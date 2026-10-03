@@ -331,7 +331,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 - **Beschreibung:** Push-Notifications über den Web-Push-Standard (VAPID, RFC 8291) für Approvals, Fragen, Turn-Ende, Erwähnungen, gemäß serverseitigem Routing (COL-010, siehe 07-sessions-collaboration.md). Weil Web-Push über die Push-Dienste der Browser-Hersteller läuft, ist er **optional und standardmäßig aus**: Erst wenn der User ihn in den Einstellungen bzw. in der PWA ausdrücklich aktiviert, wird eine Subscription angelegt; Standard sind Inbox/In-App und lokale Desktop-Notifications (DESK-005, ADR-0033). Payload minimal; Klick öffnet die PWA direkt an der Approval-Card. Approvals werden in der App entschieden, nicht per Notification-Action *(Annahme: verhindert Entscheidungen vom Sperrbildschirm)*.
 - **Details:** `POST /v1/push/subscriptions {endpoint, keys}`; VAPID-Schlüssel serverseitig generiert und gespeichert. Payload: `{type, session_id, title, preview?}`, `preview` nur bei `notifications.push_preview=true` (Default aus).
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Mit installierter PWA und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.
+  - [ ] AC1 — Mit installierter PWA, aktiviertem Web-Push und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.
   - [ ] AC2 — Abgelaufene Subscriptions (HTTP 404/410 vom Push-Dienst) werden automatisch entfernt.
   - [ ] AC3 — Ohne `push_preview` enthält die Payload keinen Nachrichtentext.
   - [ ] AC4 — Ohne ausdrückliche Aktivierung existiert keine Push-Subscription und der Server kontaktiert keinen Push-Dienst (Netz-Mock-Test); Approvals bleiben über Inbox und PWA entscheidbar.
