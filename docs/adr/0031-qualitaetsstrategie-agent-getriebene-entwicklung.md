@@ -29,6 +29,7 @@ Option **B**:
 - Positiv: Sicherheitsversprechen (YOLO-Mode) werden automatisiert belegt.
 - Negativ / Risiken: CI-Laufzeit und -Kosten (macOS-/Windows-Runner); Golden-Transcripts müssen bei Vendor-Updates neu aufgezeichnet werden.
 - Folgearbeiten: Fake-Harness implementieren, Aufnahme-Werkzeug für Golden-Transcripts, Coverage-Schwellen festlegen, ADR-Prozess im README dokumentieren.
+- Verschärft durch ADR-0033 (Offline-E2E-Test im Netz-Namespace ohne Netzwerk, QA-018) und ADR-0034 (manuelle Subscription-Verifikations-Checkliste pro Release, QA-019).
 
 ## Bezug
 - Spec: docs/spec/12-distribution-quality.md (Prefix QA)

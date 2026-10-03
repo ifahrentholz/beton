@@ -31,6 +31,7 @@ Nicht v1: Branding/White-Label, Canvas (ADR-0014), Smart Routing (ADR-0022), Pro
 - Positiv: Single-User-Produkt ist zu M3 alltagstauglich; Kostenkontrolle sichtbar.
 - Negativ / Risiken: Preis-Katalog muss gepflegt werden (Vendor-Preise ändern sich); Subscription-Usage hängt davon ab, was die CLIs melden.
 - Folgearbeiten: Quelle und Update-Mechanismus des Preis-Katalogs, Inbox-Datenmodell, Feature-Flag-Konvention.
+- Verschärft durch ADR-0033 (Preis-Katalog nur mitgeliefert, kein Online-Abruf) und ADR-0034 (Titel, Compaction und Zusammenfassungen ohne API-Key über die Vendor-CLI bzw. den Harness der Session).
 
 ## Bezug
 - Spec: docs/spec/11-platform-features.md (Prefix USE/UX)

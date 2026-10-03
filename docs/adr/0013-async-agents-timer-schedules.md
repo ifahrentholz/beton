@@ -27,6 +27,7 @@ Option **B** (Meilenstein M5) mit **Pause + Timeout, Default deny**:
 - Negativ / Risiken: Lokale Schedules hängen am laufenden Rechner; `keep_awake` plattformabhängig.
 - Negativ / Risiken: Pausierte Sessions binden Ressourcen (Runner, Worktree) bis zum Timeout.
 - Folgearbeiten: Scheduler-Leader-Election bei mehreren Server-Instanzen, Kosten-Caps pro Schedule, Inbox-Modell (ADR-0021).
+- Verschärft durch ADR-0033: Benachrichtigung ohne Zuschauer standardmäßig lokal (Desktop-Notification, Inbox); Web-Push nur opt-in.
 
 ## Bezug
 - Spec: docs/spec/02-agents.md (Prefix ASY), docs/spec/03-policies.md (Prefix POL)

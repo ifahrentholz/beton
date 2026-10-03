@@ -22,6 +22,7 @@ Option **A – Tauri 2**. Die React-UI (ADR-0020) läuft im System-WebView; der 
 - Negativ / Risiken: WebView-Unterschiede (insb. WebKitGTK unter Linux) erfordern Cross-Engine-Tests.
 - Negativ / Risiken: Ein agent-steuerbarer Browser ist mit System-WebViews nicht per CDP machbar → separate Lösung über Chromium/CDP (ADR-0016).
 - Folgearbeiten: Mikrofonzugriff für Push-to-Talk (ADR-0023), Signing/Notarisierung, E2E-Tests der Desktop-App mit Playwright (ADR-0031).
+- Verschärft durch ADR-0033: Der Auto-Updater prüft nur auf Klick bzw. nach Opt-in; Update aus lokaler Datei als Offline-Alternative.
 
 ## Bezug
 - Spec: docs/spec/08-clients.md (Prefix DESK)

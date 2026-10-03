@@ -26,6 +26,7 @@ Agents sollen einen Browser steuern (navigate, snapshot mit A11y-Tree-Refs, clic
 - Positiv: Identisches Verhalten auf allen OS, auch im Web-/PWA-Client nutzbar (Frames über Binärkanal, ADR-0019).
 - Negativ / Risiken: Screencast-Latenz; Abhängigkeit von einem Chromium außerhalb des App-Bundles; CDP-Änderungen.
 - Folgearbeiten: Binärkanal für `browser.frame`, Policy-Hooks für Navigation, Download von Chrome for Testing nur nach Zustimmung.
+- Verschärft durch ADR-0033: Chrome for Testing nur auf Klick; Offline-Alternative installiertes Chrome/Chromium bzw. lokale Datei.
 
 ## Bezug
 - Spec: docs/spec/09-browser.md (Prefix BRW)

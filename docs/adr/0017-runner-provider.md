@@ -26,6 +26,7 @@ Option **B**:
 - Negativ / Risiken: Subscription-Login pro Container/Volume ist manuell; Volume-Verschlüsselung und -Lebenszyklus müssen sauber gelöst werden.
 - Negativ / Risiken: K8s-Betrieb (RBAC, PVC, Netzwerk-Policies) erhöht Doku- und Testaufwand.
 - Folgearbeiten: Label-basiertes Dispatching (ADR-0013), Image-Build-Pipeline multi-arch (ADR-0026), Reaper für verwaiste Runner.
+- Verschärft durch ADR-0033: Das Runner-Image ist auch lokal baubar bzw. per Datei ladbar; kein Registry-Zwang.
 
 ## Bezug
 - Spec: docs/spec/10-runners-extensibility.md (Prefix RUN)

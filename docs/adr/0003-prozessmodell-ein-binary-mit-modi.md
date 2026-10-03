@@ -27,6 +27,7 @@ Option **C**. Ein Binary `beton` (Crate `beton-cli`) mit Modi:
 - Negativ / Risiken: Binary wird groß (Server, TUI, Whisper, Browser-Steuerung) – ggf. Cargo-Features für schlanke Server-/Runner-Builds.
 - Negativ / Risiken: Server-Abstraktionen (Auth, Repository-Schicht) müssen auch lokal laufen – leichter Overhead.
 - Folgearbeiten: Daemon-Lifecycle (Autostart, PID/Lock-Datei, Port-Wahl), Tunnel-Protokoll Host↔Server (ADR-0019), Feature-Flags im Build.
+- Verschärft durch ADR-0033: Lokal-only gilt als harte, getestete Garantie ohne externe Server (Ausnahme nur Modell-Anbieter).
 
 ## Bezug
 - Spec: docs/spec/00-overview.md, docs/spec/10-runners-extensibility.md (Prefix RUN), docs/spec/08-clients.md (Prefix CLI)

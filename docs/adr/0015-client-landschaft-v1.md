@@ -28,6 +28,7 @@ v2: native Mobile-Apps (Tauri Mobile), Slack-Bot, VS-Code-Extension.
 - Negativ / Risiken: PWA-Web-Push unter iOS mit Einschränkungen; mobile Nutzung braucht erreichbaren Server (Tailscale/LAN + Device-Pairing).
 - Negativ / Risiken: TUI mit eigenem PTY-Multiplexing ist aufwendig (Terminal-Emulation, Resize, Scrollback).
 - Folgearbeiten: PTY-Crate `beton-pty`, SDK-Paket `@ifahrentholz/beton-sdk`, Crate `beton-sdk`.
+- Verschärft durch ADR-0033: Web-Push (Push-Dienste der Browser-Hersteller) ist optional und standardmäßig aus; lokale Desktop-Notifications sind der Standard.
 
 ## Bezug
 - Spec: docs/spec/08-clients.md (Prefix DESK/WEB/CLI/TUI/API)

@@ -19,6 +19,7 @@ Option **B**. Smart Routing ("Auto"-Harness-Wahl, lernender Router) wird **bewus
 - Positiv: Weniger Komplexität und keine nicht-deterministische Komponente in v1; Routing ist über Policy-Tests prüfbar.
 - Negativ / Risiken: Nutzer müssen Harness/Modell selbst wählen; Wettbewerbsnachteil gegenüber Omnigent in diesem Punkt.
 - Folgearbeiten: In v2 Router als Policy-Erweiterung (WASM, ADR-0018) oder eigener Dienst evaluieren; Telemetrie-freie Evaluationsdaten klären.
+- Verschärft durch ADR-0034: Ein Router in v2 muss über eine eingeloggte Vendor-CLI bzw. den Harness der Session laufen; ein API-Key ist nur zusätzliche Option.
 
 ## Bezug
 - Spec: docs/spec/03-policies.md (Prefix POL), docs/roadmap.md
