@@ -9,7 +9,26 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+beton-harness.workspace = true
+beton-harness-claude.workspace = true
+beton-proto.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[dev-dependencies]
+beton-host.workspace = true
+beton-server.workspace = true
+beton-store.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
