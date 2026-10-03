@@ -1,0 +1,150 @@
+# CI-Gates (QA-010). Jeder Job ist ein Required Check auf `main` (siehe AGENTS.md §6).
+# Frontend-Gates (tsc, ESLint, Vitest) kommen mit apps/web (WP-14), Schema-Snapshots
+# mit WP-02, Golden-Tests mit WP-07.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    # covers: QA-001 AC3 (jeder Job der PR-Pipeline ist auf 15 min begrenzt)
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      # covers: QA-010 AC1 (eine neue Clippy-Warnung lässt den PR fehlschlagen)
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  test-linux:
+    name: test (linux, ohne Netzwerk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Tests bauen (mit Netzwerk für die Paket-Registry)
+        # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
+        # offline aus den bereits geladenen Abhängigkeiten kompiliert.
+        run: |
+          cargo nextest run --workspace --no-run
+          cargo fetch
+      - name: Unprivilegierte User-Namespaces erlauben
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      # covers: QA-001 AC2 (Tests laufen ohne ausgehendes Netz; ein Netzzugriff scheitert)
+      - name: Tests ohne Netzwerk (nur Loopback)
+        run: |
+          unshare --user --map-root-user --net -- sh -euc '
+            ip link set lo up
+            if curl -sS --max-time 5 https://example.com >/dev/null 2>&1; then
+              echo "Netzwerk ist erreichbar, die Isolation greift nicht" >&2
+              exit 1
+            fi
+            cargo nextest run --workspace --offline
+            cargo test --workspace --doc --offline
+          '
+
+  test-macos:
+    name: test (macos)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - run: cargo nextest run --workspace
+      - run: cargo test --workspace --doc
+
+  build-windows:
+    name: build (windows, Beta)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      # `+1.88` überschreibt rust-toolchain.toml (stable).
+      - run: cargo +1.88 check --workspace --all-targets
+
+  spec:
+    name: spec + roadmap
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask spec-check
+      - name: Roadmap ist aktuell
+        run: |
+          python3 scripts/gen_roadmap.py
+          git diff --exit-code docs/spec/roadmap.md
+      - name: Spec-Abdeckung M0 (Bericht)
+        run: cargo xtask spec-coverage --milestone M0 --report
+
+  commits:
+    name: commit-lint + DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Commit-Lint und PR-Titel (QA-014)
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.base_ref }}
+        run: cargo xtask commit-lint --range "origin/${BASE_REF}..HEAD" --title "$PR_TITLE"
+      - name: DCO (QA-015)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"

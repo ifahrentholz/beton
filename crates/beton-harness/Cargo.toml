@@ -1,0 +1,15 @@
+[package]
+name = "beton-harness"
+description = "Harness-Adapter-Trait, Capabilities und Transporte (native, ACP, PTY)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

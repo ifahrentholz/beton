@@ -1,0 +1,15 @@
+[package]
+name = "beton-proto"
+description = "Wire-Protokoll: Event-Modell, WebSocket-Framing, Versionierung, Schema-Generierung."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true
