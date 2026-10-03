@@ -121,6 +121,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask spec-check
+      # covers: PROTO-013 AC1, QA-006 AC1 (Feldänderung ohne Neugenerierung lässt die CI fehlschlagen)
+      - name: Generierte Schemas und Typen sind aktuell
+        run: cargo xtask codegen --check
+      - name: Generierte TypeScript-Typen kompilieren
+        run: npx --yes -p typescript@5 tsc --noEmit --strict --module esnext --moduleResolution bundler --target es2022 packages/sdk-ts/src/gen/index.ts
       - name: Roadmap ist aktuell
         run: |
           python3 scripts/gen_roadmap.py
