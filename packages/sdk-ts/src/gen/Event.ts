@@ -1,0 +1,108 @@
+// Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { Actor } from "./Actor";
+import type { AgentCompleted } from "./AgentCompleted";
+import type { AgentMessage } from "./AgentMessage";
+import type { AgentResolved } from "./AgentResolved";
+import type { AgentSpawned } from "./AgentSpawned";
+import type { ApprovalRequested } from "./ApprovalRequested";
+import type { ApprovalResolved } from "./ApprovalResolved";
+import type { AsyncRunEvent } from "./AsyncRunEvent";
+import type { BrowserAction } from "./BrowserAction";
+import type { BrowserClosed } from "./BrowserClosed";
+import type { BrowserDevserverDetected } from "./BrowserDevserverDetected";
+import type { BrowserFrame } from "./BrowserFrame";
+import type { BrowserNavigated } from "./BrowserNavigated";
+import type { BrowserOpened } from "./BrowserOpened";
+import type { BrowserPicked } from "./BrowserPicked";
+import type { BrowserSnapshot } from "./BrowserSnapshot";
+import type { BudgetExhausted } from "./BudgetExhausted";
+import type { BudgetLeaseOverdrawn } from "./BudgetLeaseOverdrawn";
+import type { CommentAddressed } from "./CommentAddressed";
+import type { CommentChange } from "./CommentChange";
+import type { Compaction } from "./Compaction";
+import type { ContextUsage } from "./ContextUsage";
+import type { CostDelta } from "./CostDelta";
+import type { CrLink } from "./CrLink";
+import type { EgressBlocked } from "./EgressBlocked";
+import type { EgressSummary } from "./EgressSummary";
+import type { Empty } from "./Empty";
+import type { ErrorEvent } from "./ErrorEvent";
+import type { EventRedacted } from "./EventRedacted";
+import type { FsChanged } from "./FsChanged";
+import type { GitCommitCreated } from "./GitCommitCreated";
+import type { GitConflictResolution } from "./GitConflictResolution";
+import type { GitConflictsDetected } from "./GitConflictsDetected";
+import type { GitWorktreeCreated } from "./GitWorktreeCreated";
+import type { HarnessAuthRequired } from "./HarnessAuthRequired";
+import type { HarnessExited } from "./HarnessExited";
+import type { HarnessIncompatible } from "./HarnessIncompatible";
+import type { HarnessReady } from "./HarnessReady";
+import type { HarnessUnmapped } from "./HarnessUnmapped";
+import type { McpServerFailed } from "./McpServerFailed";
+import type { MessageCompleted } from "./MessageCompleted";
+import type { Notice } from "./Notice";
+import type { PolicyDecision } from "./PolicyDecision";
+import type { PolicyRuleIssue } from "./PolicyRuleIssue";
+import type { PolicySetChanged } from "./PolicySetChanged";
+import type { PolicySetInvalid } from "./PolicySetInvalid";
+import type { PolicyStateChanged } from "./PolicyStateChanged";
+import type { PresenceUpdated } from "./PresenceUpdated";
+import type { QueueUpdated } from "./QueueUpdated";
+import type { ReasoningCompleted } from "./ReasoningCompleted";
+import type { RunnerStatus } from "./RunnerStatus";
+import type { SandboxStarted } from "./SandboxStarted";
+import type { SandboxViolation } from "./SandboxViolation";
+import type { ScheduleEvent } from "./ScheduleEvent";
+import type { SessionCreated } from "./SessionCreated";
+import type { SessionForkCreated } from "./SessionForkCreated";
+import type { SessionForked } from "./SessionForked";
+import type { SessionImported } from "./SessionImported";
+import type { SessionOwnershipChanged } from "./SessionOwnershipChanged";
+import type { SessionResumed } from "./SessionResumed";
+import type { SessionSettingsChanged } from "./SessionSettingsChanged";
+import type { SessionStartDenied } from "./SessionStartDenied";
+import type { SessionStarted } from "./SessionStarted";
+import type { SessionStatusChanged } from "./SessionStatusChanged";
+import type { SessionTitleChanged } from "./SessionTitleChanged";
+import type { ShareChange } from "./ShareChange";
+import type { TerminalClosed } from "./TerminalClosed";
+import type { TerminalOpened } from "./TerminalOpened";
+import type { TerminalOutput } from "./TerminalOutput";
+import type { TerminalSnapshot } from "./TerminalSnapshot";
+import type { TextDelta } from "./TextDelta";
+import type { TimerEvent } from "./TimerEvent";
+import type { ToolCallCompleted } from "./ToolCallCompleted";
+import type { ToolCallOutputDelta } from "./ToolCallOutputDelta";
+import type { ToolCallRequested } from "./ToolCallRequested";
+import type { ToolCallStarted } from "./ToolCallStarted";
+import type { TurnCompleted } from "./TurnCompleted";
+import type { TurnFailed } from "./TurnFailed";
+import type { TurnInterrupted } from "./TurnInterrupted";
+import type { TurnStarted } from "./TurnStarted";
+import type { UsageSubscription } from "./UsageSubscription";
+import type { JsonValue } from "./serde_json/JsonValue";
+
+/**
+ * Ein Event im Session-Log bzw. auf dem Draht.
+ */
+export type Event = { 
+/**
+ * Envelope-Version, derzeit immer 1.
+ */
+v: number, id: `evt_${string}`, session_id: `ses_${string}`, 
+/**
+ * Lückenlose Position im Session-Log. Transiente Events tragen die letzte dauerhafte `seq`.
+ */
+seq: number, ts: string, actor: Actor, turn_id?: `trn_${string}`, causation_id?: `evt_${string}`, 
+/**
+ * Original-Payload des Harness (optional, vor Persistenz redigiert).
+ */
+raw?: JsonValue, 
+/**
+ * Nur bei transienten Events: `true`.
+ */
+transient?: boolean, 
+/**
+ * Nur bei transienten Events: pro Session und Epoch monotone Folgenummer (PROTO-003).
+ */
+tseq?: number, } & ({ "type": "session.created", "payload": SessionCreated } | { "type": "session.started", "payload": SessionStarted } | { "type": "session.status", "payload": SessionStatusChanged } | { "type": "session.resumed", "payload": SessionResumed } | { "type": "session.settings_changed", "payload": SessionSettingsChanged } | { "type": "session.title_changed", "payload": SessionTitleChanged } | { "type": "session.archived", "payload": Empty } | { "type": "session.unarchived", "payload": Empty } | { "type": "session.forked", "payload": SessionForked } | { "type": "session.fork_created", "payload": SessionForkCreated } | { "type": "session.imported", "payload": SessionImported } | { "type": "session.ownership_changed", "payload": SessionOwnershipChanged } | { "type": "session.start_denied", "payload": SessionStartDenied } | { "type": "harness.ready", "payload": HarnessReady } | { "type": "harness.exited", "payload": HarnessExited } | { "type": "harness.auth_required", "payload": HarnessAuthRequired } | { "type": "harness.incompatible", "payload": HarnessIncompatible } | { "type": "mcp.server_failed", "payload": McpServerFailed } | { "type": "runner.status", "payload": RunnerStatus } | { "type": "queue.updated", "payload": QueueUpdated } | { "type": "turn.started", "payload": TurnStarted } | { "type": "turn.completed", "payload": TurnCompleted } | { "type": "turn.failed", "payload": TurnFailed } | { "type": "turn.interrupted", "payload": TurnInterrupted } | { "type": "message.delta", "payload": TextDelta } | { "type": "message.completed", "payload": MessageCompleted } | { "type": "reasoning.delta", "payload": TextDelta } | { "type": "reasoning.completed", "payload": ReasoningCompleted } | { "type": "tool.call.requested", "payload": ToolCallRequested } | { "type": "tool.call.started", "payload": ToolCallStarted } | { "type": "tool.call.output.delta", "payload": ToolCallOutputDelta } | { "type": "tool.call.completed", "payload": ToolCallCompleted } | { "type": "approval.requested", "payload": ApprovalRequested } | { "type": "approval.resolved", "payload": ApprovalResolved } | { "type": "policy.decision", "payload": PolicyDecision } | { "type": "policy.set_changed", "payload": PolicySetChanged } | { "type": "policy.set_invalid", "payload": PolicySetInvalid } | { "type": "policy.state_changed", "payload": PolicyStateChanged } | { "type": "policy.enforcement_degraded", "payload": PolicyRuleIssue } | { "type": "policy.rule_inapplicable", "payload": PolicyRuleIssue } | { "type": "budget.exhausted", "payload": BudgetExhausted } | { "type": "budget.lease_overdrawn", "payload": BudgetLeaseOverdrawn } | { "type": "cost.delta", "payload": CostDelta } | { "type": "usage.subscription", "payload": UsageSubscription } | { "type": "context.usage", "payload": ContextUsage } | { "type": "compaction.started", "payload": Compaction } | { "type": "compaction.completed", "payload": Compaction } | { "type": "fs.changed", "payload": FsChanged } | { "type": "git.worktree_created", "payload": GitWorktreeCreated } | { "type": "git.commit_created", "payload": GitCommitCreated } | { "type": "cr.linked", "payload": CrLink } | { "type": "cr.unlinked", "payload": CrLink } | { "type": "git.conflicts_detected", "payload": GitConflictsDetected } | { "type": "git.conflict_resolution", "payload": GitConflictResolution } | { "type": "terminal.opened", "payload": TerminalOpened } | { "type": "terminal.output", "payload": TerminalOutput } | { "type": "terminal.snapshot", "payload": TerminalSnapshot } | { "type": "terminal.closed", "payload": TerminalClosed } | { "type": "browser.opened", "payload": BrowserOpened } | { "type": "browser.frame", "payload": BrowserFrame } | { "type": "browser.navigated", "payload": BrowserNavigated } | { "type": "browser.action", "payload": BrowserAction } | { "type": "browser.snapshot", "payload": BrowserSnapshot } | { "type": "browser.picked", "payload": BrowserPicked } | { "type": "browser.closed", "payload": BrowserClosed } | { "type": "browser.devserver.detected", "payload": BrowserDevserverDetected } | { "type": "sandbox.started", "payload": SandboxStarted } | { "type": "sandbox.violation", "payload": SandboxViolation } | { "type": "egress.blocked", "payload": EgressBlocked } | { "type": "egress.summary", "payload": EgressSummary } | { "type": "agent.spawned", "payload": AgentSpawned } | { "type": "agent.completed", "payload": AgentCompleted } | { "type": "agent.resolved", "payload": AgentResolved } | { "type": "agent.message", "payload": AgentMessage } | { "type": "timer.set", "payload": TimerEvent } | { "type": "timer.fired", "payload": TimerEvent } | { "type": "timer.cancelled", "payload": TimerEvent } | { "type": "async.run.queued", "payload": AsyncRunEvent } | { "type": "async.run.started", "payload": AsyncRunEvent } | { "type": "async.run.paused", "payload": AsyncRunEvent } | { "type": "async.run.resumed", "payload": AsyncRunEvent } | { "type": "async.run.finished", "payload": AsyncRunEvent } | { "type": "schedule.created", "payload": ScheduleEvent } | { "type": "schedule.updated", "payload": ScheduleEvent } | { "type": "schedule.deleted", "payload": ScheduleEvent } | { "type": "schedule.fired", "payload": ScheduleEvent } | { "type": "schedule.skipped", "payload": ScheduleEvent } | { "type": "comment.added", "payload": CommentChange } | { "type": "comment.updated", "payload": CommentChange } | { "type": "comment.resolved", "payload": CommentChange } | { "type": "comment.deleted", "payload": CommentChange } | { "type": "comment.addressed", "payload": CommentAddressed } | { "type": "share.granted", "payload": ShareChange } | { "type": "share.changed", "payload": ShareChange } | { "type": "share.revoked", "payload": ShareChange } | { "type": "presence.updated", "payload": PresenceUpdated } | { "type": "event.redacted", "payload": EventRedacted } | { "type": "harness.unmapped", "payload": HarnessUnmapped } | { "type": "notice", "payload": Notice } | { "type": "error", "payload": ErrorEvent });

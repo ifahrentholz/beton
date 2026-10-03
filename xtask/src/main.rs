@@ -1,12 +1,14 @@
 //! Entwickler-Werkzeuge für das beton-Repo.
 //!
 //! ```text
+//! cargo xtask codegen [--check]
 //! cargo xtask commit-lint [--range <base>..<head>] [--title <text>]
 //! cargo xtask dco [--range <base>..<head>]
 //! cargo xtask spec-check
 //! cargo xtask spec-coverage --milestone <M0…M5> [--report]
 //! ```
 
+mod codegen;
 mod commits;
 mod coverage;
 mod spec;
@@ -44,13 +46,14 @@ fn run() -> Result<bool> {
     let rest: Vec<String> = args.collect();
     let root = repo_root();
     match command.as_str() {
+        "codegen" => run_codegen(&root, &rest),
         "commit-lint" => commit_lint(&root, &rest),
         "dco" => dco(&rest),
         "spec-check" => spec_check(&root),
         "spec-coverage" => spec_coverage(&root, &rest),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <commit-lint|dco|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|dco|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
@@ -95,6 +98,27 @@ fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
         })
         .filter(|c| !c.hash.is_empty())
         .collect())
+}
+
+fn run_codegen(root: &std::path::Path, args: &[String]) -> Result<bool> {
+    let files = codegen::generate()?;
+    if args.iter().any(|a| a == "--check") {
+        let problems = codegen::drift(root, &files)?;
+        for p in &problems {
+            eprintln!("codegen: {p}");
+        }
+        if problems.is_empty() {
+            println!("codegen --check: {} Dateien aktuell", files.len());
+        } else {
+            eprintln!(
+                "Generierte Dateien weichen ab. `cargo xtask codegen` ausführen und committen."
+            );
+        }
+        return Ok(problems.is_empty());
+    }
+    codegen::write(root, &files)?;
+    println!("codegen: {} Dateien geschrieben", files.len());
+    Ok(true)
 }
 
 fn commit_lint(root: &std::path::Path, args: &[String]) -> Result<bool> {
