@@ -324,7 +324,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .unwrap_or(Value::Null)
         })
         .unwrap_or(Value::Null);
-    let mut session = registry
+    let session = registry
         .start(
             &boot.harness,
             SessionSpec {
@@ -336,7 +336,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             },
             ctx,
         )
-        .await?;
+        .await;
+    let mut session = match session {
+        Ok(s) => s,
+        Err(e) => {
+            // Start gescheitert (z. B. inkompatible CLI, HAR-002 AC2): melden, dann enden.
+            report_start_failure(&boot, &e).await;
+            return Err(e.into());
+        }
+    };
     // SES-001: nach `session.created` folgt `session.started`.
     pending_status.insert(
         0,
@@ -543,6 +551,59 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             tracing::warn!("Tunnel getrennt, verbinde neu");
         }
         tokio::time::sleep(backoff.next_delay()).await;
+    }
+}
+
+/// Meldet einen gescheiterten Harness-Start über den Tunnel und setzt die Session auf `failed`.
+async fn report_start_failure(boot: &RunnerBoot, error: &beton_harness::HarnessError) {
+    let Ok(mut ws) = connect(boot).await else {
+        return;
+    };
+    let hello = TunnelUp::Hello {
+        kind: PeerKind::Runner,
+        version: env!("CARGO_PKG_VERSION").into(),
+        protocol: PROTOCOL.into(),
+        harnesses: vec![boot.harness.to_string()],
+    };
+    let bind = TunnelUp::SessionBind {
+        session_id: boot.session_id,
+        epoch: boot.epoch,
+        last_acked_rseq: 0,
+    };
+    if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
+        return;
+    }
+    let system = Actor::System {
+        component: beton_core::event::SystemComponent::Runner,
+    };
+    let mut events = Vec::new();
+    if let beton_harness::HarnessError::Incompatible { detected, expected } = error {
+        events.push(Event::new(
+            boot.session_id,
+            0,
+            system.clone(),
+            EventPayload::HarnessIncompatible(beton_core::event::HarnessIncompatible {
+                detected_version: detected.clone(),
+                expected_range: expected.clone(),
+            }),
+        ));
+    } else {
+        events.push(Event::new(boot.session_id, 0, system.clone(), EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({"type": format!("urn:beton:problem:{}", error.code()), "code": error.code(), "title": error.to_string()}),
+        })));
+    }
+    events.push(Event::new(
+        boot.session_id,
+        0,
+        system,
+        EventPayload::SessionStatus(SessionStatusChanged {
+            status: SessionStatus::Failed,
+            reason: Some(error.to_string()),
+        }),
+    ));
+    let mut unacked = Unacked::default();
+    if push(&mut ws, boot, &mut unacked, events).await {
+        drain_acks(&mut ws, &mut unacked).await;
     }
 }
 

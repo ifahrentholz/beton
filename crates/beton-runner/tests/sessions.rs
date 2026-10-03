@@ -732,3 +732,81 @@ async fn ses_001_ac4_lifecycle_actions_emit_one_event_by_the_actor() {
     }
     d.daemon.shutdown().await;
 }
+
+#[tokio::test]
+async fn har_002_ac2_incompatible_cli_fails_the_session_with_event() {
+    let dir = tmp();
+    // Eine "claude"-CLI mit zu alter Version.
+    let cli = dir.path().join("claude-alt");
+    std::fs::write(&cli, "#!/bin/sh\necho '1.0.0 (Claude Code)'\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    inherit.insert("BETON_CLAUDE_PATH".into(), cli.display().to_string());
+    let runners = dir.path().join("runners");
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(
+            LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
+        );
+        r
+    })
+    .await;
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "claude", "cwd": dir.path()})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    let events = d.wait_for(&id, is("harness.incompatible")).await;
+    let e = events
+        .iter()
+        .find(|e| e["type"] == "harness.incompatible")
+        .unwrap();
+    assert_eq!(e["payload"]["detected_version"], "1.0.0");
+    d.wait_status(&id, "failed").await;
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn proto_001_ac4_large_payload_reaches_clients_via_blob_api() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let big = "z".repeat(70 * 1024);
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(
+                dir.path(),
+                &format!("turns: [{{ emit: [{{ message: \"{big}\" }}] }}]"),
+            ),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.http(
+        "POST",
+        &format!("/v1/sessions/{id}/input"),
+        Some(json!({"text": "los"})),
+    )
+    .await;
+    let events = d.wait_for(&id, is("turn.completed")).await;
+    let offloaded = events
+        .iter()
+        .find(|e| e["type"] == "message.completed")
+        .unwrap();
+    assert!(offloaded.get("payload").is_none(), "Payload ausgelagert");
+    let blob = offloaded["payload_ref"].as_str().unwrap();
+    let (status, content) = d
+        .http("GET", &format!("/v1/sessions/{id}/blobs/{blob}"), None)
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        content["content"][0]["text"].as_str().unwrap().len(),
+        big.len()
+    );
+    d.daemon.shutdown().await;
+}
