@@ -1,0 +1,2 @@
+{"request":{"subtype":"initialize"},"request_id":"beton_init","type":"control_request"}
+{"message":{"content":[{"text":"Denke kurz nach: Was ist 17 mal 23? Antworte nur mit der Zahl.","type":"text"}],"role":"user"},"type":"user"}

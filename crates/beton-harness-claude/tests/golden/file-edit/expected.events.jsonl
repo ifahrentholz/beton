@@ -1,0 +1,19 @@
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"harness_session_ref":"<id:3>","mcp_servers":[],"tools":["Task","Artifact","ArtifactComments","ArtifactData","AskUserQuestion","Bash","CronCreate","CronDelete","CronList","DesignSync","Edit","EnterPlanMode","EnterWorktree","ExitPlanMode","ExitWorktree","ListAgents","Monitor","NotebookEdit","PushNotification","Read","RemoteTrigger","ReportFindings","ScheduleWakeup","SendMessage","ShareOnboardingGuide","Skill","TaskCreate","TaskGet","TaskList","TaskStop","TaskUpdate","ToolSearch","WebFetch","WebSearch","Workflow","Write"]},"turn_id":"<id:2>","type":"harness.ready"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"args":{"file_path":"<workdir>/notiz.txt"},"call_id":"<id:5>","source":"harness","tool":"Read"},"turn_id":"<id:2>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":21.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"call_id":"<id:5>","duration_ms":0,"result":"1\tDas ist alt.\n2\t","status":"ok"},"turn_id":"<id:2>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:6>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"args":{"file_path":"<workdir>/notiz.txt","new_string":"Das ist neu.","old_string":"Das ist alt.","replace_all":false},"call_id":"<id:7>","source":"harness","tool":"Edit"},"turn_id":"<id:2>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"approval_id":"<id:8>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"file_path":"<workdir>/notiz.txt","new_string":"Das ist neu.","old_string":"Das ist alt.","replace_all":false},"call_id":"<id:7>","tool":"Edit"}},"turn_id":"<id:2>","type":"approval.requested"}
+{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:8>","decision":"allow","via":"user"},"turn_id":"<id:2>","type":"approval.resolved"}
+{"has_raw":false,"payload":{"call_id":"<id:7>"},"turn_id":"<id:2>","type":"tool.call.started"}
+{"has_raw":true,"payload":{"call_id":"<id:7>","duration_ms":0,"result":"The file <workdir>/notiz.txt has been updated successfully. (file state is current in your context — no need to Read it back)","status":"ok"},"turn_id":"<id:2>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:9>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:9>","text":"fer"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:9>","text":"tig."},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"fertig.","type":"text"}],"message_id":"<id:9>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":82737,"cache_write_tokens":4717,"currency":"USD","harness":"claude","input_tokens":26,"model":"claude-haiku-4-5-20251001","output_tokens":520,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"source":"harness","used_tokens":87480,"window_tokens":200000},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":8115,"input_tokens":26,"num_turns":3,"output_tokens":520}},"turn_id":"<id:2>","type":"turn.completed"}

@@ -1,0 +1,4 @@
+model: haiku
+inputs:
+- send: 'Antworte nur mit dem Wort: ok'
+gate: []

@@ -1,0 +1,2 @@
+{"request":{"subtype":"initialize"},"request_id":"beton_init","type":"control_request"}
+{"message":{"content":[{"text":"Führe mit dem Bash-Tool `echo eins` aus, danach `echo zwei`, danach `echo drei`.","type":"text"}],"role":"user"},"type":"user"}

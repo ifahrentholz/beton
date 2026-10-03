@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.285
+recorded_at: 2026-10-03T16:46:25.577Z
+scenario: Turn mit Reasoning
+platform: macos-aarch64
+exit_code: 0

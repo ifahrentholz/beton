@@ -1,0 +1,5 @@
+model: haiku
+inputs:
+- send: Schreibe die Zahlen von 1 bis 300 untereinander, eine pro Zeile.
+  interrupt_after_events: 12
+gate: []

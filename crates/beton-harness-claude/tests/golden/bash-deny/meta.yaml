@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.285
+recorded_at: 2026-10-03T16:48:02.492Z
+scenario: Bash-Tool abgelehnt (HAR-005 AC1)
+platform: macos-aarch64
+exit_code: 0
