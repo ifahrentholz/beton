@@ -1,4 +1,6 @@
-//! Wire-Protokoll: Event-Modell, WebSocket-Framing, Versionierung, Schema-Generierung.
+//! Wire-Protokoll von beton: transiente Events, WebSocket-Framing, Versionierung.
 //!
-//! Spec: PROTO-* (docs/spec/06-data-sync-protocol.md). Die Implementierung folgt mit den zugehörigen Arbeitspaketen;
-//! bis dahin ist dieses Crate bewusst leer (AGENTS.md §1: nichts auf Vorrat bauen).
+//! Das Event-Modell selbst liegt in `beton_core::event` (PROTO-001, PROTO-002).
+//! Spec: PROTO-* in `docs/spec/06-data-sync-protocol.md`.
+
+pub mod transient;
