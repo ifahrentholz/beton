@@ -668,7 +668,9 @@
             ]
           },
           "code": {
-            "$ref": "#/components/schemas/ProblemCode"
+            "type": "string",
+            "description": "Maschinenlesbarer Code; offener Katalog (neue Codes sind kein Breaking Change),\nReferenz: `docs/generated/problem-codes.md`.",
+            "example": "not_found"
           },
           "trace_id": {
             "type": "string"

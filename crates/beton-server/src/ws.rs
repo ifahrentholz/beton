@@ -238,6 +238,16 @@ async fn connection(socket: WebSocket, state: AppState, auth: Authenticated) {
     drop(conn);
     drop(out);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+    // Close-Handshake: kurz auf das Close des Clients warten, statt die Verbindung hart zu
+    // schließen (sonst kann das Close-Frame beim Client verloren gehen).
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        while let Some(Ok(msg)) = stream.next().await {
+            if matches!(msg, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
 }
 
 async fn wait_shutdown(rx: &mut tokio::sync::watch::Receiver<bool>) {

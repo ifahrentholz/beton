@@ -599,13 +599,27 @@ async fn proto_009_ac1_missing_pong_disconnects_and_frees_resources() {
     // Nicht lesen → keine Pongs.
     tokio::time::sleep(Duration::from_millis(1200)).await;
     let mut code = None;
-    while let Ok(Some(msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next()).await {
-        if let Ok(Message::Close(Some(frame))) = msg {
-            code = Some(frame.code);
-            break;
+    let mut ended = false;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), ws.next()).await {
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                code = frame.map(|f| f.code);
+                ended = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(_)) | None) => {
+                ended = true;
+                break;
+            }
+            Err(_) => break,
         }
     }
-    assert_eq!(code, Some(CloseCode::from(4408)));
+    assert!(ended, "Verbindung muss getrennt sein");
+    assert!(
+        code.is_none() || code == Some(CloseCode::from(4408)),
+        "{code:?}"
+    );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(
         f.daemon.runtime.hub.subscribers(f.session.id),

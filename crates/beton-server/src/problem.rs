@@ -91,6 +91,9 @@ pub struct Problem {
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+    /// Maschinenlesbarer Code; offener Katalog (neue Codes sind kein Breaking Change),
+    /// Referenz: `docs/generated/problem-codes.md`.
+    #[schema(value_type = String, example = "not_found")]
     pub code: ProblemCode,
     pub trace_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
