@@ -228,7 +228,10 @@ async fn data_002_events_roundtrip_envelope_fields() {
     assert_eq!(written, expected);
 }
 
+/// Benchmark: läuft in CI als eigener Schritt im Release-Build, ohne parallele Tests
+/// (`cargo test -p beton-store --release --lib data_002_ac3 -- --ignored`).
 #[tokio::test]
+#[ignore = "Benchmark; CI führt ihn isoliert im Release-Build aus"]
 async fn data_002_ac3_batch_append_throughput() {
     let t = store().await;
     let s = t
