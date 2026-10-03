@@ -190,7 +190,10 @@ mod tests {
             .map(|(_, c)| c)
             .expect("Event.ts fehlt");
         for (name, _) in beton_core::event::CATALOG {
-            assert!(event.contains(&format!("\"type\": \"{name}\"")), "{name} fehlt in Event.ts");
+            assert!(
+                event.contains(&format!("\"type\": \"{name}\"")),
+                "{name} fehlt in Event.ts"
+            );
         }
         assert!(files.contains_key(&PathBuf::from("packages/sdk-ts/src/gen/index.ts")));
     }
