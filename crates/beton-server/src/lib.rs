@@ -11,15 +11,18 @@
 
 pub mod api;
 pub mod app;
+pub mod commands;
 pub mod config;
 pub mod extract;
+pub mod hub;
 pub mod idempotency;
 pub mod local_auth;
 pub mod problem;
 pub mod security;
 pub mod serve;
+pub mod ws;
 
 pub use crate::app::openapi;
 pub use crate::config::{DEFAULT_PORT, ServerConfig};
 pub use crate::problem::{Problem, ProblemCode};
-pub use crate::serve::{Daemon, StartError, start};
+pub use crate::serve::{Daemon, StartError, start, start_with};

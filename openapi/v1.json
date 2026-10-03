@@ -466,6 +466,60 @@
           }
         }
       }
+    },
+    "/v1/ws": {
+      "get": {
+        "tags": [
+          "ws"
+        ],
+        "summary": "WebSocket-Verbindung (Upgrade, Subprotokoll `beton.v1`).",
+        "operationId": "ws_upgrade",
+        "responses": {
+          "101": {
+            "description": "Upgrade auf WebSocket, Subprotokoll beton.v1"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -636,6 +690,7 @@
           "validation_failed",
           "invalid_cursor",
           "invalid_limit",
+          "unknown_command",
           "unauthorized",
           "invalid_code",
           "forbidden",
@@ -647,6 +702,7 @@
           "conflict",
           "seq_conflict",
           "stale_epoch",
+          "seq_ahead",
           "tombstoned",
           "precondition_failed",
           "payload_too_large",

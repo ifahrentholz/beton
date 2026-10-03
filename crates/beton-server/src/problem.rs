@@ -45,6 +45,7 @@ problem_codes! {
     ValidationFailed = "validation_failed", 400, "Validierung fehlgeschlagen";
     InvalidCursor = "invalid_cursor", 400, "Ungültiger Cursor";
     InvalidLimit = "invalid_limit", 400, "Ungültiges Limit";
+    UnknownCommand = "unknown_command", 400, "Unbekanntes Kommando";
     Unauthorized = "unauthorized", 401, "Anmeldung erforderlich";
     InvalidCode = "invalid_code", 401, "Einmal-Code ungültig oder abgelaufen";
     Forbidden = "forbidden", 403, "Keine Berechtigung";
@@ -56,6 +57,7 @@ problem_codes! {
     Conflict = "conflict", 409, "Konflikt";
     SeqConflict = "seq_conflict", 409, "Sequenzkonflikt";
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
+    SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
     Tombstoned = "tombstoned", 410, "Gelöscht";
     PreconditionFailed = "precondition_failed", 412, "Vorbedingung nicht erfüllt";
     PayloadTooLarge = "payload_too_large", 413, "Anfrage zu groß";
