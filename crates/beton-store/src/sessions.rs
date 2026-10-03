@@ -330,6 +330,41 @@ impl Store {
             .collect()
     }
 
+    /// Eine Seite der Session-Liste, neueste zuerst nach ID (PROTO-010 AC1). Die Sortierung
+    /// über die unveränderliche, zeitlich sortierte ID macht die Pagination stabil: Neue
+    /// Sessions erscheinen vor der ersten Seite und verschieben keine späteren.
+    pub async fn sessions_page(
+        &self,
+        org: OrgId,
+        include_archived: bool,
+        limit: u32,
+        before: Option<SessionId>,
+    ) -> Result<(Vec<SessionRecord>, Option<SessionId>)> {
+        let sql = format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions WHERE org_id = ? AND (archived = 0 OR ?) \
+             AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?"
+        );
+        let before = before.map(|b| b.to_string());
+        let mut items: Vec<SessionRecord> = sqlx::query(&sql)
+            .bind(org.to_string())
+            .bind(include_archived)
+            .bind(&before)
+            .bind(&before)
+            .bind(i64::from(limit) + 1)
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(session_from_row)
+            .collect::<Result<_>>()?;
+        let next = if items.len() > limit as usize {
+            items.truncate(limit as usize);
+            items.last().map(|s| s.id)
+        } else {
+            None
+        };
+        Ok((items, next))
+    }
+
     /// Löscht eine Session samt Side-Chats und Sub-Sessions in einer Transaktion: Events,
     /// `event_raw`, Projektionen und Blob-Referenzen. Hinterlässt je Session einen Tombstone
     /// und einen Audit-Eintrag (DATA-008). Die Blob-Dateien entfernt der nächste GC-Lauf.

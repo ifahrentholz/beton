@@ -76,6 +76,15 @@ jobs:
             cargo nextest run --workspace --offline
             cargo test --workspace --doc --offline
           '
+      # covers: AUTH-001 AC3 (zweiter OS-User kann weder Token-Datei noch Socket öffnen)
+      - name: Zweiter OS-User ohne Zugriff
+        run: |
+          sudo useradd --no-create-home --shell /bin/sh betontest
+          BETON_TEST_OTHER_USER=betontest cargo nextest run -p beton-server -E 'test(auth_001_ac3)'
+
+      # covers: DATA-002 AC3 (Durchsatz ≥ 5 000 Events/s, isoliert im Release-Build)
+      - name: Benchmark Event-Log-Durchsatz
+        run: cargo test -p beton-store --release --lib data_002_ac3 -- --ignored --nocapture
 
   test-macos:
     name: test (macos)
@@ -124,6 +133,28 @@ jobs:
       # covers: PROTO-013 AC1, QA-006 AC1 (Feldänderung ohne Neugenerierung lässt die CI fehlschlagen)
       - name: Generierte Schemas und Typen sind aktuell
         run: cargo xtask codegen --check
+      # covers: PROTO-013 AC3 (OpenAPI 3.1 mit Linter validiert)
+      - name: OpenAPI-Linter
+        run: npx --yes @redocly/cli@1 lint openapi/v1.json
+      # covers: QA-006 AC2 (Breaking Changes an der OpenAPI nur mit `!`-Commit oder Label)
+      - name: OpenAPI-Breaking-Changes gegen den Basis-Branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BREAKING_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') }}
+        run: |
+          git fetch --depth=50 origin "$BASE_REF"
+          if ! git cat-file -e "origin/$BASE_REF:openapi/v1.json" 2>/dev/null; then
+            echo "Basis hat noch keine openapi/v1.json; nichts zu vergleichen."
+            exit 0
+          fi
+          if [ "$BREAKING_LABEL" = "true" ] || git log --format=%s "origin/$BASE_REF..HEAD" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+            echo "Breaking Change ist angekündigt (Label oder !-Commit)."
+            exit 0
+          fi
+          mkdir -p /tmp/oas && git show "origin/$BASE_REF:openapi/v1.json" > /tmp/oas/base.json
+          cp openapi/v1.json /tmp/oas/head.json
+          docker run --rm -v /tmp/oas:/oas tufin/oasdiff:latest breaking /oas/base.json /oas/head.json --fail-on ERR
       - name: Generierte TypeScript-Typen kompilieren
         run: npx --yes -p typescript@5 tsc --noEmit --strict --module esnext --moduleResolution bundler --target es2022 packages/sdk-ts/src/gen/index.ts
       - name: Roadmap ist aktuell

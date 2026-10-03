@@ -1,0 +1,33 @@
+<!-- Generiert von `cargo xtask codegen` aus beton_server::ProblemCode. Nicht von Hand ändern. -->
+
+# Fehlercodes (RFC 9457)
+
+Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. Spezifikation: PROTO-011 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#proto-011--fehlerformat-rfc-9457).
+
+| Code | Status | Titel |
+| --- | --- | --- |
+| `bad_request` | 400 | Ungültige Anfrage |
+| `validation_failed` | 400 | Validierung fehlgeschlagen |
+| `invalid_cursor` | 400 | Ungültiger Cursor |
+| `invalid_limit` | 400 | Ungültiges Limit |
+| `unauthorized` | 401 | Anmeldung erforderlich |
+| `invalid_code` | 401 | Einmal-Code ungültig oder abgelaufen |
+| `forbidden` | 403 | Keine Berechtigung |
+| `host_not_allowed` | 403 | Host nicht erlaubt |
+| `origin_not_allowed` | 403 | Origin nicht erlaubt |
+| `loopback_only` | 403 | Nur über Loopback erreichbar |
+| `not_found` | 404 | Nicht gefunden |
+| `method_not_allowed` | 405 | Methode nicht erlaubt |
+| `conflict` | 409 | Konflikt |
+| `seq_conflict` | 409 | Sequenzkonflikt |
+| `stale_epoch` | 409 | Veraltete Epoch |
+| `tombstoned` | 410 | Gelöscht |
+| `precondition_failed` | 412 | Vorbedingung nicht erfüllt |
+| `payload_too_large` | 413 | Anfrage zu groß |
+| `unsupported_media_type` | 415 | Medientyp nicht unterstützt |
+| `idempotency_key_reused` | 422 | Idempotency-Key mit anderem Inhalt wiederverwendet |
+| `capability_unsupported` | 422 | Vom Harness nicht unterstützt |
+| `rate_limited` | 429 | Zu viele Anfragen |
+| `internal` | 500 | Interner Fehler |
+| `blob_corrupt` | 500 | Blob beschädigt |
+| `unavailable` | 503 | Vorübergehend nicht verfügbar |

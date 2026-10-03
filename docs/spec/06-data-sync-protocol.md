@@ -321,7 +321,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### PROTO-010 — REST-Konventionen
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** REST unter `/v1` ist ressourcenorientiert mit JSON in `snake_case`. Listen nutzen Cursor-Pagination (`?limit=1..200`, Default 50, `&cursor=<opak>` → `{items, next_cursor}`); Event-Abfragen `GET /v1/sessions/{id}/events?after_seq=N&limit≤1000`. `POST` akzeptiert `Idempotency-Key` (24 h); veränderliche Konfigurationsobjekte (Agents, Policies, Projekte) nutzen `ETag`/`If-Match` (412 bei Konflikt). Geld als Ganzzahl-Mikro-Einheiten + Währung; Zeitpunkte RFC 3339 UTC; lange Operationen `202` + `Location: /v1/operations/{id}`; Rate-Limits mit `429`, `Retry-After` und `RateLimit-*`-Headern.
+- **Beschreibung:** REST unter `/v1` ist ressourcenorientiert mit JSON in `snake_case`. Listen nutzen Cursor-Pagination (`?limit=1..200`, Default 50, `&cursor=<opak>` → `{items, next_cursor}`) über einen unveränderlichen Schlüssel (z. B. die zeitlich sortierte ID), damit neue Einträge keine Seiten verschieben; Event-Abfragen `GET /v1/sessions/{id}/events?after_seq=N&limit≤1000`. `POST` akzeptiert `Idempotency-Key` (24 h); veränderliche Konfigurationsobjekte (Agents, Policies, Projekte) nutzen `ETag`/`If-Match` (412 bei Konflikt). Geld als Ganzzahl-Mikro-Einheiten + Währung; Zeitpunkte RFC 3339 UTC; lange Operationen `202` + `Location: /v1/operations/{id}`; Rate-Limits mit `429`, `Retry-After` und `RateLimit-*`-Headern.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Paginieren über 1 000 Sessions mit `limit=50` liefert jede genau einmal, auch wenn währenddessen neue entstehen.
   - [ ] AC2 — Gleicher `Idempotency-Key` mit anderem Body liefert 422 `idempotency_key_reused`.
@@ -331,7 +331,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### PROTO-011 — Fehlerformat RFC 9457
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Alle Fehler (REST, WS-`nack`, Tunnel) sind Problem-Objekte: `type` (`urn:beton:problem:<code>`), `title`, `status`, `detail`, `instance`, `code`, `trace_id`, optional `errors: [{pointer, detail}]` für Validierung. Codes stammen aus einem Rust-Enum `ProblemCode`, aus dem eine Code-Referenz generiert wird. Problem-Details enthalten nie Secrets, Stacktraces oder interne Pfade.
+- **Beschreibung:** Alle Fehler (REST, WS-`nack`, Tunnel) sind Problem-Objekte: `type` (`urn:beton:problem:<code>`), `title`, `status`, `detail`, `instance`, `code`, `trace_id`, optional `errors: [{pointer, detail}]` für Validierung. Codes stammen aus einem Rust-Enum `ProblemCode`, aus dem eine Code-Referenz generiert wird ([`docs/generated/problem-codes.md`](../generated/problem-codes.md)). Problem-Details enthalten nie Secrets, Stacktraces oder interne Pfade.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Jede 4xx/5xx-Antwort hat `Content-Type: application/problem+json` (Contract-Test über alle Routen mit provozierten Fehlern).
   - [ ] AC2 — Validierungsfehler in einem Agent-YAML-Upload liefern JSON-Pointer auf das fehlerhafte Feld.

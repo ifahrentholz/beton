@@ -142,7 +142,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### AUTH-001 — Lokaler Modus: Loopback-Bindung & Token-Datei
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Im lokalen Modus bindet der Daemon ausschließlich an `127.0.0.1` und `::1` (konfigurierbarer Port) sowie auf Unix an einen Socket `~/.beton/run/beton.sock` (0600). Jeder Request braucht das lokale Token aus `~/.beton/auth/local.token` (256 bit, 0600, Verzeichnis 0700), das CLI, TUI und Desktop lesen. Andere lokale OS-User haben weder Datei- noch Socket-Zugriff.
-- **Details:** Start bricht ab, wenn Datei/Verzeichnis Gruppen-/Fremdrechte haben oder einem anderen UID gehören (Windows: ACL nur aktueller User + SYSTEM). `beton auth rotate-local` erneuert das Token; laufende Clients reconnecten mit neuem Token. Nicht-Loopback-Bindung ist im lokalen Modus nur über AUTH-009 möglich.
+- **Details:** Standard-Port ist **7420** (`server.listen`, Default `127.0.0.1:7420` und `[::1]:7420`); ist der Port belegt, bricht der Start mit klarer Meldung ab, statt auszuweichen, damit Clients den Daemon zuverlässig finden. Fehlt IPv6-Loopback, genügt IPv4. Start bricht ab, wenn Datei/Verzeichnis Gruppen-/Fremdrechte haben oder einem anderen UID gehören (Windows: ACL nur aktueller User + SYSTEM). Über den Unix-Socket entfällt die `Host`-Prüfung (AUTH-002), das Token ist trotzdem nötig. `beton auth rotate-local` erneuert das Token; laufende Clients reconnecten mit neuem Token. Nicht-Loopback-Bindung ist im lokalen Modus nur über AUTH-009 möglich.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Request ohne bzw. mit falschem Token an `127.0.0.1:<port>` erhält 401; mit Token aus der Datei 200.
   - [ ] AC2 — Ist `local.token` mit Modus 0644 angelegt, verweigert der Daemon den Start mit klarer Meldung.
@@ -173,7 +173,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 
 ### AUTH-004 — Lokale Browser-Anmeldung per Einmal-Link
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Damit die Web-UI im normalen Browser ohne Token-Kopieren funktioniert, erzeugt `beton open [session]` (bzw. `beton run` beim ersten Start) über die authentisierte lokale API einen Einmal-Code (128 bit, 60 s, single-use) und öffnet `http://127.0.0.1:<port>/auth/local/redeem?code=…`. Der Server tauscht ihn gegen ein Session-Cookie (`HttpOnly`, `SameSite=Strict`) und leitet ohne Code in der URL weiter.
+- **Beschreibung:** Damit die Web-UI im normalen Browser ohne Token-Kopieren funktioniert, erzeugt `beton open [session]` (bzw. `beton run` beim ersten Start) über die authentisierte lokale API einen Einmal-Code (128 bit, 60 s, single-use) und öffnet `http://127.0.0.1:<port>/auth/local/redeem?code=…`. Der Server tauscht ihn gegen ein Session-Cookie `beton_session` (`HttpOnly`, `SameSite=Strict`, serverseitig 24 h gültig) und leitet per `303` ohne Code in der URL weiter (optional `&next=<relativer Pfad>`; absolute oder protokoll-relative Ziele werden ignoriert).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein zweites Einlösen desselben Codes oder ein Einlösen nach 60 s schlägt mit 401 fehl.
   - [ ] AC2 — Nach Einlösen enthält die Browser-History keine URL mit gültigem Code (Redirect ersetzt den Eintrag).

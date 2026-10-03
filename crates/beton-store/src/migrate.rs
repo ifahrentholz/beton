@@ -23,14 +23,21 @@ pub(crate) struct Migration {
     pub sql: &'static str,
 }
 
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../migrations/sqlite/0001_init.sql"),
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../migrations/sqlite/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "idempotency",
+        sql: include_str!("../migrations/sqlite/0002_idempotency.sql"),
+    },
+];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
@@ -137,8 +144,8 @@ mod tests {
 
     use super::*;
 
-    const TEST_V2: Migration = Migration {
-        version: 2,
+    const TEST_NEXT: Migration = Migration {
+        version: 3,
         name: "test_extra",
         sql: "CREATE TABLE test_extra (org_id TEXT NOT NULL, id TEXT NOT NULL PRIMARY KEY);",
     };
@@ -169,13 +176,13 @@ mod tests {
     async fn data_003_ac2_older_binary_refuses_newer_schema() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("beton.db");
-        let newer = [MIGRATIONS[0], TEST_V2];
+        let newer = [MIGRATIONS[0], MIGRATIONS[1], TEST_NEXT];
         run(&db, &newer).await.unwrap();
 
         let err = run(&db, MIGRATIONS).await.unwrap_err();
         assert_eq!(err.code(), "schema_too_new");
         assert!(
-            matches!(err, Error::SchemaTooNew { db: 2, binary: 1 }),
+            matches!(err, Error::SchemaTooNew { db: 3, binary: 2 }),
             "{err}"
         );
         // Auch der Store selbst startet nicht.
@@ -192,7 +199,7 @@ mod tests {
         run(&db, &MIGRATIONS[..1]).await.unwrap();
         assert!(!dir.path().join("beton.db.bak-0").exists());
 
-        run(&db, &[MIGRATIONS[0], TEST_V2]).await.unwrap();
+        run(&db, MIGRATIONS).await.unwrap();
         let backup = dir.path().join("beton.db.bak-1");
         assert!(backup.exists());
         assert_eq!(versions(&backup).await, vec![1]);
@@ -215,7 +222,7 @@ mod tests {
                             .build()
                             .unwrap();
                         barrier.wait();
-                        rt.block_on(run(&db, &[MIGRATIONS[0], TEST_V2]))
+                        rt.block_on(run(&db, &[MIGRATIONS[0], MIGRATIONS[1], TEST_NEXT]))
                     })
                 })
                 .collect();
@@ -226,7 +233,7 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            assert_eq!(rt.block_on(versions(&db)), vec![1, 2]);
+            assert_eq!(rt.block_on(versions(&db)), vec![1, 2, 3]);
         }
     }
 }

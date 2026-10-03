@@ -228,7 +228,10 @@ async fn data_002_events_roundtrip_envelope_fields() {
     assert_eq!(written, expected);
 }
 
+/// Benchmark: läuft in CI als eigener Schritt im Release-Build, ohne parallele Tests
+/// (`cargo test -p beton-store --release --lib data_002_ac3 -- --ignored`).
 #[tokio::test]
+#[ignore = "Benchmark; CI führt ihn isoliert im Release-Build aus"]
 async fn data_002_ac3_batch_append_throughput() {
     let t = store().await;
     let s = t
@@ -671,6 +674,41 @@ async fn data_001_local_identity_is_stable() {
         .await
         .unwrap();
     assert_eq!(reopened.ensure_local().await.unwrap(), t.local);
+}
+
+#[tokio::test]
+async fn sessions_page_is_stable_while_new_sessions_appear() {
+    let t = store().await;
+    for _ in 0..25 {
+        t.store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+    }
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let (items, next) = t
+            .store
+            .sessions_page(org(&t), true, 10, cursor)
+            .await
+            .unwrap();
+        seen.extend(items.iter().map(|s| s.id));
+        // Neue Sessions während des Paginierens.
+        t.store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        match next {
+            Some(n) => cursor = Some(n),
+            None => break,
+        }
+    }
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), seen.len(), "keine Doppelten");
+    assert_eq!(seen.len(), 25, "jede ursprüngliche Session genau einmal");
 }
 
 // ---------------------------------------------------------------------------

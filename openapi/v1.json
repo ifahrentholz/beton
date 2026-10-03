@@ -1,0 +1,758 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "beton",
+    "description": "REST-API von beton. Fehler sind Problem-Objekte nach RFC 9457.",
+    "contact": {
+      "name": "Ingo Fahrentholz"
+    },
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:7420",
+      "description": "Lokaler Daemon (Standard-Port)"
+    }
+  ],
+  "paths": {
+    "/auth/local/redeem": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Einmal-Code einlösen: setzt das Session-Cookie und leitet ohne Code weiter (AUTH-004).",
+        "operationId": "redeem_login_code",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "next",
+            "in": "query",
+            "description": "Relativer Pfad für die Weiterleitung (Default `/`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Weiterleitung mit Set-Cookie"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Erreichbarkeit prüfen (ohne Anmeldung).",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Server läuft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/auth/local/codes": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Einmal-Code erzeugen (AUTH-004). Nur mit lokalem Token und nur über Loopback.",
+        "operationId": "create_login_code",
+        "responses": {
+          "201": {
+            "description": "Einmal-Code erzeugt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginCode"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/info": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Version, Schema- und Protokollversion des Servers.",
+        "operationId": "info",
+        "responses": {
+          "200": {
+            "description": "Server-Informationen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Info"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Der angemeldete Benutzer und die Art der Anmeldung.",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "Angemeldeter Benutzer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Das OpenAPI-Dokument (API-001).",
+        "operationId": "openapi_json",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session-Liste, neueste zuerst, mit Cursor-Pagination.",
+        "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_archived",
+            "in": "query",
+            "description": "Archivierte Sessions einschließen.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eine Seite der Session-Liste",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "FieldError": {
+        "type": "object",
+        "description": "Ein Validierungsfehler mit JSON-Pointer auf das Feld.",
+        "required": [
+          "pointer",
+          "detail"
+        ],
+        "properties": {
+          "pointer": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "description": "Antwort von `/healthz`.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "Info": {
+        "type": "object",
+        "description": "Server-Informationen.",
+        "required": [
+          "version",
+          "schema_version",
+          "protocol_version",
+          "mode",
+          "org_id"
+        ],
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "`local` (M0) oder `server`."
+          },
+          "org_id": {
+            "type": "string",
+            "example": "org_local"
+          }
+        }
+      },
+      "LoginCode": {
+        "type": "object",
+        "description": "Ein Einmal-Code für die Browser-Anmeldung.",
+        "required": [
+          "code",
+          "redeem_url",
+          "expires_in_s"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "redeem_url": {
+            "type": "string",
+            "description": "Fertige URL zum Öffnen im Browser."
+          },
+          "expires_in_s": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "description": "Der angemeldete Benutzer.",
+        "required": [
+          "id",
+          "org_id",
+          "auth"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "usr_local"
+          },
+          "org_id": {
+            "type": "string",
+            "example": "org_local"
+          },
+          "auth": {
+            "type": "string",
+            "description": "`bearer` oder `cookie`."
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "Problem-Objekt nach RFC 9457.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code",
+          "trace_id"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "`urn:beton:problem:<code>`"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "$ref": "#/components/schemas/ProblemCode"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FieldError"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProblemCode": {
+        "type": "string",
+        "description": "Maschinenlesbare Fehlercodes; daraus wird `docs/generated/problem-codes.md` erzeugt.",
+        "enum": [
+          "bad_request",
+          "validation_failed",
+          "invalid_cursor",
+          "invalid_limit",
+          "unauthorized",
+          "invalid_code",
+          "forbidden",
+          "host_not_allowed",
+          "origin_not_allowed",
+          "loopback_only",
+          "not_found",
+          "method_not_allowed",
+          "conflict",
+          "seq_conflict",
+          "stale_epoch",
+          "tombstoned",
+          "precondition_failed",
+          "payload_too_large",
+          "unsupported_media_type",
+          "idempotency_key_reused",
+          "capability_unsupported",
+          "rate_limited",
+          "internal",
+          "blob_corrupt",
+          "unavailable"
+        ]
+      },
+      "SessionPage": {
+        "type": "object",
+        "description": "Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SessionSummary": {
+        "type": "object",
+        "description": "Eine Session in der Liste.",
+        "required": [
+          "id",
+          "title",
+          "status",
+          "kind",
+          "harness",
+          "archived",
+          "head_seq",
+          "cost_micro",
+          "created_at",
+          "last_activity_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "Siehe `SessionStatus` im Event-Schema."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "head_seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_micro": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Kosten in Mikro-Einheiten der Währung."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "last_activity_at": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "browser_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "beton_session"
+      },
+      "local_token": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "local_token": []
+    },
+    {
+      "browser_session": []
+    }
+  ]
+}

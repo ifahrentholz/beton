@@ -409,7 +409,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### CLI-004 — `serve` & `host`
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** `beton serve` startet den Server (lokal: localhost-Bindung, Token-Datei 0600; zentral: Postgres, OIDC per Config). `beton host` startet den Host-Daemon, der sich per ausgehendem WebSocket am Server anmeldet; `host enable|disable` installiert ihn als User-Service (launchd/systemd --user).
+- **Beschreibung:** `beton serve` startet den Server (lokal: localhost-Bindung auf Port 7420, Token-Datei 0600, siehe AUTH-001; zentral: Postgres, OIDC per Config). `beton host` startet den Host-Daemon, der sich per ausgehendem WebSocket am Server anmeldet; `host enable|disable` installiert ihn als User-Service (launchd/systemd --user).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton serve` ohne Config bindet ausschließlich an Loopback; `--bind 0.0.0.0` ohne konfigurierte Auth wird verweigert.
   - [ ] AC2 — (ab M4, RUN-006) `beton host enable` erzeugt einen User-Service, der nach Reboot automatisch verbindet; `disable` entfernt ihn.
