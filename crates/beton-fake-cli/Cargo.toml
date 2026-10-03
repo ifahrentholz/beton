@@ -14,7 +14,11 @@ beton-harness.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+beton-harness-claude.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

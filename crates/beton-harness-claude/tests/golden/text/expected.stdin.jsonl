@@ -1,0 +1,2 @@
+{"request":{"subtype":"initialize"},"request_id":"beton_init","type":"control_request"}
+{"message":{"content":[{"text":"Antworte nur mit dem Wort: ok","type":"text"}],"role":"user"},"type":"user"}

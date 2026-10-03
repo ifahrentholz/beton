@@ -1,0 +1,9 @@
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
+{"has_raw":true,"payload":{"harness_session_ref":"<id:2>","mcp_servers":[],"tools":["Task","Artifact","ArtifactComments","ArtifactData","AskUserQuestion","Bash","CronCreate","CronDelete","CronList","DesignSync","Edit","EnterPlanMode","EnterWorktree","ExitPlanMode","ExitWorktree","ListAgents","Monitor","NotebookEdit","PushNotification","Read","RemoteTrigger","ReportFindings","ScheduleWakeup","SendMessage","ShareOnboardingGuide","Skill","TaskCreate","TaskGet","TaskList","TaskStop","TaskUpdate","ToolSearch","WebFetch","WebSearch","Workflow","Write"]},"turn_id":"<id:1>","type":"harness.ready"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","redacted":true},"turn_id":"<id:1>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","text":"391"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"391","type":"text"}],"message_id":"<id:3>","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":21.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:1>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":24765,"cache_write_tokens":4013,"currency":"USD","harness":"claude","input_tokens":10,"model":"claude-haiku-4-5-20251001","output_tokens":133,"source":"subscription"},"turn_id":"<id:1>","type":"cost.delta"}
+{"has_raw":false,"payload":{"source":"harness","used_tokens":28788,"window_tokens":200000},"turn_id":"<id:1>","type":"context.usage"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:1>","usage_summary":{"duration_ms":5494,"input_tokens":10,"num_turns":1,"output_tokens":133}},"turn_id":"<id:1>","type":"turn.completed"}

@@ -1,0 +1,7 @@
+model: haiku
+inputs:
+- send: 'Ersetze in der Datei notiz.txt das Wort alt durch neu. Nutze das Edit-Tool. Antworte danach nur mit: fertig.'
+gate:
+- allow
+- allow
+- allow

@@ -1,0 +1,15 @@
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"harness_session_ref":"<id:3>","mcp_servers":[],"tools":["Task","Artifact","ArtifactComments","ArtifactData","AskUserQuestion","Bash","CronCreate","CronDelete","CronList","DesignSync","Edit","EnterPlanMode","EnterWorktree","ExitPlanMode","ExitWorktree","ListAgents","Monitor","NotebookEdit","PushNotification","Read","RemoteTrigger","ReportFindings","ScheduleWakeup","SendMessage","ShareOnboardingGuide","Skill","TaskCreate","TaskGet","TaskList","TaskStop","TaskUpdate","ToolSearch","WebFetch","WebSearch","Workflow","Write"]},"turn_id":"<id:2>","type":"harness.ready"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"args":{"command":"mkdir beton-ordner","description":"Create directory named beton-ordner"},"call_id":"<id:5>","source":"harness","tool":"Bash"},"turn_id":"<id:2>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"approval_id":"<id:6>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"mkdir beton-ordner","description":"Create directory named beton-ordner"},"call_id":"<id:5>","tool":"Bash"}},"turn_id":"<id:2>","type":"approval.requested"}
+{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:6>","decision":"deny","via":"user"},"turn_id":"<id:2>","type":"approval.resolved"}
+{"has_raw":true,"payload":{"call_id":"<id:5>","duration_ms":0,"result":"nicht erlaubt","status":"denied"},"turn_id":"<id:2>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":21.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","text":"ab"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","text":"gelehnt."},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"abgelehnt.","type":"text"}],"message_id":"<id:7>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":53558,"cache_write_tokens":4304,"currency":"USD","harness":"claude","input_tokens":18,"model":"claude-haiku-4-5-20251001","output_tokens":213,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"source":"harness","used_tokens":57880,"window_tokens":200000},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":4462,"input_tokens":18,"num_turns":2,"output_tokens":213}},"turn_id":"<id:2>","type":"turn.completed"}

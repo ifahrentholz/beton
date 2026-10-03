@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.285
+recorded_at: 2026-10-03T16:46:30.770Z
+scenario: Fehler-Result error_max_turns
+platform: macos-aarch64
+exit_code: 0

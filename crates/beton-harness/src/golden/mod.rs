@@ -15,6 +15,7 @@
 //! `script.yaml` und vergleicht beide Richtungen. Mit `BETON_BLESS=1` werden die Erwartungen
 //! neu geschrieben (der Diff erscheint dann im PR).
 
+mod record;
 mod replay;
 pub mod secrets;
 
@@ -29,6 +30,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+pub use self::record::RecordingLauncher;
 pub use self::replay::{RawLine, ReplayLauncher};
 use crate::adapter::{
     AdapterContext, Gate, GateDecision, GateRequest, HarnessAdapter, HostEnv, NormalizedEvent,
@@ -178,7 +180,10 @@ impl Gate for ScriptGate {
         }
         match self.decisions.lock().ok().and_then(|mut d| d.pop_front()) {
             Some(ScriptDecision::Allow) => GateDecision::Allow { updated_args: None },
-            _ => GateDecision::Deny {
+            Some(ScriptDecision::Deny) => GateDecision::Deny {
+                reason: Some("nicht erlaubt".into()),
+            },
+            None => GateDecision::Deny {
                 reason: Some("golden: keine Entscheidung im Skript".into()),
             },
         }
@@ -197,71 +202,20 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Spielt einen Fall gegen einen Adapter ab und liefert das normalisierte Transkript.
 pub async fn replay(case: &Case, adapter: &dyn HarnessAdapter) -> Result<Transcript, GoldenError> {
-    let adapter_err = |message: String| GoldenError::Adapter {
+    let launcher = ReplayLauncher::new(case.raw.clone(), case.meta.exit_code);
+    let events = drive(
+        adapter,
+        &case.script,
+        Arc::new(launcher.clone()),
+        HostEnv::default(),
+        GOLDEN_WORKDIR.into(),
+        STEP_TIMEOUT,
+    )
+    .await
+    .map_err(|message| GoldenError::Adapter {
         case: case.name(),
         message,
-    };
-    let launcher = ReplayLauncher::new(case.raw.clone(), case.meta.exit_code);
-    let gate = Arc::new(ScriptGate {
-        decisions: Mutex::new(case.script.gate.iter().copied().collect()),
-        requests: Mutex::default(),
-    });
-    let ctx = AdapterContext {
-        gate: gate.clone(),
-        launcher: Arc::new(launcher.clone()),
-        env: HostEnv::default(),
-    };
-    let spec = SessionSpec {
-        workdir: GOLDEN_WORKDIR.into(),
-        model: case.script.model.clone(),
-        ..SessionSpec::default()
-    };
-    let mut session = adapter
-        .start(spec, ctx)
-        .await
-        .map_err(|e| adapter_err(e.to_string()))?;
-    let mut rx = session
-        .events()
-        .ok_or_else(|| adapter_err("Event-Strom fehlt".into()))?;
-    let mut events: Vec<NormalizedEvent> = Vec::new();
-
-    for input in &case.script.inputs {
-        if let Some(text) = &input.send {
-            session
-                .send(UserInput { text: text.clone() })
-                .await
-                .map_err(|e| adapter_err(e.to_string()))?;
-        }
-        let mut in_turn = 0;
-        loop {
-            let next = tokio::time::timeout(STEP_TIMEOUT, rx.recv())
-                .await
-                .map_err(|_| adapter_err("Zeitüberschreitung beim Warten auf Events".into()))?;
-            let Some(event) = next else { break };
-            let terminal = is_turn_end(&event);
-            events.push(event);
-            in_turn += 1;
-            if input.interrupt_after_events == Some(in_turn) {
-                session
-                    .interrupt()
-                    .await
-                    .map_err(|e| adapter_err(e.to_string()))?;
-            }
-            if terminal {
-                break;
-            }
-        }
-    }
-    session
-        .shutdown(Shutdown::Graceful {
-            timeout: Duration::from_secs(1),
-        })
-        .await
-        .map_err(|e| adapter_err(e.to_string()))?;
-    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
-        events.push(event);
-    }
-
+    })?;
     let mut normalizer = Normalizer::new(GOLDEN_WORKDIR);
     let stdin = launcher
         .stdin_lines()
@@ -276,6 +230,68 @@ pub async fn replay(case: &Case, adapter: &dyn HarnessAdapter) -> Result<Transcr
         stdin: join_lines(&stdin),
         events: join_lines(&events),
     })
+}
+
+/// Treibt einen Adapter nach `script` – gleich für Replay und Aufnahme.
+pub async fn drive(
+    adapter: &dyn HarnessAdapter,
+    script: &Script,
+    launcher: Arc<dyn crate::process::ProcessLauncher>,
+    env: HostEnv,
+    workdir: std::path::PathBuf,
+    step_timeout: Duration,
+) -> Result<Vec<NormalizedEvent>, String> {
+    let gate = Arc::new(ScriptGate {
+        decisions: Mutex::new(script.gate.iter().copied().collect()),
+        requests: Mutex::default(),
+    });
+    let ctx = AdapterContext {
+        gate,
+        launcher,
+        env,
+    };
+    let spec = SessionSpec {
+        workdir,
+        model: script.model.clone(),
+        ..SessionSpec::default()
+    };
+    let mut session = adapter.start(spec, ctx).await.map_err(|e| e.to_string())?;
+    let mut rx = session.events().ok_or("Event-Strom fehlt")?;
+    let mut events: Vec<NormalizedEvent> = Vec::new();
+    for input in &script.inputs {
+        if let Some(text) = &input.send {
+            session
+                .send(UserInput { text: text.clone() })
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let mut in_turn = 0;
+        loop {
+            let next = tokio::time::timeout(step_timeout, rx.recv())
+                .await
+                .map_err(|_| "Zeitüberschreitung beim Warten auf Events".to_owned())?;
+            let Some(event) = next else { break };
+            let terminal = is_turn_end(&event);
+            events.push(event);
+            in_turn += 1;
+            if input.interrupt_after_events == Some(in_turn) {
+                session.interrupt().await.map_err(|e| e.to_string())?;
+            }
+            if terminal {
+                break;
+            }
+        }
+    }
+    session
+        .shutdown(Shutdown::Graceful {
+            timeout: Duration::from_secs(5),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+        events.push(event);
+    }
+    Ok(events)
 }
 
 fn is_turn_end(e: &NormalizedEvent) -> bool {

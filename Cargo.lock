@@ -153,9 +153,13 @@ dependencies = [
 name = "beton-fake-cli"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
+ "beton-core",
  "beton-harness",
+ "beton-harness-claude",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -182,6 +186,16 @@ dependencies = [
 [[package]]
 name = "beton-harness-claude"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "beton-host"

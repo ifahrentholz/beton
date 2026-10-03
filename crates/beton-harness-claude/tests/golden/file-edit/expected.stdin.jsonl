@@ -1,0 +1,3 @@
+{"request":{"subtype":"initialize"},"request_id":"beton_init","type":"control_request"}
+{"message":{"content":[{"text":"Ersetze in der Datei notiz.txt das Wort alt durch neu. Nutze das Edit-Tool. Antworte danach nur mit: fertig.","type":"text"}],"role":"user"},"type":"user"}
+{"response":{"request_id":"<id:1>","response":{"behavior":"allow","updatedInput":{"file_path":"<workdir>/notiz.txt","new_string":"Das ist neu.","old_string":"Das ist alt.","replace_all":false}},"subtype":"success"},"type":"control_response"}

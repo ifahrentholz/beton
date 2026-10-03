@@ -1,0 +1,6 @@
+model: haiku
+inputs:
+- send: 'Lege mit dem Bash-Tool genau `mkdir beton-ordner` an und antworte danach nur mit: erledigt.'
+gate:
+- allow
+- allow

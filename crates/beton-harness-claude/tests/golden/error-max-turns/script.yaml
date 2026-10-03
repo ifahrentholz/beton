@@ -1,0 +1,7 @@
+model: haiku
+inputs:
+- send: Führe mit dem Bash-Tool `echo eins` aus, danach `echo zwei`, danach `echo drei`.
+gate:
+- allow
+- allow
+- allow

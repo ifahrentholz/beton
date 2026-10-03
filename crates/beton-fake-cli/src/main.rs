@@ -140,6 +140,8 @@ enum TurnEnd {
     Done,
     Interrupted,
     Failed(String),
+    /// Login abgelaufen: Result mit `api_error_status: 401`.
+    AuthFailed(String),
 }
 
 struct Sim<R, W> {
@@ -391,7 +393,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         } else if let Some(code) = step.crash {
             return Err(Stop::Crash(u8::try_from(code.clamp(1, 255)).unwrap_or(1)));
         } else if let Some(hint) = &step.auth_expired {
-            return Ok(TurnEnd::Failed(format!("authentication_error: {hint}")));
+            return Ok(TurnEnd::AuthFailed(format!("authentication_error: {hint}")));
         } else if step.hang {
             loop {
                 let msg = self.read()?;
@@ -419,15 +421,20 @@ impl<R: BufRead, W: Write> Sim<R, W> {
     }
 
     fn result(&mut self, end: TurnEnd, text: &str, usage: &Usage) -> Result<(), Stop> {
+        let mut api_status = Value::Null;
         let (subtype, is_error, result) = match end {
             TurnEnd::Done => ("success", false, text.to_owned()),
             TurnEnd::Interrupted => ("error_during_execution", true, "interrupted".to_owned()),
             TurnEnd::Failed(why) => ("error_during_execution", true, why),
+            TurnEnd::AuthFailed(why) => {
+                api_status = json!(401);
+                ("error_during_execution", true, why)
+            }
         };
         self.emit(json!({
             "type": "result", "subtype": subtype, "is_error": is_error,
             "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1,
-            "result": result, "session_id": self.session_id,
+            "result": result, "session_id": self.session_id, "api_error_status": api_status,
             "total_cost_usd": usage.cost_usd.unwrap_or(0.0),
             "usage": {
                 "input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens,

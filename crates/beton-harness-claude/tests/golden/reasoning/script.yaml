@@ -1,0 +1,4 @@
+model: haiku
+inputs:
+- send: 'Denke kurz nach: Was ist 17 mal 23? Antworte nur mit der Zahl.'
+gate: []

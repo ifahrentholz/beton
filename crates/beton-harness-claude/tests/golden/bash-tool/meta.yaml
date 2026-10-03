@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.285
+recorded_at: 2026-10-03T16:47:28.610Z
+scenario: Turn mit Bash-Tool, Freigabe erteilt
+platform: macos-aarch64
+exit_code: 0
