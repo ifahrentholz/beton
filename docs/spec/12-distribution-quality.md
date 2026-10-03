@@ -361,7 +361,7 @@ release-please PR gemergt → Tag
 
 ### QA-010 — CI-Gates
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015). Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).
+- **Beschreibung:** Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015); Offline-E2E im Netz-Namespace ohne Netzwerk (QA-018), sobald vorhanden. Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine neue Clippy-Warnung lässt den PR fehlschlagen.
   - [ ] AC2 — Eine Abhängigkeit mit GPL-3.0-Lizenz oder bekannter RUSTSEC-Advisory wird von `cargo deny` blockiert.
@@ -434,6 +434,19 @@ release-please PR gemergt → Tag
   - [ ] AC1 — Die Repository-Test-Suite läuft mit `BETON_TEST_DB=sqlite` und `=postgres` identisch grün.
   - [ ] AC2 — Ein Upgrade-Test migriert einen mit der Vorgängerversion erzeugten Datenbestand ohne Datenverlust (Event-Zähler und Hashes vorher = nachher).
 - **Abhängigkeiten:** DATA-003, DATA-004 (siehe 06-data-sync-protocol.md)
+
+### QA-018 — Offline-E2E-Garantie (Netz-Namespace nur mit Loopback)
+- **Meilenstein:** M0 · **Priorität:** Must
+- **Beschreibung:** Ein CI-Job `offline-e2e` (Linux) beweist ADR-0033: Server (`beton serve`), Host/Runner, Clients (Web-UI über Playwright, CLI; ab M3 TUI und Desktop) und Fake-Harness bzw. Protokoll-Fake-CLI laufen gemeinsam in einem Netz-Namespace, der ausschließlich das Loopback-Interface besitzt (keine Default-Route, kein externer DNS). Abgedeckt werden die Demo-Szenarien M0 und (ab M3) M3 aus der Roadmap, jeweils mit Fake-Harness statt Vendor-CLI. Ein zweiter Lauf mit Sinkhole weist nach, dass beton keine Verbindung nach außen auch nur versucht. Zusätzlich führt `beton-core` eine Registry aller netzwirksamen Funktionen (Name, Zweck, Default, Offline-Alternative); einzige Einträge mit Default „an“ sind die Modell-Anbieter der Harnesses.
+- **Details:** Namespace z. B. per `unshare --net --map-root-user` bzw. `ip netns`; Datenverzeichnis temporär; Playwright-Browser und Chromium für BRW-Fälle sind im CI-Image vorinstalliert, das Whisper-Modell wird vorab per Datei importiert (VOI-002). Sinkhole: Dummy-Interface mit Default-Route und Paketmitschnitt, DNS-Stub auf Loopback, der jede Anfrage mit NXDOMAIN beantwortet und protokolliert. Läuft in jeder PR-Pipeline (QA-010).
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Im Namespace ohne Netzwerk läuft das M0-Demo-Szenario vollständig: `beton run fake` (bzw. Claude-Adapter gegen Fake-CLI) startet eine Session, die Antwort streamt live im Browser, nach erzwungenem Verbindungsabbruch setzt die UI ab `seq` fort, und die Session überlebt einen Daemon-Neustart.
+  - [ ] AC2 — Im Sinkhole-Lauf desselben Szenarios werden null DNS-Anfragen und null Verbindungsversuche zu Nicht-Loopback-Adressen aufgezeichnet; jeder Fund lässt den Job mit Ziel und Zeitpunkt fehlschlagen.
+  - [ ] AC3 — Ein Test prüft die Registry netzwirksamer Funktionen: Jeder Eintrag außer den Modell-Anbietern hat Default „aus“ bzw. „nur auf Nutzeraktion“ und eine benannte Offline-Alternative; ein neuer Eintrag ohne diese Angaben lässt den Build fehlschlagen.
+  - [ ] AC4 — Während des Laufs zeigt die UI keinen Fehlerdialog wegen fehlenden Netzes; netzabhängige Aktionen (z. B. Modell-Download, Update-Prüfung) sind deaktiviert und nennen ihre Offline-Alternative.
+  - [ ] AC5 — (ab M3) Im selben Namespace läuft das M3-Demo-Szenario mit Fake-Harness: Desktop (tauri-driver, Linux) bzw. Web-UI und `beton tui`, zwei Sessions in Worktrees eines lokalen Repos, eingebetteter Browser mit Inspect-Mode gegen einen lokalen Dev-Server und Diktat mit vorab importiertem Whisper-Modell und Audio-Fixture.
+- **Abhängigkeiten:** QA-002, QA-007, QA-010, HAR-026 (siehe 01-harnesses.md), WEB-001 (siehe 08-clients.md); ab M3: QA-008, SES-015 (siehe 07-sessions-collaboration.md), TUI-001 (siehe 08-clients.md), BRW-013 (siehe 09-browser.md), VOI-002 (siehe 11-platform-features.md)
+- **Referenz:** ADR-0033, ADR-0031
 
 ## Nicht in v1
 
