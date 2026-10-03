@@ -32,6 +32,8 @@ pub struct LaunchSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// Aus der geerbten Umgebung entfernen (z. B. API-Keys bei Subscription, HAR-015).
+    pub env_remove: Vec<String>,
     pub cwd: Option<PathBuf>,
 }
 
@@ -94,6 +96,9 @@ pub struct RealLauncher;
 impl ProcessLauncher for RealLauncher {
     async fn launch(&self, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>> {
         let mut cmd = tokio::process::Command::new(&spec.program);
+        for key in &spec.env_remove {
+            cmd.env_remove(key);
+        }
         cmd.args(&spec.args)
             .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())

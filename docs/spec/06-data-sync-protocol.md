@@ -83,7 +83,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `reasoning.delta` | T | `message_id, text` |
 | | `reasoning.completed` | D | `message_id, summary?, redacted` |
 | Tools | `tool.call.requested` | D | `call_id, tool, mcp_server?, args, source: harness\|beton_mcp\|acp` |
-| | `tool.call.started` | D | `call_id, sandbox_stage?` |
+| | `tool.call.started` | D | `call_id, sandbox_stage?, args?` (ausgeführte Argumente, wenn das Gate sie geändert hat) |
 | | `tool.call.output.delta` | T | `call_id, stream: stdout\|stderr, text` |
 | | `tool.call.completed` | D | `call_id, status: ok\|error\|denied\|cancelled, result?\|result_ref?, duration_ms` |
 | Kontrolle | `approval.requested` | D | `approval_id, kind: tool\|policy\|browser\|budget\|question, subject, options, expires_at, on_timeout: deny\|allow\|abort` |

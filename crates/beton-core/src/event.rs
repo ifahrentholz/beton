@@ -639,6 +639,8 @@ payload!(ToolCallRequested {
 payload!(ToolCallStarted {
     call_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] sandbox_stage: Option<SandboxStage>,
+    /// Ausgeführte Argumente, wenn das Gate sie geändert hat (HAR-005 AC2).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] args: Option<Value>,
 });
 payload!(ToolCallOutputDelta {
     call_id: String,

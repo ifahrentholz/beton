@@ -569,6 +569,7 @@ impl Player {
         self.send(EventPayload::ToolCallStarted(ToolCallStarted {
             call_id: call_id.clone(),
             sandbox_stage: None,
+            args: None,
         }))
         .await;
         self.send(EventPayload::ToolCallCompleted(ToolCallCompleted {

@@ -4293,6 +4293,9 @@
     "ToolCallStarted": {
       "type": "object",
       "properties": {
+        "args": {
+          "description": "Ausgeführte Argumente, wenn das Gate sie geändert hat (HAR-005 AC2)."
+        },
         "call_id": {
           "type": "string"
         },

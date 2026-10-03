@@ -67,6 +67,7 @@ impl ProcessLauncher for ReplayLauncher {
         let (adapter_stdin, our_stdin) = tokio::io::duplex(64 * 1024);
         let (mut our_stdout, adapter_stdout) = tokio::io::duplex(64 * 1024);
         let (count_tx, mut count_rx) = watch::channel(0usize);
+        let (closed_tx, mut closed_rx) = watch::channel(false);
         let done = Arc::new(Notify::new());
         let finished = Arc::new(Mutex::new(false));
 
@@ -82,6 +83,8 @@ impl ProcessLauncher for ReplayLauncher {
                 n += 1;
                 let _ = count_tx.send(n);
             }
+            // Wie die echte CLI: Ende von stdin beendet den Prozess.
+            let _ = closed_tx.send(true);
         });
 
         // stdout abspielen.
@@ -99,6 +102,8 @@ impl ProcessLauncher for ReplayLauncher {
                     break;
                 }
             }
+            // stdout erst schließen, wenn der Adapter stdin geschlossen hat.
+            let _ = closed_rx.wait_for(|c| *c).await;
             drop(our_stdout);
             if let Ok(mut f) = finished_flag.lock() {
                 *f = true;
