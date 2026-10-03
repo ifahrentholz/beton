@@ -1,0 +1,5 @@
+harness: echo
+cli_version: 1.4.0
+recorded_at: 2026-10-03T12:00:00Z
+scenario: Datei lesen mit Freigabe
+platform: synthetic

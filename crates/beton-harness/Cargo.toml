@@ -1,6 +1,6 @@
 [package]
 name = "beton-harness"
-description = "Harness-Adapter-Trait, Capabilities und Transporte (native, ACP, PTY)."
+description = "Harness-Adapter-Trait, Capabilities, Registry, Prozess-Supervision, Fake-Harness und Golden-Transcripts."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,23 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+process-wrap.workspace = true
+regex.workspace = true
+schemars.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+ulid.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

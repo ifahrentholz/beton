@@ -1,0 +1,3 @@
+inputs:
+  - send: Lies die README
+gate: [allow]
