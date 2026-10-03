@@ -387,8 +387,8 @@ Fehlercodes: JSON-RPC-Standard plus `-32001 Unsupported`, `-32002 PermissionDeni
 - **Beschreibung:** Erstanbieter-Integrationen sind einkompilierte Rust-Implementierungen derselben Traits, die auch Plugins bedienen: `beton-harness-claude`, `beton-harness-codex`, `beton-harness-acp`, `beton-harness-direct` (Harness-Trait, HAR-001 in 01-harnesses.md); Docker- und Kubernetes-Provider in `beton-host` hinter Cargo-Features `provider-docker`, `provider-kubernetes` *(Annahme: Module statt eigener Crates, um das Crate-Layout beizubehalten)*; GitHub/GitLab in `beton-git` (GIT-002, GIT-003 in 07-sessions-collaboration.md, ab M4). Neue Harnesses sollen bevorzugt über ACP angebunden werden statt als Plugin.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eingebaute Adapter registrieren sich über eine gemeinsame Registry (`AdapterRegistry`) mit `kind`, `id`, `capabilities`; der Server unterscheidet in API-Antworten nur über das Feld `source: builtin | plugin`.
-  - [ ] AC2 — Ein Build mit `--no-default-features --features provider-docker` enthält keinen Kubernetes-Code (Prüfung via `cargo tree`).
-  - [ ] AC3 — Dieselbe Contract-Test-Suite (RUN-001 AC4, HAR-/GIT-Contracts) läuft gegen eingebaute Adapter und gegen ein Plugin über die PluginBridge.
+  - [ ] AC2 — (ab M5) Ein Build mit `--no-default-features --features provider-docker` enthält keinen Kubernetes-Code (Prüfung via `cargo tree`).
+  - [ ] AC3 — (ab M5) Dieselbe Contract-Test-Suite (RUN-001 AC4, HAR-/GIT-Contracts) läuft gegen eingebaute Adapter und gegen ein Plugin über die PluginBridge.
 - **Abhängigkeiten:** RUN-001
 - **Referenz:** ADR-0018
 
