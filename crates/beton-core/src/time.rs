@@ -60,12 +60,19 @@ impl Serialize for Timestamp {
     }
 }
 
+impl std::str::FromStr for Timestamp {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        OffsetDateTime::parse(s, &Rfc3339)
+            .map(Self::from)
+            .map_err(|e| format!("ungültiger Zeitstempel `{s}`: {e}"))
+    }
+}
+
 impl<'de> Deserialize<'de> for Timestamp {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = Cow::<str>::deserialize(d)?;
-        OffsetDateTime::parse(&s, &Rfc3339)
-            .map(Self::from)
-            .map_err(|e| serde::de::Error::custom(format!("ungültiger Zeitstempel `{s}`: {e}")))
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 

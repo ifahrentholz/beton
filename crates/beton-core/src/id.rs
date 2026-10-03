@@ -23,7 +23,10 @@ pub enum IdError {
     InvalidUlid { value: String },
 }
 
-fn parse_prefixed(prefix: &'static str, value: &str) -> Result<Ulid, IdError> {
+/// Suffix der festen lokalen IDs (`org_local`, `usr_local`, DATA-001); intern die Null-ULID.
+const LOCAL: &str = "local";
+
+fn parse_prefixed(prefix: &'static str, local: bool, value: &str) -> Result<Ulid, IdError> {
     let rest = value
         .strip_prefix(prefix)
         .and_then(|r| r.strip_prefix('_'))
@@ -31,6 +34,9 @@ fn parse_prefixed(prefix: &'static str, value: &str) -> Result<Ulid, IdError> {
             value: value.to_owned(),
             expected: prefix,
         })?;
+    if local && rest == LOCAL {
+        return Ok(Ulid::nil());
+    }
     // ULIDs sind genau 26 Zeichen Crockford-Base32 (Großbuchstaben).
     if rest.len() != 26 || rest.chars().any(|c| c.is_ascii_lowercase()) {
         return Err(IdError::InvalidUlid {
@@ -43,7 +49,7 @@ fn parse_prefixed(prefix: &'static str, value: &str) -> Result<Ulid, IdError> {
 }
 
 macro_rules! ids {
-    ($($(#[$meta:meta])* $name:ident => $prefix:literal,)*) => {$(
+    ($($(#[$meta:meta])* $name:ident => $prefix:literal $(+ $local:ident)?,)*) => {$(
         $(#[$meta])*
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(Ulid);
@@ -71,9 +77,18 @@ macro_rules! ids {
             }
         }
 
+        impl $name {
+            /// Ob es für diese Art eine feste lokale ID (`<präfix>_local`) gibt.
+            const HAS_LOCAL: bool = false $(|| stringify!($local).len() > 0)?;
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{}_{}", $prefix, self.0)
+                if Self::HAS_LOCAL && self.0.is_nil() {
+                    write!(f, "{}_{}", $prefix, LOCAL)
+                } else {
+                    write!(f, "{}_{}", $prefix, self.0)
+                }
             }
         }
 
@@ -86,7 +101,7 @@ macro_rules! ids {
         impl FromStr for $name {
             type Err = IdError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                parse_prefixed($prefix, s).map(Self)
+                parse_prefixed($prefix, Self::HAS_LOCAL, s).map(Self)
             }
         }
 
@@ -108,9 +123,14 @@ macro_rules! ids {
                 stringify!($name).into()
             }
             fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                let pattern = if Self::HAS_LOCAL {
+                    concat!("^", $prefix, "_([0-9A-HJKMNP-TV-Z]{26}|local)$")
+                } else {
+                    concat!("^", $prefix, "_[0-9A-HJKMNP-TV-Z]{26}$")
+                };
                 json_schema!({
                     "type": "string",
-                    "pattern": concat!("^", $prefix, "_[0-9A-HJKMNP-TV-Z]{26}$"),
+                    "pattern": pattern,
                     "examples": [concat!($prefix, "_01JB8Y2D0M3K4J5H6G7F8E9D0C")]
                 })
             }
@@ -136,9 +156,11 @@ ids! {
     EventId => "evt",
     /// Turn (eine Eingabe und die Arbeit des Agents daran).
     TurnId => "trn",
-    UserId => "usr",
+    /// Mensch; lokal genau `usr_local` (DATA-001).
+    UserId => "usr" + local,
     ServiceAccountId => "sa",
-    OrgId => "org",
+    /// Organisation; lokal genau `org_local` (DATA-001).
+    OrgId => "org" + local,
     TeamId => "team",
     ProjectId => "prj",
     AgentId => "agt",
@@ -154,6 +176,16 @@ ids! {
     ApprovalId => "apr",
     BlobId => "bls",
     NodeId => "nod",
+}
+
+impl OrgId {
+    /// Die einzige Org im lokalen Modus.
+    pub const LOCAL: Self = Self(Ulid(0));
+}
+
+impl UserId {
+    /// Der einzige User im lokalen Modus.
+    pub const LOCAL: Self = Self(Ulid(0));
 }
 
 /// Ein Mensch oder ein Service-Account (`usr_…` bzw. `sa_…`).
@@ -209,7 +241,7 @@ impl JsonSchema for PrincipalId {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
             "type": "string",
-            "pattern": "^(usr|sa)_[0-9A-HJKMNP-TV-Z]{26}$"
+            "pattern": "^(usr_([0-9A-HJKMNP-TV-Z]{26}|local)|sa_[0-9A-HJKMNP-TV-Z]{26})$"
         })
     }
 }
@@ -246,6 +278,21 @@ mod tests {
             "ses01JB8Y2D0M3K4J5H6G7F8E9D0C"
                 .parse::<SessionId>()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn local_ids_exist_only_for_org_and_user() {
+        assert_eq!(OrgId::LOCAL.to_string(), "org_local");
+        assert_eq!("usr_local".parse::<UserId>().unwrap(), UserId::LOCAL);
+        assert_eq!(
+            serde_json::to_value(PrincipalId::User(UserId::LOCAL)).unwrap(),
+            "usr_local"
+        );
+        assert!("ses_local".parse::<SessionId>().is_err());
+        assert_eq!(
+            SessionId::from_ulid(Ulid::nil()).to_string(),
+            "ses_00000000000000000000000000"
         );
     }
 
