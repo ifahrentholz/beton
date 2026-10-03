@@ -10,7 +10,8 @@ use axum::Extension;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use beton_core::id::{OrgId, SessionId, UserId};
+use beton_core::id::{HostId, OrgId, SessionId, UserId};
+use beton_host::RunnerCapabilities;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -286,4 +287,51 @@ pub async fn openapi_json(State(state): State<AppState>) -> Response {
         state.openapi_json.as_ref().clone(),
     )
         .into_response()
+}
+
+/// Ein Provider eines Hosts mit seinen Capabilities (RUN-001).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub capabilities: RunnerCapabilities,
+}
+
+/// Ein Host (lokal genau `hst_local`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostInfo {
+    #[schema(value_type = String, example = "hst_local")]
+    pub id: HostId,
+    pub name: String,
+    pub providers: Vec<ProviderInfo>,
+}
+
+impl HostInfo {
+    /// Der lokale Daemon mit dem Provider `local`.
+    pub fn local() -> Self {
+        Self {
+            id: HostId::LOCAL,
+            name: "lokal".into(),
+            providers: vec![ProviderInfo {
+                id: "local".into(),
+                capabilities: beton_host::local::capabilities(),
+            }],
+        }
+    }
+}
+
+/// Ein Host mit den unverändert gemeldeten Provider-Capabilities (RUN-001 AC3).
+#[utoipa::path(get, path = "/v1/hosts/{id}", tag = "hosts",
+    params(("id" = String, Path, description = "Host-ID, lokal `hst_local`")),
+    responses((status = 200, description = "Host mit Providern", body = HostInfo),
+              (status = 404, description = "Host unbekannt", body = Problem, content_type = "application/problem+json")))]
+pub async fn get_host(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<axum::Json<HostInfo>> {
+    let host = state.runtime.host.clone();
+    if host.id.to_string() == id {
+        Ok(axum::Json(host))
+    } else {
+        Err(Problem::new(ProblemCode::NotFound).detail(format!("Host {id}")))
+    }
 }

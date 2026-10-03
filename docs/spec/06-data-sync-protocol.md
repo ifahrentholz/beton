@@ -160,7 +160,7 @@ Die erste Protokollversion ist `1.0`; die Beispiele oben zeigen eine spätere Mi
 
 ### Tunnel-Protokoll (Host/Runner/Knoten → Server)
 
-Endpunkt `GET /v1/tunnel`, Subprotokoll `beton.tunnel.v1`, `Authorization: Bearer` (Host: Device-Token; Runner: Runner-Token; Knoten: Device-Token mit Scope `nodes:sync`); lokal über Unix-Socket `~/.beton/run/tunnel.sock` mit identischem Framing. `hello {kind: host|runner|node, node_id, version, protocol, labels, capabilities, harnesses, sandbox_probe}` → `welcome {server_time, policy_bundle_version}`.
+Endpunkt `GET /v1/tunnel` (lokal ausschließlich auf dem Tunnel-Socket, nicht auf dem TCP-Port und nicht in der öffentlichen OpenAPI), Subprotokoll `beton.tunnel.v1`, `Authorization: Bearer` (Host: Device-Token; Runner: Runner-Token; Knoten: Device-Token mit Scope `nodes:sync`); lokal über Unix-Socket `~/.beton/run/tunnel.sock` mit identischem Framing. `hello {kind: host|runner|node, node_id, version, protocol, labels, capabilities, harnesses, sandbox_probe}` → `welcome {server_time, policy_bundle_version}`.
 
 | Richtung | Nachricht | Zweck |
 | --- | --- | --- |
@@ -368,7 +368,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### PROTO-015 — Tunnel-Protokoll Host/Runner → Server
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
+- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.
   - [ ] AC2 — Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.
