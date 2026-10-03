@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+description = "Entwickler-Werkzeuge für das beton-Repo (cargo xtask …)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+toml = "0.9"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

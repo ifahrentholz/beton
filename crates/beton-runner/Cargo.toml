@@ -1,0 +1,15 @@
+[package]
+name = "beton-runner"
+description = "Session-Runtime: führt genau eine Session aus und überwacht den Harness-Prozess."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+
+[lints]
+workspace = true

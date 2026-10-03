@@ -24,4 +24,4 @@ beton ist eine gemeinsame Schicht über **Claude Code**, **Codex**, **ACP-Agents
 
 ## Lizenz
 
-Apache-2.0 (die `LICENSE`-Datei folgt mit dem ersten Code-Commit). Beiträge erfolgen unter dem [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`).
+[Apache-2.0](LICENSE). Beiträge erfolgen unter dem [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`), siehe [CONTRIBUTING.md](CONTRIBUTING.md).

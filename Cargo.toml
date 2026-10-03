@@ -1,0 +1,48 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/ifahrentholz/beton"
+authors = ["Ingo Fahrentholz"]
+
+[workspace.dependencies]
+# interne Crates
+beton-core = { path = "crates/beton-core", version = "0.0.0" }
+beton-proto = { path = "crates/beton-proto", version = "0.0.0" }
+beton-store = { path = "crates/beton-store", version = "0.0.0" }
+beton-server = { path = "crates/beton-server", version = "0.0.0" }
+beton-host = { path = "crates/beton-host", version = "0.0.0" }
+beton-runner = { path = "crates/beton-runner", version = "0.0.0" }
+beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
+beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
+beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
+
+# extern
+anyhow = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
