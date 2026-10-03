@@ -494,8 +494,8 @@ Eingabe: effektives Policy-Set, `PolicyRequest`. Regeln werden in kanonischer Re
 
 ## Nicht in v1
 
-- LLM-basierte Policies (Risiko-Klassifizierer, Prompt-Policies, Intent-Gate, "trivial → teures Modell"-Erkennung, Themenwechsel-Erkennung) – v2, voraussichtlich als WASM- oder Plugin-Erweiterung.
-- Smart Routing / lernender Router (ADR-0022); v1 kennt nur manuelles Routing per `model_route`.
+- LLM-basierte Policies (Risiko-Klassifizierer, Prompt-Policies, Intent-Gate, "trivial → teures Modell"-Erkennung, Themenwechsel-Erkennung) – v2, voraussichtlich als WASM- oder Plugin-Erweiterung; Modellaufrufe dann über eine eingeloggte Vendor-CLI im Einmal-Modus bzw. den Harness der Session, ein API-Key ist nur zusätzliche Option (ADR-0034).
+- Smart Routing / lernender Router (ADR-0022); v1 kennt nur manuelles Routing per `model_route`. Ein Router in v2 folgt ADR-0034 (Subscription-first).
 - Policies in natürlicher Sprache per Chat anlegen ("Plain-Language-Policies").
 - Ad-hoc-Session-Policies als eigene Hierarchie-Ebene unterhalb von Agent.
 - Proxy-basierte Inspektion von Model-Requests nativer Harnesses (Phase `model_request` pro Call statt pro Turn bei Claude/Codex).

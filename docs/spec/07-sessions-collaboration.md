@@ -199,12 +199,13 @@ pub trait GitProvider: Send + Sync {
 ### SES-010 — Automatische Session-Titel
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Nach dem ersten abgeschlossenen Turn erzeugt beton einen kurzen Titel (≤ 60 Zeichen). Ein vom User gesetzter Titel wird nie überschrieben; native Umbenennungen (z.B. Claude `/rename`) werden übernommen.
-- **Details:** `titles.generator: auto | direct | harness | off`. `auto`: Direkt-API-Harness mit konfiguriertem Kleinmodell, falls API-Key vorhanden, sonst Einmal-Aufruf der Session-Harness-CLI im nicht-interaktiven Modus mit kleinstem Modell, sonst Heuristik (erste Zeile der ersten User-Nachricht, gekürzt). Optional `titles.instructions` (≤ 2 000 Zeichen). Event `session.title_changed {title, source: generated|user|harness}`. SES-010 ist Owner der Generierung; UI-Darstellung und Inline-Umbenennen: UX-009.
+- **Details:** `titles.generator: auto | direct | harness | off`. `auto` (Default): Einmal-Aufruf über den Harness der Session – bei Vendor-CLIs deren nicht-interaktiver Modus (z. B. `claude -p`, `codex exec`, ACP: kurzlebige Session) mit deren eigener Anmeldung (Subscription, HAR-015) und kleinstem Modell –, bei Fehlschlag Heuristik (erste Zeile der ersten User-Nachricht, gekürzt). `harness`: wie `auto`, aber ohne Heuristik-Fallback. `direct`: Direkt-API-Harness mit konfiguriertem Kleinmodell (`titles.provider`), nur wenn ausdrücklich gewählt; ein API-Key ist nie Voraussetzung (ADR-0034). `off`: nur Heuristik. Optional `titles.instructions` (≤ 2 000 Zeichen). Event `session.title_changed {title, source: generated|user|harness}`. SES-010 ist Owner der Generierung; UI-Darstellung und Inline-Umbenennen: UX-009.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Given `titles.generator=off`, then entsteht der Titel per Heuristik ohne Modellaufruf.
   - [ ] AC2 — When der User umbenennt, then erfolgt keine weitere automatische Generierung für diese Session.
   - [ ] AC3 — Titelgenerierung verursacht ein `cost.delta` mit `purpose: "title"` bzw. zählt zur Subscription-Usage.
-- **Abhängigkeiten:** HAR-004, HAR-010 (siehe 01-harnesses.md), USE-001 (ab M2), UX-009 (siehe 11-platform-features.md)
+  - [ ] AC4 — Mit Default `auto`, ohne `*_API_KEY` in der Umgebung und ohne `providers`-Konfiguration entsteht der Titel einer Claude-Session über einen Einmal-Aufruf der `claude`-CLI (Fake-CLI-Test prüft Aufruf und bereinigte Umgebung); der Direkt-API-Harness wird nur mit `titles.generator: direct` genutzt.
+- **Abhängigkeiten:** HAR-004, HAR-010, HAR-015 (siehe 01-harnesses.md), USE-001 (ab M2), UX-009 (siehe 11-platform-features.md)
 
 ### SES-011 — Compaction & Kontextanzeige (Session-Anbindung)
 - **Meilenstein:** M1 · **Priorität:** Should
@@ -261,12 +262,13 @@ pub trait GitProvider: Send + Sync {
 ### SES-015 — Worktree pro Session (Erstellung & Base-Branch)
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Auf Wunsch (oder per Project-Default) erhält jede Session ein eigenes `git worktree` mit eigenem Branch, damit parallele Sessions im selben Repo isoliert arbeiten. Die Sandbox der Session bekommt den Worktree als Schreib-Root (ab M2). Engine und API (`--worktree`, Fork mit `new_worktree`, Sub-Agents mit `worktree: new`) gibt es ab M1; die UI dazu (Branch-Auswahl im Composer, Project-Defaults, Worktree-Anzeige) folgt mit M3 (SES-013, WEB-004).
-- **Details:** Ablage `~/.beton/worktrees/<repo-slug>-<hash8>/<branch-slug>/` *(Annahme: außerhalb des Repos, um es nicht zu verschmutzen)*. Branch-Name `beton/<titel-slug>-<id4>` (umbenennbar, solange nicht gepusht). Base: explizit → Project-Default → `origin/HEAD` → aktueller Branch; vor Erstellung `git fetch <remote> <base>` (abschaltbar, Timeout 15 s). Sandbox-Grants: Schreibrecht auf Worktree **und** `<repo>/.git/worktrees/<name>` sowie Objekt-DB (SBX-003, siehe 04-sandbox.md).
+- **Details:** Ablage `~/.beton/worktrees/<repo-slug>-<hash8>/<branch-slug>/` *(Annahme: außerhalb des Repos, um es nicht zu verschmutzen)*. Branch-Name `beton/<titel-slug>-<id4>` (umbenennbar, solange nicht gepusht). Base: explizit → Project-Default → `origin/HEAD` → aktueller Branch; vor Erstellung `git fetch <remote> <base>` (abschaltbar, Timeout 15 s); ist das Remote nicht erreichbar (offline), wird vom lokalen Stand der Base erstellt und ein Hinweis angezeigt – der Fetch ist nie Voraussetzung (ADR-0033). Sandbox-Grants: Schreibrecht auf Worktree **und** `<repo>/.git/worktrees/<name>` sowie Objekt-DB (SBX-003, siehe 04-sandbox.md).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Given zwei Sessions mit `worktree=always` im selben Repo, then arbeiten sie in verschiedenen Verzeichnissen und Branches; `git worktree list` zeigt beide.
   - [ ] AC2 — (ab M2) Ein Tool-Call, der außerhalb des Worktrees in das Haupt-Checkout schreibt, scheitert an der Sandbox.
   - [ ] AC3 — Ist die Base nicht auflösbar, schlägt die Erstellung mit einer Fehlermeldung fehl, die verfügbare Branches nennt; die Session startet nicht stillschweigend ohne Worktree.
   - [ ] AC4 — Event `git.worktree_created {path, branch, base, base_sha}` (PROTO-002) wird geloggt.
+  - [ ] AC5 — Ohne Netzwerk (Remote nicht erreichbar) wird der Worktree vom lokalen Stand der Base erstellt; die Session startet, und ein Hinweis nennt den nicht ausgeführten Fetch.
 - **Abhängigkeiten:** SES-001, SBX-003 (ab M2, siehe 04-sandbox.md)
 - **Referenz:** Omnigent Worktrees im Composer
 
@@ -383,7 +385,7 @@ pub trait GitProvider: Send + Sync {
 ### COL-008 — Side-Chats
 - **Meilenstein:** M4 · **Priorität:** Must
 - **Beschreibung:** Ein Side-Chat ist ein versteckter Fork der aktuellen Session für Rückfragen („Was macht diese Funktion?“), ohne die Haupt-Session zu stören. Er erscheint nicht in der Session-Liste, sondern als Tab im Workspace-Rail der Eltern-Session, läuft per Default mit **read-only**-Workspace *(Annahme)* und kann sein Ergebnis in die Haupt-Session übernehmen.
-- **Details:** `POST …/fork {kind: "side_chat", at_seq: current, workspace: "shared_readonly"}`; Slash-Befehl `/side <frage>`. Sichtbarkeit: Default nur für den Ersteller, teilbar an Mitglieder der Eltern-Session *(Annahme)*. „In Hauptsession übernehmen“ reiht eine Zusammenfassung (oder die letzte Antwort) als Input in die Queue der Eltern-Session. Kosten zählen zum Budget der Eltern-Session. Archivieren/Löschen der Eltern-Session erfasst Side-Chats.
+- **Details:** `POST …/fork {kind: "side_chat", at_seq: current, workspace: "shared_readonly"}`; Slash-Befehl `/side <frage>`. Sichtbarkeit: Default nur für den Ersteller, teilbar an Mitglieder der Eltern-Session *(Annahme)*. „In Hauptsession übernehmen“ reiht eine Zusammenfassung (oder die letzte Antwort) als Input in die Queue der Eltern-Session; die Zusammenfassung erzeugt der Harness des Side-Chats als zusätzlichen Turn (Subscription über die Vendor-CLI, kein separater API-Aufruf, ADR-0034). Kosten zählen zum Budget der Eltern-Session. Archivieren/Löschen der Eltern-Session erfasst Side-Chats.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Side-Chat fehlt in `GET /v1/sessions`, erscheint in `GET /v1/sessions/{parent}/side-chats`.
   - [ ] AC2 — Ein Schreib-Tool-Call im Side-Chat scheitert an der Sandbox (read-only).
@@ -402,7 +404,7 @@ pub trait GitProvider: Send + Sync {
 
 ### COL-010 — Notification-Routing
 - **Meilenstein:** M4 · **Priorität:** Must
-- **Beschreibung:** Der Server entscheidet zentral, wer bei welchem Ereignis auf welchem Kanal benachrichtigt wird (In-App, Desktop-Notification, Web-Push; Kanäle selbst: DESK-005, WEB-014, siehe 08-clients.md; User-Einstellungen: UX-006). Benachrichtigt wird nicht, wenn der Empfänger die Session gerade auf irgendeinem Gerät fokussiert betrachtet (Presence).
+- **Beschreibung:** Der Server entscheidet zentral, wer bei welchem Ereignis auf welchem Kanal benachrichtigt wird (In-App, Desktop-Notification, Web-Push; Kanäle selbst: DESK-005, WEB-014, siehe 08-clients.md; User-Einstellungen: UX-006). Web-Push nutzt Push-Dienste der Browser-Hersteller und ist daher nur aktiv, wenn der User ihn eingeschaltet hat; Standard sind In-App/Inbox und lokale Desktop-Notifications (ADR-0033). Benachrichtigt wird nicht, wenn der Empfänger die Session gerade auf irgendeinem Gerät fokussiert betrachtet (Presence).
 - **Details:** Default-Regeln: `approval.requested` → Owner + alle `comment_approve`/`drive`; `turn.completed` → Autor des letzten Inputs; `session.status=failed` / Runner-Disconnect → Owner; Erwähnung/Thread-Antwort → Betroffener; Share erhalten → Empfänger. User-Einstellungen pro Typ × Kanal; Benachrichtigungen werden pro (User, Session, Typ) innerhalb von 30 s zusammengefasst.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Betrachtet der Owner die Session fokussiert im Desktop, erhält er bei `turn.completed` weder Desktop- noch Push-Notification.
@@ -412,7 +414,7 @@ pub trait GitProvider: Send + Sync {
 
 ### GIT-001 — Git-Provider-Trait & Registry
 - **Meilenstein:** M4 · **Priorität:** Must
-- **Beschreibung:** `beton-git` definiert den `GitProvider`-Trait (siehe Design) mit neutralen Typen (`ChangeRequest`, `Check`, `ReviewThread`, `UnifiedDiff`). Eine Registry ordnet Remote-URLs anhand konfigurierter Hosts einem Provider zu; Community-Provider kommen als Out-of-Process-Plugins mit demselben Vertrag (PLG-002, ab M5, siehe 10-runners-extensibility.md).
+- **Beschreibung:** `beton-git` definiert den `GitProvider`-Trait (siehe Design) mit neutralen Typen (`ChangeRequest`, `Check`, `ReviewThread`, `UnifiedDiff`). Eine Registry ordnet Remote-URLs anhand konfigurierter Hosts einem Provider zu; Community-Provider kommen als Out-of-Process-Plugins mit demselben Vertrag (PLG-002, ab M5, siehe 10-runners-extensibility.md). Git-Provider sind optional: Ohne `git.providers`-Konfiguration bzw. ohne verbundenes Konto kontaktiert beton keine Provider-API; Sessions, Worktrees, Diffs und Commits funktionieren rein lokal (ADR-0033).
 - **Details:**
   ```yaml
   # ~/.beton/config.yaml bzw. Server-Config
@@ -426,6 +428,7 @@ pub trait GitProvider: Send + Sync {
   - [ ] AC1 — Die Remotes `git@ghe.acme.corp:team/x.git` und `https://gitlab.acme.corp/g/sub/x.git` werden dem jeweils richtigen Provider und `RepoRef` zugeordnet (Unit-Tests inkl. verschachtelter GitLab-Gruppen).
   - [ ] AC2 — Ein Remote ohne passenden Provider führt zu „kein Provider“ im Panel statt zu einem Fehler.
   - [ ] AC3 — Ein Fake-Provider im Test-Harness implementiert den Trait und besteht dieselbe Contract-Testsuite wie GitHub/GitLab (gegen Mock-Server).
+  - [ ] AC4 — Ohne `git.providers`-Konfiguration baut der Server bei Session-Start, Worktree-Erstellung und Diff-Ansicht keine Verbindung zu einer Provider-API auf (Netz-Mock-Test).
 - **Abhängigkeiten:** PLG-002 (ab M5, siehe 10-runners-extensibility.md)
 
 ### GIT-002 — GitHub-Provider (inkl. Enterprise Server)
@@ -495,7 +498,7 @@ pub trait GitProvider: Send + Sync {
 
 ### GIT-009 — CR aus der Session erstellen
 - **Meilenstein:** M4 · **Priorität:** Must
-- **Beschreibung:** Aus einer Session mit Worktree-Branch erstellt der User per Aktion einen PR/MR: Branch pushen (im Tool-Sandbox mit Credential-Proxy), Titel/Beschreibung vorschlagen (aus Session-Titel und Änderungen, editierbar), Ziel-Branch = Worktree-Base, optional Draft. Push und Erstellung durchlaufen Policies.
+- **Beschreibung:** Aus einer Session mit Worktree-Branch erstellt der User per Aktion einen PR/MR: Branch pushen (im Tool-Sandbox mit Credential-Proxy), Titel/Beschreibung vorschlagen (deterministisch aus Session-Titel und Commit-Liste, ohne Modellaufruf, editierbar), Ziel-Branch = Worktree-Base, optional Draft. Push und Erstellung durchlaufen Policies.
 - **Details:** `POST /v1/sessions/{id}/change-requests {repo?, title, body, draft, base?}`. Policy-Kontext: `tool.name == "git.push"` bzw. `"cr.create"` (Variablen-Namen final in POL-004/POL-005, siehe 03-policies.md). Die Beschreibung erhält einen abschaltbaren Footer mit Session-Link.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Given ein Worktree mit 2 Commits, when „PR erstellen“, then ist der Branch gepusht, der PR existiert und ist mit `origin=created` verknüpft.

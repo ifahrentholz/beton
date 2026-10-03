@@ -176,11 +176,13 @@ release-please PR gemergt → Tag
 
 ### DIST-014 — Desktop-Auto-Update (Tauri-Updater)
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung beim Start und alle 6 h; Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.
+- **Beschreibung:** Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung nur auf Klick oder nach Opt-in (`update.auto_check`, Default `false`; dann beim Start und alle 6 h, ADR-0033); Offline-Alternative ist die Installation eines lokal vorliegenden, signierten Update-Pakets (Signaturprüfung gegen den eingebetteten Updater-Schlüssel, ohne Netz). Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine App auf Version N erkennt N+1 im eigenen Kanal und installiert sie nach Bestätigung; danach meldet sie N+1.
   - [ ] AC2 — Ein Manifest mit ungültiger Signatur wird verworfen und geloggt; keine Installation.
   - [ ] AC3 — Mit laufendem Turn wird der Daemon-Neustart verschoben, bis alle Sessions idle sind oder der User „jetzt neu starten“ wählt.
+  - [ ] AC4 — Mit Default-Konfiguration ruft die App kein Update-Manifest ab, solange der User nicht „Nach Updates suchen“ wählt (Netz-Mock-Test).
+  - [ ] AC5 — Ein lokal vorliegendes, signiertes Update-Paket wird ohne Netzwerk installiert; ein Paket mit ungültiger Signatur wird abgelehnt.
 - **Abhängigkeiten:** DIST-008, DIST-017
 
 ### DIST-015 — Harness-CLI-Installationsangebot
@@ -195,12 +197,13 @@ release-please PR gemergt → Tag
 
 ### DIST-016 — `beton upgrade` mit Installationsart-Erkennung
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** `beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--dry-run] [--force]` bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.
+- **Beschreibung:** `beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--from-file ARCHIV] [--dry-run] [--force]` kontaktiert das Netz nur bei ausdrücklichem Aufruf (kein Hintergrund-Check) und bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. `--from-file` aktualisiert eine `script`-Installation offline aus einem lokal vorliegenden Release-Archiv; Checksumme und Signatur werden ohne Netzzugriff gegen mitgelieferte Vertrauensanker geprüft (ADR-0033). Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine Script-Installation auf Version N wird mit `beton upgrade` auf N+1 aktualisiert; `beton.old` ist N.
   - [ ] AC2 — Bei Homebrew-Installation verändert `beton upgrade` keine Dateien und gibt `brew upgrade beton` aus (Exit-Code 0).
   - [ ] AC3 — Ein Download mit falscher Signatur bricht ab; die installierte Version bleibt unverändert.
   - [ ] AC4 — `--check` gibt maschinenlesbar (mit `--json`) aktuelle/neueste Version und Installationsart aus.
+  - [ ] AC5 — `beton upgrade --from-file <archiv>` aktualisiert eine Script-Installation im Netz-Namespace ohne Netzwerk; ein manipuliertes Archiv wird abgelehnt und die installierte Version bleibt unverändert.
 - **Abhängigkeiten:** DIST-003, DIST-017
 - **Referenz:** Omnigent `omni upgrade`
 

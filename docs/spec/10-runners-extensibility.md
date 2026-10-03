@@ -312,12 +312,13 @@ Fehlercodes: JSON-RPC-Standard plus `-32001 Unsupported`, `-32002 PermissionDeni
 
 ### RUN-014 — Offizielles Runner-Image
 - **Meilenstein:** M5 · **Priorität:** Must
-- **Beschreibung:** `ghcr.io/ifahrentholz/beton-runner:<version>` (multi-arch amd64/arm64) enthält `beton`, Node.js LTS, die offiziellen CLIs `claude` und `codex`, mindestens eine ACP-CLI (Gemini CLI; weitere per Build-Arg `EXTRA_CLIS`), `git`, `ripgrep`, CA-Bundle, `tini` als Init. Läuft als Non-root-User `beton` (UID 10001). CLI-Versionen sind in `deploy/runner-image/versions.toml` gepinnt; Variante `-slim` ohne Harness-CLIs. RUN-014 ist Owner des Image-Inhalts; Build, Signatur und Veröffentlichung regelt DIST-010.
+- **Beschreibung:** `ghcr.io/ifahrentholz/beton-runner:<version>` (multi-arch amd64/arm64) enthält `beton`, Node.js LTS, die offiziellen CLIs `claude` und `codex`, mindestens eine ACP-CLI (Gemini CLI; weitere per Build-Arg `EXTRA_CLIS`), `git`, `ripgrep`, CA-Bundle, `tini` als Init. Läuft als Non-root-User `beton` (UID 10001). CLI-Versionen sind in `deploy/runner-image/versions.toml` gepinnt; Variante `-slim` ohne Harness-CLIs. Die Registry ist keine Voraussetzung (ADR-0033): Das Image lässt sich aus `deploy/runner-image/` lokal bauen oder per `docker load` aus einer Datei laden; der Docker-/K8s-Provider akzeptiert jeden lokalen Image-Namen (`image: beton-runner:local`) mit `pull: never | if_missing` (Default `if_missing`, gezogen wird nur, was explizit konfiguriert ist). RUN-014 ist Owner des Image-Inhalts; Build, Signatur und Veröffentlichung regelt DIST-010.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `docker run --rm ghcr.io/ifahrentholz/beton-runner:<v> beton doctor --json` meldet `claude`, `codex` und die ACP-CLI mit den gepinnten Versionen.
   - [ ] AC2 — Image läuft als UID 10001; `id -u` im Container ≠ 0.
   - [ ] AC3 — Das Image ist cosign-signiert und mit SBOM versehen (DIST-010, DIST-013 in 12-distribution-quality.md); Trivy-Scan in CI ohne `CRITICAL`-Findings mit verfügbarem Fix.
   - [ ] AC4 — Build mit `--build-arg EXTRA_CLIS="@qwen-code/qwen-code"` installiert die zusätzliche CLI.
+  - [ ] AC5 — Ein lokal gebautes bzw. per `docker load` geladenes Image wird mit `pull: never` vom Docker-Provider ohne Registry-Zugriff genutzt; eine Session läuft damit wie mit dem veröffentlichten Image (E2E mit Fake-Harness).
 - **Abhängigkeiten:** DIST-010 (siehe 12-distribution-quality.md)
 - **Referenz:** ADR-0017; Omnigent `omnigent-host`-Image mit `EXTRA_HARNESS_CLIS`
 
@@ -426,18 +427,18 @@ Fehlercodes: JSON-RPC-Standard plus `-32001 Unsupported`, `-32002 PermissionDeni
 
 ### PLG-005 — Installation `beton plugin install`
 - **Meilenstein:** M5 · **Priorität:** Must
-- **Beschreibung:** `beton plugin install <name>[@version]` (Registry), `beton plugin install git+https://…[#tag]` (Git-URL; Manifest im Repo-Root, Binaries per Manifest-URL oder `cargo build --release` bei `build = "cargo"` *(Annahme)*) und `beton plugin install ./pfad` (lokal, für Entwicklung). Installiert nach `~/.beton/plugins/<name>/<version>/`; `~/.beton/plugins/installed.toml` hält Quelle, Version, Checksumme und gewährte Berechtigungen. Im zentralen Betrieb installieren Admins Plugins auf Server (git_provider) bzw. Hosts (harness, runner_provider).
+- **Beschreibung:** `beton plugin install <name>[@version]` (Registry), `beton plugin install git+https://…[#tag]` (Git-URL; Manifest im Repo-Root, Binaries per Manifest-URL oder `cargo build --release` bei `build = "cargo"` *(Annahme)*) und `beton plugin install ./pfad` (lokales Verzeichnis oder Archiv; **immer möglich**, auch ohne Netzwerk und ohne Registry, ADR-0033). Installiert nach `~/.beton/plugins/<name>/<version>/`; `~/.beton/plugins/installed.toml` hält Quelle, Version, Checksumme und gewährte Berechtigungen. Im zentralen Betrieb installieren Admins Plugins auf Server (git_provider) bzw. Hosts (harness, runner_provider).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton plugin install beton-runner-hetzner@0.3.1` lädt das Plugin aus dem Registry-Index, prüft Checksumme/Signatur (PLG-007), fragt Berechtigungen ab (PLG-008) und listet es danach in `beton plugin list`.
   - [ ] AC2 — Abbruch an beliebiger Stelle hinterlässt keinen halb installierten Zustand (atomares Verschieben aus Staging-Verzeichnis).
-  - [ ] AC3 — Lokale Pfad-Installationen sind als `source: path` markiert und werden in UI/doctor als „unverifiziert“ gekennzeichnet.
+  - [ ] AC3 — Lokale Pfad-Installationen sind als `source: path` markiert und werden in UI/doctor als „unverifiziert“ gekennzeichnet; sie gelingen ohne Netzwerk und ohne konfigurierten Index (Test im Netz-Namespace nur mit Loopback).
   - [ ] AC4 — Im zentralen Modus darf nur die Rolle Admin/Owner Plugins installieren (API liefert 403 für Member).
 - **Abhängigkeiten:** PLG-004, PLG-006, PLG-007, PLG-008
 - **Referenz:** ADR-0018 (`beton plugin install <name>` Registry/Git/Pfad)
 
 ### PLG-006 — Registry-Index als Git-Repository
 - **Meilenstein:** M5 · **Priorität:** Must
-- **Beschreibung:** Der offizielle Index ist ein Git-Repository (`github.com/ifahrentholz/beton-plugins` *(Annahme)*) mit einer Datei pro Plugin (`plugins/<name>.toml`), die Versionen, Manifest-URL, Manifest-SHA-256 und die erwartete cosign-Identität enthält. Aufnahme per Pull-Request. beton klont den Index flach in einen Cache und aktualisiert ihn bei `install`/`search`/`update` (max. 1×/h). Weitere Indizes konfigurierbar (`plugins.registries`).
+- **Beschreibung:** Der offizielle Index ist ein Git-Repository (`github.com/ifahrentholz/beton-plugins` *(Annahme)*) mit einer Datei pro Plugin (`plugins/<name>.toml`), die Versionen, Manifest-URL, Manifest-SHA-256 und die erwartete cosign-Identität enthält. Aufnahme per Pull-Request. beton klont den Index flach in einen Cache und aktualisiert ihn nur bei ausdrücklichem `install <name>`/`search`/`update` (max. 1×/h), nie im Hintergrund. Die Registry ist optional; ohne sie bleibt die Installation aus lokalem Pfad möglich (PLG-005, ADR-0033). Weitere Indizes konfigurierbar (`plugins.registries`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton plugin search runner` listet passende Einträge aus dem gecachten Index, auch offline (mit Hinweis auf Alter des Caches).
   - [ ] AC2 — Weicht die Manifest-Checksumme vom Index-Eintrag ab, wird die Installation abgebrochen.
