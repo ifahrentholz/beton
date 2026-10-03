@@ -31,7 +31,7 @@ Grundlage sind ADR-0019 (eigenes Event-Modell, WebSocket mit Resume ab `seq`, ge
 ```json
 {
   "v": 1,
-  "id": "evt_01JB8Y3K6V9Q7W2N4R5T6Y7U8I",
+  "id": "evt_01JB8Y3K6V9Q7W2N4R5T6Y7Z8A",
   "session_id": "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C",
   "seq": 42,
   "ts": "2026-10-03T12:00:00.123Z",
