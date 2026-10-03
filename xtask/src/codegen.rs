@@ -5,6 +5,8 @@
 //! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
+//! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
+//! - `docs/generated/problem-codes.md` (Fehlercodes, PROTO-011)
 //!
 //! `cargo xtask codegen --check` erzeugt alles in ein temporäres Verzeichnis und vergleicht
 //! mit dem eingecheckten Stand; jede Abweichung lässt die CI fehlschlagen.
@@ -20,7 +22,12 @@ use beton_harness::registry::HarnessInfo;
 use ts_rs::TS;
 
 /// Verzeichnisse, die vollständig generiert werden (veraltete Dateien werden entfernt).
-const GENERATED_DIRS: [&str; 3] = ["schemas/v1", "packages/sdk-ts/src/gen", "docs/generated"];
+const GENERATED_DIRS: [&str; 4] = [
+    "schemas/v1",
+    "packages/sdk-ts/src/gen",
+    "docs/generated",
+    "openapi",
+];
 
 const TS_HEADER: &str =
     "// Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.\n";
@@ -80,7 +87,37 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     );
 
     files.insert(PathBuf::from("docs/generated/er-diagram.md"), er_diagram()?);
+    let mut openapi = beton_server::openapi().to_pretty_json()?;
+    openapi.push('\n');
+    files.insert(PathBuf::from("openapi/v1.json"), openapi);
+    files.insert(
+        PathBuf::from("docs/generated/problem-codes.md"),
+        problem_codes(),
+    );
     Ok(files)
+}
+
+/// Referenz der Fehlercodes aus `ProblemCode` (PROTO-011).
+fn problem_codes() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from(
+        "<!-- Generiert von `cargo xtask codegen` aus beton_server::ProblemCode. \
+         Nicht von Hand ändern. -->\n\n# Fehlercodes (RFC 9457)\n\n\
+         Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. \
+         Spezifikation: PROTO-011 in \
+         [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#proto-011--fehlerformat-rfc-9457).\n\n\
+         | Code | Status | Titel |\n| --- | --- | --- |\n",
+    );
+    for code in beton_server::ProblemCode::ALL {
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} |",
+            code.as_str(),
+            code.status().as_u16(),
+            code.title()
+        );
+    }
+    out
 }
 
 /// ER-Diagramm der lokalen Datenbank, erzeugt aus den eingebetteten SQLite-Migrationen.
@@ -251,6 +288,17 @@ mod tests {
         }
         assert!(files.contains_key(&PathBuf::from("packages/sdk-ts/src/gen/Capabilities.ts")));
         // Drift erkennt `proto_013_ac1_committed_artifacts_are_current`.
+    }
+
+    #[test]
+    fn api_001_ac1_openapi_is_snapshotted() {
+        let files = generate().unwrap();
+        let doc = &files[&PathBuf::from("openapi/v1.json")];
+        assert!(doc.contains("\"openapi\": \"3.1"));
+        assert!(doc.contains("/v1/sessions"));
+        // Drift erkennt `proto_013_ac1_committed_artifacts_are_current`.
+        let codes = &files[&PathBuf::from("docs/generated/problem-codes.md")];
+        assert!(codes.contains("| `idempotency_key_reused` | 422 |"));
     }
 
     #[test]

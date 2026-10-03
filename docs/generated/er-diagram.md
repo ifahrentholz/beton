@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 1. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 2. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -65,6 +65,15 @@ erDiagram
         TEXT causation_id "nullable"
         INTEGER epoch
         INTEGER redacted
+    }
+    idempotency_keys {
+        TEXT org_id PK,FK
+        TEXT key PK
+        TEXT request_hash
+        INTEGER status
+        TEXT content_type
+        BLOB body
+        TEXT created_at
     }
     nodes {
         TEXT id PK
@@ -129,6 +138,7 @@ erDiagram
     orgs ||--o{ blobs : "org_id"
     events ||--o{ event_raw : "session_id, seq"
     sessions ||--o{ events : "session_id"
+    orgs ||--o{ idempotency_keys : "org_id"
     orgs ||--o{ nodes : "org_id"
     nodes ||--o{ sessions : "home_node_id"
     orgs ||--o{ sessions : "org_id"
