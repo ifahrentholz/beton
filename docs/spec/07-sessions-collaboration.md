@@ -506,6 +506,49 @@ pub trait GitProvider: Send + Sync {
   - [ ] AC3 — Ohne Commits gegenüber Base ist die Aktion deaktiviert mit Begründung.
 - **Abhängigkeiten:** GIT-004, GIT-005, SES-015, POL-017 (siehe 03-policies.md)
 
+### GIT-010 — Merge-Konflikte erkennen
+- **Meilenstein:** M4 · **Priorität:** Must
+- **Beschreibung:** beton erkennt, wenn sich der Branch einer Session nicht konfliktfrei in seine Ziel-Branch mergen lässt, und zeigt das im CR-Panel, in der Session-Kopfzeile und in der Inbox an. Die Erkennung läuft **lokal** im Worktree per Probe-Merge ohne Änderungen am Arbeitsverzeichnis (`git merge-tree --write-tree <base> <head>`, Git ≥ 2.38) und braucht weder Provider-API noch Netzwerk (ADR-0033); ist ein Provider verbunden, wird zusätzlich dessen Mergeability-Status übernommen (GIT-006).
+- **Details:** Prüfung bei Session-Start mit Worktree, nach jedem Commit der Session, nach `git fetch` und beim Öffnen des CR-Panels; Ziel-Branch aus dem verknüpften CR, sonst Worktree-Base (SES-015). Ohne Netz wird gegen den lokalen Stand der Ziel-Branch geprüft und das Alter dieses Stands angezeigt („Ziel-Branch zuletzt geholt vor 3 Std.“). Ergebnis als Event `git.conflicts_detected` (PROTO-002) mit Dateiliste und Konfliktart (`content`, `delete_modify`, `rename`, `binary`).
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Given ein Worktree-Branch und eine Ziel-Branch, die dieselbe Zeile unterschiedlich ändern, when die Prüfung läuft, then entsteht `git.conflicts_detected` mit genau dieser Datei und `kind=content`, und das Arbeitsverzeichnis ist unverändert (`git status` sauber).
+  - [ ] AC2 — Die Prüfung funktioniert ohne Netzwerk und ohne konfigurierten Git-Provider (Netz-Namespace-Test).
+  - [ ] AC3 — Meldet ein verbundener Provider `mergeable=false`, zeigt das CR-Panel „Konflikte“ mit der Aktion „Konflikte lösen“ auch dann, wenn die lokale Prüfung (wegen veralteter Ziel-Branch) noch keinen Konflikt sieht; der Hinweis empfiehlt, die Ziel-Branch zu holen.
+  - [ ] AC4 — Delete/Modify-, Rename- und Binärkonflikte werden mit ihrer Art erkannt, nicht als Inhaltskonflikt.
+- **Abhängigkeiten:** SES-015, GIT-006, PROTO-002 (siehe 06-data-sync-protocol.md)
+
+### GIT-011 — Konflikt-Resolver-Ansicht
+- **Meilenstein:** M4 · **Priorität:** Must
+- **Beschreibung:** „Konflikte lösen“ startet im Worktree der Session einen Merge der Ziel-Branch (Standard; kein Umschreiben der History, kein Force-Push nötig) oder auf Wunsch einen Rebase, und öffnet die Resolver-Ansicht: links die Liste der Konfliktdateien mit Status (offen, gelöst, automatisch gelöst), rechts je Konflikt-Hunk eine Drei-Wege-Darstellung **Basis · Dein Branch · Ziel-Branch** mit dem bearbeitbaren Ergebnis darunter (Monaco, WEB-009). Je Hunk: „Deine Seite“, „Ziel-Seite“, „Beide (deine zuerst / Ziel zuerst)“, „Bearbeiten“; je Datei: ganz übernehmen. Sonderfälle: Delete/Modify (behalten oder löschen), Rename, Binärdateien (eine Seite wählen).
+- **Details:** Während des Resolvens pausiert der Agent der Session (Status `paused`), bis der Resolver abgeschlossen oder abgebrochen ist; andere Sessions laufen weiter. Schreibrechte und Befehle (`git merge`, `git rebase`, `git add`) laufen über den Exec-Broker in der Sandbox (SBX-002, siehe 04-sandbox.md) und durch Policies (POL-017 `git_guard`, siehe 03-policies.md). Fortschritt als `git.conflict_resolution` (PROTO-002). „Abbrechen“ führt `git merge --abort` bzw. `git rebase --abort` aus und stellt den Stand vor dem Start wieder her.
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Given ein erkannter Inhaltskonflikt, when der User „Konflikte lösen“ wählt, then läuft `git merge <ziel>` im Worktree, und die Ansicht zeigt für jeden Hunk Basis, beide Seiten und das Ergebnis.
+  - [ ] AC2 — „Beide (deine zuerst)“ ergibt im Ergebnis die Zeilen der eigenen Seite gefolgt von denen der Ziel-Seite, ohne Konfliktmarker.
+  - [ ] AC3 — Eine Datei gilt erst als gelöst, wenn ihr Ergebnis keine Konfliktmarker (`<<<<<<<`, `=======`, `>>>>>>>`) mehr enthält; „Abschließen“ ist bis dahin deaktiviert und nennt die offenen Stellen.
+  - [ ] AC4 — „Abbrechen“ stellt Branch und Arbeitsverzeichnis exakt auf den Stand vor dem Start zurück (Vergleich von `HEAD` und `git status`).
+  - [ ] AC5 — Ein Rebase-Lauf zeigt die Konflikte Commit für Commit („Commit 2 von 5“); der anschließend nötige Force-Push ist eine eigene, per Policy freizugebende Aktion.
+- **Abhängigkeiten:** GIT-010, WEB-009, SES-018, SBX-002 (siehe 04-sandbox.md), POL-017 (siehe 03-policies.md)
+
+### GIT-012 — Konflikte vom Agent lösen lassen
+- **Meilenstein:** M4 · **Priorität:** Must
+- **Beschreibung:** Im Resolver kann der User einzelne Hunks, eine Datei oder alle Konflikte an den Agent der Session geben. Der Agent erhält Basis, beide Seiten, die Commit-Nachrichten beider Seiten und den Session-Kontext und schreibt einen Lösungsvorschlag mit kurzer Begründung ins Ergebnis. Vorschläge sind als solche markiert und gelten erst nach Bestätigung durch den User als gelöst. Der Aufruf läuft über den Harness der Session und damit über die Subscription der Vendor-CLI (ADR-0034).
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — „Agent lösen lassen“ für einen Hunk erzeugt einen Vorschlag mit Begründung; der Hunk bleibt „offen“, bis der User „Vorschlag übernehmen“ wählt (Fake-Harness-Test).
+  - [ ] AC2 — Lehnt der User einen Vorschlag ab, wird der vorherige Ergebnisstand wiederhergestellt.
+  - [ ] AC3 — Der Agent-Aufruf funktioniert ohne API-Key mit einer per CLI angemeldeten Subscription; die Kosten bzw. das Kontingent erscheinen in der Verbrauchsanzeige der Session.
+  - [ ] AC4 — Die Policy-Engine prüft die Dateischreibungen des Agents wie jeden anderen Tool-Call (`policy.decision`-Event je Schreibvorgang).
+- **Abhängigkeiten:** GIT-011, HAR-015 (siehe 01-harnesses.md), POL-025 (siehe 03-policies.md)
+
+### GIT-013 — Konfliktlösung abschließen
+- **Meilenstein:** M4 · **Priorität:** Must
+- **Beschreibung:** „Abschließen“ markiert die Dateien als gelöst (`git add`), erstellt den Merge-Commit bzw. setzt den Rebase fort, bietet an, die Tests der Session laufen zu lassen, und danach den Branch zu pushen. Der Push läuft als Policy-geprüfte Aktion (Approval-Card bei `ask`); bei Rebase ist er ein Force-Push mit Lease (`--force-with-lease`). Danach aktualisiert das CR-Panel die Mergeability.
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Nach „Abschließen“ existiert genau ein Merge-Commit mit beiden Eltern, und `git.conflict_resolution {phase: completed}` enthält Anzahl und Art der Lösungen je Datei.
+  - [ ] AC2 — Ein Push nach einem Rebase nutzt `--force-with-lease`; ohne Freigabe durch `git_guard` wird nicht gepusht.
+  - [ ] AC3 — Ohne Netzwerk endet der Abschluss lokal mit dem Commit; der Push wird als ausstehend angezeigt und lässt sich später auslösen.
+  - [ ] AC4 — Nach erfolgreichem Push zeigt das CR-Panel spätestens beim nächsten Poll „konfliktfrei“ bzw. den neuen Provider-Status.
+- **Abhängigkeiten:** GIT-011, GIT-009, POL-017 (siehe 03-policies.md)
+
 ## Nicht in v1
 
 - Öffentliche, Login-freie Share-Links (v2, ADR-0014).
