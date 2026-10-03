@@ -24,13 +24,15 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Bauen | `cargo build --workspace` |
 | Tests (CI-Standard) | `cargo nextest run --workspace` und `cargo test --workspace --doc` |
 | Tests ohne nextest | `cargo test --workspace` |
+| Crash-Test kürzer (lokal) | `BETON_CRASH_ITERATIONS=50 cargo test -p beton-store --test crash` (CI: 1 000, DATA-002 AC2) |
 | Format / Lint | `cargo fmt --all --check` · `cargo clippy --workspace --all-targets --all-features -- -D warnings` |
 | Abhängigkeiten prüfen | `cargo deny check` (Lizenzen, Advisories, Bans, Quellen; Konfiguration in `deny.toml`) |
 | Spec-Konsistenz | `cargo xtask spec-check` |
 | Spec-Abdeckung | `cargo xtask spec-coverage --milestone M0` (Exit 1, wenn Must-ACs ohne Test sind; `--report` nur zur Anzeige) |
 | Commit-Lint / DCO | `cargo xtask commit-lint --range origin/main..HEAD` · `cargo xtask dco --range origin/main..HEAD` |
 | Roadmap neu erzeugen | `python3 scripts/gen_roadmap.py` (CI prüft, dass `docs/spec/roadmap.md` aktuell ist) |
-| Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schema nach `schemas/v1/`, TypeScript nach `packages/sdk-ts/src/gen/`); `--check` prüft, ob alles aktuell ist |
+| Feature-Katalog des Design-Prototyps neu erzeugen | `python3 scripts/gen_feature_catalog.py` (nach jeder Spec-Änderung; CI prüft `design/prototype/src/catalog/features.json`) |
+| Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schema nach `schemas/v1/`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` in `apps/web` *(folgt mit WP-14)* |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen Fake-Harness) *(folgt mit WP-15)* |
 

@@ -66,1606 +66,12 @@
       "minimum": 0
     }
   },
-  "oneOf": [
+  "anyOf": [
     {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionCreated"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.created"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
+      "$ref": "#/$defs/EventPayload"
     },
     {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionStarted"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionStatusChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.status"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionResumed"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.resumed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionSettingsChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.settings_changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionTitleChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.title_changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/Empty"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.archived"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/Empty"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.unarchived"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionForked"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.forked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionForkCreated"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.fork_created"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionImported"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.imported"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionOwnershipChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.ownership_changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SessionStartDenied"
-        },
-        "type": {
-          "type": "string",
-          "const": "session.start_denied"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/HarnessReady"
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.ready"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/HarnessExited"
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.exited"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/HarnessAuthRequired"
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.auth_required"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/HarnessIncompatible"
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.incompatible"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/McpServerFailed"
-        },
-        "type": {
-          "type": "string",
-          "const": "mcp.server_failed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/RunnerStatus"
-        },
-        "type": {
-          "type": "string",
-          "const": "runner.status"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/QueueUpdated"
-        },
-        "type": {
-          "type": "string",
-          "const": "queue.updated"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TurnStarted"
-        },
-        "type": {
-          "type": "string",
-          "const": "turn.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TurnCompleted"
-        },
-        "type": {
-          "type": "string",
-          "const": "turn.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TurnFailed"
-        },
-        "type": {
-          "type": "string",
-          "const": "turn.failed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TurnInterrupted"
-        },
-        "type": {
-          "type": "string",
-          "const": "turn.interrupted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TextDelta"
-        },
-        "type": {
-          "type": "string",
-          "const": "message.delta"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/MessageCompleted"
-        },
-        "type": {
-          "type": "string",
-          "const": "message.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TextDelta"
-        },
-        "type": {
-          "type": "string",
-          "const": "reasoning.delta"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ReasoningCompleted"
-        },
-        "type": {
-          "type": "string",
-          "const": "reasoning.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ToolCallRequested"
-        },
-        "type": {
-          "type": "string",
-          "const": "tool.call.requested"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ToolCallStarted"
-        },
-        "type": {
-          "type": "string",
-          "const": "tool.call.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ToolCallOutputDelta"
-        },
-        "type": {
-          "type": "string",
-          "const": "tool.call.output.delta"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ToolCallCompleted"
-        },
-        "type": {
-          "type": "string",
-          "const": "tool.call.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ApprovalRequested"
-        },
-        "type": {
-          "type": "string",
-          "const": "approval.requested"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ApprovalResolved"
-        },
-        "type": {
-          "type": "string",
-          "const": "approval.resolved"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicyDecision"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.decision"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicySetChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.set_changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicySetInvalid"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.set_invalid"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicyStateChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.state_changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicyRuleIssue"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.enforcement_degraded"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PolicyRuleIssue"
-        },
-        "type": {
-          "type": "string",
-          "const": "policy.rule_inapplicable"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BudgetExhausted"
-        },
-        "type": {
-          "type": "string",
-          "const": "budget.exhausted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BudgetLeaseOverdrawn"
-        },
-        "type": {
-          "type": "string",
-          "const": "budget.lease_overdrawn"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CostDelta"
-        },
-        "type": {
-          "type": "string",
-          "const": "cost.delta"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/UsageSubscription"
-        },
-        "type": {
-          "type": "string",
-          "const": "usage.subscription"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ContextUsage"
-        },
-        "type": {
-          "type": "string",
-          "const": "context.usage"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/Compaction"
-        },
-        "type": {
-          "type": "string",
-          "const": "compaction.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/Compaction"
-        },
-        "type": {
-          "type": "string",
-          "const": "compaction.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/FsChanged"
-        },
-        "type": {
-          "type": "string",
-          "const": "fs.changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/GitWorktreeCreated"
-        },
-        "type": {
-          "type": "string",
-          "const": "git.worktree_created"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/GitCommitCreated"
-        },
-        "type": {
-          "type": "string",
-          "const": "git.commit_created"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CrLink"
-        },
-        "type": {
-          "type": "string",
-          "const": "cr.linked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CrLink"
-        },
-        "type": {
-          "type": "string",
-          "const": "cr.unlinked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/GitConflictsDetected"
-        },
-        "type": {
-          "type": "string",
-          "const": "git.conflicts_detected"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/GitConflictResolution"
-        },
-        "type": {
-          "type": "string",
-          "const": "git.conflict_resolution"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TerminalOpened"
-        },
-        "type": {
-          "type": "string",
-          "const": "terminal.opened"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TerminalOutput"
-        },
-        "type": {
-          "type": "string",
-          "const": "terminal.output"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TerminalSnapshot"
-        },
-        "type": {
-          "type": "string",
-          "const": "terminal.snapshot"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TerminalClosed"
-        },
-        "type": {
-          "type": "string",
-          "const": "terminal.closed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserOpened"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.opened"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserFrame"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.frame"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserNavigated"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.navigated"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserAction"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.action"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserSnapshot"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.snapshot"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserPicked"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.picked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserClosed"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.closed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/BrowserDevserverDetected"
-        },
-        "type": {
-          "type": "string",
-          "const": "browser.devserver.detected"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SandboxStarted"
-        },
-        "type": {
-          "type": "string",
-          "const": "sandbox.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/SandboxViolation"
-        },
-        "type": {
-          "type": "string",
-          "const": "sandbox.violation"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/EgressBlocked"
-        },
-        "type": {
-          "type": "string",
-          "const": "egress.blocked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/EgressSummary"
-        },
-        "type": {
-          "type": "string",
-          "const": "egress.summary"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AgentSpawned"
-        },
-        "type": {
-          "type": "string",
-          "const": "agent.spawned"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AgentCompleted"
-        },
-        "type": {
-          "type": "string",
-          "const": "agent.completed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AgentResolved"
-        },
-        "type": {
-          "type": "string",
-          "const": "agent.resolved"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AgentMessage"
-        },
-        "type": {
-          "type": "string",
-          "const": "agent.message"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TimerEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "timer.set"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TimerEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "timer.fired"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/TimerEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "timer.cancelled"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AsyncRunEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "async.run.queued"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AsyncRunEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "async.run.started"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AsyncRunEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "async.run.paused"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AsyncRunEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "async.run.resumed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/AsyncRunEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "async.run.finished"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ScheduleEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "schedule.created"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ScheduleEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "schedule.updated"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ScheduleEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "schedule.deleted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ScheduleEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "schedule.fired"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ScheduleEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "schedule.skipped"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CommentChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "comment.added"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CommentChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "comment.updated"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CommentChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "comment.resolved"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CommentChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "comment.deleted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/CommentAddressed"
-        },
-        "type": {
-          "type": "string",
-          "const": "comment.addressed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ShareChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "share.granted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ShareChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "share.changed"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ShareChange"
-        },
-        "type": {
-          "type": "string",
-          "const": "share.revoked"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/PresenceUpdated"
-        },
-        "type": {
-          "type": "string",
-          "const": "presence.updated"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/EventRedacted"
-        },
-        "type": {
-          "type": "string",
-          "const": "event.redacted"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/HarnessUnmapped"
-        },
-        "type": {
-          "type": "string",
-          "const": "harness.unmapped"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/Notice"
-        },
-        "type": {
-          "type": "string",
-          "const": "notice"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "payload": {
-          "$ref": "#/$defs/ErrorEvent"
-        },
-        "type": {
-          "type": "string",
-          "const": "error"
-        }
-      },
-      "required": [
-        "type",
-        "payload"
-      ]
+      "$ref": "#/$defs/OffloadedPayload"
     }
   ],
   "required": [
@@ -2038,6 +444,10 @@
         "gateway",
         "none"
       ]
+    },
+    "BlobRef": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "BrowserAction": {
       "type": "object",
@@ -2653,6 +1063,1611 @@
       ],
       "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$"
     },
+    "EventPayload": {
+      "description": "Typ und Nutzlast eines Events: `{\"type\": \"…\", \"payload\": {…}}`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStatusChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.status"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionResumed"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.resumed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionSettingsChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.settings_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionTitleChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.title_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Empty"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.archived"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Empty"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.unarchived"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionForked"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.forked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionForkCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.fork_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionImported"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.imported"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionOwnershipChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.ownership_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStartDenied"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.start_denied"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessReady"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.ready"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessExited"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.exited"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessAuthRequired"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.auth_required"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessIncompatible"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.incompatible"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/McpServerFailed"
+            },
+            "type": {
+              "type": "string",
+              "const": "mcp.server_failed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/RunnerStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "runner.status"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/QueueUpdated"
+            },
+            "type": {
+              "type": "string",
+              "const": "queue.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnFailed"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.failed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnInterrupted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.interrupted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TextDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "message.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/MessageCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "message.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TextDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ReasoningCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallRequested"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.requested"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallOutputDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.output.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ApprovalRequested"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval.requested"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ApprovalResolved"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.decision"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicySetChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.set_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicySetInvalid"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.set_invalid"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyStateChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.state_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyRuleIssue"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.enforcement_degraded"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyRuleIssue"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.rule_inapplicable"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BudgetExhausted"
+            },
+            "type": {
+              "type": "string",
+              "const": "budget.exhausted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BudgetLeaseOverdrawn"
+            },
+            "type": {
+              "type": "string",
+              "const": "budget.lease_overdrawn"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CostDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "cost.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/UsageSubscription"
+            },
+            "type": {
+              "type": "string",
+              "const": "usage.subscription"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            "type": {
+              "type": "string",
+              "const": "context.usage"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Compaction"
+            },
+            "type": {
+              "type": "string",
+              "const": "compaction.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Compaction"
+            },
+            "type": {
+              "type": "string",
+              "const": "compaction.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/FsChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "fs.changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitWorktreeCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.worktree_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitCommitCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.commit_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CrLink"
+            },
+            "type": {
+              "type": "string",
+              "const": "cr.linked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CrLink"
+            },
+            "type": {
+              "type": "string",
+              "const": "cr.unlinked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitConflictsDetected"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.conflicts_detected"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitConflictResolution"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.conflict_resolution"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalOpened"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.opened"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalOutput"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.output"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalSnapshot"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.snapshot"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalClosed"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.closed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserOpened"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.opened"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserFrame"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.frame"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserNavigated"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.navigated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserAction"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.action"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserSnapshot"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.snapshot"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserPicked"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.picked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserClosed"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.closed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserDevserverDetected"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.devserver.detected"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SandboxStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "sandbox.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SandboxViolation"
+            },
+            "type": {
+              "type": "string",
+              "const": "sandbox.violation"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EgressBlocked"
+            },
+            "type": {
+              "type": "string",
+              "const": "egress.blocked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EgressSummary"
+            },
+            "type": {
+              "type": "string",
+              "const": "egress.summary"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentSpawned"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.spawned"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentResolved"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentMessage"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.message"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.set"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.fired"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.cancelled"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.queued"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.paused"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.resumed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.finished"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.deleted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.fired"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.skipped"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.added"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.deleted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentAddressed"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.addressed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.granted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.revoked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PresenceUpdated"
+            },
+            "type": {
+              "type": "string",
+              "const": "presence.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EventRedacted"
+            },
+            "type": {
+              "type": "string",
+              "const": "event.redacted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessUnmapped"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.unmapped"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Notice"
+            },
+            "type": {
+              "type": "string",
+              "const": "notice"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ErrorEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        }
+      ]
+    },
     "EventRedacted": {
       "type": "object",
       "properties": {
@@ -2672,6 +2687,112 @@
         "target_seq",
         "by",
         "reason"
+      ]
+    },
+    "EventType": {
+      "description": "Typname eines Events ohne Nutzlast, z. B. für ausgelagerte Payloads.",
+      "type": "string",
+      "enum": [
+        "session.created",
+        "session.started",
+        "session.status",
+        "session.resumed",
+        "session.settings_changed",
+        "session.title_changed",
+        "session.archived",
+        "session.unarchived",
+        "session.forked",
+        "session.fork_created",
+        "session.imported",
+        "session.ownership_changed",
+        "session.start_denied",
+        "harness.ready",
+        "harness.exited",
+        "harness.auth_required",
+        "harness.incompatible",
+        "mcp.server_failed",
+        "runner.status",
+        "queue.updated",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "message.delta",
+        "message.completed",
+        "reasoning.delta",
+        "reasoning.completed",
+        "tool.call.requested",
+        "tool.call.started",
+        "tool.call.output.delta",
+        "tool.call.completed",
+        "approval.requested",
+        "approval.resolved",
+        "policy.decision",
+        "policy.set_changed",
+        "policy.set_invalid",
+        "policy.state_changed",
+        "policy.enforcement_degraded",
+        "policy.rule_inapplicable",
+        "budget.exhausted",
+        "budget.lease_overdrawn",
+        "cost.delta",
+        "usage.subscription",
+        "context.usage",
+        "compaction.started",
+        "compaction.completed",
+        "fs.changed",
+        "git.worktree_created",
+        "git.commit_created",
+        "cr.linked",
+        "cr.unlinked",
+        "git.conflicts_detected",
+        "git.conflict_resolution",
+        "terminal.opened",
+        "terminal.output",
+        "terminal.snapshot",
+        "terminal.closed",
+        "browser.opened",
+        "browser.frame",
+        "browser.navigated",
+        "browser.action",
+        "browser.snapshot",
+        "browser.picked",
+        "browser.closed",
+        "browser.devserver.detected",
+        "sandbox.started",
+        "sandbox.violation",
+        "egress.blocked",
+        "egress.summary",
+        "agent.spawned",
+        "agent.completed",
+        "agent.resolved",
+        "agent.message",
+        "timer.set",
+        "timer.fired",
+        "timer.cancelled",
+        "async.run.queued",
+        "async.run.started",
+        "async.run.paused",
+        "async.run.resumed",
+        "async.run.finished",
+        "schedule.created",
+        "schedule.updated",
+        "schedule.deleted",
+        "schedule.fired",
+        "schedule.skipped",
+        "comment.added",
+        "comment.updated",
+        "comment.resolved",
+        "comment.deleted",
+        "comment.addressed",
+        "share.granted",
+        "share.changed",
+        "share.revoked",
+        "presence.updated",
+        "event.redacted",
+        "harness.unmapped",
+        "notice",
+        "error"
       ]
     },
     "ForkReason": {
@@ -3044,6 +3165,23 @@
         "warn"
       ]
     },
+    "OffloadedPayload": {
+      "description": "Platzhalter für eine in den Blob-Store ausgelagerte Nutzlast.",
+      "type": "object",
+      "properties": {
+        "payload_ref": {
+          "$ref": "#/$defs/BlobRef"
+        },
+        "type": {
+          "$ref": "#/$defs/EventType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "payload_ref"
+      ]
+    },
     "OutputStream": {
       "type": "string",
       "enum": [
@@ -3252,7 +3390,7 @@
     },
     "PrincipalId": {
       "type": "string",
-      "pattern": "^(usr|sa)_[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^(usr_([0-9A-HJKMNP-TV-Z]{26}|local)|sa_[0-9A-HJKMNP-TV-Z]{26})$"
     },
     "ProjectId": {
       "type": "string",

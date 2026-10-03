@@ -29,8 +29,9 @@ pub struct Event {
     pub seq: u64,
     pub ts: Timestamp,
     pub actor: Actor,
+    /// `type` und `payload`, bei ausgelagerten Payloads `type` und `payload_ref`.
     #[serde(flatten)]
-    pub body: EventPayload,
+    pub body: EventBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub turn_id: Option<TurnId>,
@@ -61,7 +62,7 @@ impl Event {
             seq,
             ts: Timestamp::now(),
             actor,
-            body,
+            body: EventBody::Inline(body),
             turn_id: None,
             causation_id: None,
             raw: None,
@@ -71,7 +72,145 @@ impl Event {
     }
 
     pub fn type_name(&self) -> &'static str {
-        self.body.type_name()
+        self.body.event_type().as_str()
+    }
+
+    /// Die Nutzlast, sofern sie nicht in den Blob-Store ausgelagert ist.
+    pub fn payload(&self) -> Option<&EventPayload> {
+        match &self.body {
+            EventBody::Inline(p) => Some(p),
+            EventBody::Offloaded(_) => None,
+        }
+    }
+}
+
+/// Grenze, ab der Payloads als Blob ausgelagert werden (PROTO-001 AC4): 64 KiB serialisiert.
+pub const PAYLOAD_INLINE_LIMIT: usize = 64 * 1024;
+
+/// Nutzlast eines Events: direkt enthalten oder als Blob ausgelagert (PROTO-001 AC4).
+///
+/// Auf dem Draht unterscheiden sich beide Formen nur durch `payload` bzw. `payload_ref`;
+/// den Inhalt einer ausgelagerten Nutzlast holen Clients über die Blob-API der Session.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema, TS)]
+#[serde(untagged)]
+// Inline ist der Normalfall; ein Box dort kostete jede Event-Allokation.
+#[allow(clippy::large_enum_variant)]
+pub enum EventBody {
+    Inline(EventPayload),
+    Offloaded(OffloadedPayload),
+}
+
+impl EventBody {
+    pub fn event_type(&self) -> EventType {
+        match self {
+            Self::Inline(p) => p.event_type(),
+            Self::Offloaded(o) => o.event_type,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EventBody {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // Selbst geschrieben statt `untagged`, damit Fehler in der Nutzlast lesbar bleiben.
+        let map = serde_json::Map::<String, Value>::deserialize(d)?;
+        let value = Value::Object(map);
+        if value.get("payload_ref").is_some() {
+            serde_json::from_value(value)
+                .map(Self::Offloaded)
+                .map_err(serde::de::Error::custom)
+        } else {
+            serde_json::from_value(value)
+                .map(Self::Inline)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+}
+
+/// Platzhalter für eine in den Blob-Store ausgelagerte Nutzlast.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct OffloadedPayload {
+    #[serde(rename = "type")]
+    pub event_type: EventType,
+    pub payload_ref: BlobRef,
+}
+
+/// Inhaltsadresse eines Blobs: `sha256:<64 Hex-Zeichen>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlobRef(String);
+
+impl BlobRef {
+    const PREFIX: &'static str = "sha256:";
+
+    /// Aus dem SHA-256-Digest als Kleinbuchstaben-Hex.
+    pub fn from_hex(hex: &str) -> Result<Self, InvalidBlobRef> {
+        format!("{}{hex}", Self::PREFIX).parse()
+    }
+
+    /// Der Digest als Hex (ohne Präfix).
+    pub fn hex(&self) -> &str {
+        &self.0[Self::PREFIX.len()..]
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` ist keine Blob-Referenz der Form sha256:<64 Hex-Zeichen>")]
+pub struct InvalidBlobRef(String);
+
+impl std::str::FromStr for BlobRef {
+    type Err = InvalidBlobRef;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let hex = s
+            .strip_prefix(Self::PREFIX)
+            .ok_or_else(|| InvalidBlobRef(s.to_owned()))?;
+        if hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            Ok(Self(s.to_owned()))
+        } else {
+            Err(InvalidBlobRef(s.to_owned()))
+        }
+    }
+}
+
+impl std::fmt::Display for BlobRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for BlobRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for BlobRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = std::borrow::Cow::<str>::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for BlobRef {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "BlobRef".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" })
+    }
+}
+
+impl TS for BlobRef {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+    fn name(_: &ts_rs::Config) -> String {
+        "`sha256:${string}`".to_owned()
+    }
+    fn inline(cfg: &ts_rs::Config) -> String {
+        <Self as TS>::name(cfg)
     }
 }
 
@@ -798,14 +937,39 @@ macro_rules! catalog {
             $(#[serde(rename = $name)] $variant($payload),)*
         }
 
+        /// Typname eines Events ohne Nutzlast, z. B. für ausgelagerte Payloads.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+        pub enum EventType {
+            $(#[serde(rename = $name)] $variant,)*
+        }
+
+        impl EventType {
+            /// Typname laut Katalog, z. B. `tool.call.requested`.
+            pub fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $name,)* }
+            }
+
+            pub fn persistence(self) -> Persistence {
+                match self { $(Self::$variant => Persistence::$persistence,)* }
+            }
+
+            pub fn parse(name: &str) -> Option<Self> {
+                match name { $($name => Some(Self::$variant),)* _ => None }
+            }
+        }
+
         impl EventPayload {
+            pub fn event_type(&self) -> EventType {
+                match self { $(Self::$variant(_) => EventType::$variant,)* }
+            }
+
             /// Typname laut Katalog, z. B. `tool.call.requested`.
             pub fn type_name(&self) -> &'static str {
-                match self { $(Self::$variant(_) => $name,)* }
+                self.event_type().as_str()
             }
 
             pub fn persistence(&self) -> Persistence {
-                match self { $(Self::$variant(_) => Persistence::$persistence,)* }
+                self.event_type().persistence()
             }
 
             pub fn is_transient(&self) -> bool {
@@ -951,7 +1115,7 @@ mod tests {
             },
             body,
         );
-        if e.body.is_transient() {
+        if e.payload().is_some_and(EventPayload::is_transient) {
             e.transient = true;
             e.tseq = Some(7);
         }
@@ -992,6 +1156,44 @@ mod tests {
         let e: Event = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(e.type_name(), "tool.call.requested");
         assert_eq!(serde_json::to_value(&e).unwrap(), json);
+    }
+
+    #[test]
+    fn proto_001_ac4_offloaded_payload_carries_ref_instead_of_payload() {
+        let hash = "ab".repeat(32);
+        let mut e = envelope(EventPayload::default());
+        e.body = EventBody::Offloaded(OffloadedPayload {
+            event_type: EventType::ToolCallCompleted,
+            payload_ref: BlobRef::from_hex(&hash).unwrap(),
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["type"], "tool.call.completed");
+        assert_eq!(v["payload_ref"], format!("sha256:{hash}"));
+        assert!(v.get("payload").is_none());
+        assert_eq!(roundtrip(&e), e);
+        assert_eq!(e.type_name(), "tool.call.completed");
+        assert!(e.payload().is_none());
+
+        assert!(BlobRef::from_hex("AB").is_err());
+        assert!("md5:00".parse::<BlobRef>().is_err());
+    }
+
+    #[test]
+    fn invalid_payload_error_names_the_problem() {
+        let mut v = serde_json::to_value(envelope(EventPayload::default())).unwrap();
+        v["payload"]["level"] = "laut".into();
+        let err = serde_json::from_value::<Event>(v).unwrap_err().to_string();
+        assert!(err.contains("laut"), "{err}");
+    }
+
+    #[test]
+    fn event_type_names_match_catalog() {
+        for (name, persistence) in CATALOG {
+            let t = EventType::parse(name).unwrap();
+            assert_eq!(t.as_str(), *name);
+            assert_eq!(t.persistence(), *persistence);
+            assert_eq!(serde_json::to_value(t).unwrap(), *name);
+        }
     }
 
     #[test]

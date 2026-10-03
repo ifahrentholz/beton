@@ -47,7 +47,7 @@ Grundlage sind ADR-0019 (eigenes Event-Modell, WebSocket mit Resume ab `seq`, ge
 - `actor.kind ∈ {user, agent, system}`; `user` mit `id` (`usr_`/`sa_`) und optional `device_id`; `agent` mit `harness`, optional `agent_ref`; `system` mit `component ∈ {policy, sandbox, proxy, scheduler, sync, runner, server}`.
 - IDs: Präfix + ULID (`ses_`, `evt_`, `trn_`, `usr_`, `sa_`, `org_`, `team_`, `prj_`, `agt_`, `pol_`, `sec_`, `hst_`, `run_`, `dev_`, `sch_`, `tmr_`, `cmt_`, `shr_`, `apr_`, `bls_`, `nod_`).
 - Transiente Events: `seq` = letzte dauerhafte `seq`, zusätzlich `"transient": true, "tseq": <n>` (pro Session und Epoch monoton).
-- Payloads > 64 KiB werden als Blob ausgelagert (`payload_ref`); große Tool-Ergebnisse als `result_ref`.
+- Payloads > 64 KiB (serialisiert) werden als Blob ausgelagert: Das Event trägt dann `"payload_ref": "sha256:<hex>"` **statt** `payload` (Typ `OffloadedPayload` in den generierten Schemas); den Inhalt holen Clients über `GET /v1/sessions/{id}/blobs/{hash}`. Große Tool-Ergebnisse als `result_ref`.
 
 ### Event-Katalog v1
 
@@ -379,7 +379,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### DATA-001 — Datenmodell & Entitäten
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Das relationale Modell umfasst: `Org`, `Team`, `User`, `Identity (issuer, sub)`, `Membership`, `ServiceAccount`, `Token`, `Device`, `Node`, `Host`, `Runner`, `Project`, `Session`, `Event`, `Blob`, `Agent` (versioniert), `Policy` (Scope org/team/user/project/agent, versioniert, ETag), `Secret`/`SecretRef` (Bindung + Krypto-Felder, SEC-005/SEC-007 in 05-security-identity.md), `Schedule`, `ScheduleRun`, `Timer`, `Comment`, `Share`, `Approval`, `BudgetLease`, `AuditEntry`, `Tombstone`. Alle Tabellen tragen `org_id`; lokal existiert genau `org_local` mit `usr_local`. In M0 sind die lokal benötigten Entitäten implementiert, Team-Entitäten ab M4.
+- **Beschreibung:** Das relationale Modell umfasst: `Org`, `Team`, `User`, `Identity (issuer, sub)`, `Membership`, `ServiceAccount`, `Token`, `Device`, `Node`, `Host`, `Runner`, `Project`, `Session`, `Event`, `Blob`, `Agent` (versioniert), `Policy` (Scope org/team/user/project/agent, versioniert, ETag), `Secret`/`SecretRef` (Bindung + Krypto-Felder, SEC-005/SEC-007 in 05-security-identity.md), `Schedule`, `ScheduleRun`, `Timer`, `Comment`, `Share`, `Approval`, `BudgetLease`, `AuditEntry`, `Tombstone`. Alle Tabellen tragen `org_id` (außer `orgs` selbst); lokal existiert genau `org_local` mit `usr_local` (intern die Null-ULID, nach außen immer als `org_local`/`usr_local`). Das ER-Diagramm wird aus den Migrationen erzeugt: [`docs/generated/er-diagram.md`](../generated/er-diagram.md). In M0 sind die lokal benötigten Entitäten implementiert, Team-Entitäten ab M4.
 - **Details:** `Session`: `id, org_id, owner (usr_|sa_), project_id?, parent_id?, kind, title, status, archived, harness, home_node_id, epoch, head_seq, created_at, updated_at`. `Comment`, `Approval`, `Share` sind Projektionen ihrer Events plus Indizes.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein ER-Diagramm wird aus den Migrationen generiert und im Repo eingecheckt (CI prüft Aktualität).
@@ -389,7 +389,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### DATA-002 — Event-Log-Speicherung (Append-only)
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Events liegen in `events(session_id, seq, id, ts, actor_kind, actor_id, type, payload, payload_ref, epoch, redacted, PRIMARY KEY (session_id, seq))`; `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen.
+- **Beschreibung:** Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Zwei konkurrierende Appends mit gleicher erwarteter `head_seq` → genau einer gelingt, der andere erhält `seq_conflict`.
   - [ ] AC2 — Nach Kill des Prozesses während Appends (Crash-Test, 1 000 Iterationen) ist das Log lückenlos und `head_seq` = max(`seq`).

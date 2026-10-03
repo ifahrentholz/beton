@@ -10,7 +10,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use beton_core::event::{Event, EventPayload, OutputStream, TextDelta, ToolCallOutputDelta};
+use beton_core::event::{
+    Event, EventBody, EventPayload, OutputStream, Persistence, TextDelta, ToolCallOutputDelta,
+};
 
 /// Grenzen des Ringpuffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +99,7 @@ impl TransientBuffer {
     /// Gibt das gestempelte Event zurück, wie es an Clients geht. Dauerhafte Events werden
     /// zurückgewiesen; die gehören ins Log (siehe [`Self::observe_durable`]).
     pub fn push(&mut self, mut event: Event, now: Instant) -> Result<Event, NotTransient> {
-        if !event.body.is_transient() {
+        if event.body.event_type().persistence() != Persistence::Transient {
             return Err(NotTransient(event.type_name()));
         }
         event.transient = true;
@@ -111,16 +113,16 @@ impl TransientBuffer {
 
     /// Meldet ein dauerhaftes Event; ein `*.completed` schließt den zugehörigen Strom ab.
     pub fn observe_durable(&mut self, event: &Event) {
-        match &event.body {
-            EventPayload::MessageCompleted(m) => {
+        match event.payload() {
+            Some(EventPayload::MessageCompleted(m)) => {
                 self.streams
                     .remove(&StreamKey::Message(m.message_id.clone()));
             }
-            EventPayload::ReasoningCompleted(r) => {
+            Some(EventPayload::ReasoningCompleted(r)) => {
                 self.streams
                     .remove(&StreamKey::Reasoning(r.message_id.clone()));
             }
-            EventPayload::ToolCallCompleted(t) => {
+            Some(EventPayload::ToolCallCompleted(t)) => {
                 self.streams.remove(&StreamKey::ToolOutput(
                     t.call_id.clone(),
                     StreamSide::Stdout,
@@ -152,7 +154,7 @@ impl TransientBuffer {
             .map(|(key, acc)| {
                 let mut e = acc.template.clone();
                 e.tseq = Some(tseq);
-                e.body = match key {
+                e.body = EventBody::Inline(match key {
                     StreamKey::Message(id) => EventPayload::MessageDelta(TextDelta {
                         message_id: id.clone(),
                         text: acc.text.clone(),
@@ -174,7 +176,7 @@ impl TransientBuffer {
                             snapshot: true,
                         })
                     }
-                };
+                });
                 e
             })
             .collect()
@@ -189,18 +191,18 @@ impl TransientBuffer {
     }
 
     fn accumulate(&mut self, event: &Event) {
-        let (key, text, snapshot) = match &event.body {
-            EventPayload::MessageDelta(d) => (
+        let (key, text, snapshot) = match event.payload() {
+            Some(EventPayload::MessageDelta(d)) => (
                 StreamKey::Message(d.message_id.clone()),
                 &d.text,
                 d.snapshot,
             ),
-            EventPayload::ReasoningDelta(d) => (
+            Some(EventPayload::ReasoningDelta(d)) => (
                 StreamKey::Reasoning(d.message_id.clone()),
                 &d.text,
                 d.snapshot,
             ),
-            EventPayload::ToolCallOutputDelta(d) => (
+            Some(EventPayload::ToolCallOutputDelta(d)) => (
                 StreamKey::ToolOutput(d.call_id.clone(), d.stream.into()),
                 &d.text,
                 d.snapshot,
@@ -270,14 +272,14 @@ impl TransientView {
             self.texts.clear();
         }
         let Some(tseq) = event.tseq else { return false };
-        let snapshot = matches!(&event.body, EventPayload::MessageDelta(d) if d.snapshot);
+        let snapshot = matches!(event.payload(), Some(EventPayload::MessageDelta(d)) if d.snapshot);
         // Ein Snapshot trägt die zuletzt vergebene tseq und ersetzt den Stand; sonst gilt
         // strikte Monotonie.
         if !(tseq > self.last_tseq || (snapshot && tseq >= self.last_tseq)) {
             return false;
         }
         self.last_tseq = tseq;
-        if let EventPayload::MessageDelta(d) = &event.body {
+        if let Some(EventPayload::MessageDelta(d)) = event.payload() {
             let text = self.texts.entry(d.message_id.clone()).or_default();
             if d.snapshot {
                 text.clone_from(&d.text);
@@ -349,7 +351,7 @@ mod tests {
 
         let mut durable = Vec::new();
         for e in stream {
-            if e.body.persistence() == Persistence::Durable {
+            if e.body.event_type().persistence() == Persistence::Durable {
                 buffer.observe_durable(&e);
                 durable.push(e);
             } else {
@@ -442,7 +444,9 @@ mod tests {
         assert_eq!(buffer.len(), 1, "Einträge älter als 5 min fallen heraus");
         // Der angesammelte Text bleibt trotz Ringgrenze vollständig.
         let snap = buffer.snapshot();
-        assert!(matches!(&snap[0].body, EventPayload::MessageDelta(d) if d.text == "01234spät"));
+        assert!(
+            matches!(snap[0].payload(), Some(EventPayload::MessageDelta(d)) if d.text == "01234spät")
+        );
     }
 
     proptest! {
