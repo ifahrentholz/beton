@@ -192,4 +192,11 @@ export const group: ScreenGroup = {
       component: SessionStream,
     },
   ],
+  noUi: {
+    'WEB-015': {
+      reason:
+        'Performance-Budgets (60 fps beim Streaming, schneller Session-Wechsel, begrenzter Speicher) werden in der CI gemessen; spürbar beim Streaming im Session-Verlauf.',
+      visibleIn: 'session-stream',
+    },
+  },
 }

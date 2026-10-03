@@ -24,19 +24,20 @@ export function SessionHeader({
 }) {
   const ctxPct = Math.round((usage.context.used / usage.context.window) * 100)
   return (
-    <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
+    <div className="@container flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
       <StatusMark status={status} />
-      <h2 className="min-w-0 shrink truncate text-[15px] font-semibold">{title}</h2>
-      <HarnessBadge id={harness} model={model ?? harnesses[harness].models[0]} className="shrink-0 whitespace-nowrap" />
+      <h2 className="min-w-[8rem] flex-1 truncate text-[15px] font-semibold" title={title}>{title}</h2>
+      <HarnessBadge id={harness} className="shrink-0 whitespace-nowrap @3xl:hidden" />
+      <HarnessBadge id={harness} model={model ?? harnesses[harness].models[0]} className="hidden shrink-0 whitespace-nowrap @3xl:inline-flex" />
       {branch && (
-        <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] whitespace-nowrap text-muted-foreground 2xl:inline-flex">
+        <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] whitespace-nowrap text-muted-foreground @5xl:inline-flex">
           <GitBranch className="size-3" />
           {branch}
         </span>
       )}
-      <div className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
+      <div className="ml-auto flex min-w-0 shrink items-center gap-3 overflow-hidden whitespace-nowrap">
         {extra}
-        <F id={['USE-008', 'HAR-021']} badge="bottom-left">
+        <F id={['USE-008', 'HAR-021']} badge="bottom-left" className="hidden @2xl:block">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={`Kontext: ${usage.context.used.toLocaleString('de-DE')} von ${usage.context.window.toLocaleString('de-DE')} Tokens`}>
             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
               <span className="block h-full bg-foreground/70" style={{ width: `${ctxPct}%` }} />
@@ -44,7 +45,7 @@ export function SessionHeader({
             {ctxPct} % Kontext
           </span>
         </F>
-        <F id="USE-004" badge="bottom-left" className="hidden xl:block">
+        <F id="USE-004" badge="bottom-left" className="hidden @4xl:block">
           <span className="text-[11px] text-muted-foreground" title={`Subscription-Fenster setzt in ${usage.subscription.resetsIn} zurück`}>
             {usage.subscription.label}: {usage.subscription.windowUsedPct} % genutzt
           </span>
