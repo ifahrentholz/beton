@@ -1,0 +1,10 @@
+# Fake-Harness-Szenario aus der Spec (HAR-026): Push mit Freigabe.
+# Wird vom Fake-Harness (in-process) und von beton-fake-cli (stream-json) abgespielt.
+capabilities: { approval: native_request, model_switch: live, fork_history: preamble }
+turns:
+  - expect_input: "Bitte pushen"
+    emit:
+      - { message_delta: "Ich pushe jetzt.", chunk: 4, delay_ms: 10 }
+      - { tool_call: { name: Bash, kind: shell, args: { command: "git push origin main" } }, gate: true }
+      - { on_gate: { allow: [{ tool_result: "ok" }], deny: [{ message: "Push abgelehnt." }] } }
+      - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }

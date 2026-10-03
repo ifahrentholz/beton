@@ -1,0 +1,5 @@
+{"ms":5,"out":"{\"type\":\"init\",\"session\":\"9f1c2d3e-1111-2222-3333-444455556666\"}"}
+{"ms":40,"after_stdin":1,"out":"{\"type\":\"text\",\"text\":\"Ich lese die Datei.\"}"}
+{"ms":50,"after_stdin":1,"out":"{\"type\":\"ask\",\"id\":\"call_abcdefghijkl\",\"tool\":\"Read\",\"args\":{\"path\":\"/beton-golden/workdir/README.md\"}}"}
+{"ms":90,"after_stdin":2,"out":"{\"type\":\"tool_result\",\"id\":\"call_abcdefghijkl\",\"result\":\"# beton\"}"}
+{"ms":95,"after_stdin":2,"out":"{\"type\":\"done\",\"at\":\"2026-10-03T12:00:00.123Z\"}"}

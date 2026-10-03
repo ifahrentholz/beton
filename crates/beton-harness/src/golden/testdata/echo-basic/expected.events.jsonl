@@ -1,0 +1,5 @@
+{"has_raw":true,"payload":{"harness_session_ref":"<id:2>","mcp_servers":[],"tools":[]},"turn_id":"<id:3>","type":"harness.ready"}
+{"has_raw":true,"payload":{"content":[{"text":"Ich lese die Datei.","type":"text"}],"message_id":"m1","role":"assistant"},"turn_id":"<id:3>","type":"message.completed"}
+{"has_raw":true,"payload":{"args":{"path":"<workdir>/README.md"},"call_id":"<id:1>","source":"harness","tool":"Read"},"turn_id":"<id:3>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"call_id":"<id:1>","duration_ms":0,"result":"# beton","status":"ok"},"turn_id":"<id:3>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"stop_reason":"end_turn","turn_id":"<id:3>","usage_summary":{}},"turn_id":"<id:3>","type":"turn.completed"}

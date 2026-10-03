@@ -21,7 +21,7 @@
       "$ref": "#/$defs/EventId"
     },
     "raw": {
-      "description": "Original-Payload des Harness (optional, vor Persistenz redigiert)."
+      "description": "Original-Payload des Harness (optional, vor Persistenz redigiert), byte-genau erhalten."
     },
     "seq": {
       "description": "Lückenlose Position im Session-Log. Transiente Events tragen die letzte dauerhafte `seq`.",

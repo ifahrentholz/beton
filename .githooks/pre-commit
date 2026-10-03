@@ -1,0 +1,8 @@
+#!/bin/sh
+# Pre-Commit-Hook für beton (QA-003 AC2). Aktivieren mit:
+#   git config core.hooksPath .githooks
+# Prüft Golden-Transcripts auf eingebettete Secrets, bevor sie committet werden.
+set -e
+if git diff --cached --name-only | grep -q '/golden/'; then
+    cargo xtask golden-scan
+fi

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, CostDelta, Empty,
-    Event, EventBody, EventPayload, Notice, ResolvedVia, SessionKind, SessionStatus,
+    Event, EventBody, EventPayload, Notice, RawJson, ResolvedVia, SessionKind, SessionStatus,
     SessionStatusChanged, SessionTitleChanged, SessionTrigger, TextDelta, TitleSource,
     ToolCallCompleted, ToolStatus,
 };
@@ -293,7 +293,9 @@ async fn proto_001_ac3_raw_passes_redaction_hook_before_persistence() {
         .await
         .unwrap();
     let mut e = notice(s.id, "mit raw");
-    e.raw = Some(json!({"type": "assistant", "token": "geheim"}));
+    e.raw = Some(RawJson::from_value(
+        &json!({"type": "assistant", "token": "geheim"}),
+    ));
     let written = append_one(&t.store, &s, e).await;
     assert_eq!(redactor.0.load(Ordering::Relaxed), 1);
     assert!(written.raw.is_none(), "raw geht nicht auf den Draht");
@@ -304,6 +306,28 @@ async fn proto_001_ac3_raw_passes_redaction_hook_before_persistence() {
         .unwrap()
         .unwrap();
     assert_eq!(raw, json!({"type": "assistant", "token": "[REDACTED]"}));
+}
+
+#[tokio::test]
+async fn har_001_ac3_raw_lands_byte_identical_in_log() {
+    let t = store().await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let line = r#"{"type":"assistant", "z":1,"a":"\u00e4","n":1.50}"#;
+    let mut e = notice(s.id, "raw");
+    e.raw = Some(RawJson::from_string(line.to_owned()).unwrap());
+    let written = append_one(&t.store, &s, e).await;
+    let stored: String =
+        sqlx::query_scalar("SELECT raw FROM event_raw WHERE org_id = ? AND seq = ?")
+            .bind(org(&t).to_string())
+            .bind(written.seq as i64)
+            .fetch_one(&t.store.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, line);
 }
 
 #[tokio::test]
@@ -321,7 +345,7 @@ async fn proto_001_ac3_store_raw_false_keeps_no_raw() {
         .await
         .unwrap();
     let mut e = notice(s.id, "mit raw");
-    e.raw = Some(json!({"token": "geheim"}));
+    e.raw = Some(RawJson::from_value(&json!({"token": "geheim"})));
     let written = append_one(&t.store, &s, e).await;
     assert!(
         t.store
@@ -411,7 +435,7 @@ async fn populate_second_org(t: &TestStore) -> (OrgId, SessionRecord, beton_core
     let s = t.store.create_session(org_b, new).await.unwrap();
     let approval = ApprovalId::new();
     let mut raw_event = notice(s.id, "raw");
-    raw_event.raw = Some(json!({"x": 1}));
+    raw_event.raw = Some(RawJson::from_value(&json!({"x": 1})));
     t.store
         .append(
             org_b,
@@ -1046,7 +1070,7 @@ async fn data_008_ac1_deleted_session_is_gone_and_tombstoned() {
         .await
         .unwrap();
     let mut raw = notice(root.id, "raw");
-    raw.raw = Some(json!({"a": 1}));
+    raw.raw = Some(RawJson::from_value(&json!({"a": 1})));
     let raw = append_one(&t.store, &root, raw).await;
     let before = Timestamp::now();
 

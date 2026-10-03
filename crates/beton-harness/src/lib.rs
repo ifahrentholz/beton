@@ -1,4 +1,25 @@
-//! Harness-Adapter-Trait, Capabilities und Transporte (native, ACP, PTY).
+//! Harness-Adapter-Trait, Capabilities, Registry, Prozess-Supervision, Fake-Harness und
+//! Golden-Transcript-Framework (HAR-001, HAR-002, HAR-003, HAR-025, HAR-026).
 //!
-//! Spec: HAR-001…003 (docs/spec/01-harnesses.md). Die Implementierung folgt mit den zugehörigen Arbeitspaketen;
-//! bis dahin ist dieses Crate bewusst leer (AGENTS.md §1: nichts auf Vorrat bauen).
+//! Spec: `docs/spec/01-harnesses.md`. Vendor-Adapter (Claude Code, Codex, ACP) liegen in
+//! eigenen Crates und implementieren [`HarnessAdapter`].
+
+mod adapter;
+mod capabilities;
+pub mod fake;
+pub mod golden;
+mod id;
+pub mod process;
+pub mod registry;
+pub mod scenario;
+
+pub use crate::adapter::{
+    AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateRequest,
+    HarnessAdapter, HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, PermissionMode,
+    ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
+};
+pub use crate::capabilities::{
+    Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport, ForkHistory,
+    InstructionsDelivery, ResumeSupport, Subagents, SwitchSupport, ToolCallGate, UsageReporting,
+};
+pub use crate::id::{HarnessId, InvalidHarnessId};

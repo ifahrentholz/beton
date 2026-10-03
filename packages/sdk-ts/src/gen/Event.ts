@@ -17,7 +17,7 @@ v: number, id: `evt_${string}`, session_id: `ses_${string}`,
  */
 seq: number, ts: string, actor: Actor, turn_id?: `trn_${string}`, causation_id?: `evt_${string}`, 
 /**
- * Original-Payload des Harness (optional, vor Persistenz redigiert).
+ * Original-Payload des Harness (optional, vor Persistenz redigiert), byte-genau erhalten.
  */
 raw?: JsonValue, 
 /**

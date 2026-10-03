@@ -56,7 +56,7 @@ pub trait HarnessSession: Send {
     async fn set_model(&mut self, m: ModelRef, effort: Option<Effort>) -> Result<SwitchOutcome>;
     async fn set_permission_mode(&mut self, m: PermissionMode) -> Result<()>;
     async fn compact(&mut self) -> Result<()>;
-    fn events(&mut self) -> BoxStream<'static, NormalizedEvent>;       // inkl. `raw`
+    fn events(&mut self) -> Option<mpsc::Receiver<NormalizedEvent>>;   // einmal entnehmbar, inkl. `raw`
     fn native_session_ref(&self) -> Option<NativeSessionRef>;          // z. B. Claude-Session-UUID, Codex-Thread-ID
     async fn shutdown(self: Box<Self>, how: Shutdown) -> Result<ExitInfo>;
 }
@@ -446,7 +446,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
   crates/beton-harness-claude/tests/golden/bash-tool/
     meta.yaml              # cli_version, recorded_at, scenario, platform
     script.yaml            # Eingaben + Gate-Entscheidungen (deterministisch)
-    raw.jsonl              # Vendor-stdout, mit Zeitmarken
+    raw.jsonl              # Vendor-stdout, je Zeile {"ms", "after_stdin"?, "out": "<exakte Zeile>"}
     expected.stdin.jsonl   # erwartete Nachrichten von beton an die CLI
     expected.events.jsonl  # normalisierte Events
   ```
@@ -474,8 +474,9 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
         - { on_gate: { allow: [{ tool_result: "ok" }], deny: [{ message: "Push abgelehnt." }] } }
         - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }
   ```
+  Schritte (genau eine Aktion je Schritt, optional `delay_ms`): `message_delta` (mit `chunk`), `message`, `reasoning`, `tool_call` (mit `gate`), `on_gate { allow, deny }`, `tool_result`, `tool_error`, `usage`, `error`, `crash: <exit-code>`, `auth_expired: <hinweis>`, `hang: true` (bis Interrupt). Szenario-Ebene: `capabilities` (Überschreibungen), `start: { refuse: <grund> }`, `version` (Ausgabe von `--version` der Fake-CLI), `faults { crash_after, hang_after, malformed_line }` (nur Fake-CLI, QA-002). Referenz: `beton_harness::scenario`.
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — `beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts`).
+  - [ ] AC1 — `beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts` und der vom Runner vergebenen `evt_`-IDs; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).
   - [ ] AC2 — Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.
   - [ ] AC3 — Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag verfügbar und erscheint sonst nicht im Katalog.
 - **Abhängigkeiten:** HAR-001, QA-002, QA-007 (siehe 12-distribution-quality.md)
