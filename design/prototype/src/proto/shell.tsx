@@ -52,7 +52,14 @@ function Toggle({ on, onClick, label, children }: { on: boolean; onClick: () => 
 }
 
 export function DesignShell() {
-  const [dark, setDark] = useState(() => readPref('beton-proto-theme', 'light') === 'dark')
+  const [dark, setDark] = useState(() => {
+    // Gespeicherte Wahl gewinnt, sonst die Vorgabe der Umgebung (data-theme bzw. System).
+    const stored = readPref('beton-proto-theme', '')
+    if (stored) return stored === 'dark'
+    const attr = document.documentElement.dataset.theme
+    if (attr) return attr === 'dark'
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
+  })
   const [overlay, setOverlay] = useState(() => readPref('beton-proto-overlay', 'off') === 'on')
   const path = useRouterState({ select: (s) => s.location.pathname })
   const stats = coverageStats()
