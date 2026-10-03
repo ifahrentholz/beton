@@ -55,7 +55,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 
 | Gruppe | Typ | D/T | Payload |
 | --- | --- | :-: | --- |
-| Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook` |
+| Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook, harness_opts?` |
 | | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?` |
 | | `session.status` | D | `status: starting\|idle\|running\|waiting_approval\|paused\|stopped\|failed, reason?` |
 | | `session.resumed` | D | `mode: native\|handover` |

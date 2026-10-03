@@ -30,6 +30,7 @@ fn new_session(t: &TestStore) -> NewSession {
         parent_id: None,
         trigger: SessionTrigger::User,
         home_node: t.local.node,
+        harness_opts: serde_json::Value::Null,
     }
 }
 

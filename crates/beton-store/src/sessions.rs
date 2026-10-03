@@ -36,6 +36,8 @@ pub struct NewSession {
     pub parent_id: Option<SessionId>,
     pub trigger: SessionTrigger,
     pub home_node: NodeId,
+    /// Harness-spezifische Startoptionen (landen in `session.created`).
+    pub harness_opts: serde_json::Value,
 }
 
 /// Eine Session mit ihren Projektionsfeldern (Session-Liste, DATA-005).
@@ -265,6 +267,7 @@ impl Store {
                 project_id: new.project_id,
                 parent_session_id: new.parent_id,
                 trigger: new.trigger,
+                harness_opts: new.harness_opts.clone(),
             }),
         );
         let created_at = event.ts.to_string();
