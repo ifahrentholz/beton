@@ -1,0 +1,231 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/*
+ * beton – Design-Tokens „Sichtbeton & Partitur“
+ *
+ * - Beton: ruhige, materialhafte Grautöne (hell: Sichtbeton am Tag, dunkel: bei Nacht).
+ * - Schalungsgelb (--signal) ist die einzige laute Farbe und bedeutet immer „du bist dran“:
+ *   offene Freigaben, Fokus, die eine Primäraktion eines Screens.
+ * - Stimmen (--voice-*): jede Harness-Familie hat eine feste Farbe für Partitur, Badges, Avatare.
+ * - Fase (.chamfer): 45°-Ecken für Elemente, die auf den Menschen warten.
+ * Schriften werden mitgeliefert (kein CDN, ADR-0033).
+ */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sunken: var(--sunken);
+  --color-signal: var(--signal);
+  --color-signal-foreground: var(--signal-foreground);
+  --color-signal-soft: var(--signal-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-deny: var(--deny);
+  --color-deny-soft: var(--deny-soft);
+  --color-voice-claude: var(--voice-claude);
+  --color-voice-codex: var(--voice-codex);
+  --color-voice-acp: var(--voice-acp);
+  --color-voice-direct: var(--voice-direct);
+  --color-voice-human: var(--voice-human);
+  --color-chart-1: var(--voice-claude);
+  --color-chart-2: var(--voice-codex);
+  --color-chart-3: var(--voice-acp);
+  --color-chart-4: var(--voice-direct);
+  --color-chart-5: var(--muted-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--foreground);
+  --color-sidebar-primary: var(--primary);
+  --color-sidebar-primary-foreground: var(--primary-foreground);
+  --color-sidebar-accent: var(--accent);
+  --color-sidebar-accent-foreground: var(--foreground);
+  --color-sidebar-border: var(--border);
+  --color-sidebar-ring: var(--ring);
+
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+  --radius-3xl: 10px;
+  --radius-4xl: 12px;
+}
+
+:root {
+  --radius: 4px;
+  --background: #e4e4e0;
+  --sidebar: #dbdbd6;
+  --card: #f0f0ec;
+  --card-foreground: #24272b;
+  --popover: #f6f6f3;
+  --popover-foreground: #24272b;
+  --sunken: #d6d6d0;
+  --foreground: #24272b;
+  --muted: #d9d9d4;
+  --muted-foreground: #585c62;
+  --accent: #d5d5cf;
+  --accent-foreground: #24272b;
+  --primary: #24272b;
+  --primary-foreground: #f0f0ec;
+  --secondary: #d9d9d4;
+  --secondary-foreground: #24272b;
+  --border: #c4c4bd;
+  --input: #bdbdb6;
+  --ring: #8f6a10;
+  --signal: #e2b33b;
+  --signal-foreground: #24272b;
+  --signal-soft: #f1e2b4;
+  --ok: #2f7a4b;
+  --ok-soft: #cfe3d4;
+  --deny: #b8352b;
+  --deny-soft: #f0d2ce;
+  --destructive: #b8352b;
+  --voice-claude: #6f55a0;
+  --voice-codex: #26727a;
+  --voice-acp: #6a7536;
+  --voice-direct: #4f5d78;
+  --voice-human: #24272b;
+}
+
+.dark {
+  --background: #1d1f22;
+  --sidebar: #191b1e;
+  --card: #26292d;
+  --card-foreground: #dcddd8;
+  --popover: #2b2e33;
+  --popover-foreground: #dcddd8;
+  --sunken: #161819;
+  --foreground: #dcddd8;
+  --muted: #2c2f34;
+  --muted-foreground: #9a9ea4;
+  --accent: #30343a;
+  --accent-foreground: #dcddd8;
+  --primary: #dcddd8;
+  --primary-foreground: #1d1f22;
+  --secondary: #2c2f34;
+  --secondary-foreground: #dcddd8;
+  --border: #363a40;
+  --input: #3e4248;
+  --ring: #e2b33b;
+  --signal: #e2b33b;
+  --signal-foreground: #1d1f22;
+  --signal-soft: #3d3420;
+  --ok: #5bab78;
+  --ok-soft: #233a2b;
+  --deny: #e0675b;
+  --deny-soft: #42231f;
+  --destructive: #e0675b;
+  --voice-claude: #a690d4;
+  --voice-codex: #56b0b7;
+  --voice-acp: #aab565;
+  --voice-direct: #93a2bf;
+  --voice-human: #dcddd8;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/60;
+  }
+  html {
+    @apply font-sans antialiased;
+    font-size: 14px;
+    font-variation-settings: "wdth" 100;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  code,
+  kbd,
+  pre,
+  samp {
+    @apply font-mono;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Fase: 45°-Ecken wie die Dreikantleiste an Betonkanten. Für Elemente, die auf dich warten. */
+  .chamfer {
+    clip-path: polygon(
+      8px 0,
+      100% 0,
+      100% calc(100% - 8px),
+      calc(100% - 8px) 100%,
+      0 100%,
+      0 8px
+    );
+  }
+  .chamfer-sm {
+    clip-path: polygon(
+      5px 0,
+      100% 0,
+      100% calc(100% - 5px),
+      calc(100% - 5px) 100%,
+      0 100%,
+      0 5px
+    );
+  }
+  /* Breitenachse von Archivo: breit für Wortmarke und Bereichsköpfe, schmal für dichte Daten. */
+  .type-wide {
+    font-variation-settings: "wdth" 125;
+    letter-spacing: -0.01em;
+  }
+  .type-narrow {
+    font-variation-settings: "wdth" 82;
+  }
+  /* Feine Körnung für große Betonflächen (nur Leerzustände/Onboarding). */
+  .concrete-grain {
+    background-image: radial-gradient(
+        color-mix(in oklab, var(--foreground) 6%, transparent) 0.6px,
+        transparent 0.7px
+      ),
+      radial-gradient(
+        color-mix(in oklab, var(--foreground) 4%, transparent) 0.5px,
+        transparent 0.6px
+      );
+    background-size:
+      7px 7px,
+      11px 11px;
+    background-position:
+      0 0,
+      3px 5px;
+  }
+}

@@ -24,3 +24,6 @@ apps/desktop/src-tauri/gen/
 .DS_Store
 .idea/
 .vscode/
+
+# Claude Code (lokale Worktrees)
+.claude/worktrees/

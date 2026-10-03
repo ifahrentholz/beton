@@ -148,3 +148,30 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"
+
+  design:
+    name: design-prototyp
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: design/prototype
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: design/prototype/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Feature-Katalog ist aktuell (ADR-0032)
+        run: |
+          python3 ../../scripts/gen_feature_catalog.py
+          git diff --exit-code src/catalog/features.json
+      - run: pnpm typecheck
+      # Jede Feature-ID der Spec ist einem Screen oder „kein UI“ zugeordnet.
+      - run: pnpm test
+      - run: pnpm build
