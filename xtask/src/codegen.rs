@@ -3,6 +3,7 @@
 //! Rust-Typen sind die einzige Quelle. `cargo xtask codegen` schreibt:
 //! - `schemas/v1/events.schema.json` (JSON-Schema via `schemars`)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
+//! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //!
 //! `cargo xtask codegen --check` erzeugt alles in ein temporäres Verzeichnis und vergleicht
 //! mit dem eingecheckten Stand; jede Abweichung lässt die CI fehlschlagen.
@@ -17,7 +18,7 @@ use beton_core::event::Event;
 use ts_rs::TS;
 
 /// Verzeichnisse, die vollständig generiert werden (veraltete Dateien werden entfernt).
-const GENERATED_DIRS: [&str; 2] = ["schemas/v1", "packages/sdk-ts/src/gen"];
+const GENERATED_DIRS: [&str; 3] = ["schemas/v1", "packages/sdk-ts/src/gen", "docs/generated"];
 
 const TS_HEADER: &str =
     "// Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.\n";
@@ -67,7 +68,28 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         PathBuf::from("packages/sdk-ts/src/gen/index.ts"),
         format!("{TS_HEADER}{index}"),
     );
+
+    files.insert(PathBuf::from("docs/generated/er-diagram.md"), er_diagram()?);
     Ok(files)
+}
+
+/// ER-Diagramm der lokalen Datenbank, erzeugt aus den eingebetteten SQLite-Migrationen.
+fn er_diagram() -> Result<String> {
+    let schema = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(beton_store::schema::sqlite_schema())
+        .context("Schema aus den Migrationen lesen")?;
+    Ok(format!(
+        "<!-- Generiert von `cargo xtask codegen` aus crates/beton-store/migrations/sqlite. \
+         Nicht von Hand ändern. -->\n\n\
+         # Datenmodell (lokal, SQLite)\n\n\
+         Schema-Version {}. Spezifikation: DATA-001 in \
+         [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).\n\n\
+         ```mermaid\n{}```\n",
+        beton_store::SCHEMA_VERSION,
+        schema.to_mermaid()
+    ))
 }
 
 /// Alle Dateien unter `dir`, rekursiv.
@@ -183,18 +205,33 @@ mod tests {
     #[test]
     fn qa_006_ac1_typescript_contains_event_union() {
         let files = generate().unwrap();
-        // `EventPayload` ist in `Event` eingebettet (serde flatten) und steht deshalb in Event.ts.
-        let event = files
-            .iter()
-            .find(|(p, _)| p.ends_with("Event.ts"))
-            .map(|(_, c)| c)
-            .expect("Event.ts fehlt");
+        let ts = |name: &str| {
+            files
+                .get(&PathBuf::from(format!("packages/sdk-ts/src/gen/{name}")))
+                .unwrap_or_else(|| panic!("{name} fehlt"))
+        };
+        let payload = ts("EventPayload.ts");
+        let event_type = ts("EventType.ts");
         for (name, _) in beton_core::event::CATALOG {
             assert!(
-                event.contains(&format!("\"type\": \"{name}\"")),
-                "{name} fehlt in Event.ts"
+                payload.contains(&format!("\"type\": \"{name}\"")),
+                "{name} fehlt in EventPayload.ts"
+            );
+            assert!(
+                event_type.contains(&format!("\"{name}\"")),
+                "{name} fehlt in EventType.ts"
             );
         }
+        assert!(ts("Event.ts").contains("EventPayload | OffloadedPayload"));
         assert!(files.contains_key(&PathBuf::from("packages/sdk-ts/src/gen/index.ts")));
+    }
+
+    #[test]
+    fn data_001_ac1_er_diagram_is_generated_from_migrations() {
+        let files = generate().unwrap();
+        let er = &files[&PathBuf::from("docs/generated/er-diagram.md")];
+        assert!(er.contains("```mermaid\nerDiagram\n"));
+        assert!(er.contains("    events {"));
+        assert!(er.contains("sessions ||--o{ events : \"session_id\""));
     }
 }

@@ -10,10 +10,12 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 beton-core.workspace = true
+beton-store.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 toml = "0.9"
 ts-rs.workspace = true
 
