@@ -270,7 +270,7 @@ release-please PR gemergt → Tag
 
 ### QA-003 — Golden-Transcript-Gate & Drift-Prozess
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Golden-Tests (Aufbau, Normalisierung, Aufnahme mit `beton dev record-golden`: Owner HAR-025 in 01-harnesses.md; QA-003 regelt nur Gate und Drift-Prozess) sind ein CI-Gate. Prozess bei neuer Vendor-CLI-Version: lokal neu aufnehmen, Diff-Report im PR, Update des unterstützten Versionsbereichs; ohne Golden-Satz für eine Version wird sie nicht als „unterstützt“ deklariert. Aufnahmen durchlaufen vor dem Commit einen Secret-Scan (gitleaks) zusätzlich zum Scrubbing.
+- **Beschreibung:** Golden-Tests (Aufbau, Normalisierung, Aufnahme mit `beton dev record-golden`: Owner HAR-025 in 01-harnesses.md; QA-003 regelt nur Gate und Drift-Prozess) sind ein CI-Gate. Prozess bei neuer Vendor-CLI-Version: lokal neu aufnehmen, Diff-Report im PR, Update des unterstützten Versionsbereichs; ohne Golden-Satz für eine Version wird sie nicht als „unterstützt“ deklariert. Aufnahmen durchlaufen vor dem Commit einen Secret-Scan zusätzlich zum Scrubbing: `cargo xtask golden-scan` mit denselben Mustern wie die Aufnahme, lokal als Pre-Commit-Hook (`git config core.hooksPath .githooks`) und in CI. Ein eigener Scanner statt gitleaks hält CI und Entwicklerrechner frei von zusätzlichen Binär-Downloads (ADR-0033). Erwartungen werden mit `BETON_BLESS=1` (bzw. `--bless`) neu geschrieben.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine Änderung am Normalisierer, die ein Golden-Ergebnis verändert, lässt CI fehlschlagen, bis die Erwartung explizit aktualisiert ist (`--bless` erzeugt Diff im PR).
   - [ ] AC2 — Ein Pre-Commit- und CI-Secret-Scan über `**/golden/**` schlägt bei eingebetteten Test-Keys fehl.

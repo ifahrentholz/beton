@@ -432,7 +432,7 @@
   "anchor": "har-026--fake-harness",
   "summary": "Deterministischer Harness `fake`, der Szenarien aus YAML abspielt (Text-Deltas, Tool-Calls mit Gate-Anfragen, Fehler, Verzögerungen) und alle Capabilities konfigurierbar deklariert. Er ist Grundlage für E2E-Tests (Playwright gegen Web/Desktop), Policy-Integrationstests und Demos ohne Subscription. HAR-026 ist Owner des Szenario-Formats; die Protokoll-Fake-CLIs (QA-002) spielen dieselben Szenarien über die echte Prozessgrenze der Adapter ab.",
   "acs": [
-   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts`).",
+   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts` und der vom Runner vergebenen `evt_`-IDs; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
    "Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.",
    "Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag verfügbar und erscheint sonst nicht im Katalog."
   ]
@@ -6236,7 +6236,7 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "qa-003--golden-transcript-gate--drift-prozess",
-  "summary": "Golden-Tests (Aufbau, Normalisierung, Aufnahme mit `beton dev record-golden`: Owner HAR-025 in 01-harnesses.md; QA-003 regelt nur Gate und Drift-Prozess) sind ein CI-Gate. Prozess bei neuer Vendor-CLI-Version: lokal neu aufnehmen, Diff-Report im PR, Update des unterstützten Versionsbereichs; ohne Golden-Satz für eine Version wird sie nicht als „unterstützt“ deklariert. Aufnahmen durchlaufen vor dem Commit einen Secret-Scan (gitleaks) zusätzlich zum Scrubbing.",
+  "summary": "Golden-Tests (Aufbau, Normalisierung, Aufnahme mit `beton dev record-golden`: Owner HAR-025 in 01-harnesses.md; QA-003 regelt nur Gate und Drift-Prozess) sind ein CI-Gate. Prozess bei neuer Vendor-CLI-Version: lokal neu aufnehmen, Diff-Report im PR, Update des unterstützten Versionsbereichs; ohne Golden-Satz für eine Version wird sie nicht als „unterstützt“ deklariert. Aufnahmen durchlaufen vor dem Commit einen Secret-Scan zusätzlich zum Scrubbing: `cargo xtask golden-scan` mit denselben Mustern wie die Aufnahme, lokal als Pre-Commit-Hook (`git config core.hooksPath .githooks`) und in CI. Ein eigener Scanner statt gitleaks hält CI und Entwicklerrechner frei von zusätzlichen Binär-Downloads (ADR-0033). Erwartungen werden mit `BETON_BLESS=1` (bzw. `--bless`) neu geschrieben.",
   "acs": [
    "Eine Änderung am Normalisierer, die ein Golden-Ergebnis verändert, lässt CI fehlschlagen, bis die Erwartung explizit aktualisiert ist (`--bless` erzeugt Diff im PR).",
    "Ein Pre-Commit- und CI-Secret-Scan über `/golden/` schlägt bei eingebetteten Test-Keys fehl.",

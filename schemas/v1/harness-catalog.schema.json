@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_HarnessInfo",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/HarnessInfo"
+  },
+  "$defs": {
+    "ApprovalMechanism": {
+      "description": "Wie der Harness Freigaben einholt.",
+      "type": "string",
+      "enum": [
+        "none",
+        "native_request",
+        "hook",
+        "acp_permission",
+        "screen_mirror"
+      ]
+    },
+    "AuthSource": {
+      "type": "string",
+      "enum": [
+        "vendor_cli",
+        "api_key",
+        "gateway",
+        "none"
+      ]
+    },
+    "AuthStatus": {
+      "description": "Login-Status laut Vendor-CLI (nie aus Token-Dateien gelesen, ADR-0005).",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "logged_in",
+        "logged_out",
+        "not_applicable"
+      ]
+    },
+    "Capabilities": {
+      "description": "Fähigkeiten eines Harness in einem Modus; ggf. nach `probe()` versionsabhängig verfeinert.",
+      "type": "object",
+      "properties": {
+        "approval": {
+          "$ref": "#/$defs/ApprovalMechanism"
+        },
+        "auth_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuthSource"
+          }
+        },
+        "compaction": {
+          "$ref": "#/$defs/CompactionSupport"
+        },
+        "effort_switch": {
+          "$ref": "#/$defs/SwitchSupport"
+        },
+        "fork_history": {
+          "$ref": "#/$defs/ForkHistory"
+        },
+        "images": {
+          "type": "boolean"
+        },
+        "instructions_delivery": {
+          "$ref": "#/$defs/InstructionsDelivery"
+        },
+        "interrupt": {
+          "type": "boolean"
+        },
+        "mcp_injection": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/$defs/Mode"
+        },
+        "model_switch": {
+          "$ref": "#/$defs/SwitchSupport"
+        },
+        "resume": {
+          "$ref": "#/$defs/ResumeSupport"
+        },
+        "steering": {
+          "type": "boolean"
+        },
+        "subagents": {
+          "$ref": "#/$defs/Subagents"
+        },
+        "tool_call_gate": {
+          "$ref": "#/$defs/ToolCallGate"
+        },
+        "transcript_import": {
+          "type": "boolean"
+        },
+        "transport": {
+          "$ref": "#/$defs/Transport"
+        },
+        "usage_reporting": {
+          "$ref": "#/$defs/UsageReporting"
+        },
+        "version_range": {
+          "description": "Getestete CLI-Versionen als SemVer-Bereich, z. B. `>=2.0.0`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "transport",
+        "auth_sources",
+        "approval",
+        "tool_call_gate",
+        "model_switch",
+        "effort_switch",
+        "resume",
+        "fork_history",
+        "interrupt",
+        "steering",
+        "subagents",
+        "usage_reporting",
+        "compaction",
+        "instructions_delivery",
+        "mcp_injection",
+        "images",
+        "transcript_import"
+      ]
+    },
+    "CompactionSupport": {
+      "type": "string",
+      "enum": [
+        "none",
+        "native"
+      ]
+    },
+    "ForkHistory": {
+      "type": "string",
+      "enum": [
+        "none",
+        "preamble",
+        "rebuild"
+      ]
+    },
+    "HarnessId": {
+      "type": "string",
+      "pattern": "^(claude|codex|fake|(acp|direct):[a-z0-9_-]{1,64})$"
+    },
+    "HarnessInfo": {
+      "description": "Ein Katalogeintrag für `GET /v1/harnesses?host=<id>` (HAR-002).",
+      "type": "object",
+      "properties": {
+        "capabilities": {
+          "description": "Je Modus, nach dem Probe verfeinert.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capabilities"
+          }
+        },
+        "id": {
+          "$ref": "#/$defs/HarnessId"
+        },
+        "incompatible": {
+          "type": "boolean"
+        },
+        "incompatible_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mode"
+          }
+        },
+        "probe": {
+          "$ref": "#/$defs/ProbeReport"
+        }
+      },
+      "required": [
+        "id",
+        "modes",
+        "capabilities",
+        "probe",
+        "incompatible"
+      ]
+    },
+    "InstructionsDelivery": {
+      "type": "string",
+      "enum": [
+        "first_message_prefix",
+        "append_system_prompt",
+        "system_prompt",
+        "developer_instructions"
+      ]
+    },
+    "Mode": {
+      "type": "string",
+      "enum": [
+        "native",
+        "tui"
+      ]
+    },
+    "ProbeReport": {
+      "description": "Ergebnis von [`HarnessAdapter::probe`].",
+      "type": "object",
+      "properties": {
+        "auth_status": {
+          "$ref": "#/$defs/AuthStatus"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probe_failed": {
+          "description": "`--version` lief nicht durch (Timeout, Fehler) – mit Begründung (HAR-003 AC2).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "installed",
+        "auth_status"
+      ]
+    },
+    "ResumeSupport": {
+      "type": "string",
+      "enum": [
+        "none",
+        "cold",
+        "warm"
+      ]
+    },
+    "Subagents": {
+      "type": "string",
+      "enum": [
+        "none",
+        "native"
+      ]
+    },
+    "SwitchSupport": {
+      "type": "string",
+      "enum": [
+        "none",
+        "restart",
+        "live"
+      ]
+    },
+    "ToolCallGate": {
+      "description": "Wie weit beton Tool-Calls vor der Ausführung prüfen kann.",
+      "type": "string",
+      "enum": [
+        "observe_only",
+        "approval_only",
+        "full"
+      ]
+    },
+    "Transport": {
+      "oneOf": [
+        {
+          "description": "Strukturiertes Vendor-Protokoll (stream-json, JSON-RPC).",
+          "type": "string",
+          "const": "native"
+        },
+        {
+          "description": "Agent Client Protocol über stdio.",
+          "type": "string",
+          "const": "acp"
+        },
+        {
+          "description": "Pseudo-Terminal mit Vendor-Hooks.",
+          "type": "string",
+          "const": "pty"
+        },
+        {
+          "description": "Im Runner-Prozess (Direkt-API, Fake).",
+          "type": "string",
+          "const": "in_proc"
+        }
+      ]
+    },
+    "UsageReporting": {
+      "type": "string",
+      "enum": [
+        "none",
+        "tokens",
+        "tokens_and_cost"
+      ]
+    }
+  }
+}

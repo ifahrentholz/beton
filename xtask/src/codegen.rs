@@ -2,6 +2,7 @@
 //!
 //! Rust-Typen sind die einzige Quelle. `cargo xtask codegen` schreibt:
 //! - `schemas/v1/events.schema.json` (JSON-Schema via `schemars`)
+//! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //!
@@ -15,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use beton_core::event::Event;
+use beton_harness::registry::HarnessInfo;
 use ts_rs::TS;
 
 /// Verzeichnisse, die vollständig generiert werden (veraltete Dateien werden entfernt).
@@ -31,12 +33,20 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     let mut json = serde_json::to_string_pretty(&schema)?;
     json.push('\n');
     files.insert(PathBuf::from("schemas/v1/events.schema.json"), json);
+    let catalog = schemars::schema_for!(Vec<HarnessInfo>);
+    let mut json = serde_json::to_string_pretty(&catalog)?;
+    json.push('\n');
+    files.insert(
+        PathBuf::from("schemas/v1/harness-catalog.schema.json"),
+        json,
+    );
 
     let tmp = tempfile::tempdir()?;
     let cfg = ts_rs::Config::new()
         .with_out_dir(tmp.path())
         .with_large_int("number");
     Event::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    HarnessInfo::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     let mut names = Vec::new();
     for path in walk(tmp.path())? {
         let rel = path.strip_prefix(tmp.path())?.to_path_buf();
@@ -224,6 +234,23 @@ mod tests {
         }
         assert!(ts("Event.ts").contains("EventPayload | OffloadedPayload"));
         assert!(files.contains_key(&PathBuf::from("packages/sdk-ts/src/gen/index.ts")));
+    }
+
+    #[test]
+    fn har_002_ac4_capability_schema_is_snapshotted() {
+        let files = generate().unwrap();
+        let schema = &files[&PathBuf::from("schemas/v1/harness-catalog.schema.json")];
+        for field in [
+            "approval",
+            "tool_call_gate",
+            "model_switch",
+            "fork_history",
+            "probe",
+        ] {
+            assert!(schema.contains(&format!("\"{field}\"")), "{field} fehlt");
+        }
+        assert!(files.contains_key(&PathBuf::from("packages/sdk-ts/src/gen/Capabilities.ts")));
+        // Drift erkennt `proto_013_ac1_committed_artifacts_are_current`.
     }
 
     #[test]

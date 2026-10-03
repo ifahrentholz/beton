@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 beton-core.workspace = true
+beton-harness.workspace = true
 beton-store.workspace = true
 regex.workspace = true
 schemars.workspace = true

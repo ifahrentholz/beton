@@ -4,6 +4,7 @@
 //! cargo xtask codegen [--check]
 //! cargo xtask commit-lint [--range <base>..<head>] [--title <text>]
 //! cargo xtask dco [--range <base>..<head>]
+//! cargo xtask golden-scan
 //! cargo xtask spec-check
 //! cargo xtask spec-coverage --milestone <M0…M5> [--report]
 //! ```
@@ -11,6 +12,7 @@
 mod codegen;
 mod commits;
 mod coverage;
+mod golden_scan;
 mod spec;
 
 use std::path::PathBuf;
@@ -49,11 +51,12 @@ fn run() -> Result<bool> {
         "codegen" => run_codegen(&root, &rest),
         "commit-lint" => commit_lint(&root, &rest),
         "dco" => dco(&rest),
+        "golden-scan" => golden_scan(&root),
         "spec-check" => spec_check(&root),
         "spec-coverage" => spec_coverage(&root, &rest),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|dco|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|dco|golden-scan|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
@@ -98,6 +101,19 @@ fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
         })
         .filter(|c| !c.hash.is_empty())
         .collect())
+}
+
+fn golden_scan(root: &std::path::Path) -> Result<bool> {
+    let findings = golden_scan::scan(root)?;
+    for f in &findings {
+        eprintln!("golden-scan: {f}");
+    }
+    if findings.is_empty() {
+        println!("golden-scan: keine Secrets in Golden-Transcripts");
+    } else {
+        eprintln!("Secrets in Golden-Transcripts gefunden. Aufnahme scrubben und neu committen.");
+    }
+    Ok(findings.is_empty())
 }
 
 fn run_codegen(root: &std::path::Path, args: &[String]) -> Result<bool> {
