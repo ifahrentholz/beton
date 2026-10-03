@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Local state
+.beton/local/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
