@@ -1637,5 +1637,15 @@ export const group: ScreenGroup = {
     'QA-015': { reason: 'DCO-Check (Signed-off-by) in CI; lokal mit cargo xtask dco.', visibleIn: 'cli-dev' },
     'QA-016': { reason: 'Gemeinsame Contract-Suite für Harness-Adapter in CI; dieselbe Suite prüft Harness-Plugins.', visibleIn: 'plugins-dev' },
     'QA-017': { reason: 'Datenbank-Matrix (SQLite, Postgres) in CI; kein UI.' },
+    'QA-018': {
+      reason:
+        'CI-Gate: Server, Clients und Fake-Harness bestehen die Demo-Szenarien in einem Netz-Namespace nur mit Loopback; ein zweiter Lauf weist nach, dass nichts nach außen verbindet.',
+      visibleIn: 'cli-dev',
+    },
+    'QA-019': {
+      reason:
+        'Release-Prozess: Vor jedem Release prüft der Maintainer alle Wege mit echten Subscription-Logins (claude, codex, Gemini via ACP) und checkt das Protokoll ein.',
+      visibleIn: 'harness-setup',
+    },
   },
 }

@@ -131,7 +131,8 @@
   "acs": [
    "`beton setup acp add mein-agent --command ./agent --arg acp` schreibt einen validen Eintrag in `~/.beton/config.yaml`; danach erscheint `acp:mein-agent` im Katalog.",
    "Ein Preset, dessen Binary nicht im `PATH` liegt, erscheint im Katalog als `installed: false` und ist nicht startbar.",
-   "Ungültige Einträge (fehlendes `command`, Slug mit unerlaubten Zeichen außerhalb `[a-z0-9-]`) werden beim Laden mit Datei/Zeile gemeldet und übersprungen, ohne andere Harnesses zu beeinträchtigen."
+   "Ungültige Einträge (fehlendes `command`, Slug mit unerlaubten Zeichen außerhalb `[a-z0-9-]`) werden beim Laden mit Datei/Zeile gemeldet und übersprungen, ohne andere Harnesses zu beeinträchtigen.",
+   "Das Preset `gemini` ist ohne gesetzten `GEMINI_API_KEY` startbar und reicht standardmäßig keine `*_API_KEY`-Variable durch (Test mit ACP-Test-Agent und leerer Umgebung)."
   ]
  },
  {
@@ -160,7 +161,7 @@
   "chapter": "01-harnesses.md",
   "chapterTitle": "01 — Harnesses",
   "anchor": "har-010--direkt-api-gateway-harness-agent-loop",
-  "summary": "Eigener Agent-Loop in Rust (`beton-harness-direct`) für API-Keys und Gateways: Model-Request streamen → Tool-Uses einsammeln → je Tool-Call `PolicyGate` → Ausführung über MCP → Tool-Results zurück → wiederholen bis `end_turn` oder Limit. Da beton hier jeden Model-Request selbst sendet, sind alle Policy-Phasen voll durchsetzbar.",
+  "summary": "Eigener Agent-Loop in Rust (`beton-harness-direct`) für API-Keys und Gateways (zusätzliche Option neben den Subscription-Harnesses; kein anderes Feature setzt ihn voraus, ADR-0034): Model-Request streamen → Tool-Uses einsammeln → je Tool-Call `PolicyGate` → Ausführung über MCP → Tool-Results zurück → wiederholen bis `end_turn` oder Limit. Da beton hier jeden Model-Request selbst sendet, sind alle Policy-Phasen voll durchsetzbar.",
   "acs": [
    "Gegen einen Mock-Server (Anthropic- und OpenAI-Wire-Format) erledigt der Loop eine Aufgabe mit drei aufeinanderfolgenden Tool-Calls; das Event-Log entspricht dem Golden-File.",
    "`max_turns` wird eingehalten; danach `turn.completed { stop_reason: \"max_turns\" }`.",
@@ -252,7 +253,8 @@
    "Mit `auth: subscription` und gesetztem `ANTHROPIC_API_KEY` in der Shell enthält die Harness-Prozess-Umgebung keinen der beiden Anthropic-Key-Variablen (Test über `/proc/<pid>/environ` bzw. `ps eww`).",
    "Code-Review-Check in CI: kein Code in `beton-harness-*` öffnet bekannte Vendor-Credential-Pfade (`~/.claude/.credentials.json`, `~/.codex/auth.json`, Keychain-Einträge der Vendors); ein Lint-Test grept nach diesen Pfaden.",
    "Abgelaufener Login (simuliert über Fake-CLI, QA-002) erzeugt `harness.auth_required`, und die UI zeigt die Anweisung, den Login in der Vendor-CLI auszuführen.",
-   "(ab M2) Mit `auth: api_key` erscheint im Harness-Env nur ein `bt_cred_*`-Wert; der echte Key wird erst im Proxy eingesetzt."
+   "(ab M2) Mit `auth: api_key` erscheint im Harness-Env nur ein `bt_cred_*`-Wert; der echte Key wird erst im Proxy eingesetzt.",
+   "Ohne `auth`-Angabe und ohne `*_API_KEY` in der Umgebung startet eine Claude-Session mit `auth_source: vendor_cli` (Fake-CLI-Test, ab M1 ebenso Codex); kein Start- oder Hilfspfad bricht wegen eines fehlenden API-Keys ab."
   ]
  },
  {
@@ -632,7 +634,8 @@
    "`beton run maestra -p \"…\"` mit Fake-Harnesses durchläuft Plan → 2 Implementierungen (parallel, jede mit eigenem Worktree, SES-015) → Cross-Review → Zusammenfassung; das Log zeigt, dass jedes Review von einem anderen Harness als die Implementierung kam.",
    "(ab M2) Ein Versuch von maestra, selbst `Bash` oder `Edit` aufzurufen, wird per Policy abgelehnt.",
    "Meldet ein Review blockierende Punkte, wird der Implementer erneut beauftragt; nach 3 Runden endet die Aufgabe mit Status \"needs_human\".",
-   "Fehlt Codex, enthält die Zusammenfassung den Hinweis \"same-vendor review\"."
+   "Fehlt Codex, enthält die Zusammenfassung den Hinweis \"same-vendor review\".",
+   "Der Lauf aus AC1 gelingt in einer Umgebung ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration; alle Child-Sessions melden `auth_source: vendor_cli`."
   ]
  },
  {
@@ -644,11 +647,12 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-012--built-in-agent-duetto-debatte",
-  "summary": "Mitgelieferter Debatten-Agent (`agents/duetto/`), Name orchester-thematisch *(Annahme)*. Jede Frage geht parallel an zwei Stimmen auf verschiedenen Harnesses (`voce-claude`, `voce-codex`, beide read-only); die Antworten werden nebeneinander dargestellt. `/debate rounds=N` (Default 2, max. 5) lässt die Stimmen die Antwort der jeweils anderen kritisieren; danach synthetisiert duetto ein Ergebnis mit markierten Konsens- und Dissenspunkten.",
+  "summary": "Mitgelieferter Debatten-Agent (`agents/duetto/`), Name orchester-thematisch *(Annahme)*. Jede Frage geht parallel an zwei Stimmen auf verschiedenen Harnesses (`voce-claude`, `voce-codex`, beide read-only); die Antworten werden nebeneinander dargestellt. `/debate rounds=N` (Default 2, max. 5) lässt die Stimmen die Antwort der jeweils anderen kritisieren; danach synthetisiert duetto ein Ergebnis mit markierten Konsens- und Dissenspunkten. Stimmen und Synthese laufen auf den eingeloggten Vendor-CLIs (Subscription, HAR-015); ein API-Key ist nie erforderlich (ADR-0034).",
   "acs": [
    "Eine Frage erzeugt zwei Child-Sessions auf unterschiedlichen Harnesses, die parallel laufen (`session_wait(mode: all)`).",
    "`/debate rounds=2` erzeugt genau 2 Kritikrunden pro Stimme und eine Synthese mit Abschnitten \"Konsens\" und \"Dissens\".",
-   "Fehlt eine Stimme (Harness nicht eingerichtet), bricht duetto mit klarer Meldung ab, statt mit einer Stimme zu \"debattieren\"."
+   "Fehlt eine Stimme (Harness nicht eingerichtet), bricht duetto mit klarer Meldung ab, statt mit einer Stimme zu \"debattieren\".",
+   "Debatte und Synthese gelingen ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration; alle beteiligten Sessions melden `auth_source: vendor_cli`."
   ]
  },
  {
@@ -660,7 +664,7 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-013--agent-cli",
-  "summary": "`beton agent list | show <ref> | validate <pfad> | new <name> [--from builtin:maestra]`. `show` gibt den aufgelösten Agent (inkl. Herkunft jedes Felds) aus, `new` erzeugt ein Gerüst mit `$schema`-Kommentar, Prompt-Datei und Beispiel-Skill. AGT-013 ist Owner der Semantik; CLI-009 regelt nur die Konsistenz der CLI-Oberfläche.",
+  "summary": "`beton agent list | show <ref> | validate <pfad> | new <name> [--from builtin:maestra]`. `show` gibt den aufgelösten Agent (inkl. Herkunft jedes Felds) aus, `new` erzeugt ein Gerüst mit `$schema`-Kommentar (verweist auf die von beton lokal abgelegte Schema-Datei, nicht auf eine URL, ADR-0033), Prompt-Datei und Beispiel-Skill. AGT-013 ist Owner der Semantik; CLI-009 regelt nur die Konsistenz der CLI-Oberfläche.",
   "acs": [
    "`beton agent new demo` erzeugt `.beton/agents/demo/` mit einer Struktur, die `beton agent validate` sofort besteht.",
    "`beton agent show maestra --json` liefert den Resolved Agent inkl. `hash`."
@@ -804,9 +808,9 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "asy-008--approval-ohne-zuschauer",
-  "summary": "Trifft eine Policy `ask` in einer Session ohne verbundenen Client, wird die Session pausiert (`async.run.paused { reason: approval }`), eine Approval-Card in die Inbox gestellt und eine Push-Notification (Desktop/PWA) versendet. Läuft der Timeout ab, greift `on_timeout`: `deny` (Default; Aktion abgelehnt, Agent läuft weiter), `allow` oder `abort` (Run endet mit `aborted`).",
+  "summary": "Trifft eine Policy `ask` in einer Session ohne verbundenen Client, wird die Session pausiert (`async.run.paused { reason: approval }`), eine Approval-Card in die Inbox gestellt und eine Benachrichtigung ausgelöst: standardmäßig lokal als Desktop-Notification (DESK-005), an die PWA per Web-Push nur, wenn der User Web-Push aktiviert hat (WEB-014, ADR-0033). Läuft der Timeout ab, greift `on_timeout`: `deny` (Default; Aktion abgelehnt, Agent läuft weiter), `allow` oder `abort` (Run endet mit `aborted`).",
   "acs": [
-   "Ohne Client und mit `ask` pausiert die Session, ein Inbox-Eintrag und eine Push-Notification entstehen (Fake-Push-Sink im Test).",
+   "Ohne Client und mit `ask` pausiert die Session, ein Inbox-Eintrag und eine Benachrichtigung entstehen (Fake-Notification-Sink im Test); ohne aktivierten Web-Push wird kein Push-Dienst kontaktiert.",
    "Nach Ablauf eines 1-min-Timeouts ohne Entscheidung wird die Aktion abgelehnt (`via: timeout`, `on_timeout_applied: deny`) und der Run läuft weiter.",
    "Mit `on_timeout: abort` endet der Run mit Status `aborted`.",
    "Eine Freigabe vom Handy (PWA) setzt die Session innerhalb von 2 s fort.",
@@ -1949,7 +1953,7 @@
   "chapter": "05-security-identity.md",
   "chapterTitle": "05 — Security & Identity",
   "anchor": "auth-009--pairing-per-qr--freigabe-des-lokalen-servers-fürs-handy",
-  "summary": "Für Handys/PWA startet der Flow in einer eingeloggten UI („Gerät koppeln“): Der Server erzeugt ein Pairing-Ticket (128 bit, 120 s, single-use) und zeigt einen QR mit `https://<host>/pair#t=<ticket>` (Fragment, damit es nicht in Server-Logs landet). Das Handy löst es mit Gerätename ein; erst nach Bestätigung auf dem auslösenden Gerät entsteht das Device-Token. Damit lässt sich auch ein lokaler Server über Tailscale/LAN fürs Handy freigeben: Nicht-Loopback-Bindung ist dann nur mit TLS (`tls: tailscale` oder Zertifikat/Schlüssel-Dateien) erlaubt, und über diese Bindung werden nur Device-Tokens/-Cookies akzeptiert, nie das lokale Token.",
+  "summary": "Für Handys/PWA startet der Flow in einer eingeloggten UI („Gerät koppeln“): Der Server erzeugt ein Pairing-Ticket (128 bit, 120 s, single-use) und zeigt einen QR mit `https://<host>/pair#t=<ticket>` (Fragment, damit es nicht in Server-Logs landet). Das Handy löst es mit Gerätename ein; erst nach Bestätigung auf dem auslösenden Gerät entsteht das Device-Token. Damit lässt sich auch ein lokaler Server über Tailscale/LAN fürs Handy freigeben: Nicht-Loopback-Bindung ist dann nur mit TLS (`tls: tailscale` oder Zertifikat/Schlüssel-Dateien) erlaubt, und über diese Bindung werden nur Device-Tokens/-Cookies akzeptiert, nie das lokale Token. Tailscale ist optional; die Freigabe im LAN mit eigenen Zertifikat-/Schlüssel-Dateien kommt ohne externen Dienst aus (ADR-0033).",
   "acs": [
    "Ein eingelöstes, aber auf dem Desktop nicht bestätigtes Ticket führt nach 120 s zu keinem Token.",
    "Lokaler Modus mit `server.listen` auf Tailscale-IP ohne TLS startet nicht.",
@@ -3053,7 +3057,8 @@
   "acs": [
    "Given `titles.generator=off`, then entsteht der Titel per Heuristik ohne Modellaufruf.",
    "When der User umbenennt, then erfolgt keine weitere automatische Generierung für diese Session.",
-   "Titelgenerierung verursacht ein `cost.delta` mit `purpose: \"title\"` bzw. zählt zur Subscription-Usage."
+   "Titelgenerierung verursacht ein `cost.delta` mit `purpose: \"title\"` bzw. zählt zur Subscription-Usage.",
+   "Mit Default `auto`, ohne `*_API_KEY` in der Umgebung und ohne `providers`-Konfiguration entsteht der Titel einer Claude-Session über einen Einmal-Aufruf der `claude`-CLI (Fake-CLI-Test prüft Aufruf und bereinigte Umgebung); der Direkt-API-Harness wird nur mit `titles.generator: direct` genutzt."
   ]
  },
  {
@@ -3134,7 +3139,8 @@
    "Given zwei Sessions mit `worktree=always` im selben Repo, then arbeiten sie in verschiedenen Verzeichnissen und Branches; `git worktree list` zeigt beide.",
    "(ab M2) Ein Tool-Call, der außerhalb des Worktrees in das Haupt-Checkout schreibt, scheitert an der Sandbox.",
    "Ist die Base nicht auflösbar, schlägt die Erstellung mit einer Fehlermeldung fehl, die verfügbare Branches nennt; die Session startet nicht stillschweigend ohne Worktree.",
-   "Event `git.worktree_created {path, branch, base, base_sha}` (PROTO-002) wird geloggt."
+   "Event `git.worktree_created {path, branch, base, base_sha}` (PROTO-002) wird geloggt.",
+   "Ohne Netzwerk (Remote nicht erreichbar) wird der Worktree vom lokalen Stand der Base erstellt; die Session startet, und ein Hinweis nennt den nicht ausgeführten Fetch."
   ]
  },
  {
@@ -3355,7 +3361,7 @@
   "chapter": "07-sessions-collaboration.md",
   "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
   "anchor": "col-010--notification-routing",
-  "summary": "Der Server entscheidet zentral, wer bei welchem Ereignis auf welchem Kanal benachrichtigt wird (In-App, Desktop-Notification, Web-Push; Kanäle selbst: DESK-005, WEB-014, siehe 08-clients.md; User-Einstellungen: UX-006). Benachrichtigt wird nicht, wenn der Empfänger die Session gerade auf irgendeinem Gerät fokussiert betrachtet (Presence).",
+  "summary": "Der Server entscheidet zentral, wer bei welchem Ereignis auf welchem Kanal benachrichtigt wird (In-App, Desktop-Notification, Web-Push; Kanäle selbst: DESK-005, WEB-014, siehe 08-clients.md; User-Einstellungen: UX-006). Web-Push nutzt Push-Dienste der Browser-Hersteller und ist daher nur aktiv, wenn der User ihn eingeschaltet hat; Standard sind In-App/Inbox und lokale Desktop-Notifications (ADR-0033). Benachrichtigt wird nicht, wenn der Empfänger die Session gerade auf irgendeinem Gerät fokussiert betrachtet (Presence).",
   "acs": [
    "Betrachtet der Owner die Session fokussiert im Desktop, erhält er bei `turn.completed` weder Desktop- noch Push-Notification.",
    "Fünf Approvals binnen 10 s erzeugen eine zusammengefasste Notification („5 Freigaben ausstehend“).",
@@ -3371,11 +3377,12 @@
   "chapter": "07-sessions-collaboration.md",
   "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
   "anchor": "git-001--git-provider-trait--registry",
-  "summary": "`beton-git` definiert den `GitProvider`-Trait (siehe Design) mit neutralen Typen (`ChangeRequest`, `Check`, `ReviewThread`, `UnifiedDiff`). Eine Registry ordnet Remote-URLs anhand konfigurierter Hosts einem Provider zu; Community-Provider kommen als Out-of-Process-Plugins mit demselben Vertrag (PLG-002, ab M5, siehe 10-runners-extensibility.md).",
+  "summary": "`beton-git` definiert den `GitProvider`-Trait (siehe Design) mit neutralen Typen (`ChangeRequest`, `Check`, `ReviewThread`, `UnifiedDiff`). Eine Registry ordnet Remote-URLs anhand konfigurierter Hosts einem Provider zu; Community-Provider kommen als Out-of-Process-Plugins mit demselben Vertrag (PLG-002, ab M5, siehe 10-runners-extensibility.md). Git-Provider sind optional: Ohne `git.providers`-Konfiguration bzw. ohne verbundenes Konto kontaktiert beton keine Provider-API; Sessions, Worktrees, Diffs und Commits funktionieren rein lokal (ADR-0033).",
   "acs": [
    "Die Remotes `git@ghe.acme.corp:team/x.git` und `https://gitlab.acme.corp/g/sub/x.git` werden dem jeweils richtigen Provider und `RepoRef` zugeordnet (Unit-Tests inkl. verschachtelter GitLab-Gruppen).",
    "Ein Remote ohne passenden Provider führt zu „kein Provider“ im Panel statt zu einem Fehler.",
-   "Ein Fake-Provider im Test-Harness implementiert den Trait und besteht dieselbe Contract-Testsuite wie GitHub/GitLab (gegen Mock-Server)."
+   "Ein Fake-Provider im Test-Harness implementiert den Trait und besteht dieselbe Contract-Testsuite wie GitHub/GitLab (gegen Mock-Server).",
+   "Ohne `git.providers`-Konfiguration baut der Server bei Session-Start, Worktree-Erstellung und Diff-Ansicht keine Verbindung zu einer Provider-API auf (Netz-Mock-Test)."
   ]
  },
  {
@@ -3498,7 +3505,7 @@
   "chapter": "07-sessions-collaboration.md",
   "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
   "anchor": "git-009--cr-aus-der-session-erstellen",
-  "summary": "Aus einer Session mit Worktree-Branch erstellt der User per Aktion einen PR/MR: Branch pushen (im Tool-Sandbox mit Credential-Proxy), Titel/Beschreibung vorschlagen (aus Session-Titel und Änderungen, editierbar), Ziel-Branch = Worktree-Base, optional Draft. Push und Erstellung durchlaufen Policies.",
+  "summary": "Aus einer Session mit Worktree-Branch erstellt der User per Aktion einen PR/MR: Branch pushen (im Tool-Sandbox mit Credential-Proxy), Titel/Beschreibung vorschlagen (deterministisch aus Session-Titel und Commit-Liste, ohne Modellaufruf, editierbar), Ziel-Branch = Worktree-Base, optional Draft. Push und Erstellung durchlaufen Policies.",
   "acs": [
    "Given ein Worktree mit 2 Commits, when „PR erstellen“, then ist der Branch gepusht, der PR existiert und ist mit `origin=created` verknüpft.",
    "Eine Policy `ask` für `git.push` erzeugt vor dem Push eine Approval-Card; bei `deny` entsteht kein PR.",
@@ -3611,11 +3618,13 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "desk-007--auto-update",
-  "summary": "Tauri-Updater mit signierten Manifesten, Kanäle `stable`/`beta`/`nightly`. Prüfung beim Start und alle 6 h; Installation nur nach Zustimmung. Das Sidecar-Binary wird mit aktualisiert; der Daemon wird erst neu gestartet, wenn keine Session läuft oder der User zustimmt. Implementierung (Manifeste, Kanäle, Signaturprüfung): Owner DIST-014; DESK-007 beschreibt nur das App-Verhalten.",
+  "summary": "Tauri-Updater mit signierten Manifesten, Kanäle `stable`/`beta`/`nightly`. Die Update-Prüfung kontaktiert den Update-Server nur auf Klick („Nach Updates suchen“) oder, wenn der User die automatische Prüfung eingeschaltet hat (`update.auto_check`, Default aus; dann beim Start und alle 6 h); Installation nur nach Zustimmung. Offline-Alternative: „Update aus Datei installieren“ mit einem lokal vorliegenden, signierten Update-Paket (ADR-0033). Das Sidecar-Binary wird mit aktualisiert; der Daemon wird erst neu gestartet, wenn keine Session läuft oder der User zustimmt. Implementierung (Manifeste, Kanäle, Signaturprüfung): Owner DIST-014; DESK-007 beschreibt nur das App-Verhalten.",
   "acs": [
    "Ein Manifest mit ungültiger Signatur wird verworfen und protokolliert.",
    "Bei laufendem Turn wartet der Daemon-Neustart, bis die Session `idle` ist oder der User „jetzt“ wählt.",
-   "Kanalwechsel in den Einstellungen wirkt bei der nächsten Prüfung."
+   "Kanalwechsel in den Einstellungen wirkt bei der nächsten Prüfung.",
+   "Ohne Klick und ohne eingeschaltete automatische Prüfung baut die App keine Verbindung zum Update-Server auf (Netz-Mock-Test über 48 h simulierte Laufzeit).",
+   "„Update aus Datei installieren“ installiert ein lokales, signiertes Update-Paket ohne Netzwerk; ein Paket mit ungültiger Signatur wird abgelehnt."
   ]
  },
  {
@@ -3663,7 +3672,8 @@
   "acs": [
    "`beton run claude` öffnet (oder druckt) eine URL, unter der die Session live im Browser sichtbar ist.",
    "Deep-Link `/s/<id>` lädt direkt die Session (Reload-fest).",
-   "Bei 375 px Breite gibt es keinen horizontalen Scroll; Rail und Liste sind über Navigation erreichbar."
+   "Bei 375 px Breite gibt es keinen horizontalen Scroll; Rail und Liste sind über Navigation erreichbar.",
+   "Playwright-Test: Beim Laden und Bedienen der UI gehen alle Requests an den eigenen Origin; ein Request an einen fremden Origin (z. B. Schriften-CDN) lässt den Test fehlschlagen. Ein Build-Check findet keine absoluten `http(s)://`-Asset-URLs im Bundle."
   ]
  },
  {
@@ -3784,7 +3794,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-009--code-editor-monaco",
-  "summary": "Dateien öffnen sich in Monaco (lazy geladen) mit Highlighting, Suche, Markdown-Vorschau und Speichern (`⌘S`) mit Konfliktprüfung (`If-Match`). Zeilenbereich markieren → „An Agent anhängen“ fügt eine Referenz mit Ausschnitt in den Composer ein.",
+  "summary": "Dateien öffnen sich in Monaco (lazy geladen aus dem eigenen Bundle, kein CDN-Loader, WEB-001) mit Highlighting, Suche, Markdown-Vorschau und Speichern (`⌘S`) mit Konfliktprüfung (`If-Match`). Zeilenbereich markieren → „An Agent anhängen“ fügt eine Referenz mit Ausschnitt in den Composer ein.",
   "acs": [
    "Ändert der Agent eine geöffnete, ungespeicherte Datei, zeigt der Editor einen Konfliktdialog statt stillem Überschreiben.",
    "Monaco ist nicht im initialen Bundle (Bundle-Analyse)."
@@ -3861,11 +3871,12 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-014--web-push",
-  "summary": "Push-Notifications über den Web-Push-Standard (VAPID, RFC 8291) für Approvals, Fragen, Turn-Ende, Erwähnungen, gemäß serverseitigem Routing (COL-010, siehe 07-sessions-collaboration.md). Payload minimal; Klick öffnet die PWA direkt an der Approval-Card. Approvals werden in der App entschieden, nicht per Notification-Action *(Annahme: verhindert Entscheidungen vom Sperrbildschirm)*.",
+  "summary": "Push-Notifications über den Web-Push-Standard (VAPID, RFC 8291) für Approvals, Fragen, Turn-Ende, Erwähnungen, gemäß serverseitigem Routing (COL-010, siehe 07-sessions-collaboration.md). Weil Web-Push über die Push-Dienste der Browser-Hersteller läuft, ist er optional und standardmäßig aus: Erst wenn der User ihn in den Einstellungen bzw. in der PWA ausdrücklich aktiviert, wird eine Subscription angelegt; Standard sind Inbox/In-App und lokale Desktop-Notifications (DESK-005, ADR-0033). Payload minimal; Klick öffnet die PWA direkt an der Approval-Card. Approvals werden in der App entschieden, nicht per Notification-Action *(Annahme: verhindert Entscheidungen vom Sperrbildschirm)*.",
   "acs": [
-   "Mit installierter PWA und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.",
+   "Mit installierter PWA, aktiviertem Web-Push und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.",
    "Abgelaufene Subscriptions (HTTP 404/410 vom Push-Dienst) werden automatisch entfernt.",
-   "Ohne `push_preview` enthält die Payload keinen Nachrichtentext."
+   "Ohne `push_preview` enthält die Payload keinen Nachrichtentext.",
+   "Ohne ausdrückliche Aktivierung existiert keine Push-Subscription und der Server kontaktiert keinen Push-Dienst (Netz-Mock-Test); Approvals bleiben über Inbox und PWA entscheidbar."
   ]
  },
  {
@@ -4122,7 +4133,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "cli-013--upgrade--uninstall",
-  "summary": "`upgrade` erkennt die Installationsart (Installer-Skript, Homebrew, winget, Scoop, cargo-binstall, deb/rpm) und aktualisiert passend bzw. nennt den richtigen Befehl; Kanäle `stable|beta|nightly`. `uninstall` entfernt Binary und Services, `--purge` zusätzlich `~/.beton/` nach Bestätigung. Implementierung: Owner DIST-016 (`upgrade`) und DIST-020 (`uninstall`).",
+  "summary": "`upgrade` erkennt die Installationsart (Installer-Skript, Homebrew, winget, Scoop, cargo-binstall, deb/rpm) und aktualisiert passend bzw. nennt den richtigen Befehl; Kanäle `stable|beta|nightly`. Netzzugriff nur bei ausdrücklichem Aufruf; `--from-file` aktualisiert offline aus einem lokalen, signierten Release-Archiv (ADR-0033). `uninstall` entfernt Binary und Services, `--purge` zusätzlich `~/.beton/` nach Bestätigung. Implementierung: Owner DIST-016 (`upgrade`) und DIST-020 (`uninstall`).",
   "acs": [
    "Bei Homebrew-Installation führt `upgrade` kein Self-Replace aus, sondern meldet `brew upgrade beton`.",
    "`upgrade` verweigert den Daemon-Neustart, solange Turns laufen, außer mit `--force`."
@@ -4339,11 +4350,12 @@
   "chapter": "09-browser.md",
   "chapterTitle": "09 — Eingebetteter Browser & Inspect-Mode",
   "anchor": "brw-002--chrome-for-testing-auf-nachfrage",
-  "summary": "Ist kein kompatibler Browser vorhanden, bietet beton den Download von Chrome for Testing (gepinnte Version, passend zu OS/Arch) an – nie still. Download nach `~/.beton/browser/cft/<version>/`, Prüfung per SHA-256 aus dem offiziellen Versions-Manifest.",
+  "summary": "Ist kein kompatibler Browser vorhanden, bietet beton den Download von Chrome for Testing (gepinnte Version, passend zu OS/Arch) an – nie still, nur auf Klick. Download nach `~/.beton/browser/cft/<version>/`, Prüfung per SHA-256 gegen die im Binary mitgelieferten Prüfsummen der gepinnten Version (übernommen aus dem offiziellen Versions-Manifest). Offline-Alternativen (ADR-0033): ein installiertes Chrome/Chromium/Edge (BRW-001, auch über `browser.executable`) oder „Aus Datei installieren“ mit einem lokal vorliegenden CfT-Archiv, das gegen dieselben Prüfsummen geprüft wird. `browser.auto_download` ist standardmäßig `false`.",
   "acs": [
    "Ohne Browser zeigt der erste Browser-Start (UI oder Agent-Tool) eine Rückfrage mit Größe und Quelle; ohne Zustimmung wird nichts geladen und das Tool liefert `browser_unavailable`.",
    "Eine Datei mit falscher Prüfsumme wird verworfen und nicht ausgeführt.",
-   "Im Skript-/Async-Modus ohne Zuschauer erfolgt der Download nur bei `browser.auto_download: true`."
+   "Im Skript-/Async-Modus ohne Zuschauer erfolgt der Download nur bei `browser.auto_download: true`.",
+   "Ein lokal vorliegendes CfT-Archiv mit passender Prüfsumme wird über „Aus Datei installieren“ ohne Netzwerk installiert und danach von BRW-001 gefunden."
   ]
  },
  {
@@ -4881,12 +4893,13 @@
   "chapter": "10-runners-extensibility.md",
   "chapterTitle": "10 — Runner & Erweiterbarkeit",
   "anchor": "run-014--offizielles-runner-image",
-  "summary": "`ghcr.io/ifahrentholz/beton-runner:<version>` (multi-arch amd64/arm64) enthält `beton`, Node.js LTS, die offiziellen CLIs `claude` und `codex`, mindestens eine ACP-CLI (Gemini CLI; weitere per Build-Arg `EXTRA_CLIS`), `git`, `ripgrep`, CA-Bundle, `tini` als Init. Läuft als Non-root-User `beton` (UID 10001). CLI-Versionen sind in `deploy/runner-image/versions.toml` gepinnt; Variante `-slim` ohne Harness-CLIs. RUN-014 ist Owner des Image-Inhalts; Build, Signatur und Veröffentlichung regelt DIST-010.",
+  "summary": "`ghcr.io/ifahrentholz/beton-runner:<version>` (multi-arch amd64/arm64) enthält `beton`, Node.js LTS, die offiziellen CLIs `claude` und `codex`, mindestens eine ACP-CLI (Gemini CLI; weitere per Build-Arg `EXTRA_CLIS`), `git`, `ripgrep`, CA-Bundle, `tini` als Init. Läuft als Non-root-User `beton` (UID 10001). CLI-Versionen sind in `deploy/runner-image/versions.toml` gepinnt; Variante `-slim` ohne Harness-CLIs. Die Registry ist keine Voraussetzung (ADR-0033): Das Image lässt sich aus `deploy/runner-image/` lokal bauen oder per `docker load` aus einer Datei laden; der Docker-/K8s-Provider akzeptiert jeden lokalen Image-Namen (`image: beton-runner:local`) mit `pull: never | if_missing` (Default `if_missing`, gezogen wird nur, was explizit konfiguriert ist). RUN-014 ist Owner des Image-Inhalts; Build, Signatur und Veröffentlichung regelt DIST-010.",
   "acs": [
    "`docker run --rm ghcr.io/ifahrentholz/beton-runner:<v> beton doctor --json` meldet `claude`, `codex` und die ACP-CLI mit den gepinnten Versionen.",
    "Image läuft als UID 10001; `id -u` im Container ≠ 0.",
    "Das Image ist cosign-signiert und mit SBOM versehen (DIST-010, DIST-013 in 12-distribution-quality.md); Trivy-Scan in CI ohne `CRITICAL`-Findings mit verfügbarem Fix.",
-   "Build mit `--build-arg EXTRA_CLIS=\"@qwen-code/qwen-code\"` installiert die zusätzliche CLI."
+   "Build mit `--build-arg EXTRA_CLIS=\"@qwen-code/qwen-code\"` installiert die zusätzliche CLI.",
+   "Ein lokal gebautes bzw. per `docker load` geladenes Image wird mit `pull: never` vom Docker-Provider ohne Registry-Zugriff genutzt; eine Session läuft damit wie mit dem veröffentlichten Image (E2E mit Fake-Harness)."
   ]
  },
  {
@@ -5045,11 +5058,11 @@
   "chapter": "10-runners-extensibility.md",
   "chapterTitle": "10 — Runner & Erweiterbarkeit",
   "anchor": "plg-005--installation-beton-plugin-install",
-  "summary": "`beton plugin install <name>[@version]` (Registry), `beton plugin install git+https://…[#tag]` (Git-URL; Manifest im Repo-Root, Binaries per Manifest-URL oder `cargo build --release` bei `build = \"cargo\"` *(Annahme)*) und `beton plugin install ./pfad` (lokal, für Entwicklung). Installiert nach `~/.beton/plugins/<name>/<version>/`; `~/.beton/plugins/installed.toml` hält Quelle, Version, Checksumme und gewährte Berechtigungen. Im zentralen Betrieb installieren Admins Plugins auf Server (git_provider) bzw. Hosts (harness, runner_provider).",
+  "summary": "`beton plugin install <name>[@version]` (Registry), `beton plugin install git+https://…[#tag]` (Git-URL; Manifest im Repo-Root, Binaries per Manifest-URL oder `cargo build --release` bei `build = \"cargo\"` *(Annahme)*) und `beton plugin install ./pfad` (lokales Verzeichnis oder Archiv; immer möglich, auch ohne Netzwerk und ohne Registry, ADR-0033). Installiert nach `~/.beton/plugins/<name>/<version>/`; `~/.beton/plugins/installed.toml` hält Quelle, Version, Checksumme und gewährte Berechtigungen. Im zentralen Betrieb installieren Admins Plugins auf Server (git_provider) bzw. Hosts (harness, runner_provider).",
   "acs": [
    "`beton plugin install beton-runner-hetzner@0.3.1` lädt das Plugin aus dem Registry-Index, prüft Checksumme/Signatur (PLG-007), fragt Berechtigungen ab (PLG-008) und listet es danach in `beton plugin list`.",
    "Abbruch an beliebiger Stelle hinterlässt keinen halb installierten Zustand (atomares Verschieben aus Staging-Verzeichnis).",
-   "Lokale Pfad-Installationen sind als `source: path` markiert und werden in UI/doctor als „unverifiziert“ gekennzeichnet.",
+   "Lokale Pfad-Installationen sind als `source: path` markiert und werden in UI/doctor als „unverifiziert“ gekennzeichnet; sie gelingen ohne Netzwerk und ohne konfigurierten Index (Test im Netz-Namespace nur mit Loopback).",
    "Im zentralen Modus darf nur die Rolle Admin/Owner Plugins installieren (API liefert 403 für Member)."
   ]
  },
@@ -5062,7 +5075,7 @@
   "chapter": "10-runners-extensibility.md",
   "chapterTitle": "10 — Runner & Erweiterbarkeit",
   "anchor": "plg-006--registry-index-als-git-repository",
-  "summary": "Der offizielle Index ist ein Git-Repository (`github.com/ifahrentholz/beton-plugins` *(Annahme)*) mit einer Datei pro Plugin (`plugins/<name>.toml`), die Versionen, Manifest-URL, Manifest-SHA-256 und die erwartete cosign-Identität enthält. Aufnahme per Pull-Request. beton klont den Index flach in einen Cache und aktualisiert ihn bei `install`/`search`/`update` (max. 1×/h). Weitere Indizes konfigurierbar (`plugins.registries`).",
+  "summary": "Der offizielle Index ist ein Git-Repository (`github.com/ifahrentholz/beton-plugins` *(Annahme)*) mit einer Datei pro Plugin (`plugins/<name>.toml`), die Versionen, Manifest-URL, Manifest-SHA-256 und die erwartete cosign-Identität enthält. Aufnahme per Pull-Request. beton klont den Index flach in einen Cache und aktualisiert ihn nur bei ausdrücklichem `install <name>`/`search`/`update` (max. 1×/h), nie im Hintergrund. Die Registry ist optional; ohne sie bleibt die Installation aus lokalem Pfad möglich (PLG-005, ADR-0033). Weitere Indizes konfigurierbar (`plugins.registries`).",
   "acs": [
    "`beton plugin search runner` listet passende Einträge aus dem gecachten Index, auch offline (mit Hinweis auf Alter des Caches).",
    "Weicht die Manifest-Checksumme vom Index-Eintrag ab, wird die Installation abgebrochen.",
@@ -5372,12 +5385,13 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "voi-002--modellverwaltung-on-demand-mit-checksum",
-  "summary": "Modelle (`small`, `medium`, `large-v3-turbo`, jeweils optional quantisiert) werden erst auf Anforderung (Onboarding, Einstellungen oder erstes Diktat mit Rückfrage) aus einer im Binary gepinnten URL-Liste geladen und gegen gepinnte SHA-256 geprüft. Ablage `~/.beton/models/whisper/`. Default-Modell abhängig von Hardware: `large-v3-turbo` bei Apple Silicon/CUDA, sonst `small` *(Annahme)*. `beton voice models list|pull|remove`.",
+  "summary": "Modelle (`small`, `medium`, `large-v3-turbo`, jeweils optional quantisiert) werden erst auf Anforderung (Onboarding, Einstellungen oder erstes Diktat mit Rückfrage) aus einer im Binary gepinnten URL-Liste geladen und gegen gepinnte SHA-256 geprüft. Ablage `~/.beton/models/whisper/`. Default-Modell abhängig von Hardware: `large-v3-turbo` bei Apple Silicon/CUDA, sonst `small` *(Annahme)*. `beton voice models list|pull|import|remove`. Offline-Alternative (ADR-0033): `beton voice models import <datei>` bzw. „Aus Datei importieren“ in den Einstellungen übernimmt eine lokal vorliegende Modelldatei, sofern ihre SHA-256 zu einem Eintrag der gepinnten Liste passt.",
   "acs": [
    "Ein Download mit falscher Checksumme wird verworfen; die Datei existiert danach nicht im Modellverzeichnis.",
    "Abgebrochene Downloads werden per HTTP-Range fortgesetzt.",
    "Ohne Modell und ohne Zustimmung findet kein Download statt; der Mikrofon-Button zeigt „Modell laden (≈ X MB)“.",
-   "`beton voice models list --json` liefert Name, Größe, installiert ja/nein, Checksumme."
+   "`beton voice models list --json` liefert Name, Größe, installiert ja/nein, Checksumme.",
+   "`beton voice models import <datei>` installiert eine Modelldatei mit passender Prüfsumme ohne Netzwerk; eine Datei ohne passenden Eintrag in der gepinnten Liste wird abgelehnt."
   ]
  },
  {
@@ -5470,7 +5484,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "voi-008--keine-cloud-transkription-garantie",
-  "summary": "Der gesamte Voice-Pfad ist lokal: keine Browser-Web-Speech-API, keine Cloud-STT, keine Netzverbindungen von `beton-voice` außer dem expliziten Modell-Download von gepinnten URLs. Im zentralen Betrieb läuft Whisper auf dem eigenen Server des Betreibers.",
+  "summary": "Der gesamte Voice-Pfad ist lokal: keine Browser-Web-Speech-API, keine Cloud-STT, keine Netzverbindungen von `beton-voice` außer dem expliziten, vom User ausgelösten Modell-Download von gepinnten URLs (Alternative: Import einer lokalen Datei, VOI-002). Im zentralen Betrieb läuft Whisper auf dem eigenen Server des Betreibers.",
   "acs": [
    "Das Frontend referenziert weder `SpeechRecognition` noch `webkitSpeechRecognition` (Lint-Regel in CI).",
    "Während einer Transkription baut der Prozess keine ausgehenden Verbindungen auf (Integrationstest mit Netz-Monitoring/Proxy-Assertion).",
@@ -5567,7 +5581,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "ux-006--benachrichtigungs-einstellungen",
-  "summary": "Einstellungsseite für Benachrichtigungen als Matrix Ereignistyp × Kanal: Typen `approval_requested`, `question`, `turn_completed`, `async_done` (M5), `mention` (M4), `runner_lost`, `budget_threshold`, `rate_limit_high`; Kanäle In-App/Inbox, Desktop-Notification, Ton, Dock-/Tray-Badge, Web-Push (M4). Optional Ruhezeiten. Einstellungen werden pro User serverseitig gespeichert; das Routing selbst ist in COL-010 (ab M4, siehe 07-sessions-collaboration.md) definiert.",
+  "summary": "Einstellungsseite für Benachrichtigungen als Matrix Ereignistyp × Kanal: Typen `approval_requested`, `question`, `turn_completed`, `async_done` (M5), `mention` (M4), `runner_lost`, `budget_threshold`, `rate_limit_high`; Kanäle In-App/Inbox, Desktop-Notification, Ton, Dock-/Tray-Badge, Web-Push (M4; standardmäßig aus, nur nach ausdrücklicher Aktivierung, WEB-014, ADR-0033). Optional Ruhezeiten. Einstellungen werden pro User serverseitig gespeichert; das Routing selbst ist in COL-010 (ab M4, siehe 07-sessions-collaboration.md) definiert.",
   "acs": [
    "Deaktivierter Desktop-Kanal für `turn_completed` unterdrückt die OS-Notification, das Inbox-/In-App-Signal bleibt.",
    "Während Ruhezeiten werden nur `approval_requested`-Benachrichtigungen zugestellt, sofern der User dies ausgewählt hat.",
@@ -5599,7 +5613,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "ux-008--onboarding-wizard-ui-variante-von-beton-setup",
-  "summary": "Beim ersten Start von Desktop/Web führt ein Wizard durch dieselben Schritte wie `beton setup` (gemeinsame Zustandsmaschine im Daemon, API `/v1/setup/*` *(Annahme)*): (1) Modus: lokal oder mit Server verbinden, (2) Harness-Erkennung (`claude`, `codex`, ACP-Agents) mit Angebot zur Installation fehlender CLIs — nie still (HAR-016, DIST-015), (3) Login-Status je CLI; Login erfolgt durch die CLI selbst in einem eingebetteten Terminal (`claude auth login`, `codex login`), (4) optionale API-Keys/Gateways (Keychain, SEC-002 in 05-security-identity.md), (5) Sandbox-/Proxy-Check (Ausschnitt aus `beton doctor`), (6) Telemetrie-Consent (OBS-007, Default „Nein“), (7) optional Whisper-Modell, (8) erste Session. Jeder Schritt ist überspringbar; der Wizard ist später unter Einstellungen erneut startbar.",
+  "summary": "Beim ersten Start von Desktop/Web führt ein Wizard durch dieselben Schritte wie `beton setup` (gemeinsame Zustandsmaschine im Daemon, API `/v1/setup/*` *(Annahme)*): (1) Modus: lokal oder mit Server verbinden, (2) Harness-Erkennung (`claude`, `codex`, ACP-Agents) mit Angebot zur Installation fehlender CLIs — nie still (HAR-016, DIST-015), (3) Login-Status je CLI; Login erfolgt durch die CLI selbst in einem eingebetteten Terminal (`claude auth login`, `codex login`) – das ist der Standardweg, ein API-Key wird nie verlangt (ADR-0034), (4) optionale API-Keys/Gateways als zusätzliche Option (Keychain, SEC-002 in 05-security-identity.md), (5) Sandbox-/Proxy-Check (Ausschnitt aus `beton doctor`), (6) Telemetrie-Consent (OBS-007, Default „Nein“), (7) optional Whisper-Modell, (8) erste Session. Jeder Schritt ist überspringbar; der Wizard ist später unter Einstellungen erneut startbar.",
   "acs": [
    "Abbruch nach Schritt 3 und Neustart der App setzt den Wizard bei Schritt 4 fort.",
    "Ohne explizite Bestätigung wird keine CLI installiert (E2E-Test prüft, dass kein Installationsprozess startet).",
@@ -5714,12 +5728,12 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "obs-005--beton-doctor",
-  "summary": "Prüft die Umgebung und gibt eine Tabelle (`ok`/`warn`/`fail`, Hinweis zur Behebung) oder `--json` aus; Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler). Prüfungen werden mit den Meilensteinen ergänzt:",
+  "summary": "Prüft die Umgebung und gibt eine Tabelle (`ok`/`warn`/`fail`, Hinweis zur Behebung) oder `--json` aus; Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler). `doctor` kontaktiert keine externen Dienste (keine Online-Update-Prüfung); Netzprüfungen laufen nur gegen ausdrücklich konfigurierte Server (ADR-0033). Prüfungen werden mit den Meilensteinen ergänzt:",
   "acs": [
    "Fehlt `claude` im PATH, meldet `doctor` `warn` mit Installationshinweis und Exit-Code 1.",
    "`--json` folgt einem veröffentlichten Schema (Snapshot-Test) und enthält pro Check `id`, `status`, `message`, `hint`.",
    "Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.",
-   "`doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch)."
+   "`doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch) und läuft ohne Netzwerk (nur Loopback) ohne Verbindungsversuch nach außen durch."
   ]
  },
  {
@@ -6004,11 +6018,13 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "dist-014--desktop-auto-update-tauri-updater",
-  "summary": "Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung beim Start und alle 6 h; Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.",
+  "summary": "Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung nur auf Klick oder nach Opt-in (`update.auto_check`, Default `false`; dann beim Start und alle 6 h, ADR-0033); Offline-Alternative ist die Installation eines lokal vorliegenden, signierten Update-Pakets (Signaturprüfung gegen den eingebetteten Updater-Schlüssel, ohne Netz). Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.",
   "acs": [
    "Eine App auf Version N erkennt N+1 im eigenen Kanal und installiert sie nach Bestätigung; danach meldet sie N+1.",
    "Ein Manifest mit ungültiger Signatur wird verworfen und geloggt; keine Installation.",
-   "Mit laufendem Turn wird der Daemon-Neustart verschoben, bis alle Sessions idle sind oder der User „jetzt neu starten“ wählt."
+   "Mit laufendem Turn wird der Daemon-Neustart verschoben, bis alle Sessions idle sind oder der User „jetzt neu starten“ wählt.",
+   "Mit Default-Konfiguration ruft die App kein Update-Manifest ab, solange der User nicht „Nach Updates suchen“ wählt (Netz-Mock-Test).",
+   "Ein lokal vorliegendes, signiertes Update-Paket wird ohne Netzwerk installiert; ein Paket mit ungültiger Signatur wird abgelehnt."
   ]
  },
  {
@@ -6036,12 +6052,13 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "dist-016--beton-upgrade-mit-installationsart-erkennung",
-  "summary": "`beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--dry-run] [--force]` bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.",
+  "summary": "`beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--from-file ARCHIV] [--dry-run] [--force]` kontaktiert das Netz nur bei ausdrücklichem Aufruf (kein Hintergrund-Check) und bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. `--from-file` aktualisiert eine `script`-Installation offline aus einem lokal vorliegenden Release-Archiv; Checksumme und Signatur werden ohne Netzzugriff gegen mitgelieferte Vertrauensanker geprüft (ADR-0033). Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.",
   "acs": [
    "Eine Script-Installation auf Version N wird mit `beton upgrade` auf N+1 aktualisiert; `beton.old` ist N.",
    "Bei Homebrew-Installation verändert `beton upgrade` keine Dateien und gibt `brew upgrade beton` aus (Exit-Code 0).",
    "Ein Download mit falscher Signatur bricht ab; die installierte Version bleibt unverändert.",
-   "`--check` gibt maschinenlesbar (mit `--json`) aktuelle/neueste Version und Installationsart aus."
+   "`--check` gibt maschinenlesbar (mit `--json`) aktuelle/neueste Version und Installationsart aus.",
+   "`beton upgrade --from-file <archiv>` aktualisiert eine Script-Installation im Netz-Namespace ohne Netzwerk; ein manipuliertes Archiv wird abgelehnt und die installierte Version bleibt unverändert."
   ]
  },
  {
@@ -6085,7 +6102,7 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "dist-019--release-prozess--changelog",
-  "summary": "Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis.",
+  "summary": "Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis. Veröffentlicht wird erst, wenn das Protokoll der manuellen Subscription-Verifikation für die Version vorliegt (Gate aus QA-019).",
   "acs": [
    "Ein `feat(policy): POL-003 …`-Commit erscheint im nächsten Release-PR unter „Features“ mit Feature-ID.",
    "Ein `feat!:`-Commit führt (ab 1.0) zu einer Major-, davor zu einer Minor-Erhöhung und zu einem Eintrag unter „Breaking Changes“.",
@@ -6263,7 +6280,7 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "qa-010--ci-gates",
-  "summary": "Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015). Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).",
+  "summary": "Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015); Offline-E2E im Netz-Namespace ohne Netzwerk (QA-018), sobald vorhanden. Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).",
   "acs": [
    "Eine neue Clippy-Warnung lässt den PR fehlschlagen.",
    "Eine Abhängigkeit mit GPL-3.0-Lizenz oder bekannter RUSTSEC-Advisory wird von `cargo deny` blockiert.",
@@ -6378,6 +6395,41 @@
   "acs": [
    "Die Repository-Test-Suite läuft mit `BETON_TEST_DB=sqlite` und `=postgres` identisch grün.",
    "Ein Upgrade-Test migriert einen mit der Vorgängerversion erzeugten Datenbestand ohne Datenverlust (Event-Zähler und Hashes vorher = nachher)."
+  ]
+ },
+ {
+  "id": "QA-018",
+  "prefix": "QA",
+  "title": "Offline-E2E-Garantie (Netz-Namespace nur mit Loopback)",
+  "milestone": "M0",
+  "priority": "Must",
+  "chapter": "12-distribution-quality.md",
+  "chapterTitle": "12 — Distribution & Qualität",
+  "anchor": "qa-018--offline-e2e-garantie-netz-namespace-nur-mit-loopback",
+  "summary": "Ein CI-Job `offline-e2e` (Linux) beweist ADR-0033: Server (`beton serve`), Host/Runner, Clients (Web-UI über Playwright, CLI; ab M3 TUI und Desktop) und Fake-Harness bzw. Protokoll-Fake-CLI laufen gemeinsam in einem Netz-Namespace, der ausschließlich das Loopback-Interface besitzt (keine Default-Route, kein externer DNS). Abgedeckt werden die Demo-Szenarien M0 und (ab M3) M3 aus der Roadmap, jeweils mit Fake-Harness statt Vendor-CLI. Ein zweiter Lauf mit Sinkhole weist nach, dass beton keine Verbindung nach außen auch nur versucht. Zusätzlich führt `beton-core` eine Registry aller netzwirksamen Funktionen (Name, Zweck, Default, Offline-Alternative); einzige Einträge mit Default „an“ sind die Modell-Anbieter der Harnesses.",
+  "acs": [
+   "Im Namespace ohne Netzwerk läuft das M0-Demo-Szenario vollständig: `beton run fake` (bzw. Claude-Adapter gegen Fake-CLI) startet eine Session, die Antwort streamt live im Browser, nach erzwungenem Verbindungsabbruch setzt die UI ab `seq` fort, und die Session überlebt einen Daemon-Neustart.",
+   "Im Sinkhole-Lauf desselben Szenarios werden null DNS-Anfragen und null Verbindungsversuche zu Nicht-Loopback-Adressen aufgezeichnet; jeder Fund lässt den Job mit Ziel und Zeitpunkt fehlschlagen.",
+   "Ein Test prüft die Registry netzwirksamer Funktionen: Jeder Eintrag außer den Modell-Anbietern hat Default „aus“ bzw. „nur auf Nutzeraktion“ und eine benannte Offline-Alternative; ein neuer Eintrag ohne diese Angaben lässt den Build fehlschlagen.",
+   "Während des Laufs zeigt die UI keinen Fehlerdialog wegen fehlenden Netzes; netzabhängige Aktionen (z. B. Modell-Download, Update-Prüfung) sind deaktiviert und nennen ihre Offline-Alternative.",
+   "(ab M3) Im selben Namespace läuft das M3-Demo-Szenario mit Fake-Harness: Desktop (tauri-driver, Linux) bzw. Web-UI und `beton tui`, zwei Sessions in Worktrees eines lokalen Repos, eingebetteter Browser mit Inspect-Mode gegen einen lokalen Dev-Server und Diktat mit vorab importiertem Whisper-Modell und Audio-Fixture."
+  ]
+ },
+ {
+  "id": "QA-019",
+  "prefix": "QA",
+  "title": "Subscription-Verifikations-Checkliste pro Release",
+  "milestone": "M3",
+  "priority": "Must",
+  "chapter": "12-distribution-quality.md",
+  "chapterTitle": "12 — Distribution & Qualität",
+  "anchor": "qa-019--subscription-verifikations-checkliste-pro-release",
+  "summary": "CI kann keine Subscriptions nutzen (ADR-0031). Deshalb wird vor jedem Release ab 0.1 eine manuelle Checkliste mit echten Subscription-Logins durchlaufen – Claude Pro/Max über `claude`, ChatGPT Plus/Pro über `codex`, Google-Login über die Gemini CLI via ACP – und als Protokoll eingecheckt. Sie belegt ADR-0034: Jedes Feature, das selbst ein Modell nutzt, funktioniert ohne API-Key. Die rechtliche Klärung der Nutzungsbedingungen bleibt offener Punkt 4 (00-overview.md) und ist nicht Teil der Checkliste.",
+  "acs": [
+   "Die Vorlage enthält mindestens: Login-Erkennung in `beton setup`, Session mit Streaming und Approval je Harness (`claude`, `codex`, `acp:gemini`), Fork Claude → Codex, `maestra` mit Cross-Review, `duetto`, automatischer Session-Titel, Compaction, Subscription-Usage-Anzeige und `harness.auth_required` nach Logout der CLI.",
+   "Der Release-Workflow (DIST-019) bleibt Draft, wenn für die Version kein Protokoll existiert oder ein Must-Punkt nicht als bestanden markiert ist (CI-Check parst das Protokoll).",
+   "Der CI-Check gleicht die im Protokoll genannten CLI-Versionen mit dem Katalog-`version_range` (HAR-002) ab und schlägt bei einer Version außerhalb des Bereichs fehl.",
+   "Der Secret-Scan (QA-003) läuft auch über `docs/release/verifications/` und schlägt bei Token-Mustern oder E-Mail-Adressen fehl."
   ]
  }
 ]
