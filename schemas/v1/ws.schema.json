@@ -1,0 +1,4775 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WsMessages",
+  "description": "Beide Richtungen des WebSocket-Protokolls in einem Schema (PROTO-013).",
+  "type": "object",
+  "properties": {
+    "client": {
+      "$ref": "#/$defs/ClientMsg"
+    },
+    "server": {
+      "$ref": "#/$defs/ServerMsg"
+    }
+  },
+  "required": [
+    "client",
+    "server"
+  ],
+  "$defs": {
+    "Actor": {
+      "description": "Wer ein Event ausgelöst hat.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "device_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DeviceId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "$ref": "#/$defs/PrincipalId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "user"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "agent_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "harness": {
+              "description": "Harness-ID, z. B. `claude`, `codex`, `acp:gemini-cli`.",
+              "type": "string"
+            },
+            "id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AgentId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "agent"
+            }
+          },
+          "required": [
+            "kind",
+            "harness"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "$ref": "#/$defs/SystemComponent"
+            },
+            "kind": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "required": [
+            "kind",
+            "component"
+          ]
+        }
+      ]
+    },
+    "AgentCompleted": {
+      "type": "object",
+      "properties": {
+        "child_session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "cost_micro": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "child_session_id",
+        "status"
+      ]
+    },
+    "AgentId": {
+      "type": "string",
+      "examples": [
+        "agt_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^agt_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "AgentMessage": {
+      "type": "object",
+      "properties": {
+        "from_session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "text": {
+          "type": "string"
+        },
+        "to_session": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "from_session",
+        "to_session",
+        "text"
+      ]
+    },
+    "AgentResolved": {
+      "type": "object",
+      "properties": {
+        "blob_ref": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "overrides": true,
+        "params": true,
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "source",
+        "hash",
+        "blob_ref"
+      ]
+    },
+    "AgentSpawned": {
+      "type": "object",
+      "properties": {
+        "agent_ref": {
+          "type": "string"
+        },
+        "async": {
+          "type": "boolean"
+        },
+        "child_session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "harness": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "child_session_id",
+        "agent_ref",
+        "harness",
+        "async"
+      ]
+    },
+    "ApprovalDecision": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "abort",
+        "answer"
+      ]
+    },
+    "ApprovalId": {
+      "type": "string",
+      "examples": [
+        "apr_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^apr_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "ApprovalKind": {
+      "type": "string",
+      "enum": [
+        "tool",
+        "policy",
+        "browser",
+        "budget",
+        "question"
+      ]
+    },
+    "ApprovalRequested": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/ApprovalId"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "kind": {
+          "$ref": "#/$defs/ApprovalKind"
+        },
+        "on_timeout": {
+          "$ref": "#/$defs/TimeoutAction"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subject": true
+      },
+      "required": [
+        "approval_id",
+        "kind",
+        "subject",
+        "options",
+        "expires_at",
+        "on_timeout"
+      ]
+    },
+    "ApprovalResolved": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "answer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval_id": {
+          "$ref": "#/$defs/ApprovalId"
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "$ref": "#/$defs/ApprovalDecision"
+        },
+        "on_timeout_applied": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeoutAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remember": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RememberScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "via": {
+          "$ref": "#/$defs/ResolvedVia"
+        }
+      },
+      "required": [
+        "approval_id",
+        "decision",
+        "actor",
+        "via"
+      ]
+    },
+    "AsyncRunEvent": {
+      "type": "object",
+      "properties": {
+        "cost_micro": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "duration_s": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "run_id"
+      ]
+    },
+    "AuthSource": {
+      "type": "string",
+      "enum": [
+        "vendor_cli",
+        "api_key",
+        "gateway",
+        "none"
+      ]
+    },
+    "BlobRef": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "BrowserAction": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "browser_id": {
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/PolicyOutcome"
+        },
+        "target_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "browser_id",
+        "action",
+        "decision"
+      ]
+    },
+    "BrowserCloseReason": {
+      "type": "string",
+      "enum": [
+        "stopped",
+        "idle",
+        "crashed"
+      ]
+    },
+    "BrowserClosed": {
+      "type": "object",
+      "properties": {
+        "browser_id": {
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BrowserCloseReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "browser_id"
+      ]
+    },
+    "BrowserDevserverDetected": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "pid",
+        "source"
+      ]
+    },
+    "BrowserFrame": {
+      "description": "Metadaten zum Binärkanal; Bild und Metadaten laufen über den Kanal (PROTO-007).",
+      "type": "object",
+      "properties": {
+        "browser_id": {
+          "type": "string"
+        },
+        "channel_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "browser_id",
+        "channel_id"
+      ]
+    },
+    "BrowserMode": {
+      "type": "string",
+      "enum": [
+        "embedded",
+        "window"
+      ]
+    },
+    "BrowserNavigated": {
+      "type": "object",
+      "properties": {
+        "browser_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "browser_id",
+        "url",
+        "title"
+      ]
+    },
+    "BrowserOpened": {
+      "type": "object",
+      "properties": {
+        "browser_id": {
+          "type": "string"
+        },
+        "channel_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "mode": {
+          "$ref": "#/$defs/BrowserMode"
+        }
+      },
+      "required": [
+        "browser_id",
+        "channel_id",
+        "mode"
+      ]
+    },
+    "BrowserPicked": {
+      "type": "object",
+      "properties": {
+        "bbox": true,
+        "browser_id": {
+          "type": "string"
+        },
+        "comment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outer_html_ref": {
+          "type": "string"
+        },
+        "screenshot_ref": {
+          "type": "string"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "source_location": true,
+        "styles": true
+      },
+      "required": [
+        "browser_id",
+        "selector",
+        "outer_html_ref",
+        "styles",
+        "bbox",
+        "screenshot_ref"
+      ]
+    },
+    "BrowserSnapshot": {
+      "type": "object",
+      "properties": {
+        "a11y_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "browser_id": {
+          "type": "string"
+        },
+        "screenshot_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "browser_id",
+        "screenshot_ref"
+      ]
+    },
+    "BudgetAction": {
+      "type": "string",
+      "enum": [
+        "ask",
+        "deny"
+      ]
+    },
+    "BudgetExhausted": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/BudgetAction"
+        },
+        "lease_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "action"
+      ]
+    },
+    "BudgetLeaseOverdrawn": {
+      "type": "object",
+      "properties": {
+        "lease_id": {
+          "type": "string"
+        },
+        "overrun_micro": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "lease_id",
+        "overrun_micro"
+      ]
+    },
+    "ClientInfo": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "z. B. `web`, `desktop`, `cli`, `sdk-ts`, `sdk-rust`.",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "version"
+      ]
+    },
+    "ClientMsg": {
+      "description": "Nachrichten vom Client.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "client": {
+              "$ref": "#/$defs/ClientInfo"
+            },
+            "protocol": {
+              "description": "`1.<minor>`",
+              "type": "string"
+            },
+            "t": {
+              "type": "string",
+              "const": "hello"
+            }
+          },
+          "required": [
+            "t",
+            "protocol",
+            "client"
+          ]
+        },
+        {
+          "description": "Events ab `from_seq` (exklusiv), danach live (PROTO-005).",
+          "type": "object",
+          "properties": {
+            "from_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string"
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "attach"
+            },
+            "tail": {
+              "description": "Nur die letzten N Events (plus `has_more`).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "transient": {
+              "description": "Auch transiente Events (Deltas, Presence) senden.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "session_id",
+            "from_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "detach"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "session_id"
+          ]
+        },
+        {
+          "description": "Aktion mit REST-Zwilling (PROTO-006).",
+          "type": "object",
+          "properties": {
+            "args": {
+              "default": null
+            },
+            "id": {
+              "type": "string"
+            },
+            "idempotency_key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "session_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "t": {
+              "type": "string",
+              "const": "cmd"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "name"
+          ]
+        }
+      ]
+    },
+    "CommentAddressed": {
+      "type": "object",
+      "properties": {
+        "comment_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CommentId"
+          }
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        }
+      },
+      "required": [
+        "comment_ids",
+        "turn_id"
+      ]
+    },
+    "CommentChange": {
+      "type": "object",
+      "properties": {
+        "anchor": true,
+        "author": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment_id": {
+          "$ref": "#/$defs/CommentId"
+        },
+        "thread_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "comment_id",
+        "thread_id",
+        "anchor",
+        "author"
+      ]
+    },
+    "CommentId": {
+      "type": "string",
+      "examples": [
+        "cmt_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^cmt_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "Compaction": {
+      "type": "object",
+      "properties": {
+        "after_tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "before_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "before_tokens"
+      ]
+    },
+    "ConflictFile": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ConflictKind"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ]
+    },
+    "ConflictKind": {
+      "type": "string",
+      "enum": [
+        "content",
+        "delete_modify",
+        "rename",
+        "binary"
+      ]
+    },
+    "ConflictPhase": {
+      "type": "string",
+      "enum": [
+        "started",
+        "hunk_resolved",
+        "completed",
+        "aborted"
+      ]
+    },
+    "ConflictResolutionKind": {
+      "type": "string",
+      "enum": [
+        "ours",
+        "theirs",
+        "both",
+        "edited",
+        "agent"
+      ]
+    },
+    "ConflictSource": {
+      "type": "string",
+      "enum": [
+        "local",
+        "provider"
+      ]
+    },
+    "ContextSource": {
+      "type": "string",
+      "enum": [
+        "harness",
+        "estimated"
+      ]
+    },
+    "ContextUsage": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/ContextSource"
+        },
+        "used_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "window_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "used_tokens",
+        "window_tokens",
+        "source"
+      ]
+    },
+    "CostDelta": {
+      "type": "object",
+      "properties": {
+        "auth_source": {
+          "$ref": "#/$defs/AuthSource"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cost_micro": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "model": {
+          "type": "string"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "purpose": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/CostSource"
+        }
+      },
+      "required": [
+        "harness",
+        "model",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "currency",
+        "source",
+        "auth_source"
+      ]
+    },
+    "CostSource": {
+      "type": "string",
+      "enum": [
+        "reported",
+        "estimated",
+        "subscription"
+      ]
+    },
+    "CrLink": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "origin": {
+          "$ref": "#/$defs/CrOrigin"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "provider",
+        "number",
+        "origin"
+      ]
+    },
+    "CrOrigin": {
+      "type": "string",
+      "enum": [
+        "created",
+        "attached",
+        "inferred"
+      ]
+    },
+    "DeviceId": {
+      "type": "string",
+      "examples": [
+        "dev_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^dev_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "EgressBlocked": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "rule_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/EgressSource"
+        },
+        "tool_call_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "method",
+        "host",
+        "path",
+        "reason",
+        "source"
+      ]
+    },
+    "EgressHost": {
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "host": {
+          "type": "string"
+        },
+        "requests": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "host",
+        "requests",
+        "bytes"
+      ]
+    },
+    "EgressSource": {
+      "type": "string",
+      "enum": [
+        "tools",
+        "harness",
+        "browser"
+      ]
+    },
+    "EgressSummary": {
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EgressHost"
+          }
+        },
+        "window_s": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "window_s",
+        "hosts"
+      ]
+    },
+    "Empty": {
+      "description": "Leere Nutzlast für Events ohne Felder.",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "type": "object",
+      "properties": {
+        "problem": true
+      },
+      "required": [
+        "problem"
+      ]
+    },
+    "Event": {
+      "description": "Ein Event im Session-Log bzw. auf dem Draht.",
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/EventId"
+        },
+        "raw": {
+          "description": "Original-Payload des Harness (optional, vor Persistenz redigiert), byte-genau erhalten."
+        },
+        "seq": {
+          "description": "Lückenlose Position im Session-Log. Transiente Events tragen die letzte dauerhafte `seq`.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "transient": {
+          "description": "Nur bei transienten Events: `true`.",
+          "type": "boolean"
+        },
+        "ts": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "tseq": {
+          "description": "Nur bei transienten Events: pro Session und Epoch monotone Folgenummer (PROTO-003).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "v": {
+          "description": "Envelope-Version, derzeit immer 1.",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventPayload"
+        },
+        {
+          "$ref": "#/$defs/OffloadedPayload"
+        }
+      ],
+      "required": [
+        "v",
+        "id",
+        "session_id",
+        "seq",
+        "ts",
+        "actor"
+      ]
+    },
+    "EventId": {
+      "type": "string",
+      "examples": [
+        "evt_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^evt_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "EventPayload": {
+      "description": "Typ und Nutzlast eines Events: `{\"type\": \"…\", \"payload\": {…}}`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStatusChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.status"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionResumed"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.resumed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionSettingsChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.settings_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionTitleChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.title_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Empty"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.archived"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Empty"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.unarchived"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionForked"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.forked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionForkCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.fork_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionImported"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.imported"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionOwnershipChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.ownership_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SessionStartDenied"
+            },
+            "type": {
+              "type": "string",
+              "const": "session.start_denied"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessReady"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.ready"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessExited"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.exited"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessAuthRequired"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.auth_required"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessIncompatible"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.incompatible"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/McpServerFailed"
+            },
+            "type": {
+              "type": "string",
+              "const": "mcp.server_failed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/RunnerStatus"
+            },
+            "type": {
+              "type": "string",
+              "const": "runner.status"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/QueueUpdated"
+            },
+            "type": {
+              "type": "string",
+              "const": "queue.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnFailed"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.failed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TurnInterrupted"
+            },
+            "type": {
+              "type": "string",
+              "const": "turn.interrupted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TextDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "message.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/MessageCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "message.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TextDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ReasoningCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "reasoning.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallRequested"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.requested"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallOutputDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.output.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ToolCallCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "tool.call.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ApprovalRequested"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval.requested"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ApprovalResolved"
+            },
+            "type": {
+              "type": "string",
+              "const": "approval.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyDecision"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.decision"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicySetChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.set_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicySetInvalid"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.set_invalid"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyStateChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.state_changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyRuleIssue"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.enforcement_degraded"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PolicyRuleIssue"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.rule_inapplicable"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BudgetExhausted"
+            },
+            "type": {
+              "type": "string",
+              "const": "budget.exhausted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BudgetLeaseOverdrawn"
+            },
+            "type": {
+              "type": "string",
+              "const": "budget.lease_overdrawn"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CostDelta"
+            },
+            "type": {
+              "type": "string",
+              "const": "cost.delta"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/UsageSubscription"
+            },
+            "type": {
+              "type": "string",
+              "const": "usage.subscription"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            "type": {
+              "type": "string",
+              "const": "context.usage"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Compaction"
+            },
+            "type": {
+              "type": "string",
+              "const": "compaction.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Compaction"
+            },
+            "type": {
+              "type": "string",
+              "const": "compaction.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/FsChanged"
+            },
+            "type": {
+              "type": "string",
+              "const": "fs.changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitWorktreeCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.worktree_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitCommitCreated"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.commit_created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CrLink"
+            },
+            "type": {
+              "type": "string",
+              "const": "cr.linked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CrLink"
+            },
+            "type": {
+              "type": "string",
+              "const": "cr.unlinked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitConflictsDetected"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.conflicts_detected"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/GitConflictResolution"
+            },
+            "type": {
+              "type": "string",
+              "const": "git.conflict_resolution"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalOpened"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.opened"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalOutput"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.output"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalSnapshot"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.snapshot"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TerminalClosed"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.closed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserOpened"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.opened"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserFrame"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.frame"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserNavigated"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.navigated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserAction"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.action"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserSnapshot"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.snapshot"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserPicked"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.picked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserClosed"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.closed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/BrowserDevserverDetected"
+            },
+            "type": {
+              "type": "string",
+              "const": "browser.devserver.detected"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SandboxStarted"
+            },
+            "type": {
+              "type": "string",
+              "const": "sandbox.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/SandboxViolation"
+            },
+            "type": {
+              "type": "string",
+              "const": "sandbox.violation"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EgressBlocked"
+            },
+            "type": {
+              "type": "string",
+              "const": "egress.blocked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EgressSummary"
+            },
+            "type": {
+              "type": "string",
+              "const": "egress.summary"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentSpawned"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.spawned"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentCompleted"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.completed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentResolved"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AgentMessage"
+            },
+            "type": {
+              "type": "string",
+              "const": "agent.message"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.set"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.fired"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/TimerEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "timer.cancelled"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.queued"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.started"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.paused"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.resumed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/AsyncRunEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "async.run.finished"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.created"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.deleted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.fired"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ScheduleEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "schedule.skipped"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.added"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.resolved"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.deleted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/CommentAddressed"
+            },
+            "type": {
+              "type": "string",
+              "const": "comment.addressed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.granted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.changed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ShareChange"
+            },
+            "type": {
+              "type": "string",
+              "const": "share.revoked"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/PresenceUpdated"
+            },
+            "type": {
+              "type": "string",
+              "const": "presence.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/EventRedacted"
+            },
+            "type": {
+              "type": "string",
+              "const": "event.redacted"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/HarnessUnmapped"
+            },
+            "type": {
+              "type": "string",
+              "const": "harness.unmapped"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/Notice"
+            },
+            "type": {
+              "type": "string",
+              "const": "notice"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
+              "$ref": "#/$defs/ErrorEvent"
+            },
+            "type": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "EventRedacted": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "target_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "target_seq",
+        "by",
+        "reason"
+      ]
+    },
+    "EventType": {
+      "description": "Typname eines Events ohne Nutzlast, z. B. für ausgelagerte Payloads.",
+      "type": "string",
+      "enum": [
+        "session.created",
+        "session.started",
+        "session.status",
+        "session.resumed",
+        "session.settings_changed",
+        "session.title_changed",
+        "session.archived",
+        "session.unarchived",
+        "session.forked",
+        "session.fork_created",
+        "session.imported",
+        "session.ownership_changed",
+        "session.start_denied",
+        "harness.ready",
+        "harness.exited",
+        "harness.auth_required",
+        "harness.incompatible",
+        "mcp.server_failed",
+        "runner.status",
+        "queue.updated",
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "turn.interrupted",
+        "message.delta",
+        "message.completed",
+        "reasoning.delta",
+        "reasoning.completed",
+        "tool.call.requested",
+        "tool.call.started",
+        "tool.call.output.delta",
+        "tool.call.completed",
+        "approval.requested",
+        "approval.resolved",
+        "policy.decision",
+        "policy.set_changed",
+        "policy.set_invalid",
+        "policy.state_changed",
+        "policy.enforcement_degraded",
+        "policy.rule_inapplicable",
+        "budget.exhausted",
+        "budget.lease_overdrawn",
+        "cost.delta",
+        "usage.subscription",
+        "context.usage",
+        "compaction.started",
+        "compaction.completed",
+        "fs.changed",
+        "git.worktree_created",
+        "git.commit_created",
+        "cr.linked",
+        "cr.unlinked",
+        "git.conflicts_detected",
+        "git.conflict_resolution",
+        "terminal.opened",
+        "terminal.output",
+        "terminal.snapshot",
+        "terminal.closed",
+        "browser.opened",
+        "browser.frame",
+        "browser.navigated",
+        "browser.action",
+        "browser.snapshot",
+        "browser.picked",
+        "browser.closed",
+        "browser.devserver.detected",
+        "sandbox.started",
+        "sandbox.violation",
+        "egress.blocked",
+        "egress.summary",
+        "agent.spawned",
+        "agent.completed",
+        "agent.resolved",
+        "agent.message",
+        "timer.set",
+        "timer.fired",
+        "timer.cancelled",
+        "async.run.queued",
+        "async.run.started",
+        "async.run.paused",
+        "async.run.resumed",
+        "async.run.finished",
+        "schedule.created",
+        "schedule.updated",
+        "schedule.deleted",
+        "schedule.fired",
+        "schedule.skipped",
+        "comment.added",
+        "comment.updated",
+        "comment.resolved",
+        "comment.deleted",
+        "comment.addressed",
+        "share.granted",
+        "share.changed",
+        "share.revoked",
+        "presence.updated",
+        "event.redacted",
+        "harness.unmapped",
+        "notice",
+        "error"
+      ]
+    },
+    "ForkReason": {
+      "type": "string",
+      "enum": [
+        "user",
+        "side_chat",
+        "divergence"
+      ]
+    },
+    "FsChange": {
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/FsChangeKind"
+        },
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "change"
+      ]
+    },
+    "FsChangeKind": {
+      "type": "string",
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed"
+      ]
+    },
+    "FsChanged": {
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FsChange"
+          }
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "changes",
+        "source"
+      ]
+    },
+    "GitCommitCreated": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "branch",
+        "subject"
+      ]
+    },
+    "GitConflictResolution": {
+      "type": "object",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "hunk": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/ConflictPhase"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConflictResolutionKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MergeStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "phase",
+        "actor"
+      ]
+    },
+    "GitConflictsDetected": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConflictFile"
+          }
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/ConflictSource"
+        }
+      },
+      "required": [
+        "base",
+        "base_sha",
+        "head_sha",
+        "files",
+        "source"
+      ]
+    },
+    "GitWorktreeCreated": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "branch",
+        "base",
+        "base_sha"
+      ]
+    },
+    "HarnessAuthRequired": {
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string"
+        },
+        "hint": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "harness",
+        "hint"
+      ]
+    },
+    "HarnessExited": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "signal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stderr_tail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "stderr_tail"
+      ]
+    },
+    "HarnessIncompatible": {
+      "type": "object",
+      "properties": {
+        "detected_version": {
+          "type": "string"
+        },
+        "expected_range": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "detected_version",
+        "expected_range"
+      ]
+    },
+    "HarnessReady": {
+      "type": "object",
+      "properties": {
+        "harness_session_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "tools",
+        "mcp_servers"
+      ]
+    },
+    "HarnessUnmapped": {
+      "type": "object",
+      "properties": {
+        "raw": true
+      },
+      "required": [
+        "raw"
+      ]
+    },
+    "HistoryMode": {
+      "type": "string",
+      "enum": [
+        "native",
+        "rebuild",
+        "preamble"
+      ]
+    },
+    "HostId": {
+      "type": "string",
+      "examples": [
+        "hst_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^hst_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "McpServerFailed": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "error"
+      ]
+    },
+    "MergeStrategy": {
+      "type": "string",
+      "enum": [
+        "merge",
+        "rebase"
+      ]
+    },
+    "MessageCompleted": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrincipalId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content": {
+          "type": "array",
+          "items": true
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/MessageRole"
+        }
+      },
+      "required": [
+        "message_id",
+        "role",
+        "content"
+      ]
+    },
+    "MessageRole": {
+      "type": "string",
+      "enum": [
+        "user",
+        "assistant"
+      ]
+    },
+    "NodeId": {
+      "type": "string",
+      "examples": [
+        "nod_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^nod_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "Notice": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/NoticeLevel"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "text"
+      ]
+    },
+    "NoticeLevel": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warn"
+      ]
+    },
+    "OffloadedPayload": {
+      "description": "Platzhalter für eine in den Blob-Store ausgelagerte Nutzlast.",
+      "type": "object",
+      "properties": {
+        "payload_ref": {
+          "$ref": "#/$defs/BlobRef"
+        },
+        "type": {
+          "$ref": "#/$defs/EventType"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "payload_ref"
+      ]
+    },
+    "OutputStream": {
+      "type": "string",
+      "enum": [
+        "stdout",
+        "stderr"
+      ]
+    },
+    "OwnershipMode": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "forced"
+      ]
+    },
+    "PolicyDecision": {
+      "type": "object",
+      "properties": {
+        "approval_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conflicts": {
+          "type": "array",
+          "items": true
+        },
+        "decision_id": {
+          "type": "string"
+        },
+        "defaults_applied": {
+          "type": "array",
+          "items": true
+        },
+        "enforcement": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "array",
+          "items": true
+        },
+        "eval_us": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "grants_used": {
+          "type": "array",
+          "items": true
+        },
+        "matched": {
+          "type": "array",
+          "items": true
+        },
+        "modified": true,
+        "outcome": {
+          "$ref": "#/$defs/PolicyOutcome"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "policy_set_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "phase",
+        "outcome",
+        "matched",
+        "defaults_applied",
+        "conflicts",
+        "errors",
+        "grants_used",
+        "enforcement",
+        "policy_set_hash",
+        "eval_us"
+      ]
+    },
+    "PolicyOutcome": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ]
+    },
+    "PolicyRuleIssue": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "rule_ids",
+        "reason"
+      ]
+    },
+    "PolicySetChanged": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string"
+        },
+        "set": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "set",
+        "version"
+      ]
+    },
+    "PolicySetInvalid": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "error"
+      ]
+    },
+    "PolicyStateChanged": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "value": true
+      },
+      "required": [
+        "scope",
+        "key",
+        "op",
+        "value"
+      ]
+    },
+    "PresenceUpdated": {
+      "type": "object",
+      "properties": {
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PresenceUser"
+          }
+        }
+      },
+      "required": [
+        "users"
+      ]
+    },
+    "PresenceUser": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DeviceId"
+          }
+        },
+        "typing": {
+          "type": "boolean"
+        },
+        "user_id": {
+          "$ref": "#/$defs/PrincipalId"
+        }
+      },
+      "required": [
+        "user_id",
+        "devices",
+        "typing"
+      ]
+    },
+    "PrincipalId": {
+      "type": "string",
+      "pattern": "^(usr_([0-9A-HJKMNP-TV-Z]{26}|local)|sa_[0-9A-HJKMNP-TV-Z]{26})$"
+    },
+    "ProjectId": {
+      "type": "string",
+      "examples": [
+        "prj_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^prj_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "QueueItem": {
+      "type": "object",
+      "properties": {
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "author": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "id": {
+          "type": "string"
+        },
+        "text_preview": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "author",
+        "text_preview",
+        "attachments",
+        "created_at"
+      ]
+    },
+    "QueueUpdated": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "items",
+        "paused"
+      ]
+    },
+    "ReasoningCompleted": {
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "redacted": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message_id",
+        "redacted"
+      ]
+    },
+    "RememberScope": {
+      "type": "string",
+      "enum": [
+        "none",
+        "session"
+      ]
+    },
+    "ResolvedVia": {
+      "type": "string",
+      "enum": [
+        "user",
+        "timeout",
+        "policy",
+        "system"
+      ]
+    },
+    "ResumeMode": {
+      "type": "string",
+      "enum": [
+        "native",
+        "handover"
+      ]
+    },
+    "RunnerId": {
+      "type": "string",
+      "examples": [
+        "run_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^run_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "RunnerStatus": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner_id": {
+          "$ref": "#/$defs/RunnerId"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "runner_id",
+        "from",
+        "to"
+      ]
+    },
+    "SandboxStage": {
+      "type": "string",
+      "enum": [
+        "harness",
+        "tools"
+      ]
+    },
+    "SandboxStarted": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "caps": true,
+        "degraded": {
+          "type": "boolean"
+        },
+        "stage": {
+          "$ref": "#/$defs/SandboxStage"
+        }
+      },
+      "required": [
+        "stage",
+        "backend",
+        "caps",
+        "degraded"
+      ]
+    },
+    "SandboxViolation": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ViolationKind"
+        },
+        "stage": {
+          "$ref": "#/$defs/SandboxStage"
+        },
+        "suppressed_count": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "stage",
+        "kind",
+        "suppressed_count"
+      ]
+    },
+    "ScheduleEvent": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schedule_id": {
+          "$ref": "#/$defs/ScheduleId"
+        },
+        "scheduled_for": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "schedule_id"
+      ]
+    },
+    "ScheduleId": {
+      "type": "string",
+      "examples": [
+        "sch_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^sch_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "ServerMsg": {
+      "description": "Nachrichten vom Server.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "server_version": {
+              "type": "string"
+            },
+            "session_limits": {
+              "$ref": "#/$defs/SessionLimits"
+            },
+            "t": {
+              "type": "string",
+              "const": "welcome"
+            }
+          },
+          "required": [
+            "t",
+            "protocol",
+            "server_version",
+            "session_limits"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "events": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Event"
+              }
+            },
+            "has_more": {
+              "description": "Nur bei `tail`: es gibt ältere Events.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "events"
+            }
+          },
+          "required": [
+            "t",
+            "session_id",
+            "events"
+          ]
+        },
+        {
+          "description": "Replay abgeschlossen; ab jetzt kommen Live-Events.",
+          "type": "object",
+          "properties": {
+            "head_seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "live"
+            }
+          },
+          "required": [
+            "t",
+            "session_id",
+            "head_seq"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "result": true,
+            "t": {
+              "type": "string",
+              "const": "ack"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "result"
+          ]
+        },
+        {
+          "description": "Fehler als RFC-9457-Problem (PROTO-011).",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "problem": true,
+            "t": {
+              "type": "string",
+              "const": "nack"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "problem"
+          ]
+        },
+        {
+          "description": "Ausgangswarteschlange übergelaufen; Client attached neu ab `resume_from` (PROTO-008).",
+          "type": "object",
+          "properties": {
+            "resume_from": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "overflow"
+            }
+          },
+          "required": [
+            "t",
+            "session_id",
+            "resume_from"
+          ]
+        }
+      ]
+    },
+    "SessionCreated": {
+      "type": "object",
+      "properties": {
+        "agent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/SessionKind"
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "owner": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "parent_session_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trigger": {
+          "$ref": "#/$defs/SessionTrigger"
+        }
+      },
+      "required": [
+        "owner",
+        "kind",
+        "harness",
+        "cwd",
+        "trigger"
+      ]
+    },
+    "SessionForkCreated": {
+      "type": "object",
+      "properties": {
+        "at_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "child": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "reason": {
+          "$ref": "#/$defs/ForkReason"
+        }
+      },
+      "required": [
+        "child",
+        "at_seq",
+        "reason"
+      ]
+    },
+    "SessionForked": {
+      "type": "object",
+      "properties": {
+        "at_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "fallback_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "history_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoryMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/ForkReason"
+        }
+      },
+      "required": [
+        "from_session",
+        "at_seq",
+        "reason"
+      ]
+    },
+    "SessionId": {
+      "type": "string",
+      "examples": [
+        "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^ses_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "SessionImported": {
+      "type": "object",
+      "properties": {
+        "imported_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "source": {
+          "type": "string"
+        },
+        "vendor_session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "vendor_session_id",
+        "imported_at"
+      ]
+    },
+    "SessionKind": {
+      "type": "string",
+      "enum": [
+        "main",
+        "side_chat",
+        "subagent",
+        "async"
+      ]
+    },
+    "SessionLimits": {
+      "description": "Grenzen für Batches und eingehende Kommandos (PROTO-008).",
+      "type": "object",
+      "properties": {
+        "max_batch_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_batch_events": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_commands_per_s": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_text_frame_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "max_batch_events",
+        "max_batch_bytes",
+        "max_commands_per_s",
+        "max_text_frame_bytes"
+      ]
+    },
+    "SessionOwnershipChanged": {
+      "type": "object",
+      "properties": {
+        "epoch": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "home_node": {
+          "$ref": "#/$defs/NodeId"
+        },
+        "mode": {
+          "$ref": "#/$defs/OwnershipMode"
+        }
+      },
+      "required": [
+        "home_node",
+        "epoch",
+        "mode"
+      ]
+    },
+    "SessionResumed": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ResumeMode"
+        }
+      },
+      "required": [
+        "mode"
+      ]
+    },
+    "SessionSettingsChanged": {
+      "type": "object",
+      "properties": {
+        "effective_from_turn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mechanism": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SettingsMechanism"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SessionStartDenied": {
+      "type": "object",
+      "properties": {
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "reasons"
+      ]
+    },
+    "SessionStarted": {
+      "type": "object",
+      "properties": {
+        "capabilities": true,
+        "harness": {
+          "type": "string"
+        },
+        "harness_session_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness_version": {
+          "type": "string"
+        },
+        "host_id": {
+          "$ref": "#/$defs/HostId"
+        },
+        "runner_id": {
+          "$ref": "#/$defs/RunnerId"
+        }
+      },
+      "required": [
+        "runner_id",
+        "host_id",
+        "harness",
+        "harness_version",
+        "capabilities"
+      ]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "idle",
+        "running",
+        "waiting_approval",
+        "paused",
+        "stopped",
+        "failed"
+      ]
+    },
+    "SessionStatusChanged": {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "status"
+      ]
+    },
+    "SessionTitleChanged": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/TitleSource"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "source"
+      ]
+    },
+    "SessionTrigger": {
+      "type": "string",
+      "enum": [
+        "user",
+        "api",
+        "schedule",
+        "timer",
+        "spawn",
+        "webhook"
+      ]
+    },
+    "SettingsMechanism": {
+      "type": "string",
+      "enum": [
+        "live",
+        "restart"
+      ]
+    },
+    "ShareChange": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "principal": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal",
+        "role",
+        "by"
+      ]
+    },
+    "SystemComponent": {
+      "type": "string",
+      "enum": [
+        "server",
+        "policy",
+        "sandbox",
+        "proxy",
+        "scheduler",
+        "sync",
+        "runner"
+      ]
+    },
+    "TerminalClosed": {
+      "type": "object",
+      "properties": {
+        "exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id"
+      ]
+    },
+    "TerminalKind": {
+      "type": "string",
+      "enum": [
+        "harness_pty",
+        "user",
+        "tool"
+      ]
+    },
+    "TerminalOpened": {
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "cmd": {
+          "type": "string"
+        },
+        "cols": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "kind": {
+          "$ref": "#/$defs/TerminalKind"
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "channel_id",
+        "kind",
+        "cmd",
+        "cols",
+        "rows"
+      ]
+    },
+    "TerminalOutput": {
+      "description": "Metadaten zum Binärkanal; die Bytes laufen über den Kanal (PROTO-007).",
+      "type": "object",
+      "properties": {
+        "channel_id": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "channel_id"
+      ]
+    },
+    "TerminalSnapshot": {
+      "type": "object",
+      "properties": {
+        "blob_ref": {
+          "type": "string"
+        },
+        "cols": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "cursor": true,
+        "rows": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "blob_ref",
+        "cols",
+        "rows",
+        "cursor"
+      ]
+    },
+    "TextDelta": {
+      "description": "Text-Delta einer Nachricht oder Überlegung. Mit `snapshot: true` enthält `text` den\ngesamten bisherigen Text (Snapshot nach Reconnect, PROTO-003).",
+      "type": "object",
+      "properties": {
+        "message_id": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id",
+        "text"
+      ]
+    },
+    "TimeoutAction": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "allow",
+        "abort"
+      ]
+    },
+    "TimerEvent": {
+      "type": "object",
+      "properties": {
+        "fire_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "late_by_s": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timer_id": {
+          "$ref": "#/$defs/TimerId"
+        }
+      },
+      "required": [
+        "timer_id"
+      ]
+    },
+    "TimerId": {
+      "type": "string",
+      "examples": [
+        "tmr_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^tmr_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "TitleSource": {
+      "type": "string",
+      "enum": [
+        "generated",
+        "user",
+        "harness"
+      ]
+    },
+    "ToolCallCompleted": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "result": true,
+        "result_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/ToolStatus"
+        }
+      },
+      "required": [
+        "call_id",
+        "status",
+        "duration_ms"
+      ]
+    },
+    "ToolCallOutputDelta": {
+      "type": "object",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "snapshot": {
+          "type": "boolean"
+        },
+        "stream": {
+          "$ref": "#/$defs/OutputStream"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "stream",
+        "text"
+      ]
+    },
+    "ToolCallRequested": {
+      "type": "object",
+      "properties": {
+        "args": true,
+        "call_id": {
+          "type": "string"
+        },
+        "mcp_server": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ToolSource"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "tool",
+        "args",
+        "source"
+      ]
+    },
+    "ToolCallStarted": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Ausgeführte Argumente, wenn das Gate sie geändert hat (HAR-005 AC2)."
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "sandbox_stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxStage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "call_id"
+      ]
+    },
+    "ToolSource": {
+      "type": "string",
+      "enum": [
+        "harness",
+        "beton_mcp",
+        "acp"
+      ]
+    },
+    "ToolStatus": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error",
+        "denied",
+        "cancelled"
+      ]
+    },
+    "TurnCompleted": {
+      "type": "object",
+      "properties": {
+        "stop_reason": {
+          "type": "string"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        },
+        "usage_summary": true
+      },
+      "required": [
+        "turn_id",
+        "stop_reason",
+        "usage_summary"
+      ]
+    },
+    "TurnFailed": {
+      "type": "object",
+      "properties": {
+        "problem": true,
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        }
+      },
+      "required": [
+        "turn_id",
+        "problem"
+      ]
+    },
+    "TurnId": {
+      "type": "string",
+      "examples": [
+        "trn_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^trn_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "TurnInterrupted": {
+      "type": "object",
+      "properties": {
+        "by": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        }
+      },
+      "required": [
+        "turn_id",
+        "by"
+      ]
+    },
+    "TurnStarted": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "input_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn_id": {
+          "$ref": "#/$defs/TurnId"
+        }
+      },
+      "required": [
+        "turn_id",
+        "author"
+      ]
+    },
+    "UsageSubscription": {
+      "type": "object",
+      "properties": {
+        "resets_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "used_pct": {
+          "type": "number",
+          "format": "double"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "vendor",
+        "window",
+        "used_pct",
+        "resets_at"
+      ]
+    },
+    "ViolationKind": {
+      "type": "string",
+      "enum": [
+        "fs",
+        "net",
+        "syscall",
+        "limit",
+        "proxy_down"
+      ]
+    }
+  }
+}

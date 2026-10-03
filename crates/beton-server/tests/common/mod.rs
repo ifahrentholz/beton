@@ -58,6 +58,7 @@ pub async fn app_with(
             hosts: vec![HOST.into(), "localhost:7420".into(), "[::1]:7420".into()],
             origins: vec![ORIGIN.into(), "tauri://localhost".into()],
             primary_host: HOST.into(),
+            runtime: app::Runtime::new(tokio::sync::watch::channel(false).1),
         },
     )
     .layer(MockConnectInfo(peer.parse::<SocketAddr>().unwrap()));

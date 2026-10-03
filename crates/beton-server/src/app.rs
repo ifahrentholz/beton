@@ -16,10 +16,14 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 use crate::api;
+use crate::commands::CommandRegistry;
+use crate::hub::{EventService, Hub};
 use crate::idempotency::{self, Idempotency};
 use crate::local_auth::{BrowserLogins, LocalToken};
 use crate::problem::{FieldError, PROBLEM_CONTENT_TYPE, Problem, ProblemCode};
 use crate::security::{self, Guard, OriginPolicy, PUBLIC_PATHS};
+use crate::ws::{Authorizer, LocalAuthorizer, WsConfig};
+use tokio::sync::watch;
 
 /// Gemeinsamer Zustand der Handler.
 #[derive(Clone)]
@@ -30,6 +34,39 @@ pub struct AppState {
     /// Host für Links, wenn der Request keinen brauchbaren `Host` hat (Socket).
     pub primary_host: String,
     pub openapi_json: Arc<Vec<u8>>,
+    pub runtime: Runtime,
+}
+
+impl AppState {
+    pub fn events(&self) -> EventService {
+        EventService {
+            store: self.store.clone(),
+            hub: self.runtime.hub.clone(),
+        }
+    }
+}
+
+/// Laufzeit-Bausteine für Live-Verbindungen (WebSocket).
+#[derive(Clone)]
+pub struct Runtime {
+    pub hub: Arc<Hub>,
+    pub commands: Arc<CommandRegistry>,
+    pub authorizer: Arc<dyn Authorizer>,
+    pub ws: WsConfig,
+    /// `true` beim Herunterfahren (Close 4503).
+    pub shutdown: watch::Receiver<bool>,
+}
+
+impl Runtime {
+    pub fn new(shutdown: watch::Receiver<bool>) -> Self {
+        Self {
+            hub: Arc::new(Hub::default()),
+            commands: Arc::new(CommandRegistry::default()),
+            authorizer: Arc::new(LocalAuthorizer),
+            ws: WsConfig::default(),
+            shutdown,
+        }
+    }
 }
 
 #[derive(utoipa::OpenApi)]
@@ -135,6 +172,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(api::create_login_code))
         .routes(routes!(api::redeem_login_code))
         .routes(routes!(api::openapi_json))
+        .routes(routes!(crate::ws::ws_upgrade))
         .split_for_parts();
     // Erst nach dem Einsammeln aller Pfade, sonst sehen die Modifier keine Operationen.
     Security.modify(&mut doc);
@@ -156,6 +194,7 @@ pub struct AppParts {
     pub hosts: Vec<String>,
     pub origins: Vec<String>,
     pub primary_host: String,
+    pub runtime: Runtime,
 }
 
 /// Die vollständige App mit allen Schichten.
@@ -174,6 +213,7 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
         logins: parts.logins.clone(),
         primary_host: parts.primary_host,
         openapi_json,
+        runtime: parts.runtime,
     };
     let guard = Guard {
         hosts: Arc::new(parts.hosts),

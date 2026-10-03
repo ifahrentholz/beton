@@ -2,6 +2,7 @@
 //!
 //! Rust-Typen sind die einzige Quelle. `cargo xtask codegen` schreibt:
 //! - `schemas/v1/events.schema.json` (JSON-Schema via `schemars`)
+//! - `schemas/v1/ws.schema.json` (WebSocket-Nachrichten, PROTO-004 ff.)
 //! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
@@ -19,6 +20,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use beton_core::event::Event;
 use beton_harness::registry::HarnessInfo;
+use beton_proto::ws::{ClientMsg, ServerMsg};
+
+/// Beide Richtungen des WebSocket-Protokolls in einem Schema (PROTO-013).
+#[derive(schemars::JsonSchema)]
+#[allow(dead_code)]
+struct WsMessages {
+    client: ClientMsg,
+    server: ServerMsg,
+}
 use ts_rs::TS;
 
 /// Verzeichnisse, die vollständig generiert werden (veraltete Dateien werden entfernt).
@@ -40,6 +50,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     let mut json = serde_json::to_string_pretty(&schema)?;
     json.push('\n');
     files.insert(PathBuf::from("schemas/v1/events.schema.json"), json);
+    let ws = schemars::schema_for!(WsMessages);
+    let mut json = serde_json::to_string_pretty(&ws)?;
+    json.push('\n');
+    files.insert(PathBuf::from("schemas/v1/ws.schema.json"), json);
     let catalog = schemars::schema_for!(Vec<HarnessInfo>);
     let mut json = serde_json::to_string_pretty(&catalog)?;
     json.push('\n');
@@ -54,6 +68,8 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         .with_large_int("number");
     Event::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     HarnessInfo::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    ClientMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    ServerMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     let mut names = Vec::new();
     for path in walk(tmp.path())? {
         let rel = path.strip_prefix(tmp.path())?.to_path_buf();

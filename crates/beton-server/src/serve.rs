@@ -33,6 +33,7 @@ pub struct Daemon {
     pub addrs: Vec<SocketAddr>,
     pub socket: Option<PathBuf>,
     pub token: Arc<LocalToken>,
+    pub runtime: crate::app::Runtime,
     stop: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -61,6 +62,15 @@ impl Daemon {
 
 /// Bindet alle Listener und startet den Server.
 pub async fn start(config: ServerConfig, store: Store) -> Result<Daemon, StartError> {
+    start_with(config, store, |r| r).await
+}
+
+/// Wie [`start`], mit anpassbarer Laufzeit (Kommandos, WebSocket-Grenzen).
+pub async fn start_with(
+    config: ServerConfig,
+    store: Store,
+    customize: impl FnOnce(crate::app::Runtime) -> crate::app::Runtime,
+) -> Result<Daemon, StartError> {
     config.validate()?;
     let token = Arc::new(LocalToken::load_or_create(&config.data_dir)?);
     let local = store.ensure_local().await?;
@@ -100,6 +110,8 @@ pub async fn start(config: ServerConfig, store: Store) -> Result<Daemon, StartEr
         .map(|a| format!("127.0.0.1:{}", a.port()))
         .unwrap_or_else(|| "localhost".into());
 
+    let (stop, stop_rx) = watch::channel(false);
+    let runtime = customize(crate::app::Runtime::new(stop_rx.clone()));
     let router = app::build(AppParts {
         store,
         local,
@@ -108,9 +120,9 @@ pub async fn start(config: ServerConfig, store: Store) -> Result<Daemon, StartEr
         hosts: config.host_allowlist(&ports),
         origins: config.origin_allowlist(&ports),
         primary_host,
+        runtime: runtime.clone(),
     });
 
-    let (stop, stop_rx) = watch::channel(false);
     let mut tasks = Vec::new();
     for listener in listeners {
         let app = router
@@ -141,6 +153,7 @@ pub async fn start(config: ServerConfig, store: Store) -> Result<Daemon, StartEr
         addrs,
         socket,
         token,
+        runtime,
         stop,
         tasks,
     })

@@ -2449,7 +2449,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "proto-008--backpressure--batching",
-  "summary": "Der Server bündelt Events (spätestens alle 16 ms bzw. 64 Events/256 KiB). Pro Verbindung ist die Ausgangswarteschlange begrenzt: Ab 1 MiB werden aufeinanderfolgende Deltas derselben Nachricht zusammengefasst; überschreiten dauerhafte Events 4 MiB, sendet der Server `overflow {session_id, resume_from}` und stoppt das Senden für diese Session, bis der Client neu attached. Eingehend: max. 100 Kommandos/s und 1 MiB pro Textframe.",
+  "summary": "Der Server bündelt Events (spätestens alle 16 ms bzw. 64 Events/256 KiB). Pro Verbindung ist die Ausgangswarteschlange begrenzt: Ab 1 MiB werden transiente Deltas zurückgehalten und, sobald die Warteschlange wieder unter 1 MiB liegt, als ein Snapshot je Strom (`snapshot: true`) nachgereicht; überschreiten dauerhafte Events 4 MiB, sendet der Server `overflow {session_id, resume_from}` und stoppt das Senden für diese Session, bis der Client neu attached. Eingehend: max. 100 Kommandos/s und 1 MiB pro Textframe.",
   "acs": [
    "Ein künstlich blockierter Client erhält `overflow`; nach erneutem `attach` ab `resume_from` ist sein Zustand vollständig.",
    "Ein langsamer Client verzögert andere Clients derselben Session nicht (p99-Latenz der schnellen Clients < 100 ms im Lasttest).",

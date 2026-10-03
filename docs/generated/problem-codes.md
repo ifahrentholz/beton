@@ -10,6 +10,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `validation_failed` | 400 | Validierung fehlgeschlagen |
 | `invalid_cursor` | 400 | Ungültiger Cursor |
 | `invalid_limit` | 400 | Ungültiges Limit |
+| `unknown_command` | 400 | Unbekanntes Kommando |
 | `unauthorized` | 401 | Anmeldung erforderlich |
 | `invalid_code` | 401 | Einmal-Code ungültig oder abgelaufen |
 | `forbidden` | 403 | Keine Berechtigung |
@@ -21,6 +22,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `conflict` | 409 | Konflikt |
 | `seq_conflict` | 409 | Sequenzkonflikt |
 | `stale_epoch` | 409 | Veraltete Epoch |
+| `seq_ahead` | 409 | from_seq liegt hinter head_seq |
 | `tombstoned` | 410 | Gelöscht |
 | `precondition_failed` | 412 | Vorbedingung nicht erfüllt |
 | `payload_too_large` | 413 | Anfrage zu groß |

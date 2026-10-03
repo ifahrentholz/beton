@@ -4,3 +4,4 @@
 //! Spec: PROTO-* in `docs/spec/06-data-sync-protocol.md`.
 
 pub mod transient;
+pub mod ws;

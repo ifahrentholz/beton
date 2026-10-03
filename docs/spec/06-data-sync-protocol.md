@@ -156,7 +156,7 @@ Client                                         Server
   │── credit {channel_id:5, bytes:262144} ─►│
 ```
 
-Kommandos (gleichwertig zu REST): `input.submit`, `queue.edit|delete|reorder|resume`, `turn.interrupt`, `approval.resolve`, `comment.add|update|resolve|delete|address`, `session.set`, `terminal.resize`, `browser.input`, `presence.update`, `voice.start|stop` (Audio-Kanal; Transkripte kommen als `voice.partial|final` direkt an den Client, nicht ins Session-Log). Close-Codes: `4400` Protokoll/Version, `4401` nicht (mehr) authentisiert, `4403` verboten/Share widerrufen, `4404` Session unbekannt, `4408` Heartbeat-Timeout, `4429` Rate-Limit, `4500` intern, `4503` Server fährt herunter (Reconnect).
+Die erste Protokollversion ist `1.0`; die Beispiele oben zeigen eine spätere Minor. Kommandos (gleichwertig zu REST): `input.submit`, `queue.edit|delete|reorder|resume`, `turn.interrupt`, `approval.resolve`, `comment.add|update|resolve|delete|address`, `session.set`, `terminal.resize`, `browser.input`, `presence.update`, `voice.start|stop` (Audio-Kanal; Transkripte kommen als `voice.partial|final` direkt an den Client, nicht ins Session-Log). Close-Codes: `4400` Protokoll/Version, `4401` nicht (mehr) authentisiert, `4403` verboten/Share widerrufen, `4404` Session unbekannt, `4408` Heartbeat-Timeout, `4429` Rate-Limit, `4500` intern, `4503` Server fährt herunter (Reconnect).
 
 ### Tunnel-Protokoll (Host/Runner/Knoten → Server)
 
@@ -303,7 +303,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### PROTO-008 — Backpressure & Batching
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Der Server bündelt Events (spätestens alle 16 ms bzw. 64 Events/256 KiB). Pro Verbindung ist die Ausgangswarteschlange begrenzt: Ab 1 MiB werden aufeinanderfolgende Deltas derselben Nachricht zusammengefasst; überschreiten dauerhafte Events 4 MiB, sendet der Server `overflow {session_id, resume_from}` und stoppt das Senden für diese Session, bis der Client neu attached. Eingehend: max. 100 Kommandos/s und 1 MiB pro Textframe.
+- **Beschreibung:** Der Server bündelt Events (spätestens alle 16 ms bzw. 64 Events/256 KiB). Pro Verbindung ist die Ausgangswarteschlange begrenzt: Ab 1 MiB werden transiente Deltas zurückgehalten und, sobald die Warteschlange wieder unter 1 MiB liegt, als ein Snapshot je Strom (`snapshot: true`) nachgereicht; überschreiten dauerhafte Events 4 MiB, sendet der Server `overflow {session_id, resume_from}` und stoppt das Senden für diese Session, bis der Client neu attached. Eingehend: max. 100 Kommandos/s und 1 MiB pro Textframe.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein künstlich blockierter Client erhält `overflow`; nach erneutem `attach` ab `resume_from` ist sein Zustand vollständig.
   - [ ] AC2 — Ein langsamer Client verzögert andere Clients derselben Session nicht (p99-Latenz der schnellen Clients < 100 ms im Lasttest).

@@ -206,7 +206,12 @@ name = "beton-proto"
 version = "0.0.0"
 dependencies = [
  "beton-core",
+ "fastrand",
  "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
@@ -221,10 +226,13 @@ version = "0.0.0"
 name = "beton-server"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "beton-core",
+ "beton-proto",
  "beton-store",
+ "futures-util",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
@@ -238,6 +246,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-http",
  "tracing",
@@ -2413,6 +2422,7 @@ dependencies = [
  "anyhow",
  "beton-core",
  "beton-harness",
+ "beton-proto",
  "beton-server",
  "beton-store",
  "regex",
