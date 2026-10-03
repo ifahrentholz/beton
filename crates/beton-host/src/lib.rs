@@ -90,6 +90,8 @@ pub struct RunnerBoot {
     pub scenario: Option<PathBuf>,
     pub model: Option<String>,
     pub dev: bool,
+    /// Native Session-Referenz zum Fortsetzen (SES-003).
+    pub resume: Option<String>,
 }
 
 /// Laufender Runner.
@@ -216,6 +218,7 @@ macro_rules! runner_provider_contract {
                     scenario: None,
                     model: None,
                     dev: true,
+                    resume: None,
                 }
             }
 

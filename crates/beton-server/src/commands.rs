@@ -11,15 +11,13 @@ use async_trait::async_trait;
 use beton_core::id::SessionId;
 use serde_json::Value;
 
-use crate::hub::EventService;
 use crate::problem::Problem;
 use crate::security::Authenticated;
 
 /// Kontext eines Kommandos.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CommandCtx {
-    pub events: EventService,
-    pub local: beton_store::LocalIdentity,
+    pub state: crate::app::AppState,
     pub auth: Authenticated,
 }
 

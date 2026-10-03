@@ -50,6 +50,7 @@ impl std::fmt::Debug for Daemon {
 impl Daemon {
     /// Beendet alle Listener und wartet auf laufende Requests.
     pub async fn shutdown(self) {
+        crate::sessions::shutdown_all(&self.runtime.sessions, &self.runtime.runners).await;
         let _ = self.stop.send(true);
         for t in self.tasks {
             let _ = t.await;
@@ -111,7 +112,9 @@ pub async fn start_with(
         .unwrap_or_else(|| "localhost".into());
 
     let (stop, stop_rx) = watch::channel(false);
-    let runtime = customize(crate::app::Runtime::new(stop_rx.clone()));
+    let runtime = customize(
+        crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
+    );
     let store_for_tunnel = store.clone();
     let router = app::build(AppParts {
         store,

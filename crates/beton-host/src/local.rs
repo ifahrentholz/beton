@@ -168,6 +168,9 @@ impl RunnerProvider for LocalProvider {
         if let Some(s) = &boot.scenario {
             vars.push((beton_runner::env::SCENARIO.into(), s.display().to_string()));
         }
+        if let Some(r) = &boot.resume {
+            vars.push((beton_runner::env::RESUME.into(), r.clone()));
+        }
         if let Some(m) = &boot.model {
             vars.push((beton_runner::env::MODEL.into(), m.clone()));
         }

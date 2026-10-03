@@ -262,6 +262,8 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "beton-core",
+ "beton-harness",
+ "beton-harness-claude",
  "beton-host",
  "beton-proto",
  "beton-store",

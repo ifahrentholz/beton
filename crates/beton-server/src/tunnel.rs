@@ -5,7 +5,7 @@
 //! Start mintet und per stdin übergibt (AUTH-011-Prinzip). Der Server vergibt `seq`,
 //! dedupliziert erneut gesendete Events über `rseq` und bestätigt per `events.ack`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -72,7 +72,8 @@ pub struct RunnerRegistry {
     conns: Mutex<HashMap<SessionId, RunnerConn>>,
     /// Höchste gespeicherte `rseq` je Session (Dedup nach Reconnect).
     persisted: Mutex<HashMap<SessionId, u64>>,
-    stopping: Mutex<HashSet<SessionId>>,
+    /// Sessions, deren Runner geordnet gestoppt wird, mit Grund.
+    stopping: Mutex<HashMap<SessionId, String>>,
     /// Test-Haken: Sessions, deren Verbindungen bis zum Zeitpunkt abgelehnt werden.
     refuse_until: Mutex<HashMap<SessionId, Instant>>,
     next_conn: AtomicU64,
@@ -142,7 +143,7 @@ impl RunnerRegistry {
         }
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(v))) => Ok(v),
-            Ok(Ok(Err(problem))) => Err(Problem::new(ProblemCode::Conflict).detail(
+            Ok(Ok(Err(problem))) => Err(Problem::new(runner_code(&problem)).detail(
                 problem["detail"]
                     .as_str()
                     .unwrap_or("Runner meldet einen Fehler")
@@ -154,11 +155,15 @@ impl RunnerRegistry {
 
     /// Runner beenden lassen; nach dem Trennen gilt die Session als `stopped`.
     pub fn stop(&self, session: SessionId, grace_s: u64) -> bool {
+        self.stop_with_reason(session, grace_s, "Runner im Leerlauf beendet")
+    }
+
+    pub fn stop_with_reason(&self, session: SessionId, grace_s: u64, reason: &str) -> bool {
         let conns = lock(&self.conns);
         let Some(conn) = conns.get(&session) else {
             return false;
         };
-        lock(&self.stopping).insert(session);
+        lock(&self.stopping).insert(session, reason.to_owned());
         conn.tx
             .send(TunnelDown::RunnerStop {
                 session_id: session,
@@ -171,6 +176,18 @@ impl RunnerRegistry {
     pub fn disconnect_for(&self, session: SessionId, duration: Duration) {
         lock(&self.refuse_until).insert(session, Instant::now() + duration);
         lock(&self.conns).remove(&session);
+    }
+}
+
+/// Fehlercode des Runners auf den passenden `ProblemCode` abbilden.
+fn runner_code(problem: &Value) -> ProblemCode {
+    match problem["code"].as_str().unwrap_or_default() {
+        "capability_unsupported" => ProblemCode::CapabilityUnsupported,
+        "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
+        "not_found" => ProblemCode::NotFound,
+        "unknown_command" => ProblemCode::UnknownCommand,
+        "session_closed" => ProblemCode::Unavailable,
+        _ => ProblemCode::Conflict,
     }
 }
 
@@ -370,15 +387,10 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
             conns.remove(&session_id);
         }
     }
-    if lock(&state.runners.stopping).remove(&session_id) {
-        // RUN-003 AC2: nach geordnetem Stopp ist die Session `stopped`.
-        append_status(
-            &state,
-            session_id,
-            SessionStatus::Stopped,
-            "Runner beendet (Idle-Timeout)",
-        )
-        .await;
+    let stopped = lock(&state.runners.stopping).remove(&session_id);
+    if let Some(reason) = stopped {
+        // RUN-003 AC2, SES-001 AC2: nach geordnetem Stopp ist die Session `stopped`.
+        append_status(&state, session_id, SessionStatus::Stopped, &reason).await;
         state.runners.revoke_tokens(session_id);
     }
 }
@@ -540,7 +552,7 @@ pub async fn idle_reaper(
             .map(|(s, _)| *s)
             .collect();
         for session in idle {
-            if !lock(&state.runners.stopping).contains(&session) {
+            if !lock(&state.runners.stopping).contains_key(&session) {
                 tracing::info!(%session, "Runner im Leerlauf, wird beendet");
                 state.runners.stop(session, 10);
             }

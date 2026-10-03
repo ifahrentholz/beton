@@ -136,6 +136,22 @@ impl SessionListQuery {
     }
 }
 
+/// Listen-Darstellung einer Session.
+pub fn summary(s: beton_store::SessionRecord) -> SessionSummary {
+    SessionSummary {
+        id: s.id,
+        title: s.title,
+        status: enum_str(&s.status),
+        kind: enum_str(&s.kind),
+        harness: s.harness,
+        archived: s.archived,
+        head_seq: s.head_seq,
+        cost_micro: s.cost_micro,
+        created_at: s.created_at.to_string(),
+        last_activity_at: s.last_activity_at.to_string(),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionCursor {
     before: SessionId,
@@ -169,21 +185,7 @@ pub async fn list_sessions(
         )
         .await?;
     Ok(axum::Json(SessionPage {
-        items: sessions
-            .into_iter()
-            .map(|s| SessionSummary {
-                id: s.id,
-                title: s.title,
-                status: enum_str(&s.status),
-                kind: enum_str(&s.kind),
-                harness: s.harness,
-                archived: s.archived,
-                head_seq: s.head_seq,
-                cost_micro: s.cost_micro,
-                created_at: s.created_at.to_string(),
-                last_activity_at: s.last_activity_at.to_string(),
-            })
-            .collect(),
+        items: sessions.into_iter().map(summary).collect(),
         next_cursor: next.map(|before| encode_cursor(&SessionCursor { before })),
     }))
 }

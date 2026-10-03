@@ -39,6 +39,10 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn sessions(&self) -> crate::sessions::SessionManager<'_> {
+        crate::sessions::SessionManager::new(self)
+    }
+
     pub fn events(&self) -> EventService {
         EventService {
             store: self.store.clone(),
@@ -58,6 +62,9 @@ pub struct Runtime {
     pub tunnel: TunnelConfig,
     /// Der Host dieses Knotens mit seinen Providern.
     pub host: crate::api::HostInfo,
+    pub sessions: crate::sessions::SessionsConfig,
+    /// Harness-Katalog dieses Hosts (HAR-002).
+    pub harnesses: beton_harness::registry::Registry,
     /// `true` beim Herunterfahren (Close 4503).
     pub shutdown: watch::Receiver<bool>,
 }
@@ -72,8 +79,60 @@ impl Runtime {
             runners: Arc::new(RunnerRegistry::default()),
             tunnel: TunnelConfig::default(),
             host: crate::api::HostInfo::local(),
+            sessions: crate::sessions::SessionsConfig {
+                provider: Arc::new(beton_host::LocalProvider::new(
+                    default_runner_command(),
+                    std::env::temp_dir().join("beton-runners"),
+                )),
+                tunnel_socket: None,
+                dev: cfg!(debug_assertions),
+                launched: Arc::default(),
+            },
+            harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
         }
+    }
+
+    /// Laufzeit für eine Konfiguration: Runner-Zustand unter `<data_dir>/runners`, Tunnel-Socket.
+    pub fn for_config(
+        config: &crate::config::ServerConfig,
+        shutdown: watch::Receiver<bool>,
+    ) -> Self {
+        let mut r = Self::new(shutdown);
+        r.sessions.provider = Arc::new(beton_host::LocalProvider::new(
+            default_runner_command(),
+            config.data_dir.join("runners"),
+        ));
+        r.sessions.tunnel_socket.clone_from(&config.tunnel_socket);
+        r
+    }
+}
+
+/// Eingebaute Harnesses; der Fake nur im Entwicklermodus (HAR-026 AC3).
+pub fn default_registry(dev: bool) -> beton_harness::registry::Registry {
+    let mut r =
+        beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions { dev });
+    r.register(Arc::new(beton_harness_claude::ClaudeAdapter::default()));
+    r
+}
+
+/// Runner-Kommando: `beton-runner` neben dem eigenen Binary, sonst aus `PATH`.
+/// (Mit WP-10 wird daraus `beton runner`.)
+pub fn default_runner_command() -> Vec<String> {
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("beton-runner")))
+        .filter(|p| p.is_file());
+    vec![sibling.map_or_else(|| "beton-runner".to_owned(), |p| p.display().to_string())]
+}
+
+impl Runtime {
+    /// Standard-Kommandos (PROTO-006) für diese Laufzeit.
+    pub fn with_default_commands(mut self) -> Self {
+        let mut reg = (*self.commands).clone();
+        crate::api_sessions::register_commands(&mut reg);
+        self.commands = Arc::new(reg);
+        self
     }
 }
 
@@ -182,6 +241,23 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(api::openapi_json))
         .routes(routes!(crate::ws::ws_upgrade))
         .routes(routes!(api::get_host))
+        .routes(routes!(crate::api_sessions::create_session))
+        .routes(routes!(
+            crate::api_sessions::get_session,
+            crate::api_sessions::delete_session,
+            crate::api_sessions::patch_session
+        ))
+        .routes(routes!(crate::api_sessions::list_harnesses))
+        .routes(routes!(crate::api_sessions::archive_session))
+        .routes(routes!(crate::api_sessions::unarchive_session))
+        .routes(routes!(crate::api_sessions::interrupt_session))
+        .routes(routes!(crate::api_sessions::resume_session))
+        .routes(routes!(crate::api_sessions::submit_input))
+        .routes(routes!(crate::api_sessions::list_events))
+        .routes(routes!(crate::api_sessions::list_approvals))
+        .routes(routes!(crate::api_sessions::resolve_approval))
+        .routes(routes!(crate::api_sessions::get_blob))
+        .routes(routes!(crate::api_sessions::list_tombstones))
         .split_for_parts();
     // Erst nach dem Einsammeln aller Pfade, sonst sehen die Modifier keine Operationen.
     Security.modify(&mut doc);
@@ -243,8 +319,11 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
         .layer(CatchPanicLayer::custom(panic_response))
 }
 
+/// Kennzeichnet ein 404 ohne passende Route (im Unterschied zu „Ressource unbekannt“).
+pub const NO_ROUTE: &str = "Keine Route für diesen Pfad";
+
 async fn not_found() -> Problem {
-    Problem::new(ProblemCode::NotFound)
+    Problem::new(ProblemCode::NotFound).detail(NO_ROUTE)
 }
 
 async fn method_not_allowed(method: Method) -> Problem {
