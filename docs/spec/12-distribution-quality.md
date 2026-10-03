@@ -41,6 +41,7 @@ release-please PR gemergt → Tag
   → SBOM (CycloneDX: cargo-cyclonedx; Images: syft) + SLSA-Provenance (GitHub Attestations)
   → GitHub Release (Draft) mit SHA256SUMS, *.sigstore.json, SBOMs
   → Smoke-Tests: Installer auf macOS/Linux/Windows, `beton --version`, `beton doctor --json`
+  → Gate: Protokoll der Subscription-Verifikation mit echten Logins vorhanden (QA-019)
   → Release veröffentlichen → Container push (ghcr) → Tauri latest.json je Kanal
   → PRs/Commits an homebrew-tap, scoop-bucket, winget-pkgs
 ```
@@ -228,7 +229,7 @@ release-please PR gemergt → Tag
 
 ### DIST-019 — Release-Prozess & Changelog
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis.
+- **Beschreibung:** Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis. Veröffentlicht wird erst, wenn das Protokoll der manuellen Subscription-Verifikation für die Version vorliegt (Gate aus QA-019).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein `feat(policy): POL-003 …`-Commit erscheint im nächsten Release-PR unter „Features“ mit Feature-ID.
   - [ ] AC2 — Ein `feat!:`-Commit führt (ab 1.0) zu einer Major-, davor zu einer Minor-Erhöhung und zu einem Eintrag unter „Breaking Changes“.
@@ -447,6 +448,18 @@ release-please PR gemergt → Tag
   - [ ] AC5 — (ab M3) Im selben Namespace läuft das M3-Demo-Szenario mit Fake-Harness: Desktop (tauri-driver, Linux) bzw. Web-UI und `beton tui`, zwei Sessions in Worktrees eines lokalen Repos, eingebetteter Browser mit Inspect-Mode gegen einen lokalen Dev-Server und Diktat mit vorab importiertem Whisper-Modell und Audio-Fixture.
 - **Abhängigkeiten:** QA-002, QA-007, QA-010, HAR-026 (siehe 01-harnesses.md), WEB-001 (siehe 08-clients.md); ab M3: QA-008, SES-015 (siehe 07-sessions-collaboration.md), TUI-001 (siehe 08-clients.md), BRW-013 (siehe 09-browser.md), VOI-002 (siehe 11-platform-features.md)
 - **Referenz:** ADR-0033, ADR-0031
+
+### QA-019 — Subscription-Verifikations-Checkliste pro Release
+- **Meilenstein:** M3 · **Priorität:** Must
+- **Beschreibung:** CI kann keine Subscriptions nutzen (ADR-0031). Deshalb wird vor jedem Release ab 0.1 eine manuelle Checkliste mit **echten Subscription-Logins** durchlaufen – Claude Pro/Max über `claude`, ChatGPT Plus/Pro über `codex`, Google-Login über die Gemini CLI via ACP – und als Protokoll eingecheckt. Sie belegt ADR-0034: Jedes Feature, das selbst ein Modell nutzt, funktioniert ohne API-Key. Die rechtliche Klärung der Nutzungsbedingungen bleibt offener Punkt 4 (00-overview.md) und ist nicht Teil der Checkliste.
+- **Details:** Vorlage `docs/release/subscription-checklist.md`; Protokoll je Release `docs/release/verifications/<version>.md` mit Datum, Prüfer, beton-Version, getesteten Vendor-CLI-Versionen und Ergebnis je Punkt (`bestanden | fehlgeschlagen | n/a` mit Begründung). Durchgeführt in einer Umgebung ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration. Protokolle enthalten keine Tokens, Account-IDs oder E-Mail-Adressen.
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Die Vorlage enthält mindestens: Login-Erkennung in `beton setup`, Session mit Streaming und Approval je Harness (`claude`, `codex`, `acp:gemini`), Fork Claude → Codex, `maestra` mit Cross-Review, `duetto`, automatischer Session-Titel, Compaction, Subscription-Usage-Anzeige und `harness.auth_required` nach Logout der CLI.
+  - [ ] AC2 — Der Release-Workflow (DIST-019) bleibt Draft, wenn für die Version kein Protokoll existiert oder ein Must-Punkt nicht als bestanden markiert ist (CI-Check parst das Protokoll).
+  - [ ] AC3 — Der CI-Check gleicht die im Protokoll genannten CLI-Versionen mit dem Katalog-`version_range` (HAR-002) ab und schlägt bei einer Version außerhalb des Bereichs fehl.
+  - [ ] AC4 — Der Secret-Scan (QA-003) läuft auch über `docs/release/verifications/**` und schlägt bei Token-Mustern oder E-Mail-Adressen fehl.
+- **Abhängigkeiten:** DIST-019, QA-003, HAR-002, HAR-015, HAR-016 (siehe 01-harnesses.md), SES-010 (siehe 07-sessions-collaboration.md), AGT-011, AGT-012 (siehe 02-agents.md)
+- **Referenz:** ADR-0034, ADR-0031
 
 ## Nicht in v1
 

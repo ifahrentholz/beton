@@ -11,10 +11,10 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | [M0](#m0) | Fundament | 67 | 1 | 0 | 68 |
 | [M1](#m1) | Meta-Harness | 33 | 20 | 0 | 53 |
 | [M2](#m2) | Kontrolle | 64 | 9 | 2 | 75 |
-| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 67 | 15 | 2 | 84 |
+| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 68 | 15 | 2 | 85 |
 | [M4](#m4) | Team | 57 | 8 | 1 | 66 |
 | [M5](#m5) | Autonomie & Breite → v1.0 | 35 | 9 | 3 | 47 |
-| **Summe v1.0** | | **323** | **62** | **8** | **393** |
+| **Summe v1.0** | | **324** | **62** | **8** | **394** |
 
 **Arbeitsweise:** Innerhalb eines Meilensteins zuerst alle *Must*-Features (in Abhängigkeitsreihenfolge, siehe Feld *Abhängigkeiten*), dann *Should*. *Could*-Features sind Stretch-Goals und blockieren den Meilenstein nicht. Ein Meilenstein gilt als erreicht, wenn alle *Must*-Features grün sind **und** das Demo-Szenario manuell (und so weit möglich als E2E-Test) funktioniert.
 
@@ -394,11 +394,11 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 - Projects, Worktrees, Terminals
 - Eingebetteter Browser (CDP-Screencast), Agent-Tools, Inspect-Mode
 - Lokales Whisper, Command-Palette, Themes, Onboarding
-- Release-Pipeline: Signing, Notarisierung, Homebrew, Installer, Auto-Update
+- Release-Pipeline: Signing, Notarisierung, Homebrew, Installer, Updates (Prüfung nur auf Klick/opt-in), Subscription-Checkliste pro Release (QA-019)
 
 **Demo-Szenario (Exit-Kriterium):** Ein neuer Nutzer installiert die signierte Desktop-App, `beton setup` erkennt die CLI-Logins, und er arbeitet mit mehreren Sessions in Worktrees, nutzt den Inspect-Mode im eingebetteten Browser und diktiert Prompts per Push-to-Talk – vollständig lokal.
 
-<details><summary>Features (84)</summary>
+<details><summary>Features (85)</summary>
 
 
 **[01 — Harnesses](01-harnesses.md)**
@@ -529,6 +529,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | DIST-020 | Deinstallation | Must |
 | QA-008 | E2E-Tests Desktop (tauri-driver) | Must |
 | QA-012 | Performance-Benchmarks | Should |
+| QA-019 | Subscription-Verifikations-Checkliste pro Release | Must |
 
 </details>
 
