@@ -77,6 +77,10 @@ jobs:
             cargo test --workspace --doc --offline
           '
 
+      # covers: DATA-002 AC3 (Durchsatz ≥ 5 000 Events/s, isoliert im Release-Build)
+      - name: Benchmark Event-Log-Durchsatz
+        run: cargo test -p beton-store --release --lib data_002_ac3 -- --ignored --nocapture
+
   test-macos:
     name: test (macos)
     runs-on: macos-latest
