@@ -38,10 +38,11 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub causation_id: Option<EventId>,
-    /// Original-Payload des Harness (optional, vor Persistenz redigiert).
+    /// Original-Payload des Harness (optional, vor Persistenz redigiert), byte-genau erhalten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub raw: Option<Value>,
+    #[schemars(with = "Option<Value>")]
+    #[ts(as = "Option<Value>", optional)]
+    pub raw: Option<RawJson>,
     /// Nur bei transienten Events: `true`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
@@ -81,6 +82,43 @@ impl Event {
             EventBody::Inline(p) => Some(p),
             EventBody::Offloaded(_) => None,
         }
+    }
+}
+
+/// JSON-Text, der unverändert (byte-genau) erhalten bleibt, z. B. die Original-Zeile eines
+/// Harness (HAR-001 AC3). Vergleiche erfolgen auf dem Text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawJson(Box<serde_json::value::RawValue>);
+
+impl RawJson {
+    /// Übernimmt gültigen JSON-Text unverändert.
+    pub fn from_string(json: String) -> Result<Self, serde_json::Error> {
+        serde_json::value::RawValue::from_string(json).map(Self)
+    }
+
+    /// Kompakte Serialisierung eines Werts.
+    pub fn from_value(value: &Value) -> Self {
+        // Ein `Value` ist immer gültiges JSON.
+        Self::from_string(value.to_string()).unwrap_or_else(|_| Self::null())
+    }
+
+    fn null() -> Self {
+        Self(serde_json::value::RawValue::NULL.to_owned())
+    }
+
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+
+    pub fn to_value(&self) -> Result<Value, serde_json::Error> {
+        serde_json::from_str(self.get())
+    }
+}
+
+impl PartialEq for RawJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
     }
 }
 
@@ -1179,6 +1217,17 @@ mod tests {
     }
 
     #[test]
+    fn har_001_ac3_raw_keeps_original_bytes() {
+        let original = r#"{"z":1,  "a":"\u00e4","n":1.50}"#;
+        let mut e = envelope(EventPayload::default());
+        e.raw = Some(RawJson::from_string(original.to_owned()).unwrap());
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(original), "{json}");
+        let back: Event = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.raw.unwrap().get(), original);
+    }
+
+    #[test]
     fn invalid_payload_error_names_the_problem() {
         let mut v = serde_json::to_value(envelope(EventPayload::default())).unwrap();
         v["payload"]["level"] = "laut".into();
@@ -1333,7 +1382,7 @@ mod tests {
                 let mut e = envelope(body);
                 e.seq = seq;
                 e.ts = ts;
-                e.raw = raw.clone();
+                e.raw = raw.as_ref().map(RawJson::from_value);
                 prop_assert_eq!(roundtrip(&e), e);
             }
         }

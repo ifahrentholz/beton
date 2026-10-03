@@ -95,10 +95,7 @@ impl Store {
                     (Some(json), None)
                 };
                 let raw = match event.raw.take() {
-                    Some(mut raw) if self.options.store_raw => {
-                        self.options.redactor.redact(&mut raw);
-                        Some(raw.to_string())
-                    }
+                    Some(raw) if self.options.store_raw => Some(self.redact_raw(&raw)?),
                     _ => None,
                 };
                 Ok(Prepared {
@@ -110,6 +107,21 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Schickt `raw` durch den Redaction-Hook. Ändert er nichts, bleiben die Original-Bytes
+    /// erhalten (HAR-001 AC3); sonst wird der redigierte Wert kompakt serialisiert.
+    fn redact_raw(&self, raw: &beton_core::event::RawJson) -> Result<String> {
+        let original: Value = raw
+            .to_value()
+            .map_err(|e| Error::InvalidEvent(format!("raw ist kein JSON: {e}")))?;
+        let mut redacted = original.clone();
+        self.options.redactor.redact(&mut redacted);
+        Ok(if redacted == original {
+            raw.get().to_owned()
+        } else {
+            redacted.to_string()
+        })
     }
 
     /// Schreibt vorbereitete Events in einer bestehenden Transaktion.
