@@ -45,6 +45,8 @@ pub mod env {
     pub const MODEL: &str = "BETON_MODEL";
     pub const PARENT_PID: &str = "BETON_RUNNER_PARENT_PID";
     pub const DEV: &str = "BETON_DEV";
+    /// Native Session-Referenz zum Fortsetzen (SES-003).
+    pub const RESUME: &str = "BETON_RESUME";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -62,6 +64,7 @@ pub struct RunnerBoot {
     pub model: Option<String>,
     pub parent_pid: Option<u32>,
     pub dev: bool,
+    pub resume: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -107,6 +110,7 @@ impl RunnerBoot {
                 .ok()
                 .and_then(|p| p.parse().ok()),
             dev: std::env::var(env::DEV).is_ok_and(|v| v == "1"),
+            resume: std::env::var(env::RESUME).ok().filter(|r| !r.is_empty()),
         })
     }
 }
@@ -175,6 +179,32 @@ impl Unacked {
             .front()
             .map(|(e, _)| e.rseq - 1)
             .unwrap_or(self.next_rseq)
+    }
+}
+
+/// Leitet `session.status` aus dem Event-Strom ab und meldet nur Änderungen.
+#[derive(Default)]
+struct StatusTracker {
+    current: Option<SessionStatus>,
+}
+
+impl StatusTracker {
+    fn set(&mut self, boot: &RunnerBoot, to: SessionStatus, out: &mut Vec<Event>) {
+        if self.current == Some(to) {
+            return;
+        }
+        self.current = Some(to);
+        out.push(Event::new(
+            boot.session_id,
+            0,
+            Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            EventPayload::SessionStatus(SessionStatusChanged {
+                status: to,
+                reason: None,
+            }),
+        ));
     }
 }
 
@@ -283,6 +313,17 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         &mut pending_status,
     );
 
+    let probe = match registry.get(&boot.harness) {
+        Some(adapter) => adapter.probe(&ctx.env).await,
+        None => beton_harness::ProbeReport::default(),
+    };
+    let capabilities = registry
+        .get(&boot.harness)
+        .map(|a| {
+            serde_json::to_value(a.capabilities(beton_harness::Mode::Native, &probe))
+                .unwrap_or(Value::Null)
+        })
+        .unwrap_or(Value::Null);
     let mut session = registry
         .start(
             &boot.harness,
@@ -290,16 +331,53 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 workdir: boot.workdir.clone(),
                 model: boot.model.clone(),
                 scenario: boot.scenario.clone(),
+                resume: boot.resume.clone(),
                 ..SessionSpec::default()
             },
             ctx,
         )
         .await?;
+    // SES-001: nach `session.created` folgt `session.started`.
+    pending_status.insert(
+        0,
+        Event::new(
+            boot.session_id,
+            0,
+            Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            EventPayload::SessionStarted(beton_core::event::SessionStarted {
+                runner_id: boot.runner_id,
+                host_id: beton_core::id::HostId::LOCAL,
+                harness: boot.harness.to_string(),
+                harness_version: probe.version.unwrap_or_default(),
+                capabilities,
+                harness_session_ref: boot.resume.clone(),
+            }),
+        ),
+    );
+    if boot.resume.is_some() {
+        pending_status.insert(
+            1,
+            Event::new(
+                boot.session_id,
+                0,
+                Actor::System {
+                    component: beton_core::event::SystemComponent::Runner,
+                },
+                EventPayload::SessionResumed(beton_core::event::SessionResumed {
+                    mode: beton_core::event::ResumeMode::Native,
+                }),
+            ),
+        );
+    }
     let mut harness_rx = session
         .events()
         .ok_or(RunnerError::Boot("Event-Strom fehlt".into()))?;
 
     let mut unacked = Unacked::default();
+    let mut tracker = StatusTracker::default();
+    let mut turn_running = false;
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
@@ -340,6 +418,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         let mut extra = Vec::new();
         status(&mut lifecycle, RunnerState::Connected, None, &mut extra);
         status(&mut lifecycle, RunnerState::Idle, None, &mut extra);
+        if !turn_running {
+            tracker.set(&boot, SessionStatus::Idle, &mut extra);
+        }
         for e in extra {
             unacked.push(e);
         }
@@ -363,16 +444,36 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             let paused = unacked.bytes > MAX_UNACKED_BYTES;
             tokio::select! {
                 ev = harness_rx.recv(), if !paused => {
-                    let Some(ev) = ev else { break Some(Exit::HarnessExited { code: None }) };
-                    let exited = match &ev.payload {
-                        EventPayload::HarnessExited(x) => Some(x.clone()),
-                        _ => None,
-                    };
-                    let busy = matches!(ev.payload, EventPayload::TurnStarted(_));
-                    let done = matches!(ev.payload, EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_));
-                    let mut batch = vec![to_event(&boot, &actor, ev)];
-                    if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); }
-                    if done { status(&mut lifecycle, RunnerState::Idle, None, &mut batch); }
+                    let Some(first) = ev else { break Some(Exit::HarnessExited { code: None }) };
+                    // Bereits anstehende Events bündeln: ein Push, eine Transaktion beim Server.
+                    let mut incoming = vec![first];
+                    while incoming.len() < 256 {
+                        match harness_rx.try_recv() {
+                            Ok(e) => incoming.push(e),
+                            Err(_) => break,
+                        }
+                    }
+                    let mut batch = Vec::with_capacity(incoming.len() + 4);
+                    let mut exited = None;
+                    for ev in incoming {
+                        if let EventPayload::HarnessExited(x) = &ev.payload {
+                            exited = Some(x.clone());
+                        }
+                        let busy = matches!(ev.payload, EventPayload::TurnStarted(_));
+                        let next_status = match &ev.payload {
+                            EventPayload::TurnStarted(_) | EventPayload::ApprovalResolved(_) => Some(SessionStatus::Running),
+                            EventPayload::ApprovalRequested(_) => Some(SessionStatus::WaitingApproval),
+                            EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_) => Some(SessionStatus::Idle),
+                            _ => None,
+                        };
+                        let done = matches!(ev.payload, EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_));
+                        batch.push(to_event(&boot, &actor, ev));
+                        if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; }
+                        if done { status(&mut lifecycle, RunnerState::Idle, None, &mut batch); turn_running = false; }
+                        if let Some(st) = next_status {
+                            tracker.set(&boot, st, &mut batch);
+                        }
+                    }
                     if let Some(x) = &exited {
                         // RUN-003 AC3 / HAR-001 AC1: Absturz → Runner failed, Session failed.
                         let tail: Vec<&str> = x.stderr_tail.lines().rev().take(50).collect::<Vec<_>>().into_iter().rev().collect();
@@ -398,7 +499,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
                         TunnelDown::CmdDeliver { cmd_id, name, args } => {
-                            let reply = deliver(&mut *session, &gate, &name, args).await;
+                            let reply = deliver(&mut *session, &gate, &name, args, turn_running).await;
                             let msg = match reply {
                                 Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
                                 Err(problem) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(problem) },
@@ -509,6 +610,7 @@ async fn deliver(
     gate: &RunnerGate,
     name: &str,
     args: Value,
+    turn_running: bool,
 ) -> Result<Value, Value> {
     let problem = |code: &str, detail: String| json!({"code": code, "detail": detail});
     match name {
@@ -520,11 +622,24 @@ async fn deliver(
                 .map(|turn| json!({"turn_id": turn}))
                 .map_err(|e| problem(e.code(), e.to_string()))
         }
+        // SES-005 AC3: ohne laufenden Turn ist Interrupt ein No-op.
+        "turn.interrupt" if !turn_running => Ok(Value::Null),
         "turn.interrupt" => session
             .interrupt()
             .await
             .map(|()| Value::Null)
             .map_err(|e| problem(e.code(), e.to_string())),
+        "session.set" => {
+            let model = args["model"].as_str().map(str::to_owned);
+            match model {
+                Some(model) => session
+                    .set_model(model, args["effort"].as_str().map(str::to_owned))
+                    .await
+                    .map(|_| Value::Null)
+                    .map_err(|e| problem(e.code(), e.to_string())),
+                None => Ok(Value::Null),
+            }
+        }
         "approval.resolve" => {
             let call_id = args["call_id"].as_str().unwrap_or_default();
             let decision = if args["decision"] == "allow" {
