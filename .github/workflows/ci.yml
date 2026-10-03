@@ -57,9 +57,11 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Tests bauen (mit Netzwerk für die Paket-Registry)
+        # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
+        # offline aus den bereits geladenen Abhängigkeiten kompiliert.
         run: |
           cargo nextest run --workspace --no-run
-          cargo test --workspace --doc --no-run
+          cargo fetch
       - name: Unprivilegierte User-Namespaces erlauben
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # covers: QA-001 AC2 (Tests laufen ohne ausgehendes Netz; ein Netzzugriff scheitert)
