@@ -3513,6 +3513,75 @@
   ]
  },
  {
+  "id": "GIT-010",
+  "prefix": "GIT",
+  "title": "Merge-Konflikte erkennen",
+  "milestone": "M4",
+  "priority": "Must",
+  "chapter": "07-sessions-collaboration.md",
+  "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
+  "anchor": "git-010--merge-konflikte-erkennen",
+  "summary": "beton erkennt, wenn sich der Branch einer Session nicht konfliktfrei in seine Ziel-Branch mergen lässt, und zeigt das im CR-Panel, in der Session-Kopfzeile und in der Inbox an. Die Erkennung läuft lokal im Worktree per Probe-Merge ohne Änderungen am Arbeitsverzeichnis (`git merge-tree --write-tree <base> <head>`, Git ≥ 2.38) und braucht weder Provider-API noch Netzwerk (ADR-0033); ist ein Provider verbunden, wird zusätzlich dessen Mergeability-Status übernommen (GIT-006).",
+  "acs": [
+   "Given ein Worktree-Branch und eine Ziel-Branch, die dieselbe Zeile unterschiedlich ändern, when die Prüfung läuft, then entsteht `git.conflicts_detected` mit genau dieser Datei und `kind=content`, und das Arbeitsverzeichnis ist unverändert (`git status` sauber).",
+   "Die Prüfung funktioniert ohne Netzwerk und ohne konfigurierten Git-Provider (Netz-Namespace-Test).",
+   "Meldet ein verbundener Provider `mergeable=false`, zeigt das CR-Panel „Konflikte“ mit der Aktion „Konflikte lösen“ auch dann, wenn die lokale Prüfung (wegen veralteter Ziel-Branch) noch keinen Konflikt sieht; der Hinweis empfiehlt, die Ziel-Branch zu holen.",
+   "Delete/Modify-, Rename- und Binärkonflikte werden mit ihrer Art erkannt, nicht als Inhaltskonflikt."
+  ]
+ },
+ {
+  "id": "GIT-011",
+  "prefix": "GIT",
+  "title": "Konflikt-Resolver-Ansicht",
+  "milestone": "M4",
+  "priority": "Must",
+  "chapter": "07-sessions-collaboration.md",
+  "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
+  "anchor": "git-011--konflikt-resolver-ansicht",
+  "summary": "„Konflikte lösen“ startet im Worktree der Session einen Merge der Ziel-Branch (Standard; kein Umschreiben der History, kein Force-Push nötig) oder auf Wunsch einen Rebase, und öffnet die Resolver-Ansicht: links die Liste der Konfliktdateien mit Status (offen, gelöst, automatisch gelöst), rechts je Konflikt-Hunk eine Drei-Wege-Darstellung Basis · Dein Branch · Ziel-Branch mit dem bearbeitbaren Ergebnis darunter (Monaco, WEB-009). Je Hunk: „Deine Seite“, „Ziel-Seite“, „Beide (deine zuerst / Ziel zuerst)“, „Bearbeiten“; je Datei: ganz übernehmen. Sonderfälle: Delete/Modify (behalten oder löschen), Rename, Binärdateien (eine Seite wählen).",
+  "acs": [
+   "Given ein erkannter Inhaltskonflikt, when der User „Konflikte lösen“ wählt, then läuft `git merge <ziel>` im Worktree, und die Ansicht zeigt für jeden Hunk Basis, beide Seiten und das Ergebnis.",
+   "„Beide (deine zuerst)“ ergibt im Ergebnis die Zeilen der eigenen Seite gefolgt von denen der Ziel-Seite, ohne Konfliktmarker.",
+   "Eine Datei gilt erst als gelöst, wenn ihr Ergebnis keine Konfliktmarker (`<<<<<<<`, `=======`, `>>>>>>>`) mehr enthält; „Abschließen“ ist bis dahin deaktiviert und nennt die offenen Stellen.",
+   "„Abbrechen“ stellt Branch und Arbeitsverzeichnis exakt auf den Stand vor dem Start zurück (Vergleich von `HEAD` und `git status`).",
+   "Ein Rebase-Lauf zeigt die Konflikte Commit für Commit („Commit 2 von 5“); der anschließend nötige Force-Push ist eine eigene, per Policy freizugebende Aktion."
+  ]
+ },
+ {
+  "id": "GIT-012",
+  "prefix": "GIT",
+  "title": "Konflikte vom Agent lösen lassen",
+  "milestone": "M4",
+  "priority": "Must",
+  "chapter": "07-sessions-collaboration.md",
+  "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
+  "anchor": "git-012--konflikte-vom-agent-lösen-lassen",
+  "summary": "Im Resolver kann der User einzelne Hunks, eine Datei oder alle Konflikte an den Agent der Session geben. Der Agent erhält Basis, beide Seiten, die Commit-Nachrichten beider Seiten und den Session-Kontext und schreibt einen Lösungsvorschlag mit kurzer Begründung ins Ergebnis. Vorschläge sind als solche markiert und gelten erst nach Bestätigung durch den User als gelöst. Der Aufruf läuft über den Harness der Session und damit über die Subscription der Vendor-CLI (ADR-0034).",
+  "acs": [
+   "„Agent lösen lassen“ für einen Hunk erzeugt einen Vorschlag mit Begründung; der Hunk bleibt „offen“, bis der User „Vorschlag übernehmen“ wählt (Fake-Harness-Test).",
+   "Lehnt der User einen Vorschlag ab, wird der vorherige Ergebnisstand wiederhergestellt.",
+   "Der Agent-Aufruf funktioniert ohne API-Key mit einer per CLI angemeldeten Subscription; die Kosten bzw. das Kontingent erscheinen in der Verbrauchsanzeige der Session.",
+   "Die Policy-Engine prüft die Dateischreibungen des Agents wie jeden anderen Tool-Call (`policy.decision`-Event je Schreibvorgang)."
+  ]
+ },
+ {
+  "id": "GIT-013",
+  "prefix": "GIT",
+  "title": "Konfliktlösung abschließen",
+  "milestone": "M4",
+  "priority": "Must",
+  "chapter": "07-sessions-collaboration.md",
+  "chapterTitle": "07 — Sessions, Collaboration & Git-Provider",
+  "anchor": "git-013--konfliktlösung-abschließen",
+  "summary": "„Abschließen“ markiert die Dateien als gelöst (`git add`), erstellt den Merge-Commit bzw. setzt den Rebase fort, bietet an, die Tests der Session laufen zu lassen, und danach den Branch zu pushen. Der Push läuft als Policy-geprüfte Aktion (Approval-Card bei `ask`); bei Rebase ist er ein Force-Push mit Lease (`--force-with-lease`). Danach aktualisiert das CR-Panel die Mergeability.",
+  "acs": [
+   "Nach „Abschließen“ existiert genau ein Merge-Commit mit beiden Eltern, und `git.conflict_resolution {phase: completed}` enthält Anzahl und Art der Lösungen je Datei.",
+   "Ein Push nach einem Rebase nutzt `--force-with-lease`; ohne Freigabe durch `git_guard` wird nicht gepusht.",
+   "Ohne Netzwerk endet der Abschluss lokal mit dem Commit; der Push wird als ausstehend angezeigt und lässt sich später auslösen.",
+   "Nach erfolgreichem Push zeigt das CR-Panel spätestens beim nächsten Poll „konfliktfrei“ bzw. den neuen Provider-Status."
+  ]
+ },
+ {
   "id": "DESK-001",
   "prefix": "DESK",
   "title": "Tauri-2-App-Shell & Fenster",

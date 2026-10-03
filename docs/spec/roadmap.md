@@ -12,9 +12,9 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | [M1](#m1) | Meta-Harness | 33 | 20 | 0 | 53 |
 | [M2](#m2) | Kontrolle | 64 | 9 | 2 | 75 |
 | [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 68 | 15 | 2 | 85 |
-| [M4](#m4) | Team | 57 | 8 | 1 | 66 |
+| [M4](#m4) | Team | 61 | 8 | 1 | 70 |
 | [M5](#m5) | Autonomie & Breite → v1.0 | 35 | 9 | 3 | 47 |
-| **Summe v1.0** | | **324** | **62** | **8** | **394** |
+| **Summe v1.0** | | **328** | **62** | **8** | **398** |
 
 **Arbeitsweise:** Innerhalb eines Meilensteins zuerst alle *Must*-Features (in Abhängigkeitsreihenfolge, siehe Feld *Abhängigkeiten*), dann *Should*. *Could*-Features sind Stretch-Goals und blockieren den Meilenstein nicht. Ein Meilenstein gilt als erreicht, wenn alle *Must*-Features grün sind **und** das Demo-Szenario manuell (und so weit möglich als E2E-Test) funktioniert.
 
@@ -546,7 +546,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 **Demo-Szenario (Exit-Kriterium):** Zwei Personen melden sich per OIDC an einem zentralen Server an, teilen eine Session, steuern sie gemeinsam, kommentieren inline, verfolgen den PR/MR im Panel; ein Laptop arbeitet offline mit einer Budget-Lease weiter und synchronisiert danach.
 
-<details><summary>Features (66)</summary>
+<details><summary>Features (70)</summary>
 
 
 **[03 — Policies](03-policies.md)**
@@ -620,6 +620,10 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | GIT-007 | Review-Kommentare im Panel | Should |
 | GIT-008 | CR-Diff | Must |
 | GIT-009 | CR aus der Session erstellen | Must |
+| GIT-010 | Merge-Konflikte erkennen | Must |
+| GIT-011 | Konflikt-Resolver-Ansicht | Must |
+| GIT-012 | Konflikte vom Agent lösen lassen | Must |
+| GIT-013 | Konfliktlösung abschließen | Must |
 
 **[08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs](08-clients.md)**
 

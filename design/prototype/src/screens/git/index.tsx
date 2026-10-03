@@ -1,10 +1,11 @@
 import type { ScreenGroup } from '@/proto/types'
+import { ConflictScreen } from './conflicts'
 import { ConnectScreen } from './connect'
 import { CreatePrScreen, PrPanelScreen, ReviewScreen } from './panel'
 
 /**
  * GitHub & GitLab: optionale Verbindung zu Providern, PR-/MR-Panel mit Status, Checks,
- * Reviews und Diff, PR aus der Session erstellen. Alles Netzwerk ist als optional gekennzeichnet.
+ * Reviews und Diff, PR aus der Session erstellen, Merge-Konflikte lösen. Alles Netzwerk ist als optional gekennzeichnet.
  */
 export const group: ScreenGroup = {
   id: 'git',
@@ -69,6 +70,25 @@ export const group: ScreenGroup = {
         { id: 'denied', title: 'Von Policy abgelehnt' },
       ],
       component: CreatePrScreen,
+    },
+    {
+      id: 'git-conflicts',
+      title: 'Merge-Konflikte lösen',
+      description:
+        'Konflikte mit der Ziel-Branch werden lokal erkannt und im Worktree gelöst: Drei-Wege-Ansicht mit Basis, deinem Branch und der Ziel-Branch, Entscheidung pro Stelle, Vorschläge vom Agent, Abschluss mit Merge-Commit und Push-Freigabe.',
+      features: ['GIT-010', 'GIT-011', 'GIT-012', 'GIT-013', 'GIT-006', 'WEB-009', 'POL-017'],
+      states: [
+        { id: 'detected', title: 'Konflikt erkannt' },
+        { id: 'resolve', title: 'Stelle offen' },
+        { id: 'agent', title: 'Vorschlag des Agents' },
+        { id: 'delete-modify', title: 'Gelöscht gegen geändert' },
+        { id: 'rebase', title: 'Rebase, Commit 2 von 5' },
+        { id: 'finish', title: 'Abschließen' },
+        { id: 'offline', title: 'Abschließen ohne Netz' },
+        { id: 'pushed', title: 'Push-Freigabe' },
+        { id: 'abort', title: 'Abbrechen' },
+      ],
+      component: ConflictScreen,
     },
   ],
 }

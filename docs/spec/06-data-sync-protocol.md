@@ -102,6 +102,8 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `git.worktree_created` | D | `path, branch, base, base_sha` |
 | | `git.commit_created` | D | `sha, branch, subject` |
 | | `cr.linked` / `cr.unlinked` | D | `url, provider, number, origin: created\|attached\|inferred` |
+| | `git.conflicts_detected` | D | `base, base_sha, head_sha, files[{path, kind: content\|delete_modify\|rename\|binary}], source: local\|provider` |
+| | `git.conflict_resolution` | D | `phase: started\|hunk_resolved\|completed\|aborted, strategy?: merge\|rebase, path?, hunk?, resolution?: ours\|theirs\|both\|edited\|agent, actor` |
 | Terminal | `terminal.opened` | D | `terminal_id, channel_id, kind: harness_pty\|user\|tool, cmd, cols, rows` |
 | | `terminal.output` | T | Binärkanal (Bytes) |
 | | `terminal.snapshot` | D | `terminal_id, blob_ref, cols, rows, cursor` |
