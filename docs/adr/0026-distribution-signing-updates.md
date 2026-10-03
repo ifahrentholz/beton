@@ -25,6 +25,7 @@ Option **B**:
 - Positiv: Vertrauenswürdige, verifizierbare Artefakte; einfache Installation auf allen Plattformen.
 - Negativ / Risiken: Kosten und Verwaltung der Signing-Accounts (Apple Developer, Azure); umfangreiche Release-Pipeline.
 - Folgearbeiten / offene Punkte: **Wer hält die Signing-Accounts** (Apple Developer, Azure Trusted Signing)? Release-Automatisierung (z. B. cargo-dist), Paketpflege in Fremd-Repos (winget, Scoop, Homebrew-Tap).
+- Verschärft durch ADR-0033: Update-Prüfung nur auf Klick bzw. opt-in, Update aus lokaler signierter Datei; Runner-Image auch lokal baubar.
 
 ## Bezug
 - Spec: docs/spec/12-distribution-quality.md (Prefix DIST)

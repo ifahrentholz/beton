@@ -8,13 +8,13 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 | Meilenstein | Thema | Must | Should | Could | Gesamt |
 |---|---|---:|---:|---:|---:|
-| [M0](#m0) | Fundament | 66 | 1 | 0 | 67 |
+| [M0](#m0) | Fundament | 67 | 1 | 0 | 68 |
 | [M1](#m1) | Meta-Harness | 33 | 20 | 0 | 53 |
 | [M2](#m2) | Kontrolle | 64 | 9 | 2 | 75 |
-| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 67 | 15 | 2 | 84 |
+| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 68 | 15 | 2 | 85 |
 | [M4](#m4) | Team | 57 | 8 | 1 | 66 |
 | [M5](#m5) | Autonomie & Breite → v1.0 | 35 | 9 | 3 | 47 |
-| **Summe v1.0** | | **322** | **62** | **8** | **392** |
+| **Summe v1.0** | | **324** | **62** | **8** | **394** |
 
 **Arbeitsweise:** Innerhalb eines Meilensteins zuerst alle *Must*-Features (in Abhängigkeitsreihenfolge, siehe Feld *Abhängigkeiten*), dann *Should*. *Could*-Features sind Stretch-Goals und blockieren den Meilenstein nicht. Ein Meilenstein gilt als erreicht, wenn alle *Must*-Features grün sind **und** das Demo-Szenario manuell (und so weit möglich als E2E-Test) funktioniert.
 
@@ -28,11 +28,11 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 - Lokaler Daemon (`serve` + lokaler Runner), CLI-Grundgerüst
 - Claude-Code-Adapter (stream-json) inkl. Permission-Bridge
 - Minimale Web-UI (Session-Liste, Chat-Stream, Composer)
-- Test-Fundament: Fake-Harness, Golden Transcripts, Schema-Snapshots, CI-Gates
+- Test-Fundament: Fake-Harness, Golden Transcripts, Schema-Snapshots, CI-Gates, Offline-E2E ohne Netzwerk (QA-018)
 
 **Demo-Szenario (Exit-Kriterium):** `beton run claude` startet eine persistente Claude-Code-Session (Subscription über die offizielle CLI), die im Browser live mitläuft, nach einem Verbindungsabbruch ab `seq` fortgesetzt wird und einen Neustart des Daemons überlebt.
 
-<details><summary>Features (67)</summary>
+<details><summary>Features (68)</summary>
 
 
 **[01 — Harnesses](01-harnesses.md)**
@@ -141,6 +141,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | QA-010 | CI-Gates | Must |
 | QA-014 | Agent-Workflow & Feature-IDs | Must |
 | QA-015 | DCO-Check | Must |
+| QA-018 | Offline-E2E-Garantie (Netz-Namespace nur mit Loopback) | Must |
 
 </details>
 
@@ -393,11 +394,11 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 - Projects, Worktrees, Terminals
 - Eingebetteter Browser (CDP-Screencast), Agent-Tools, Inspect-Mode
 - Lokales Whisper, Command-Palette, Themes, Onboarding
-- Release-Pipeline: Signing, Notarisierung, Homebrew, Installer, Auto-Update
+- Release-Pipeline: Signing, Notarisierung, Homebrew, Installer, Updates (Prüfung nur auf Klick/opt-in), Subscription-Checkliste pro Release (QA-019)
 
 **Demo-Szenario (Exit-Kriterium):** Ein neuer Nutzer installiert die signierte Desktop-App, `beton setup` erkennt die CLI-Logins, und er arbeitet mit mehreren Sessions in Worktrees, nutzt den Inspect-Mode im eingebetteten Browser und diktiert Prompts per Push-to-Talk – vollständig lokal.
 
-<details><summary>Features (84)</summary>
+<details><summary>Features (85)</summary>
 
 
 **[01 — Harnesses](01-harnesses.md)**
@@ -528,6 +529,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | DIST-020 | Deinstallation | Must |
 | QA-008 | E2E-Tests Desktop (tauri-driver) | Must |
 | QA-012 | Performance-Benchmarks | Should |
+| QA-019 | Subscription-Verifikations-Checkliste pro Release | Must |
 
 </details>
 

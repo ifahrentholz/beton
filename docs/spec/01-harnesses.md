@@ -4,7 +4,7 @@ Dieses Kapitel spezifiziert, wie beton fremde Coding-Agents ("Harnesses") anbind
 
 **Scope:** Crates `beton-harness` (Trait, Transporte), `beton-harness-claude`, `beton-harness-codex`, `beton-harness-acp`, `beton-harness-direct`, Teile von `beton-pty` und `beton-mcp`. Nicht hier: Session-Lebenszyklus, Fork-/Import-UX (SES in 07-sessions-collaboration.md), Event-Katalog und Wire-Format (PROTO in 06-data-sync-protocol.md), Sandbox/Proxy (SBX/PRX in 04-sandbox.md), Policy-Semantik (POL in [03](03-policies.md)), Agent-YAML (AGT in [02](02-agents.md)).
 
-**Bezug:** ADR-0005 (Adapter mit drei Transporten, Subscription-Regel), ADR-0006 (v1-Harness-Umfang), ADR-0008 (Policy-Hooks), ADR-0012 (Agents laufen *auf* Harnesses), ADR-0031 (Golden-Transcript-Tests).
+**Bezug:** ADR-0005 (Adapter mit drei Transporten, Subscription-Regel), ADR-0006 (v1-Harness-Umfang), ADR-0008 (Policy-Hooks), ADR-0012 (Agents laufen *auf* Harnesses), ADR-0031 (Golden-Transcript-Tests), ADR-0034 (Subscription-first: kein Feature setzt einen API-Key voraus).
 
 ## Konzepte & Begriffe
 
@@ -212,17 +212,19 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
         gemini:
           command: gemini
           args: ["--experimental-acp"]   # Annahme: Preset-Flags je Vendor verifizieren
-          env_passthrough: [GEMINI_API_KEY]
+          # Auth: Google-Login der Gemini CLI (Standard, kein Key nötig); GEMINI_API_KEY nur optional
+          # über `env_passthrough: [GEMINI_API_KEY]` bzw. als Secret (ADR-0034)
           mcp_bridge: true               # System-Tools via MCP (HAR-009)
           models: [gemini-2.5-pro, gemini-2.5-flash]   # optional, für den Modell-Picker
         goose: { command: goose, args: [acp] }
         qwen:  { command: qwen,  args: ["--acp"] }
   ```
-  Presets: `gemini`, `goose`, `qwen` *(Annahme)*. Ein eigener Eintrag mit gleichem Slug überschreibt das Preset.
+  Presets: `gemini`, `goose`, `qwen` *(Annahme)*. Ein eigener Eintrag mit gleichem Slug überschreibt das Preset. Presets setzen keinen API-Key voraus: Der Agent authentifiziert sich mit seinem eigenen Login (z. B. Google-Login der Gemini CLI); API-Keys sind eine zusätzliche Option (ADR-0034).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton setup acp add mein-agent --command ./agent --arg acp` schreibt einen validen Eintrag in `~/.beton/config.yaml`; danach erscheint `acp:mein-agent` im Katalog.
   - [ ] AC2 — Ein Preset, dessen Binary nicht im `PATH` liegt, erscheint im Katalog als `installed: false` und ist nicht startbar.
   - [ ] AC3 — Ungültige Einträge (fehlendes `command`, Slug mit unerlaubten Zeichen außerhalb `[a-z0-9-]`) werden beim Laden mit Datei/Zeile gemeldet und übersprungen, ohne andere Harnesses zu beeinträchtigen.
+  - [ ] AC4 — Das Preset `gemini` ist ohne gesetzten `GEMINI_API_KEY` startbar und reicht standardmäßig keine `*_API_KEY`-Variable durch (Test mit ACP-Test-Agent und leerer Umgebung).
 - **Abhängigkeiten:** HAR-003, HAR-007
 
 ### HAR-009 — MCP-Injektion & System-Tool-Bridge
@@ -238,7 +240,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 
 ### HAR-010 — Direkt-API-/Gateway-Harness: Agent-Loop
 - **Meilenstein:** M1 · **Priorität:** Must
-- **Beschreibung:** Eigener Agent-Loop in Rust (`beton-harness-direct`) für API-Keys und Gateways: Model-Request streamen → Tool-Uses einsammeln → je Tool-Call `PolicyGate` → Ausführung über MCP → Tool-Results zurück → wiederholen bis `end_turn` oder Limit. Da beton hier jeden Model-Request selbst sendet, sind alle Policy-Phasen voll durchsetzbar.
+- **Beschreibung:** Eigener Agent-Loop in Rust (`beton-harness-direct`) für API-Keys und Gateways (zusätzliche Option neben den Subscription-Harnesses; kein anderes Feature setzt ihn voraus, ADR-0034): Model-Request streamen → Tool-Uses einsammeln → je Tool-Call `PolicyGate` → Ausführung über MCP → Tool-Results zurück → wiederholen bis `end_turn` oder Limit. Da beton hier jeden Model-Request selbst sendet, sind alle Policy-Phasen voll durchsetzbar.
 - **Details:** Coding-Tools stellt der eingebaute MCP-Server `beton-workspace` bereit (`fs_read`, `fs_write`, `fs_edit`, `fs_glob`, `fs_grep`, `shell_exec`), ausgeführt in der Tool-Sandbox Stufe 2 (SBX-002, ab M2) *(Annahme: eigener Server, nur für Direkt-API standardmäßig aktiv)*. Limits: `executor.max_turns` (Default 200 Model-Requests pro User-Turn), Request-Timeout 300 s, Retries mit Exponential-Backoff bei 429/5xx (max. 5, `retry-after` respektiert). Eigene Compaction: bei > 80 % Kontextfenster werden alte Tool-Results gekürzt, danach ältere Turns zusammengefasst (Summary-Request an dasselbe Modell). Parallele Tool-Calls eines Model-Requests werden parallel ausgeführt (max. 4).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Gegen einen Mock-Server (Anthropic- und OpenAI-Wire-Format) erledigt der Loop eine Aufgabe mit drei aufeinanderfolgenden Tool-Calls; das Event-Log entspricht dem Golden-File.
@@ -328,14 +330,15 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
     claude: { auth: subscription }       # subscription | api_key
     codex:  { auth: api_key, api_key: secret://openai/default }
   ```
-  `subscription` (= `auth_source: vendor_cli`): beton entfernt `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` bzw. `OPENAI_API_KEY` aus der Harness-Umgebung (sonst würde die CLI ggf. API-Billing nutzen). Die Model- und Auth-Hosts des Vendors werden im Egress-Proxy als TLS-Passthrough (CONNECT ohne Terminierung) konfiguriert, sodass beton den Token auch im Transit nie sieht *(Annahme; Konfiguration siehe PRX-005 in 04-sandbox.md)*. Die Sandbox Stufe 1 erlaubt der CLI Lesezugriff auf ihre eigenen Credential-Speicher. `api_key`: Env-Variable enthält nur einen `bt_cred_*`-Platzhalter, der Proxy injiziert den echten Wert. Läuft die CLI mit abgelaufenem Login, wird `harness.auth_required { harness, hint: "claude auth login" }` emittiert. Offener Punkt (Nutzungsbedingungen) siehe Überblick, offener Punkt 4.
+  Ohne Angabe gilt `auth: subscription` für alle Vendor-CLI-Harnesses (`claude`, `codex`, `acp:*`); `api_key` ist nur eine zusätzliche Option und wird von keinem Feature vorausgesetzt (ADR-0034). Modell-Hilfsfunktionen (z. B. Session-Titel, SES-010) rufen dieselbe CLI im Einmal-Modus (z. B. `claude -p`, `codex exec`) mit derselben Auth-Herkunft und Umgebungsbereinigung auf. `subscription` (= `auth_source: vendor_cli`): beton entfernt `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` bzw. `OPENAI_API_KEY` aus der Harness-Umgebung (sonst würde die CLI ggf. API-Billing nutzen). Die Model- und Auth-Hosts des Vendors werden im Egress-Proxy als TLS-Passthrough (CONNECT ohne Terminierung) konfiguriert, sodass beton den Token auch im Transit nie sieht *(Annahme; Konfiguration siehe PRX-005 in 04-sandbox.md)*. Die Sandbox Stufe 1 erlaubt der CLI Lesezugriff auf ihre eigenen Credential-Speicher. `api_key`: Env-Variable enthält nur einen `bt_cred_*`-Platzhalter, der Proxy injiziert den echten Wert. Läuft die CLI mit abgelaufenem Login, wird `harness.auth_required { harness, hint: "claude auth login" }` emittiert. Offener Punkt (Nutzungsbedingungen) siehe Überblick, offener Punkt 4.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Mit `auth: subscription` und gesetztem `ANTHROPIC_API_KEY` in der Shell enthält die Harness-Prozess-Umgebung keinen der beiden Anthropic-Key-Variablen (Test über `/proc/<pid>/environ` bzw. `ps eww`).
   - [ ] AC2 — Code-Review-Check in CI: kein Code in `beton-harness-*` öffnet bekannte Vendor-Credential-Pfade (`~/.claude/.credentials.json`, `~/.codex/auth.json`, Keychain-Einträge der Vendors); ein Lint-Test grept nach diesen Pfaden.
   - [ ] AC3 — Abgelaufener Login (simuliert über Fake-CLI, QA-002) erzeugt `harness.auth_required`, und die UI zeigt die Anweisung, den Login in der Vendor-CLI auszuführen.
   - [ ] AC4 — (ab M2) Mit `auth: api_key` erscheint im Harness-Env nur ein `bt_cred_*`-Wert; der echte Key wird erst im Proxy eingesetzt.
+  - [ ] AC5 — Ohne `auth`-Angabe und ohne `*_API_KEY` in der Umgebung startet eine Claude-Session mit `auth_source: vendor_cli` (Fake-CLI-Test, ab M1 ebenso Codex); kein Start- oder Hilfspfad bricht wegen eines fehlenden API-Keys ab.
 - **Abhängigkeiten:** HAR-004, PRX-005 (ab M2), PRX-006 (ab M2), SBX-002 (ab M2, siehe 04-sandbox.md), SEC-001 (ab M2, siehe 05-security-identity.md)
-- **Referenz:** ADR-0005 Subscription-Regel
+- **Referenz:** ADR-0005 Subscription-Regel, ADR-0034 Subscription-first
 
 ### HAR-016 — Credential-Erkennung in `beton setup`
 - **Meilenstein:** M0 · **Priorität:** Must
@@ -493,7 +496,7 @@ Folgende Harnesses und Funktionen sind ausdrücklich **nicht** Teil von v1 (ADR-
 
 - Dedizierte Adapter für **Pi, GitHub Copilot, Cursor, OpenCode, Devin, Kiro, Kimi, Hermes, Antigravity/Gemini nativ** (Gemini CLI, Goose, Qwen sind über ACP abgedeckt).
 - In-Process-Vendor-SDKs (Claude Agent SDK, OpenAI Agents SDK) – beton spricht die CLI-Protokolle direkt.
-- **Smart Routing** / "Auto"-Harness-Wahl und lernender Router (v2, ADR-0022).
+- **Smart Routing** / "Auto"-Harness-Wahl und lernender Router (v2, ADR-0022); in v2 subscription-first über eine eingeloggte Vendor-CLI bzw. den Harness der Session, API-Key nur optional (ADR-0034).
 - Eigener OAuth-Login oder Speicherung von Subscription-Tokens (dauerhaft ausgeschlossen, ADR-0005).
 - OpenAI-Responses-API als Wire-Format des Direkt-API-Harness (v2; v1 nutzt Chat Completions und Anthropic Messages).
 - Automatische Capability-Verifikation per Probe-Benchmark (Omnigent `harness_bench`) – v2; v1 deklariert Capabilities statisch + Golden-Tests.

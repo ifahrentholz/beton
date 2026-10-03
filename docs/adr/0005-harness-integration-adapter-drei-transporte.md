@@ -29,6 +29,7 @@ Jeder Adapter deklariert Capabilities (Elicitation/Approval, Resume, Fork-Histor
 - Negativ / Risiken: stream-json- und app-server-Protokolle sind Vendor-intern und können sich ändern → Golden-Transcript-Tests (ADR-0031).
 - Negativ / Risiken (rechtlich, **offener Punkt**): Anthropic weist in der Agent-SDK-Doku darauf hin, dass Drittprodukte keinen claude.ai-Login (Subscription) für ihre Nutzer anbieten sollen. Ob das Starten der offiziellen `claude`-CLI mit deren eigener Anmeldung durch beton zulässig ist, muss anhand des **aktuellen Wortlauts** der Anthropic- (und OpenAI-) Nutzungsbedingungen geprüft werden. Bis zur Klärung: keine Werbung mit "Subscription-Nutzung", klare Doku, dass Login/Auth ausschließlich bei der Vendor-CLI liegt.
 - Folgearbeiten: Capability-Matrix pro Adapter, Hook-Bridge für PTY-Modus, MCP-Relay für System-Tools.
+- Verschärft durch ADR-0034: Kein Feature darf einen API-Key voraussetzen; Modell-Hilfsfunktionen laufen über die eingeloggte Vendor-CLI bzw. den Harness der Session.
 
 ## Bezug
 - Spec: docs/spec/01-harnesses.md (Prefix HAR)

@@ -55,3 +55,6 @@ Akzeptierte ADRs werden inhaltlich nicht mehr geändert. Ändert sich eine Entsc
 | 0029 | Hosting auf persönlichem GitHub-Account `ifahrentholz` | Akzeptiert | [0029-hosting-persoenlicher-github-account.md](0029-hosting-persoenlicher-github-account.md) |
 | 0030 | Roadmap M0–M5, erstes öffentliches Release nach M3, Solo-Entwicklung mit Coding-Agents | Akzeptiert | [0030-roadmap-meilensteine-m0-m5.md](0030-roadmap-meilensteine-m0-m5.md) |
 | 0031 | Qualitätsstrategie für agent-getriebene Entwicklung | Akzeptiert | [0031-qualitaetsstrategie-agent-getriebene-entwicklung.md](0031-qualitaetsstrategie-agent-getriebene-entwicklung.md) |
+| 0032 | Design-first – klickbarer Prototyp aller Screens und Feature-Katalog vor den UI-Arbeitspaketen | Akzeptiert | [0032-design-first-prototyp-und-feature-katalog.md](0032-design-first-prototyp-und-feature-katalog.md) |
+| 0033 | Lokal ohne externe Server – harte, getestete Garantie mit abschließender Ausnahmenliste | Akzeptiert | [0033-lokal-ohne-externe-server.md](0033-lokal-ohne-externe-server.md) |
+| 0034 | Subscription-first – kein Feature setzt einen API-Key voraus | Akzeptiert | [0034-subscription-first-kein-feature-setzt-api-key-voraus.md](0034-subscription-first-kein-feature-setzt-api-key-voraus.md) |

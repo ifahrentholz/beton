@@ -41,6 +41,7 @@ release-please PR gemergt → Tag
   → SBOM (CycloneDX: cargo-cyclonedx; Images: syft) + SLSA-Provenance (GitHub Attestations)
   → GitHub Release (Draft) mit SHA256SUMS, *.sigstore.json, SBOMs
   → Smoke-Tests: Installer auf macOS/Linux/Windows, `beton --version`, `beton doctor --json`
+  → Gate: Protokoll der Subscription-Verifikation mit echten Logins vorhanden (QA-019)
   → Release veröffentlichen → Container push (ghcr) → Tauri latest.json je Kanal
   → PRs/Commits an homebrew-tap, scoop-bucket, winget-pkgs
 ```
@@ -176,11 +177,13 @@ release-please PR gemergt → Tag
 
 ### DIST-014 — Desktop-Auto-Update (Tauri-Updater)
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung beim Start und alle 6 h; Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.
+- **Beschreibung:** Die Desktop-App nutzt den Tauri-Updater mit signierten Update-Manifesten (Ed25519-Schlüssel getrennt von Code-Signing) je Kanal (`latest-stable.json`, `latest-beta.json`, `latest-nightly.json` als Release-Assets). Prüfung nur auf Klick oder nach Opt-in (`update.auto_check`, Default `false`; dann beim Start und alle 6 h, ADR-0033); Offline-Alternative ist die Installation eines lokal vorliegenden, signierten Update-Pakets (Signaturprüfung gegen den eingebetteten Updater-Schlüssel, ohne Netz). Installation erst nach Bestätigung oder beim nächsten Neustart; laufende Sessions werden nicht unterbrochen (Daemon-Neustart nach Drain). DIST-014 ist Owner der Update-Implementierung; das App-Verhalten beschreibt DESK-007.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine App auf Version N erkennt N+1 im eigenen Kanal und installiert sie nach Bestätigung; danach meldet sie N+1.
   - [ ] AC2 — Ein Manifest mit ungültiger Signatur wird verworfen und geloggt; keine Installation.
   - [ ] AC3 — Mit laufendem Turn wird der Daemon-Neustart verschoben, bis alle Sessions idle sind oder der User „jetzt neu starten“ wählt.
+  - [ ] AC4 — Mit Default-Konfiguration ruft die App kein Update-Manifest ab, solange der User nicht „Nach Updates suchen“ wählt (Netz-Mock-Test).
+  - [ ] AC5 — Ein lokal vorliegendes, signiertes Update-Paket wird ohne Netzwerk installiert; ein Paket mit ungültiger Signatur wird abgelehnt.
 - **Abhängigkeiten:** DIST-008, DIST-017
 
 ### DIST-015 — Harness-CLI-Installationsangebot
@@ -195,12 +198,13 @@ release-please PR gemergt → Tag
 
 ### DIST-016 — `beton upgrade` mit Installationsart-Erkennung
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** `beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--dry-run] [--force]` bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.
+- **Beschreibung:** `beton upgrade [--check] [--channel stable|beta|nightly] [--version X] [--from-file ARCHIV] [--dry-run] [--force]` kontaktiert das Netz nur bei ausdrücklichem Aufruf (kein Hintergrund-Check) und bestimmt die Installationsart (Receipt → Pfad-Heuristik: Homebrew-Cellar, `~/.cargo/bin`, Scoop-/winget-Pfade, `dpkg -S`/`rpm -qf`, Desktop-Bundle, Container-Marker). Bei `script` aktualisiert beton sich selbst (Download, Checksumme + Signatur prüfen, atomarer Austausch, vorherige Version als `beton.old`). Bei Paketmanagern wird nur der passende Befehl angezeigt (z.B. `brew upgrade beton`), im Container ein Hinweis auf das neue Image. `--from-file` aktualisiert eine `script`-Installation offline aus einem lokal vorliegenden Release-Archiv; Checksumme und Signatur werden ohne Netzzugriff gegen mitgelieferte Vertrauensanker geprüft (ADR-0033). Vor dem Austausch werden laufende Sessions gedraint (Daemon-Neustart nach Idle, `--force` überspringt). DIST-016 ist Owner der Implementierung; CLI-Oberfläche: CLI-013.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine Script-Installation auf Version N wird mit `beton upgrade` auf N+1 aktualisiert; `beton.old` ist N.
   - [ ] AC2 — Bei Homebrew-Installation verändert `beton upgrade` keine Dateien und gibt `brew upgrade beton` aus (Exit-Code 0).
   - [ ] AC3 — Ein Download mit falscher Signatur bricht ab; die installierte Version bleibt unverändert.
   - [ ] AC4 — `--check` gibt maschinenlesbar (mit `--json`) aktuelle/neueste Version und Installationsart aus.
+  - [ ] AC5 — `beton upgrade --from-file <archiv>` aktualisiert eine Script-Installation im Netz-Namespace ohne Netzwerk; ein manipuliertes Archiv wird abgelehnt und die installierte Version bleibt unverändert.
 - **Abhängigkeiten:** DIST-003, DIST-017
 - **Referenz:** Omnigent `omni upgrade`
 
@@ -225,7 +229,7 @@ release-please PR gemergt → Tag
 
 ### DIST-019 — Release-Prozess & Changelog
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis.
+- **Beschreibung:** Conventional Commits (ab M0 erzwungen, QA-014) speisen `release-please` (Single-Version-Workspace), das einen Release-PR mit Versionserhöhung und `CHANGELOG.md` pflegt. Changelog-Einträge enthalten Feature-IDs. Merge des Release-PR erzeugt Tag und startet die Release-Pipeline (siehe Design). Breaking Changes erscheinen in eigener Sektion mit Migrationshinweis. Veröffentlicht wird erst, wenn das Protokoll der manuellen Subscription-Verifikation für die Version vorliegt (Gate aus QA-019).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein `feat(policy): POL-003 …`-Commit erscheint im nächsten Release-PR unter „Features“ mit Feature-ID.
   - [ ] AC2 — Ein `feat!:`-Commit führt (ab 1.0) zu einer Major-, davor zu einer Minor-Erhöhung und zu einem Eintrag unter „Breaking Changes“.
@@ -358,7 +362,7 @@ release-please PR gemergt → Tag
 
 ### QA-010 — CI-Gates
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015). Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).
+- **Beschreibung:** Pflicht-Checks für jeden PR (Branch-Protection auf `main`): `cargo fmt --check`; `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo deny check` (Lizenzen: Apache-2.0-kompatible Allowlist, Advisories, Bans, Quellen); `cargo nextest run --workspace` plus `cargo test --doc`; MSRV-Build; Frontend `pnpm tsc --noEmit`, `pnpm lint` (ESLint *(Annahme)*), `pnpm vitest run`; Schema-Snapshots (QA-006); Golden-Tests (QA-003); Commit-Lint und DCO (QA-014, QA-015); Offline-E2E im Netz-Namespace ohne Netzwerk (QA-018), sobald vorhanden. Ab M2 zusätzlich Coverage-Floor (QA-011), Sandbox-Escape (QA-005), Policy-Tests (QA-004).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine neue Clippy-Warnung lässt den PR fehlschlagen.
   - [ ] AC2 — Eine Abhängigkeit mit GPL-3.0-Lizenz oder bekannter RUSTSEC-Advisory wird von `cargo deny` blockiert.
@@ -431,6 +435,31 @@ release-please PR gemergt → Tag
   - [ ] AC1 — Die Repository-Test-Suite läuft mit `BETON_TEST_DB=sqlite` und `=postgres` identisch grün.
   - [ ] AC2 — Ein Upgrade-Test migriert einen mit der Vorgängerversion erzeugten Datenbestand ohne Datenverlust (Event-Zähler und Hashes vorher = nachher).
 - **Abhängigkeiten:** DATA-003, DATA-004 (siehe 06-data-sync-protocol.md)
+
+### QA-018 — Offline-E2E-Garantie (Netz-Namespace nur mit Loopback)
+- **Meilenstein:** M0 · **Priorität:** Must
+- **Beschreibung:** Ein CI-Job `offline-e2e` (Linux) beweist ADR-0033: Server (`beton serve`), Host/Runner, Clients (Web-UI über Playwright, CLI; ab M3 TUI und Desktop) und Fake-Harness bzw. Protokoll-Fake-CLI laufen gemeinsam in einem Netz-Namespace, der ausschließlich das Loopback-Interface besitzt (keine Default-Route, kein externer DNS). Abgedeckt werden die Demo-Szenarien M0 und (ab M3) M3 aus der Roadmap, jeweils mit Fake-Harness statt Vendor-CLI. Ein zweiter Lauf mit Sinkhole weist nach, dass beton keine Verbindung nach außen auch nur versucht. Zusätzlich führt `beton-core` eine Registry aller netzwirksamen Funktionen (Name, Zweck, Default, Offline-Alternative); einzige Einträge mit Default „an“ sind die Modell-Anbieter der Harnesses.
+- **Details:** Namespace z. B. per `unshare --net --map-root-user` bzw. `ip netns`; Datenverzeichnis temporär; Playwright-Browser und Chromium für BRW-Fälle sind im CI-Image vorinstalliert, das Whisper-Modell wird vorab per Datei importiert (VOI-002). Sinkhole: Dummy-Interface mit Default-Route und Paketmitschnitt, DNS-Stub auf Loopback, der jede Anfrage mit NXDOMAIN beantwortet und protokolliert. Läuft in jeder PR-Pipeline (QA-010).
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Im Namespace ohne Netzwerk läuft das M0-Demo-Szenario vollständig: `beton run fake` (bzw. Claude-Adapter gegen Fake-CLI) startet eine Session, die Antwort streamt live im Browser, nach erzwungenem Verbindungsabbruch setzt die UI ab `seq` fort, und die Session überlebt einen Daemon-Neustart.
+  - [ ] AC2 — Im Sinkhole-Lauf desselben Szenarios werden null DNS-Anfragen und null Verbindungsversuche zu Nicht-Loopback-Adressen aufgezeichnet; jeder Fund lässt den Job mit Ziel und Zeitpunkt fehlschlagen.
+  - [ ] AC3 — Ein Test prüft die Registry netzwirksamer Funktionen: Jeder Eintrag außer den Modell-Anbietern hat Default „aus“ bzw. „nur auf Nutzeraktion“ und eine benannte Offline-Alternative; ein neuer Eintrag ohne diese Angaben lässt den Build fehlschlagen.
+  - [ ] AC4 — Während des Laufs zeigt die UI keinen Fehlerdialog wegen fehlenden Netzes; netzabhängige Aktionen (z. B. Modell-Download, Update-Prüfung) sind deaktiviert und nennen ihre Offline-Alternative.
+  - [ ] AC5 — (ab M3) Im selben Namespace läuft das M3-Demo-Szenario mit Fake-Harness: Desktop (tauri-driver, Linux) bzw. Web-UI und `beton tui`, zwei Sessions in Worktrees eines lokalen Repos, eingebetteter Browser mit Inspect-Mode gegen einen lokalen Dev-Server und Diktat mit vorab importiertem Whisper-Modell und Audio-Fixture.
+- **Abhängigkeiten:** QA-002, QA-007, QA-010, HAR-026 (siehe 01-harnesses.md), WEB-001 (siehe 08-clients.md); ab M3: QA-008, SES-015 (siehe 07-sessions-collaboration.md), TUI-001 (siehe 08-clients.md), BRW-013 (siehe 09-browser.md), VOI-002 (siehe 11-platform-features.md)
+- **Referenz:** ADR-0033, ADR-0031
+
+### QA-019 — Subscription-Verifikations-Checkliste pro Release
+- **Meilenstein:** M3 · **Priorität:** Must
+- **Beschreibung:** CI kann keine Subscriptions nutzen (ADR-0031). Deshalb wird vor jedem Release ab 0.1 eine manuelle Checkliste mit **echten Subscription-Logins** durchlaufen – Claude Pro/Max über `claude`, ChatGPT Plus/Pro über `codex`, Google-Login über die Gemini CLI via ACP – und als Protokoll eingecheckt. Sie belegt ADR-0034: Jedes Feature, das selbst ein Modell nutzt, funktioniert ohne API-Key. Die rechtliche Klärung der Nutzungsbedingungen bleibt offener Punkt 4 (00-overview.md) und ist nicht Teil der Checkliste.
+- **Details:** Vorlage `docs/release/subscription-checklist.md`; Protokoll je Release `docs/release/verifications/<version>.md` mit Datum, Prüfer, beton-Version, getesteten Vendor-CLI-Versionen und Ergebnis je Punkt (`bestanden | fehlgeschlagen | n/a` mit Begründung). Durchgeführt in einer Umgebung ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration. Protokolle enthalten keine Tokens, Account-IDs oder E-Mail-Adressen.
+- **Akzeptanzkriterien:**
+  - [ ] AC1 — Die Vorlage enthält mindestens: Login-Erkennung in `beton setup`, Session mit Streaming und Approval je Harness (`claude`, `codex`, `acp:gemini`), Fork Claude → Codex, `maestra` mit Cross-Review, `duetto`, automatischer Session-Titel, Compaction, Subscription-Usage-Anzeige und `harness.auth_required` nach Logout der CLI.
+  - [ ] AC2 — Der Release-Workflow (DIST-019) bleibt Draft, wenn für die Version kein Protokoll existiert oder ein Must-Punkt nicht als bestanden markiert ist (CI-Check parst das Protokoll).
+  - [ ] AC3 — Der CI-Check gleicht die im Protokoll genannten CLI-Versionen mit dem Katalog-`version_range` (HAR-002) ab und schlägt bei einer Version außerhalb des Bereichs fehl.
+  - [ ] AC4 — Der Secret-Scan (QA-003) läuft auch über `docs/release/verifications/**` und schlägt bei Token-Mustern oder E-Mail-Adressen fehl.
+- **Abhängigkeiten:** DIST-019, QA-003, HAR-002, HAR-015, HAR-016 (siehe 01-harnesses.md), SES-010 (siehe 07-sessions-collaboration.md), AGT-011, AGT-012 (siehe 02-agents.md)
+- **Referenz:** ADR-0034, ADR-0031
 
 ## Nicht in v1
 

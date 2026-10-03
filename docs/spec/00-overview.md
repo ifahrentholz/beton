@@ -20,8 +20,8 @@ beton orientiert sich an [Omnigent](https://omnigent.ai) (siehe [Feature-Inventa
 ## 2. Ziele & Nicht-Ziele
 
 **Ziele (v1.0)**
-1. **Subscriptions first:** Claude Pro/Max und ChatGPT Plus/Pro funktionieren über die offiziellen CLIs, nicht nur API-Keys (ADR-0005).
-2. **Lokal-first:** Auf einem einzelnen Rechner ist beton ohne Server-Setup und ohne Account vollständig nutzbar (ADR-0003).
+1. **Subscriptions first:** Claude Pro/Max, ChatGPT Plus/Pro und Google-Login (Gemini CLI via ACP) funktionieren über die offiziellen CLIs; kein Feature setzt einen API-Key voraus, API-Keys sind nur eine zusätzliche Option (ADR-0005, ADR-0034).
+2. **Lokal-first:** Auf einem einzelnen Rechner ist beton ohne Server-Setup und ohne Account vollständig nutzbar, ohne Abhängigkeit von externen Servern außer den Modell-Anbietern; alles andere, was ins Netz geht, ist optional und standardmäßig aus. Ein Offline-E2E-Test belegt das (ADR-0003, ADR-0033).
 3. **Team-fähig:** Derselbe Code läuft als zentraler Server mit OIDC, Rollen, Sharing und Sync (ADR-0010, ADR-0011).
 4. **Sicher by default:** Sandbox und Proxy sind standardmäßig aktiv; verlangt man eine Sandbox und sie ist nicht verfügbar, gibt es einen Fehler statt einer stillen Degradierung (ADR-0007).
 5. **Plattformen:** macOS und Linux vollwertig, Windows als Beta (Sandbox "best effort").
@@ -246,6 +246,9 @@ docs/                  # spec/, adr/
 | 0029 | Repo auf dem persönlichen Account `ifahrentholz` |
 | 0030 | Roadmap M0–M5, öffentliches Release nach M3 |
 | 0031 | Qualitätsstrategie für agent-getriebene Entwicklung |
+| 0032 | Design-first: klickbarer Prototyp aller Screens und Zustände + Feature-Katalog vor den UI-Arbeitspaketen |
+| 0033 | Lokal ohne externe Server (außer Modell-Anbietern); Online-Funktionen optional, Default aus; Offline-E2E-Test |
+| 0034 | Subscription-first: kein Feature setzt einen API-Key voraus; Release-Checkliste mit echten Subscriptions |
 
 ## 9. Offene Punkte
 

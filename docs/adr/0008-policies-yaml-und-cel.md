@@ -28,6 +28,7 @@ Option **B**, mit WASM als späterem Erweiterungspunkt:
 - Positiv: Deklarative Policy-Tests (Event rein, Entscheidung raus) leicht möglich.
 - Negativ / Risiken: Kein Ersatz für Omnigents LLM-basierte Policies in v1; `cel-rust`-Reife (Regex, Makros) prüfen.
 - Folgearbeiten: Policy-Event-Schema, Approval-Flow (ADR-0013), Budget-Leases (ADR-0010), Coverage-Floor für `beton-policy`.
+- Verschärft durch ADR-0034: LLM-basierte Policies (v2) müssen über eine eingeloggte Vendor-CLI bzw. den Harness der Session laufen, nicht über einen API-Key.
 
 ## Bezug
 - Spec: docs/spec/03-policies.md (Prefix POL)

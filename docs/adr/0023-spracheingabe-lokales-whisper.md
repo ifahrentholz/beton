@@ -24,6 +24,7 @@ Option **B**: **nur lokales Whisper** (`whisper-rs`/whisper.cpp) in Crate `beton
 - Negativ / Risiken: Modell-Downloads (Hunderte MB bis > 1 GB); CPU-Last auf Servern ohne GPU; Latenz bei großen Modellen.
 - Negativ / Risiken: Zentraler Server transkribiert für alle Nutzer → Ressourcenplanung.
 - Folgearbeiten: Modellverwaltung (Download nach Zustimmung, Prüfsummen), Audio-Binärkanal im WS (ADR-0019), Mikrofon-Berechtigungen in Tauri/PWA.
+- Verschärft durch ADR-0033: Modell-Download nur auf Klick; Import einer lokalen Modelldatei (Prüfsumme gegen mitgelieferte Liste) als Offline-Alternative.
 
 ## Bezug
 - Spec: docs/spec/11-platform-features.md (Prefix VOI)

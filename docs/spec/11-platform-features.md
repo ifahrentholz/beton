@@ -194,12 +194,13 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### VOI-002 — Modellverwaltung on demand mit Checksum
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Modelle (`small`, `medium`, `large-v3-turbo`, jeweils optional quantisiert) werden erst auf Anforderung (Onboarding, Einstellungen oder erstes Diktat mit Rückfrage) aus einer im Binary gepinnten URL-Liste geladen und gegen gepinnte SHA-256 geprüft. Ablage `~/.beton/models/whisper/`. Default-Modell abhängig von Hardware: `large-v3-turbo` bei Apple Silicon/CUDA, sonst `small` *(Annahme)*. `beton voice models list|pull|remove`.
+- **Beschreibung:** Modelle (`small`, `medium`, `large-v3-turbo`, jeweils optional quantisiert) werden erst auf Anforderung (Onboarding, Einstellungen oder erstes Diktat mit Rückfrage) aus einer im Binary gepinnten URL-Liste geladen und gegen gepinnte SHA-256 geprüft. Ablage `~/.beton/models/whisper/`. Default-Modell abhängig von Hardware: `large-v3-turbo` bei Apple Silicon/CUDA, sonst `small` *(Annahme)*. `beton voice models list|pull|import|remove`. Offline-Alternative (ADR-0033): `beton voice models import <datei>` bzw. „Aus Datei importieren“ in den Einstellungen übernimmt eine lokal vorliegende Modelldatei, sofern ihre SHA-256 zu einem Eintrag der gepinnten Liste passt.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Download mit falscher Checksumme wird verworfen; die Datei existiert danach nicht im Modellverzeichnis.
   - [ ] AC2 — Abgebrochene Downloads werden per HTTP-Range fortgesetzt.
   - [ ] AC3 — Ohne Modell und ohne Zustimmung findet kein Download statt; der Mikrofon-Button zeigt „Modell laden (≈ X MB)“.
   - [ ] AC4 — `beton voice models list --json` liefert Name, Größe, installiert ja/nein, Checksumme.
+  - [ ] AC5 — `beton voice models import <datei>` installiert eine Modelldatei mit passender Prüfsumme ohne Netzwerk; eine Datei ohne passenden Eintrag in der gepinnten Liste wird abgelehnt.
 - **Abhängigkeiten:** VOI-001
 
 ### VOI-003 — Hardware-Beschleunigung
@@ -251,7 +252,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### VOI-008 — Keine Cloud-Transkription (Garantie)
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Der gesamte Voice-Pfad ist lokal: keine Browser-Web-Speech-API, keine Cloud-STT, keine Netzverbindungen von `beton-voice` außer dem expliziten Modell-Download von gepinnten URLs. Im zentralen Betrieb läuft Whisper auf dem eigenen Server des Betreibers.
+- **Beschreibung:** Der gesamte Voice-Pfad ist lokal: keine Browser-Web-Speech-API, keine Cloud-STT, keine Netzverbindungen von `beton-voice` außer dem expliziten, vom User ausgelösten Modell-Download von gepinnten URLs (Alternative: Import einer lokalen Datei, VOI-002). Im zentralen Betrieb läuft Whisper auf dem eigenen Server des Betreibers.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Das Frontend referenziert weder `SpeechRecognition` noch `webkitSpeechRecognition` (Lint-Regel in CI).
   - [ ] AC2 — Während einer Transkription baut der Prozess keine ausgehenden Verbindungen auf (Integrationstest mit Netz-Monitoring/Proxy-Assertion).
@@ -310,7 +311,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### UX-006 — Benachrichtigungs-Einstellungen
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Einstellungsseite für Benachrichtigungen als Matrix Ereignistyp × Kanal: Typen `approval_requested`, `question`, `turn_completed`, `async_done` (M5), `mention` (M4), `runner_lost`, `budget_threshold`, `rate_limit_high`; Kanäle In-App/Inbox, Desktop-Notification, Ton, Dock-/Tray-Badge, Web-Push (M4). Optional Ruhezeiten. Einstellungen werden pro User serverseitig gespeichert; das Routing selbst ist in COL-010 (ab M4, siehe 07-sessions-collaboration.md) definiert.
+- **Beschreibung:** Einstellungsseite für Benachrichtigungen als Matrix Ereignistyp × Kanal: Typen `approval_requested`, `question`, `turn_completed`, `async_done` (M5), `mention` (M4), `runner_lost`, `budget_threshold`, `rate_limit_high`; Kanäle In-App/Inbox, Desktop-Notification, Ton, Dock-/Tray-Badge, Web-Push (M4; standardmäßig aus, nur nach ausdrücklicher Aktivierung, WEB-014, ADR-0033). Optional Ruhezeiten. Einstellungen werden pro User serverseitig gespeichert; das Routing selbst ist in COL-010 (ab M4, siehe 07-sessions-collaboration.md) definiert.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Deaktivierter Desktop-Kanal für `turn_completed` unterdrückt die OS-Notification, das Inbox-/In-App-Signal bleibt.
   - [ ] AC2 — Während Ruhezeiten werden nur `approval_requested`-Benachrichtigungen zugestellt, sofern der User dies ausgewählt hat.
@@ -329,7 +330,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### UX-008 — Onboarding-Wizard (UI-Variante von `beton setup`)
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Beim ersten Start von Desktop/Web führt ein Wizard durch dieselben Schritte wie `beton setup` (gemeinsame Zustandsmaschine im Daemon, API `/v1/setup/*` *(Annahme)*): (1) Modus: lokal oder mit Server verbinden, (2) Harness-Erkennung (`claude`, `codex`, ACP-Agents) mit **Angebot** zur Installation fehlender CLIs — nie still (HAR-016, DIST-015), (3) Login-Status je CLI; Login erfolgt durch die CLI selbst in einem eingebetteten Terminal (`claude auth login`, `codex login`), (4) optionale API-Keys/Gateways (Keychain, SEC-002 in 05-security-identity.md), (5) Sandbox-/Proxy-Check (Ausschnitt aus `beton doctor`), (6) Telemetrie-Consent (OBS-007, Default „Nein“), (7) optional Whisper-Modell, (8) erste Session. Jeder Schritt ist überspringbar; der Wizard ist später unter Einstellungen erneut startbar.
+- **Beschreibung:** Beim ersten Start von Desktop/Web führt ein Wizard durch dieselben Schritte wie `beton setup` (gemeinsame Zustandsmaschine im Daemon, API `/v1/setup/*` *(Annahme)*): (1) Modus: lokal oder mit Server verbinden, (2) Harness-Erkennung (`claude`, `codex`, ACP-Agents) mit **Angebot** zur Installation fehlender CLIs — nie still (HAR-016, DIST-015), (3) Login-Status je CLI; Login erfolgt durch die CLI selbst in einem eingebetteten Terminal (`claude auth login`, `codex login`) – das ist der Standardweg, ein API-Key wird nie verlangt (ADR-0034), (4) optionale API-Keys/Gateways als zusätzliche Option (Keychain, SEC-002 in 05-security-identity.md), (5) Sandbox-/Proxy-Check (Ausschnitt aus `beton doctor`), (6) Telemetrie-Consent (OBS-007, Default „Nein“), (7) optional Whisper-Modell, (8) erste Session. Jeder Schritt ist überspringbar; der Wizard ist später unter Einstellungen erneut startbar.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Abbruch nach Schritt 3 und Neustart der App setzt den Wizard bei Schritt 4 fort.
   - [ ] AC2 — Ohne explizite Bestätigung wird keine CLI installiert (E2E-Test prüft, dass kein Installationsprozess startet).
@@ -423,7 +424,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### OBS-005 — `beton doctor`
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Prüft die Umgebung und gibt eine Tabelle (`ok`/`warn`/`fail`, Hinweis zur Behebung) oder `--json` aus; Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler). Prüfungen werden mit den Meilensteinen ergänzt:
+- **Beschreibung:** Prüft die Umgebung und gibt eine Tabelle (`ok`/`warn`/`fail`, Hinweis zur Behebung) oder `--json` aus; Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler). `doctor` kontaktiert keine externen Dienste (keine Online-Update-Prüfung); Netzprüfungen laufen nur gegen ausdrücklich konfigurierte Server (ADR-0033). Prüfungen werden mit den Meilensteinen ergänzt:
   - M0: Version/Update-Kanal, Daemon-Status und Port, Config-Validität, Rechte von `~/.beton` und Token-Datei (0600), SQLite-Integrität (`quick_check`), Harness-CLIs (Pfad, Version, unterstützter Bereich), Login-Status über CLI-eigene Statusbefehle, sofern vorhanden.
   - M2: Sandbox-Fähigkeiten (macOS `sandbox-exec`; Linux Landlock-ABI, seccomp, User-Namespaces, optional bubblewrap; Windows Beta), Egress-Proxy-CA, Keychain-Zugriff, Policy-Ladefehler.
   - M3: Chromium/Chrome for Testing, Whisper-Modelle + Backend, Desktop-Updater-Kanal.
@@ -432,7 +433,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Fehlt `claude` im PATH, meldet `doctor` `warn` mit Installationshinweis und Exit-Code 1.
   - [ ] AC2 — `--json` folgt einem veröffentlichten Schema (Snapshot-Test) und enthält pro Check `id`, `status`, `message`, `hint`.
   - [ ] AC3 — Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.
-  - [ ] AC4 — `doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch).
+  - [ ] AC4 — `doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch) und läuft ohne Netzwerk (nur Loopback) ohne Verbindungsversuch nach außen durch.
 - **Abhängigkeiten:** —
 - **Referenz:** ADR-0025
 
@@ -480,8 +481,8 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ## Nicht in v1
 
-- **Smart Routing** („Auto“-Harness/Modell-Wahl), lernender Router — v2 (ADR-0022).
-- **Prompt-Cleanup nach Diktat** (LLM-Nachbearbeitung des Transkripts) — v2 (ADR-0023).
+- **Smart Routing** („Auto“-Harness/Modell-Wahl), lernender Router — v2 (ADR-0022); subscription-first gemäß ADR-0034.
+- **Prompt-Cleanup nach Diktat** (LLM-Nachbearbeitung des Transkripts) — v2 (ADR-0023); dann über eine eingeloggte Vendor-CLI im Einmal-Modus, API-Key nur optional (ADR-0034).
 - **Cloud-Transkription** jeglicher Art — dauerhaft ausgeschlossen (ADR-0023).
 - **Branding/White-Label** von Themes und Oberfläche — v2.
 - **UI-Extensions** (eigene Seiten/Panels von Drittanbietern) — v2 (siehe 10-runners-extensibility.md).

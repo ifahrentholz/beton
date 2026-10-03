@@ -74,13 +74,15 @@ Logs gehen über `tracing` (Modul `beton_cli::logging`). Prompts, Tool-Inhalte u
 - Sandbox-Escape-Tests abschwächen oder überspringen, damit die CI grün wird.
 - Generierte Dateien (TS-Typen, OpenAPI, JSON-Schemas) von Hand ändern.
 
-## 5. Menschliches Review erforderlich
+## 5. Entscheidungen und menschliches Review
 
-PRs, die eines der folgenden Themen berühren, brauchen eine explizite Freigabe durch den Maintainer, auch wenn alle Checks grün sind:
-- `beton-sandbox`, `beton-proxy`, `beton-secrets`, `beton-policy`, Auth/Sharing in `beton-server`
-- Wire-Protokoll-Breaking-Changes (`beton-proto`)
-- neue ADRs oder Änderungen an `docs/adr/`
-- Release-, Signing- und Update-Pipeline
+Der Maintainer hat die Entscheidungen delegiert: Agents treffen Architektur- und Umsetzungsentscheidungen selbst und halten grundsätzliche Entscheidungen als ADR fest (`docs/adr/`). Verbindlich bleiben die Prämissen des Maintainers (ADR-0032 Design-first, ADR-0033 lokal ohne externe Server, ADR-0034 Subscription-first). PRs ohne Label `security-review` dürfen nach grüner CI gemergt werden.
+
+Dem Maintainer vorgelegt werden nur:
+- **Security-Review vor dem Merge** (Label `security-review`): `beton-sandbox`, `beton-proxy`, `beton-secrets`, `beton-policy`, Auth/Sharing in `beton-server`, Release-, Signing- und Update-Pipeline.
+- **Designs zur Abnahme** (Design-Prototyp, ADR-0032).
+- **Recht, Geld und Accounts** (Label `human-required`), z. B. Nutzungsbedingungen, Signing-Zertifikate, kostenpflichtige Dienste.
+- **Unumkehrbares**, z. B. das Repo öffentlich machen, Releases veröffentlichen, Daten löschen.
 
 ## 6. Arbeitsablauf mit GitHub-Issues
 

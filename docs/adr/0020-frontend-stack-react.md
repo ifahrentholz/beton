@@ -20,6 +20,7 @@ Option **A**: **React 19 + TypeScript + Vite + TanStack Router/Query + Tailwind 
 - Positiv: Maximale Komponentenauswahl und Agent-Produktivität; konsistente Typen zwischen Rust und TS.
 - Negativ / Risiken: Bundle-Größe (Monaco) → Code-Splitting/Lazy-Loading; Rendering-Kosten bei langen Sessions.
 - Folgearbeiten: Design-Tokens/Themes (ADR-0021), Vitest + Playwright (ADR-0031), PWA-Manifest und Service Worker für Web-Push.
+- Verschärft durch ADR-0033: Schriften, Icons und Editor-/Highlighter-Assets sind gebündelt, kein CDN; Web-Push nur opt-in.
 
 ## Bezug
 - Spec: docs/spec/08-clients.md (Prefix WEB/DESK)

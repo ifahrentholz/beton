@@ -269,28 +269,30 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
     - { id: maestra-no-code, type: tool_allowlist, params: { allow_kinds: [system, file_read, search] } }
     - { id: maestra-no-merge, type: git_guard, params: { merge: deny, push: deny } }
   ```
-  Preflight: Fehlt ein Harness (z. B. kein Codex-Login), weicht maestra auf den verfügbaren Vendor aus und kennzeichnet das Review als "same-vendor".
+  Preflight: Fehlt ein Harness (z. B. kein Codex-Login), weicht maestra auf den verfügbaren Vendor aus und kennzeichnet das Review als "same-vendor". maestra und alle Sub-Agents laufen auf den eingeloggten Vendor-CLIs (Subscription, HAR-015); kein Teil setzt einen API-Key oder den Direkt-API-Harness voraus (ADR-0034).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run maestra -p "…"` mit Fake-Harnesses durchläuft Plan → 2 Implementierungen (parallel, jede mit eigenem Worktree, SES-015) → Cross-Review → Zusammenfassung; das Log zeigt, dass jedes Review von einem anderen Harness als die Implementierung kam.
   - [ ] AC2 — (ab M2) Ein Versuch von maestra, selbst `Bash` oder `Edit` aufzurufen, wird per Policy abgelehnt.
   - [ ] AC3 — Meldet ein Review blockierende Punkte, wird der Implementer erneut beauftragt; nach 3 Runden endet die Aufgabe mit Status "needs_human".
   - [ ] AC4 — Fehlt Codex, enthält die Zusammenfassung den Hinweis "same-vendor review".
+  - [ ] AC5 — Der Lauf aus AC1 gelingt in einer Umgebung ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration; alle Child-Sessions melden `auth_source: vendor_cli`.
 - **Abhängigkeiten:** AGT-009, AGT-008, POL-015 (ab M2), POL-017 (ab M2, siehe [03](03-policies.md))
 - **Referenz:** ADR-0012; Omnigent Polly
 
 ### AGT-012 — Built-in-Agent `duetto` (Debatte)
 - **Meilenstein:** M1 · **Priorität:** Should
-- **Beschreibung:** Mitgelieferter Debatten-Agent (`agents/duetto/`), Name orchester-thematisch *(Annahme)*. Jede Frage geht parallel an zwei Stimmen auf verschiedenen Harnesses (`voce-claude`, `voce-codex`, beide read-only); die Antworten werden nebeneinander dargestellt. `/debate rounds=N` (Default 2, max. 5) lässt die Stimmen die Antwort der jeweils anderen kritisieren; danach synthetisiert duetto ein Ergebnis mit markierten Konsens- und Dissenspunkten.
+- **Beschreibung:** Mitgelieferter Debatten-Agent (`agents/duetto/`), Name orchester-thematisch *(Annahme)*. Jede Frage geht parallel an zwei Stimmen auf verschiedenen Harnesses (`voce-claude`, `voce-codex`, beide read-only); die Antworten werden nebeneinander dargestellt. `/debate rounds=N` (Default 2, max. 5) lässt die Stimmen die Antwort der jeweils anderen kritisieren; danach synthetisiert duetto ein Ergebnis mit markierten Konsens- und Dissenspunkten. Stimmen und Synthese laufen auf den eingeloggten Vendor-CLIs (Subscription, HAR-015); ein API-Key ist nie erforderlich (ADR-0034).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine Frage erzeugt zwei Child-Sessions auf unterschiedlichen Harnesses, die parallel laufen (`session_wait(mode: all)`).
   - [ ] AC2 — `/debate rounds=2` erzeugt genau 2 Kritikrunden pro Stimme und eine Synthese mit Abschnitten "Konsens" und "Dissens".
   - [ ] AC3 — Fehlt eine Stimme (Harness nicht eingerichtet), bricht duetto mit klarer Meldung ab, statt mit einer Stimme zu "debattieren".
+  - [ ] AC4 — Debatte und Synthese gelingen ohne `*_API_KEY`-Variablen und ohne `providers`-Konfiguration; alle beteiligten Sessions melden `auth_source: vendor_cli`.
 - **Abhängigkeiten:** AGT-009, AGT-008
 - **Referenz:** Omnigent Debby
 
 ### AGT-013 — Agent-CLI
 - **Meilenstein:** M1 · **Priorität:** Should
-- **Beschreibung:** `beton agent list | show <ref> | validate <pfad> | new <name> [--from builtin:maestra]`. `show` gibt den aufgelösten Agent (inkl. Herkunft jedes Felds) aus, `new` erzeugt ein Gerüst mit `$schema`-Kommentar, Prompt-Datei und Beispiel-Skill. AGT-013 ist Owner der Semantik; CLI-009 regelt nur die Konsistenz der CLI-Oberfläche.
+- **Beschreibung:** `beton agent list | show <ref> | validate <pfad> | new <name> [--from builtin:maestra]`. `show` gibt den aufgelösten Agent (inkl. Herkunft jedes Felds) aus, `new` erzeugt ein Gerüst mit `$schema`-Kommentar (verweist auf die von beton lokal abgelegte Schema-Datei, nicht auf eine URL, ADR-0033), Prompt-Datei und Beispiel-Skill. AGT-013 ist Owner der Semantik; CLI-009 regelt nur die Konsistenz der CLI-Oberfläche.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton agent new demo` erzeugt `.beton/agents/demo/` mit einer Struktur, die `beton agent validate` sofort besteht.
   - [ ] AC2 — `beton agent show maestra --json` liefert den Resolved Agent inkl. `hash`.
@@ -391,10 +393,10 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 
 ### ASY-008 — Approval ohne Zuschauer
 - **Meilenstein:** M5 · **Priorität:** Must
-- **Beschreibung:** Trifft eine Policy `ask` in einer Session ohne verbundenen Client, wird die Session pausiert (`async.run.paused { reason: approval }`), eine Approval-Card in die Inbox gestellt und eine Push-Notification (Desktop/PWA) versendet. Läuft der Timeout ab, greift `on_timeout`: `deny` (Default; Aktion abgelehnt, Agent läuft weiter), `allow` oder `abort` (Run endet mit `aborted`).
+- **Beschreibung:** Trifft eine Policy `ask` in einer Session ohne verbundenen Client, wird die Session pausiert (`async.run.paused { reason: approval }`), eine Approval-Card in die Inbox gestellt und eine Benachrichtigung ausgelöst: standardmäßig lokal als Desktop-Notification (DESK-005), an die PWA per Web-Push nur, wenn der User Web-Push aktiviert hat (WEB-014, ADR-0033). Läuft der Timeout ab, greift `on_timeout`: `deny` (Default; Aktion abgelehnt, Agent läuft weiter), `allow` oder `abort` (Run endet mit `aborted`).
 - **Details:** Timeout-Quelle (erste gewinnt): Regel-Parameter `approval.timeout` → Agent `async.approval.timeout` → Default 24 h. `on_timeout: allow` ist nur zulässig, wenn die auslösende Regel es nicht verbietet (`approval.allow_on_timeout: false` in höheren Ebenen sperrt es; strengere Variante gewinnt). Pausierte Sessions belegen keinen Model-Traffic; der Harness-Prozess bleibt bestehen, solange die Capability das erfordert, und wird nach 1 h Pause per Resume (HAR-020) neu aufgebaut *(Annahme)*. Das Ergebnis ist `approval.resolved { decision: allow|deny|abort, via: user|timeout, actor, on_timeout_applied }` (PROTO-002).
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Ohne Client und mit `ask` pausiert die Session, ein Inbox-Eintrag und eine Push-Notification entstehen (Fake-Push-Sink im Test).
+  - [ ] AC1 — Ohne Client und mit `ask` pausiert die Session, ein Inbox-Eintrag und eine Benachrichtigung entstehen (Fake-Notification-Sink im Test); ohne aktivierten Web-Push wird kein Push-Dienst kontaktiert.
   - [ ] AC2 — Nach Ablauf eines 1-min-Timeouts ohne Entscheidung wird die Aktion abgelehnt (`via: timeout`, `on_timeout_applied: deny`) und der Run läuft weiter.
   - [ ] AC3 — Mit `on_timeout: abort` endet der Run mit Status `aborted`.
   - [ ] AC4 — Eine Freigabe vom Handy (PWA) setzt die Session innerhalb von 2 s fort.

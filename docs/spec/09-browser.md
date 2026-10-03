@@ -128,11 +128,12 @@ Das Payload wird als Event `browser.picked` (PROTO-002) geloggt und dem Agent al
 
 ### BRW-002 — Chrome for Testing auf Nachfrage
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Ist kein kompatibler Browser vorhanden, bietet beton den Download von **Chrome for Testing** (gepinnte Version, passend zu OS/Arch) an – nie still. Download nach `~/.beton/browser/cft/<version>/`, Prüfung per SHA-256 aus dem offiziellen Versions-Manifest.
+- **Beschreibung:** Ist kein kompatibler Browser vorhanden, bietet beton den Download von **Chrome for Testing** (gepinnte Version, passend zu OS/Arch) an – nie still, nur auf Klick. Download nach `~/.beton/browser/cft/<version>/`, Prüfung per SHA-256 gegen die im Binary mitgelieferten Prüfsummen der gepinnten Version (übernommen aus dem offiziellen Versions-Manifest). Offline-Alternativen (ADR-0033): ein installiertes Chrome/Chromium/Edge (BRW-001, auch über `browser.executable`) oder „Aus Datei installieren“ mit einem lokal vorliegenden CfT-Archiv, das gegen dieselben Prüfsummen geprüft wird. `browser.auto_download` ist standardmäßig `false`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ohne Browser zeigt der erste Browser-Start (UI oder Agent-Tool) eine Rückfrage mit Größe und Quelle; ohne Zustimmung wird nichts geladen und das Tool liefert `browser_unavailable`.
   - [ ] AC2 — Eine Datei mit falscher Prüfsumme wird verworfen und nicht ausgeführt.
   - [ ] AC3 — Im Skript-/Async-Modus ohne Zuschauer erfolgt der Download nur bei `browser.auto_download: true`.
+  - [ ] AC4 — Ein lokal vorliegendes CfT-Archiv mit passender Prüfsumme wird über „Aus Datei installieren“ ohne Netzwerk installiert und danach von BRW-001 gefunden.
 - **Abhängigkeiten:** BRW-001
 
 ### BRW-003 — CDP-Lebenszyklus pro Session

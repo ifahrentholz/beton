@@ -26,6 +26,7 @@ Mehrstufig:
 - Negativ / Risiken: Plugin-Protokolle müssen versioniert und stabil gehalten werden; Berechtigungsmodell für Plugins ist sicherheitsrelevant.
 - Negativ / Risiken: Registry-Betrieb und Supply-Chain-Fragen (Signaturen) offen.
 - Folgearbeiten: Plugin-Host in `beton-plugin`, Manifest-Schema, WIT-Interface für Policies, Plugin-SDK-Beispiele.
+- Verschärft durch ADR-0033: Die Plugin-Registry ist optional; Installation aus lokalem Pfad ist immer möglich.
 
 ## Bezug
 - Spec: docs/spec/10-runners-extensibility.md (Prefix PLG)

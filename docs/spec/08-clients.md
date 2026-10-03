@@ -91,12 +91,12 @@ beton
 ├── audit    list|export|verify                        # SEC-012
 ├── auth     rotate-local                              # AUTH-001
 ├── admin    secrets rewrap|projections rebuild|blobs migrate   # SEC-006, DATA-005, DATA-007
-├── voice    models list|pull|remove                   # VOI-002
+├── voice    models list|pull|import|remove            # VOI-002
 ├── telemetry status|enable|disable|show|reset-id      # OBS-007
 ├── schedule list|create|update|pause|resume|delete|run-now
 ├── run-history <SCHEDULE|AGENT>
 ├── plugin   install|list|update|remove|enable|disable|info|search|new|validate|test|doctor
-├── upgrade  [--check] [--channel stable|beta|nightly] [--version V] [--dry-run] [--force]
+├── upgrade  [--check] [--channel stable|beta|nightly] [--version V] [--from-file FILE] [--dry-run] [--force]
 ├── uninstall [--purge] [--yes]
 ├── tui      [SESSION]
 ├── completion <bash|zsh|fish|powershell>
@@ -185,11 +185,13 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### DESK-007 — Auto-Update
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** Tauri-Updater mit signierten Manifesten, Kanäle `stable`/`beta`/`nightly`. Prüfung beim Start und alle 6 h; Installation nur nach Zustimmung. Das Sidecar-Binary wird mit aktualisiert; der Daemon wird erst neu gestartet, wenn keine Session läuft oder der User zustimmt. Implementierung (Manifeste, Kanäle, Signaturprüfung): Owner DIST-014; DESK-007 beschreibt nur das App-Verhalten.
+- **Beschreibung:** Tauri-Updater mit signierten Manifesten, Kanäle `stable`/`beta`/`nightly`. Die Update-Prüfung kontaktiert den Update-Server **nur auf Klick** („Nach Updates suchen“) oder, wenn der User die automatische Prüfung eingeschaltet hat (`update.auto_check`, Default aus; dann beim Start und alle 6 h); Installation nur nach Zustimmung. Offline-Alternative: „Update aus Datei installieren“ mit einem lokal vorliegenden, signierten Update-Paket (ADR-0033). Das Sidecar-Binary wird mit aktualisiert; der Daemon wird erst neu gestartet, wenn keine Session läuft oder der User zustimmt. Implementierung (Manifeste, Kanäle, Signaturprüfung): Owner DIST-014; DESK-007 beschreibt nur das App-Verhalten.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Manifest mit ungültiger Signatur wird verworfen und protokolliert.
   - [ ] AC2 — Bei laufendem Turn wartet der Daemon-Neustart, bis die Session `idle` ist oder der User „jetzt“ wählt.
   - [ ] AC3 — Kanalwechsel in den Einstellungen wirkt bei der nächsten Prüfung.
+  - [ ] AC4 — Ohne Klick und ohne eingeschaltete automatische Prüfung baut die App keine Verbindung zum Update-Server auf (Netz-Mock-Test über 48 h simulierte Laufzeit).
+  - [ ] AC5 — „Update aus Datei installieren“ installiert ein lokales, signiertes Update-Paket ohne Netzwerk; ein Paket mit ungültiger Signatur wird abgelehnt.
 - **Abhängigkeiten:** DIST-014, DIST-017 (siehe 12-distribution-quality.md)
 
 ### DESK-008 — Globaler Push-to-Talk-Shortcut
@@ -213,11 +215,12 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-001 — App-Shell, Routing & Layout
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** React-19-SPA (Vite, TanStack Router/Query, Zustand, Tailwind, shadcn/ui), ausgeliefert von `beton serve` und gebündelt im Desktop. Drei-Spalten-Layout (Session-Liste · Chat · Workspace-Rail) mit responsiven Breakpoints gemäß Design; M0 liefert Liste + Chat + Composer.
-- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`.
+- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`. Alle Assets (Schriften, Icons, Monaco- und Shiki-Dateien, Mermaid, Web-Worker) sind gebündelt und werden vom eigenen Origin ausgeliefert; kein CDN, keine externen Origins (ADR-0033). „Offline“ (kein Netz außer Loopback) ist ein normaler Zustand ohne Fehlerdialog.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run claude` öffnet (oder druckt) eine URL, unter der die Session live im Browser sichtbar ist.
   - [ ] AC2 — Deep-Link `/s/<id>` lädt direkt die Session (Reload-fest).
   - [ ] AC3 — Bei 375 px Breite gibt es keinen horizontalen Scroll; Rail und Liste sind über Navigation erreichbar.
+  - [ ] AC4 — Playwright-Test: Beim Laden und Bedienen der UI gehen alle Requests an den eigenen Origin; ein Request an einen fremden Origin (z. B. Schriften-CDN) lässt den Test fehlschlagen. Ein Build-Check findet keine absoluten `http(s)://`-Asset-URLs im Bundle.
 - **Abhängigkeiten:** PROTO-004, PROTO-005 (siehe 06-data-sync-protocol.md), API-001, API-004
 - **Referenz:** ADR-0020
 
@@ -283,7 +286,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### WEB-009 — Code-Editor (Monaco)
 - **Meilenstein:** M1 · **Priorität:** Should
-- **Beschreibung:** Dateien öffnen sich in Monaco (lazy geladen) mit Highlighting, Suche, Markdown-Vorschau und Speichern (`⌘S`) mit Konfliktprüfung (`If-Match`). Zeilenbereich markieren → „An Agent anhängen“ fügt eine Referenz mit Ausschnitt in den Composer ein.
+- **Beschreibung:** Dateien öffnen sich in Monaco (lazy geladen aus dem eigenen Bundle, kein CDN-Loader, WEB-001) mit Highlighting, Suche, Markdown-Vorschau und Speichern (`⌘S`) mit Konfliktprüfung (`If-Match`). Zeilenbereich markieren → „An Agent anhängen“ fügt eine Referenz mit Ausschnitt in den Composer ein.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ändert der Agent eine geöffnete, ungespeicherte Datei, zeigt der Editor einen Konfliktdialog statt stillem Überschreiben.
   - [ ] AC2 — Monaco ist nicht im initialen Bundle (Bundle-Analyse).
@@ -325,12 +328,13 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### WEB-014 — Web-Push
 - **Meilenstein:** M4 · **Priorität:** Must
-- **Beschreibung:** Push-Notifications über den Web-Push-Standard (VAPID, RFC 8291) für Approvals, Fragen, Turn-Ende, Erwähnungen, gemäß serverseitigem Routing (COL-010, siehe 07-sessions-collaboration.md). Payload minimal; Klick öffnet die PWA direkt an der Approval-Card. Approvals werden in der App entschieden, nicht per Notification-Action *(Annahme: verhindert Entscheidungen vom Sperrbildschirm)*.
+- **Beschreibung:** Push-Notifications über den Web-Push-Standard (VAPID, RFC 8291) für Approvals, Fragen, Turn-Ende, Erwähnungen, gemäß serverseitigem Routing (COL-010, siehe 07-sessions-collaboration.md). Weil Web-Push über die Push-Dienste der Browser-Hersteller läuft, ist er **optional und standardmäßig aus**: Erst wenn der User ihn in den Einstellungen bzw. in der PWA ausdrücklich aktiviert, wird eine Subscription angelegt; Standard sind Inbox/In-App und lokale Desktop-Notifications (DESK-005, ADR-0033). Payload minimal; Klick öffnet die PWA direkt an der Approval-Card. Approvals werden in der App entschieden, nicht per Notification-Action *(Annahme: verhindert Entscheidungen vom Sperrbildschirm)*.
 - **Details:** `POST /v1/push/subscriptions {endpoint, keys}`; VAPID-Schlüssel serverseitig generiert und gespeichert. Payload: `{type, session_id, title, preview?}`, `preview` nur bei `notifications.push_preview=true` (Default aus).
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Mit installierter PWA und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.
+  - [ ] AC1 — Mit installierter PWA, aktiviertem Web-Push und geschlossener App erzeugt ein `approval.requested` eine Push-Notification innerhalb von 5 s.
   - [ ] AC2 — Abgelaufene Subscriptions (HTTP 404/410 vom Push-Dienst) werden automatisch entfernt.
   - [ ] AC3 — Ohne `push_preview` enthält die Payload keinen Nachrichtentext.
+  - [ ] AC4 — Ohne ausdrückliche Aktivierung existiert keine Push-Subscription und der Server kontaktiert keinen Push-Dienst (Netz-Mock-Test); Approvals bleiben über Inbox und PWA entscheidbar.
 - **Abhängigkeiten:** WEB-013, COL-010 (siehe 07-sessions-collaboration.md)
 
 ### WEB-015 — Performance-Budgets
@@ -478,7 +482,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### CLI-013 — `upgrade` & `uninstall`
 - **Meilenstein:** M3 · **Priorität:** Must
-- **Beschreibung:** `upgrade` erkennt die Installationsart (Installer-Skript, Homebrew, winget, Scoop, cargo-binstall, deb/rpm) und aktualisiert passend bzw. nennt den richtigen Befehl; Kanäle `stable|beta|nightly`. `uninstall` entfernt Binary und Services, `--purge` zusätzlich `~/.beton/` nach Bestätigung. Implementierung: Owner DIST-016 (`upgrade`) und DIST-020 (`uninstall`).
+- **Beschreibung:** `upgrade` erkennt die Installationsart (Installer-Skript, Homebrew, winget, Scoop, cargo-binstall, deb/rpm) und aktualisiert passend bzw. nennt den richtigen Befehl; Kanäle `stable|beta|nightly`. Netzzugriff nur bei ausdrücklichem Aufruf; `--from-file` aktualisiert offline aus einem lokalen, signierten Release-Archiv (ADR-0033). `uninstall` entfernt Binary und Services, `--purge` zusätzlich `~/.beton/` nach Bestätigung. Implementierung: Owner DIST-016 (`upgrade`) und DIST-020 (`uninstall`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Bei Homebrew-Installation führt `upgrade` kein Self-Replace aus, sondern meldet `brew upgrade beton`.
   - [ ] AC2 — `upgrade` verweigert den Daemon-Neustart, solange Turns laufen, außer mit `--force`.
@@ -613,7 +617,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ## Nicht in v1
 
-- Native Mobile-Apps (Tauri Mobile) – v1 nutzt PWA + Web-Push.
+- Native Mobile-Apps (Tauri Mobile) – v1 nutzt PWA + Web-Push (Web-Push opt-in, WEB-014).
 - VS-Code-Extension, Slack-Bot.
 - UI-Extensions (sandboxed iframe + Message-Bridge).
 - Branding/White-Label.
