@@ -356,6 +356,8 @@ async fn stored_session(
                 harness: harness.into(),
                 cwd: env.work().display().to_string(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

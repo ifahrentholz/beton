@@ -542,6 +542,8 @@ async fn agt_007_ac2_session_spawn_runs_a_codex_child_and_returns_its_answer() {
                 harness: "claude".into(),
                 cwd: env.work().display().to_string(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: Some("lead".into()),
                 project_id: None,
                 parent_id: None,
