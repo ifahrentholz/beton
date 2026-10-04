@@ -165,7 +165,7 @@ impl Store {
     /// Baut die Projektionen aus dem Log neu auf: für eine Session oder die ganze Org.
     /// Gibt die Zahl der neu aufgebauten Sessions zurück.
     pub async fn rebuild_projections(&self, org: OrgId, session: Option<SessionId>) -> Result<u64> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let ids: Vec<String> = match session {
             Some(id) => {
                 crate::sessions::session_exists(&mut tx, org, id).await?;

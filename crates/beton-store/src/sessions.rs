@@ -157,7 +157,7 @@ impl Store {
         let org = OrgId::LOCAL;
         let user = UserId::LOCAL;
         let now = Timestamp::now().to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         sqlx::query(
             "INSERT INTO orgs (id, name, created_at) VALUES (?, 'Lokal', ?) ON CONFLICT DO NOTHING",
         )
@@ -273,7 +273,7 @@ impl Store {
         let created_at = event.ts.to_string();
         let prepared = self.prepare(new.id, vec![event])?;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         if is_tombstoned(&mut tx, org, new.id).await? {
             return Err(Error::Tombstoned(format!("Session {}", new.id)));
         }
@@ -401,7 +401,7 @@ impl Store {
         by: PrincipalId,
         authority: DeleteAuthority,
     ) -> Result<Vec<Tombstone>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let owner: String =
             sqlx::query_scalar("SELECT owner_id FROM sessions WHERE org_id = ? AND id = ?")
                 .bind(org.to_string())
@@ -456,7 +456,7 @@ impl Store {
             .id
             .parse()
             .map_err(|e| Error::InvalidEvent(format!("{e}")))?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM sessions WHERE org_id = ? AND id = ?")
                 .bind(org.to_string())
