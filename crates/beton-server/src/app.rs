@@ -303,6 +303,8 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::list_tombstones))
         .routes(routes!(crate::imports::list_candidates))
         .routes(routes!(crate::imports::import_sessions))
+        .routes(routes!(crate::exports::export_session))
+        .routes(routes!(crate::exports::import_session))
         .routes(routes!(crate::api_workspace::tree))
         .routes(crate::api_workspace::file_routes())
         .routes(routes!(crate::api_workspace::search))

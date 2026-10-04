@@ -15,6 +15,7 @@ pub mod api_workspace;
 pub mod app;
 pub mod commands;
 pub mod config;
+pub mod exports;
 pub mod extract;
 pub mod fork;
 pub mod hub;

@@ -9,6 +9,7 @@
 //! - `schemas/v1/mcp.schema.json` (`mcp.yaml` der User- und Projektebene, AGT-006)
 //! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
 //! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
+//! - `schemas/v1/export-header.schema.json` (Kopfzeile des Session-Exports, DATA-010)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
@@ -87,6 +88,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
             "schemas/v1/mcp.schema.json",
             schemars::schema_for!(beton_mcp::config::McpFile),
         ),
+        (
+            "schemas/v1/export-header.schema.json",
+            schemars::schema_for!(beton_store::ExportHeader),
+        ),
     ] {
         let mut json = serde_json::to_string_pretty(&schema)?;
         json.push('\n');
@@ -144,6 +149,9 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         ImportCandidatePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ImportRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ImportResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Session-Export/-Import als Datei (SES-009, DATA-010).
+        beton_server::exports::SessionImportResult::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
     }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {

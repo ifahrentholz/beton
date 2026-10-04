@@ -408,7 +408,11 @@ impl<'a> SessionManager<'a> {
 
     /// Workspace einer Session: ihr Worktree, sonst das Arbeitsverzeichnis aus
     /// `session.created`.
+    ///
+    /// Eine aus einer Exportdatei importierte Session hat hier keinen Workspace (SES-009):
+    /// Runner, Fork und Workspace-API scheitern dann mit `imported_read_only`.
     pub async fn workspace_root(&self, session: &SessionRecord) -> Result<PathBuf, Problem> {
+        crate::exports::ensure_runnable(&self.state.store, self.org(), session.id).await?;
         if let Some(wt) = &session.worktree {
             return Ok(PathBuf::from(&wt.path));
         }
@@ -480,6 +484,7 @@ impl<'a> SessionManager<'a> {
         session: &SessionRecord,
         resume: Option<String>,
     ) -> Result<(), Problem> {
+        crate::exports::ensure_runnable(&self.state.store, self.org(), session.id).await?;
         let cfg = self.cfg();
         let socket = cfg.tunnel_socket.clone().ok_or_else(|| {
             Problem::new(ProblemCode::Unavailable).detail("Kein Tunnel-Socket konfiguriert")
@@ -636,6 +641,7 @@ impl<'a> SessionManager<'a> {
             return Err(Problem::new(ProblemCode::Conflict)
                 .detail("Archivierte Session; erst wiederherstellen"));
         }
+        crate::exports::ensure_runnable(&self.state.store, self.org(), session).await?;
         let mut q = self.state.queue().lock(session).await?;
         if mode == InputMode::Steer && q.busy() {
             // SES-004 AC4: ohne Capability `steering` lehnt die API ab.
