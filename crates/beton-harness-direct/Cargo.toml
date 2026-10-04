@@ -1,0 +1,38 @@
+[package]
+name = "beton-harness-direct"
+description = "Direkt-API-/Gateway-Harness: eigener Agent-Loop gegen Anthropic- und OpenAI-kompatible Endpunkte (HAR-010, HAR-011)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Lokaler Mock-Server (HTTP/SSE auf Loopback) für Tests anderer Crates; nie im Release nötig.
+mock = []
+
+[dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+beton-harness.workspace = true
+beton-mcp.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+beton-harness-direct = { workspace = true, features = ["mock"] }
+serde_yaml_ng.workspace = true
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

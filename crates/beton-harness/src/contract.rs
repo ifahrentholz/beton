@@ -366,7 +366,7 @@ pub async fn run(subject: &dyn ContractSubject, scratch: &Path) -> ContractRepor
         check_model_switch(subject, &streaming, &caps).await,
     );
     push("turn_error", check_turn_error(subject, &turn_error).await);
-    push("crash", check_crash(subject, &crash).await);
+    push("crash", check_crash(subject, &crash, &caps).await);
     push("auth_expired", check_auth_expired(subject, &auth).await);
     report
 }
@@ -808,7 +808,16 @@ async fn check_turn_error(subject: &dyn ContractSubject, scenario: &Path) -> Out
     outcome(result)
 }
 
-async fn check_crash(subject: &dyn ContractSubject, scenario: &Path) -> Outcome {
+async fn check_crash(
+    subject: &dyn ContractSubject,
+    scenario: &Path,
+    caps: &Capabilities,
+) -> Outcome {
+    // Ein Harness im Runner-Prozess (Direkt-API) hat keinen eigenen Prozess, der abstürzen
+    // könnte; Verbindungsabbrüche zum Anbieter enden als `turn.failed`.
+    if caps.transport == crate::adapter::Transport::InProc {
+        return Outcome::Skipped("transport: inproc, kein Harness-Prozess".into());
+    }
     let mut s = match start(subject, scenario, None, FixedGate::new(true)).await {
         Ok(s) => s,
         Err(e) => return Outcome::Failed(e),

@@ -129,6 +129,7 @@ pub fn capabilities() -> Capabilities {
         images: false,
         transcript_import: false,
         models: Vec::new(),
+        models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
     }
 }

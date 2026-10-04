@@ -108,6 +108,7 @@ pub fn capabilities() -> Capabilities {
         transcript_import: false,
         // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
         models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
+        models_stale: false,
         efforts: Vec::new(),
     }
 }

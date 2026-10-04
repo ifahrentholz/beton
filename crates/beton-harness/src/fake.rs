@@ -64,6 +64,7 @@ pub fn default_capabilities() -> Capabilities {
         images: false,
         transcript_import: false,
         models: vec!["fake-small".into(), "fake-large".into()],
+        models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
     }
 }
