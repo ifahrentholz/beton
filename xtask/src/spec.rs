@@ -27,7 +27,7 @@ static META: LazyLock<Regex> = LazyLock::new(|| {
 static AC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*- \[[ xX]\] AC(\d+) — (.*)$").expect("gültige Regex"));
 static DEFERRED: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\(ab (M\d)\)").expect("gültige Regex"));
+    LazyLock::new(|| Regex::new(r"^\(ab (M\d)[,)]").expect("gültige Regex"));
 
 /// Regex für eine Feature-ID wie `POL-003`.
 pub fn id_regex() -> Regex {
@@ -222,6 +222,7 @@ pub(crate) mod tests {
 - **Akzeptanzkriterien:**
   - [ ] AC1 — erstes
   - [ ] AC2 — (ab M2) später
+  - [ ] AC3 — (ab M4, siehe Runner) mit Zusatz
 - **Abhängigkeiten:** —
 
 ### POL-002 — Zweite Regel
@@ -244,8 +245,9 @@ pub(crate) mod tests {
         let f = &spec.features["POL-001"];
         assert_eq!(f.milestone.as_deref(), Some("M0"));
         assert_eq!(f.priority.as_deref(), Some("Must"));
-        assert_eq!(f.acs.len(), 2);
+        assert_eq!(f.acs.len(), 3);
         assert_eq!(f.acs[1].deferred_to.as_deref(), Some("M2"));
+        assert_eq!(f.acs[2].deferred_to.as_deref(), Some("M4"));
         assert!(spec.problems().is_empty(), "{:?}", spec.problems());
     }
 
