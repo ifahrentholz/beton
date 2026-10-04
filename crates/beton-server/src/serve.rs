@@ -125,6 +125,7 @@ pub async fn start_with(
         origins: config.origin_allowlist(&ports),
         primary_host,
         runtime: runtime.clone(),
+        web_dir: config.web_dir.clone(),
     });
 
     let mut tasks = Vec::new();

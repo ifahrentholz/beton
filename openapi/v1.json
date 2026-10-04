@@ -581,6 +581,15 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "updated_after",
+            "in": "query",
+            "description": "Nur Sessions mit Aktivität nach diesem Zeitpunkt (RFC 3339), älteste zuerst, auch\narchivierte; für Listen-Deltas ohne Neuladen. Ohne `next_cursor`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

@@ -23,6 +23,7 @@ pub mod security;
 pub mod serve;
 pub mod sessions;
 pub mod tunnel;
+pub mod web;
 pub mod ws;
 
 pub use crate::app::openapi;

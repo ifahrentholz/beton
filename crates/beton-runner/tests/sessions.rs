@@ -903,3 +903,47 @@ async fn proto_015_second_runner_in_the_same_daemon_loses_no_events() {
     assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
     d.daemon.shutdown().await;
 }
+
+#[tokio::test]
+async fn session_list_delta_contains_only_changed_sessions() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let a = d
+        .create(dir.path(), &scenario(dir.path(), "turns: []"))
+        .await;
+    let b = d
+        .create(dir.path(), &scenario(dir.path(), "turns: []"))
+        .await;
+    d.wait_status(&a, "idle").await;
+    d.wait_status(&b, "idle").await;
+    let (_, list) = d.http("GET", "/v1/sessions", None).await;
+    let since = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["last_activity_at"].as_str())
+        .max()
+        .unwrap()
+        .to_owned();
+    let (_, body) = d
+        .http("POST", &format!("/v1/sessions/{a}/archive"), None)
+        .await;
+    assert_eq!(body["archived"], true, "{body}");
+    let (status, delta) = d
+        .http("GET", &format!("/v1/sessions?updated_after={since}"), None)
+        .await;
+    assert_eq!(status, 200, "{delta}");
+    let ids: Vec<&str> = delta["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![a.as_str()], "{delta}");
+    assert_eq!(delta["items"][0]["archived"], true);
+    let (status, _) = d
+        .http("GET", "/v1/sessions?updated_after=gestern", None)
+        .await;
+    assert_eq!(status, 400);
+    d.daemon.shutdown().await;
+}

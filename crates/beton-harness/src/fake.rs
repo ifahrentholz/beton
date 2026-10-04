@@ -63,6 +63,8 @@ pub fn default_capabilities() -> Capabilities {
         mcp_injection: false,
         images: false,
         transcript_import: false,
+        models: vec!["fake-small".into(), "fake-large".into()],
+        efforts: vec!["low".into(), "medium".into(), "high".into()],
     }
 }
 

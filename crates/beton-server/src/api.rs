@@ -126,6 +126,9 @@ pub struct SessionListQuery {
     pub cursor: Option<String>,
     /// Archivierte Sessions einschließen.
     pub include_archived: Option<bool>,
+    /// Nur Sessions mit Aktivität nach diesem Zeitpunkt (RFC 3339), älteste zuerst, auch
+    /// archivierte; für Listen-Deltas ohne Neuladen. Ohne `next_cursor`.
+    pub updated_after: Option<String>,
 }
 
 impl SessionListQuery {
@@ -175,6 +178,20 @@ pub async fn list_sessions(
 ) -> ApiResult<axum::Json<SessionPage>> {
     let page = q.page();
     let limit = page.limit()?;
+    if let Some(since) = &q.updated_after {
+        let since: beton_core::time::Timestamp = since.parse().map_err(|_| {
+            Problem::new(ProblemCode::ValidationFailed)
+                .detail("updated_after ist kein RFC-3339-Zeitpunkt")
+        })?;
+        let items = state
+            .store
+            .sessions_updated_after(state.local.org, since, limit)
+            .await?;
+        return Ok(axum::Json(SessionPage {
+            items: items.into_iter().map(summary).collect(),
+            next_cursor: None,
+        }));
+    }
     let before = page.cursor::<SessionCursor>()?.map(|c| c.before);
     let (sessions, next) = state
         .store

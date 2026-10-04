@@ -106,6 +106,9 @@ pub fn capabilities() -> Capabilities {
         mcp_injection: true,
         images: true,
         transcript_import: false,
+        // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
+        models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
+        efforts: Vec::new(),
     }
 }
 
