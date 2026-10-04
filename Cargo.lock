@@ -180,7 +180,9 @@ dependencies = [
  "async-trait",
  "beton-core",
  "beton-harness",
+ "beton-harness-acp",
  "beton-harness-claude",
+ "beton-harness-codex",
  "beton-host",
  "beton-runner",
  "beton-sdk",
@@ -226,7 +228,9 @@ dependencies = [
  "async-trait",
  "beton-core",
  "beton-harness",
+ "beton-harness-acp",
  "beton-harness-claude",
+ "beton-harness-codex",
  "serde_json",
  "tempfile",
  "tokio",
@@ -254,12 +258,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "beton-harness-acp"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "beton-harness-claude"
 version = "0.0.0"
 dependencies = [
  "async-trait",
  "beton-core",
  "beton-harness",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "beton-harness-codex"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "semver",
  "serde_json",
  "tempfile",
  "time",
@@ -305,7 +339,9 @@ dependencies = [
  "async-trait",
  "beton-core",
  "beton-harness",
+ "beton-harness-acp",
  "beton-harness-claude",
+ "beton-harness-codex",
  "beton-host",
  "beton-proto",
  "beton-server",
@@ -348,7 +384,9 @@ dependencies = [
  "base64 0.23.1",
  "beton-core",
  "beton-harness",
+ "beton-harness-acp",
  "beton-harness-claude",
+ "beton-harness-codex",
  "beton-host",
  "beton-proto",
  "beton-store",
