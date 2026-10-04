@@ -133,17 +133,17 @@ sandbox:                             # Felder und Semantik: SBX (04-sandbox.md)
 | Tool | Zweck | Freischaltung |
 |---|---|---|
 | `session_spawn` | Child-Session für einen in `spawn.agents` erlaubten Agent starten (`agent`, `prompt`, `async`, `worktree`, `budget_usd`, `params`) → `session_id` | `spawn.agents` nicht leer |
-| `session_send` | Nachricht an eine eigene Child-Session senden | mit `session_spawn` |
-| `session_wait` | Auf Ergebnis einer oder mehrerer Childs warten (`ids`, `mode: all\|any`, `timeout`) | mit `session_spawn` |
-| `session_status` / `session_list` / `session_cancel` | Status, Liste, Abbruch von Childs | mit `session_spawn` |
-| `inbox_read` | Ergebnisse/Nachrichten an diese Session lesen (Agent-Inbox) | immer |
-| `ask_user` | Frage an den Menschen (erzeugt Inbox-Frage; blockiert bis Antwort/Timeout) | immer |
+| `session_send` | Nachricht an eine eigene Child-Session senden | mit `session_spawn` (mit AGT-009) |
+| `session_wait` | Auf Ergebnis einer oder mehrerer Childs warten (`ids`, `mode: all\|any`, `timeout`) | mit `session_spawn` (mit AGT-009) |
+| `session_status` / `session_list` / `session_cancel` | Status, Liste, Abbruch von Childs | mit `session_spawn` (mit AGT-009) |
+| `inbox_read` | Ergebnisse/Nachrichten an diese Session lesen (Agent-Inbox) | immer (ab M2, UX-001) |
+| `ask_user` | Frage an den Menschen (erzeugt Inbox-Frage; blockiert bis Antwort/Timeout) | immer (ab M2, UX-001) |
 | `policy_query` | "Wäre Aktion X erlaubt?" → Entscheidung + Begründung (Explain, POL-027) | immer |
 | `timer_set` / `timer_cancel` / `timer_list` | Einmalige Wiederaufnahme dieser Session | `timers: true` (ab M5, ASY-003) |
 | `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` | Schedules für erlaubte Agents verwalten | Agent-Feld `tools.system` enthält sie (ab M5, ASY-011) |
 | `skill_load` / `skill_read_file` | Skill-Inhalt bzw. Zusatzdatei laden (für Harnesses ohne native Skills) | wenn Skills aktiv |
 
-Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind = "system"`.
+Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind = "system"` (ab M2; im Event-Log `tool.call.requested` mit `mcp_server: beton`, `source: beton_mcp`). `tools.system` wählt aus (leer bzw. fehlend: alle verfügbaren), die Spalte „Freischaltung“ begrenzt; `skill_load`/`skill_read_file` kommen mit aktiven Skills immer hinzu. Tools, deren Freischaltung fehlt oder die erst ein späterer Meilenstein bringt, sind unsichtbar, ein direkter Aufruf endet mit `tool_not_enabled`.
 
 ## Features — Agents (AGT)
 
@@ -202,7 +202,7 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-006 — Tools = MCP-Server (Agent/Projekt/User)
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Tools werden ausschließlich als MCP-Server deklariert: stdio (`command`, `args`, `env`) oder HTTP (`url`, `headers`), jeweils mit optionaler `allow`-Liste von Tool-Namen. Neben dem Agent können User (`~/.beton/mcp.yaml`) und Projekt (`.beton/mcp.yaml`) MCP-Server definieren. Es gibt keine Funktions-Tools in anderen Sprachen.
-- **Details:** Merge-Reihenfolge User → Projekt → Agent; gleicher Name: die spezifischere Ebene ersetzt den Eintrag vollständig. Agent-Läufe (Agent-Ref angegeben) verwenden User-/Projekt-Server nur, wenn `tools.inherit: true` *(Annahme: Default `false` für Reproduzierbarkeit; interaktive Sessions ohne Agent nutzen User+Projekt)*. Die Sandbox-Stufe von stdio-MCP-Servern regelt SBX-002. UI und CLI zur MCP-Server-Verwaltung: UX-010 (siehe 11-platform-features.md).
+- **Details:** Format der User- und Projekt-Datei (`~/.beton/mcp.yaml` bzw. `.beton/mcp.yaml`, Schema `schemas/v1/mcp.schema.json`): `servers: { <name>: { command, args, env, url, headers, allow } }` mit denselben Feldern wie `tools.mcp` im Agent; Namen `[a-z0-9_-]` (höchstens 64 Zeichen), `beton` ist für die System-Tools reserviert. Genau eines von `command` (stdio) und `url` (HTTP, `http://` oder `https://`) ist Pflicht; eine fehlerhafte Datei wird mit Hinweis (`notice`) ignoriert, ein ungültiger Eintrag meldet `mcp.server_failed`. HTTP-Server verbindet der Runner nur, wenn sie konfiguriert sind (ADR-0033). `${secret:…}` in `env`/`headers` wird erst ab M2 aufgelöst; bis dahin startet ein solcher Server nicht (`mcp.server_failed`, fail closed). `allow` filtert `tools/list` im Relay-Hub (HAR-009) und lehnt `tools/call` anderer Tools mit `tool_not_enabled` ab. Merge-Reihenfolge User → Projekt → Agent; gleicher Name: die spezifischere Ebene ersetzt den Eintrag vollständig. Agent-Läufe (Agent-Ref angegeben) verwenden User-/Projekt-Server nur, wenn `tools.inherit: true` *(Annahme: Default `false` für Reproduzierbarkeit; interaktive Sessions ohne Agent nutzen User+Projekt)*. Die Sandbox-Stufe von stdio-MCP-Servern regelt SBX-002. UI und CLI zur MCP-Server-Verwaltung: UX-010 (siehe 11-platform-features.md).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein in `allow` nicht gelistetes Tool eines MCP-Servers ist für das Modell nicht sichtbar (Tool-Liste im `harness.ready`-Event geprüft).
   - [ ] AC2 — Ein Projekt-Server mit gleichem Namen wie ein User-Server ersetzt diesen vollständig (Unit-Test des Merges).
@@ -213,7 +213,7 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-007 — System-Tools via MCP-Server `beton`
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** `beton-mcp` implementiert die System-Tools (Tabelle im Design) als MCP-Server, den HAR-009 in jeden Harness injiziert. Welche Tools sichtbar sind, steuern `tools.system` und die Freischaltungsregeln; Sessions ohne Agent erhalten `policy_query`, `inbox_read`, `ask_user`, `skill_load`, `skill_read_file`.
-- **Details:** Jeder Aufruf trägt das session-gebundene Relay-Token; Aufrufe sind als `tool.call.*` mit `tool.kind = "system"` im Log. `session_wait` blockiert höchstens `timeout` (Default 30 min, max. 24 h) und liefert dann den Zwischenstand. `timer_*` und `schedule_*` sind erst ab M5 verfügbar (ASY-003, ASY-011).
+- **Details:** Jeder Aufruf trägt das session-gebundene Relay-Token; Aufrufe sind als `tool.call.*` mit `mcp_server: beton` und `source: beton_mcp` im Log (Policy-Klasse `tool.kind = "system"`, ab M2). `session_wait` blockiert höchstens `timeout` (Default 30 min, max. 24 h) und liefert dann den Zwischenstand. Verfügbar in M1: `policy_query`, `session_spawn` (nur `async: false`), `skill_load`, `skill_read_file`; `inbox_read` und `ask_user` kommen mit der Inbox (UX-001, ab M2), `session_send`/`session_wait`/`session_status`/`session_list`/`session_cancel` mit AGT-009, `timer_*` und `schedule_*` ab M5 (ASY-003, ASY-011). Sessions ohne Agent erhalten daher in M1 `policy_query` und, wenn Skills gefunden werden, `skill_load`/`skill_read_file`. `policy_query` antwortet ohne Policy-Engine (bis POL-027, M2) nie mit `allow`, sondern mit `decision: ask` und Begründung. `session_spawn` startet den Sub-Agent mit dem Harness und Modell aus seinem `executor` (das Modell wählt nur den Namen aus `spawn.agents`), als Session `kind: subagent`, `trigger: spawn` mit `parent_session_id` im Arbeitsverzeichnis des Parents; der Server führt das über `system.call` im Tunnel aus (PROTO-015) und wartet höchstens 30 min auf das Turn-Ende. Instructions, eigene Tools und Grenzen (`max_depth`, `max_concurrent`, Worktree, Budget) des Childs sowie `agent.spawned`/`agent.completed` folgen mit AGT-004/AGT-005 und AGT-009; bis dahin bekommt ein Child selbst keine Sub-Agents.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ohne `spawn.agents` ist `session_spawn` nicht in der Tool-Liste; ein direkter Aufruf wird mit `tool_not_enabled` abgelehnt.
   - [ ] AC2 — `session_spawn(agent: "quick-check", prompt: "…", async: false)` startet eine Child-Session auf Codex und liefert deren Abschlussnachricht als Tool-Result (Integrationstest mit Fake-Harnesses).
@@ -224,10 +224,10 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-008 — Skills (`SKILL.md`)
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Skills sind Ordner mit `SKILL.md` (Frontmatter `name`, `description`, optional `user-invocable`, `disable-model-invocation`, `allowed-tools`) und optionalen `scripts/`, `references/`, `assets/`. Discovery-Reihenfolge (erster Treffer pro Name gewinnt): Agent-Verzeichnis `skills/` → Projekt `.beton/skills/`, `.claude/skills/`, `.agents/skills/` → User `~/.beton/skills/`, `~/.claude/skills/`, `~/.agents/skills/` → Built-in-Skills. `skills:` im Agent filtert (`all`, `none`, Liste).
-- **Details:** Auslieferung: Harnesses mit nativer Skill-Unterstützung erhalten die ausgewählten Skills in einem session-spezifischen Skill-Verzeichnis, das beton dem Harness bekannt macht *(Annahme: Mechanismus je CLI-Version; sonst Fallback)*; alle anderen bekommen einen Skill-Index (Name + Beschreibung) in den Instructions und laden Inhalte über `skill_load`/`skill_read_file`. Im Composer sind user-invocable Skills über `/name` aufrufbar.
+- **Details:** Auslieferung: Harnesses mit nativer Skill-Unterstützung erhalten die ausgewählten Skills in einem session-spezifischen Skill-Verzeichnis (Kopie, Symlinks nach außen ausgelassen), das beton dem Harness bekannt macht – verifiziert ohne Modellaufruf: Claude Code 2.1.285 lädt es als Plugin `beton` über `--plugin-dir` (Skills erscheinen als `beton:<name>` mit Alias `<name>`), Codex 0.153.2 über den Request `skills/extraRoots/set` mit `<dir>/skills`. Skills aus dem Verzeichnis, das die CLI selbst liest (Claude: `.claude/skills`, Codex: `.agents/skills`), liefert beton dort nicht noch einmal aus. Alle Harnesses können Inhalte über `skill_load`/`skill_read_file` laden; der Skill-Index (Name + Beschreibung) steht in der Beschreibung von `skill_load` und damit harness-unabhängig im Modell-Kontext *(Abweichung: nicht in den Instructions, die erst AGT-005 liefert)*. Skills mit `disable-model-invocation: true` erscheinen nicht im Index und lassen sich nicht über `skill_load` laden. `skill_read_file` liefert nur Textdateien bis 256 KiB innerhalb des Skill-Ordners. Ohne Agent gelten alle gefundenen Skills (`skills: all`). Im Composer sind user-invocable Skills über `/name` aufrufbar (WEB-006).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Skill gleichen Namens im Agent-Verzeichnis verschattet den Projekt-Skill (Test der Discovery-Reihenfolge).
-  - [ ] AC2 — Auf dem Direkt-API-Harness ruft das Modell `skill_load("fix-ci")` auf und erhält den Body ohne Frontmatter.
+  - [ ] AC2 — Auf einem Harness ohne native Skills (ACP; Direkt-API mit HAR-010) ruft das Modell `skill_load("fix-ci")` auf und erhält den Body ohne Frontmatter.
   - [ ] AC3 — `skill_read_file` verweigert Pfade außerhalb des Skill-Ordners (`../`, Symlinks nach außen).
   - [ ] AC4 — Eine `SKILL.md` ohne `name`/`description` wird mit Warnung übersprungen.
 - **Abhängigkeiten:** AGT-007

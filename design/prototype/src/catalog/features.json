@@ -581,7 +581,7 @@
   "summary": "Skills sind Ordner mit `SKILL.md` (Frontmatter `name`, `description`, optional `user-invocable`, `disable-model-invocation`, `allowed-tools`) und optionalen `scripts/`, `references/`, `assets/`. Discovery-Reihenfolge (erster Treffer pro Name gewinnt): Agent-Verzeichnis `skills/` → Projekt `.beton/skills/`, `.claude/skills/`, `.agents/skills/` → User `~/.beton/skills/`, `~/.claude/skills/`, `~/.agents/skills/` → Built-in-Skills. `skills:` im Agent filtert (`all`, `none`, Liste).",
   "acs": [
    "Ein Skill gleichen Namens im Agent-Verzeichnis verschattet den Projekt-Skill (Test der Discovery-Reihenfolge).",
-   "Auf dem Direkt-API-Harness ruft das Modell `skill_load(\"fix-ci\")` auf und erhält den Body ohne Frontmatter.",
+   "Auf einem Harness ohne native Skills (ACP; Direkt-API mit HAR-010) ruft das Modell `skill_load(\"fix-ci\")` auf und erhält den Body ohne Frontmatter.",
    "`skill_read_file` verweigert Pfade außerhalb des Skill-Ordners (`../`, Symlinks nach außen).",
    "Eine `SKILL.md` ohne `name`/`description` wird mit Warnung übersprungen."
   ]
