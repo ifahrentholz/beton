@@ -1873,7 +1873,8 @@
   "acs": [
    "Ein zweites Einlösen desselben Codes oder ein Einlösen nach 60 s schlägt mit 401 fehl.",
    "Nach Einlösen enthält die Browser-History keine URL mit gültigem Code (Redirect ersetzt den Eintrag).",
-   "Codes lassen sich nur mit lokalem Token erzeugen; der Endpunkt ist über eine Nicht-Loopback-Bindung nicht erreichbar."
+   "Codes lassen sich nur mit lokalem Token erzeugen; der Endpunkt ist über eine Nicht-Loopback-Bindung nicht erreichbar.",
+   "Eine Browser-Anmeldung überlebt einen Neustart des Daemons innerhalb der 24 h: Der Server speichert nur den SHA-256 des Cookies mit Ablaufzeit in `~/.beton/auth/browser-sessions.json` (0600, Start bricht bei weiteren Rechten ab wie bei `local.token`); Einmal-Codes überleben keinen Neustart."
   ]
  },
  {

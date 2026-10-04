@@ -4,15 +4,17 @@
 //!   Start bricht ab, wenn Rechte zu weit sind oder Datei/Verzeichnis einem anderen User
 //!   gehören.
 //! - Einmal-Codes (128 bit, 60 s, single-use) für den Browser-Login, eingelöst gegen ein
-//!   Session-Cookie.
+//!   Session-Cookie. Codes leben nur im Speicher; Browser-Sessions stehen zusätzlich in
+//!   `<data_dir>/auth/browser-sessions.json` (0600), damit sie einen Daemon-Neustart
+//!   überleben (AUTH-004 AC4).
 //!
-//! Tokens, Codes und Cookies werden nur gehasht im Speicher gehalten und nie geloggt.
+//! Tokens, Codes und Cookies werden nur als SHA-256 gehalten bzw. gespeichert und nie geloggt.
 
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -279,16 +281,74 @@ pub(crate) fn check_private(path: &Path, _expected: u32) -> Result<(), AuthError
     Ok(())
 }
 
-/// Einmal-Codes und Browser-Sessions im Speicher (nur Hashes).
+/// Einmal-Codes (nur im Speicher) und Browser-Sessions (optional dauerhaft), nur als Hashes.
 #[derive(Debug, Default)]
 pub struct BrowserLogins {
-    codes: Mutex<HashMap<[u8; 32], Instant>>,
-    sessions: Mutex<HashMap<[u8; 32], Instant>>,
+    codes: Mutex<HashMap<[u8; 32], SystemTime>>,
+    sessions: Mutex<HashMap<[u8; 32], SystemTime>>,
+    /// Datei der Browser-Sessions; `None` hält sie nur im Speicher (Tests).
+    file: Option<PathBuf>,
+}
+
+/// Inhalt von `browser-sessions.json`: Cookie-Hashes mit Ablauf in Unix-Sekunden.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct SessionFile {
+    v: u32,
+    sessions: Vec<StoredSession>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredSession {
+    sha256: String,
+    expires: u64,
+}
+
+fn unix_secs(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 impl BrowserLogins {
+    pub fn path_in(data_dir: &Path) -> PathBuf {
+        data_dir.join("auth").join("browser-sessions.json")
+    }
+
+    /// Lädt die gespeicherten Browser-Sessions. Zu weite Rechte verhindern den Start wie bei
+    /// der Token-Datei; eine unlesbare oder kaputte Datei meldet niemanden an.
+    pub fn persistent(data_dir: &Path) -> Result<Self, AuthError> {
+        let path = Self::path_in(data_dir);
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !dir.exists() {
+            create_private_dir(&dir)?;
+        }
+        check_private(&dir, 0o700)?;
+        let mut sessions = HashMap::new();
+        if path.exists() {
+            check_private(&path, 0o600)?;
+            let stored: SessionFile = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| {
+                    tracing::warn!(
+                        "Browser-Sessions nicht lesbar; alle Browser müssen sich neu anmelden"
+                    );
+                    SessionFile::default()
+                });
+            for s in stored.sessions {
+                let mut hash = [0u8; 32];
+                if hex::decode_to_slice(&s.sha256, &mut hash).is_ok() {
+                    sessions.insert(hash, UNIX_EPOCH + Duration::from_secs(s.expires));
+                }
+            }
+        }
+        Ok(Self {
+            codes: Mutex::default(),
+            sessions: Mutex::new(sessions),
+            file: Some(path),
+        })
+    }
+
     /// Neuer Einmal-Code (128 bit), gültig für 60 s ab `now`.
-    pub fn issue_code(&self, now: Instant) -> Result<String, AuthError> {
+    pub fn issue_code(&self, now: SystemTime) -> Result<String, AuthError> {
         let code = random_hex(16)?;
         if let Ok(mut codes) = self.codes.lock() {
             codes.retain(|_, expires| *expires > now);
@@ -298,7 +358,8 @@ impl BrowserLogins {
     }
 
     /// Löst einen Code ein (genau einmal, innerhalb der Frist) und liefert den Cookie-Wert.
-    pub fn redeem(&self, code: &str, now: Instant) -> Option<String> {
+    /// Lässt sich die Session nicht speichern, gibt es kein Cookie (fail closed).
+    pub fn redeem(&self, code: &str, now: SystemTime) -> Option<String> {
         let expires = self.codes.lock().ok()?.remove(&sha256(code))?;
         if now >= expires {
             return None;
@@ -307,16 +368,45 @@ impl BrowserLogins {
         let mut sessions = self.sessions.lock().ok()?;
         sessions.retain(|_, e| *e > now);
         sessions.insert(sha256(&cookie), now + COOKIE_TTL);
+        if let Some(path) = &self.file
+            && let Err(e) = save_sessions(path, &sessions)
+        {
+            tracing::warn!("Browser-Session nicht gespeichert: {e}");
+            sessions.remove(&sha256(&cookie));
+            return None;
+        }
         Some(cookie)
     }
 
-    pub fn verify_cookie(&self, cookie: &str, now: Instant) -> bool {
+    pub fn verify_cookie(&self, cookie: &str, now: SystemTime) -> bool {
         self.sessions
             .lock()
             .ok()
             .and_then(|s| s.get(&sha256(cookie)).copied())
             .is_some_and(|expires| now < expires)
     }
+}
+
+/// Schreibt die Sessions atomar (temporäre Datei 0600, dann `rename`).
+fn save_sessions(path: &Path, sessions: &HashMap<[u8; 32], SystemTime>) -> Result<(), AuthError> {
+    let file = SessionFile {
+        v: 1,
+        sessions: sessions
+            .iter()
+            .map(|(hash, expires)| StoredSession {
+                sha256: hex::encode(hash),
+                expires: unix_secs(*expires),
+            })
+            .collect(),
+    };
+    let json = serde_json::to_string(&file).map_err(|e| AuthError::Io {
+        path: path.display().to_string(),
+        source: std::io::Error::other(e),
+    })?;
+    let tmp = path.with_extension("json.new");
+    let _ = std::fs::remove_file(&tmp);
+    write_private(&tmp, &json)?;
+    std::fs::rename(&tmp, path).map_err(io_err(path))
 }
 
 #[cfg(test)]
@@ -430,7 +520,7 @@ mod tests {
     #[test]
     fn auth_004_ac1_code_is_single_use_and_expires() {
         let logins = BrowserLogins::default();
-        let t0 = Instant::now();
+        let t0 = SystemTime::now();
         let code = logins.issue_code(t0).unwrap();
         assert_eq!(code.len(), 32, "128 bit");
         let cookie = logins.redeem(&code, t0 + Duration::from_secs(5)).unwrap();
@@ -444,5 +534,96 @@ mod tests {
         assert!(logins.redeem(&late, t0 + CODE_TTL).is_none(), "nach 60 s");
         assert!(logins.redeem("unbekannt", t0).is_none());
         assert!(!logins.verify_cookie(&cookie, t0 + COOKIE_TTL + Duration::from_secs(6)));
+    }
+
+    #[test]
+    fn auth_004_ac4_cookie_survives_daemon_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let t0 = SystemTime::now();
+        let cookie = {
+            let logins = BrowserLogins::persistent(dir.path()).unwrap();
+            let code = logins.issue_code(t0).unwrap();
+            logins.redeem(&code, t0).unwrap()
+        };
+        // Neuer Prozess: gleiche Datei, Cookie gilt weiter, aber nicht über die 24 h hinaus.
+        let logins = BrowserLogins::persistent(dir.path()).unwrap();
+        assert!(logins.verify_cookie(&cookie, t0 + Duration::from_secs(3600)));
+        assert!(!logins.verify_cookie(&cookie, t0 + COOKIE_TTL));
+        assert!(!logins.verify_cookie("unbekannt", t0));
+        // Einmal-Codes überleben keinen Neustart.
+        let before = BrowserLogins::persistent(dir.path()).unwrap();
+        let code = before.issue_code(t0).unwrap();
+        drop(before);
+        let after = BrowserLogins::persistent(dir.path()).unwrap();
+        assert!(after.redeem(&code, t0).is_none());
+    }
+
+    #[test]
+    fn auth_004_ac4_session_file_is_private_and_holds_only_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let logins = BrowserLogins::persistent(dir.path()).unwrap();
+        let t0 = SystemTime::now();
+        let code = logins.issue_code(t0).unwrap();
+        let cookie = logins.redeem(&code, t0).unwrap();
+        let path = BrowserLogins::path_in(dir.path());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(!content.contains(&cookie), "kein Klartext-Cookie");
+        assert!(!content.contains(&code), "kein Einmal-Code");
+        assert!(content.contains(&hex::encode(sha256(&cookie))));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_004_ac4_readable_session_file_refuses_start() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let logins = BrowserLogins::persistent(dir.path()).unwrap();
+        let t0 = SystemTime::now();
+        let code = logins.issue_code(t0).unwrap();
+        logins.redeem(&code, t0).unwrap();
+        let path = BrowserLogins::path_in(dir.path());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            BrowserLogins::persistent(dir.path()).unwrap_err(),
+            AuthError::InsecurePermissions { mode: 0o644, .. }
+        ));
+    }
+
+    #[test]
+    fn auth_004_ac4_damaged_or_expired_entries_grant_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let t0 = SystemTime::now();
+        let cookie = {
+            let logins = BrowserLogins::persistent(dir.path()).unwrap();
+            let code = logins.issue_code(t0).unwrap();
+            logins.redeem(&code, t0).unwrap()
+        };
+        let path = BrowserLogins::path_in(dir.path());
+        // Kaputte Datei: niemand ist angemeldet, neue Anmeldungen funktionieren.
+        std::fs::write(&path, "{kein json").unwrap();
+        let logins = BrowserLogins::persistent(dir.path()).unwrap();
+        assert!(!logins.verify_cookie(&cookie, t0));
+        let code = logins.issue_code(t0).unwrap();
+        let fresh = logins.redeem(&code, t0).unwrap();
+        assert!(
+            BrowserLogins::persistent(dir.path())
+                .unwrap()
+                .verify_cookie(&fresh, t0)
+        );
+        // Abgelaufene Einträge werden beim nächsten Schreiben entfernt.
+        let later = t0 + COOKIE_TTL + Duration::from_secs(1);
+        let code = logins.issue_code(later).unwrap();
+        logins.redeem(&code, later).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !content.contains(&hex::encode(sha256(&fresh))),
+            "abgelaufen entfernt"
+        );
     }
 }

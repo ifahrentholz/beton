@@ -4,7 +4,7 @@
 //! derselben Deklaration stammen (API-001 AC2).
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use axum::Extension;
 use axum::extract::{ConnectInfo, State};
@@ -238,7 +238,7 @@ pub async fn create_login_code(
     }
     let code = state
         .logins
-        .issue_code(Instant::now())
+        .issue_code(SystemTime::now())
         .map_err(|e| Problem::internal(&e))?;
     let host = headers
         .get(header::HOST)
@@ -272,7 +272,7 @@ pub async fn redeem_login_code(
 ) -> ApiResult<Response> {
     let cookie = state
         .logins
-        .redeem(&q.code, Instant::now())
+        .redeem(&q.code, SystemTime::now())
         .ok_or_else(|| Problem::new(ProblemCode::InvalidCode))?;
     // Nur relative Pfade, keine Protokoll-relativen URLs (Open Redirect).
     let next = q

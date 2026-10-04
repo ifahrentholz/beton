@@ -178,6 +178,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
   - [ ] AC1 — Ein zweites Einlösen desselben Codes oder ein Einlösen nach 60 s schlägt mit 401 fehl.
   - [ ] AC2 — Nach Einlösen enthält die Browser-History keine URL mit gültigem Code (Redirect ersetzt den Eintrag).
   - [ ] AC3 — Codes lassen sich nur mit lokalem Token erzeugen; der Endpunkt ist über eine Nicht-Loopback-Bindung nicht erreichbar.
+  - [ ] AC4 — Eine Browser-Anmeldung überlebt einen Neustart des Daemons innerhalb der 24 h: Der Server speichert nur den SHA-256 des Cookies mit Ablaufzeit in `~/.beton/auth/browser-sessions.json` (0600, Start bricht bei weiteren Rechten ab wie bei `local.token`); Einmal-Codes überleben keinen Neustart.
 - **Abhängigkeiten:** AUTH-001, AUTH-002
 
 ### AUTH-005 — OIDC-Login mit Just-in-Time-User-Anlage

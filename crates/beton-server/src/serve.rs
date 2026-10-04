@@ -74,6 +74,7 @@ pub async fn start_with(
 ) -> Result<Daemon, StartError> {
     config.validate()?;
     let token = Arc::new(LocalToken::load_or_create(&config.data_dir)?);
+    let logins = Arc::new(BrowserLogins::persistent(&config.data_dir)?);
     let local = store.ensure_local().await?;
 
     let mut listeners = Vec::new();
@@ -120,7 +121,7 @@ pub async fn start_with(
         store,
         local,
         token: token.clone(),
-        logins: Arc::new(BrowserLogins::default()),
+        logins,
         hosts: config.host_allowlist(&ports),
         origins: config.origin_allowlist(&ports),
         primary_host,
