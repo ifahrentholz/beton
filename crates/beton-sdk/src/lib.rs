@@ -1,7 +1,10 @@
 //! Rust-Client-SDK für die beton-API (API-005).
 //!
 //! CLI und TUI greifen ausschließlich über dieses Crate auf den Server zu. Der Umfang wächst
-//! mit den Arbeitspaketen; heute: Daemon-Erkennung, Info, Session-Liste, Einmal-Codes.
+//! mit den Arbeitspaketen; heute: Daemon-Erkennung, Info, Sessions (REST), Einmal-Codes und
+//! der WebSocket-Stream ([`ws`]).
+
+pub mod ws;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -124,6 +127,11 @@ impl Client {
         &self.base
     }
 
+    /// Basis-URL der Web-UI für eine Session (`/s/<id>`, WEB-001).
+    pub fn session_url(&self, id: &str) -> String {
+        format!("{}/s/{id}", self.base)
+    }
+
     /// `GET /v1/info`.
     pub async fn info(&self) -> Result<Value> {
         self.get("/v1/info").await
@@ -178,6 +186,116 @@ impl Client {
             .await
     }
 
+    /// `GET /v1/sessions/{id}`.
+    pub async fn session(&self, id: &str) -> Result<Value> {
+        self.get(&format!("/v1/sessions/{id}")).await
+    }
+
+    /// `GET /v1/sessions/{id}/events` (eine Seite, dauerhafte Events nach `after_seq`).
+    pub async fn events(&self, id: &str, after_seq: u64, limit: u32) -> Result<Page<Value>> {
+        self.send(
+            self.http
+                .get(self.url(&format!("/v1/sessions/{id}/events")))
+                .query(&[("after_seq", after_seq), ("limit", u64::from(limit))]),
+        )
+        .await
+    }
+
+    /// `POST /v1/sessions/{id}/input`: Nachricht senden; startet einen Turn.
+    pub async fn input(&self, id: &str, text: &str) -> Result<Value> {
+        self.post(
+            &format!("/v1/sessions/{id}/input"),
+            &serde_json::json!({ "text": text }),
+        )
+        .await
+    }
+
+    /// `POST /v1/sessions/{id}/interrupt` (SES-005, idempotent).
+    pub async fn interrupt(&self, id: &str) -> Result<Value> {
+        self.post(&format!("/v1/sessions/{id}/interrupt"), &Value::Null)
+            .await
+    }
+
+    /// `POST /v1/sessions/{id}/resume` (SES-003).
+    pub async fn resume(&self, id: &str) -> Result<Value> {
+        self.post(&format!("/v1/sessions/{id}/resume"), &Value::Null)
+            .await
+    }
+
+    /// `POST /v1/sessions/{id}/archive` bzw. `/unarchive`.
+    pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Value> {
+        let action = if archived { "archive" } else { "unarchive" };
+        self.post(&format!("/v1/sessions/{id}/{action}"), &Value::Null)
+            .await
+    }
+
+    /// `PATCH /v1/sessions/{id}`, z. B. `{"title": "…"}`.
+    pub async fn patch_session(&self, id: &str, body: &Value) -> Result<Value> {
+        self.send(
+            self.http
+                .patch(self.url(&format!("/v1/sessions/{id}")))
+                .json(body),
+        )
+        .await
+    }
+
+    /// `DELETE /v1/sessions/{id}`.
+    pub async fn delete_session(&self, id: &str) -> Result<()> {
+        self.send_empty(self.http.delete(self.url(&format!("/v1/sessions/{id}"))))
+            .await
+    }
+
+    /// `POST /v1/sessions/{id}/approvals/{approval_id}/resolve`.
+    pub async fn resolve_approval(
+        &self,
+        id: &str,
+        approval_id: &str,
+        allow: bool,
+        reason: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({ "decision": if allow { "allow" } else { "deny" } });
+        if let Some(r) = reason {
+            body["reason"] = Value::String(r.to_owned());
+        }
+        self.post(
+            &format!("/v1/sessions/{id}/approvals/{approval_id}/resolve"),
+            &body,
+        )
+        .await
+    }
+
+    /// WebSocket-Verbindung (`/v1/ws`, Subprotokoll `beton.v1`) mit Begrüßung.
+    pub async fn connect_ws(&self) -> Result<ws::Connection> {
+        ws::Connection::open(self).await
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    async fn post<T: serde::de::DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
+        let req = self.http.post(self.url(path));
+        let req = if body.is_null() { req } else { req.json(body) };
+        self.send(req).await
+    }
+
+    async fn send_empty(&self, req: reqwest::RequestBuilder) -> Result<()> {
+        let res = req
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| Error::Unreachable {
+                url: self.base.clone(),
+                reason: root_cause(&e),
+            })?;
+        if res.status().is_success() {
+            return Ok(());
+        }
+        let status = res.status();
+        let bytes = res.bytes().await.unwrap_or_default();
+        Err(problem(status, &bytes))
+    }
+
     async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.send(self.http.get(self.url(path))).await
     }
@@ -204,17 +322,29 @@ impl Client {
             reason: root_cause(&e),
         })?;
         if !status.is_success() {
-            let problem: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            let text = |k: &str| problem.get(k).and_then(Value::as_str).map(str::to_owned);
-            return Err(Error::Problem {
-                status: status.as_u16(),
-                code: text("code").unwrap_or_else(|| "unknown".into()),
-                title: text("title")
-                    .unwrap_or_else(|| status.canonical_reason().unwrap_or("Fehler").into()),
-                detail: text("detail"),
-            });
+            return Err(problem(status, &bytes));
         }
         serde_json::from_slice(&bytes).map_err(|e| Error::Decode(e.to_string()))
+    }
+}
+
+/// Fehlerantwort als [`Error::Problem`].
+fn problem(status: reqwest::StatusCode, bytes: &[u8]) -> Error {
+    let problem: Value = serde_json::from_slice(bytes).unwrap_or(Value::Null);
+    from_problem(status.as_u16(), &problem)
+}
+
+pub(crate) fn from_problem(status: u16, problem: &Value) -> Error {
+    let text = |k: &str| problem.get(k).and_then(Value::as_str).map(str::to_owned);
+    Error::Problem {
+        status: problem
+            .get("status")
+            .and_then(Value::as_u64)
+            .and_then(|s| u16::try_from(s).ok())
+            .unwrap_or(status),
+        code: text("code").unwrap_or_else(|| "unknown".into()),
+        title: text("title").unwrap_or_else(|| "Fehler".into()),
+        detail: text("detail"),
     }
 }
 
