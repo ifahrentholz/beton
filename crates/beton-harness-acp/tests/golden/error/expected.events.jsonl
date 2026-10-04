@@ -1,0 +1,3 @@
+{"has_raw":false,"payload":{"harness_session_ref":"sess_fakee8fefe07d3de","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
+{"has_raw":true,"payload":{"problem":{"code":-32603,"title":"Interner Fehler des Agents","type":"urn:beton:problem:harness_error"},"turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.failed"}

@@ -1,0 +1,4 @@
+inputs:
+- send: Lege den Ordner beton-ordner an.
+gate:
+- deny

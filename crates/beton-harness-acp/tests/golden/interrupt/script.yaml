@@ -1,0 +1,4 @@
+inputs:
+- send: Zähle bis 300.
+  interrupt_after_events: 3
+gate: []

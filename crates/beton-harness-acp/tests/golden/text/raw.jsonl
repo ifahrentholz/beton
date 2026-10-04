@@ -1,0 +1,7 @@
+{"ms":187,"after_stdin":1,"out":"{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"agentCapabilities\":{\"loadSession\":true,\"mcpCapabilities\":{\"http\":false,\"sse\":false},\"promptCapabilities\":{\"audio\":false,\"embeddedContext\":false,\"image\":false}},\"agentInfo\":{\"name\":\"beton-fake-acp\",\"version\":\"0.1.0\"},\"authMethods\":[],\"protocolVersion\":1}}"}
+{"ms":187,"after_stdin":2,"out":"{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"sessionId\":\"sess_fake819b5a2aa6ce\"}}"}
+{"ms":188,"after_stdin":3,"out":"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess_fake819b5a2aa6ce\",\"update\":{\"content\":{\"text\":\"Kurz überlegen.\",\"type\":\"text\"},\"sessionUpdate\":\"agent_thought_chunk\"}}}"}
+{"ms":188,"after_stdin":3,"out":"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess_fake819b5a2aa6ce\",\"update\":{\"content\":{\"text\":\"Be\",\"type\":\"text\"},\"sessionUpdate\":\"agent_message_chunk\"}}}"}
+{"ms":188,"after_stdin":3,"out":"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess_fake819b5a2aa6ce\",\"update\":{\"content\":{\"text\":\"to\",\"type\":\"text\"},\"sessionUpdate\":\"agent_message_chunk\"}}}"}
+{"ms":188,"after_stdin":3,"out":"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess_fake819b5a2aa6ce\",\"update\":{\"content\":{\"text\":\"n\",\"type\":\"text\"},\"sessionUpdate\":\"agent_message_chunk\"}}}"}
+{"ms":188,"after_stdin":3,"out":"{\"id\":3,\"jsonrpc\":\"2.0\",\"result\":{\"stopReason\":\"end_turn\"}}"}

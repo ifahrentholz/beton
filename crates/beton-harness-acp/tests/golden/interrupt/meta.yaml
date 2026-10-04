@@ -1,0 +1,7 @@
+harness: acp:test
+cli_version: 0.1.0
+recorded_at: 2026-10-04T08:36:16.619Z
+scenario: Cancel während der Antwort
+platform: beton-fake-cli
+exit_code: 0
+recorded_with: beton-fake-cli --protocol acp
