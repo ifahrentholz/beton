@@ -798,7 +798,7 @@ function CliUsage({ state }: { state: string }) {
             <L>
               {'qwen3-coder:30b   '}
               <H name="Ollama (lokal)" pad={15} />
-              {' 3        120.400      18.300      0,00 €'}
+              {' 3        120.400      18.300      0,00 $'}
             </L>
             <Blank />
             <L tone="dim">Subscription- und API-Nutzung werden nie zusammengerechnet.</L>

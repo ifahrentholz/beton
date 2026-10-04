@@ -461,7 +461,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 - **Beschreibung:** Tabellarische Kosten-/Usage-Übersicht (gruppiert nach Session, Tag, Harness, Modell; Subscription-Usage separat) mit `--json`. Datenmodell und Implementierung: Owner USE-005/USE-007 (siehe 11-platform-features.md); CLI-010 regelt nur die Konsistenz der CLI-Oberfläche.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton usage --by model --since 2026-10-01 --json` liefert dieselben Summen wie die Usage-Seite.
-  - [ ] AC2 — Subscription-Harnesses erscheinen mit Token-/Rate-Limit-Nutzung statt Euro-Betrag; Mischsummen werden nicht gebildet.
+  - [ ] AC2 — Subscription-Harnesses erscheinen mit Token-/Rate-Limit-Nutzung statt Geldbetrag; Mischsummen werden nicht gebildet.
 - **Abhängigkeiten:** USE-005, USE-007 (siehe 11-platform-features.md)
 
 ### CLI-011 — `schedule`

@@ -21,10 +21,10 @@ const SERIES: Record<HarnessId, number[]> = {
   ollama: [0, 0, 0, 140, 0, 0, 0, 0, 380, 0, 0, 120, 0, 0],
 }
 /** Euro pro Tag aus API-Key-/Gateway-Sessions (nur Zustand „mit API-Key“). */
-const COST_EUR = [0, 0, 0.84, 0, 1.92, 0.31, 0, 0, 2.47, 0.62, 0, 3.18, 2.71, 0.59]
+const COST_USD = [0, 0, 0.84, 0, 1.92, 0.31, 0, 0, 2.47, 0.62, 0, 3.18, 2.71, 0.59]
 
 const fmtTok = (k: number) => (k >= 1000 ? `${(k / 1000).toLocaleString('de-DE', { maximumFractionDigits: 1 })} Mio.` : `${k.toLocaleString('de-DE')} k`)
-const eur = (v: number) => v.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })
+const dollars = (v: number) => v.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })
 
 type Dim = 'day' | 'session' | 'project' | 'harness' | 'model' | 'auth' | 'user' | 'team'
 const DIMS: { id: Dim; label: string; central?: boolean }[] = [
@@ -46,7 +46,7 @@ const LOCAL = <span className="text-muted-foreground">lokal, kostenlos</span>
 function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
   const api = (v: number, src: string) => (
     <span className="tabular-nums">
-      {eur(v)} <span className="text-[11px] text-muted-foreground">{src}</span>
+      {dollars(v)} <span className="text-[11px] text-muted-foreground">{src}</span>
     </span>
   )
   switch (dim) {
@@ -140,7 +140,7 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
             input: Math.round(tot * 0.86),
             output: Math.round(tot * 0.08),
             cache: Math.round(tot * 0.64),
-            billing: mixed && COST_EUR[idx] > 0 ? api(COST_EUR[idx], 'API & Gateway') : SUB,
+            billing: mixed && COST_USD[idx] > 0 ? api(COST_USD[idx], 'API & Gateway') : SUB,
           }
         })
   }
@@ -182,7 +182,7 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
       <div className="relative h-44 w-14 shrink-0 text-right text-[10px] text-muted-foreground tabular-nums">
         {ticks.map((t) => (
           <span key={t} className="absolute right-1 -translate-y-1/2" style={{ top: `${100 - (t / max) * 100}%` }}>
-            {mode === 'tokens' ? (t === 0 ? '0' : `${t / 1000} Mio.`) : eur(t).replace(',00', '')}
+            {mode === 'tokens' ? (t === 0 ? '0' : `${t / 1000} Mio.`) : dollars(t).replace(',00', '')}
           </span>
         ))}
       </div>
@@ -193,7 +193,7 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
           ))}
           <div className="absolute inset-0 flex items-end gap-[6px] px-1">
             {DAYS.map((d, i) => (
-              <div key={d} className="flex h-full flex-1 flex-col-reverse" title={`${d}: ${mode === 'tokens' ? fmtTok(totals[i]) + ' Tokens' : eur(COST_EUR[i])}`}>
+              <div key={d} className="flex h-full flex-1 flex-col-reverse" title={`${d}: ${mode === 'tokens' ? fmtTok(totals[i]) + ' Tokens' : dollars(COST_USD[i])}`}>
                 {mode === 'tokens' ? (
                   order.map((h) =>
                     SERIES[h][i] ? (
@@ -204,8 +204,8 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
                       />
                     ) : null,
                   )
-                ) : COST_EUR[i] ? (
-                  <span className="block w-full rounded-t-[2px] bg-foreground/75" style={{ height: `${(COST_EUR[i] / max) * 100}%` }} />
+                ) : COST_USD[i] ? (
+                  <span className="block w-full rounded-t-[2px] bg-foreground/75" style={{ height: `${(COST_USD[i] / max) * 100}%` }} />
                 ) : null}
                 {i === 13 && <span className="sr-only">heute</span>}
               </div>
@@ -307,7 +307,7 @@ function UsageOverview({ state }: { state: string }) {
             <Kpi label="Letzte 7 Tage" value={fmtTok(15_010)} sub="Tokens · 99 Turns" />
             <Kpi label="Oktober" value={fmtTok(7_100)} sub="Tokens · 3 Tage" />
             {mixed ? (
-              <Kpi label="Kosten 7 Tage" value={eur(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
+              <Kpi label="Kosten 7 Tage" value={dollars(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
             ) : (
               <Kpi label="Kosten" value="keine" sub="alle Sessions über Subscriptions oder lokal" />
             )}
@@ -446,7 +446,7 @@ function UsageOverview({ state }: { state: string }) {
               <Info className="size-3" /> Preise aus dem mitgelieferten Katalog <span className="font-mono">2026-10-01</span> (mit beton 0.9.2, kein
               Online-Abruf)
             </span>
-            <span>Anzeige in Euro zum festen Kurs 1 USD = 0,92 € (in den Einstellungen änderbar)</span>
+            <span>Beträge in USD; Anzeige in Euro optional zum festen Kurs (Einstellungen)</span>
             <a className="underline underline-offset-2">Preise & eigene Preise</a>
           </F>
         </div>
