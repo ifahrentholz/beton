@@ -1,34 +1,14 @@
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Page } from '@playwright/test'
 import { Daemon, attachLogs, expect, test } from './fixtures'
-import { fakeCli } from './fake-cli'
+import { call, vendorEnv } from './vendors'
 
 /*
  * Sub-Agent-Graph (WEB-012) gegen den echten Daemon: ein Projekt-Agent auf Claude (Fake-CLI)
  * startet Sub-Agents auf Codex und Claude (Fake-CLIs, AGT-009). Eine Szenario-Datei je Harness
  * bedient Parent und Childs (`select: by_input`).
  */
-
-const call = (tool: string, args: unknown) => ({ mcp_call: { server: 'beton', tool, args } })
-
-/** Fake-CLIs für Claude und Codex mit je einem Szenario (JSON ist gültiges YAML). */
-function vendorEnv(claude: unknown[], codex: unknown[]): Record<string, string> {
-  const dir = mkdtempSync(join(tmpdir(), 'beton-e2e-sub-'))
-  const write = (name: string, turns: unknown[]) => {
-    const p = join(dir, name)
-    writeFileSync(p, JSON.stringify({ select: 'by_input', turns }))
-    return p
-  }
-  // Ein Link namens `codex`, damit der Versions-Probe die Codex-Version liest.
-  const link = join(dir, 'codex')
-  symlinkSync(fakeCli(), link)
-  return {
-    BETON_CLAUDE_PATH: `${fakeCli()} --protocol stream-json --scenario ${write('claude.yaml', claude)}`,
-    BETON_CODEX_PATH: `${link} --protocol app-server --scenario ${write('codex.yaml', codex)}`,
-  }
-}
 
 const LEAD = `spec_version: 1
 name: lead

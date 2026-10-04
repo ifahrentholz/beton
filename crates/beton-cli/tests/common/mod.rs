@@ -52,6 +52,15 @@ impl Serve {
     }
 
     pub fn start_with(env: &[(&str, &str)]) -> Self {
+        Self::start_inner(env, false)
+    }
+
+    /// Wie [`Self::start_with`], aber ohne `*_API_KEY` in der Umgebung des Daemons (ADR-0034).
+    pub fn start_without_api_keys(env: &[(&str, &str)]) -> Self {
+        Self::start_inner(env, true)
+    }
+
+    fn start_inner(env: &[(&str, &str)], without_api_keys: bool) -> Self {
         let home = tempfile::tempdir().unwrap();
         let work = tempfile::tempdir().unwrap();
         let log = std::fs::File::create(work.path().join("serve.log")).unwrap();
@@ -60,6 +69,13 @@ impl Serve {
             .current_dir(work.path())
             .stdout(Stdio::null())
             .stderr(log);
+        if without_api_keys {
+            for (k, _) in std::env::vars() {
+                if k.ends_with("_API_KEY") {
+                    cmd.env_remove(k);
+                }
+            }
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
