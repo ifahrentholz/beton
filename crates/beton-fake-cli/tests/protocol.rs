@@ -119,7 +119,8 @@ fn qa_002_stream_json_tool_approval_flow() {
     assert_eq!(result["usage"]["input_tokens"], 1200);
 
     let (denied, _) = drive(&push_ask(), &[], false);
-    assert!(denied.contains("Permission denied"));
+    // Wie Claude Code 2.1.285: Die Begründung der Ablehnung ist das Tool-Ergebnis.
+    assert!(denied.contains(r#""content":"abgelehnt""#), "{denied}");
     assert!(denied.contains("Push abgelehnt."));
 }
 

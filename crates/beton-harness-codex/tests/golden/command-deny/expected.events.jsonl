@@ -1,34 +1,34 @@
 {"has_raw":false,"payload":{"harness_session_ref":"<id:1>","mcp_servers":[],"tools":[]},"type":"harness.ready"}
-{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
-{"has_raw":true,"payload":{"message_id":"rs_0382de717322215e016ac210ffa9cc87d2a962d4fec567c018","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"Ich"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" füh"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"re"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" jetzt"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" genau"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" den"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" angegeben"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"en"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" B"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"efe"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"hl"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":" aus"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:3>","text":"."},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"content":[{"text":"Ich führe jetzt genau den angegebenen Befehl aus.","type":"text"}],"message_id":"<id:3>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
-{"has_raw":true,"payload":{"args":{"command":"/bin/zsh -lc 'git push origin main'","cwd":"<workdir>"},"call_id":"exec-<id:4>","source":"harness","tool":"commandExecution"},"turn_id":"<id:2>","type":"tool.call.requested"}
-{"has_raw":true,"payload":{"approval_id":"<id:5>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"/bin/zsh -lc 'git push origin main'","cwd":"<workdir>","reason":null},"call_id":"exec-<id:4>","tool":"commandExecution"}},"turn_id":"<id:2>","type":"approval.requested"}
-{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:5>","comment":"nicht erlaubt","decision":"deny","via":"user"},"turn_id":"<id:2>","type":"approval.resolved"}
-{"has_raw":true,"payload":{"call_id":"exec-<id:4>","duration_ms":0,"result":{"exit_code":null,"output":null},"status":"denied"},"turn_id":"<id:2>","type":"tool.call.completed"}
-{"has_raw":true,"payload":{"source":"harness","used_tokens":15237,"window_tokens":258400},"turn_id":"<id:2>","type":"context.usage"}
-{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:2>","type":"usage.subscription"}
-{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:2>","type":"usage.subscription"}
-{"has_raw":true,"payload":{"message_id":"rs_0382de717322215e016ac21103a26487d2ab01d75094aa57ed","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
-{"has_raw":true,"payload":{"message_id":"<id:6>","text":"ab"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:6>","text":"gele"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"message_id":"<id:6>","text":"hnt"},"turn_id":"<id:2>","type":"message.delta"}
-{"has_raw":true,"payload":{"content":[{"text":"abgelehnt","type":"text"}],"message_id":"<id:6>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
-{"has_raw":true,"payload":{"source":"harness","used_tokens":15302,"window_tokens":258400},"turn_id":"<id:2>","type":"context.usage"}
-{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:2>","type":"usage.subscription"}
-{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:2>","type":"usage.subscription"}
-{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":25088,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":5279,"model":"gpt-5.6-luna","output_tokens":172,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
-{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":7473,"input_tokens":30367,"output_tokens":172}},"turn_id":"<id:2>","type":"turn.completed"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:3>"},"turn_id":"<id:3>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"rs_0382de717322215e016ac210ffa9cc87d2a962d4fec567c018","redacted":true},"turn_id":"<id:3>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"Ich"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" füh"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"re"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" jetzt"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" genau"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" den"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" angegeben"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"en"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" B"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"efe"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"hl"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":" aus"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:4>","text":"."},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"Ich führe jetzt genau den angegebenen Befehl aus.","type":"text"}],"message_id":"<id:4>","role":"assistant"},"turn_id":"<id:3>","type":"message.completed"}
+{"has_raw":true,"payload":{"args":{"command":"/bin/zsh -lc 'git push origin main'","cwd":"<workdir>"},"call_id":"exec-<id:5>","source":"harness","tool":"commandExecution"},"turn_id":"<id:3>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"approval_id":"<id:6>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"/bin/zsh -lc 'git push origin main'","cwd":"<workdir>","reason":null},"call_id":"exec-<id:5>","tool":"commandExecution"}},"turn_id":"<id:3>","type":"approval.requested"}
+{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:6>","comment":"nicht erlaubt","decision":"deny","via":"user"},"turn_id":"<id:3>","type":"approval.resolved"}
+{"has_raw":true,"payload":{"call_id":"exec-<id:5>","duration_ms":0,"result":{"exit_code":null,"output":null},"status":"denied"},"turn_id":"<id:3>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":15237,"window_tokens":258400},"turn_id":"<id:3>","type":"context.usage"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"message_id":"rs_0382de717322215e016ac21103a26487d2ab01d75094aa57ed","redacted":true},"turn_id":"<id:3>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","text":"ab"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","text":"gele"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:7>","text":"hnt"},"turn_id":"<id:3>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"abgelehnt","type":"text"}],"message_id":"<id:7>","role":"assistant"},"turn_id":"<id:3>","type":"message.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":15302,"window_tokens":258400},"turn_id":"<id:3>","type":"context.usage"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":25088,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":5279,"model":"gpt-5.6-luna","output_tokens":172,"source":"subscription"},"turn_id":"<id:3>","type":"cost.delta"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:3>","usage_summary":{"duration_ms":7473,"input_tokens":30367,"output_tokens":172}},"turn_id":"<id:3>","type":"turn.completed"}

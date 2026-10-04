@@ -201,6 +201,14 @@ pub fn parse(
     Ok(change)
 }
 
+/// Bindet der Agent die Session an den Plan-Modus (AGT-011, HAR-027)? Ja, wenn sein
+/// `executor.permission_mode` `plan` ist und die Session in `plan` startet, also kein Override
+/// (CLI-Flag, Anfrage, Fork) einen anderen Modus gesetzt hat. `plan` ohne Agent wählt der
+/// Nutzer selbst; dann darf er `ExitPlanMode` freigeben.
+pub fn plan_bound(agent: Option<PermissionMode>, start: Option<PermissionMode>) -> bool {
+    agent == Some(PermissionMode::Plan) && start == Some(PermissionMode::Plan)
+}
+
 /// Einstellungen beim Start einer Session (aus `session.created` bzw. den letzten
 /// `session.settings_changed`). Der Effort wird gegen die Stufen des Harness gemappt; ob der
 /// Harness den Permission-Mode abbilden kann, prüft der Adapter beim Start (manche kennen ihre
@@ -397,5 +405,17 @@ mod tests {
         assert_eq!(change.permission_mode, Some(PermissionMode::Plan));
         assert_eq!(change.effort.as_deref(), Some("high"));
         assert_eq!(mapped.unwrap().requested_effort.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn agt_011_plan_from_the_agent_is_binding_unless_overridden() {
+        let plan = Some(PermissionMode::Plan);
+        // `executor.permission_mode: plan` des Agents, Session startet in `plan`.
+        assert!(plan_bound(plan, plan));
+        // Ein Override (CLI-Flag, Anfrage, Fork) auf einen anderen Modus löst die Bindung.
+        assert!(!plan_bound(plan, Some(PermissionMode::Default)));
+        // `plan` ohne Agent bzw. ohne Agent-Modus: Der Nutzer darf `ExitPlanMode` freigeben.
+        assert!(!plan_bound(None, plan));
+        assert!(!plan_bound(Some(PermissionMode::AcceptEdits), plan));
     }
 }
