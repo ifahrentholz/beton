@@ -407,3 +407,15 @@ async fn ses_004_last_event_of_type_finds_latest() {
         .unwrap();
     assert_eq!(last.seq, 3);
 }
+
+#[tokio::test]
+async fn ses_012_view_carries_the_full_session_record() {
+    let t = store().await;
+    let s = create(&t, "claude").await;
+    let view = t
+        .store
+        .session_view(org(&t), t.local.user, s.id)
+        .await
+        .unwrap();
+    assert_eq!(view.session, t.store.session(org(&t), s.id).await.unwrap());
+}
