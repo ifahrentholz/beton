@@ -139,6 +139,11 @@ jobs:
       - name: Generierte Schemas und Typen sind aktuell
         # covers: API-004 AC1
         run: cargo xtask codegen --check
+      - name: Alle CI-Jobs sind Required Checks auf main
+        # covers: QA-010 AC3
+        run: python3 scripts/check_branch_protection.py
+        env:
+          GH_TOKEN: ${{ github.token }}
       # covers: PROTO-013 AC3 (OpenAPI 3.1 mit Linter validiert)
       - name: OpenAPI-Linter
         run: npx --yes @redocly/cli@1 lint openapi/v1.json
