@@ -796,7 +796,7 @@ async fn proto_001_ac4_large_payload_reaches_clients_via_blob_api() {
     let events = d.wait_for(&id, is("turn.completed")).await;
     let offloaded = events
         .iter()
-        .find(|e| e["type"] == "message.completed")
+        .find(|e| e["type"] == "message.completed" && e["actor"]["kind"] != "user")
         .unwrap();
     assert!(offloaded.get("payload").is_none(), "Payload ausgelagert");
     let blob = offloaded["payload_ref"].as_str().unwrap();
@@ -864,7 +864,7 @@ async fn har_004_claude_adapter_runs_a_turn_through_the_runner() {
     let events = d.wait_for(&id, is("turn.completed")).await;
     let text = events
         .iter()
-        .find(|e| e["type"] == "message.completed")
+        .find(|e| e["type"] == "message.completed" && e["payload"]["role"] == "assistant")
         .unwrap();
     assert_eq!(text["payload"]["content"][0]["text"], "Hallo!");
     d.daemon.shutdown().await;
@@ -901,5 +901,84 @@ async fn proto_015_second_runner_in_the_same_daemon_loses_no_events() {
     assert_eq!(count("session.resumed"), 1);
     let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
     assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_list_delta_contains_only_changed_sessions() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let a = d
+        .create(dir.path(), &scenario(dir.path(), "turns: []"))
+        .await;
+    let b = d
+        .create(dir.path(), &scenario(dir.path(), "turns: []"))
+        .await;
+    d.wait_status(&a, "idle").await;
+    d.wait_status(&b, "idle").await;
+    let (_, list) = d.http("GET", "/v1/sessions", None).await;
+    let since = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["last_activity_at"].as_str())
+        .max()
+        .unwrap()
+        .to_owned();
+    let (_, body) = d
+        .http("POST", &format!("/v1/sessions/{a}/archive"), None)
+        .await;
+    assert_eq!(body["archived"], true, "{body}");
+    let (status, delta) = d
+        .http("GET", &format!("/v1/sessions?updated_after={since}"), None)
+        .await;
+    assert_eq!(status, 200, "{delta}");
+    let ids: Vec<&str> = delta["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![a.as_str()], "{delta}");
+    assert_eq!(delta["items"][0]["archived"], true);
+    let (status, _) = d
+        .http("GET", "/v1/sessions?updated_after=gestern", None)
+        .await;
+    assert_eq!(status, 400);
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_002_user_input_is_part_of_the_event_log() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.http(
+        "POST",
+        &format!("/v1/sessions/{id}/input"),
+        Some(json!({"text": "Bitte prüfen"})),
+    )
+    .await;
+    let events = d.wait_for(&id, is("turn.completed")).await;
+    let user = events
+        .iter()
+        .position(|e| e["type"] == "message.completed" && e["payload"]["role"] == "user")
+        .expect("Nachricht des Nutzers fehlt");
+    assert_eq!(
+        events[user]["payload"]["content"][0]["text"],
+        "Bitte prüfen"
+    );
+    assert_eq!(events[user]["payload"]["author"], "usr_local");
+    let turn = events
+        .iter()
+        .position(|e| e["type"] == "turn.started")
+        .unwrap();
+    assert!(user < turn, "Eingabe steht vor dem Turn");
     d.daemon.shutdown().await;
 }

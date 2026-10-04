@@ -1303,3 +1303,30 @@ async fn data_005_same_approval_id_in_two_sessions_does_not_collide() {
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].session_id, sessions[1].id);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_002_concurrent_writers_do_not_fail_with_busy() {
+    // Lesen-dann-Schreiben in DEFERRED-Transaktionen scheitert im WAL-Modus sofort mit
+    // SQLITE_BUSY, wenn ein anderer Schreiber dazwischen committet.
+    let t = store().await;
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let store = t.store.clone();
+        let new = new_session(&t);
+        let org = org(&t);
+        tasks.push(tokio::spawn(async move {
+            for _ in 0..25 {
+                let mut new = new.clone();
+                new.id = SessionId::new();
+                let s = store.create_session(org, new).await?;
+                store
+                    .append(org, s.id, 1, 1, vec![notice(s.id, "n")])
+                    .await?;
+            }
+            Ok::<_, crate::Error>(())
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+}

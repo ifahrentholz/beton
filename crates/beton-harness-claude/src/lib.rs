@@ -106,6 +106,9 @@ pub fn capabilities() -> Capabilities {
         mcp_injection: true,
         images: true,
         transcript_import: false,
+        // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
+        models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
+        efforts: Vec::new(),
     }
 }
 
@@ -395,7 +398,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
         }),
     )
     .await;
-    let (response, decision, via, modified) = match decision {
+    let (response, decision, via, modified, comment) = match decision {
         Ok(GateDecision::Allow { updated_args }) => {
             let args = updated_args.clone().unwrap_or_else(|| input.clone());
             (
@@ -403,19 +406,23 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
                 ApprovalDecision::Allow,
                 ResolvedVia::User,
                 updated_args,
+                None,
             )
         }
         Ok(GateDecision::Deny { reason }) => (
-            json!({"behavior": "deny", "message": reason.unwrap_or_else(|| "Von beton abgelehnt.".into())}),
+            json!({"behavior": "deny", "message": reason.clone().unwrap_or_else(|| "Von beton abgelehnt.".into())}),
             ApprovalDecision::Deny,
             ResolvedVia::User,
             None,
+            // Die Begründung sehen auch andere Clients (WEB-018 AC1).
+            reason,
         ),
         // Fail closed (HAR-005 AC4).
         Err(_) => (
             json!({"behavior": "deny", "message": "Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt."}),
             ApprovalDecision::Deny,
             ResolvedVia::Timeout,
+            None,
             None,
         ),
     };
@@ -445,7 +452,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
             },
             via,
             remember: None,
-            comment: None,
+            comment,
             on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
         }),
         None,

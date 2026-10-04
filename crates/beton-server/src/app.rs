@@ -36,6 +36,8 @@ pub struct AppState {
     pub primary_host: String,
     pub openapi_json: Arc<Vec<u8>>,
     pub runtime: Runtime,
+    /// Build der Web-UI (WEB-001); `None` = Hinweisseite.
+    pub web_dir: Option<Arc<std::path::PathBuf>>,
 }
 
 impl AppState {
@@ -281,6 +283,7 @@ pub struct AppParts {
     pub origins: Vec<String>,
     pub primary_host: String,
     pub runtime: Runtime,
+    pub web_dir: Option<std::path::PathBuf>,
 }
 
 /// Die vollständige App mit allen Schichten.
@@ -300,6 +303,7 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
         primary_host: parts.primary_host,
         openapi_json,
         runtime: parts.runtime,
+        web_dir: parts.web_dir.map(Arc::new),
     };
     let guard = Guard {
         hosts: Arc::new(parts.hosts),
@@ -312,7 +316,7 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
         org: parts.local.org,
     };
     router
-        .fallback(not_found)
+        .fallback(fallback)
         .method_not_allowed_fallback(method_not_allowed)
         .with_state(state)
         .layer(middleware::from_fn_with_state(idem, idempotency::layer))
@@ -325,6 +329,19 @@ pub const NO_ROUTE: &str = "Keine Route für diesen Pfad";
 
 async fn not_found() -> Problem {
     Problem::new(ProblemCode::NotFound).detail(NO_ROUTE)
+}
+
+/// Unbekannte Pfade: Web-UI (Dateien bzw. `index.html` für Client-Routen), sonst 404.
+async fn fallback(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    method: Method,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    match crate::web::serve(state.web_dir.as_deref().map(|p| p.as_path()), &method, &uri).await {
+        Some(res) => res,
+        None => not_found().await.into_response(),
+    }
 }
 
 async fn method_not_allowed(method: Method) -> Problem {

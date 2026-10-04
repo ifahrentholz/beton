@@ -48,6 +48,7 @@ pub fn server_config(
         }
     }
     let mut config = ServerConfig::local(home.to_path_buf());
+    config.web_dir = web_dir();
     config.listen = listen;
     config
         .allowed_hosts
@@ -98,6 +99,19 @@ async fn serve_background(ctx: &Ctx, args: &ServeArgs) -> CliResult {
         ctx.home.join("logs").display()
     ));
     Ok(())
+}
+
+/// Build der Web-UI: `BETON_WEB_DIR`, sonst `<bin>/../share/beton/web` oder `<bin>/web`
+/// (Installationslayout); maßgeblich ist eine vorhandene `index.html`.
+pub fn web_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("BETON_WEB_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let bin = exe.parent()?;
+    [bin.join("../share/beton/web"), bin.join("web")]
+        .into_iter()
+        .find(|d| d.join("index.html").is_file())
 }
 
 /// Store-Einstellungen aus der Konfiguration (`events.store_raw`, PROTO-001 AC3).

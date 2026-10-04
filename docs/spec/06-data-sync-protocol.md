@@ -275,7 +275,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 ### PROTO-005 — Attach & Resume ab seq
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `attach {session_id, from_seq, transient?, tail?}` liefert alle dauerhaften Events mit `seq > from_seq` in Reihenfolge, dann `live {head_seq}`, dann Live-Events — lückenlos und ohne Duplikate über Replay und Live hinweg. `tail: N` liefert nur die letzten N Events plus `has_more` für schnelle UIs. Mehrere Sessions pro Verbindung sind möglich.
-- **Details:** Während des Replays eintreffende Live-Events werden serverseitig gepuffert und nach dem Replay in Reihenfolge gesendet. `from_seq > head_seq` → `nack seq_ahead` (Client verwirft lokalen Zustand und attached neu ab 0, z. B. nach Divergenz-Fork).
+- **Details:** Während des Replays eintreffende Live-Events werden serverseitig gepuffert und nach dem Replay in Reihenfolge gesendet. `from_seq > head_seq` → `nack seq_ahead` (Client verwirft lokalen Zustand und attached neu ab 0, z. B. nach Divergenz-Fork). Eingaben des Nutzers stehen als `message.completed` mit `role: user` und `author` im Log, vor dem zugehörigen Turn.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Bei laufender Produktion von 100 Events/s liefert ein Attach ab `from_seq=0` eine lückenlose, duplikatfreie Folge bis zum Live-Betrieb (Test prüft `seq` streng +1).
   - [ ] AC2 — `from_seq=head_seq+5` liefert `nack` mit Code `seq_ahead`.
@@ -389,7 +389,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### DATA-002 — Event-Log-Speicherung (Append-only)
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen.
+- **Beschreibung:** Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen. Schreibtransaktionen beginnen mit `BEGIN IMMEDIATE` (SQLite), damit gleichzeitige Schreiber nicht mit `SQLITE_BUSY` scheitern.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Zwei konkurrierende Appends mit gleicher erwarteter `head_seq` → genau einer gelingt, der andere erhält `seq_conflict`.
   - [ ] AC2 — Nach Kill des Prozesses während Appends (Crash-Test, 1 000 Iterationen) ist das Log lückenlos und `head_seq` = max(`seq`).

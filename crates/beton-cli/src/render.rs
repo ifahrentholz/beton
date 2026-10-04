@@ -27,6 +27,9 @@ pub struct Renderer {
     streamed: HashSet<String>,
     /// Text der letzten Assistenten-Nachricht.
     pub last_answer: String,
+    /// Noch im Replay: eigene Eingaben aus dem Verlauf zeigen; live hat der Nutzer sie
+    /// gerade selbst getippt.
+    pub replaying: bool,
 }
 
 /// Text einer `message.completed`-Nachricht (Blöcke vom Typ `text`).
@@ -92,6 +95,7 @@ impl Renderer {
             streaming: None,
             streamed: HashSet::new(),
             last_answer: String::new(),
+            replaying: true,
         }
     }
 
@@ -159,7 +163,7 @@ impl Renderer {
                             }
                         }
                     }
-                    Some("user") if self.style == Style::Interactive => {
+                    Some("user") if self.style == Style::Interactive && self.replaying => {
                         self.line(&format!("› {text}"));
                     }
                     _ => {}

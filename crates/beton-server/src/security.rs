@@ -189,6 +189,22 @@ pub async fn guard(State(g): State<Guard>, mut req: Request, next: Next) -> Resp
         }
         Authenticated::Cookie
     } else {
+        // Browser-Navigation zur Web-UI: Hinweis statt JSON (Status bleibt 401).
+        let wants_html =
+            header_str(headers, header::ACCEPT).is_some_and(|a| a.contains("text/html"));
+        if wants_html && req.method() == Method::GET && crate::web::is_ui_path(req.uri().path()) {
+            let mut res = (
+                axum::http::StatusCode::UNAUTHORIZED,
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                crate::web::LOGIN_HINT,
+            )
+                .into_response();
+            res.headers_mut().insert(
+                header::CONTENT_SECURITY_POLICY,
+                axum::http::HeaderValue::from_static(crate::web::CSP),
+            );
+            return res;
+        }
         return reject(
             ProblemCode::Unauthorized,
             "lokales Token oder Anmeldung erforderlich",

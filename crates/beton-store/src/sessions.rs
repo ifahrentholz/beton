@@ -157,7 +157,7 @@ impl Store {
         let org = OrgId::LOCAL;
         let user = UserId::LOCAL;
         let now = Timestamp::now().to_string();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         sqlx::query(
             "INSERT INTO orgs (id, name, created_at) VALUES (?, 'Lokal', ?) ON CONFLICT DO NOTHING",
         )
@@ -273,7 +273,7 @@ impl Store {
         let created_at = event.ts.to_string();
         let prepared = self.prepare(new.id, vec![event])?;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         if is_tombstoned(&mut tx, org, new.id).await? {
             return Err(Error::Tombstoned(format!("Session {}", new.id)));
         }
@@ -333,6 +333,29 @@ impl Store {
             .collect()
     }
 
+    /// Sessions mit Aktivität nach `since` (RFC 3339), älteste Änderung zuerst, auch
+    /// archivierte (WEB-003: Listen-Deltas statt Neuladen).
+    pub async fn sessions_updated_after(
+        &self,
+        org: OrgId,
+        since: Timestamp,
+        limit: u32,
+    ) -> Result<Vec<SessionRecord>> {
+        let sql = format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions WHERE org_id = ? AND last_activity_at > ? \
+             ORDER BY last_activity_at ASC, id ASC LIMIT ?"
+        );
+        sqlx::query(&sql)
+            .bind(org.to_string())
+            .bind(since.to_string())
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(session_from_row)
+            .collect()
+    }
+
     /// Eine Seite der Session-Liste, neueste zuerst nach ID (PROTO-010 AC1). Die Sortierung
     /// über die unveränderliche, zeitlich sortierte ID macht die Pagination stabil: Neue
     /// Sessions erscheinen vor der ersten Seite und verschieben keine späteren.
@@ -378,7 +401,7 @@ impl Store {
         by: PrincipalId,
         authority: DeleteAuthority,
     ) -> Result<Vec<Tombstone>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let owner: String =
             sqlx::query_scalar("SELECT owner_id FROM sessions WHERE org_id = ? AND id = ?")
                 .bind(org.to_string())
@@ -433,7 +456,7 @@ impl Store {
             .id
             .parse()
             .map_err(|e| Error::InvalidEvent(format!("{e}")))?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM sessions WHERE org_id = ? AND id = ?")
                 .bind(org.to_string())

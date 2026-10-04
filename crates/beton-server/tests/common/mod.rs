@@ -46,6 +46,11 @@ pub async fn app_with(
         .trim()
         .to_owned();
     let logins = Arc::new(BrowserLogins::default());
+    // Minimaler Build der Web-UI (WEB-001).
+    let web = dir.path().join("web");
+    std::fs::create_dir_all(web.join("assets")).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html><div id=app></div>").unwrap();
+    std::fs::write(web.join("assets/app-1234.js"), "console.log(1)").unwrap();
     let (router, doc) = app::routes();
     let router = app::layered(
         extra(router),
@@ -60,6 +65,7 @@ pub async fn app_with(
             primary_host: HOST.into(),
             runtime: app::Runtime::new(tokio::sync::watch::channel(false).1)
                 .with_default_commands(),
+            web_dir: Some(web),
         },
     )
     .layer(MockConnectInfo(peer.parse::<SocketAddr>().unwrap()));

@@ -117,6 +117,13 @@ impl Store {
         })
     }
 
+    /// Schreib-Transaktion mit `BEGIN IMMEDIATE`: nimmt die Schreibsperre sofort. Bei
+    /// `DEFERRED` scheitert ein Lesen-dann-Schreiben im WAL-Modus sofort mit `SQLITE_BUSY`,
+    /// sobald ein anderer Schreiber dazwischen committet; der Busy-Timeout greift dort nicht.
+    pub(crate) async fn write_tx(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }

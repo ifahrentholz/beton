@@ -23,6 +23,8 @@ pub struct ServerConfig {
     pub allowed_hosts: Vec<String>,
     /// Zusätzlich erlaubte Origins für WebSocket und Cookie-Requests (`auth.ws_allowed_origins`).
     pub allowed_origins: Vec<String>,
+    /// Build der Web-UI (`apps/web/dist`); `None` = Hinweisseite (WEB-001).
+    pub web_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -37,6 +39,7 @@ impl ServerConfig {
             tunnel_socket: cfg!(unix).then(|| data_dir.join("run").join("tunnel.sock")),
             allowed_hosts: Vec::new(),
             allowed_origins: Vec::new(),
+            web_dir: None,
             data_dir,
         }
     }

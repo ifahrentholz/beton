@@ -40,11 +40,15 @@ export class BetonClient {
   }
 
   readonly sessions = {
-    list: (opts: { limit?: number; cursor?: string; includeArchived?: boolean } = {}): Promise<SessionPage> => {
+    list: (
+      opts: { limit?: number; cursor?: string; includeArchived?: boolean; updatedAfter?: string } = {},
+    ): Promise<SessionPage> => {
       const q = new URLSearchParams()
       if (opts.limit !== undefined) q.set('limit', String(opts.limit))
       if (opts.cursor) q.set('cursor', opts.cursor)
       if (opts.includeArchived) q.set('include_archived', 'true')
+      // Nur Sessions mit Aktivität danach (Listen-Deltas, WEB-003).
+      if (opts.updatedAfter) q.set('updated_after', opts.updatedAfter)
       const qs = q.toString()
       return this.request('GET', `/v1/sessions${qs ? `?${qs}` : ''}`)
     },
@@ -140,6 +144,11 @@ export class Session {
 
   delete(): Promise<void> {
     return this.client.request('DELETE', `/v1/sessions/${enc(this.id)}`)
+  }
+
+  /** Ausgelagerte Nutzlast eines Events (PROTO-001 AC4). */
+  blob(ref: string): Promise<unknown> {
+    return this.client.request('GET', `/v1/sessions/${enc(this.id)}/blobs/${enc(ref)}`)
   }
 
   approvals(): Promise<ApprovalPage> {
