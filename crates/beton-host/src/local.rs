@@ -43,6 +43,9 @@ pub const ENV_ALLOWLIST: [&str; 14] = [
     "SYSTEMROOT",
 ];
 
+/// Ergebnis von `provision`, Env-Allowlist und Secret-Variablen eines Runners.
+type ProvisionedRunner = (Provisioned, Vec<String>, Vec<String>);
+
 /// Der lokale Provider.
 pub struct LocalProvider {
     /// Runner-Kommando (Programm und Argumente), z. B. `beton runner`.
@@ -51,7 +54,7 @@ pub struct LocalProvider {
     /// Umgebung, aus der die Allowlist schöpft (Default: die des Daemons).
     inherit: BTreeMap<String, String>,
     /// Je Runner: Ergebnis, Env-Allowlist und Secret-Variablen.
-    provisioned: Mutex<HashMap<RunnerId, (Provisioned, Vec<String>, Vec<String>)>>,
+    provisioned: Mutex<HashMap<RunnerId, ProvisionedRunner>>,
     running: Mutex<HashMap<RunnerId, Box<dyn ProcessHandle>>>,
 }
 
