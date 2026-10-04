@@ -620,6 +620,8 @@ pub async fn list_harnesses(
     if let Some(host) = q.host.filter(|h| *h != state.runtime.host.id.to_string()) {
         return Err(Problem::new(ProblemCode::NotFound).detail(format!("Host {host}")));
     }
+    // UX-007 AC1: Der Fake-Harness erscheint nur, wenn er freigeschaltet ist.
+    let fake = state.sessions().fake_allowed();
     let items = state
         .runtime
         .harnesses
@@ -629,6 +631,7 @@ pub async fn list_harnesses(
         })
         .await
         .into_iter()
+        .filter(|h| fake || h.id.as_str() != beton_harness::HarnessId::FAKE)
         .take(limit)
         .collect();
     Ok(axum::Json(HarnessPage {

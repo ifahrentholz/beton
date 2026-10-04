@@ -69,6 +69,8 @@ pub struct Runtime {
     pub harnesses: beton_harness::registry::Registry,
     /// `true` beim Herunterfahren (Close 4503).
     pub shutdown: watch::Receiver<bool>,
+    /// Aktive Feature-Flags (UX-007); `beton serve` löst sie aus Config und Env auf.
+    pub features: Arc<beton_core::feature::FeatureSet>,
 }
 
 impl Runtime {
@@ -93,6 +95,7 @@ impl Runtime {
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
+            features: Arc::default(),
         }
     }
 

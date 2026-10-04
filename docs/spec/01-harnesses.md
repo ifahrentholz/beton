@@ -479,7 +479,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts` und der vom Runner vergebenen `evt_`-IDs; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).
   - [ ] AC2 — Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.
-  - [ ] AC3 — Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag verfügbar und erscheint sonst nicht im Katalog.
+  - [ ] AC3 — Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag (`fake_harness`, UX-007) verfügbar und erscheint sonst nicht im Katalog.
 - **Abhängigkeiten:** HAR-001, QA-002, QA-007 (siehe 12-distribution-quality.md)
 
 ### HAR-027 — Permission-Mode-Mapping

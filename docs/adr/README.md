@@ -58,3 +58,4 @@ Akzeptierte ADRs werden inhaltlich nicht mehr geändert. Ändert sich eine Entsc
 | 0032 | Design-first – klickbarer Prototyp aller Screens und Feature-Katalog vor den UI-Arbeitspaketen | Akzeptiert | [0032-design-first-prototyp-und-feature-katalog.md](0032-design-first-prototyp-und-feature-katalog.md) |
 | 0033 | Lokal ohne externe Server – harte, getestete Garantie mit abschließender Ausnahmenliste | Akzeptiert | [0033-lokal-ohne-externe-server.md](0033-lokal-ohne-externe-server.md) |
 | 0034 | Subscription-first – kein Feature setzt einen API-Key voraus | Akzeptiert | [0034-subscription-first-kein-feature-setzt-api-key-voraus.md](0034-subscription-first-kein-feature-setzt-api-key-voraus.md) |
+| 0035 | Feature-Flag-Konvention – Katalog in `beton-core`, User-Config und Env, server-autoritativ | Akzeptiert | [0035-feature-flag-konvention.md](0035-feature-flag-konvention.md) |

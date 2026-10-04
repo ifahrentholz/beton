@@ -6,4 +6,8 @@ export type Info = { version: string, schema_version: number, protocol_version: 
 /**
  * `local` (M0) oder `server`.
  */
-mode: string, org_id: `org_${string}`, };
+mode: string, org_id: `org_${string}`, 
+/**
+ * Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus.
+ */
+features: Array<string>, };

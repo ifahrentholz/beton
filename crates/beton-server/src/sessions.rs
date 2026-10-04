@@ -92,15 +92,27 @@ impl<'a> SessionManager<'a> {
         &self.state.runtime.sessions
     }
 
+    /// Fake-Harness erlaubt: Entwicklermodus oder Flag `fake_harness` (HAR-026 AC3, UX-007).
+    pub fn fake_allowed(&self) -> bool {
+        self.cfg().dev
+            || self
+                .state
+                .runtime
+                .features
+                .is_active(beton_core::feature::FeatureFlag::FakeHarness)
+    }
+
     /// Legt eine Session an und startet ihren Runner (SES-001 AC1).
     pub async fn create(&self, by: UserId, req: CreateSession) -> Result<SessionRecord, Problem> {
         let harness: beton_harness::HarnessId = req
             .target
             .parse()
             .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(format!("{e}")))?;
-        if harness.as_str() == beton_harness::HarnessId::FAKE && !self.cfg().dev {
-            return Err(Problem::new(ProblemCode::ValidationFailed)
-                .detail("Der Fake-Harness gibt es nur im Entwicklermodus (--dev)."));
+        if harness.as_str() == beton_harness::HarnessId::FAKE && !self.fake_allowed() {
+            // UX-007 AC1: hinter einem nicht aktivierten Flag nicht erreichbar.
+            return Err(Problem::new(ProblemCode::FeatureDisabled).detail(
+                "Der Fake-Harness ist nur mit --dev oder BETON_FEATURES=fake_harness verfügbar.",
+            ));
         }
         if !std::path::Path::new(&req.cwd).is_dir() {
             return Err(Problem::new(ProblemCode::ValidationFailed)
@@ -238,7 +250,7 @@ impl<'a> SessionManager<'a> {
                     harness: session.harness.clone(),
                     scenario: created.harness_opts["scenario"].as_str().map(PathBuf::from),
                     model: created.model.clone(),
-                    dev: cfg.dev,
+                    dev: self.fake_allowed(),
                     resume,
                     harnesses: beton_harness::registry::HarnessLayers {
                         user: cfg.harnesses_user.clone(),

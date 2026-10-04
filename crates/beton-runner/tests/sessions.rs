@@ -636,7 +636,7 @@ async fn har_002_ac3_action_without_capability_is_rejected() {
             Some(json!({"model": "opus"})),
         )
         .await;
-    assert_eq!(status, 422, "{problem}");
+    assert_eq!(status, 409, "{problem}");
     assert_eq!(problem["code"], "capability_unsupported");
     d.daemon.shutdown().await;
 }

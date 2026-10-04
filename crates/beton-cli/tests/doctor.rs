@@ -261,3 +261,21 @@ fn cli_005_ac2_doctor_json_gives_id_status_message_hint() {
         }
     }
 }
+
+#[test]
+fn ux_007_ac2_unknown_flag_starts_with_warning_in_log_and_doctor() {
+    let served = common::Serve::start_with(&[("BETON_FEATURES", "unknown_flag")]);
+    // Gestartet (daemon.json liegt vor), Warnung im Log.
+    let log = served.log();
+    assert!(
+        log.contains("BETON_FEATURES enthält unbekanntes Flag „unknown_flag“"),
+        "{log}"
+    );
+    let empty = tempfile::tempdir().unwrap();
+    let (code, report, _) =
+        doctor(isolated(served.home(), empty.path(), true).env("BETON_FEATURES", "unknown_flag"));
+    assert_eq!(code, Some(1), "Warnung, kein Fehler");
+    let c = report.checks.iter().find(|c| c.id == "features").unwrap();
+    assert_eq!(c.status, CheckStatus::Warn);
+    assert!(c.message.contains("unknown_flag"), "{c:?}");
+}

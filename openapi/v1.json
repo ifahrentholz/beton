@@ -371,7 +371,7 @@
         "tags": [
           "system"
         ],
-        "summary": "Version, Schema- und Protokollversion des Servers.",
+        "summary": "Version, Schema- und Protokollversion des Servers und aktive Feature-Flags.",
         "operationId": "info",
         "responses": {
           "200": {
@@ -1997,7 +1997,8 @@
           "schema_version",
           "protocol_version",
           "mode",
-          "org_id"
+          "org_id",
+          "features"
         ],
         "properties": {
           "version": {
@@ -2019,6 +2020,13 @@
           "org_id": {
             "type": "string",
             "example": "org_local"
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus."
           }
         }
       },
@@ -2170,8 +2178,10 @@
           "origin_not_allowed",
           "loopback_only",
           "not_found",
+          "feature_disabled",
           "method_not_allowed",
           "conflict",
+          "capability_unsupported",
           "seq_conflict",
           "stale_epoch",
           "seq_ahead",
@@ -2180,7 +2190,6 @@
           "payload_too_large",
           "unsupported_media_type",
           "idempotency_key_reused",
-          "capability_unsupported",
           "rate_limited",
           "internal",
           "blob_corrupt",

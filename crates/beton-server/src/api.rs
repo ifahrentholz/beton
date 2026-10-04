@@ -47,9 +47,11 @@ pub struct Info {
     pub mode: String,
     #[schema(value_type = String, example = "org_local")]
     pub org_id: OrgId,
+    /// Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus.
+    pub features: Vec<String>,
 }
 
-/// Version, Schema- und Protokollversion des Servers.
+/// Version, Schema- und Protokollversion des Servers und aktive Feature-Flags.
 #[utoipa::path(get, path = "/v1/info", tag = "system",
     responses((status = 200, description = "Server-Informationen", body = Info)))]
 pub async fn info(State(state): State<AppState>) -> axum::Json<Info> {
@@ -59,6 +61,7 @@ pub async fn info(State(state): State<AppState>) -> axum::Json<Info> {
         protocol_version: 1,
         mode: "local".into(),
         org_id: state.local.org,
+        features: state.runtime.features.active_ids(),
     })
 }
 
