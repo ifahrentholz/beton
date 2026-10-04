@@ -21,12 +21,15 @@ beton-runner = { path = "crates/beton-runner", version = "0.0.0" }
 beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
 beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
+beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 
 # extern
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.23"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
 fastrand = "2"
 fs4 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -36,6 +39,7 @@ http-body-util = "0.1"
 process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 proptest = "1"
 regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 rustix = { version = "1", features = ["process"] }
 schemars = "1"
 semver = { version = "1", features = ["serde"] }

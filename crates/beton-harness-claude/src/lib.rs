@@ -6,6 +6,7 @@
 //! entfernt bei `auth: subscription` API-Key-Variablen aus der Umgebung.
 
 pub mod mapping;
+pub mod record;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +42,24 @@ pub const VERSION_RANGE: &str = ">=2.1.0, <3.0.0";
 pub const SUBSCRIPTION_ENV_REMOVE: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 /// Höchstens so lange wartet der Adapter auf das Gate; danach `deny` (HAR-005 AC4).
 pub const GATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Höchstdauer für `claude auth status`.
+pub const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wertet nur `loggedIn` aus `claude auth status --json` aus; Konto-Felder (E-Mail,
+/// Organisation) werden verworfen (HAR-016).
+pub fn parse_auth_status(stdout: &[u8]) -> AuthStatus {
+    serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .and_then(|v| v.get("loggedIn")?.as_bool())
+        .map_or(AuthStatus::Unknown, |logged_in| {
+            if logged_in {
+                AuthStatus::LoggedIn
+            } else {
+                AuthStatus::LoggedOut
+            }
+        })
+}
 
 /// Der Claude-Code-Adapter.
 #[derive(Debug, Clone)]
@@ -87,6 +106,9 @@ pub fn capabilities() -> Capabilities {
         mcp_injection: true,
         images: true,
         transcript_import: false,
+        // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
+        models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
+        efforts: Vec::new(),
     }
 }
 
@@ -155,6 +177,28 @@ impl HarnessAdapter for ClaudeAdapter {
         }
     }
 
+    async fn auth_status(&self, env: &HostEnv) -> AuthStatus {
+        let Some(bin) = resolve_binary(&harness_id(), "claude", env) else {
+            return AuthStatus::Unknown;
+        };
+        let remove: &[&str] = if self.auth == AuthSource::VendorCli {
+            &SUBSCRIPTION_ENV_REMOVE
+        } else {
+            &[]
+        };
+        match beton_harness::registry::run_status(
+            &bin.program,
+            &["auth", "status", "--json"],
+            remove,
+            AUTH_STATUS_TIMEOUT,
+        )
+        .await
+        {
+            Ok(out) => parse_auth_status(&out.stdout),
+            Err(_) => AuthStatus::Unknown,
+        }
+    }
+
     async fn start(
         &self,
         spec: SessionSpec,
@@ -179,6 +223,7 @@ impl HarnessAdapter for ClaudeAdapter {
             } else {
                 Vec::new()
             },
+            clear_env: false,
             cwd: Some(spec.workdir.clone()),
         };
         let mut process = ctx.launcher.launch(launch).await?;
@@ -353,7 +398,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
         }),
     )
     .await;
-    let (response, decision, via, modified) = match decision {
+    let (response, decision, via, modified, comment) = match decision {
         Ok(GateDecision::Allow { updated_args }) => {
             let args = updated_args.clone().unwrap_or_else(|| input.clone());
             (
@@ -361,19 +406,23 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
                 ApprovalDecision::Allow,
                 ResolvedVia::User,
                 updated_args,
+                None,
             )
         }
         Ok(GateDecision::Deny { reason }) => (
-            json!({"behavior": "deny", "message": reason.unwrap_or_else(|| "Von beton abgelehnt.".into())}),
+            json!({"behavior": "deny", "message": reason.clone().unwrap_or_else(|| "Von beton abgelehnt.".into())}),
             ApprovalDecision::Deny,
             ResolvedVia::User,
             None,
+            // Die Begründung sehen auch andere Clients (WEB-018 AC1).
+            reason,
         ),
         // Fail closed (HAR-005 AC4).
         Err(_) => (
             json!({"behavior": "deny", "message": "Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt."}),
             ApprovalDecision::Deny,
             ResolvedVia::Timeout,
+            None,
             None,
         ),
     };
@@ -403,7 +452,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
             },
             via,
             remember: None,
-            comment: None,
+            comment,
             on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
         }),
         None,
@@ -564,5 +613,24 @@ impl HarnessSession for ClaudeSession {
             }
         };
         Ok(exit)
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn har_016_auth_status_reads_only_logged_in() {
+        assert_eq!(
+            parse_auth_status(br#"{"loggedIn":true,"email":"x@y.z","orgName":"O"}"#),
+            AuthStatus::LoggedIn
+        );
+        assert_eq!(
+            parse_auth_status(br#"{"loggedIn":false}"#),
+            AuthStatus::LoggedOut
+        );
+        assert_eq!(parse_auth_status(b"Logged in as x"), AuthStatus::Unknown);
+        assert_eq!(parse_auth_status(b""), AuthStatus::Unknown);
     }
 }

@@ -1,0 +1,46 @@
+Meta-Harness für KI-Coding-Agents: Sessions mit Claude Code und anderen Vendor-CLIs lokal starten,
+beobachten und steuern.
+
+Usage: beton [OPTIONS] <COMMAND>
+
+Commands:
+  run         Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv)
+  resume      Gestoppte Session fortsetzen und anhängen
+  attach      An eine laufende Session anhängen (Verlauf, dann live)
+  open        Web-UI im Browser öffnen (Anmeldung per Einmal-Link)
+  session     Sessions verwalten
+  serve       Lokalen Server starten (nur Loopback)
+  setup       Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
+  doctor      Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler
+  config      Konfiguration lesen und schreiben
+  auth        Lokale Anmeldung verwalten
+  admin       Wartung von Datenbank und Projektionen
+  completion  Shell-Vervollständigung ausgeben
+  version     Version ausgeben
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version

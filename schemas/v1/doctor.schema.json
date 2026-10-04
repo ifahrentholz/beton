@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DoctorReport",
+  "description": "Ausgabe von `beton doctor --json` (Schema: `schemas/v1/doctor.schema.json`).",
+  "type": "object",
+  "properties": {
+    "checks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Check"
+      }
+    },
+    "status": {
+      "description": "Schlechtester Status aller Prüfungen.",
+      "$ref": "#/$defs/CheckStatus"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "status",
+    "checks"
+  ],
+  "$defs": {
+    "Check": {
+      "description": "Eine Prüfung.",
+      "type": "object",
+      "properties": {
+        "details": {
+          "description": "Zusätzliche Angaben, z. B. Pfad und Version eines Harness."
+        },
+        "hint": {
+          "description": "Handlungsempfehlung; `null`, wenn nichts zu tun ist.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Stabile Kennung, z. B. `daemon` oder `harness.claude`.",
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "message"
+      ]
+    },
+    "CheckStatus": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "warn",
+        "fail"
+      ]
+    }
+  }
+}

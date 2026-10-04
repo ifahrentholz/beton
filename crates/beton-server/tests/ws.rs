@@ -60,6 +60,12 @@ impl Fixture {
     }
 
     async fn connect(&self) -> Ws {
+        self.connect_with(None).await
+    }
+
+    /// Verbindet optional mit kleinem Empfangspuffer: Unter Linux wächst das TCP-Fenster
+    /// auf Loopback sonst auf mehrere MB, und ein „blockierter“ Client staut nichts im Server.
+    async fn connect_with(&self, recv_buffer: Option<u32>) -> Ws {
         let port = self.daemon.addrs[0].port();
         let mut req = format!("ws://127.0.0.1:{port}/v1/ws")
             .into_client_request()
@@ -70,13 +76,24 @@ impl Fixture {
         );
         req.headers_mut()
             .insert("sec-websocket-protocol", "beton.v1".parse().unwrap());
-        let (ws, res) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        if let Some(size) = recv_buffer {
+            socket.set_recv_buffer_size(size).unwrap();
+        }
+        let stream = socket.connect(self.daemon.addrs[0]).await.unwrap();
+        let (ws, res) = tokio_tungstenite::client_async(req, MaybeTlsStream::Plain(stream))
+            .await
+            .unwrap();
         assert_eq!(res.headers()["sec-websocket-protocol"], "beton.v1");
         ws
     }
 
     async fn hello(&self) -> Ws {
-        let mut ws = self.connect().await;
+        self.hello_with(None).await
+    }
+
+    async fn hello_with(&self, recv_buffer: Option<u32>) -> Ws {
+        let mut ws = self.connect_with(recv_buffer).await;
         send(
             &mut ws,
             json!({"t": "hello", "protocol": "1.0", "client": {"kind": "test", "version": "0"}}),
@@ -125,6 +142,7 @@ async fn fixture(customize: impl FnOnce(Runtime) -> Runtime) -> Fixture {
                 parent_id: None,
                 trigger: SessionTrigger::User,
                 home_node: local.node,
+                harness_opts: serde_json::Value::Null,
             },
         )
         .await
@@ -447,6 +465,7 @@ fn proto_006_ac3_every_command_has_a_rest_twin() {
     // Die eingebauten Kommandos (ab WP-09) prüft derselbe Test über die Standard-Registry.
     assert!(
         Runtime::new(tokio::sync::watch::channel(false).1)
+            .with_default_commands()
             .commands
             .missing_rest_twins(&doc)
             .is_empty()
@@ -501,7 +520,7 @@ async fn proto_008_ac1_blocked_client_gets_overflow_and_recovers() {
         r
     })
     .await;
-    let mut ws = f.hello().await;
+    let mut ws = f.hello_with(Some(16 * 1024)).await;
     send(
         &mut ws,
         json!({"t": "attach", "id": "r1", "session_id": f.session.id, "from_seq": 0}),
@@ -564,8 +583,10 @@ async fn proto_008_ac2_slow_client_does_not_delay_fast_client() {
     assert_eq!(recv(&mut fast).await.unwrap()["t"], "live");
     let mut latencies = Vec::new();
     for i in 0..100 {
-        let sent = Instant::now();
+        // Gemessen wird die Zustellung ab dem Commit; die Schreiblatenz des Stores
+        // (fsync auf CI-Runnern) hängt nicht vom langsamen Client ab.
         f.produce(1, &format!("{i} {}", "y".repeat(4000))).await;
+        let sent = Instant::now();
         loop {
             let m = recv(&mut fast).await.unwrap();
             if m["t"] == "events" {

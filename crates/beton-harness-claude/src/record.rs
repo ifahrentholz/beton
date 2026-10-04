@@ -1,16 +1,10 @@
-//! Nimmt Golden-Transcripts mit der echten `claude`-CLI auf (HAR-025).
+//! Aufnahme von Golden-Transcripts mit der echten `claude`-CLI (HAR-025).
 //!
-//! ```text
-//! cargo run -p beton-harness-claude --example record_golden [-- <szenario> …]
-//! ```
-//!
-//! Braucht eine installierte, angemeldete CLI und verbraucht etwas Kontingent. Die CLI läuft
+//! Aufruf über `beton dev record-golden --harness claude [--scenario <name>]…`. Braucht eine
+//! installierte, angemeldete CLI und verbraucht etwas Kontingent; nie in CI. Die CLI läuft
 //! isoliert (`--safe-mode --strict-mcp-config`). Vor dem Schreiben entfernt der Recorder
 //! Konto-, Pfad- und Benutzerdaten; danach greifen Scrubbing und Secret-Scan
 //! (`golden::write_recording`). Die Erwartungen entstehen anschließend per Replay.
-//! Das CLI-Kommando `beton dev record-golden` folgt mit WP-10.
-
-#![allow(clippy::unwrap_used, clippy::print_stdout)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,12 +13,14 @@ use std::time::Duration;
 use beton_harness::golden::{self, Meta, RecordingLauncher, Script, ScriptDecision, ScriptInput};
 use beton_harness::process::RealLauncher;
 use beton_harness::{HarnessAdapter, HostEnv};
-use beton_harness_claude::ClaudeAdapter;
 use serde_json::Value;
 
-struct Scenario {
-    name: &'static str,
-    description: &'static str,
+use crate::ClaudeAdapter;
+
+/// Ein Aufnahme-Szenario.
+pub struct Scenario {
+    pub name: &'static str,
+    pub description: &'static str,
     inputs: Vec<ScriptInput>,
     gate: Vec<ScriptDecision>,
     files: &'static [(&'static str, &'static str)],
@@ -38,7 +34,8 @@ fn send(text: &str) -> ScriptInput {
     }
 }
 
-fn scenarios() -> Vec<Scenario> {
+/// Alle Szenarien in Aufnahme-Reihenfolge.
+pub fn scenarios() -> Vec<Scenario> {
     use ScriptDecision::{Allow, Deny};
     vec![
         Scenario {
@@ -167,13 +164,14 @@ fn clean(v: &mut Value) {
     }
 }
 
-async fn record(s: &Scenario, root: &Path, version: &str) {
-    let work = tempfile::tempdir().unwrap();
+/// Nimmt ein Szenario nach `<root>/<name>` auf und prüft es per Replay.
+pub async fn record(s: &Scenario, root: &Path, version: &str) -> Result<(), String> {
+    let work = tempfile::tempdir().map_err(|e| e.to_string())?;
     for (name, content) in s.files {
-        std::fs::write(work.path().join(name), content).unwrap();
+        std::fs::write(work.path().join(name), content).map_err(|e| e.to_string())?;
     }
     let workdir = work.path().to_path_buf();
-    let canonical = workdir.canonicalize().unwrap();
+    let canonical = workdir.canonicalize().map_err(|e| e.to_string())?;
     let home = std::env::var("HOME").unwrap_or_default();
     let mut replacements = vec![
         (
@@ -196,7 +194,7 @@ async fn record(s: &Scenario, root: &Path, version: &str) {
     };
     let mut env = HostEnv::from_process();
     if !s.extra_args.is_empty() {
-        let claude = which("claude").unwrap();
+        let claude = which("claude").ok_or("claude nicht in PATH")?;
         env.vars.insert(
             "BETON_CLAUDE_PATH".into(),
             format!("{} {}", claude.display(), s.extra_args),
@@ -216,12 +214,12 @@ async fn record(s: &Scenario, root: &Path, version: &str) {
         Duration::from_secs(180),
     )
     .await
-    .unwrap_or_else(|e| panic!("{}: {e}", s.name));
-    println!(
-        "{}: {} Events, {} Zeilen",
-        s.name,
-        events.len(),
-        launcher.raw_lines().len()
+    .map_err(|e| format!("{}: {e}", s.name))?;
+    tracing::info!(
+        scenario = s.name,
+        events = events.len(),
+        lines = launcher.raw_lines().len(),
+        "Szenario aufgenommen"
     );
 
     let raw: Vec<golden::RawLine> = launcher
@@ -242,29 +240,24 @@ async fn record(s: &Scenario, root: &Path, version: &str) {
     };
     let dir = root.join(s.name);
     let _ = std::fs::remove_dir_all(&dir);
-    golden::write_recording(&dir, &meta, &script, &raw, &[]).unwrap();
+    golden::write_recording(&dir, &meta, &script, &raw, &[]).map_err(|e| e.to_string())?;
     golden::check_case(&dir, &ClaudeAdapter::default(), true)
         .await
-        .unwrap();
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Version der installierten CLI.
+pub async fn cli_version() -> Result<String, String> {
+    ClaudeAdapter::default()
+        .probe(&HostEnv::from_process())
+        .await
+        .version
+        .ok_or_else(|| "claude --version liefert keine Version; ist die CLI installiert?".into())
 }
 
 fn which(cmd: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|d| d.join(cmd))
         .find(|p| p.is_file())
-}
-
-#[tokio::main]
-async fn main() {
-    let wanted: Vec<String> = std::env::args().skip(1).collect();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden");
-    let probe = ClaudeAdapter::default()
-        .probe(&HostEnv::from_process())
-        .await;
-    let version = probe.version.expect("claude --version");
-    for s in scenarios() {
-        if wanted.is_empty() || wanted.iter().any(|w| w == s.name) {
-            record(&s, &root, &version).await;
-        }
-    }
 }

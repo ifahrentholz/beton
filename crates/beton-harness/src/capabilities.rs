@@ -80,6 +80,14 @@ pub struct Capabilities {
     pub mcp_injection: bool,
     pub images: bool,
     pub transcript_import: bool,
+    /// Wählbare Modelle (Aliase der CLI), z. B. für den Composer-Picker (WEB-004).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub models: Vec<String>,
+    /// Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub efforts: Vec<String>,
 }
 
 impl Capabilities {
@@ -105,6 +113,8 @@ impl Capabilities {
             mcp_injection: false,
             images: false,
             transcript_import: false,
+            models: Vec::new(),
+            efforts: Vec::new(),
         }
     }
 

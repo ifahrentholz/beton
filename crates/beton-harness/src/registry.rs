@@ -17,25 +17,91 @@ use crate::capabilities::Capabilities;
 use crate::id::HarnessId;
 
 /// Ein Eintrag unter `harnesses.<id>` in `.beton/config.yaml` bzw. `~/.beton/config.yaml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HarnessCommandConfig {
+    /// Programm (Name in `PATH` oder Pfad), HAR-003.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extra_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env_passthrough: Vec<String>,
+    /// Auth-Herkunft (HAR-015); ohne Angabe `subscription`. Nur in der User-Konfiguration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<HarnessAuth>,
+    /// Benutzer-Anpassungen der Vendor-CLI (Hooks, Skills, Plugins, MCP) abschalten (HAR-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated: Option<bool>,
+}
+
+/// Auth-Herkunft in der Konfiguration (HAR-015): `subscription` = Login der offiziellen CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessAuth {
+    Subscription,
+    ApiKey,
+}
+
+impl HarnessAuth {
+    pub fn source(self) -> beton_core::event::AuthSource {
+        match self {
+            HarnessAuth::Subscription => beton_core::event::AuthSource::VendorCli,
+            HarnessAuth::ApiKey => beton_core::event::AuthSource::ApiKey,
+        }
+    }
 }
 
 /// Abschnitt `harnesses:` der Konfiguration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HarnessesConfig {
     /// Standard-Harness für neue Sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     #[serde(flatten)]
     pub entries: BTreeMap<String, HarnessCommandConfig>,
+}
+
+impl HarnessesConfig {
+    /// Liest `harnesses:` aus `<dir>/.beton/config.yaml`; andere Abschnitte bleiben unbeachtet.
+    /// Fehlt die Datei, ist das Ergebnis leer.
+    pub fn load_project(dir: &Path) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct File {
+            #[serde(default)]
+            harnesses: HarnessesConfig,
+        }
+        let path = dir.join(".beton").join("config.yaml");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        };
+        if text.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        serde_yaml_ng::from_str::<File>(&text)
+            .map(|f| f.harnesses)
+            .map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Auth-Herkunft eines Harness; Default `subscription` (ADR-0034).
+    pub fn auth(&self, id: &str) -> HarnessAuth {
+        self.entries
+            .get(id)
+            .and_then(|e| e.auth)
+            .unwrap_or(HarnessAuth::Subscription)
+    }
+}
+
+/// Konfigurationsebenen, die der Daemon an einen Runner weitergibt (JSON in
+/// `BETON_RUNNER_HARNESSES`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessLayers {
+    #[serde(default)]
+    pub user: HarnessesConfig,
+    #[serde(default)]
+    pub project: HarnessesConfig,
 }
 
 /// Woher ein Binary-Pfad stammt (Präzedenz von oben nach unten, HAR-003).
@@ -120,6 +186,43 @@ fn find_program(command: &str, env: &HostEnv) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Ausgabe eines Status-Kommandos.
+#[derive(Debug, Clone, Default)]
+pub struct StatusOutput {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Führt ein Status-Kommando einer Vendor-CLI aus (z. B. `claude auth status --json`).
+/// Ohne stdin, mit Timeout; die Ausgabe wird nicht geloggt (sie kann Kontodaten enthalten).
+pub async fn run_status(
+    program: &Path,
+    args: &[&str],
+    remove_env: &[&str],
+    timeout: Duration,
+) -> Result<StatusOutput, String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for k in remove_env {
+        cmd.env_remove(k);
+    }
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Err(_) => Err(format!(
+            "`{}` antwortet nicht innerhalb von {timeout:?}",
+            program.display()
+        )),
+        Ok(Err(e)) => Err(format!("`{}`: {e}", program.display())),
+        Ok(Ok(out)) => Ok(StatusOutput {
+            success: out.status.success(),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        }),
+    }
 }
 
 /// Cache-Schlüssel: Pfad und Änderungszeit des Binaries.
@@ -325,6 +428,36 @@ fn info(adapter: &dyn HarnessAdapter, probe: ProbeReport) -> HarnessInfo {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn har_003_project_config_is_read_from_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            HarnessesConfig::load_project(dir.path()).unwrap(),
+            HarnessesConfig::default(),
+            "ohne Datei leer"
+        );
+        std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
+        std::fs::write(
+            dir.path().join(".beton/config.yaml"),
+            "events:\n  store_raw: false\nharnesses:\n  claude:\n    command: ./bin/claude\n    isolated: true\n",
+        )
+        .unwrap();
+        let cfg = HarnessesConfig::load_project(dir.path()).unwrap();
+        assert_eq!(
+            cfg.entries["claude"].command.as_deref(),
+            Some("./bin/claude")
+        );
+        assert_eq!(cfg.entries["claude"].isolated, Some(true));
+        assert_eq!(cfg.auth("claude"), HarnessAuth::Subscription);
+        std::fs::write(
+            dir.path().join(".beton/config.yaml"),
+            "harnesses:\n  claude:\n    unbekannt: 1\n",
+        )
+        .unwrap();
+        let err = HarnessesConfig::load_project(dir.path()).unwrap_err();
+        assert!(err.contains("config.yaml"), "{err}");
+    }
+
     use super::*;
 
     fn exe(dir: &Path, name: &str, script: &str) -> PathBuf {

@@ -34,10 +34,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "idempotency",
         sql: include_str!("../migrations/sqlite/0002_idempotency.sql"),
     },
+    Migration {
+        version: 3,
+        name: "approvals_per_session",
+        sql: include_str!("../migrations/sqlite/0003_approvals_per_session.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
@@ -144,8 +149,9 @@ mod tests {
 
     use super::*;
 
+    /// Eine Migration nach der neuesten (simuliert ein neueres Binary).
     const TEST_NEXT: Migration = Migration {
-        version: 3,
+        version: SCHEMA_VERSION + 1,
         name: "test_extra",
         sql: "CREATE TABLE test_extra (org_id TEXT NOT NULL, id TEXT NOT NULL PRIMARY KEY);",
     };
@@ -176,13 +182,13 @@ mod tests {
     async fn data_003_ac2_older_binary_refuses_newer_schema() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("beton.db");
-        let newer = [MIGRATIONS[0], MIGRATIONS[1], TEST_NEXT];
+        let newer: Vec<Migration> = MIGRATIONS.iter().copied().chain([TEST_NEXT]).collect();
         run(&db, &newer).await.unwrap();
 
         let err = run(&db, MIGRATIONS).await.unwrap_err();
         assert_eq!(err.code(), "schema_too_new");
         assert!(
-            matches!(err, Error::SchemaTooNew { db: 3, binary: 2 }),
+            matches!(err, Error::SchemaTooNew { db, binary } if db == SCHEMA_VERSION + 1 && binary == SCHEMA_VERSION),
             "{err}"
         );
         // Auch der Store selbst startet nicht.
@@ -203,7 +209,10 @@ mod tests {
         let backup = dir.path().join("beton.db.bak-1");
         assert!(backup.exists());
         assert_eq!(versions(&backup).await, vec![1]);
-        assert_eq!(versions(&db).await, vec![1, 2]);
+        assert_eq!(
+            versions(&db).await,
+            (1..=SCHEMA_VERSION).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -222,7 +231,9 @@ mod tests {
                             .build()
                             .unwrap();
                         barrier.wait();
-                        rt.block_on(run(&db, &[MIGRATIONS[0], MIGRATIONS[1], TEST_NEXT]))
+                        let all: Vec<Migration> =
+                            MIGRATIONS.iter().copied().chain([TEST_NEXT]).collect();
+                        rt.block_on(run(&db, &all))
                     })
                 })
                 .collect();
@@ -233,7 +244,10 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap();
-            assert_eq!(rt.block_on(versions(&db)), vec![1, 2, 3]);
+            assert_eq!(
+                rt.block_on(versions(&db)),
+                (1..=SCHEMA_VERSION + 1).collect::<Vec<_>>()
+            );
         }
     }
 }
