@@ -458,7 +458,12 @@ impl Player {
         if let Some(text) = step.message_delta {
             let chunk = step.chunk.unwrap_or(usize::MAX);
             let chars: Vec<char> = text.chars().collect();
-            for piece in chars.chunks(chunk.min(chars.len().max(1))) {
+            for (i, piece) in chars.chunks(chunk.min(chars.len().max(1))).enumerate() {
+                if i > 0
+                    && let Some(ms) = step.chunk_delay_ms
+                {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
                 let piece: String = piece.iter().collect();
                 self.text.push_str(&piece);
                 self.send(EventPayload::MessageDelta(TextDelta {
@@ -883,5 +888,26 @@ turns:
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].id.as_str(), "fake");
         assert!(!catalog[0].incompatible);
+    }
+
+    #[tokio::test]
+    async fn har_026_chunk_delay_paces_the_stream() {
+        let start = std::time::Instant::now();
+        let events = run(
+            "turns:\n  - emit: [{ message_delta: \"abcde\", chunk: 1, chunk_delay_ms: 25 }]\n",
+            Arc::new(AllowAll),
+            &["x"],
+        )
+        .await;
+        let deltas = events
+            .iter()
+            .filter(|e| matches!(e.payload, EventPayload::MessageDelta(_)))
+            .count();
+        assert_eq!(deltas, 5);
+        assert!(
+            start.elapsed() >= Duration::from_millis(100),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }
