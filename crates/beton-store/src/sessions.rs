@@ -60,6 +60,17 @@ pub struct SessionRecord {
     pub archived: bool,
     pub cost_micro: i64,
     pub last_activity_at: Timestamp,
+    /// Eigener Worktree der Session (SES-015), aus `git.worktree_created`.
+    pub worktree: Option<SessionWorktree>,
+}
+
+/// Worktree einer Session (Projektion von `git.worktree_created`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SessionWorktree {
+    pub path: String,
+    pub branch: String,
+    pub base: String,
+    pub base_sha: String,
 }
 
 /// Grund, aus dem jemand eine Session löschen darf (DATA-008 AC3).
@@ -127,7 +138,7 @@ pub(crate) fn to_u64(v: i64) -> Result<u64> {
 
 const SESSION_COLUMNS: &str = "id, org_id, owner_id, project_id, parent_id, kind, harness, \
     home_node_id, epoch, head_seq, created_at, updated_at, title, status, archived, cost_micro, \
-    last_activity_at";
+    last_activity_at, worktree_path, worktree_branch, worktree_base, worktree_base_sha";
 
 pub(crate) fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
     Ok(SessionRecord {
@@ -148,6 +159,21 @@ pub(crate) fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
         archived: row.try_get("archived")?,
         cost_micro: row.try_get("cost_micro")?,
         last_activity_at: parse(row.try_get("last_activity_at")?)?,
+        worktree: match row.try_get::<Option<String>, _>("worktree_path")? {
+            Some(path) => Some(SessionWorktree {
+                path,
+                branch: row
+                    .try_get::<Option<String>, _>("worktree_branch")?
+                    .unwrap_or_default(),
+                base: row
+                    .try_get::<Option<String>, _>("worktree_base")?
+                    .unwrap_or_default(),
+                base_sha: row
+                    .try_get::<Option<String>, _>("worktree_base_sha")?
+                    .unwrap_or_default(),
+            }),
+            None => None,
+        },
     })
 }
 

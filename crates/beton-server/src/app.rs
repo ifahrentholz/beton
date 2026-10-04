@@ -105,6 +105,8 @@ impl Runtime {
                 dev: cfg!(debug_assertions),
                 launched: Arc::default(),
                 harnesses_user: Default::default(),
+                worktrees_root: std::env::temp_dir().join("beton-worktrees"),
+                snapshots_root: std::env::temp_dir().join("beton-snapshots"),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -124,6 +126,8 @@ impl Runtime {
             config.data_dir.join("runners"),
         ));
         r.sessions.tunnel_socket.clone_from(&config.tunnel_socket);
+        r.sessions.worktrees_root = config.data_dir.join("worktrees");
+        r.sessions.snapshots_root = config.data_dir.join("snapshots");
         r
     }
 }
@@ -290,7 +294,19 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::resolve_approval))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(routes!(crate::api_sessions::list_tombstones))
+        .routes(routes!(crate::api_workspace::tree))
+        .routes(crate::api_workspace::file_routes())
+        .routes(routes!(crate::api_workspace::search))
+        .routes(routes!(crate::api_workspace::changes))
+        .routes(routes!(crate::api_workspace::diff))
         .split_for_parts();
+    // Der Router braucht ein Wildcard-Segment für Dateipfade, OpenAPI einen Parameter `{path}`.
+    let wildcard = crate::api_workspace::FILE_PATH_ROUTE;
+    if let Some(item) = doc.paths.paths.remove(wildcard) {
+        doc.paths
+            .paths
+            .insert(crate::api_workspace::FILE_PATH_DOC.to_owned(), item);
+    }
     // Erst nach dem Einsammeln aller Pfade, sonst sehen die Modifier keine Operationen.
     Security.modify(&mut doc);
     ProblemResponses.modify(&mut doc);

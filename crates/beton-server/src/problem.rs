@@ -52,6 +52,7 @@ problem_codes! {
     HostNotAllowed = "host_not_allowed", 403, "Host nicht erlaubt";
     OriginNotAllowed = "origin_not_allowed", 403, "Origin nicht erlaubt";
     LoopbackOnly = "loopback_only", 403, "Nur über Loopback erreichbar";
+    PathOutsideWorkspace = "path_outside_workspace", 403, "Pfad außerhalb des Workspace";
     NotFound = "not_found", 404, "Nicht gefunden";
     /// Die Funktion liegt hinter einem nicht aktivierten Feature-Flag (UX-007).
     FeatureDisabled = "feature_disabled", 404, "Funktion nicht aktiviert";
@@ -64,11 +65,15 @@ problem_codes! {
     SeqConflict = "seq_conflict", 409, "Sequenzkonflikt";
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
+    NotAGitRepo = "not_a_git_repo", 409, "Kein Git-Repository";
+    WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
+    WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
     Tombstoned = "tombstoned", 410, "Gelöscht";
     PreconditionFailed = "precondition_failed", 412, "Vorbedingung nicht erfüllt";
     PayloadTooLarge = "payload_too_large", 413, "Anfrage zu groß";
     UnsupportedMediaType = "unsupported_media_type", 415, "Medientyp nicht unterstützt";
     IdempotencyKeyReused = "idempotency_key_reused", 422, "Idempotency-Key mit anderem Inhalt wiederverwendet";
+    BaseNotFound = "base_not_found", 422, "Base-Branch nicht auflösbar";
     RateLimited = "rate_limited", 429, "Zu viele Anfragen";
     Internal = "internal", 500, "Interner Fehler";
     BlobCorrupt = "blob_corrupt", 500, "Blob beschädigt";

@@ -226,8 +226,8 @@ impl HarnessAdapter for AcpAdapter {
             usage_reporting: UsageReporting::None,
             compaction: CompactionSupport::None,
             instructions_delivery: InstructionsDelivery::FirstMessagePrefix,
-            // `session/new.mcpServers` folgt mit HAR-009.
-            mcp_injection: false,
+            // `session/new.mcpServers` (HAR-009).
+            mcp_injection: true,
             images: false,
             transcript_import: false,
             models: self.config().models.clone(),
@@ -268,9 +268,14 @@ impl HarnessAdapter for AcpAdapter {
 
     async fn start(
         &self,
-        spec: SessionSpec,
+        mut spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        // `harnesses.acp.agents.<slug>.mcp_bridge: false`: keine System-Tools (HAR-009 AC2);
+        // der Runner filtert bereits, der Adapter sichert zusätzlich ab.
+        if self.config().mcp_bridge == Some(false) {
+            spec.mcp.servers.retain(|s| s.name != "beton");
+        }
         let launch = self
             .launch_spec(&ctx.env, Some(spec.workdir.clone()))
             .unwrap_or_else(|| LaunchSpec {
@@ -306,7 +311,7 @@ impl HarnessAdapter for AcpAdapter {
                 EventPayload::HarnessReady(HarnessReady {
                     harness_session_ref: Some(session_id.clone()),
                     tools: Vec::new(),
-                    mcp_servers: Vec::new(),
+                    mcp_servers: spec.mcp.names(),
                 }),
                 None,
             ))
@@ -395,12 +400,13 @@ async fn open_session(
     let init = initialize(rpc, timeout).await?;
     let load = init["agentCapabilities"]["loadSession"] == true;
     let cwd = spec.workdir.display().to_string();
+    let servers = mcp_servers(spec);
     let (method, params) = match &spec.resume {
         Some(id) if load => (
             "session/load",
-            json!({"sessionId": id, "cwd": cwd, "mcpServers": []}),
+            json!({"sessionId": id, "cwd": cwd, "mcpServers": servers}),
         ),
-        _ => ("session/new", json!({"cwd": cwd, "mcpServers": []})),
+        _ => ("session/new", json!({"cwd": cwd, "mcpServers": servers})),
     };
     let result = match rpc.request_timeout(method, params, timeout).await {
         Ok(v) => v,
@@ -428,6 +434,17 @@ async fn open_session(
         .filter_map(|m| m["id"].as_str().map(str::to_owned))
         .collect();
     Ok((session_id, modes))
+}
+
+/// `mcpServers` für `session/new` bzw. `session/load` (HAR-009): stdio-Relays ohne Env.
+pub fn mcp_servers(spec: &SessionSpec) -> Value {
+    Value::Array(
+        spec.mcp
+            .servers
+            .iter()
+            .map(|s| json!({"name": s.name, "command": s.command, "args": s.args, "env": []}))
+            .collect(),
+    )
 }
 
 /// Zustand des laufenden Turns.
@@ -859,5 +876,31 @@ mod tests {
         assert_eq!(option_for(&options, true).as_deref(), Some("o"));
         assert_eq!(option_for(&options, false).as_deref(), Some("r"));
         assert_eq!(option_for(&json!([]), true), None);
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    use super::*;
+    use beton_harness::{McpInjection, McpLaunch};
+
+    #[test]
+    fn har_009_acp_gets_relays_as_stdio_mcp_servers() {
+        assert_eq!(mcp_servers(&SessionSpec::default()), json!([]));
+        let spec = SessionSpec {
+            mcp: McpInjection {
+                servers: vec![McpLaunch {
+                    name: "beton".into(),
+                    command: "/bin/beton".into(),
+                    args: vec!["mcp".into(), "serve".into()],
+                }],
+                skills_dir: None,
+            },
+            ..SessionSpec::default()
+        };
+        assert_eq!(
+            mcp_servers(&spec),
+            json!([{"name": "beton", "command": "/bin/beton", "args": ["mcp", "serve"], "env": []}])
+        );
     }
 }

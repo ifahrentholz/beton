@@ -124,8 +124,8 @@ pub fn capabilities() -> Capabilities {
         // `thread/compact/start` folgt mit HAR-022.
         compaction: CompactionSupport::None,
         instructions_delivery: InstructionsDelivery::DeveloperInstructions,
-        // MCP-Server über `thread/start.config` folgen mit HAR-009.
-        mcp_injection: false,
+        // MCP-Server über `thread/start.config` (HAR-009).
+        mcp_injection: true,
         images: false,
         transcript_import: false,
         models: Vec::new(),
@@ -246,7 +246,7 @@ impl HarnessAdapter for CodexAdapter {
                         EventPayload::HarnessReady(HarnessReady {
                             harness_session_ref: Some(thread.id),
                             tools: Vec::new(),
-                            mcp_servers: Vec::new(),
+                            mcp_servers: spec.mcp.names(),
                         }),
                         None,
                     ))
@@ -299,6 +299,27 @@ struct Thread {
     model: String,
 }
 
+/// MCP-Server für `thread/start.config` (HAR-009): `mcp_servers.<name>` mit dem
+/// Relay-Kommando. Codex ergänzt sie zu den eigenen Servern des Nutzers (verifiziert gegen
+/// 0.153.2: Config-Overrides werden je Schlüssel zusammengeführt).
+pub fn mcp_config(spec: &SessionSpec) -> Option<Value> {
+    if spec.mcp.servers.is_empty() {
+        return None;
+    }
+    let servers: serde_json::Map<String, Value> = spec
+        .mcp
+        .servers
+        .iter()
+        .map(|s| {
+            (
+                s.name.clone(),
+                json!({"command": s.command, "args": s.args}),
+            )
+        })
+        .collect();
+    Some(json!({"mcp_servers": servers}))
+}
+
 /// `initialize`, `initialized` und `thread/start` bzw. `thread/resume` (HAR-006 AC4).
 async fn handshake(
     rpc: &RpcClient,
@@ -345,6 +366,9 @@ async fn handshake(
     if let Some(model) = &spec.model {
         params["model"] = json!(model);
     }
+    if let Some(config) = mcp_config(spec) {
+        params["config"] = config;
+    }
     let method = match &spec.resume {
         Some(thread) => {
             params["threadId"] = json!(thread);
@@ -370,6 +394,16 @@ async fn handshake(
     let Some(id) = result["thread"]["id"].as_str() else {
         return Err(incompatible(detected, "thread ohne id"));
     };
+    // Session-Skills als zusätzliche Skill-Wurzel (AGT-008, gegen 0.153.2 verifiziert).
+    if let Some(dir) = &spec.mcp.skills_dir {
+        let roots = json!({"extraRoots": [dir.join("skills").display().to_string()]});
+        if let Err(e) = rpc
+            .request_timeout("skills/extraRoots/set", roots, timeout)
+            .await
+        {
+            tracing::warn!("codex: Session-Skills nicht gesetzt: {e}");
+        }
+    }
     Ok(Thread {
         id: id.to_owned(),
         model: result["model"].as_str().unwrap_or_default().to_owned(),
@@ -887,5 +921,50 @@ mod tests {
             Some("0.153.2")
         );
         assert_eq!(version_from_user_agent("ohne Version"), None);
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::{McpInjection, McpLaunch};
+
+    #[test]
+    fn har_009_codex_gets_relays_via_thread_config() {
+        assert_eq!(mcp_config(&SessionSpec::default()), None);
+        let spec = SessionSpec {
+            mcp: McpInjection {
+                servers: vec![McpLaunch {
+                    name: "beton".into(),
+                    command: "/bin/beton".into(),
+                    args: vec!["mcp".into(), "serve".into()],
+                }],
+                skills_dir: None,
+            },
+            ..SessionSpec::default()
+        };
+        assert_eq!(
+            mcp_config(&spec).unwrap(),
+            json!({"mcp_servers": {"beton": {"command": "/bin/beton", "args": ["mcp", "serve"]}}})
+        );
+        assert!(capabilities().mcp_injection);
+    }
+
+    #[test]
+    fn agt_007_codex_marks_beton_mcp_calls_as_system_tools() {
+        let mut st = mapping::MapState::default();
+        let item = json!({"id": "i1", "type": "mcpToolCall", "server": "beton", "tool": "policy_query", "arguments": {}, "status": "inProgress"});
+        let Some(EventPayload::ToolCallRequested(r)) = requested(&item, &mut st) else {
+            panic!()
+        };
+        assert_eq!(r.source, beton_core::event::ToolSource::BetonMcp);
+        assert_eq!(r.tool, "policy_query");
+        let item = json!({"id": "i2", "type": "mcpToolCall", "server": "gh", "tool": "get", "arguments": {}, "status": "inProgress"});
+        let Some(EventPayload::ToolCallRequested(r)) = requested(&item, &mut st) else {
+            panic!()
+        };
+        assert_eq!(r.source, beton_core::event::ToolSource::Harness);
     }
 }

@@ -172,6 +172,7 @@ Endpunkt `GET /v1/tunnel` (lokal ausschließlich auf dem Tunnel-Socket, nicht au
 | S → Runner | `events.ack {session_id, upto_rseq, seq_range}` | Runner verwirft bis `upto_rseq`; ungeackte werden nach Reconnect erneut gesendet |
 | Runner → S | `transient.push {session_id, events}` | Deltas, ohne Ack |
 | S → Runner | `cmd.deliver {cmd_id, name, args, actor}` → `cmd.result` | Inputs, Approvals, Interrupts |
+| Runner → S | `system.call {call_id, tool, args}` → `system.result {call_id, result?, problem?}` | System-Tools, die der Server ausführt, z. B. `session.spawn` (AGT-007); gilt immer für die gebundene Session, Arbeitsverzeichnis und Owner leitet der Server daraus ab |
 | S → Runner | `policy.bundle {version, hash, sig, rules}` | Policy-Cache (SYNC-006) |
 | beide | `secret.lease.*` (SEC-008, siehe 05-security-identity.md), `budget.lease.*` (SYNC-007) | Leases |
 | beide | Binärframes wie Client-WS | Terminal-/Browser-Kanäle (Server mappt auf Client-Kanäle) |

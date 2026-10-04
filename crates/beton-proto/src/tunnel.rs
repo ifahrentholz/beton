@@ -59,6 +59,15 @@ pub enum TunnelUp {
         session_id: SessionId,
         events: Vec<Event>,
     },
+    /// System-Tool, das der Server ausführt, z. B. `session.spawn` (AGT-007). Gilt immer für
+    /// die gebundene Session; der Server leitet Arbeitsverzeichnis und Owner daraus ab.
+    #[serde(rename = "system.call")]
+    SystemCall {
+        call_id: String,
+        tool: String,
+        #[serde(default)]
+        args: Value,
+    },
     #[serde(rename = "cmd.result")]
     CmdResult {
         cmd_id: String,
@@ -101,6 +110,17 @@ pub enum TunnelDown {
         name: String,
         #[serde(default)]
         args: Value,
+    },
+    /// Ergebnis eines `system.call`: `result` oder `problem` (`{code, detail}`).
+    #[serde(rename = "system.result")]
+    SystemResult {
+        call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        result: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        problem: Option<Value>,
     },
     /// Runner beenden (z. B. Idle-Timeout, RUN-003 AC2).
     #[serde(rename = "runner.stop")]

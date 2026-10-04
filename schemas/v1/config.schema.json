@@ -171,6 +171,13 @@
             "boolean",
             "null"
           ]
+        },
+        "mcp_bridge": {
+          "description": "System-Tools (MCP-Server `beton`) an diesen Harness geben (HAR-009); Default `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

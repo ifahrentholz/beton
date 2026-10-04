@@ -395,9 +395,10 @@ impl Guard {
         input_id: InputId,
         text: String,
         by: PrincipalId,
+        actor: Actor,
     ) -> Result<Accepted, Problem> {
         self.state().busy = true;
-        let result = self.deliver_turn(&text, by).await;
+        let result = self.deliver_turn(&text, by, actor).await;
         match result {
             Ok(turn_id) => Ok(Accepted::Started { input_id, turn_id }),
             Err(e) => {
@@ -407,10 +408,15 @@ impl Guard {
         }
     }
 
-    async fn deliver_turn(&self, text: &str, by: PrincipalId) -> Result<String, Problem> {
+    async fn deliver_turn(
+        &self,
+        text: &str,
+        by: PrincipalId,
+        actor: Actor,
+    ) -> Result<String, Problem> {
         // Die Eingabe gehört zum Verlauf (Chat, Replay, Export): als Nachricht des Nutzers
         // vor der Zustellung, damit sie vor der Antwort steht.
-        self.user_message(text, by).await?;
+        self.user_message(text, by, actor).await?;
         let result = self
             .ctx
             .runners
@@ -424,12 +430,12 @@ impl Guard {
         Ok(result["turn_id"].as_str().unwrap_or_default().to_owned())
     }
 
-    async fn user_message(&self, text: &str, by: PrincipalId) -> Result<(), Problem> {
+    async fn user_message(&self, text: &str, by: PrincipalId, actor: Actor) -> Result<(), Problem> {
         append(
             &self.ctx.events,
             self.ctx.org,
             self.session,
-            user_actor(by),
+            actor,
             EventPayload::MessageCompleted(MessageCompleted {
                 message_id: format!("msg_user_{}", InputId::new()),
                 role: MessageRole::User,
@@ -455,7 +461,7 @@ impl Guard {
             .await
         {
             Ok(_) => {
-                self.user_message(text, by).await?;
+                self.user_message(text, by, user_actor(by)).await?;
                 Ok(true)
             }
             // Der Turn startet gerade erst oder ist eben zu Ende: Das Turn-Ende in den
@@ -477,7 +483,10 @@ impl Guard {
         self.state().items.remove(0);
         self.publish(system()).await?;
         let input_id: InputId = next.id.parse().unwrap_or_else(|_| InputId::new());
-        if let Err(p) = self.start_turn(input_id, next.text, next.author).await {
+        if let Err(p) = self
+            .start_turn(input_id, next.text, next.author, user_actor(next.author))
+            .await
+        {
             // Niemand wartet auf diese Antwort: als Fehler im Verlauf sichtbar machen.
             let problem = serde_json::to_value(&p).unwrap_or(Value::Null);
             append(

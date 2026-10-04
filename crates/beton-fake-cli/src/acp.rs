@@ -34,6 +34,8 @@ pub struct Agent<R, W> {
     session_id: Option<String>,
     calls: u32,
     requests: i64,
+    /// Injizierte MCP-Server (HAR-009).
+    mcp: crate::mcp::Clients,
 }
 
 enum TurnEnd {
@@ -78,6 +80,7 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             session_id: None,
             calls: 0,
             requests: 0,
+            mcp: crate::mcp::Clients::default(),
         }
     }
 
@@ -134,10 +137,14 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             "session/new" => {
                 let session = format!("sess_fake{:012x}", self.seed & 0xffff_ffff_ffff);
                 self.session_id = Some(session.clone());
+                self.mcp =
+                    crate::mcp::Clients::connect(&crate::mcp::from_acp(&params["mcpServers"]));
                 self.respond(id, json!({"sessionId": session}))
             }
             "session/load" if self.load_session => {
                 self.session_id = params["sessionId"].as_str().map(str::to_owned);
+                self.mcp =
+                    crate::mcp::Clients::connect(&crate::mcp::from_acp(&params["mcpServers"]));
                 self.respond(id, Value::Null)
             }
             "session/prompt" => self.prompt(id, params),
@@ -232,6 +239,27 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 }))?;
                 state.call = None;
             }
+        } else if let Some(call) = &step.mcp_call {
+            self.calls += 1;
+            let id = format!("call_fake{:08}", self.calls);
+            self.update(json!({
+                "sessionUpdate": "tool_call", "toolCallId": id,
+                "title": format!("{}/{}", call.server, call.tool), "kind": "other",
+                "status": "pending", "rawInput": call.args, "locations": [],
+            }))?;
+            self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}))?;
+            state.call = Some(id);
+            match self.mcp.call(&call.server, &call.tool, &call.args) {
+                Ok(result) => {
+                    let status = if result["isError"] == true {
+                        "failed"
+                    } else {
+                        "completed"
+                    };
+                    self.complete(state, &result, status)?;
+                }
+                Err(e) => self.complete(state, &json!(e), "failed")?,
+            }
         } else if let Some(on_gate) = &step.on_gate {
             let branch = if state.allowed {
                 &on_gate.allow
@@ -257,6 +285,10 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 code: AUTH_REQUIRED,
                 message: format!("Authentication required: {hint}"),
             });
+        } else if let Some(write) = &step.write_file {
+            // Wie ein Edit-Tool: Datei relativ zum Arbeitsverzeichnis (SES-017).
+            let workdir = std::env::current_dir().unwrap_or_default();
+            let _ = write.apply(&workdir);
         } else if step.hang {
             loop {
                 let msg = self.io.read()?;

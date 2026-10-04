@@ -11,6 +11,7 @@
 
 pub mod api;
 pub mod api_sessions;
+pub mod api_workspace;
 pub mod app;
 pub mod commands;
 pub mod config;
@@ -25,6 +26,7 @@ pub mod serve;
 pub mod sessions;
 pub mod tunnel;
 pub mod web;
+pub mod workspace;
 pub mod ws;
 
 pub use crate::app::openapi;

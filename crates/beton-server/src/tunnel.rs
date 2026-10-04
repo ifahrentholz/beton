@@ -195,6 +195,13 @@ fn runner_code(problem: &Value) -> ProblemCode {
     }
 }
 
+/// Ausführung von `system.call` (AGT-007), z. B. `session.spawn`.
+#[async_trait::async_trait]
+pub trait SystemCalls: Send + Sync {
+    /// Gilt für die gebundene Session des Runners. `Err` ist ein Problem `{code, detail}`.
+    async fn call(&self, session: SessionId, tool: &str, args: Value) -> Result<Value, Value>;
+}
+
 /// Zustand des Tunnel-Endpunkts.
 #[derive(Clone)]
 pub struct TunnelState {
@@ -202,6 +209,8 @@ pub struct TunnelState {
     pub local: beton_store::LocalIdentity,
     pub runners: Arc<RunnerRegistry>,
     pub config: TunnelConfig,
+    /// Ohne Handler werden System-Tools abgelehnt (fail closed).
+    pub system: Option<Arc<dyn SystemCalls>>,
     /// Queues der Sessions: Turn-Ende arbeitet die nächste Eingabe ab (SES-004).
     pub queues: Arc<crate::queue::Queues>,
 }
@@ -459,6 +468,35 @@ async fn append(
 async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option<TunnelDown> {
     let runners = &state.runners;
     match up {
+        TunnelUp::SystemCall {
+            call_id,
+            tool,
+            args,
+        } => {
+            // Lange Aufrufe (`session.spawn`) blockieren die Verbindung nicht.
+            let tx = lock(&runners.conns).get(&session).map(|c| c.tx.clone());
+            let handler = state.system.clone();
+            tokio::spawn(async move {
+                let reply = match handler {
+                    Some(h) => h.call(session, &tool, args).await,
+                    None => Err(
+                        serde_json::json!({"code": "unavailable", "detail": "System-Tools sind auf diesem Server nicht verfügbar"}),
+                    ),
+                };
+                if let Some(tx) = tx {
+                    let (result, problem) = match reply {
+                        Ok(v) => (Some(v), None),
+                        Err(p) => (None, Some(p)),
+                    };
+                    let _ = tx.send(TunnelDown::SystemResult {
+                        call_id,
+                        result,
+                        problem,
+                    });
+                }
+            });
+            None
+        }
         TunnelUp::EventsPush {
             session_id,
             epoch,

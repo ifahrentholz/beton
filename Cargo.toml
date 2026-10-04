@@ -23,8 +23,10 @@ beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
 beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
 beton-harness-codex = { path = "crates/beton-harness-codex", version = "0.0.0" }
 beton-harness-acp = { path = "crates/beton-harness-acp", version = "0.0.0" }
+beton-mcp = { path = "crates/beton-mcp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
+beton-git = { path = "crates/beton-git", version = "0.0.0" }
 
 # extern
 anyhow = "1"
@@ -39,6 +41,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 getrandom = "0.4"
 hex = "0.4"
 http-body-util = "0.1"
+# Dateiauswahl mit ripgrep-Semantik (`.gitignore`) für die Workspace-Suche (SES-017).
+ignore = "0.4"
 process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 proptest = "1"
 regex = "1"

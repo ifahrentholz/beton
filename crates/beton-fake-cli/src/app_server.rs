@@ -37,6 +37,8 @@ pub struct AppServer<R, W> {
     items: u32,
     requests: i64,
     total: Usage,
+    /// Injizierte MCP-Server (HAR-009).
+    mcp: crate::mcp::Clients,
 }
 
 /// Was ein Turn erlebt hat.
@@ -75,6 +77,7 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             items: 0,
             requests: 0,
             total: Usage::default(),
+            mcp: crate::mcp::Clients::default(),
         }
     }
 
@@ -179,8 +182,23 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                 let response = self.thread_response(params);
                 self.respond(id, response)?;
                 let thread = self.thread();
-                self.notify("thread/started", json!({"thread": thread}))
+                self.notify("thread/started", json!({"thread": thread}))?;
+                // Wie Codex: MCP-Server aus `config.mcp_servers` starten und melden.
+                let configs = crate::mcp::from_codex_config(&params["config"]);
+                if configs.is_empty() {
+                    return Ok(());
+                }
+                self.mcp = crate::mcp::Clients::connect(&configs);
+                let thread_id = self.thread_id.clone();
+                for name in self.mcp.connected() {
+                    self.notify("mcpServer/startupStatus/updated", json!({"threadId": thread_id, "name": name, "status": "ready", "error": null}))?;
+                }
+                for (name, error) in self.mcp.failed.clone() {
+                    self.notify("mcpServer/startupStatus/updated", json!({"threadId": thread_id, "name": name, "status": "failed", "error": error}))?;
+                }
+                Ok(())
             }
+            "skills/extraRoots/set" => self.respond(id, json!({})),
             "turn/start" => self.turn(id, params),
             "turn/interrupt" => self.respond(id, json!({})),
             _ => self.respond_error(id, -32601, &format!("Method not found: {method}")),
@@ -370,6 +388,29 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                 }
             }
             state.call = Some(Call { id, item });
+        } else if let Some(call) = &step.mcp_call {
+            let id = self.next_item("mcp");
+            let mut item = json!({
+                "type": "mcpToolCall", "id": id, "server": call.server, "tool": call.tool,
+                "arguments": call.args, "status": "inProgress",
+            });
+            self.item("item/started", state, item.clone())?;
+            match self.mcp.call(&call.server, &call.tool, &call.args) {
+                Ok(result) => {
+                    item["status"] = json!(if result["isError"] == true {
+                        "failed"
+                    } else {
+                        "completed"
+                    });
+                    item["result"] = result;
+                }
+                Err(e) => {
+                    item["status"] = json!("failed");
+                    item["error"] = json!({"message": e});
+                }
+            }
+            item["durationMs"] = json!(0);
+            self.item("item/completed", state, item)?;
         } else if let Some(on_gate) = &step.on_gate {
             let branch = if state.allowed {
                 &on_gate.allow
@@ -395,6 +436,10 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                 message: format!("unauthorized: {hint}"),
                 info: "unauthorized",
             });
+        } else if let Some(write) = &step.write_file {
+            // Wie ein Edit-Tool: Datei relativ zum Arbeitsverzeichnis (SES-017).
+            let workdir = std::env::current_dir().unwrap_or_default();
+            let _ = write.apply(&workdir);
         } else if step.hang {
             loop {
                 let msg = self.io.read()?;

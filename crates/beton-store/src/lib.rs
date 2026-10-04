@@ -36,7 +36,8 @@ pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
 pub use crate::projections::{ApprovalRecord, UsageRecord};
 pub use crate::sessions::{
-    AuditEntry, DeleteAuthority, LocalIdentity, NewSession, SessionRecord, Tombstone,
+    AuditEntry, DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree,
+    Tombstone,
 };
 
 /// Hook, der `raw` vor der Persistenz redigiert (PROTO-001 AC3).
@@ -175,6 +176,28 @@ pub async fn quick_check(db_path: &Path) -> Result<Vec<String>> {
         .filter_map(|r| r.try_get::<String, _>(0).ok())
         .filter(|s| s != "ok")
         .collect())
+}
+
+/// Worktree-Pfade aller Sessions (SES-016 AC3: `beton doctor` meldet Verzeichnisse ohne
+/// Session). Liest wie [`quick_check`] schreibgeschützt und ohne Migrationen.
+pub async fn worktree_paths(db_path: &Path) -> Result<Vec<String>> {
+    use sqlx::ConnectOptions as _;
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let idle = !Path::new(&wal).exists();
+    let mut conn = SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .immutable(idle)
+        .create_if_missing(false)
+        .connect()
+        .await?;
+    let paths: Vec<String> =
+        sqlx::query_scalar("SELECT worktree_path FROM sessions WHERE worktree_path IS NOT NULL")
+            .fetch_all(&mut conn)
+            .await?;
+    let _ = sqlx::Connection::close(conn).await;
+    Ok(paths)
 }
 
 /// Standard-Datenverzeichnis: `$BETON_HOME`, sonst `~/.beton` (bzw. `%USERPROFILE%\.beton`).

@@ -10,12 +10,16 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+beton-agents.workspace = true
 beton-core.workspace = true
+beton-git.workspace = true
 beton-harness.workspace = true
 beton-harness-claude.workspace = true
 beton-harness-codex.workspace = true
 beton-harness-acp.workspace = true
+beton-mcp.workspace = true
 beton-proto.workspace = true
+getrandom.workspace = true
 futures-util.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

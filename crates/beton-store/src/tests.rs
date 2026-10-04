@@ -923,6 +923,53 @@ async fn data_005_ac1_rebuild_reproduces_projections() {
     assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
 }
 
+#[tokio::test]
+async fn ses_015_worktree_is_projected_from_event_and_rebuilt() {
+    let t = store().await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    assert_eq!(s.worktree, None);
+    append_one(
+        &t.store,
+        &s,
+        ev(
+            s.id,
+            EventPayload::GitWorktreeCreated(beton_core::event::GitWorktreeCreated {
+                path: "/wt/projekt-12345678/beton-x-ab12".into(),
+                branch: "beton/x-ab12".into(),
+                base: "main".into(),
+                base_sha: "a".repeat(40),
+            }),
+        ),
+    )
+    .await;
+    let wt = t
+        .store
+        .session(org(&t), s.id)
+        .await
+        .unwrap()
+        .worktree
+        .unwrap();
+    assert_eq!(wt.branch, "beton/x-ab12");
+    assert_eq!(wt.base, "main");
+    let before = t.store.projection_dump(org(&t)).await.unwrap();
+    sqlx::query("UPDATE sessions SET worktree_path = NULL")
+        .execute(&t.store.pool)
+        .await
+        .unwrap();
+    t.store.rebuild_projections(org(&t), None).await.unwrap();
+    assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
+    assert_eq!(
+        crate::worktree_paths(&t.dir.path().join("beton.db"))
+            .await
+            .unwrap(),
+        vec!["/wt/projekt-12345678/beton-x-ab12".to_owned()]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // DATA-006: Blob-Zugriff, GC, Beschädigung
 // ---------------------------------------------------------------------------

@@ -115,7 +115,8 @@ impl HarnessAdapter for FakeAdapter {
         })?;
         let scenario =
             Scenario::load(&path).map_err(|e| HarnessError::StartRefused(e.to_string()))?;
-        let session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
+        let mut session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
+        session.workdir = spec.workdir;
         Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
 }
@@ -135,6 +136,8 @@ pub struct FakeSession {
     session_ref: String,
     /// Steer-Eingaben in den laufenden Turn (Schritt `await_steer`, SES-004).
     steer: Option<mpsc::UnboundedSender<String>>,
+    /// Arbeitsverzeichnis für `write_file`-Schritte.
+    workdir: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for FakeSession {
@@ -200,6 +203,7 @@ impl FakeSession {
             running: None,
             interrupt: Arc::new(Notify::new()),
             crashed: Arc::new(Mutex::new(false)),
+            workdir: std::env::current_dir().unwrap_or_default(),
             session_ref,
             steer: None,
         })
@@ -263,6 +267,7 @@ impl HarnessSession for FakeSession {
             last_call: None,
             last_decision: None,
             steer: steer_rx,
+            workdir: self.workdir.clone(),
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -385,6 +390,7 @@ struct Player {
     last_call: Option<String>,
     last_decision: Option<bool>,
     steer: mpsc::UnboundedReceiver<String>,
+    workdir: std::path::PathBuf,
 }
 
 enum Outcome {
@@ -572,6 +578,25 @@ impl Player {
             }
             self.last_call = Some(call_id);
             self.last_decision = Some(allowed);
+        } else if let Some(call) = step.mcp_call {
+            // Der Fake-Harness hat keine MCP-Injektion (Capability `mcp_injection: false`);
+            // echte MCP-Aufrufe spielt die Fake-CLI ab (HAR-009).
+            self.calls += 1;
+            let call_id = format!("call_{}_{}", self.turn_index + 1, self.calls);
+            self.send(EventPayload::ToolCallRequested(ToolCallRequested {
+                call_id: call_id.clone(),
+                tool: call.tool,
+                mcp_server: Some(call.server),
+                args: call.args,
+                source: ToolSource::Harness,
+            }))
+            .await;
+            self.last_call = Some(call_id);
+            self.complete_call(
+                ToolStatus::Error,
+                Value::String("mcp_injection: der Fake-Harness hat keine MCP-Server".into()),
+            )
+            .await;
         } else if let Some(on_gate) = step.on_gate {
             let branch = if self.last_decision.unwrap_or(true) {
                 on_gate.allow
@@ -642,6 +667,9 @@ impl Player {
                 .await;
                 return Outcome::Stop;
             }
+        } else if let Some(write) = step.write_file {
+            let workdir = self.workdir.clone();
+            let _ = tokio::task::spawn_blocking(move || write.apply(&workdir)).await;
         }
         Outcome::Continue
     }

@@ -17,6 +17,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `host_not_allowed` | 403 | Host nicht erlaubt |
 | `origin_not_allowed` | 403 | Origin nicht erlaubt |
 | `loopback_only` | 403 | Nur über Loopback erreichbar |
+| `path_outside_workspace` | 403 | Pfad außerhalb des Workspace |
 | `not_found` | 404 | Nicht gefunden |
 | `feature_disabled` | 404 | Funktion nicht aktiviert |
 | `method_not_allowed` | 405 | Methode nicht erlaubt |
@@ -26,11 +27,15 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `seq_conflict` | 409 | Sequenzkonflikt |
 | `stale_epoch` | 409 | Veraltete Epoch |
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |
+| `not_a_git_repo` | 409 | Kein Git-Repository |
+| `worktree_dirty` | 409 | Worktree hat uncommittete Änderungen |
+| `worktree_unpushed` | 409 | Branch hat ungepushte Commits |
 | `tombstoned` | 410 | Gelöscht |
 | `precondition_failed` | 412 | Vorbedingung nicht erfüllt |
 | `payload_too_large` | 413 | Anfrage zu groß |
 | `unsupported_media_type` | 415 | Medientyp nicht unterstützt |
 | `idempotency_key_reused` | 422 | Idempotency-Key mit anderem Inhalt wiederverwendet |
+| `base_not_found` | 422 | Base-Branch nicht auflösbar |
 | `rate_limited` | 429 | Zu viele Anfragen |
 | `internal` | 500 | Interner Fehler |
 | `blob_corrupt` | 500 | Blob beschädigt |

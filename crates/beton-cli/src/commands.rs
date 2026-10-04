@@ -121,6 +121,8 @@ pub async fn run(cli: Cli) -> CliResult {
             .ok();
             runner_exit(beton_runner::main_from_env().await)
         }
+        // stdout gehört dem MCP-Protokoll: kein Log, keine weiteren Ausgaben.
+        Command::Mcp(args) => runner_exit(beton_mcp::relay::main(&args.args).await),
     }
 }
 
@@ -131,6 +133,7 @@ fn cli_logs(command: &Command) -> bool {
         command,
         Command::Serve(_)
             | Command::Runner
+            | Command::Mcp(_)
             | Command::Doctor
             | Command::Config(_)
             | Command::Agent(_)
@@ -321,9 +324,9 @@ async fn session(ctx: &Ctx, cmd: SessionCommand) -> CliResult {
         SessionCommand::Show(a)
         | SessionCommand::Archive(a)
         | SessionCommand::Unarchive(a)
-        | SessionCommand::Delete(a)
         | SessionCommand::Interrupt(a) => a.session.clone(),
         SessionCommand::Rename(a) => a.session.clone(),
+        SessionCommand::Delete(a) => a.session.clone(),
     };
     let id = crate::sessionref::resolve(&client, &reference).await?;
     let result = match cmd {
@@ -364,9 +367,37 @@ async fn session(ctx: &Ctx, cmd: SessionCommand) -> CliResult {
         }
         SessionCommand::Archive(_) => client.set_archived(&id, true).await?,
         SessionCommand::Unarchive(_) => client.set_archived(&id, false).await?,
-        SessionCommand::Delete(_) => {
-            client.delete_session(&id).await?;
-            json!({ "id": id, "deleted": true })
+        SessionCommand::Delete(a) => {
+            use crate::cli::{BranchChoice, UncommittedChoice};
+            let uncommitted = a.uncommitted.map(|u| match u {
+                UncommittedChoice::Commit => "commit",
+                UncommittedChoice::Discard => "discard",
+            });
+            let branch = a.branch.map(|b| match b {
+                BranchChoice::Keep => "keep",
+                BranchChoice::Delete => "delete",
+            });
+            match client.delete_session_with(&id, uncommitted, branch).await {
+                Ok(()) => json!({ "id": id, "deleted": true }),
+                // SES-016: Rückfrage mit den passenden Optionen der CLI.
+                Err(beton_sdk::Error::Problem { code, detail, .. })
+                    if code == "worktree_dirty" || code == "worktree_unpushed" =>
+                {
+                    let next = if code == "worktree_dirty" {
+                        "--uncommitted commit|discard"
+                    } else {
+                        "--branch keep|delete"
+                    };
+                    return Err(CliError::new(
+                        Exit::General,
+                        anyhow::anyhow!(
+                            "{} Nichts wurde gelöscht. Erneut mit: beton session delete {id} {next}",
+                            detail.unwrap_or_default()
+                        ),
+                    ));
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         SessionCommand::Interrupt(_) => {
             client.interrupt(&id).await?;

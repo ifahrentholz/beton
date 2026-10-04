@@ -427,6 +427,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Prüft die Umgebung und gibt eine Tabelle (`ok`/`warn`/`fail`, Hinweis zur Behebung) oder `--json` aus; Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler). `doctor` kontaktiert keine externen Dienste (keine Online-Update-Prüfung); Netzprüfungen laufen nur gegen ausdrücklich konfigurierte Server (ADR-0033). Prüfungen werden mit den Meilensteinen ergänzt:
   - M0: Version/Update-Kanal, Daemon-Status und Port, Config-Validität, Rechte von `~/.beton` und Token-Datei (0600), SQLite-Integrität (`quick_check`), Harness-CLIs (Pfad, Version, unterstützter Bereich), Login-Status über CLI-eigene Statusbefehle, sofern vorhanden.
+  - M1: verwaiste Session-Worktrees ohne Session mit Pfad und Größe (Check `worktrees`, `warn`, SES-016).
   - M2: Sandbox-Fähigkeiten (macOS `sandbox-exec`; Linux Landlock-ABI, seccomp, User-Namespaces, optional bubblewrap; Windows Beta), Egress-Proxy-CA, Keychain-Zugriff, Policy-Ladefehler.
   - M3: Chromium/Chrome for Testing, Whisper-Modelle + Backend, Desktop-Updater-Kanal.
   - M4/M5: Server-Erreichbarkeit, TLS, Uhrzeitabweichung, Host-Pairing, Docker/Podman, Kubernetes-Kontext, Plugins (PLG-011, siehe 10-runners-extensibility.md), Telemetrie-Status. OBS-005 ist Owner der Prüfungen, des `--json`-Schemas und der Exit-Codes; CLI-005 ist die CLI-Front.

@@ -1,4 +1,6 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { SessionWorktree } from "./SessionWorktree";
+
 /**
  * Eine Session in der Liste.
  */
@@ -27,4 +29,8 @@ unread: boolean,
  * Letzte Änderung aus Sicht des Users (Aktivität, Gelesen-Stand, Pin); Grundlage von
  * `updated_after`.
  */
-changed_at: string, };
+changed_at: string, 
+/**
+ * Eigener Worktree der Session (SES-015); fehlt ohne Worktree.
+ */
+worktree?: SessionWorktree, };

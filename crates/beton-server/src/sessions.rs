@@ -1,5 +1,6 @@
 //! Session-Lebenszyklus (SES-001, SES-003, SES-005): anlegen, Runner starten, Eingaben
-//! zustellen, unterbrechen, archivieren, löschen, fortsetzen.
+//! zustellen, unterbrechen, archivieren, löschen, fortsetzen. Worktree pro Session beim Anlegen
+//! und kontrolliertes Entfernen beim Löschen (SES-015, SES-016).
 //!
 //! Der Server führt nie Agent-Code aus; er startet Runner über den `RunnerProvider` und
 //! spricht mit ihnen über den Tunnel (`RunnerRegistry`).
@@ -16,7 +17,7 @@ use beton_core::event::{
 use beton_core::id::{InputId, OrgId, PrincipalId, RunnerId, SessionId, UserId};
 use beton_host::{RunnerBoot, RunnerHandle, RunnerProvider, RunnerSpec, TerminateMode};
 use beton_store::{DeleteAuthority, NewSession, SessionRecord};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::app::AppState;
@@ -47,6 +48,8 @@ pub enum InputMode {
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Höchstdauer eines synchronen `session_spawn` (wie `session_wait`, AGT-007).
+const SPAWN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Gestartete Runner dieses Knotens.
 #[derive(Default)]
@@ -71,6 +74,17 @@ pub struct SessionsConfig {
     /// `harnesses:` aus der User-Konfiguration; die Projekt-Konfiguration liest der Daemon
     /// beim Start aus dem Arbeitsverzeichnis der Session (HAR-003).
     pub harnesses_user: beton_harness::registry::HarnessesConfig,
+    /// Wurzel der Session-Worktrees, z. B. `~/.beton/worktrees` (SES-015).
+    pub worktrees_root: PathBuf,
+    /// Schatten-Repositories der Turn-Snapshots, z. B. `~/.beton/snapshots` (SES-018).
+    pub snapshots_root: PathBuf,
+}
+
+impl SessionsConfig {
+    /// Schatten-Repository einer Session.
+    pub fn snapshots_dir(&self, session: SessionId) -> PathBuf {
+        self.snapshots_root.join(format!("{session}.git"))
+    }
 }
 
 impl std::fmt::Debug for SessionsConfig {
@@ -78,6 +92,30 @@ impl std::fmt::Debug for SessionsConfig {
         f.debug_struct("SessionsConfig")
             .field("dev", &self.dev)
             .finish_non_exhaustive()
+    }
+}
+
+/// System-Tools, die der Runner über den Tunnel an den Server gibt (`system.call`, AGT-007).
+pub struct ServerSystemCalls(pub AppState);
+
+#[async_trait::async_trait]
+impl crate::tunnel::SystemCalls for ServerSystemCalls {
+    async fn call(&self, session: SessionId, tool: &str, args: Value) -> Result<Value, Value> {
+        let problem = |p: Problem| {
+            let v = serde_json::to_value(&p).unwrap_or(Value::Null);
+            json!({"code": v["code"], "detail": v["detail"]})
+        };
+        match tool {
+            "session.spawn" => self
+                .0
+                .sessions()
+                .spawn_child(session, &args)
+                .await
+                .map_err(problem),
+            other => Err(
+                json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
+            ),
+        }
     }
 }
 
@@ -89,6 +127,82 @@ pub struct CreateSession {
     pub title: Option<String>,
     pub model: Option<String>,
     pub harness_opts: Value,
+    /// Eigener Worktree (SES-015).
+    pub worktree: Option<WorktreeSpec>,
+}
+
+/// Worktree-Wunsch beim Anlegen einer Session (SES-015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeSpec {
+    /// Branch-Name; sonst `beton/<titel-slug>-<id4>`.
+    pub branch: Option<String>,
+    /// Base; sonst `origin/HEAD`, sonst der aktuelle Branch.
+    pub base: Option<String>,
+    /// `git fetch` vor dem Anlegen (Default an).
+    pub fetch: bool,
+}
+
+/// Entscheidungen beim Löschen einer Session mit Worktree (SES-016).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeleteOptions {
+    pub worktree: beton_git::worktree::RemoveOptions,
+}
+
+/// Fehler von `beton-git` als Problem; Git-Meldungen können Pfade enthalten und gehen nur ins
+/// Log (PROTO-011).
+fn git_problem(e: &beton_git::GitError) -> Problem {
+    match e {
+        beton_git::GitError::NotInstalled => {
+            Problem::new(ProblemCode::Unavailable).detail("git ist nicht installiert")
+        }
+        other => Problem::internal(other),
+    }
+}
+
+fn worktree_problem(e: beton_git::worktree::WorktreeError) -> Problem {
+    use beton_git::worktree::WorktreeError as E;
+    match e {
+        E::NotARepo => Problem::new(ProblemCode::NotAGitRepo).detail(
+            "Das Arbeitsverzeichnis ist kein Git-Repository; ein Worktree ist nicht möglich.",
+        ),
+        E::BaseNotFound { base, available } => {
+            Problem::new(ProblemCode::BaseNotFound).detail(format!(
+                "Base `{base}` ist nicht auflösbar. Verfügbare Branches: {}",
+                if available.is_empty() {
+                    "keine".to_owned()
+                } else {
+                    available.join(", ")
+                }
+            ))
+        }
+        E::InvalidBranch(b) => Problem::new(ProblemCode::ValidationFailed)
+            .detail(format!("Branch-Name `{b}` ist ungültig")),
+        E::Exists(_) => Problem::new(ProblemCode::Conflict)
+            .detail("Für diesen Branch existiert bereits ein Worktree-Verzeichnis."),
+        E::Git(g) => git_problem(&g),
+        E::Io(io) => Problem::internal(&io),
+    }
+}
+
+fn remove_problem(e: beton_git::worktree::RemoveError) -> Problem {
+    use beton_git::worktree::RemoveError as E;
+    match e {
+        E::Dirty { files } => Problem::new(ProblemCode::WorktreeDirty).detail(format!(
+            "Der Worktree hat {} uncommittete Änderung(en). Erneut löschen mit \
+             `uncommitted=commit` (WIP-Commit) oder `uncommitted=discard` (verwerfen).",
+            files.len()
+        )),
+        E::Unpushed {
+            branch,
+            base,
+            commits,
+        } => Problem::new(ProblemCode::WorktreeUnpushed).detail(format!(
+            "Branch `{branch}` hat {commits} ungepushte Commit(s), die nicht in `{base}` \
+                 enthalten sind. Erneut löschen mit `branch=keep` (Branch behalten) oder \
+                 `branch=delete` (Branch löschen)."
+        )),
+        E::Git(g) => git_problem(&g),
+    }
 }
 
 pub struct SessionManager<'a> {
@@ -125,7 +239,8 @@ impl<'a> SessionManager<'a> {
                 .is_active(beton_core::feature::FeatureFlag::FakeHarness)
     }
 
-    /// Legt eine Session an und startet ihren Runner (SES-001 AC1).
+    /// Legt eine Session an und startet ihren Runner (SES-001 AC1). Mit Worktree entsteht er
+    /// vor der Session; scheitert er, gibt es keine Session (SES-015 AC3).
     pub async fn create(&self, by: UserId, req: CreateSession) -> Result<SessionRecord, Problem> {
         let harness: beton_harness::HarnessId = req
             .target
@@ -141,13 +256,18 @@ impl<'a> SessionManager<'a> {
             return Err(Problem::new(ProblemCode::ValidationFailed)
                 .detail(format!("Arbeitsverzeichnis {} existiert nicht", req.cwd)));
         }
-        let session = self
+        let id = SessionId::new();
+        let worktree = match &req.worktree {
+            Some(spec) => Some(self.create_worktree(id, &req, spec).await?),
+            None => None,
+        };
+        let created = self
             .state
             .store
             .create_session(
                 self.org(),
                 NewSession {
-                    id: SessionId::new(),
+                    id,
                     owner: by,
                     kind: SessionKind::Main,
                     harness: harness.to_string(),
@@ -161,7 +281,16 @@ impl<'a> SessionManager<'a> {
                     harness_opts: req.harness_opts.clone(),
                 },
             )
-            .await?;
+            .await;
+        let session = match created {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(wt) = worktree {
+                    discard_worktree(wt).await;
+                }
+                return Err(e.into());
+            }
+        };
         if let Some(title) = req.title.filter(|t| !t.trim().is_empty()) {
             self.append(
                 session.id,
@@ -173,11 +302,97 @@ impl<'a> SessionManager<'a> {
             )
             .await?;
         }
+        if let Some(wt) = &worktree {
+            self.log_worktree(session.id, wt).await?;
+        }
         self.launch(&session, None).await?;
         Ok(self.state.store.session(self.org(), session.id).await?)
     }
 
-    async fn append(
+    /// Legt den Worktree einer neuen Session an (SES-015).
+    async fn create_worktree(
+        &self,
+        id: SessionId,
+        req: &CreateSession,
+        spec: &WorktreeSpec,
+    ) -> Result<beton_git::worktree::Created, Problem> {
+        let id_text = id.to_string();
+        let tag = id_text[id_text.len().saturating_sub(4)..].to_owned();
+        let cwd = PathBuf::from(&req.cwd);
+        let root = self.cfg().worktrees_root.clone();
+        let (title, branch, base, fetch) = (
+            req.title.clone(),
+            spec.branch.clone(),
+            spec.base.clone(),
+            spec.fetch,
+        );
+        tokio::task::spawn_blocking(move || {
+            beton_git::worktree::create(&beton_git::worktree::CreateOptions {
+                cwd: &cwd,
+                root: &root,
+                base: base.as_deref(),
+                branch: branch.as_deref(),
+                title: title.as_deref(),
+                tag: &tag,
+                fetch,
+                fetch_timeout: beton_git::worktree::FETCH_TIMEOUT,
+            })
+        })
+        .await
+        .map_err(|e| Problem::internal(&e))?
+        .map_err(worktree_problem)
+    }
+
+    /// `git.worktree_created` (SES-015 AC4) und bei nicht erreichbarem Remote ein Hinweis
+    /// (SES-015 AC5). Der Grund des Fetch-Fehlers bleibt draußen: er kann die Remote-URL samt
+    /// Zugangsdaten enthalten.
+    async fn log_worktree(
+        &self,
+        session: SessionId,
+        wt: &beton_git::worktree::Created,
+    ) -> Result<(), Problem> {
+        let server = Actor::System {
+            component: beton_core::event::SystemComponent::Server,
+        };
+        self.append(
+            session,
+            server.clone(),
+            EventPayload::GitWorktreeCreated(beton_core::event::GitWorktreeCreated {
+                path: wt.path.display().to_string(),
+                branch: wt.branch.clone(),
+                base: wt.base.clone(),
+                base_sha: wt.base_sha.clone(),
+            }),
+        )
+        .await?;
+        if let beton_git::worktree::FetchOutcome::Failed { remote, branch, .. } = &wt.fetch {
+            self.append(
+                session,
+                server,
+                EventPayload::Notice(beton_core::event::Notice {
+                    level: beton_core::event::NoticeLevel::Warn,
+                    text: format!(
+                        "`git fetch {remote} {branch}` nicht ausgeführt: Remote nicht erreichbar. \
+                         Der Worktree basiert auf dem lokalen Stand von `{}`.",
+                        wt.base
+                    ),
+                }),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Workspace einer Session: ihr Worktree, sonst das Arbeitsverzeichnis aus
+    /// `session.created`.
+    pub async fn workspace_root(&self, session: &SessionRecord) -> Result<PathBuf, Problem> {
+        if let Some(wt) = &session.worktree {
+            return Ok(PathBuf::from(&wt.path));
+        }
+        Ok(PathBuf::from(self.created(session.id).await?.cwd))
+    }
+
+    pub(crate) async fn append(
         &self,
         session: SessionId,
         actor: Actor,
@@ -199,7 +414,7 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Startoptionen aus `session.created`.
-    async fn created(
+    pub(crate) async fn created(
         &self,
         session: SessionId,
     ) -> Result<beton_core::event::SessionCreated, Problem> {
@@ -240,9 +455,9 @@ impl<'a> SessionManager<'a> {
             Problem::new(ProblemCode::Unavailable).detail("Kein Tunnel-Socket konfiguriert")
         })?;
         let created = self.created(session.id).await?;
-        let project =
-            beton_harness::registry::HarnessesConfig::load_project(Path::new(&created.cwd))
-                .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
+        let workspace = self.workspace_root(session).await?;
+        let project = beton_harness::registry::HarnessesConfig::load_project(&workspace)
+            .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
         let token = self
             .state
             .runtime
@@ -253,7 +468,7 @@ impl<'a> SessionManager<'a> {
             runner_id: RunnerId::new(),
             session_id: session.id,
             harness: session.harness.clone(),
-            workspace: PathBuf::from(&created.cwd),
+            workspace,
             env_allowlist: Vec::new(),
         };
         let provisioned = cfg
@@ -275,6 +490,7 @@ impl<'a> SessionManager<'a> {
                     model: created.model.clone(),
                     dev: self.fake_allowed(),
                     resume,
+                    agent_ref: created.agent_ref.clone(),
                     harnesses: beton_harness::registry::HarnessLayers {
                         user: cfg.harnesses_user.clone(),
                         project,
@@ -283,6 +499,7 @@ impl<'a> SessionManager<'a> {
                             Path::new(&created.cwd).join(".beton").join("config.yaml"),
                         ),
                     },
+                    snapshots: Some(cfg.snapshots_dir(session.id)),
                 },
             )
             .await
@@ -367,6 +584,18 @@ impl<'a> SessionManager<'a> {
         by: PrincipalId,
         mode: InputMode,
     ) -> Result<Value, Problem> {
+        self.input_as(session, text, by, mode, user_actor(by)).await
+    }
+
+    /// Wie [`Self::input`], mit eigenem Akteur der Nachricht (z. B. der Parent-Agent).
+    async fn input_as(
+        &self,
+        session: SessionId,
+        text: String,
+        by: PrincipalId,
+        mode: InputMode,
+        actor: Actor,
+    ) -> Result<Value, Problem> {
         if text.trim().is_empty() {
             return Err(Problem::new(ProblemCode::ValidationFailed).detail("text ist leer"));
         }
@@ -399,7 +628,9 @@ impl<'a> SessionManager<'a> {
             return Ok(Accepted::Queued { input_id }.to_json());
         }
         self.ensure_runner(session).await?;
-        Ok(q.start_turn(InputId::new(), text, by).await?.to_json())
+        Ok(q.start_turn(InputId::new(), text, by, actor)
+            .await?
+            .to_json())
     }
 
     /// Einen eingereihten Input in den laufenden Turn einspeisen („Als Steer senden“).
@@ -518,6 +749,138 @@ impl<'a> SessionManager<'a> {
             .map(|_| ())
     }
 
+    /// `session_spawn` (AGT-007): Child-Session für einen erlaubten Sub-Agent starten, den
+    /// Auftrag zustellen, auf das Turn-Ende warten und die Abschlussnachricht liefern.
+    ///
+    /// Arbeitsverzeichnis, Owner und Projekt kommen aus der Parent-Session, nicht aus den
+    /// Argumenten; welcher Agent mit welchem Harness laufen darf, hat der Runner anhand von
+    /// `spawn.agents` entschieden. Grenzen wie `max_depth`, `max_concurrent` und eigene
+    /// Worktrees folgen mit AGT-009.
+    pub async fn spawn_child(&self, parent: SessionId, args: &Value) -> Result<Value, Problem> {
+        let invalid = |d: &str| Problem::new(ProblemCode::ValidationFailed).detail(d.to_owned());
+        let record = self.state.store.session(self.org(), parent).await?;
+        let created = self.created(parent).await?;
+        let harness: beton_harness::HarnessId = args["harness"]
+            .as_str()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|e| invalid(&format!("{e}")))?;
+        if harness.as_str() == beton_harness::HarnessId::FAKE && !self.cfg().dev {
+            return Err(invalid(
+                "Der Fake-Harness gibt es nur im Entwicklermodus (--dev).",
+            ));
+        }
+        let prompt = args["prompt"]
+            .as_str()
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| invalid("`prompt` fehlt"))?
+            .to_owned();
+        let agent = args["agent"].as_str().unwrap_or("sub-agent").to_owned();
+        let child = self
+            .state
+            .store
+            .create_session(
+                self.org(),
+                NewSession {
+                    id: SessionId::new(),
+                    owner: record.owner,
+                    kind: SessionKind::Subagent,
+                    harness: harness.to_string(),
+                    cwd: created.cwd.clone(),
+                    model: args["model"].as_str().map(str::to_owned),
+                    agent_ref: None,
+                    project_id: record.project_id,
+                    parent_id: Some(parent),
+                    trigger: SessionTrigger::Spawn,
+                    home_node: self.state.local.node,
+                    harness_opts: Value::Null,
+                },
+            )
+            .await?;
+        let parent_actor = Actor::Agent {
+            id: None,
+            harness: record.harness.clone(),
+            agent_ref: created.agent_ref.clone(),
+        };
+        self.append(
+            child.id,
+            parent_actor.clone(),
+            EventPayload::SessionTitleChanged(SessionTitleChanged {
+                title: agent,
+                source: TitleSource::Generated,
+            }),
+        )
+        .await?;
+        self.launch(&child, None).await?;
+        self.wait_connected(child.id).await?;
+        let from = self
+            .state
+            .store
+            .session(self.org(), child.id)
+            .await?
+            .head_seq;
+        self.input_as(
+            child.id,
+            prompt,
+            PrincipalId::User(record.owner),
+            InputMode::Queue,
+            parent_actor,
+        )
+        .await?;
+        let (status, result) = self.wait_turn_end(child.id, from).await?;
+        Ok(json!({"session_id": child.id, "status": status, "result": result}))
+    }
+
+    /// Wartet auf das Ende des nächsten Turns ab `after`; liefert Status und letzte
+    /// Assistant-Nachricht.
+    async fn wait_turn_end(
+        &self,
+        session: SessionId,
+        after: u64,
+    ) -> Result<(&'static str, String), Problem> {
+        let deadline = Instant::now() + SPAWN_TIMEOUT;
+        let mut seq = after;
+        let mut last = String::new();
+        loop {
+            let page = self
+                .state
+                .store
+                .events(self.org(), session, seq, 500)
+                .await?;
+            for e in &page {
+                seq = e.seq;
+                match e.payload() {
+                    Some(EventPayload::MessageCompleted(m))
+                        if m.role == beton_core::event::MessageRole::Assistant =>
+                    {
+                        last = m
+                            .content
+                            .iter()
+                            .filter_map(|c| c["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("");
+                    }
+                    Some(EventPayload::TurnCompleted(_)) => return Ok(("completed", last)),
+                    Some(EventPayload::TurnFailed(_)) => return Ok(("failed", last)),
+                    Some(EventPayload::TurnInterrupted(_)) => return Ok(("interrupted", last)),
+                    Some(EventPayload::SessionStatus(st))
+                        if st.status == beton_core::event::SessionStatus::Failed =>
+                    {
+                        return Ok(("failed", last));
+                    }
+                    _ => {}
+                }
+            }
+            if page.is_empty() {
+                if Instant::now() > deadline {
+                    return Err(Problem::new(ProblemCode::Unavailable)
+                        .detail("Child-Session hat nicht rechtzeitig geantwortet"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
     /// Archivieren: Runner beenden, Session ausblenden (SES-001 AC2).
     pub async fn archive(&self, session: SessionId, by: PrincipalId) -> Result<(), Problem> {
         self.append(
@@ -584,11 +947,40 @@ impl<'a> SessionManager<'a> {
         }
     }
 
-    /// Löschen nur durch den Owner (SES-001 AC3, DATA-008).
-    pub async fn delete(&self, session: SessionId, by: PrincipalId) -> Result<(), Problem> {
+    /// Löschen nur durch den Owner (SES-001 AC3, DATA-008). Ein Worktree wird vorher
+    /// kontrolliert entfernt (SES-016); verlangt das eine Rückfrage, bleibt alles unverändert.
+    pub async fn delete(
+        &self,
+        session: SessionId,
+        by: PrincipalId,
+        opts: DeleteOptions,
+    ) -> Result<(), Problem> {
         let record = self.state.store.session(self.org(), session).await?;
         if PrincipalId::User(record.owner) != by {
             return Err(Problem::new(ProblemCode::Forbidden).detail("Nur der Owner darf löschen"));
+        }
+        if let Some(wt) = &record.worktree {
+            let cwd = self.created(session).await?.cwd;
+            let wt_ref = beton_git::worktree::WorktreeRef {
+                repo: PathBuf::new(),
+                path: PathBuf::from(&wt.path),
+                branch: wt.branch.clone(),
+                base: wt.base.clone(),
+                base_sha: wt.base_sha.clone(),
+            };
+            let remove = opts.worktree;
+            tokio::task::spawn_blocking(move || {
+                let repo = beton_git::worktree::main_checkout(&wt_ref.path)
+                    .or_else(|_| beton_git::worktree::main_checkout(Path::new(&cwd)))
+                    .map_err(worktree_problem)?;
+                beton_git::worktree::remove(
+                    &beton_git::worktree::WorktreeRef { repo, ..wt_ref },
+                    remove,
+                )
+                .map_err(remove_problem)
+            })
+            .await
+            .map_err(|e| Problem::internal(&e))??;
         }
         self.state.runtime.runners.revoke_tokens(session);
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
@@ -603,8 +995,34 @@ impl<'a> SessionManager<'a> {
             .delete_session(self.org(), session, by, DeleteAuthority::Owner)
             .await?;
         self.state.runtime.queues.forget(session);
+        let snapshots = self.cfg().snapshots_dir(session);
+        if snapshots.is_dir()
+            && let Err(e) = std::fs::remove_dir_all(&snapshots)
+        {
+            tracing::warn!(session_id = %session, "Turn-Snapshots nicht gelöscht: {e}");
+        }
         Ok(())
     }
+}
+
+/// Entfernt einen frisch angelegten Worktree wieder (Session konnte nicht angelegt werden).
+async fn discard_worktree(wt: beton_git::worktree::Created) {
+    let _ = tokio::task::spawn_blocking(move || {
+        beton_git::worktree::remove(
+            &beton_git::worktree::WorktreeRef {
+                repo: wt.repo,
+                path: wt.path,
+                branch: wt.branch,
+                base: wt.base,
+                base_sha: wt.base_sha,
+            },
+            beton_git::worktree::RemoveOptions {
+                uncommitted: Some(beton_git::worktree::Uncommitted::Discard),
+                branch: Some(beton_git::worktree::BranchAction::Delete),
+            },
+        )
+    })
+    .await;
 }
 
 /// Beim Herunterfahren alle Runner dieses Knotens beenden.
@@ -623,4 +1041,72 @@ pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerR
             )
             .await;
     }
+}
+
+/// Wartung der Session-Worktrees (SES-016): beim Start und danach täglich `git worktree prune`
+/// in allen Repositories mit Session-Worktrees und Meldung verwaister Worktree-Verzeichnisse.
+pub async fn worktree_janitor(
+    store: beton_store::Store,
+    org: OrgId,
+    cfg: SessionsConfig,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    const EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+    loop {
+        if let Err(e) = tidy_worktrees(&store, org, &cfg).await {
+            tracing::warn!("Worktree-Wartung: {e}");
+        }
+        tokio::select! {
+            () = tokio::time::sleep(EVERY) => {}
+            _ = stop.wait_for(|s| *s) => return,
+        }
+    }
+}
+
+async fn tidy_worktrees(
+    store: &beton_store::Store,
+    org: OrgId,
+    cfg: &SessionsConfig,
+) -> Result<(), beton_store::Error> {
+    let mut known = Vec::new();
+    let mut repos = Vec::new();
+    for s in store.sessions(org, true).await? {
+        let Some(wt) = &s.worktree else { continue };
+        known.push(PathBuf::from(&wt.path));
+        let cwd = match store
+            .events(org, s.id, 0, 1)
+            .await?
+            .first()
+            .and_then(|e| e.payload())
+        {
+            Some(EventPayload::SessionCreated(c)) => Some(PathBuf::from(&c.cwd)),
+            _ => None,
+        };
+        repos.push((PathBuf::from(&wt.path), cwd));
+    }
+    let root = cfg.worktrees_root.clone();
+    let orphans = tokio::task::spawn_blocking(move || {
+        let mut done = std::collections::HashSet::new();
+        for (path, cwd) in repos {
+            let repo = beton_git::worktree::main_checkout(&path)
+                .ok()
+                .or_else(|| cwd.and_then(|c| beton_git::worktree::main_checkout(&c).ok()));
+            if let Some(repo) = repo
+                && done.insert(repo.clone())
+                && let Err(e) = beton_git::worktree::prune(&repo)
+            {
+                tracing::debug!("git worktree prune: {e}");
+            }
+        }
+        beton_git::worktree::orphans(&root, &known).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
+    if !orphans.is_empty() {
+        tracing::warn!(
+            count = orphans.len(),
+            "verwaiste Worktree-Verzeichnisse ohne Session; `beton doctor` listet sie"
+        );
+    }
+    Ok(())
 }

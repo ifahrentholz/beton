@@ -104,6 +104,40 @@ pub struct SessionSpec {
     pub resume: Option<String>,
     /// Nur Fake-Harness: Szenario-Datei (HAR-026).
     pub scenario: Option<PathBuf>,
+    /// MCP-Server und Skills, die der Harness bekommt (HAR-009, AGT-008).
+    pub mcp: McpInjection,
+}
+
+/// Ein MCP-Server, wie ihn der Harness starten soll (HAR-009). Immer ein stdio-Relay
+/// (`beton mcp serve|proxy`): Definitionen, Env-Werte, Header und das Relay-Token bleiben
+/// beim Runner und erscheinen nie in der Konfiguration des Harness.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpLaunch {
+    /// Name des Servers, z. B. `beton` oder `github` (`[a-z0-9_-]`).
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
+
+/// MCP-Konfiguration einer Session (HAR-009) und das Session-Skill-Verzeichnis (AGT-008).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct McpInjection {
+    pub servers: Vec<McpLaunch>,
+    /// Plugin-Verzeichnis mit `.claude-plugin/plugin.json` und `skills/<name>/SKILL.md` für
+    /// Harnesses mit nativen Skills (Claude: `--plugin-dir`, Codex: `skills/extraRoots/set`
+    /// mit `<dir>/skills`).
+    pub skills_dir: Option<PathBuf>,
+}
+
+impl McpInjection {
+    pub fn is_empty(&self) -> bool {
+        self.servers.is_empty() && self.skills_dir.is_none()
+    }
+
+    /// Namen der Server in Übergabe-Reihenfolge.
+    pub fn names(&self) -> Vec<String> {
+        self.servers.iter().map(|s| s.name.clone()).collect()
+    }
 }
 
 /// Eingabe eines Nutzers für einen Turn.

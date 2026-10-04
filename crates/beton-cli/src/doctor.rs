@@ -2,7 +2,7 @@
 //!
 //! M0-Prüfungen: Version, Daemon, Konfiguration, Rechte von `~/.beton` und Token-Datei,
 //! SQLite-Integrität, Harness-CLIs (Pfad, Version, Bereich, Quelle) und Login-Status über
-//! das Statuskommando der CLI. `doctor` schreibt nichts und kontaktiert nur den lokalen
+//! das Statuskommando der CLI. Ab M1: verwaiste Worktrees ohne Session (SES-016 AC3). `doctor` schreibt nichts und kontaktiert nur den lokalen
 //! Daemon über Loopback (ADR-0033). Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler).
 
 use std::path::Path;
@@ -168,6 +168,93 @@ async fn database(home: &Path) -> Check {
             Some("Rechte des Datenverzeichnisses prüfen"),
         ),
     }
+}
+
+/// Größe für Menschen, z. B. `12,3 MiB`.
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit]).replace('.', ",")
+    }
+}
+
+/// Worktree-Verzeichnisse unter `<home>/worktrees` ohne Session (SES-016 AC3).
+async fn worktrees(home: &Path) -> Check {
+    let root = home.join("worktrees");
+    if !root.is_dir() {
+        return check(
+            "worktrees",
+            CheckStatus::Ok,
+            "keine Session-Worktrees",
+            None,
+        );
+    }
+    let db = home.join("beton.db");
+    let known: Vec<std::path::PathBuf> = if db.exists() {
+        match beton_store::worktree_paths(&db).await {
+            Ok(paths) => paths.into_iter().map(Into::into).collect(),
+            Err(e) => {
+                return check(
+                    "worktrees",
+                    CheckStatus::Warn,
+                    format!("verwaiste Worktrees nicht prüfbar ({e})"),
+                    Some("Daemon einmal starten (`beton serve`), damit die Datenbank aktuell ist"),
+                );
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    let orphans = match beton_git::worktree::orphans(&root, &known) {
+        Ok(o) => o,
+        Err(e) => {
+            return check(
+                "worktrees",
+                CheckStatus::Warn,
+                format!("{}: nicht lesbar ({e})", root.display()),
+                None,
+            );
+        }
+    };
+    if orphans.is_empty() {
+        return check(
+            "worktrees",
+            CheckStatus::Ok,
+            format!("{} Session-Worktree(s), keine verwaisten", known.len()),
+            None,
+        );
+    }
+    let list: Vec<String> = orphans
+        .iter()
+        .map(|o| format!("{} ({})", o.path.display(), human_size(o.size)))
+        .collect();
+    let mut c = check(
+        "worktrees",
+        CheckStatus::Warn,
+        format!(
+            "{} verwaiste(r) Worktree(s) ohne Session: {}",
+            orphans.len(),
+            list.join(", ")
+        ),
+        Some(
+            "Inhalt prüfen, dann im Repository `git worktree remove <pfad>` und `git worktree prune`",
+        ),
+    );
+    c.details = Some(json!({
+        "orphans": orphans
+            .iter()
+            .map(|o| json!({ "path": o.path.display().to_string(), "size_bytes": o.size }))
+            .collect::<Vec<_>>(),
+    }));
+    c
 }
 
 async fn daemon(home: &Path) -> Check {
@@ -423,6 +510,7 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
     ));
     checks.push(permissions(&ctx.home));
     checks.push(database(&ctx.home).await);
+    checks.push(worktrees(&ctx.home).await);
 
     let harness_layers = layers
         .as_ref()
@@ -495,6 +583,13 @@ mod tests {
         assert_eq!(c.status, CheckStatus::Ok);
         assert_eq!(c.message, "fake_harness aktiv");
         assert_eq!(c.details.unwrap()["active"][0]["source"], "config");
+    }
+
+    #[test]
+    fn human_sizes() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(1536), "1,5 KiB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3,0 MiB");
     }
 
     #[cfg(unix)]

@@ -5,7 +5,9 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+pub mod mcp;
 pub mod state;
+pub mod workspace;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -13,8 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use beton_core::event::{Actor, Event, EventPayload, SessionStatus, SessionStatusChanged};
-use beton_core::id::{RunnerId, SessionId};
+use beton_core::event::{
+    Actor, Event, EventPayload, FsChange, FsChanged, SessionStatus, SessionStatusChanged,
+};
+use beton_core::id::{RunnerId, SessionId, TurnId};
 use beton_harness::process::RealLauncher;
 use beton_harness::registry::{HarnessLayers, Registry, RegistryOptions};
 use beton_harness::{
@@ -25,7 +29,7 @@ use beton_proto::tunnel::{PROTOCOL, PeerKind, RseqEvent, SUBPROTOCOL, TunnelDown
 use beton_proto::ws::Backoff;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -49,6 +53,10 @@ pub mod env {
     pub const RESUME: &str = "BETON_RESUME";
     /// `harnesses:` aus User- und Projekt-Konfiguration als JSON (HAR-003, HAR-015).
     pub const HARNESSES: &str = "BETON_RUNNER_HARNESSES";
+    /// Agent der Session (`agent_ref`); bestimmt Tools, System-Tools und Skills (HAR-009).
+    pub const AGENT_REF: &str = "BETON_AGENT_REF";
+    /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
+    pub const SNAPSHOTS: &str = "BETON_SNAPSHOTS";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -68,6 +76,10 @@ pub struct RunnerBoot {
     pub dev: bool,
     pub resume: Option<String>,
     pub harnesses: HarnessLayers,
+    /// Agent-Ref der Session (AGT-003), z. B. ein Pfad oder `builtin:<name>`.
+    pub agent_ref: Option<String>,
+    /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
+    pub snapshots: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +131,10 @@ impl RunnerBoot {
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::HARNESSES)))?,
                 Err(_) => HarnessLayers::default(),
             },
+            agent_ref: std::env::var(env::AGENT_REF).ok().filter(|r| !r.is_empty()),
+            snapshots: std::env::var_os(env::SNAPSHOTS)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
         })
     }
 
@@ -414,13 +430,43 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         Some(adapter) => adapter.probe(&ctx.env).await,
         None => beton_harness::ProbeReport::default(),
     };
-    let capabilities = registry
+    let caps = registry
         .get(&boot.harness)
-        .map(|a| {
-            serde_json::to_value(a.capabilities(beton_harness::Mode::Native, &probe))
-                .unwrap_or(Value::Null)
-        })
+        .map(|a| a.capabilities(beton_harness::Mode::Native, &probe));
+    let capabilities = caps
+        .as_ref()
+        .and_then(|c| serde_json::to_value(c).ok())
         .unwrap_or(Value::Null);
+    // MCP-Server, System-Tools und Skills der Session (HAR-009, AGT-006 bis AGT-008).
+    let run_dir = boot
+        .socket
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let setup = match caps.as_ref() {
+        Some(caps) => {
+            mcp::prepare(
+                boot.session_id,
+                &boot.harness,
+                caps,
+                &boot.workdir,
+                boot.agent_ref.as_deref(),
+                &boot.harnesses,
+                &mcp::Paths::from_process(run_dir),
+            )
+            .await
+        }
+        None => Ok(mcp::McpSetup::default()),
+    };
+    let mut setup = match setup {
+        Ok(s) => s,
+        Err(e) => {
+            // Fail closed: ohne ladbaren Agent startet die Session nicht.
+            let e = beton_harness::HarnessError::StartRefused(format!("Agent: {e}"));
+            report_start_failure(&boot, &e).await;
+            return Err(e.into());
+        }
+    };
     let session = registry
         .start(
             &boot.harness,
@@ -429,6 +475,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 model: boot.model.clone(),
                 scenario: boot.scenario.clone(),
                 resume: boot.resume.clone(),
+                mcp: setup.injection.clone(),
                 ..SessionSpec::default()
             },
             ctx,
@@ -484,6 +531,40 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut harness_rx = session
         .events()
         .ok_or(RunnerError::Boot("Event-Strom fehlt".into()))?;
+    // Hinweise und nicht injizierbare MCP-Server direkt nach dem Start.
+    let mut reported_failures: std::collections::HashSet<String> = Default::default();
+    for payload in std::mem::take(&mut setup.initial) {
+        if let EventPayload::McpServerFailed(f) = &payload {
+            reported_failures.insert(f.name.clone());
+        }
+        pending_status.push(system_event(&boot, payload));
+    }
+    let mut hub_events = setup.events.take();
+    let mut system_calls = setup.calls.take();
+    let mut pending_calls: HashMap<String, oneshot::Sender<Result<Value, Value>>> = HashMap::new();
+    let mut next_call: u64 = 0;
+
+    // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018).
+    let (files, files_notice) = open_tracker(&boot).await;
+    if let Some(text) = files_notice {
+        pending_status.push(Event::new(
+            boot.session_id,
+            0,
+            Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            EventPayload::Notice(beton_core::event::Notice {
+                level: beton_core::event::NoticeLevel::Warn,
+                text,
+            }),
+        ));
+    }
+    let (turn_tx, turn_rx) = watch::channel::<Option<TurnId>>(None);
+    let (fs_tx, mut fs_rx) = mpsc::channel::<(TurnId, Vec<FsChange>)>(64);
+    if let Some(t) = &files {
+        tokio::spawn(watch_workspace(t.clone(), turn_rx, fs_tx.clone()));
+    }
+    let mut pending_before: Option<String> = None;
 
     let mut unacked = Unacked::default();
     let mut tracker = StatusTracker::default();
@@ -566,6 +647,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     let mut batch = Vec::with_capacity(incoming.len() + 4);
                     let mut exited = None;
                     for ev in incoming {
+                        // `mcp.server_failed` je Server nur einmal (Hub und Harness melden beide).
+                        if let EventPayload::McpServerFailed(f) = &ev.payload
+                            && !reported_failures.insert(f.name.clone())
+                        {
+                            continue;
+                        }
                         if let EventPayload::HarnessExited(x) = &ev.payload {
                             exited = Some(x.clone());
                         }
@@ -577,6 +664,31 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             _ => None,
                         };
                         let done = matches!(ev.payload, EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_));
+                        if let Some(t) = &files {
+                            if let EventPayload::TurnStarted(ts) = &ev.payload {
+                                let tree = match pending_before.take() {
+                                    Some(b) => Some(b),
+                                    None => workspace::poll(t).await.map(|(_, tree)| tree),
+                                };
+                                if let Some(tree) = tree {
+                                    workspace::mark(t, ts.turn_id.to_string(), "before", tree).await;
+                                }
+                                let _ = turn_tx.send(Some(ts.turn_id));
+                            }
+                            if done {
+                                // Letzte Änderungen des Turns vor seinem Ende melden.
+                                let turn = (*turn_tx.borrow()).or(ev.turn_id);
+                                let _ = turn_tx.send(None);
+                                if let Some(turn) = turn
+                                    && let Some((changes, tree)) = workspace::poll(t).await
+                                {
+                                    if !changes.is_empty() {
+                                        batch.push(fs_changed(&boot, &actor, turn, changes));
+                                    }
+                                    workspace::mark(t, turn.to_string(), "after", tree).await;
+                                }
+                            }
+                        }
                         batch.push(to_event(&boot, &actor, ev));
                         if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; }
                         if done { status(&mut lifecycle, RunnerState::Idle, None, &mut batch); turn_running = false; }
@@ -601,6 +713,25 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         return Ok(Exit::HarnessExited { code: x.code });
                     }
                 }
+                ev = recv_opt(&mut hub_events) => {
+                    let Some(payload) = ev else { hub_events = None; continue };
+                    if let EventPayload::McpServerFailed(f) = &payload
+                        && !reported_failures.insert(f.name.clone())
+                    {
+                        continue;
+                    }
+                    if !push(&mut ws, &boot, &mut unacked, vec![system_event(&boot, payload)]).await {
+                        break None;
+                    }
+                }
+                call = recv_opt(&mut system_calls) => {
+                    let Some(call) = call else { system_calls = None; continue };
+                    next_call += 1;
+                    let call_id = format!("sys_{next_call}");
+                    let up = TunnelUp::SystemCall { call_id: call_id.clone(), tool: call.tool, args: call.args };
+                    pending_calls.insert(call_id, call.reply);
+                    if !send(&mut ws, &up).await { break None; }
+                }
                 msg = ws.next() => {
                     let Some(Ok(msg)) = msg else { break None };
                     let Message::Text(text) = msg else { continue };
@@ -609,6 +740,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
                         TunnelDown::CmdDeliver { cmd_id, name, args } => {
+                            // Stand vor dem Turn festhalten, bevor der Harness die Eingabe sieht.
+                            if name == "input.submit"
+                                && turn_tx.borrow().is_none()
+                                && let Some(t) = &files
+                            {
+                                pending_before = workspace::poll(t).await.map(|(_, tree)| tree);
+                            }
                             let reply = deliver(&mut *session, &gate, &name, args, turn_running).await;
                             let msg = match reply {
                                 Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
@@ -632,7 +770,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             tracing::warn!(?problem, "Tunnel-Problem");
                         }
+                        TunnelDown::SystemResult { call_id, result, problem } => {
+                            if let Some(reply) = pending_calls.remove(&call_id) {
+                                let _ = reply.send(match (result, problem) {
+                                    (Some(r), None) => Ok(r),
+                                    (_, p) => Err(p.unwrap_or_else(|| json!({"code": "internal"}))),
+                                });
+                            }
+                        }
                         TunnelDown::Welcome { .. } => {}
+                    }
+                }
+                Some((turn, changes)) = fs_rx.recv() => {
+                    if !push(&mut ws, &boot, &mut unacked, vec![fs_changed(&boot, &actor, turn, changes)]).await {
+                        break None;
                     }
                 }
                 _ = parent_check.tick() => {
@@ -642,6 +793,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 }
             }
         };
+        // Offene System-Tool-Aufrufe scheitern mit der Verbindung (fail closed).
+        for (_, reply) in pending_calls.drain() {
+            let _ = reply.send(Err(
+                json!({"code": "unavailable", "detail": "Verbindung zum Server getrennt"}),
+            ));
+        }
         if let Some(exit) = outcome {
             return finish(session, exit).await;
         }
@@ -654,6 +811,97 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         tokio::time::sleep(backoff.next_delay()).await;
     }
+}
+
+/// Wartet auf den nächsten Wert; ohne Kanal nie.
+async fn recv_opt<T>(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn system_event(boot: &RunnerBoot, payload: EventPayload) -> Event {
+    Event::new(
+        boot.session_id,
+        0,
+        Actor::System {
+            component: beton_core::event::SystemComponent::Runner,
+        },
+        payload,
+    )
+}
+
+/// Öffnet das Schatten-Repository der Session; ohne Konfiguration oder ohne `git` keine
+/// Beobachtung (der Turn läuft trotzdem). Bei zu großem Workspace ein Hinweis für die Session.
+async fn open_tracker(boot: &RunnerBoot) -> (Option<workspace::Shared>, Option<String>) {
+    let Some(dir) = boot.snapshots.clone() else {
+        return (None, None);
+    };
+    let work = boot.workdir.clone();
+    match tokio::task::spawn_blocking(move || workspace::Tracker::open(&dir, &work)).await {
+        Ok(Ok(t)) => (Some(Arc::new(Mutex::new(t))), None),
+        Ok(Err(workspace::OpenError::TooLarge(n))) => (
+            None,
+            Some(format!(
+                "Der Workspace hat mehr als {n} Dateien (ohne ignorierte). Änderungen des Agents \
+                 erscheinen daher nicht als `fs.changed`, und die Turn-Sicht der Änderungen fehlt."
+            )),
+        ),
+        Ok(Err(e)) => {
+            tracing::warn!("Workspace-Beobachtung nicht verfügbar: {e}");
+            (None, None)
+        }
+        Err(e) => {
+            tracing::warn!("Workspace-Beobachtung nicht verfügbar: {e}");
+            (None, None)
+        }
+    }
+}
+
+/// Vergleicht den Workspace während eines Turns laufend mit dem letzten Snapshot und meldet
+/// Änderungen (SES-017 AC3: ≤ 1 s). Der Abstand wächst mit der Dauer eines Snapshots, damit
+/// große Repositories nicht dauerhaft Last erzeugen.
+async fn watch_workspace(
+    tracker: workspace::Shared,
+    mut turn: watch::Receiver<Option<TurnId>>,
+    out: mpsc::Sender<(TurnId, Vec<FsChange>)>,
+) {
+    // Basis-Snapshot vorab: füllt den Index, damit spätere Snapshots schnell sind.
+    let _ = workspace::poll(&tracker).await;
+    loop {
+        let current = *turn.borrow_and_update();
+        let Some(t) = current else {
+            if turn.changed().await.is_err() {
+                return;
+            }
+            continue;
+        };
+        let started = std::time::Instant::now();
+        if let Some((changes, _)) = workspace::poll(&tracker).await
+            && !changes.is_empty()
+            && out.send((t, changes)).await.is_err()
+        {
+            return;
+        }
+        let pause = workspace::POLL_MIN.max(started.elapsed() * 2);
+        tokio::time::sleep(pause.min(Duration::from_secs(5))).await;
+    }
+}
+
+/// `fs.changed` des Agents für einen Turn.
+fn fs_changed(boot: &RunnerBoot, actor: &Actor, turn: TurnId, changes: Vec<FsChange>) -> Event {
+    let mut e = Event::new(
+        boot.session_id,
+        0,
+        actor.clone(),
+        EventPayload::FsChanged(FsChanged {
+            changes,
+            source: workspace::FS_SOURCE_WATCHER.into(),
+        }),
+    );
+    e.turn_id = Some(turn);
+    e
 }
 
 /// Meldet einen gescheiterten Harness-Start über den Tunnel und setzt die Session auf `failed`.
@@ -721,36 +969,36 @@ fn to_event(boot: &RunnerBoot, actor: &Actor, ev: NormalizedEvent) -> Event {
     e
 }
 
-/// Sendet dauerhafte Events (mit `rseq`) bzw. transiente direkt.
+/// Sendet dauerhafte Events (mit `rseq`) bzw. transiente direkt – in der Reihenfolge des
+/// Batches: aufeinanderfolgende Events gleicher Art gehen gemeinsam, ein `turn.started` kommt
+/// also vor den Deltas desselben Turns an.
 async fn push(ws: &mut Ws, boot: &RunnerBoot, unacked: &mut Unacked, events: Vec<Event>) -> bool {
-    let (transient, durable): (Vec<Event>, Vec<Event>) = events
-        .into_iter()
-        .partition(|e| e.payload().is_some_and(EventPayload::is_transient));
-    if !transient.is_empty()
-        && !send(
-            ws,
-            &TunnelUp::TransientPush {
+    let mut runs: Vec<(bool, Vec<Event>)> = Vec::new();
+    for e in events {
+        let transient = e.payload().is_some_and(EventPayload::is_transient);
+        match runs.last_mut() {
+            Some((t, run)) if *t == transient => run.push(e),
+            _ => runs.push((transient, vec![e])),
+        }
+    }
+    for (transient, run) in runs {
+        let msg = if transient {
+            TunnelUp::TransientPush {
                 session_id: boot.session_id,
-                events: transient,
-            },
-        )
-        .await
-    {
-        return false;
+                events: run,
+            }
+        } else {
+            TunnelUp::EventsPush {
+                session_id: boot.session_id,
+                epoch: boot.epoch,
+                batch: run.into_iter().map(|e| unacked.push(e)).collect(),
+            }
+        };
+        if !send(ws, &msg).await {
+            return false;
+        }
     }
-    if durable.is_empty() {
-        return true;
-    }
-    let batch: Vec<RseqEvent> = durable.into_iter().map(|e| unacked.push(e)).collect();
-    send(
-        ws,
-        &TunnelUp::EventsPush {
-            session_id: boot.session_id,
-            epoch: boot.epoch,
-            batch,
-        },
-    )
-    .await
+    true
 }
 
 /// Wartet kurz auf ausstehende Bestätigungen.

@@ -5,6 +5,7 @@
 //! beton-fake-cli --protocol app-server  --scenario <datei.yaml> [app-server …]
 //! beton-fake-cli --protocol acp         --scenario <datei.yaml> [Agent-Flags …]
 //! beton-fake-cli [--protocol …] --version
+//! beton-fake-cli --protocol mcp-server --tools a,b   # Test-MCP-Server (HAR-009)
 //! ```
 //!
 //! Spielt Szenarien im Format des Fake-Harness (HAR-026, `beton_harness::scenario`) über das
@@ -22,6 +23,7 @@
 mod acp;
 mod app_server;
 mod io;
+mod mcp;
 mod stream_json;
 
 use std::path::PathBuf;
@@ -45,6 +47,10 @@ struct Args {
     partial: bool,
     resume: Option<String>,
     faults: Faults,
+    /// `--mcp-config` von Claude Code (JSON-Text oder Datei).
+    mcp_config: Option<String>,
+    /// Tools des Test-MCP-Servers (`--protocol mcp-server`).
+    tools: Vec<String>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -61,6 +67,16 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--version" | "-v" | "-V" => out.version = true,
             "--include-partial-messages" => out.partial = true,
             "--resume" => out.resume = args.next(),
+            "--mcp-config" => out.mcp_config = args.next(),
+            "--tools" => {
+                out.tools = args
+                    .next()
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+            }
             "--crash-after" => out.faults.crash_after = Some(number(args.next(), &arg)?),
             "--hang-after" => out.faults.hang_after = Some(number(args.next(), &arg)?),
             "--malformed-line" => out.faults.malformed_line = Some(number(args.next(), &arg)?),
@@ -92,6 +108,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.protocol.as_deref() == Some("mcp-server") {
+        return match mcp::serve(&args.tools) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("beton-fake-cli: {e}");
+                ExitCode::from(1)
+            }
+        };
+    }
     let scenario = match &args.scenario {
         Some(path) => match Scenario::load(path) {
             Ok(s) => Some(s),
@@ -132,7 +157,18 @@ fn main() -> ExitCode {
         .and_then(|s| s.version.clone())
         .or_else(|| std::env::var("BETON_FAKE_VERSION").ok());
     if args.version {
-        match args.protocol.as_deref() {
+        // Der Versions-Probe ruft nur `<programm> --version` auf (ohne die konfigurierten
+        // Argumente); ein Link namens `codex` meldet daher die Codex-Version.
+        let invoked_as_codex = std::env::args()
+            .next()
+            .map(std::path::PathBuf::from)
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .is_some_and(|name| name == "codex");
+        let protocol = args
+            .protocol
+            .clone()
+            .or_else(|| invoked_as_codex.then(|| "app-server".to_owned()));
+        match protocol.as_deref() {
             Some("app-server") => println!(
                 "codex-cli {}",
                 configured.as_deref().unwrap_or(CODEX_VERSION)
@@ -166,6 +202,10 @@ fn main() -> ExitCode {
             &scenario,
             args.partial,
             args.resume.clone(),
+            args.mcp_config
+                .as_deref()
+                .map(mcp::from_claude_config)
+                .unwrap_or_default(),
             stdin.lock(),
             stdout.lock(),
         )

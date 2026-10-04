@@ -54,6 +54,8 @@ fn boot() -> RunnerBoot {
         dev: true,
         resume: None,
         harnesses: Default::default(),
+        agent_ref: None,
+        snapshots: None,
     }
 }
 

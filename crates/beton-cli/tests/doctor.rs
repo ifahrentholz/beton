@@ -279,3 +279,80 @@ fn ux_007_ac2_unknown_flag_starts_with_warning_in_log_and_doctor() {
     assert_eq!(c.status, CheckStatus::Warn);
     assert!(c.message.contains("unknown_flag"), "{c:?}");
 }
+
+#[tokio::test]
+async fn ses_016_ac3_doctor_lists_orphaned_worktrees_with_path_and_size() {
+    use beton_core::event::{
+        Actor, Event, EventPayload, GitWorktreeCreated, SessionKind, SessionTrigger,
+    };
+    use beton_core::id::{OrgId, SessionId, UserId};
+    let home = tempfile::tempdir().unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let root = home.path().join("worktrees").join("projekt-1a2b3c4d");
+    let kept = root.join("beton-mit-session-ab12");
+    let orphan = root.join("beton-ohne-session-cd34");
+    for (dir, bytes) in [(&kept, 10), (&orphan, 3000)] {
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/datei.txt"), vec![b'x'; bytes]).unwrap();
+    }
+    // Eine Session kennt `kept`.
+    let store = beton_store::Store::open(home.path(), beton_store::StoreOptions::default())
+        .await
+        .unwrap();
+    let local = store.ensure_local().await.unwrap();
+    let s = store
+        .create_session(
+            OrgId::LOCAL,
+            beton_store::NewSession {
+                id: SessionId::new(),
+                owner: UserId::LOCAL,
+                kind: SessionKind::Main,
+                harness: "fake".into(),
+                cwd: "/projekt".into(),
+                model: None,
+                agent_ref: None,
+                project_id: None,
+                parent_id: None,
+                trigger: SessionTrigger::User,
+                home_node: local.node,
+                harness_opts: Value::Null,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .append(
+            OrgId::LOCAL,
+            s.id,
+            s.head_seq,
+            s.epoch,
+            vec![Event::new(
+                s.id,
+                0,
+                Actor::default(),
+                EventPayload::GitWorktreeCreated(GitWorktreeCreated {
+                    path: kept.display().to_string(),
+                    branch: "beton/mit-session-ab12".into(),
+                    base: "main".into(),
+                    base_sha: "0".repeat(40),
+                }),
+            )],
+        )
+        .await
+        .unwrap();
+    store.close().await;
+
+    let (code, report, _) = doctor(&mut isolated(home.path(), empty.path(), true));
+    assert_eq!(code, Some(1), "Warnung");
+    let c = report.checks.iter().find(|c| c.id == "worktrees").unwrap();
+    assert_eq!(c.status, CheckStatus::Warn);
+    let orphan_path = orphan.canonicalize().unwrap().display().to_string();
+    assert!(c.message.contains(&orphan_path), "{}", c.message);
+    assert!(c.message.contains("2,9 KiB"), "Größe: {}", c.message);
+    assert!(!c.message.contains("mit-session"), "{}", c.message);
+    let details = c.details.as_ref().unwrap();
+    assert_eq!(details["orphans"].as_array().unwrap().len(), 1);
+    assert_eq!(details["orphans"][0]["path"], orphan_path.as_str());
+    assert_eq!(details["orphans"][0]["size_bytes"], 3000);
+    assert!(c.hint.as_deref().unwrap().contains("git worktree remove"));
+}

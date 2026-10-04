@@ -118,6 +118,28 @@ fn apply_ddl(schema: &mut Schema, sql: &str) {
                     .unwrap_or_else(|| panic!("Umbenennen unbekannter Tabelle {from}"));
                 schema.tables.insert((*to).to_owned(), table);
             }
+            [
+                "ALTER",
+                "TABLE",
+                table,
+                "ADD",
+                "COLUMN",
+                name,
+                ty,
+                rest @ ..,
+            ] => {
+                let rest = rest.join(" ");
+                schema
+                    .tables
+                    .get_mut(*table)
+                    .unwrap_or_else(|| panic!("Spalte an unbekannter Tabelle {table}"))
+                    .columns
+                    .push(Column {
+                        name: (*name).to_owned(),
+                        ty: (*ty).to_owned(),
+                        not_null: rest.contains("NOT NULL"),
+                    });
+            }
             // Datenübernahme ändert das Schema nicht.
             ["INSERT", "INTO", ..] => {}
             _ => panic!("Nicht unterstützte Anweisung – Leser erweitern:\n{stmt}"),

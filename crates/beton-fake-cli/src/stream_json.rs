@@ -9,6 +9,7 @@ use beton_harness::scenario::{Scenario, Step, Usage};
 use serde_json::{Value, json};
 
 use crate::io::{Lines, Stop, fnv};
+use crate::mcp::{Clients, ServerConfig, result_text};
 
 /// Was ein Turn erlebt hat.
 enum TurnEnd {
@@ -26,6 +27,8 @@ pub struct Sim<R, W> {
     model: String,
     ids: u32,
     initialized: bool,
+    mcp_configs: Vec<ServerConfig>,
+    mcp: Clients,
 }
 
 impl<R: BufRead, W: Write> Sim<R, W> {
@@ -33,6 +36,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         scenario: &Scenario,
         partial: bool,
         resume: Option<String>,
+        mcp_configs: Vec<ServerConfig>,
         input: R,
         out: W,
     ) -> Self {
@@ -47,6 +51,8 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             model: "claude-fake".into(),
             ids: 0,
             initialized: false,
+            mcp_configs,
+            mcp: Clients::default(),
         }
     }
 
@@ -91,10 +97,14 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                     let text = user_text(&msg);
                     if !self.initialized {
                         self.initialized = true;
+                        // Wie die echte CLI: injizierte MCP-Server starten, Tools melden.
+                        self.mcp = Clients::connect(&self.mcp_configs);
+                        let mut tools = vec![json!("Bash"), json!("Read"), json!("Edit")];
+                        tools.extend(self.mcp.claude_tool_names().into_iter().map(Value::String));
                         self.emit(json!({
                             "type": "system", "subtype": "init",
                             "session_id": self.session_id, "model": self.model,
-                            "tools": ["Bash", "Read", "Edit"], "mcp_servers": [],
+                            "tools": tools, "mcp_servers": self.mcp.status(),
                             "permissionMode": "default", "apiKeySource": "none",
                         }))?;
                     }
@@ -233,6 +243,19 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 }
             }
             state.call = Some(id);
+        } else if let Some(call) = &step.mcp_call {
+            let id = self.next_id("toolu");
+            let name = format!("mcp__{}__{}", call.server, call.tool);
+            self.assistant(
+                json!({"type": "tool_use", "id": id, "name": name, "input": call.args}),
+            )?;
+            match self.mcp.call(&call.server, &call.tool, &call.args) {
+                Ok(result) => {
+                    let is_error = result["isError"] == true;
+                    self.tool_result(&id, &json!(result_text(&result)), is_error)?;
+                }
+                Err(e) => self.tool_result(&id, &json!(e), true)?,
+            }
         } else if let Some(on_gate) = &step.on_gate {
             let branch = if state.allowed {
                 &on_gate.allow
@@ -256,6 +279,10 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             return Err(Stop::Crash(u8::try_from(code.clamp(1, 255)).unwrap_or(1)));
         } else if let Some(hint) = &step.auth_expired {
             return Ok(TurnEnd::AuthFailed(format!("authentication_error: {hint}")));
+        } else if let Some(write) = &step.write_file {
+            // Wie ein Edit-Tool: Datei relativ zum Arbeitsverzeichnis (SES-017).
+            let workdir = std::env::current_dir().unwrap_or_default();
+            let _ = write.apply(&workdir);
         } else if step.hang {
             loop {
                 let msg = self.read()?;

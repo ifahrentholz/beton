@@ -115,6 +115,8 @@ impl Fixture {
                     dev: true,
                     resume: None,
                     harnesses: Default::default(),
+                    agent_ref: None,
+                    snapshots: None,
                 },
             )
             .await
@@ -435,6 +437,8 @@ async fn runner_token_only_opens_its_own_session() {
                 dev: true,
                 resume: None,
                 harnesses: Default::default(),
+                agent_ref: None,
+                snapshots: None,
             },
         )
         .await
