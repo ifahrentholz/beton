@@ -138,6 +138,7 @@ pub struct FakeSession {
     tx: Option<mpsc::Sender<NormalizedEvent>>,
     rx: Option<mpsc::Receiver<NormalizedEvent>>,
     next_turn: usize,
+    cursor: crate::scenario::TurnCursor,
     running: Option<JoinHandle<()>>,
     interrupt: Arc<Notify>,
     crashed: Arc<Mutex<bool>>,
@@ -210,6 +211,7 @@ impl FakeSession {
             tx: Some(tx),
             rx: Some(rx),
             next_turn: 0,
+            cursor: crate::scenario::TurnCursor::default(),
             running: None,
             interrupt: Arc::new(Notify::new()),
             crashed: Arc::new(Mutex::new(false)),
@@ -246,11 +248,14 @@ impl HarnessSession for FakeSession {
             return Err(HarnessError::Protocol("es läuft bereits ein Turn".into()));
         }
         let index = self.next_turn;
-        let turn = self.scenario.turns.get(index).cloned().ok_or_else(|| {
-            HarnessError::UnexpectedInput {
-                expected: "<Szenario-Ende>".into(),
-                got: input.text.clone(),
-            }
+        let picked = if self.scenario.select.is_sequential() {
+            self.scenario.turns.get(index).cloned()
+        } else {
+            self.cursor.pick(&self.scenario, &input.text).cloned()
+        };
+        let turn = picked.ok_or_else(|| HarnessError::UnexpectedInput {
+            expected: "<Szenario-Ende>".into(),
+            got: input.text.clone(),
         })?;
         if let Some(expected) = &turn.expect_input
             && *expected != input.text

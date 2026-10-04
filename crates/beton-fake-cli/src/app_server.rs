@@ -16,7 +16,7 @@
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-use beton_harness::scenario::{Scenario, Step, Turn, Usage};
+use beton_harness::scenario::{Scenario, Step, Usage};
 use serde_json::{Value, json};
 
 use crate::io::{Lines, Stop, chunks, fnv};
@@ -25,7 +25,8 @@ const CONTEXT_WINDOW: u64 = 272_000;
 
 pub struct AppServer<R, W> {
     io: Lines<R, W>,
-    turns: Vec<Turn>,
+    scenario: Scenario,
+    cursor: beton_harness::scenario::TurnCursor,
     next_turn: usize,
     version: String,
     bad_handshake: bool,
@@ -65,7 +66,8 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
     pub fn new(scenario: &Scenario, version: String, input: R, out: W) -> Self {
         Self {
             io: Lines::new(input, out, scenario.faults),
-            turns: scenario.turns.clone(),
+            scenario: scenario.clone(),
+            cursor: beton_harness::scenario::TurnCursor::default(),
             next_turn: 0,
             version,
             bad_handshake: scenario.faults.bad_handshake,
@@ -226,24 +228,22 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
         self.respond(id, json!({"turn": turn}))?;
         let thread_id = self.thread_id.clone();
         self.notify("turn/started", json!({"threadId": thread_id, "turn": turn}))?;
-        let end = match self.turns.get(index).cloned() {
+        let text = input_text(params);
+        let end = match self.cursor.pick(&self.scenario, &text).cloned() {
             None => TurnEnd::Failed {
                 message: "Szenario zu Ende".into(),
                 info: "other",
             },
-            Some(t) => {
-                let text = input_text(params);
-                match &t.expect_input {
-                    Some(expected) if *expected != text => TurnEnd::Failed {
-                        message: format!("erwartet `{expected}`, erhalten `{text}`"),
-                        info: "badRequest",
-                    },
-                    _ => self.steps(
-                        &beton_harness::scenario::resolve_echo(&t.emit, &text, &[]),
-                        &mut state,
-                    )?,
-                }
-            }
+            Some(t) => match &t.expect_input {
+                Some(expected) if *expected != text => TurnEnd::Failed {
+                    message: format!("erwartet `{expected}`, erhalten `{text}`"),
+                    info: "badRequest",
+                },
+                _ => self.steps(
+                    &beton_harness::scenario::resolve_echo(&t.emit, &text, &[]),
+                    &mut state,
+                )?,
+            },
         };
         let (status, error) = match end {
             TurnEnd::Done => ("completed", Value::Null),
@@ -397,12 +397,13 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             state.call = Some(Call { id, item });
         } else if let Some(call) = &step.mcp_call {
             let id = self.next_item("mcp");
+            let args = self.mcp.resolve(&call.args);
             let mut item = json!({
                 "type": "mcpToolCall", "id": id, "server": call.server, "tool": call.tool,
-                "arguments": call.args, "status": "inProgress",
+                "arguments": args, "status": "inProgress",
             });
             self.item("item/started", state, item.clone())?;
-            match self.mcp.call(&call.server, &call.tool, &call.args) {
+            match self.mcp.call(&call.server, &call.tool, &args) {
                 Ok(result) => {
                     item["status"] = json!(if result["isError"] == true {
                         "failed"

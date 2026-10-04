@@ -15,7 +15,7 @@
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-use beton_harness::scenario::{Scenario, Step, Turn};
+use beton_harness::scenario::{Scenario, Step};
 use serde_json::{Value, json};
 
 use crate::io::{Lines, Stop, chunks, fnv};
@@ -25,8 +25,8 @@ const AUTH_REQUIRED: i64 = -32000;
 
 pub struct Agent<R, W> {
     io: Lines<R, W>,
-    turns: Vec<Turn>,
-    next_turn: usize,
+    scenario: Scenario,
+    cursor: beton_harness::scenario::TurnCursor,
     version: String,
     bad_handshake: bool,
     load_session: bool,
@@ -71,8 +71,8 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             .unwrap_or("warm");
         Self {
             io: Lines::new(input, out, scenario.faults),
-            turns: scenario.turns.clone(),
-            next_turn: 0,
+            scenario: scenario.clone(),
+            cursor: beton_harness::scenario::TurnCursor::default(),
             version,
             bad_handshake: scenario.faults.bad_handshake,
             load_session: !matches!(resume, "none" | "cold"),
@@ -158,26 +158,22 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             return self.respond_error(id, -32602, "unknown session");
         }
         crate::io::record_context("user", &prompt_text(params));
-        let index = self.next_turn;
-        self.next_turn += 1;
-        let end = match self.turns.get(index).cloned() {
+        let text = prompt_text(params);
+        let end = match self.cursor.pick(&self.scenario, &text).cloned() {
             None => TurnEnd::Error {
                 code: -32603,
                 message: "Szenario zu Ende".into(),
             },
-            Some(turn) => {
-                let text = prompt_text(params);
-                match &turn.expect_input {
-                    Some(expected) if *expected != text => TurnEnd::Error {
-                        code: -32602,
-                        message: format!("erwartet `{expected}`, erhalten `{text}`"),
-                    },
-                    _ => self.steps(
-                        &beton_harness::scenario::resolve_echo(&turn.emit, &text, &[]),
-                        &mut TurnState::default(),
-                    )?,
-                }
-            }
+            Some(turn) => match &turn.expect_input {
+                Some(expected) if *expected != text => TurnEnd::Error {
+                    code: -32602,
+                    message: format!("erwartet `{expected}`, erhalten `{text}`"),
+                },
+                _ => self.steps(
+                    &beton_harness::scenario::resolve_echo(&turn.emit, &text, &[]),
+                    &mut TurnState::default(),
+                )?,
+            },
         };
         match end {
             TurnEnd::Done => self.respond(id, json!({"stopReason": "end_turn"})),
@@ -246,14 +242,15 @@ impl<R: BufRead, W: Write> Agent<R, W> {
         } else if let Some(call) = &step.mcp_call {
             self.calls += 1;
             let id = format!("call_fake{:08}", self.calls);
+            let args = self.mcp.resolve(&call.args);
             self.update(json!({
                 "sessionUpdate": "tool_call", "toolCallId": id,
                 "title": format!("{}/{}", call.server, call.tool), "kind": "other",
-                "status": "pending", "rawInput": call.args, "locations": [],
+                "status": "pending", "rawInput": args, "locations": [],
             }))?;
             self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}))?;
             state.call = Some(id);
-            match self.mcp.call(&call.server, &call.tool, &call.args) {
+            match self.mcp.call(&call.server, &call.tool, &args) {
                 Ok(result) => {
                     let status = if result["isError"] == true {
                         "failed"

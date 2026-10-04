@@ -164,7 +164,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
     }
 
     pub fn run(&mut self, scenario: &Scenario) -> Result<(), Stop> {
-        let mut turns = scenario.turns.iter();
+        let mut cursor = beton_harness::scenario::TurnCursor::default();
         loop {
             let msg = self.read()?;
             match msg["type"].as_str() {
@@ -206,7 +206,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         self.context = after;
                         continue;
                     }
-                    let Some(turn) = turns.next() else {
+                    let Some(turn) = cursor.pick(scenario, &text) else {
                         self.result(
                             TurnEnd::Failed("Szenario zu Ende".into()),
                             "",
@@ -374,10 +374,9 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         } else if let Some(call) = &step.mcp_call {
             let id = self.next_id("toolu");
             let name = format!("mcp__{}__{}", call.server, call.tool);
-            self.assistant(
-                json!({"type": "tool_use", "id": id, "name": name, "input": call.args}),
-            )?;
-            match self.mcp.call(&call.server, &call.tool, &call.args) {
+            let args = self.mcp.resolve(&call.args);
+            self.assistant(json!({"type": "tool_use", "id": id, "name": name, "input": args}))?;
+            match self.mcp.call(&call.server, &call.tool, &args) {
                 Ok(result) => {
                     let is_error = result["isError"] == true;
                     self.tool_result(&id, &json!(result_text(&result)), is_error)?;
