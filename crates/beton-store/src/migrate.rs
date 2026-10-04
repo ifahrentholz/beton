@@ -42,7 +42,7 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 4,
         name: "session_search_and_user_state",
-        sql: include_str!("../migrations/sqlite/0004_session_search_and_user_state.sql"),
+        sql: include_str!("../migrations/sqlite/0005_session_search_and_user_state.sql"),
     },
 ];
 

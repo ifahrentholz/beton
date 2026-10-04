@@ -1,9 +1,9 @@
--- 0004_session_search_and_user_state: Gelesen-Stand und Anpinnen je User (SES-012) sowie
+-- 0005_session_search_and_user_state: Gelesen-Stand und Anpinnen je User (SES-012) sowie
 -- Volltextsuche über Titel und Nachrichten (SES-012 AC1).
 -- Gleiche Semantik wie SQLite FTS5 (`unicode61 remove_diacritics 0`): Konfiguration `simple`
 -- (keine Stammformen, keine Stoppwörter), jedes Suchwort als Präfix (`wort:*`), alle Wörter
 -- in demselben Dokument (`&`). Der GIN-Index ist dialektspezifisch und nicht Teil der Parität.
--- Gegenstück: migrations/sqlite/0004_session_search_and_user_state.sql.
+-- Gegenstück: migrations/sqlite/0005_session_search_and_user_state.sql.
 
 CREATE TABLE session_user_state (
     org_id TEXT NOT NULL,
