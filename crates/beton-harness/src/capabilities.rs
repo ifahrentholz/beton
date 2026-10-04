@@ -103,6 +103,11 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub context_window: Option<u64>,
+    /// Projektdateien, die der Harness selbst liest (z. B. Claude `CLAUDE.md`, Codex
+    /// `AGENTS.md`); bei `project_files: auto` liefert beton nur die übrigen (AGT-005).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub native_project_files: Vec<String>,
 }
 
 /// Kontextfenster, wenn ein Harness keines meldet (HAR-018).
@@ -136,6 +141,7 @@ impl Capabilities {
             efforts: Vec::new(),
             permission_modes: Vec::new(),
             context_window: None,
+            native_project_files: Vec::new(),
         }
     }
 

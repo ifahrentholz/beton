@@ -19,6 +19,31 @@ impl From<io::Error> for Stop {
     }
 }
 
+/// Ziel von [`record_context`]: `--record <datei>`, sonst `BETON_FAKE_RECORD`.
+static RECORD: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+/// Legt das Ziel der Kontext-Aufzeichnung fest (einmal beim Start).
+pub fn set_record(path: Option<std::path::PathBuf>) {
+    let _ = RECORD.set(path.or_else(|| std::env::var_os("BETON_FAKE_RECORD").map(Into::into)));
+}
+
+/// Protokolliert, was beim Modell als Kontext ankäme (AGT-005): eine JSON-Zeile
+/// `{"source": …, "text": …}` je Eingabe in die Aufzeichnungsdatei, falls gesetzt.
+/// `source`: `append_system_prompt` (Claude), `developer_instructions` (Codex) oder `user`.
+pub fn record_context(source: &str, text: &str) {
+    let Some(Some(path)) = RECORD.get() else {
+        return;
+    };
+    let line = serde_json::json!({"source": source, "text": text}).to_string();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// FNV-1a: stabiler Hash ohne Abhängigkeit, für deterministische IDs.
 pub fn fnv(text: &str) -> u64 {
     text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {

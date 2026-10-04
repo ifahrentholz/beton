@@ -92,6 +92,10 @@ pub struct SessionsConfig {
     pub forks_root: PathBuf,
     /// Leere Workspaces von Forks mit `workspace: fresh`, z. B. `~/.beton/workspaces` (SES-006).
     pub fresh_root: PathBuf,
+    /// Agent-Snapshots für den Runner-Start, z. B. `~/.beton/agent-snapshots` (AGT-004).
+    pub agent_snapshots_root: PathBuf,
+    /// `~/.beton` bzw. `BETON_HOME`: User-Agents unter `agents/` (AGT-003).
+    pub beton_home: PathBuf,
     /// Umgebung, in der der Import die Verzeichnisse der Vendor-CLIs findet (`HOME`,
     /// `CLAUDE_CONFIG_DIR`, `CODEX_HOME`; SES-008). Enthält nur Pfade.
     pub vendor_env: beton_harness::HostEnv,
@@ -113,6 +117,11 @@ impl SessionsConfig {
     /// Leerer Workspace eines Forks mit `workspace: fresh`.
     pub fn fresh_dir(&self, session: SessionId) -> PathBuf {
         self.fresh_root.join(session.to_string())
+    }
+
+    /// Agent-Snapshot einer Session für den Runner (AGT-004).
+    pub fn agent_snapshot(&self, session: SessionId) -> PathBuf {
+        self.agent_snapshots_root.join(format!("{session}.json"))
     }
 }
 
@@ -151,7 +160,12 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
 /// Parameter für `POST /v1/sessions`.
 #[derive(Debug, Clone, Default)]
 pub struct CreateSession {
+    /// Harness-ID; mit `agent` optional und dann ein Override von `executor.harness`.
     pub target: String,
+    /// Agent-Ref (AGT-003); bestimmt Harness, Modell, Instructions und Tools (AGT-004).
+    pub agent: Option<String>,
+    /// Parameterwerte des Agents (AGT-010); Texte werden typgerecht umgewandelt.
+    pub params: std::collections::BTreeMap<String, Value>,
     pub cwd: String,
     pub title: Option<String>,
     pub model: Option<String>,
@@ -279,25 +293,59 @@ impl<'a> SessionManager<'a> {
     /// Legt eine Session an und startet ihren Runner (SES-001 AC1). Mit Worktree entsteht er
     /// vor der Session; scheitert er, gibt es keine Session (SES-015 AC3).
     pub async fn create(&self, by: UserId, req: CreateSession) -> Result<SessionRecord, Problem> {
-        let harness: beton_harness::HarnessId = req
-            .target
-            .parse()
-            .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(format!("{e}")))?;
+        if !std::path::Path::new(&req.cwd).is_dir() {
+            return Err(Problem::new(ProblemCode::ValidationFailed)
+                .detail(format!("Arbeitsverzeichnis {} existiert nicht", req.cwd)));
+        }
+        // Agent-Start (AGT-004): Agent auflösen, prüfen, Parameter und Snapshot vor der Session.
+        let agent = match &req.agent {
+            Some(reference) => {
+                let target = Some(req.target.as_str()).filter(|t| !t.is_empty());
+                Some(self.resolve_agent(
+                    reference,
+                    std::path::Path::new(&req.cwd),
+                    target,
+                    req.model.as_deref(),
+                    &req.params,
+                )?)
+            }
+            None if !req.params.is_empty() => {
+                return Err(Problem::new(ProblemCode::ValidationFailed)
+                    .detail("`params` gibt es nur zusammen mit `agent`"));
+            }
+            None => None,
+        };
+        let harness: beton_harness::HarnessId = match &agent {
+            Some(a) => a.harness.clone(),
+            None => req
+                .target
+                .parse()
+                .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(format!("{e}")))?,
+        };
         if harness.as_str() == beton_harness::HarnessId::FAKE && !self.fake_allowed() {
             // UX-007 AC1: hinter einem nicht aktivierten Flag nicht erreichbar.
             return Err(Problem::new(ProblemCode::FeatureDisabled).detail(
                 "Der Fake-Harness ist nur mit --dev oder BETON_FEATURES=fake_harness verfügbar.",
             ));
         }
-        if !std::path::Path::new(&req.cwd).is_dir() {
-            return Err(Problem::new(ProblemCode::ValidationFailed)
-                .detail(format!("Arbeitsverzeichnis {} existiert nicht", req.cwd)));
+        if let Some(a) = &agent {
+            let (spec, _) = a
+                .snapshot
+                .agent()
+                .map_err(|e| Problem::new(ProblemCode::AgentInvalid).detail(e.to_string()))?;
+            self.check_agent_harness(&spec, &harness, std::path::Path::new(&req.cwd))?;
         }
-        // HAR-017, HAR-027: vor dem Anlegen prüfen; `yolo` ohne Sandbox nie (fail closed).
+        // Effort und Permission-Mode: Anfrage vor `executor` des Agents (AGT-004). Vor dem
+        // Anlegen geprüft; `yolo` ohne Sandbox nie, auch nicht aus einem Agent (HAR-027).
+        let (agent_effort, agent_mode) =
+            crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
+        let effort = req.effort.clone().or(agent_effort);
+        let permission_mode = req.permission_mode.clone().or(agent_mode);
         crate::settings::validate_start(
-            self.catalog_caps(&harness, Path::new(&req.cwd)).as_ref(),
-            req.effort.as_deref(),
-            req.permission_mode.as_deref(),
+            self.harness_capabilities(&harness, Path::new(&req.cwd))
+                .as_ref(),
+            effort.as_deref(),
+            permission_mode.as_deref(),
         )?;
         let id = SessionId::new();
         let worktree = match &req.worktree {
@@ -315,10 +363,13 @@ impl<'a> SessionManager<'a> {
                     kind: SessionKind::Main,
                     harness: harness.to_string(),
                     cwd: req.cwd.clone(),
-                    model: req.model.clone(),
-                    effort: req.effort.clone(),
-                    permission_mode: req.permission_mode.clone(),
-                    agent_ref: None,
+                    model: match &agent {
+                        Some(a) => a.model.clone(),
+                        None => req.model.clone(),
+                    },
+                    effort: effort.clone(),
+                    permission_mode: permission_mode.clone(),
+                    agent_ref: req.agent.clone(),
                     project_id: None,
                     parent_id: None,
                     trigger: SessionTrigger::Api,
@@ -336,6 +387,10 @@ impl<'a> SessionManager<'a> {
                 return Err(e.into());
             }
         };
+        if let Some(a) = &agent {
+            self.record_agent(session.id, &a.snapshot, &a.notices)
+                .await?;
+        }
         if let Some(title) = req.title.filter(|t| !t.trim().is_empty()) {
             self.append(
                 session.id,
@@ -515,6 +570,7 @@ impl<'a> SessionManager<'a> {
         // Modell, Effort und Mode laut letztem Stand, nicht nur `session.created` (HAR-020).
         let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
+        let agent_snapshot = self.snapshot_file(session.id).await?;
         let token = self
             .state
             .runtime
@@ -552,6 +608,7 @@ impl<'a> SessionManager<'a> {
                     dev: self.fake_allowed(),
                     resume,
                     agent_ref: created.agent_ref.clone(),
+                    agent_snapshot,
                     harnesses: beton_harness::registry::HarnessLayers {
                         user: cfg.harnesses_user.clone(),
                         project,
@@ -924,6 +981,17 @@ impl<'a> SessionManager<'a> {
             .ok_or_else(|| invalid("`prompt` fehlt"))?
             .to_owned();
         let agent = args["agent"].as_str().unwrap_or("sub-agent").to_owned();
+        // Instructions, Tools und Parameter des Childs aus dem Snapshot des Parents (AGT-004,
+        // AGT-005, AGT-010).
+        let snapshot = self.child_snapshot(parent, &agent, &args["params"]).await?;
+        // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027).
+        let (child_effort, child_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        crate::settings::validate_start(
+            self.harness_capabilities(&harness, Path::new(&created.cwd))
+                .as_ref(),
+            child_effort.as_deref(),
+            child_mode.as_deref(),
+        )?;
         let child = self
             .state
             .store
@@ -936,9 +1004,9 @@ impl<'a> SessionManager<'a> {
                     harness: harness.to_string(),
                     cwd: created.cwd.clone(),
                     model: args["model"].as_str().map(str::to_owned),
-                    effort: None,
-                    permission_mode: None,
-                    agent_ref: None,
+                    effort: child_effort,
+                    permission_mode: child_mode,
+                    agent_ref: snapshot.as_ref().map(|s| s.reference.clone()),
                     project_id: record.project_id,
                     parent_id: Some(parent),
                     trigger: SessionTrigger::Spawn,
@@ -947,6 +1015,9 @@ impl<'a> SessionManager<'a> {
                 },
             )
             .await?;
+        if let Some(snapshot) = &snapshot {
+            self.record_agent(child.id, snapshot, &[]).await?;
+        }
         let parent_actor = Actor::Agent {
             id: None,
             harness: record.harness.clone(),
@@ -1146,6 +1217,7 @@ impl<'a> SessionManager<'a> {
             .await?;
         self.state.runtime.queues.forget(session);
         let _ = std::fs::remove_file(self.cfg().fork_plan(session));
+        let _ = std::fs::remove_file(self.cfg().agent_snapshot(session));
         let fresh = self.cfg().fresh_dir(session);
         if fresh.is_dir()
             && let Err(e) = std::fs::remove_dir_all(&fresh)

@@ -4,7 +4,8 @@ Usage: beton run [OPTIONS] [TARGET]
 
 Arguments:
   [TARGET]
-          Harness, z. B. `claude` (Default: `harnesses.default`, sonst `claude`)
+          Harness (`claude`, `codex`, `acp:<slug>`, `direct:<provider>`, `fake`) oder Agent: Name,
+          Pfad (`./agents/x`) oder `builtin:<name>` (Default: `harnesses.default`, sonst `claude`)
 
 Options:
   -p, --prompt <PROMPT>
@@ -64,7 +65,8 @@ Options:
           (SES-006). Mitten in einem Turn beginnt der Fork am vorherigen Turn-Ende
 
       --harness <HARNESS>
-          Harness des Forks (wie TARGET); ein anderer Harness bekommt eine Übergabe (SES-007)
+          Harness des Forks (wie TARGET; ein anderer Harness bekommt eine Übergabe, SES-007) bzw.
+          eines Agents statt `executor.harness` (AGT-004)
 
       --workspace <MODE>
           Dateien des Forks: neuer Worktree (Default im Git-Repository), gemeinsam oder leer
@@ -108,6 +110,9 @@ Options:
 
       --scenario <FILE>
           Szenario-Datei, nur für den Harness `fake` (HAR-026)
+
+      --param <NAME=WERT>
+          Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`
 
   -h, --help
           Print help (see a summary with '-h')

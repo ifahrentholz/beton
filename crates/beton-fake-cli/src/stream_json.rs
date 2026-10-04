@@ -303,6 +303,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         self.result(TurnEnd::Failed(why), "", &Usage::default())?;
                         continue;
                     }
+                    crate::io::record_context("user", &text);
                     let settings = beton_harness::scenario::settings_text(
                         &self.model,
                         self.settings.effort.as_deref(),

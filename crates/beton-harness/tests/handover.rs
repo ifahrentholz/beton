@@ -168,6 +168,7 @@ fn sample() -> Log {
     log.push(EventPayload::TurnInterrupted(TurnInterrupted {
         turn_id: TurnId::from_ulid(ulid::Ulid(1)),
         by: PrincipalId::User(UserId::LOCAL),
+        reason: None,
     }));
     log
 }

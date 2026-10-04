@@ -395,3 +395,57 @@ fn agt_003_builtin_subagent_refs_resolve_inside_the_embedded_tree() {
     .validate(&located);
     assert!(report.is_valid(), "{:#?}", report.diagnostics);
 }
+
+// --------------------------------------------------------------------------- AGT-005 / AGT-010
+
+#[test]
+fn agt_005_ac3_missing_instructions_file_fails_validation_with_the_path() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("x");
+    write(
+        &dir,
+        "agent.yaml",
+        &minimal("x", "instructions:\n  file: prompts/system.md\n"),
+    );
+    let report = validate_dir(&dir, &SearchPath::default());
+    assert!(!report.is_valid());
+    let d = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "file_not_found")
+        .unwrap();
+    assert_eq!(d.path, "instructions.file");
+    assert_eq!(d.severity, Severity::Error);
+    assert!(d.message.contains("prompts/system.md"), "{}", d.message);
+    assert_eq!((d.line, d.column), (6, 3));
+}
+
+#[test]
+fn agt_010_templates_only_in_append_and_only_with_declared_params() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("x");
+    write(
+        &dir,
+        "agent.yaml",
+        &minimal(
+            "x",
+            "params:\n  branch: { type: string, default: main }\ninstructions:\n  text: \"Branch {{ params.branch }}\"\n  append: \"{{ params.branch }} {{ params.fehlt }} {{ now }} {{ env.HOME }}\"\n",
+        ),
+    );
+    let report = validate_dir(&dir, &SearchPath::default());
+    let found: Vec<(&str, &str)> = report
+        .diagnostics
+        .iter()
+        .map(|d| (d.code, d.path.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("invalid_value", "instructions.text"),
+            ("invalid_param", "instructions.append"),
+            ("invalid_value", "instructions.append"),
+        ],
+        "{:#?}",
+        report.diagnostics
+    );
+}

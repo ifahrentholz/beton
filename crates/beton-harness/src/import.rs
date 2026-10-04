@@ -547,6 +547,7 @@ impl TurnBuilder {
             EventPayload::TurnInterrupted(beton_core::event::TurnInterrupted {
                 turn_id: turn,
                 by: beton_core::id::PrincipalId::User(beton_core::id::UserId::LOCAL),
+                reason: None,
             })
         } else {
             EventPayload::TurnCompleted(beton_core::event::TurnCompleted {

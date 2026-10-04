@@ -104,6 +104,8 @@ pub struct RunnerBoot {
     pub harnesses: beton_harness::registry::HarnessLayers,
     /// Agent der Session; bestimmt MCP-Server, System-Tools und Skills (HAR-009).
     pub agent_ref: Option<String>,
+    /// Agent-Snapshot der Session als JSON-Datei (AGT-004); hat Vorrang vor `agent_ref`.
+    pub agent_snapshot: Option<PathBuf>,
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018); `None` =
     /// keine Workspace-Beobachtung.
     pub snapshots: Option<PathBuf>,
@@ -251,6 +253,7 @@ macro_rules! runner_provider_contract {
                     resume: None,
                     harnesses: Default::default(),
                     agent_ref: None,
+                    agent_snapshot: None,
                     snapshots: None,
                     fork: None,
                 }

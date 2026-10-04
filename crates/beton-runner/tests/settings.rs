@@ -772,3 +772,61 @@ async fn ses_006_110_fork_takes_effort_and_permission_mode() {
     );
     env.daemon.shutdown().await;
 }
+
+/// Agent im Projekt mit `executor` (AGT-004): Effort und Permission-Mode kommen aus ihm.
+fn agent(env: &Env, name: &str, executor: &str) {
+    write(
+        &env.work().join(format!(".beton/agents/{name}/agent.yaml")),
+        &format!(
+            "spec_version: 1\nname: {name}\nexecutor: {executor}\ninstructions: {{ text: \"Arbeite sorgfältig.\", project_files: none }}\n"
+        ),
+    );
+}
+
+#[tokio::test]
+async fn har_027_agent_executor_sets_effort_and_mode_but_never_yolo() {
+    let env = Env::start(|_| Vec::new()).await;
+    let scenario = write(&env.path("echo.yaml"), ECHO);
+    agent(
+        &env,
+        "careful",
+        "{ harness: fake, reasoning_effort: xhigh, permission_mode: plan }",
+    );
+    let id = env
+        .create(
+            json!({"agent": "careful", "cwd": env.work(), "harness_opts": {"scenario": scenario}}),
+        )
+        .await;
+    env.wait_status(&id, "idle").await;
+    let created = one(&env.events(&id).await, "session.created").clone();
+    assert_eq!(created["payload"]["permission_mode"], "plan");
+    assert_eq!(created["payload"]["effort"], "xhigh");
+    assert_eq!(
+        env.turn(&id, "eins").await.last().unwrap(),
+        "model=fake-model effort=high mode=plan"
+    );
+    // Die Anfrage überschreibt den Agent.
+    let id = env
+        .create(json!({"agent": "careful", "cwd": env.work(), "permission_mode": "default", "harness_opts": {"scenario": scenario}}))
+        .await;
+    env.wait_status(&id, "idle").await;
+    assert_eq!(
+        env.turn(&id, "eins").await.last().unwrap(),
+        "model=fake-model effort=high mode=default"
+    );
+    // Ein Agent (z. B. aus dem Repository) kann YOLO nicht erzwingen (fail closed).
+    agent(&env, "reckless", "{ harness: fake, permission_mode: yolo }");
+    let (status, body) = env
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"agent": "reckless", "cwd": env.work(), "harness_opts": {"scenario": scenario}})),
+        )
+        .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (409, Some("sandbox_required")),
+        "{body}"
+    );
+    env.daemon.shutdown().await;
+}

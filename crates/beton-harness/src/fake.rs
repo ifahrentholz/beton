@@ -105,6 +105,7 @@ pub fn default_capabilities() -> Capabilities {
         efforts: vec!["low".into(), "medium".into(), "high".into()],
         permission_modes: PermissionMode::ALL.to_vec(),
         context_window: Some(crate::capabilities::DEFAULT_CONTEXT_WINDOW),
+        native_project_files: Vec::new(),
     }
 }
 
@@ -169,6 +170,10 @@ impl HarnessAdapter for FakeAdapter {
             session.capabilities_check_mode(mode)?;
             session.permission_mode = mode;
         }
+        // `first_message_prefix` (AGT-005): eine fortgesetzte Session hat sie schon.
+        if !resumed {
+            session.instructions = spec.instructions;
+        }
         Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
 }
@@ -197,6 +202,8 @@ pub struct FakeSession {
     /// Schlüssel des „nativen“ Verlaufs: Referenz und Szenario-Datei, damit parallele Sessions
     /// im selben Prozess (Tests) sich nicht überschreiben.
     native_key: Option<String>,
+    /// Instructions für die erste Nachricht (`first_message_prefix`, AGT-005).
+    instructions: Option<String>,
 }
 
 impl std::fmt::Debug for FakeSession {
@@ -269,6 +276,7 @@ impl FakeSession {
             steer: None,
             history: Vec::new(),
             native_key: None,
+            instructions: None,
         })
     }
 
@@ -338,6 +346,11 @@ impl HarnessSession for FakeSession {
                 },
             );
         }
+        // Was beim Modell ankommt: die erste Nachricht mit den Instructions davor.
+        let delivered = match self.instructions.take() {
+            Some(i) => crate::adapter::prefix_instructions(&i, &input.text),
+            None => input.text,
+        };
         let (steer_tx, steer_rx) = mpsc::unbounded_channel();
         self.steer = Some(steer_tx);
         let player = Player {
@@ -355,7 +368,7 @@ impl HarnessSession for FakeSession {
             last_decision: None,
             steer: steer_rx,
             workdir: self.workdir.clone(),
-            input: input.text,
+            input: delivered,
             history,
             effort: self.effort.clone(),
             permission_mode: self.permission_mode,
@@ -508,6 +521,7 @@ impl Player {
                 self.send(EventPayload::TurnInterrupted(TurnInterrupted {
                     turn_id: self.turn,
                     by: local_user(),
+                    reason: None,
                 }))
                 .await;
                 false
@@ -838,6 +852,36 @@ turns:
             out.push(e);
         }
         out
+    }
+
+    #[tokio::test]
+    async fn agt_005_ac1_fake_gets_the_instructions_once_before_the_first_message() {
+        let mut s = FakeSession::start(
+            Scenario::from_yaml(
+                "turns:\n  - expect_input: eins\n    emit: [{ echo_input: true }]\n  - expect_input: zwei\n    emit: [{ echo_input: true }]\n",
+            )
+            .unwrap(),
+            None,
+            Arc::new(AllowAll),
+        )
+        .unwrap();
+        s.instructions = Some("REGEL-42".into());
+        let mut rx = s.events().unwrap();
+        for input in ["eins", "zwei"] {
+            s.send(input.into()).await.unwrap();
+            if let Some(h) = s.running.take() {
+                h.await.unwrap();
+            }
+        }
+        Box::new(s).shutdown(Shutdown::Kill).await.unwrap();
+        let mut seen = String::new();
+        while let Some(e) = rx.recv().await {
+            if let EventPayload::MessageCompleted(m) = &e.payload {
+                seen.push_str(&serde_json::to_string(&m.content).unwrap());
+            }
+        }
+        assert_eq!(seen.matches("REGEL-42").count(), 1, "{seen}");
+        assert!(seen.contains("eins") && seen.contains("zwei"), "{seen}");
     }
 
     fn types(events: &[NormalizedEvent]) -> Vec<&'static str> {

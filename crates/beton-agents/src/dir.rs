@@ -103,27 +103,54 @@ pub fn normalize_relative(base: &str, rel: &str) -> Option<String> {
 #[derive(Debug, Clone)]
 pub enum AgentDir {
     Fs(PathBuf),
-    Builtin { builtins: Builtins, prefix: String },
+    Builtin {
+        builtins: Builtins,
+        prefix: String,
+    },
+    /// Aus einem Agent-Snapshot (AGT-004): Dateien im Speicher, unabhängig von der Platte.
+    /// `refs` bildet Sub-Agent-Verweise außerhalb des Agent-Verzeichnisses auf ihren Präfix im
+    /// Snapshot ab (Schlüssel `<präfix des Verweisenden>|<ref>`).
+    Snapshot {
+        files: Builtins,
+        prefix: String,
+        refs: Arc<BTreeMap<String, String>>,
+    },
 }
 
 impl AgentDir {
+    /// Dateibaum im Speicher (Built-ins, Snapshot) mit Präfix.
+    fn memory(&self) -> Option<(&Builtins, &str)> {
+        match self {
+            AgentDir::Fs(_) => None,
+            AgentDir::Builtin { builtins, prefix } => Some((builtins, prefix)),
+            AgentDir::Snapshot { files, prefix, .. } => Some((files, prefix)),
+        }
+    }
+
+    /// Liegt der Agent im Speicher (Built-in oder Snapshot) statt im Dateisystem?
+    pub fn in_memory(&self) -> bool {
+        self.memory().is_some()
+    }
+
     /// Inhalt einer Datei relativ zum Verzeichnis.
     pub fn read(&self, rel: &str) -> Option<Vec<u8>> {
-        match self {
-            AgentDir::Fs(dir) => std::fs::read(dir.join(rel)).ok(),
-            AgentDir::Builtin { builtins, prefix } => {
+        match (self, self.memory()) {
+            (AgentDir::Fs(dir), _) => std::fs::read(dir.join(rel)).ok(),
+            (_, Some((builtins, prefix))) => {
                 let path = normalize_relative(prefix, rel)?;
                 builtins.get(&path).map(<[u8]>::to_vec)
             }
+            (_, None) => None,
         }
     }
 
     /// Existiert die Datei oder das Verzeichnis?
     pub fn exists(&self, rel: &str) -> bool {
-        match self {
-            AgentDir::Fs(dir) => dir.join(rel).exists(),
-            AgentDir::Builtin { builtins, prefix } => normalize_relative(prefix, rel)
+        match (self, self.memory()) {
+            (AgentDir::Fs(dir), _) => dir.join(rel).exists(),
+            (_, Some((builtins, prefix))) => normalize_relative(prefix, rel)
                 .is_some_and(|p| builtins.get(&p).is_some() || builtins.has_dir(&p)),
+            (_, None) => false,
         }
     }
 
@@ -135,7 +162,7 @@ impl AgentDir {
     pub fn has_agent_yaml(&self) -> bool {
         match self {
             AgentDir::Fs(dir) => dir.join(AGENT_YAML).is_file(),
-            AgentDir::Builtin { .. } => self.read(AGENT_YAML).is_some(),
+            AgentDir::Builtin { .. } | AgentDir::Snapshot { .. } => self.read(AGENT_YAML).is_some(),
         }
     }
 
@@ -148,6 +175,15 @@ impl AgentDir {
                 builtins: builtins.clone(),
                 prefix: normalize_relative(prefix, rel).filter(|p| !p.is_empty())?,
             }),
+            AgentDir::Snapshot {
+                files,
+                prefix,
+                refs,
+            } => Some(AgentDir::Snapshot {
+                files: files.clone(),
+                prefix: normalize_relative(prefix, rel).filter(|p| !p.is_empty())?,
+                refs: refs.clone(),
+            }),
         }
     }
 
@@ -158,7 +194,7 @@ impl AgentDir {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            AgentDir::Builtin { prefix, .. } => {
+            AgentDir::Builtin { prefix, .. } | AgentDir::Snapshot { prefix, .. } => {
                 prefix.rsplit('/').next().unwrap_or_default().to_owned()
             }
         }
@@ -173,14 +209,16 @@ impl AgentDir {
                 .display()
                 .to_string(),
             AgentDir::Builtin { prefix, .. } => format!("builtin:{prefix}"),
+            AgentDir::Snapshot { prefix, .. } => format!("snapshot:{prefix}"),
         }
     }
 
-    /// Anzeige: Pfad bzw. `builtin:<name>`.
+    /// Anzeige: Pfad bzw. `builtin:<name>` oder `snapshot:<pfad>`.
     pub fn display(&self) -> String {
         match self {
             AgentDir::Fs(dir) => dir.display().to_string(),
             AgentDir::Builtin { prefix, .. } => format!("builtin:{prefix}"),
+            AgentDir::Snapshot { prefix, .. } => format!("snapshot:{prefix}"),
         }
     }
 
@@ -198,7 +236,8 @@ impl AgentDir {
                         .join("/"),
                 )
             }
-            (AgentDir::Builtin { prefix: a, .. }, AgentDir::Builtin { prefix: b, .. }) => {
+            (AgentDir::Builtin { prefix: a, .. }, AgentDir::Builtin { prefix: b, .. })
+            | (AgentDir::Snapshot { prefix: a, .. }, AgentDir::Snapshot { prefix: b, .. }) => {
                 if a == b {
                     Some(String::new())
                 } else {
@@ -218,9 +257,13 @@ impl AgentDir {
                 out.sort();
                 out
             }
-            AgentDir::Builtin { builtins, prefix } => {
+            AgentDir::Builtin {
+                builtins: files,
+                prefix,
+            }
+            | AgentDir::Snapshot { files, prefix, .. } => {
                 let p = format!("{prefix}/");
-                builtins
+                files
                     .files()
                     .filter_map(|(path, bytes)| {
                         path.strip_prefix(&p)
@@ -234,15 +277,20 @@ impl AgentDir {
     /// Inhalts-Hash über alle Dateien des Agents (Pfad und Inhalt), `sha256:<hex>`.
     /// Unveränderte Dateien ergeben denselben Hash, jede Änderung einen anderen.
     pub fn hash(&self) -> String {
-        let mut h = Sha256::new();
-        for (path, bytes) in self.files() {
-            h.update(path.as_bytes());
-            h.update([0]);
-            h.update((bytes.len() as u64).to_le_bytes());
-            h.update(&bytes);
-        }
-        format!("sha256:{}", hex::encode(h.finalize()))
+        hash_files(&self.files())
     }
+}
+
+/// Inhalts-Hash über Dateien (relativer Pfad, Inhalt) in der gegebenen Reihenfolge.
+pub fn hash_files(files: &[(String, Vec<u8>)]) -> String {
+    let mut h = Sha256::new();
+    for (path, bytes) in files {
+        h.update(path.as_bytes());
+        h.update([0]);
+        h.update((bytes.len() as u64).to_le_bytes());
+        h.update(bytes);
+    }
+    format!("sha256:{}", hex::encode(h.finalize()))
 }
 
 fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {

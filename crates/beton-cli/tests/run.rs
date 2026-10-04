@@ -846,6 +846,122 @@ async fn ses_006_ac4_run_fork_creates_the_same_fork_as_the_api() {
     assert!(!content_of(&c_events).is_empty());
 }
 
+// --------------------------------------------------------------------------- AGT-004 / AGT-010
+
+/// Agent `pr-fixer` auf dem Fake-Harness im Projekt von `serve`.
+fn agent(serve: &Serve, executor: &str, params: &str) {
+    let dir = serve.work.path().join(".beton/agents/pr-fixer");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("agent.yaml"),
+        format!(
+            "spec_version: 1\nname: pr-fixer\nexecutor: {executor}\ninstructions: {{ text: \"Behebe die CI.\", project_files: none }}\nparams:\n  max_attempts: {{ type: integer, default: 3, minimum: 1, maximum: 10 }}\n{params}"
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn agt_010_ac1_cli_rejects_a_param_above_maximum_before_the_start() {
+    let serve = Serve::start();
+    agent(&serve, "{ harness: fake }", "");
+    let scenario = serve.scenario(HELLO);
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .args([
+            "run",
+            "pr-fixer",
+            "--param",
+            "max_attempts=20",
+            "-p",
+            "sag hallo",
+            "--scenario",
+        ])
+        .arg(&scenario));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("max_attempts") && err.contains("maximum 10"),
+        "{err}"
+    );
+    // Vor dem Start abgelehnt: keine Session.
+    assert!(serve.client().all_sessions(true).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn agt_010_ac2_cli_aborts_when_a_required_param_is_missing() {
+    let serve = Serve::start();
+    agent(
+        &serve,
+        "{ harness: fake }",
+        "  ticket: { type: string, required: true }\n",
+    );
+    let scenario = serve.scenario(HELLO);
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .args(["run", "pr-fixer", "-p", "sag hallo", "--scenario"])
+        .arg(&scenario));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("ticket") && err.contains("Pflichtparameter"),
+        "{err}"
+    );
+    assert!(serve.client().all_sessions(true).await.unwrap().is_empty());
+
+    // Mit Wert startet der Agent; die Werte stehen in `agent.resolved` (AGT-010 AC3).
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .args([
+            "run",
+            "pr-fixer",
+            "--param",
+            "ticket=CI-7",
+            "--param",
+            "max_attempts=4",
+            "-p",
+            "sag hallo",
+            "--scenario",
+        ])
+        .arg(&scenario));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "Hallo!\n");
+    let sessions = serve.client().all_sessions(false).await.unwrap();
+    let id = sessions[0]["id"].as_str().unwrap();
+    let log = events(&serve.client(), id).await;
+    let resolved = log.iter().find(|e| e["type"] == "agent.resolved").unwrap();
+    assert_eq!(
+        resolved["payload"]["params"],
+        json!({"max_attempts": 4, "ticket": "CI-7"})
+    );
+    assert_eq!(sessions[0]["harness"], "fake");
+}
+
+#[tokio::test]
+async fn agt_004_ac3_run_agent_ends_with_timed_out_after_executor_timeout() {
+    let serve = Serve::start();
+    agent(&serve, "{ harness: fake, timeout: 1s }", "");
+    let scenario =
+        serve.scenario("turns:\n  - emit: [{ message_delta: \"Ich arbeite\" }, { hang: true }]\n");
+    let started = Instant::now();
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .args([
+            "run",
+            "pr-fixer",
+            "--output-format",
+            "json",
+            "-p",
+            "los",
+            "--scenario",
+        ])
+        .arg(&scenario));
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["status"], "timed_out", "{v}");
+}
+
 // ------------------------------------------------------------- HAR-017, HAR-027 (CLI-002)
 
 const ECHO_SETTINGS: &str =

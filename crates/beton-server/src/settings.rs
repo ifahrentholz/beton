@@ -17,6 +17,22 @@ use serde_json::{Value, json};
 use crate::problem::{Problem, ProblemCode};
 use crate::sessions::SessionManager;
 
+/// `reasoning_effort` und `permission_mode` aus dem `executor` eines Agent-Snapshots
+/// (AGT-004); ohne Snapshot oder bei unlesbarem Agent nichts (dann gilt der Default).
+pub fn executor_settings(
+    snapshot: Option<&beton_agents::AgentSnapshot>,
+) -> (Option<String>, Option<String>) {
+    let Some((spec, _)) = snapshot.and_then(|s| s.agent().ok()) else {
+        return (None, None);
+    };
+    (
+        spec.executor
+            .reasoning_effort
+            .map(|e| e.as_str().to_owned()),
+        spec.executor.permission_mode.map(|m| m.as_str().to_owned()),
+    )
+}
+
 /// Wirksame Einstellungen einer Session laut Log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
@@ -207,44 +223,6 @@ pub fn closing_events(session: SessionId, open: &Interrupted) -> Vec<Event> {
 }
 
 impl SessionManager<'_> {
-    /// Capabilities des Harness laut Katalog (ohne Probe); `None`, wenn der Harness auf diesem
-    /// Host unbekannt ist.
-    pub(crate) fn catalog_caps(
-        &self,
-        target: &beton_harness::HarnessId,
-        workdir: &std::path::Path,
-    ) -> Option<Capabilities> {
-        let probe = beton_harness::ProbeReport::default();
-        let mode = beton_harness::Mode::Native;
-        if target.as_str() == beton_harness::HarnessId::FAKE {
-            return Some(beton_harness::fake::default_capabilities());
-        }
-        if let Some(a) = self.state().runtime.harnesses.get(target) {
-            return Some(a.capabilities(mode, &probe));
-        }
-        // ACP-Agents (HAR-008) und Direkt-API-Provider (HAR-011) aus der Konfiguration.
-        let layers = beton_harness::registry::HarnessLayers {
-            user: self.cfg().harnesses_user.clone(),
-            project: beton_harness::registry::HarnessesConfig::load_project(workdir)
-                .unwrap_or_default(),
-            user_file: None,
-            project_file: None,
-            // Direkt-API-Provider nur aus der User-Konfiguration (HAR-011).
-            providers: self.cfg().providers.clone(),
-        };
-        let mut r =
-            beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions {
-                dev: false,
-            });
-        beton_harness_acp::register(&mut r, &layers);
-        beton_harness_direct::register(
-            &mut r,
-            &layers.providers,
-            &beton_harness_direct::DirectOptions::default(),
-        );
-        r.get(target).map(|a| a.capabilities(mode, &probe))
-    }
-
     /// Schließt im Log ab, was ein beendeter Runner offen ließ (HAR-020 AC3), und gibt die
     /// Queue frei. Liefert `true`, wenn etwas offen war.
     pub(crate) async fn close_interrupted(&self, session: SessionId) -> Result<bool, Problem> {

@@ -238,6 +238,7 @@ impl HarnessAdapter for AcpAdapter {
             // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
             permission_modes: vec![PermissionMode::Default],
             context_window: None,
+            native_project_files: Vec::new(),
         }
     }
 
@@ -297,7 +298,7 @@ impl HarnessAdapter for AcpAdapter {
         let process = Arc::new(Mutex::new(process));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
         let opened = open_session(&rpc, &spec, self.handshake_timeout).await;
-        let (session_id, modes, models) = match opened {
+        let (session_id, modes, models, loaded) = match opened {
             Ok(s) => s,
             Err(e) => {
                 rpc.close().await;
@@ -377,6 +378,9 @@ impl HarnessAdapter for AcpAdapter {
             cancel,
             session_id,
             modes,
+            // `first_message_prefix` (AGT-005); eine per `session/load` fortgesetzte Session
+            // kennt sie schon.
+            instructions: if loaded { None } else { spec.instructions },
         }))
     }
 }
@@ -423,12 +427,13 @@ impl From<HarnessError> for Opened {
 }
 
 /// Handshake und Session: `session/load`, wenn fortgesetzt wird und der Agent es kann,
-/// sonst `session/new` (kalt, HAR-007 AC3). Liefert Session-ID und angebotene Modi.
+/// sonst `session/new` (kalt, HAR-007 AC3). Liefert Session-ID, angebotene Modi und ob die
+/// Session per `session/load` fortgesetzt wurde.
 async fn open_session(
     rpc: &RpcClient,
     spec: &SessionSpec,
     timeout: Duration,
-) -> Result<(String, Vec<String>, Vec<String>), Opened> {
+) -> Result<(String, Vec<String>, Vec<String>, bool), Opened> {
     let init = initialize(rpc, timeout).await?;
     let load = init["agentCapabilities"]["loadSession"] == true;
     let cwd = spec.workdir.display().to_string();
@@ -469,7 +474,7 @@ async fn open_session(
     let modes = ids(&result["modes"]["availableModes"], "id");
     // `models` (ACP, instabil): angebotene Modelle für `session/set_model`.
     let models = ids(&result["models"]["availableModels"], "modelId");
-    Ok((session_id, modes, models))
+    Ok((session_id, modes, models, spec.resume.is_some() && load))
 }
 
 /// ACP-Modus-ID eines beton-Modus (Benennung von Claude Code über ACP).
@@ -682,6 +687,7 @@ fn turn_end(d: &Dispatcher, turn_id: TurnId, result: Result<Value, RpcError>) ->
             "cancelled" => vec![EventPayload::TurnInterrupted(TurnInterrupted {
                 turn_id,
                 by: PrincipalId::User(UserId::LOCAL),
+                reason: None,
             })],
             "refusal" => vec![EventPayload::TurnFailed(TurnFailed {
                 turn_id,
@@ -851,6 +857,8 @@ pub struct AcpSession {
     cancel: Arc<Notify>,
     session_id: String,
     modes: Vec<String>,
+    /// Instructions für die erste Nachricht (`first_message_prefix`, AGT-005).
+    instructions: Option<String>,
 }
 
 #[async_trait]
@@ -876,11 +884,15 @@ impl HarnessSession for AcpSession {
                 Some(turn),
             ))
             .await;
+        let text = match self.instructions.take() {
+            Some(i) => beton_harness::prefix_instructions(&i, &input.text),
+            None => input.text,
+        };
         let id = self
             .rpc
             .send_request(
                 "session/prompt",
-                json!({"sessionId": self.session_id, "prompt": [{"type": "text", "text": input.text}]}),
+                json!({"sessionId": self.session_id, "prompt": [{"type": "text", "text": text}]}),
             )
             .await?;
         self.state.lock().await.prompt_request = Some(id);

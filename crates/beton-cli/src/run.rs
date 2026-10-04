@@ -24,6 +24,44 @@ fn default_target(ctx: &Ctx) -> CliResult<String> {
         .unwrap_or_else(|| "claude".to_owned()))
 }
 
+/// Ist TARGET ein Harness (sonst ein Agent-Ref)? Harness-IDs haben Vorrang: `claude`,
+/// `codex`, `fake`, `acp:<slug>`, `direct:<provider>`.
+pub fn is_harness(target: &str) -> bool {
+    matches!(target, "claude" | "codex" | "fake")
+        || target.starts_with("acp:")
+        || target.starts_with("direct:")
+}
+
+/// `--param k=v` als Objekt (Werte bleiben Text; der Server wandelt typgerecht um, AGT-010).
+fn params(raw: &[String]) -> CliResult<serde_json::Map<String, Value>> {
+    let mut out = serde_json::Map::new();
+    for p in raw {
+        let (k, v) = beton_agents::params::parse_assignment(p).map_err(CliError::usage)?;
+        out.insert(k, v);
+    }
+    Ok(out)
+}
+
+/// Fehler eines Agent-Starts als Usage-Fehler (Exit-Code 2): Agent fehlt oder ist ungültig,
+/// Parameter fehlen oder passen nicht (AGT-010 AC1, AC2).
+fn agent_error(e: beton_sdk::Error) -> CliError {
+    match &e {
+        beton_sdk::Error::Problem { code, .. }
+            if matches!(
+                code.as_str(),
+                "invalid_param"
+                    | "params_required"
+                    | "agent_not_found"
+                    | "agent_invalid"
+                    | "harness_incompatible"
+            ) =>
+        {
+            CliError::new(Exit::Usage, e)
+        }
+        _ => e.into(),
+    }
+}
+
 /// Startet eine gestoppte oder fehlgeschlagene Session neu (SES-003); sonst nichts.
 async fn ensure_live(client: &Client, id: &str) -> CliResult<Value> {
     let session = client.session(id).await?;
@@ -94,7 +132,28 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                 Some(t) => t.clone(),
                 None => default_target(ctx)?,
             };
-            if args.scenario.is_some() && target != "fake" {
+            // Agent als TARGET (CLI-002, AGT-004): Harness und Modell aus `executor`.
+            let agent = (!is_harness(&target)).then(|| target.clone());
+            if agent.is_none() && !args.params.is_empty() {
+                return Err(CliError::usage("--param gilt nur für Agents"));
+            }
+            if agent.is_none() && args.harness.as_ref().is_some_and(|h| *h != target) {
+                return Err(CliError::usage(format!(
+                    "--harness {} widerspricht TARGET {target}",
+                    args.harness.as_deref().unwrap_or_default()
+                )));
+            }
+            if let Some(reference) = &agent {
+                // Verschattung eines Built-ins melden (AGT-003 AC1); der Server löst denselben
+                // Suchpfad auf.
+                if let Ok(r) = beton_agents::AgentRef::parse(reference)
+                    && let Ok(found) = crate::agent::search_path(ctx).resolve(&r, &cwd)
+                    && let Some(warning) = found.shadow_warning()
+                {
+                    eprintln!("Warnung: {warning}");
+                }
+            }
+            if args.scenario.is_some() && agent.is_none() && target != "fake" {
                 return Err(CliError::usage(
                     "--scenario gilt nur für den Harness `fake`",
                 ));
@@ -106,7 +165,21 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                     .with_context(|| format!("Szenario {}", scenario.display()))?;
                 opts["scenario"] = Value::String(path.display().to_string());
             }
-            let mut body = json!({ "target": target, "cwd": cwd_text, "harness_opts": opts });
+            let mut body = match &agent {
+                Some(reference) => {
+                    let mut b =
+                        json!({ "agent": reference, "cwd": cwd_text, "harness_opts": opts });
+                    if let Some(h) = &args.harness {
+                        b["target"] = Value::String(h.clone());
+                    }
+                    let params = params(&args.params)?;
+                    if !params.is_empty() {
+                        b["params"] = Value::Object(params);
+                    }
+                    b
+                }
+                None => json!({ "target": target, "cwd": cwd_text, "harness_opts": opts }),
+            };
             if let Some(t) = &args.title {
                 body["title"] = Value::String(t.clone());
             }
@@ -122,7 +195,13 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                 }
                 body["worktree"] = wt;
             }
-            let created = client.create_session(&body).await?;
+            let created = client.create_session(&body).await.map_err(|e| {
+                if agent.is_some() {
+                    agent_error(e)
+                } else {
+                    e.into()
+                }
+            })?;
             if let Some(wt) = created.get("worktree").filter(|w| w.is_object()) {
                 ctx.note(format!(
                     "Worktree {} (Branch {}, Base {})",

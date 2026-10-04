@@ -9,6 +9,7 @@
 // seltene Pfad, ein `Box` brächte nur Umwege.
 #![allow(clippy::result_large_err)]
 
+pub mod agents;
 pub mod api;
 pub mod api_sessions;
 pub mod api_workspace;

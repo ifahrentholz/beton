@@ -217,7 +217,10 @@ impl DirectAdapter {
             gate: ctx.gate.clone(),
             tx: tx.clone(),
             settings,
-            system: session::system_prompt(&spec.workdir.display().to_string()),
+            system: session::system_prompt_with(
+                &spec.workdir.display().to_string(),
+                spec.instructions.as_deref(),
+            ),
             model: std::sync::Mutex::new(model),
             conv: Mutex::new(Conversation::default()),
             running: AtomicBool::new(false),
@@ -300,6 +303,8 @@ impl HarnessAdapter for DirectAdapter {
                 .iter()
                 .filter_map(|m| m.context_window)
                 .min(),
+            // Der Loop liest keine Projektdateien; beton liefert sie mit (AGT-005).
+            native_project_files: Vec::new(),
         }
     }
 
