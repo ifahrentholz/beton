@@ -56,6 +56,8 @@ serde_path_to_error = "0.1"
 serde_yaml_ng = "0.10"
 sha2 = "0.10"
 subtle = "2"
+# Session-Export mit Blobs als `.tar.zst` (DATA-010); ohne xattr, ohne Legacy-Formate.
+tar = { version = "0.4", default-features = false }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3"
 thiserror = "2"
@@ -71,6 +73,7 @@ ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 ulid = "3"
 # Marked-Event-Parser für Zeilen/Spalten in Agent-YAML (AGT-001); ohne `encoding`.
 yaml-rust2 = { version = "0.13", default-features = false }
+zstd = { version = "0.13", default-features = false }
 utoipa = { version = "6", features = ["preserve_order"] }
 utoipa-axum = "0.3"
 

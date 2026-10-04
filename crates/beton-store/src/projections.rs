@@ -220,6 +220,9 @@ impl Store {
             for (seq, ts, payload) in self.full_events(&mut tx, org, session).await? {
                 apply(&mut tx, org, session, seq, ts, &payload).await?;
             }
+            if crate::export::is_file_import(&mut tx, org, id).await? {
+                crate::export::seal_imported(&mut tx, org, session).await?;
+            }
         }
         tx.commit().await?;
         tracing::info!(sessions = ids.len(), "Projektionen neu aufgebaut");

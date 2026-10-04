@@ -10,6 +10,7 @@
 mod blobs;
 mod error;
 mod events;
+pub mod export;
 mod idempotency;
 mod imports;
 mod listing;
@@ -32,6 +33,10 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 
 pub use crate::blobs::{BlobStore, DEFAULT_MAX_BLOB_BYTES, GC_GRACE, GcReport};
 pub use crate::error::{Error, Result};
+pub use crate::export::{
+    ExportFile, ExportHeader, ExportOptions, FileImportOutcome, FileImportRecord, FileImportStatus,
+    ImportedFrom, InvalidExport, InvalidKind, ParsedExport, parse_export,
+};
 pub use crate::idempotency::{IDEMPOTENCY_TTL, StoredResponse};
 pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
