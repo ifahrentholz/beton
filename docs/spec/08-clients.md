@@ -422,6 +422,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-005 — `setup`, `doctor` & `diagnose`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `setup` führt interaktiv durch die Erstkonfiguration (erkennt `claude`/`codex`-CLIs und deren Login, **bietet** Installation fehlender CLIs an, nie still). `doctor` prüft Umgebung und gibt Handlungsempfehlungen; `diagnose` (M3) erzeugt ein secret-freies Support-Bundle. Inhalte der Prüfungen, `--json`-Schema und Exit-Codes: Owner OBS-005, `diagnose`: OBS-006 (siehe 11-platform-features.md); Setup-Logik: Owner HAR-016 (siehe 01-harnesses.md). CLI-005 regelt nur die CLI-Oberfläche.
+- **Details:** `setup` fragt nur auf einem Terminal nach (`[y/N]`, Enter = Nein); ohne Terminal, mit `--non-interactive` oder `--check` installiert und meldet es nie etwas an. Exit-Code 1, wenn die CLI eines in diesem Release nutzbaren Harness fehlt (M0: `claude`; `codex` wird erkannt und angeboten, der Harness folgt in M1). `setup --check --json` folgt `schemas/v1/setup-check.schema.json`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `setup --non-interactive` installiert nie etwas und meldet fehlende CLIs mit Exit-Code ≠ 0.
   - [ ] AC2 — `doctor --json` liefert pro Check `{id, status: ok|warn|fail, message, hint}` (OBS-005).

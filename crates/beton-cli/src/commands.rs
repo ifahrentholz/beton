@@ -92,6 +92,8 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Session(SessionCommand::List(args)) => session_list(&ctx, args.archived).await,
         Command::Session(cmd) => session(&ctx, cmd).await,
         Command::Serve(args) => crate::serve::serve(&ctx, args).await,
+        Command::Setup(args) => setup(&ctx, args).await,
+        Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
@@ -117,6 +119,72 @@ fn runner_exit(code: std::process::ExitCode) -> CliResult {
         _ => Err(CliError::new(
             Exit::General,
             anyhow::anyhow!("Runner beendet mit Fehler"),
+        )),
+    }
+}
+
+async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
+    let settings = ctx
+        .layers()?
+        .settings()
+        .map_err(|e| CliError::new(Exit::General, e))?;
+    let layers = beton_harness::registry::HarnessLayers {
+        user: settings.harnesses.clone(),
+        project: Default::default(),
+    };
+    let env = beton_harness::HostEnv {
+        user: settings.harnesses,
+        ..beton_harness::HostEnv::from_process()
+    };
+    let registry = beton_runner::builtin_registry(&layers, false);
+    let report = crate::setup::check(&env, &registry, &crate::setup::default_local_servers()).await;
+    if args.check && ctx.global.json {
+        print_json(&serde_json::to_value(&report).context("Bericht")?)?;
+        let missing = report.harnesses.iter().any(|h| h.supported && !h.installed);
+        return if missing {
+            Err(CliError::new(
+                Exit::General,
+                anyhow::anyhow!("Harness-CLI fehlt"),
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    // Ohne Terminal keine Rückfragen (wie --non-interactive).
+    let interactive = !args.non_interactive && !args.check && std::io::stdin().is_terminal();
+    let mut out = std::io::stdout().lock();
+    let code = crate::setup::run(
+        &report,
+        interactive,
+        &mut crate::setup::TerminalPrompt,
+        &crate::setup::RealSpawner,
+        &mut out,
+    )
+    .await
+    .context("stdout")?;
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!("Mindestens eine nutzbare Harness-CLI fehlt"),
+        ))
+    }
+}
+
+async fn doctor(ctx: &Ctx) -> CliResult {
+    let report = crate::doctor::run(ctx).await;
+    if ctx.global.json {
+        print_json(&serde_json::to_value(&report).context("Bericht")?)?;
+    } else {
+        crate::doctor::render(&report, &mut std::io::stdout().lock()).context("stdout")?;
+    }
+    match report.exit_code() {
+        0 => Ok(()),
+        1 => Err(CliError::new(Exit::General, anyhow::anyhow!("Warnungen"))),
+        _ => Err(CliError::new(
+            Exit::Usage,
+            anyhow::anyhow!("Fehler gefunden"),
         )),
     }
 }

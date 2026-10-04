@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 beton-core.workspace = true
 beton-harness.workspace = true
 beton-harness-claude.workspace = true
@@ -36,6 +37,9 @@ tokio = { workspace = true, features = ["io-std", "signal"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
 
 [dev-dependencies]
 sqlx.workspace = true

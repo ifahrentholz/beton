@@ -10,6 +10,8 @@ Commands:
   open        Web-UI im Browser öffnen (Anmeldung per Einmal-Link)
   session     Sessions verwalten
   serve       Lokalen Server starten (nur Loopback)
+  setup       Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
+  doctor      Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler
   config      Konfiguration lesen und schreiben
   auth        Lokale Anmeldung verwalten
   admin       Wartung von Datenbank und Projektionen

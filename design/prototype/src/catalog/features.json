@@ -5801,7 +5801,7 @@
   "acs": [
    "Fehlt `claude` im PATH, meldet `doctor` `warn` mit Installationshinweis und Exit-Code 1.",
    "`--json` folgt einem veröffentlichten Schema (Snapshot-Test) und enthält pro Check `id`, `status`, `message`, `hint`.",
-   "Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.",
+   "(ab M2) Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.",
    "`doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch) und läuft ohne Netzwerk (nur Loopback) ohne Verbindungsversuch nach außen durch."
   ]
  },

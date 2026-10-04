@@ -177,6 +177,7 @@ name = "beton-cli"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "beton-core",
  "beton-harness",
  "beton-harness-claude",
@@ -188,6 +189,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "fs4",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",

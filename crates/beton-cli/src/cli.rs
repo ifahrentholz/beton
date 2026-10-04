@@ -71,6 +71,10 @@ pub enum Command {
     Session(SessionCommand),
     /// Lokalen Server starten (nur Loopback).
     Serve(ServeArgs),
+    /// Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen.
+    Setup(SetupArgs),
+    /// Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler.
+    Doctor,
     /// Konfiguration lesen und schreiben.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -192,6 +196,16 @@ pub struct RenameArgs {
     pub session: String,
     /// Neuer Titel.
     pub title: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// Keine Rückfragen; installiert und meldet nie etwas an.
+    #[arg(long)]
+    pub non_interactive: bool,
+    /// Nur prüfen und ausgeben (mit `--json` maschinenlesbar).
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Debug, Args)]
