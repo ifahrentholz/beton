@@ -80,6 +80,12 @@
 
 :root {
   --radius: 4px;
+}
+
+/* Sichtbeton hell */
+:root,
+.light,
+.theme-concrete.light {
   --background: #e4e4e0;
   --sidebar: #dbdbd6;
   --card: #f0f0ec;
@@ -114,7 +120,9 @@
   --voice-human: #24272b;
 }
 
-.dark {
+/* Sichtbeton dunkel */
+.dark,
+.theme-concrete.dark {
   --background: #1d1f22;
   --sidebar: #191b1e;
   --card: #26292d;
@@ -147,6 +155,158 @@
   --voice-acp: #aab565;
   --voice-direct: #93a2bf;
   --voice-human: #dcddd8;
+}
+
+/* Nord hell (Snow Storm, Frost, Aurora; Textfarben für AA abgedunkelt) */
+.theme-nord,
+.theme-nord.light,
+:where(.theme-nord) .light {
+  --background: #e5e9f0;
+  --sidebar: #dce2eb;
+  --card: #eceff4;
+  --card-foreground: #2e3440;
+  --popover: #f3f5f8;
+  --popover-foreground: #2e3440;
+  --sunken: #d8dee9;
+  --foreground: #2e3440;
+  --muted: #dfe4ec;
+  --muted-foreground: #4c566a;
+  --accent: #d6dce7;
+  --accent-foreground: #2e3440;
+  --primary: #2e3440;
+  --primary-foreground: #eceff4;
+  --secondary: #dfe4ec;
+  --secondary-foreground: #2e3440;
+  --border: #c2cad8;
+  --input: #b4bdcd;
+  --ring: #8a6a1c;
+  --signal: #e5b94f;
+  --signal-foreground: #2e3440;
+  --signal-soft: #f2e5c3;
+  --ok: #406637;
+  --ok-soft: #dbe7d5;
+  --deny: #a5383f;
+  --deny-soft: #f2dadc;
+  --destructive: #a5383f;
+  --voice-claude: #775173;
+  --voice-codex: #286572;
+  --voice-acp: #586328;
+  --voice-direct: #435f85;
+  --voice-human: #2e3440;
+}
+
+/* Nord dunkel (Polar Night, Frost, Aurora; Textfarben für AA aufgehellt) */
+.theme-nord.dark,
+:where(.theme-nord) .dark,
+:where(.dark) .theme-nord:not(.light) {
+  --background: #2e3440;
+  --sidebar: #2a2f3a;
+  --card: #353c4a;
+  --card-foreground: #eceff4;
+  --popover: #3b4252;
+  --popover-foreground: #eceff4;
+  --sunken: #272c36;
+  --foreground: #eceff4;
+  --muted: #353c4a;
+  --muted-foreground: #b4bccb;
+  --accent: #3f4757;
+  --accent-foreground: #eceff4;
+  --primary: #eceff4;
+  --primary-foreground: #2e3440;
+  --secondary: #353c4a;
+  --secondary-foreground: #eceff4;
+  --border: #4c566a;
+  --input: #566178;
+  --ring: #ebcb8b;
+  --signal: #ebcb8b;
+  --signal-foreground: #2e3440;
+  --signal-soft: #48432f;
+  --ok: #a7c191;
+  --ok-soft: #36443f;
+  --deny: #e4a9ae;
+  --deny-soft: #47363e;
+  --destructive: #e4a9ae;
+  --voice-claude: #cbb0c6;
+  --voice-codex: #88c0d0;
+  --voice-acp: #bfc38a;
+  --voice-direct: #a5b9d8;
+  --voice-human: #eceff4;
+}
+
+/* Hoher Kontrast hell: Text ≥ 7:1 auf allen Flächen, kräftige Linien */
+.theme-hc,
+.theme-hc.light,
+:where(.theme-hc) .light {
+  --background: #ffffff;
+  --sidebar: #f2f2f2;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --sunken: #ebebeb;
+  --foreground: #000000;
+  --muted: #ebebeb;
+  --muted-foreground: #333333;
+  --accent: #e0e0e0;
+  --accent-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #ebebeb;
+  --secondary-foreground: #000000;
+  --border: #6b6b6b;
+  --input: #4d4d4d;
+  --ring: #6b4e00;
+  --signal: #ffc629;
+  --signal-foreground: #000000;
+  --signal-soft: #fff1c2;
+  --ok: #00511f;
+  --ok-soft: #e3f3e7;
+  --deny: #8e0d0d;
+  --deny-soft: #fde4e4;
+  --destructive: #8e0d0d;
+  --voice-claude: #4a2a85;
+  --voice-codex: #004e56;
+  --voice-acp: #3d470c;
+  --voice-direct: #28385a;
+  --voice-human: #000000;
+}
+
+/* Hoher Kontrast dunkel */
+.theme-hc.dark,
+:where(.theme-hc) .dark,
+:where(.dark) .theme-hc:not(.light) {
+  --background: #000000;
+  --sidebar: #0a0a0a;
+  --card: #0f0f0f;
+  --card-foreground: #ffffff;
+  --popover: #141414;
+  --popover-foreground: #ffffff;
+  --sunken: #000000;
+  --foreground: #ffffff;
+  --muted: #1c1c1c;
+  --muted-foreground: #d6d6d6;
+  --accent: #2a2a2a;
+  --accent-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --secondary: #1c1c1c;
+  --secondary-foreground: #ffffff;
+  --border: #9a9a9a;
+  --input: #b3b3b3;
+  --ring: #ffd23f;
+  --signal: #ffd23f;
+  --signal-foreground: #000000;
+  --signal-soft: #332a00;
+  --ok: #5ee38c;
+  --ok-soft: #002d14;
+  --deny: #ff9f97;
+  --deny-soft: #3d0a0a;
+  --destructive: #ff9f97;
+  --voice-claude: #cdb6ff;
+  --voice-codex: #6fe6ee;
+  --voice-acp: #dbe57c;
+  --voice-direct: #bccbff;
+  --voice-human: #ffffff;
 }
 
 @layer base {
