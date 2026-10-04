@@ -60,13 +60,29 @@ test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und
   await expect(page.getByLabel('Nachricht')).toBeEditable()
   expect(Date.now() - t0).toBeLessThanOrEqual(1500)
 
-  const open = async (id: string) => {
-    const start = Date.now()
-    await page.locator(`[data-session="${id}"]`).click()
-    await expect(page.getByRole('heading', { name: id === big ? 'Groß' : 'Klein' })).toBeVisible()
-    if (id === big) await expect(page.getByTestId('agent-message').first()).toBeVisible()
-    return Date.now() - start
-  }
+  // Im Browser gemessen: Klick bis der erste Inhalt im DOM steht. Playwrights `expect`
+  // pollt in Stufen (0/20/100/500 ms) und würde die Messung verfälschen.
+  const open = (id: string) =>
+    page.evaluate(
+      ({ id, title, needsMessage }) =>
+        new Promise<number>((resolve) => {
+          const ready = () => {
+            const h = document.querySelector('h2')
+            if (h?.textContent !== title) return false
+            return !needsMessage || document.querySelector('[data-testid="agent-message"]') !== null
+          }
+          const start = performance.now()
+          const observer = new MutationObserver(() => {
+            if (ready()) {
+              observer.disconnect()
+              resolve(performance.now() - start)
+            }
+          })
+          observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+          document.querySelector<HTMLElement>(`[data-session="${id}"]`)!.click()
+        }),
+      { id, title: id === big ? 'Groß' : 'Klein', needsMessage: id === big },
+    )
   const cold = await open(big)
   expect(cold).toBeLessThanOrEqual(800)
   await open(small)
