@@ -569,6 +569,53 @@ async fn proto_008_ac1_blocked_client_gets_overflow_and_recovers() {
 }
 
 #[tokio::test]
+async fn proto_008_ac1_reattach_with_large_backlog_completes_without_overflow() {
+    // Beim Nachliefern aus dem Store bestimmt der Server das Tempo: Ein lesender Client mit
+    // kleinem Empfangsfenster holt einen Rückstand weit über der Overflow-Grenze auf. Ein
+    // einzelner Store-Abruf (64 Events à 8 KB) liegt schon über der Grenze von 64 KB.
+    let f = fixture(|mut r| {
+        r.ws.overflow_bytes = 64 * 1024;
+        r
+    })
+    .await;
+    for _ in 0..40 {
+        f.produce(50, &"x".repeat(8000)).await;
+    }
+    let head = f
+        .store
+        .session(OrgId::LOCAL, f.session.id)
+        .await
+        .unwrap()
+        .head_seq;
+    for round in 0..3 {
+        let mut ws = f.hello_with(Some(16 * 1024)).await;
+        send(
+            &mut ws,
+            json!({"t": "attach", "id": "r1", "session_id": f.session.id, "from_seq": 0}),
+        )
+        .await;
+        let mut seen = Vec::new();
+        while seen.last().copied().unwrap_or(0) < head {
+            let m = recv(&mut ws).await.unwrap();
+            assert_ne!(
+                m["t"], "overflow",
+                "Runde {round}: lesender Client bekommt kein overflow"
+            );
+            if m["t"] == "events" {
+                seen.extend(
+                    m["events"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|e| e["seq"].as_u64().unwrap()),
+                );
+            }
+        }
+        assert_eq!(seen, (1..=head).collect::<Vec<_>>());
+    }
+}
+
+#[tokio::test]
 async fn proto_008_ac2_slow_client_does_not_delay_fast_client() {
     let f = fixture(|r| r).await;
     let mut slow = f.hello().await;
