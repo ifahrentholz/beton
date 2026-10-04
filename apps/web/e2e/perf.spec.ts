@@ -37,7 +37,7 @@ async function frames(page: import('@playwright/test').Page, ms: number) {
 }
 
 test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und Start', async ({ daemon, page }) => {
-  test.setTimeout(240_000)
+  test.setTimeout(180_000 + STREAM_SECONDS * 1000)
 
   // Initial-JS (gzip) ≤ 450 KB.
   const dist = join(import.meta.dirname, '..', 'dist')
@@ -99,14 +99,14 @@ test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und
   let text = ''
   while (text.length < chars) text += paragraph + (text.length % 600 < paragraph.length ? '\\n\\n' : '')
   const streamer = await daemon.session(
-    `turns:\n  - expect_input: "los"\n    emit:\n      - { message_delta: "${text}", chunk: 8, delay_ms: 4 }\n`,
+    `turns:\n  - expect_input: "los"\n    emit:\n      - { message_delta: "${text}", chunk: 8, chunk_delay_ms: 4 }\n`,
     'Strom',
   )
   await page.locator(`[data-session="${streamer}"]`).click()
   await expect(page.getByRole('heading', { name: 'Strom' })).toBeVisible()
   await daemon.api('POST', `/v1/sessions/${streamer}/input`, { text: 'los' })
   await expect(page.getByTestId('agent-message').last()).toBeVisible()
-  const f = await frames(page, Math.min(STREAM_SECONDS, 20) * 1000 - 2000)
+  const f = await frames(page, STREAM_SECONDS * 1000 - 2000)
   test.info().annotations.push({
     type: 'Messwerte',
     description: JSON.stringify({

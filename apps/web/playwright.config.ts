@@ -12,7 +12,13 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
-    ...devices['Desktop Chrome'],
     trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
+  // Das M0-Szenario läuft auf allen drei Engines (QA-007 AC1), der Rest auf Chromium.
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] }, grep: /@alle-engines/ },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] }, grep: /@alle-engines/ },
+  ],
 })

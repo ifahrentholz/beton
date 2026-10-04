@@ -220,18 +220,23 @@ jobs:
       - name: Bundle bauen und prüfen
         # covers: WEB-001 AC4 (keine absoluten http(s)-Asset-URLs im Bundle)
         run: pnpm build
-      - run: pnpm exec playwright install --with-deps chromium
-      - name: E2E und Performance-Budgets
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: E2E, M0-Szenario auf drei Engines und Performance-Budgets
         # covers: WEB-015 AC1
+        # covers: QA-007 AC1
         run: pnpm e2e
         env:
           CI: "1"
           BETON_BIN: ${{ github.workspace }}/target/debug/beton
-      - uses: actions/upload-artifact@v4
+      - name: Trace, Screenshot und Daemon-Logs fehlgeschlagener Tests
+        # covers: QA-007 AC3
+        uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
-          path: apps/web/playwright-report
+          name: playwright-ergebnisse
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
           retention-days: 7
 
   sdk-ts:
