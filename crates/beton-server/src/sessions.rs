@@ -405,6 +405,28 @@ impl<'a> SessionManager<'a> {
         Ok(())
     }
 
+    /// Titel ändern (CLI-003 `session rename`).
+    pub async fn rename(
+        &self,
+        session: SessionId,
+        title: &str,
+        by: PrincipalId,
+    ) -> Result<(), Problem> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(Problem::new(ProblemCode::ValidationFailed).detail("Titel ist leer"));
+        }
+        self.append(
+            session,
+            user_actor(by),
+            EventPayload::SessionTitleChanged(SessionTitleChanged {
+                title: title.to_owned(),
+                source: TitleSource::User,
+            }),
+        )
+        .await
+    }
+
     pub async fn unarchive(&self, session: SessionId, by: PrincipalId) -> Result<(), Problem> {
         self.append(
             session,
