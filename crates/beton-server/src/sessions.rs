@@ -243,6 +243,10 @@ impl<'a> SessionManager<'a> {
                     harnesses: beton_harness::registry::HarnessLayers {
                         user: cfg.harnesses_user.clone(),
                         project,
+                        user_file: None,
+                        project_file: Some(
+                            Path::new(&created.cwd).join(".beton").join("config.yaml"),
+                        ),
                     },
                 },
             )

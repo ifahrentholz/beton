@@ -58,6 +58,10 @@ pub struct Faults {
     /// Diese Zeile (1-basiert) als ungültiges JSON ausgeben.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub malformed_line: Option<u32>,
+    /// JSON-RPC-Protokolle (`app-server`, `acp`): Den Handshake (`initialize`) mit einer
+    /// Antwort beantworten, die nicht zum Schema passt (HAR-006 AC4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bad_handshake: bool,
 }
 
 impl Faults {
