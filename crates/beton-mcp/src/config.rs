@@ -118,9 +118,8 @@ impl ConfiguredServer {
             }
             (None, Some(url)) => {
                 if !(url.starts_with("http://") || url.starts_with("https://")) {
-                    return Err(format!(
-                        "`url` muss mit http:// oder https:// beginnen: {url}"
-                    ));
+                    // Die URL selbst nicht ausgeben: sie kann Zugangsdaten enthalten.
+                    return Err("`url` muss mit http:// oder https:// beginnen".into());
                 }
                 if !s.args.is_empty() || !s.env.is_empty() {
                     return Err("`args` und `env` gelten nur für stdio-Server (`command`)".into());
@@ -213,8 +212,35 @@ pub fn parse(text: &str, file: &Path) -> Result<McpFile, ConfigError> {
         file: file.to_owned(),
         line: e.location().map(|l| l.line()),
         column: e.location().map(|l| l.column()),
-        message: e.to_string(),
+        message: redact_values(&e.to_string()),
     })
+}
+
+/// Entfernt zitierte Werte aus Typ- und Wertfehlern („invalid type: string "…"“), damit
+/// Env- oder Header-Werte nicht in Hinweise, Events oder Logs gelangen. Feldnamen in
+/// Fehlern zu unbekannten Feldern bleiben erhalten.
+fn redact_values(message: &str) -> String {
+    if !message.contains("invalid") {
+        return message.to_owned();
+    }
+    let mut out = String::with_capacity(message.len());
+    let mut quote: Option<char> = None;
+    for c in message.chars() {
+        match quote {
+            Some(q) if c == q => {
+                out.push('…');
+                out.push(c);
+                quote = None;
+            }
+            Some(_) => {}
+            None if c == '"' || c == '`' => {
+                out.push(c);
+                quote = Some(c);
+            }
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -323,6 +349,25 @@ mod tests {
         assert_eq!(e.line, Some(3));
         assert!(e.to_string().starts_with("/p/mcp.yaml:3:"), "{e}");
         assert!(e.message.contains("comand"), "{e}");
+    }
+
+    #[test]
+    fn config_errors_do_not_echo_values() {
+        // Falsch eingerückt: der Wert landet sonst in Fehlermeldung, Notice und Log.
+        let e = parse(
+            "servers:\n  gh:\n    command: x\n    env: ghp_geheimerwert123\n",
+            Path::new("mcp.yaml"),
+        )
+        .unwrap_err();
+        assert!(!e.to_string().contains("ghp_geheimerwert123"), "{e}");
+        assert_eq!(e.line, Some(4));
+        let f = parse(
+            "servers:\n  web:\n    url: ftp://user:pw@host/x\n",
+            Path::new("m"),
+        )
+        .unwrap();
+        let s = merge(&McpFile::default(), &f, None);
+        assert!(!s[0].endpoint().unwrap_err().contains("pw@host"));
     }
 
     #[test]
