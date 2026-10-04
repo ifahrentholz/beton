@@ -545,7 +545,7 @@ function DiagConnection({ state }: { state: string }) {
     <SettingsShell section="connection" wide connection={down ? 'offline' : 'local'}>
       <PageHeader title="Verbindung">Wie diese App mit dem beton-Daemon auf deinem Rechner spricht. Für die Fehlersuche – im Alltag musst du hier nichts tun.</PageHeader>
       {banner[state]}
-      <div className={cn('grid grid-cols-2 gap-x-8', down && 'opacity-60')}>
+      <div className={cn('grid grid-cols-2 gap-x-8', down && 'dimmed')}>
         <F id="PROTO-004">
           <SectionTitle>WebSocket</SectionTitle>
           <KV
@@ -570,7 +570,7 @@ function DiagConnection({ state }: { state: string }) {
         </F>
       </div>
 
-      <F id="PROTO-005" className={cn(down && 'opacity-60')}>
+      <F id="PROTO-005" className={cn(down && 'dimmed')}>
         <SectionTitle aside="Ereignisse kommen lückenlos in Reihenfolge, auch nach Neuverbindung">Angehängte Sessions</SectionTitle>
         <div className="overflow-hidden rounded-md border border-border">
           <table className="w-full text-[13px]">
@@ -602,7 +602,7 @@ function DiagConnection({ state }: { state: string }) {
         </div>
       </F>
 
-      <div className={cn('grid grid-cols-2 gap-x-8', down && 'opacity-60')}>
+      <div className={cn('grid grid-cols-2 gap-x-8', down && 'dimmed')}>
         <F id="PROTO-007">
           <SectionTitle>Datenkanäle</SectionTitle>
           <div className="divide-y divide-border rounded-md border border-border text-[13px]">
@@ -638,7 +638,7 @@ function DiagConnection({ state }: { state: string }) {
         </F>
       </div>
 
-      <F id="PROTO-015" className={cn(down && 'opacity-60')}>
+      <F id="PROTO-015" className={cn(down && 'dimmed')}>
         <SectionTitle aside="Runner verbinden sich nur ausgehend; kein offener Port">Runner</SectionTitle>
         <div className="divide-y divide-border rounded-md border border-border text-[13px]">
           {[

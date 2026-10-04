@@ -104,7 +104,7 @@ function MobileSessions({ state }: { state: string }) {
         )
       }
     >
-      <F id="WEB-013" className={cn(stale && 'opacity-60')}>
+      <F id="WEB-013" className={cn(stale && 'dimmed')}>
         {projects.map((p) => {
           const list = sessions.filter((s) => s.project === p.id)
           return (
@@ -367,7 +367,7 @@ function MobileInstall({ state }: { state: string }) {
           </F>
         }
       >
-        <div className="opacity-90">
+        <div>
           {sessions.slice(0, 6).map((s) => (
             <div key={s.id} className="flex items-center gap-3 border-b border-border/60 px-3 py-2.5">
               <StatusMark status={s.status} />

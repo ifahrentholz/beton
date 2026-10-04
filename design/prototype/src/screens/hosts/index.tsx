@@ -585,7 +585,7 @@ function RunnersScreen({ state }: { state: string }) {
 
               <div className="mt-1 flex gap-2">
                 <F id="RUN-018" as="span">
-                  <Btn className={cn(sel.provider !== 'kubernetes' && 'pointer-events-none opacity-40')}>Workspace sichern</Btn>
+                  <Btn disabled={sel.provider !== 'kubernetes'}>Workspace sichern</Btn>
                 </F>
                 <Btn variant="danger">Runner stoppen</Btn>
               </div>
@@ -720,7 +720,7 @@ function ProvidersScreen({ state }: { state: string }) {
                   const avail = m.on.includes(prov)
                   const on = m.id === selectedMode
                   return (
-                    <div key={m.id} className={cn('flex gap-3 border-b border-border py-2', !avail && 'opacity-45')}>
+                    <div key={m.id} className={cn('flex gap-3 border-b border-border py-2', !avail && 'dimmed')}>
                       <span className={cn('mt-0.5 size-4 shrink-0 rounded-full border', on ? 'border-[5px] border-foreground' : 'border-input')} />
                       <div>
                         <div className="text-[13px] font-medium">

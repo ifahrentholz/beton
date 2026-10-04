@@ -98,7 +98,7 @@ export function AgentLibrary({ state, overlay }: { state: string; overlay?: Reac
             <div className="divide-y divide-border border-y border-border">
               {builtins.map((a) =>
                 shadowed && a.name === 'maestra' ? (
-                  <div key={a.name} className="opacity-60">
+                  <div key={a.name} className="dimmed">
                     <AgentRow a={a} warn={<Mark kind="skip" label="Verschattet durch .beton/agents/maestra" className="mt-1" />} />
                   </div>
                 ) : (

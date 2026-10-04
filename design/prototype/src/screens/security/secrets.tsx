@@ -142,7 +142,7 @@ export function Secrets({ state }: { state: string }) {
               {rows.map((r) => (
                 <div
                   key={r.ref}
-                  className={cn('grid items-center gap-3 border-b border-border/70 px-3 py-1.5 text-[12px] last:border-b-0', isTeam ? 'grid-cols-[minmax(0,1.6fr)_70px_120px_minmax(0,1fr)_110px_100px_150px]' : 'grid-cols-[minmax(0,1.6fr)_70px_minmax(0,1fr)_110px_100px_200px]', locked && 'opacity-60')}
+                  className={cn('grid items-center gap-3 border-b border-border/70 px-3 py-1.5 text-[12px] last:border-b-0', isTeam ? 'grid-cols-[minmax(0,1.6fr)_70px_120px_minmax(0,1fr)_110px_100px_150px]' : 'grid-cols-[minmax(0,1.6fr)_70px_minmax(0,1fr)_110px_100px_200px]', locked && 'dimmed')}
                 >
                   <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px]">
                     {locked ? <Lock className="size-3 shrink-0" /> : <KeyRound className="size-3 shrink-0 text-muted-foreground" />}
