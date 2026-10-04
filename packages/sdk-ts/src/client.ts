@@ -11,6 +11,14 @@ import type { SessionSummary } from './gen/SessionSummary.js'
 import type { InputMode } from './gen/InputMode.js'
 import type { QueueView } from './gen/QueueView.js'
 import type { Event } from './gen/Event.js'
+import type { ChangeScope } from './gen/ChangeScope.js'
+import type { ChangesPage } from './gen/ChangesPage.js'
+import type { FileDiff } from './gen/FileDiff.js'
+import type { SearchPage } from './gen/SearchPage.js'
+import type { TreePage } from './gen/TreePage.js'
+import type { WorkspaceFile } from './gen/WorkspaceFile.js'
+import type { WorkspaceInfo } from './gen/WorkspaceInfo.js'
+import type { WrittenFile } from './gen/WrittenFile.js'
 import { defaultWebSocketFactory, eventStream, type StreamOptions, type WebSocketFactory } from './stream.js'
 
 export interface ClientOptions {
@@ -86,8 +94,8 @@ export class BetonClient {
   }
 
   /** Low-Level-Aufruf; Fehler als {@link BetonError}. */
-  async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = { accept: 'application/json' }
+  async request<T>(method: string, path: string, body?: unknown, extraHeaders: Record<string, string> = {}): Promise<T> {
+    const headers: Record<string, string> = { accept: 'application/json', ...extraHeaders }
     if (this.token) headers.authorization = `Bearer ${this.token}`
     if (body !== undefined) headers['content-type'] = 'application/json'
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -221,6 +229,57 @@ export class Session {
     )
   }
 
+  /** Workspace der Session: Dateien, Suche, Änderungen und Diffs (SES-017, SES-018). */
+  readonly workspace = {
+    /** Überblick, z. B. ob der Workspace ein Git-Repository ist. */
+    info: (): Promise<WorkspaceInfo> => this.client.request('GET', `${this.base()}/workspace`),
+    /** Eine Ebene des Dateibaums (`path` leer = Wurzel). */
+    tree: (path = '', opts: { cursor?: string; limit?: number } = {}): Promise<TreePage> => {
+      const q = new URLSearchParams()
+      if (path) q.set('path', path)
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      const qs = q.toString()
+      return this.client.request('GET', `${this.base()}/workspace/tree${qs ? `?${qs}` : ''}`)
+    },
+    /** Datei lesen; `sha256` ist zugleich das ETag für {@link writeFile}. */
+    readFile: (path: string): Promise<WorkspaceFile> =>
+      this.client.request('GET', `${this.base()}/workspace/files/${encPath(path)}`),
+    /** URL für den Download (Dateien über 5 MiB). */
+    downloadUrl: (path: string): string => `${this.client.baseUrl}${this.base()}/workspace/files/${encPath(path)}?download=true`,
+    /**
+     * Datei schreiben. Mit `ifMatch` (SHA-256 des zuletzt gelesenen Stands) nur, wenn sie
+     * seitdem unverändert ist; sonst {@link BetonError} mit Status 412.
+     */
+    writeFile: (path: string, content: string, ifMatch?: string): Promise<WrittenFile> =>
+      this.client.request('PUT', `${this.base()}/workspace/files/${encPath(path)}`, { content }, ifMatch ? { 'if-match': `"${ifMatch}"` } : {}),
+    /** Dateinamen- oder Inhaltssuche. */
+    search: (query: string, mode: 'name' | 'content' = 'name', opts: { cursor?: string; limit?: number } = {}): Promise<SearchPage> => {
+      const q = new URLSearchParams({ q: query, mode })
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      return this.client.request('GET', `${this.base()}/workspace/search?${q.toString()}`)
+    },
+    /** Geänderte Dateien in einer Sicht; `turn` nur bei `scope=turn` (ohne: letzter Turn). */
+    changes: (scope: ChangeScope, opts: { turn?: string; cursor?: string; limit?: number } = {}): Promise<ChangesPage> => {
+      const q = new URLSearchParams({ scope })
+      if (opts.turn) q.set('turn', opts.turn)
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      return this.client.request('GET', `${this.base()}/workspace/changes?${q.toString()}`)
+    },
+    /** Zeilengenauer Diff einer Datei. */
+    diff: (path: string, scope: ChangeScope, turn?: string): Promise<FileDiff> => {
+      const q = new URLSearchParams({ path, scope })
+      if (turn) q.set('turn', turn)
+      return this.client.request('GET', `${this.base()}/workspace/diff?${q.toString()}`)
+    },
+  }
+
+  private base(): string {
+    return `/v1/sessions/${enc(this.id)}`
+  }
+
   /** Fork ab `atSeq` (SES-006). Folgt mit M1. */
   fork(_options: { atSeq: number; harness?: string }): Promise<Session> {
     return Promise.reject(new Error('Fork folgt mit M1 (SES-006)'))
@@ -229,4 +288,9 @@ export class Session {
 
 function enc(s: string): string {
   return encodeURIComponent(s)
+}
+
+/** Workspace-Pfad: jedes Segment einzeln kodiert, `/` bleibt Trenner. */
+function encPath(path: string): string {
+  return path.split('/').map(enc).join('/')
 }

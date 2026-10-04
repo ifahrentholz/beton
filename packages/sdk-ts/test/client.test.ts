@@ -51,4 +51,33 @@ describe('REST-Client', () => {
     expect((err as BetonError).code).toBe('not_found')
     expect((err as BetonError).status).toBe(404)
   })
+
+  it('SES-017: Workspace-Pfade segmentweise kodiert, Schreiben mit If-Match, 412 als BetonError', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${req.headers['if-match'] ?? '-'} ${text}`)
+      if (req.method === 'PUT') return [412, { status: 412, code: 'precondition_failed', title: 'Veraltet' }]
+      if (req.url?.startsWith('/v1/sessions/ses_1/workspace/files/')) return [200, { path: 'a b/c#.ts', size: 1, sha256: 'abc', binary: false, too_large: false, content: 'x' }]
+      return [200, { items: [], next_cursor: null, path: '', scope: 'turn', base_sha: 'b' }]
+    })
+    const s = new BetonClient({ baseUrl: url }).session('ses_1')
+    const f = await s.workspace.readFile('a b/c#.ts')
+    expect(f.sha256).toBe('abc')
+    const err = await s.workspace.writeFile('a b/c#.ts', 'neu', 'abc').catch((e: unknown) => e)
+    expect((err as BetonError).status).toBe(412)
+    await s.workspace.info()
+    await s.workspace.tree('src')
+    await s.workspace.search('Retry-After', 'content')
+    await s.workspace.changes('turn', { turn: 'trn_1' })
+    await s.workspace.diff('src/a.ts', 'uncommitted')
+    expect(seen).toEqual([
+      'GET /v1/sessions/ses_1/workspace/files/a%20b/c%23.ts - ',
+      'PUT /v1/sessions/ses_1/workspace/files/a%20b/c%23.ts "abc" {"content":"neu"}',
+      'GET /v1/sessions/ses_1/workspace - ',
+      'GET /v1/sessions/ses_1/workspace/tree?path=src - ',
+      'GET /v1/sessions/ses_1/workspace/search?q=Retry-After&mode=content - ',
+      'GET /v1/sessions/ses_1/workspace/changes?scope=turn&turn=trn_1 - ',
+      'GET /v1/sessions/ses_1/workspace/diff?path=src%2Fa.ts&scope=uncommitted - ',
+    ])
+  })
 })
