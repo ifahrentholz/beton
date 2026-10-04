@@ -105,6 +105,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Setup(args) => setup(&ctx, args).await,
         Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
+        Command::Agent(cmd) => crate::agent::run(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
@@ -124,7 +125,7 @@ pub async fn run(cli: Cli) -> CliResult {
 }
 
 /// Kommandos, die mit dem Daemon sprechen und nach `cli.log` loggen (OBS-001).
-/// `doctor` schreibt nichts ins Datenverzeichnis (OBS-005 AC4).
+/// `doctor` schreibt nichts ins Datenverzeichnis (OBS-005 AC4); `agent` arbeitet nur auf Dateien.
 fn cli_logs(command: &Command) -> bool {
     !matches!(
         command,
@@ -132,6 +133,7 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Runner
             | Command::Doctor
             | Command::Config(_)
+            | Command::Agent(_)
             | Command::Completion(_)
             | Command::Version
             | Command::Auth(_)

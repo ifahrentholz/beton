@@ -13,6 +13,7 @@ authors = ["Ingo Fahrentholz"]
 [workspace.dependencies]
 # interne Crates
 beton-core = { path = "crates/beton-core", version = "0.0.0" }
+beton-agents = { path = "crates/beton-agents", version = "0.0.0" }
 beton-proto = { path = "crates/beton-proto", version = "0.0.0" }
 beton-store = { path = "crates/beton-store", version = "0.0.0" }
 beton-server = { path = "crates/beton-server", version = "0.0.0" }
@@ -64,6 +65,8 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 ulid = "3"
+# Marked-Event-Parser für Zeilen/Spalten in Agent-YAML (AGT-001); ohne `encoding`.
+yaml-rust2 = { version = "0.13", default-features = false }
 utoipa = { version = "6", features = ["preserve_order"] }
 utoipa-axum = "0.3"
 

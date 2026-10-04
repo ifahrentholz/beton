@@ -1,0 +1,1181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "beton Agent (agent.yaml, Format v1)",
+  "description": "Eine Agent-Definition (`agent.yaml`).",
+  "type": "object",
+  "properties": {
+    "agents": {
+      "description": "Sub-Agents für `session_spawn`: Verweis (`ref`) oder inline definiert.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/SubAgent"
+      },
+      "default": {}
+    },
+    "async": {
+      "description": "Verhalten als Async-Agent (ab M5, ASY-002, ASY-008).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Async"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "executor": {
+      "$ref": "#/$defs/Executor"
+    },
+    "instructions": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Instructions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "name": {
+      "description": "Name, `[a-z0-9-]`, eindeutig im Suchpfad; entspricht dem Verzeichnisnamen.",
+      "$ref": "#/$defs/AgentName"
+    },
+    "params": {
+      "description": "Typisierte Eingaben, nutzbar als `{{ params.x }}` (AGT-010).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Param"
+      },
+      "default": {}
+    },
+    "policies": {
+      "description": "Agent-Ebene der Policy-Hierarchie (ab M2, AGT-014).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/PolicyEntry"
+      }
+    },
+    "sandbox": {
+      "description": "Sandbox-Anforderungen (ab M2; Felder und Semantik: SBX).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Sandbox"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schedules": {
+      "description": "Wiederkehrende Auslöser (ab M5, ASY-004).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Schedule"
+      }
+    },
+    "skills": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SkillSelection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "spawn": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Spawn"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "spec_version": {
+      "description": "Version des Formats. Unterstützt: `1`.",
+      "type": "integer",
+      "format": "uint64",
+      "const": 1,
+      "minimum": 0
+    },
+    "timers": {
+      "description": "Timer-Tools freischalten (ab M5, ASY-003).",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "tools": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Tools"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "version": {
+      "description": "Frei wählbar, SemVer empfohlen.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
+  },
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "required": [
+    "spec_version",
+    "name",
+    "executor"
+  ],
+  "$defs": {
+    "AgentName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "Async": {
+      "description": "Verhalten als Async-Agent (ab M5).",
+      "type": "object",
+      "properties": {
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AsyncApproval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notify": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/NotifyChannel"
+          }
+        },
+        "on_result": {
+          "description": "Zustellung an den Parent: `wake` (Default) oder `inbox_only`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "AsyncApproval": {
+      "description": "Approvals ohne Zuschauer (ASY-008).",
+      "type": "object",
+      "properties": {
+        "on_timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Budget": {
+      "description": "Budget eines Runs (ASY-010).",
+      "type": "object",
+      "properties": {
+        "max_cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "max_duration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_turns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "CatchUp": {
+      "type": "string",
+      "enum": [
+        "run_once",
+        "skip"
+      ]
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ms|s|m|h|d)$"
+    },
+    "Effort": {
+      "description": "Reasoning-Effort.",
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ]
+    },
+    "Executor": {
+      "description": "Auf welchem Harness und wie der Agent läuft (AGT-004).",
+      "type": "object",
+      "properties": {
+        "harness": {
+          "description": "`claude`, `codex`, `fake`, `acp:<slug>` oder `direct:<provider>`.",
+          "$ref": "#/$defs/HarnessId"
+        },
+        "max_turns": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 1
+        },
+        "mcp_bridge": {
+          "description": "System-Tools über MCP bereitstellen (HAR-009).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "`native` (Default) oder `tui`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "description": "Modell; ohne Angabe der Default des Harness.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_mode": {
+          "description": "`plan`, `default`, `accept_edits` oder `yolo` (HAR-027).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasoning_effort": {
+          "description": "Gegen Harness/Modell geprüft und ggf. gemappt (HAR-017).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Effort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Wanduhr pro Run, z. B. `2h`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Duration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "harness"
+      ]
+    },
+    "HarnessId": {
+      "type": "string",
+      "pattern": "^(claude|codex|fake|(acp|direct):[a-z0-9_-]{1,64})$"
+    },
+    "Instructions": {
+      "description": "Instructions aus `text` oder `file`, optional mit `append` (AGT-005).",
+      "type": "object",
+      "properties": {
+        "append": {
+          "description": "Wird angehängt; darf Template-Ausdrücke enthalten.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Datei relativ zum Agent-Verzeichnis; alternativ `text`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_files": {
+          "description": "`auto`, `none` oder eine Liste von Dateien.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectFiles"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeepAwake": {
+      "enum": [
+        false,
+        "during_run",
+        "always"
+      ]
+    },
+    "McpServer": {
+      "description": "MCP-Server: stdio (`command`, `args`, `env`) oder HTTP (`url`, `headers`).",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Nur diese Tools des Servers sind sichtbar.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "args": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Mode": {
+      "type": "string",
+      "enum": [
+        "native",
+        "tui"
+      ]
+    },
+    "NotifyChannel": {
+      "type": "string",
+      "enum": [
+        "push",
+        "inbox"
+      ]
+    },
+    "OnResult": {
+      "type": "string",
+      "enum": [
+        "wake",
+        "inbox_only"
+      ]
+    },
+    "OnTimeout": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "allow",
+        "abort"
+      ]
+    },
+    "Overlap": {
+      "type": "string",
+      "enum": [
+        "skip",
+        "queue"
+      ]
+    },
+    "Param": {
+      "description": "Ein typisierter Parameter (AGT-010).",
+      "type": "object",
+      "properties": {
+        "default": true,
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maximum": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "minimum": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/$defs/ParamType"
+        },
+        "values": {
+          "description": "Erlaubte Werte bei `type: enum`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ]
+    },
+    "ParamType": {
+      "type": "string",
+      "enum": [
+        "string",
+        "integer",
+        "number",
+        "boolean",
+        "enum"
+      ]
+    },
+    "PermissionMode": {
+      "description": "Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.",
+      "type": "string",
+      "enum": [
+        "plan",
+        "default",
+        "accept_edits",
+        "yolo"
+      ]
+    },
+    "PolicyEntry": {
+      "description": "Policy-Eintrag: Verweis auf eine Policy-Datei (`ref`) oder Inline-Regel mit `id`\n(Format POL-001). Die Regelfelder prüft ab M2 das Policy-Schema; v1 prüft nur `ref`/`id`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "ProjectFiles": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProjectFilesMode"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "ProjectFilesMode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "none"
+      ]
+    },
+    "RunnerSelector": {
+      "description": "Ziel-Runner per Label-Selektor (nur zentral, RUN-016).",
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "selector"
+      ]
+    },
+    "Sandbox": {
+      "description": "Sandbox-Anforderungen des Agents; Felder und Semantik wie die Sandbox-Konfiguration in\nSBX (04-sandbox.md). Ausgewertet ab M2.",
+      "type": "object",
+      "properties": {
+        "allow_hidden": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_network": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "backend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxBackend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credentials": {
+          "description": "Credential-Bindungen (Format PRX-006, ab M2).",
+          "type": "array",
+          "default": [],
+          "items": true
+        },
+        "egress_allow_private": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_rules": {
+          "description": "Egress-Regeln, z. B. `\"GET,HEAD registry.npmjs.org/**\"`.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxEnv"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxHarness"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "masks": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "preset": {
+          "description": "`default`, `dev` oder `readonly` (SBX-012).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxPreset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "read_paths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_tool_isolation": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "windows": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxWindows"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceAccess"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "write_paths": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxBackend": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "seatbelt",
+        "landlock",
+        "bwrap",
+        "windows",
+        "docker",
+        "podman",
+        "none"
+      ]
+    },
+    "SandboxEnv": {
+      "type": "object",
+      "properties": {
+        "passthrough": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "set": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxHarness": {
+      "type": "object",
+      "properties": {
+        "egress_extra": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxLimits": {
+      "type": "object",
+      "properties": {
+        "cpu_seconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "memory_mb": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pids": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxPreset": {
+      "type": "string",
+      "enum": [
+        "default",
+        "dev",
+        "readonly"
+      ]
+    },
+    "SandboxWindows": {
+      "type": "object",
+      "properties": {
+        "allow_unenforced_network": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Schedule": {
+      "description": "Schedule im Agent (ab M5, ASY-004); der Agent ist der Agent selbst.",
+      "type": "object",
+      "properties": {
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Budget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "catch_up": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatchUp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cron": {
+          "description": "Standard-Cron mit 5 Feldern.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "keep_awake": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeepAwake"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "overlap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Overlap"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "default": {}
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runner": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunnerSelector"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScheduleState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timezone": {
+          "description": "IANA-Zeitzone; ohne Angabe die des Users.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "cron"
+      ]
+    },
+    "ScheduleState": {
+      "type": "string",
+      "enum": [
+        "active",
+        "paused"
+      ]
+    },
+    "SkillMode": {
+      "type": "string",
+      "enum": [
+        "all",
+        "none"
+      ]
+    },
+    "SkillSelection": {
+      "description": "`all`, `none` oder eine Liste von Skill-Namen (AGT-008).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SkillMode"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "Spawn": {
+      "description": "Grenzen für Child-Sessions (AGT-009).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "Nur diese Sub-Agents (Schlüssel aus `agents`) dürfen gestartet werden.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "budget_share": {
+          "description": "Maximaler Anteil am Run-Budget je Kind (0–1).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "max_concurrent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "max_depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "worktree": {
+          "description": "Default für Kinder: `new`, `inherit` oder `none`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorktreeMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SubAgent": {
+      "description": "Sub-Agent: entweder nur `ref` (Agent-Ref, relativ zum Agent-Verzeichnis) oder inline mit\n`executor` (AGT-009).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/SubAgent"
+          },
+          "default": {}
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Executor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instructions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instructions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Param"
+          },
+          "default": {}
+        },
+        "policies": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PolicyEntry"
+          }
+        },
+        "ref": {
+          "description": "`./agents/reviewer`, `name` oder `builtin:<name>`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sandbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Sandbox"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skills": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spawn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Spawn"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tools": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Tools"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SystemTool": {
+      "description": "Eingebaute System-Tools des MCP-Servers `beton` (AGT-007).",
+      "type": "string",
+      "enum": [
+        "session_spawn",
+        "session_send",
+        "session_wait",
+        "session_status",
+        "session_list",
+        "session_cancel",
+        "inbox_read",
+        "ask_user",
+        "policy_query",
+        "timer_set",
+        "timer_cancel",
+        "timer_list",
+        "schedule_create",
+        "schedule_list",
+        "schedule_update",
+        "schedule_delete",
+        "skill_load",
+        "skill_read_file"
+      ]
+    },
+    "Tools": {
+      "description": "Tools sind ausschließlich MCP-Server (AGT-006) plus System-Tools (AGT-007).",
+      "type": "object",
+      "properties": {
+        "inherit": {
+          "description": "User- und Projekt-MCP-Server zusätzlich verwenden (Default `false`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mcp": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/McpServer"
+          },
+          "default": {}
+        },
+        "system": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SystemTool"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceAccess": {
+      "type": "string",
+      "enum": [
+        "rw",
+        "ro"
+      ]
+    },
+    "WorktreeMode": {
+      "type": "string",
+      "enum": [
+        "new",
+        "inherit",
+        "none"
+      ]
+    }
+  }
+}

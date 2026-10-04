@@ -395,7 +395,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 
 ### HAR-021 — Usage- & Kontext-Reporting
 - **Meilenstein:** M0 · **Priorität:** Should
-- **Beschreibung:** Adapter liefern Token-Verbrauch und, falls vom Harness gemeldet, Kosten als `cost.delta` sowie den Kontext-Füllstand als `context.usage`. Bei Subscription-Nutzung wird statt Euro die Token-/Rate-Limit-Nutzung gemeldet. Preisberechnung und Usage-Seite liegen in USE-001 bzw. USE-006 (siehe 11-platform-features.md).
+- **Beschreibung:** Adapter liefern Token-Verbrauch und, falls vom Harness gemeldet, Kosten als `cost.delta` sowie den Kontext-Füllstand als `context.usage`. Bei Subscription-Nutzung wird statt eines Geldbetrags die Token-/Rate-Limit-Nutzung gemeldet. Preisberechnung und Usage-Seite liegen in USE-001 bzw. USE-006 (siehe 11-platform-features.md).
 - **Details:** `cost.delta { model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported|estimated|subscription, auth_source }` (PROTO-002); `context.usage { used_tokens, window_tokens }`. Rate-Limit-Informationen, die die CLI meldet, werden als `usage.subscription { vendor, window, used_pct, resets_at }` (PROTO-002) durchgereicht; Claude Code meldet sie als `rate_limit_event` (`rateLimitType`, `unifiedWindows.<typ>.utilization`, `resetsAt`). Bei Subscription meldet `result.total_cost_usd` nur ein API-Äquivalent; beton übernimmt es nicht als Ausgabe (AC2). Den Kontext-Füllstand liefert `result.modelUsage.<modell>.contextWindow`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log.

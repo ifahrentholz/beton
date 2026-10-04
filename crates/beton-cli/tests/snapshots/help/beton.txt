@@ -13,6 +13,7 @@ Commands:
   setup       Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
   doctor      Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler
   config      Konfiguration lesen und schreiben
+  agent       Agent-Definitionen auflisten, anzeigen, prüfen und anlegen
   auth        Lokale Anmeldung verwalten
   admin       Wartung von Datenbank und Projektionen
   completion  Shell-Vervollständigung ausgeben

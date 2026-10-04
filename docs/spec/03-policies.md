@@ -30,7 +30,8 @@ Dieses Kapitel spezifiziert die Policy-Engine von beton: Policy-Dokumente in YAM
 
 ```yaml
 # .beton/policies/git-and-budget.yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/ifahrentholz/beton/main/schemas/policy.v1.json
+# Schema: lokale Datei unter .beton/schemas/v1/, nie eine URL (ADR-0033)
+# yaml-language-server: $schema=../schemas/v1/policy.schema.json
 spec_version: 1
 name: git-and-budget
 description: Projekt-Regeln für Git und Kosten
@@ -109,7 +110,7 @@ Eingabe: effektives Policy-Set, `PolicyRequest`. Regeln werden in kanonischer Re
 
 ### POL-001 — Policy-Dokumentformat, Ladeorte & Hot-Reload
 - **Meilenstein:** M2 · **Priorität:** Must
-- **Beschreibung:** Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/policy.v1.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in [02](02-agents.md)), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.
+- **Beschreibung:** Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in [02](02-agents.md)), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.
 - **Details:** `beton setup` legt `~/.beton/policies/defaults.yaml` mit sicheren, editierbaren Defaults an (`git_guard` mit `force_push: deny`, `loop_detection` mit `id: loop`) *(Annahme: Defaults auf User-Ebene, weil höhere Ebenen nicht gelockert werden können)*. Ein Reload mit Syntax- oder Typfehler behält die letzte gültige Version und erzeugt eine Fehlermeldung (UI-Toast + `policy.set_invalid`). Erfolgreicher Reload: `policy.set_changed { scope, set, version }` in allen betroffenen aktiven Sessions. Regel-IDs müssen pro Set eindeutig sein (`[a-z0-9-]`, max. 64 Zeichen).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.

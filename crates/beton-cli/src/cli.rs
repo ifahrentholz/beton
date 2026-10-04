@@ -78,6 +78,9 @@ pub enum Command {
     /// Konfiguration lesen und schreiben.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Agent-Definitionen auflisten, anzeigen, prüfen und anlegen.
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// Lokale Anmeldung verwalten.
     #[command(subcommand)]
     Auth(AuthCommand),
@@ -323,6 +326,50 @@ pub struct ConfigSetArgs {
     pub value: String,
     #[command(flatten)]
     pub scope: ConfigScopeArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentCommand {
+    /// Agents im Suchpfad: Projekt, User, Built-ins (Name, Quelle, Version, Harness, Pfad).
+    List(AgentListArgs),
+    /// Aufgelösten Agent mit Herkunft jedes Felds und Inhalts-Hash anzeigen.
+    Show(AgentShowArgs),
+    /// Agent gegen Schema und semantische Regeln prüfen; Exit 0 gültig, 1 Fehler.
+    Validate(AgentValidateArgs),
+    /// Gerüst unter `.beton/agents/<NAME>/` anlegen (mit `$schema`-Kommentar, Prompt, Skill).
+    New(AgentNewArgs),
+    /// JSON-Schema des Agent-Formats ausgeben.
+    Schema,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentListArgs {
+    /// Auch verschattete und ungültige Einträge zeigen.
+    #[arg(long)]
+    pub all: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentShowArgs {
+    /// Agent-Ref: Name, Pfad (`./agents/x`) oder `builtin:<name>`.
+    #[arg(value_name = "REF")]
+    pub reference: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentValidateArgs {
+    /// Agent-Verzeichnis (oder dessen `agent.yaml`); sonst ein Agent-Ref.
+    #[arg(value_name = "PATH")]
+    pub path: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentNewArgs {
+    /// Name des Agents (`a-z`, `0-9`, `-`).
+    pub name: String,
+    /// Vorhandenen Agent als Vorlage kopieren, z. B. `builtin:maestra`.
+    #[arg(long, value_name = "REF")]
+    pub from: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
