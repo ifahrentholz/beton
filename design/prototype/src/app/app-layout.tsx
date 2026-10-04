@@ -2,15 +2,14 @@ import type { ReactNode } from 'react'
 import { Bot, CalendarClock, Gauge, Inbox, MessagesSquare, Plus, Search, Settings, ShieldCheck } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { projects, sessions } from '@/mock/data'
+import { harnesses, inboxWaitingCount, projects, sessions } from '@/mock/data'
 import { StatusMark, VoiceDot, voiceVar } from './harness'
-import { harnesses } from '@/mock/data'
 
 export type NavItem = 'sessions' | 'inbox' | 'agents' | 'automations' | 'usage' | 'policies' | 'settings'
 
-const NAV: { id: NavItem; label: string; icon: typeof Inbox; badge?: number }[] = [
+const NAV: { id: NavItem; label: string; icon: typeof Inbox }[] = [
   { id: 'sessions', label: 'Sessions', icon: MessagesSquare },
-  { id: 'inbox', label: 'Inbox', icon: Inbox, badge: 2 },
+  { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'automations', label: 'Automationen', icon: CalendarClock },
   { id: 'usage', label: 'Verbrauch', icon: Gauge },
@@ -27,33 +26,38 @@ type Props = {
   children: ReactNode
   /** Verbindungsstatus unten links. */
   connection?: 'local' | 'server' | 'offline'
+  /** Zähler am Inbox-Symbol; Standard: offene Freigaben und Fragen aus den Beispieldaten. */
+  inboxCount?: number
 }
 
 /** Grundlayout der App: Navigationsspalte, optional Session-Liste, Hauptbereich, optional Workspace-Rail. */
-export function AppLayout({ nav = 'sessions', sessionList, activeSession, rail, children, connection = 'local' }: Props) {
+export function AppLayout({ nav = 'sessions', sessionList, activeSession, rail, children, connection = 'local', inboxCount = inboxWaitingCount }: Props) {
   const showList = sessionList ?? nav === 'sessions'
   return (
     <div className="flex h-full min-h-0 bg-background text-foreground">
       <F id="WEB-001" className="flex w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-2" badge="bottom-left">
-        {NAV.map((n) => (
-          <button
-            key={n.id}
-            title={n.label}
-            aria-label={n.label}
-            aria-current={n.id === nav ? 'page' : undefined}
-            className={cn(
-              'relative flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground',
-              n.id === nav && 'bg-accent text-foreground',
-            )}
-          >
-            <n.icon className="size-[18px]" />
-            {n.badge ? (
-              <span className="chamfer-sm absolute -top-0.5 -right-0.5 min-w-4 bg-signal px-0.5 text-[10px] leading-4 font-semibold text-signal-foreground">
-                {n.badge}
-              </span>
-            ) : null}
-          </button>
-        ))}
+        {NAV.map((n) => {
+          const badge = n.id === 'inbox' ? inboxCount : 0
+          return (
+            <button
+              key={n.id}
+              title={n.label}
+              aria-label={n.label}
+              aria-current={n.id === nav ? 'page' : undefined}
+              className={cn(
+                'relative flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground',
+                n.id === nav && 'bg-accent text-foreground',
+              )}
+            >
+              <n.icon className="size-[18px]" />
+              {badge ? (
+                <span className="chamfer-sm absolute -top-0.5 -right-0.5 min-w-4 bg-signal px-0.5 text-[10px] leading-4 font-semibold text-signal-foreground">
+                  {badge}
+                </span>
+              ) : null}
+            </button>
+          )
+        })}
         <div className="mt-auto flex flex-col items-center gap-2 pb-1">
           <span
             title={

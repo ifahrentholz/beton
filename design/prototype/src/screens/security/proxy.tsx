@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { ArrowRight, KeyRound, Pause, Plus, RotateCw } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, KV, Mark, PageHead, Premise, Scroll, Section, SettingsLayout, Tag, Verdict } from '../policies/kit'
+import { Btn, C, Callout, KV, Mark, PageHead, Premise, Scroll, Section, SettingsLayout, Tag, Verdict } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Regeln */
 

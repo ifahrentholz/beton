@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { CalendarClock, Clock, GitFork, Webhook } from 'lucide-react'
 import { AppLayout } from '@/app/app-layout'
 import { cn } from '@/lib/utils'
-import { Mark, type MarkKind } from '@/screens/harnesses/kit'
+import { Mark, type MarkKind } from '@/app/kit/harnesses'
 
 export type RunStatus =
   | 'queued'

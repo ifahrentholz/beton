@@ -2,8 +2,7 @@ import { Download, FileUp } from 'lucide-react'
 import { SystemNote, UserMessage, AgentMessage, ToolCall } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from './bits'
-import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, Overlay, Segmented, SessionShell, Tag } from './parts'
+import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, Overlay, Segmented, SessionShell, ShortStream, Tag } from '@/app/kit/workspace'
 
 const candidates = [
   { title: 'Checkout: Stripe-Webhook verifizieren', cwd: '~/code/shop-frontend', project: 'shop-frontend', msgs: 42, date: '28.09.', checked: true },

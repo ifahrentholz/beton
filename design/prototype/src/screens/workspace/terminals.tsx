@@ -2,8 +2,8 @@ import { Lock, Pencil, Plus, RotateCw, X } from 'lucide-react'
 import { WorkspaceRail } from '@/app/session-chrome'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from './bits'
-import { Avatar, Callout, SessionShell, TermView } from './parts'
+import { Avatar, Callout, SessionShell, ShortStream } from '@/app/kit/workspace'
+import { TermView } from './parts'
 
 type Tab = { id: string; name: string; by: string; running?: boolean }
 

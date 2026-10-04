@@ -1,24 +1,5 @@
-import { AgentMessage, ToolCall, UserMessage } from '@/app/stream'
 import type { ChangedFile } from './mock'
 import { cn } from '@/lib/utils'
-
-/** Kurzer Verlauf der Beispiel-Session als Kontext neben Panels. */
-export function ShortStream({ compact }: { compact?: boolean }) {
-  return (
-    <>
-      <UserMessage>Die Login-Route braucht einen Rate-Limiter: höchstens 5 Versuche pro Minute und IP. Bitte mit Tests.</UserMessage>
-      {!compact && <ToolCall kind="read" name="Lesen" target="src/routes/auth.ts" duration="0,1 s" />}
-      <ToolCall kind="edit" name="Bearbeiten" target="src/middleware/rate-limit.ts" duration="0,3 s" />
-      <ToolCall kind="shell" name="Shell" target="pnpm vitest run auth" duration="4,8 s" />
-      <AgentMessage harness="claude">
-        <p>
-          Die Login-Route ist jetzt auf 5 Versuche pro Minute und IP begrenzt. Danach antwortet sie mit{' '}
-          <code className="rounded-sm bg-muted px-1 text-[13px]">429</code>. Alle 10 Tests laufen.
-        </p>
-      </AgentMessage>
-    </>
-  )
-}
 
 const statusWord: Record<ChangedFile['status'], string> = { A: 'neu', M: 'geändert', D: 'gelöscht' }
 

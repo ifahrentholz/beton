@@ -4,7 +4,7 @@ import { HarnessBadge } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { projects } from '@/mock/data'
-import { Btn, Callout, DialogPanel, FakeInput, FakeSelect, Field, Overlay, PageHeader, Segmented, Tag } from './parts'
+import { Btn, Callout, DialogPanel, FakeInput, FakeSelect, Field, Overlay, PageHeader, Segmented, Tag } from '@/app/kit/workspace'
 
 function ProjectList() {
   return (

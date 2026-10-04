@@ -3,7 +3,7 @@ import { VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { harnesses, type HarnessId } from '@/mock/data'
-import { Btn, Code, Mark, Note, Pill, SectionTitle } from '@/screens/harnesses/kit'
+import { Btn, Code, Mark, Note, Pill, SectionTitle } from '@/app/kit/harnesses'
 import { AutomationShell } from './parts'
 
 type Sched = {

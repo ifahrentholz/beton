@@ -5,7 +5,7 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from './shell'
+import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '@/app/kit/settings'
 
 /* ───────────────────────── Darstellung (UX-005, WEB-016, WEB-017) ───────────────────────── */
 
@@ -64,7 +64,11 @@ const appearanceText = {
   },
 }
 
-function ThemeTile({ name, note, selected, className, split }: { name: string; note: string; selected?: boolean; className?: string; split?: boolean }) {
+/**
+ * Vorschau eines Themes mit echten Tokens (UX-005): Familie und Modus stehen als Klassen am Element,
+ * z. B. `theme-nord dark`. Mit `split` zeigt die Kachel links hell, rechts dunkel.
+ */
+function ThemeTile({ name, note, selected, theme, split }: { name: string; note: string; selected?: boolean; theme: string; split?: boolean }) {
   const mini = (
     <div className="flex h-full bg-background">
       <div className="w-3 border-r border-border bg-sidebar" />
@@ -88,11 +92,11 @@ function ThemeTile({ name, note, selected, className, split }: { name: string; n
       <div className="relative h-16 overflow-hidden rounded-[3px] border border-border">
         {split ? (
           <div className="flex h-full">
-            <div className="w-1/2 overflow-hidden">{mini}</div>
-            <div className="dark w-1/2 overflow-hidden">{mini}</div>
+            <div className={cn('w-1/2 overflow-hidden', theme, 'light')}>{mini}</div>
+            <div className={cn('w-1/2 overflow-hidden', theme, 'dark')}>{mini}</div>
           </div>
         ) : (
-          <div className={cn('h-full', className)}>{mini}</div>
+          <div className={cn('h-full', theme)}>{mini}</div>
         )}
       </div>
       <div className="flex items-center gap-1 px-0.5 text-[12px] font-medium">
@@ -117,11 +121,11 @@ function SettingsAppearance({ state }: { state: string }) {
       <F id="UX-005">
         <SectionTitle>{t.theme}</SectionTitle>
         <div role="radiogroup" aria-label={t.theme} className="flex flex-wrap gap-2">
-          <ThemeTile name={en ? 'System' : 'System'} note={en ? 'Follows the OS, switches live' : 'Folgt dem Betriebssystem, wechselt live'} split selected={theme === 'system'} />
-          <ThemeTile name={en ? 'Concrete light' : 'Sichtbeton hell'} note={en ? 'Brand theme, by day' : 'Markenthema am Tag'} />
-          <ThemeTile name={en ? 'Concrete dark' : 'Sichtbeton dunkel'} note={en ? 'Brand theme, by night' : 'Markenthema bei Nacht'} className="dark" />
-          <ThemeTile name="Nord" note={en ? 'Cool blue-grey' : 'Kühles Blaugrau'} className="dark saturate-[.7] hue-rotate-[12deg]" />
-          <ThemeTile name={en ? 'High contrast' : 'Hoher Kontrast'} note="WCAG AAA" className="dark contrast-150" selected={theme === 'hc'} />
+          <ThemeTile name={en ? 'System' : 'System'} note={en ? 'Follows the OS, switches live' : 'Folgt dem Betriebssystem, wechselt live'} theme="theme-concrete" split selected={theme === 'system'} />
+          <ThemeTile name={en ? 'Concrete light' : 'Sichtbeton hell'} note={en ? 'Brand theme, by day' : 'Markenthema am Tag'} theme="theme-concrete light" />
+          <ThemeTile name={en ? 'Concrete dark' : 'Sichtbeton dunkel'} note={en ? 'Brand theme, by night' : 'Markenthema bei Nacht'} theme="theme-concrete dark" />
+          <ThemeTile name="Nord" note={en ? 'Cool blue-grey, light and dark' : 'Kühles Blaugrau, hell und dunkel'} theme="theme-nord" split />
+          <ThemeTile name={en ? 'High contrast' : 'Hoher Kontrast'} note={en ? 'WCAG AAA, light and dark' : 'WCAG AAA, hell und dunkel'} theme="theme-hc" split selected={theme === 'hc'} />
         </div>
       </F>
 

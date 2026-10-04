@@ -1,5 +1,5 @@
 import { F } from '@/proto/feature-marker'
-import { Cmd, Ln, Term } from '@/screens/harnesses/terminal'
+import { Cmd, Ln, Term } from '@/app/kit/harness-term'
 
 export function AutomationCli({ state }: { state: string }) {
   if (state === 'queue')

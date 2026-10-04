@@ -6,7 +6,7 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '../settings/shell'
+import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '@/app/kit/settings'
 
 /* ───────────────────────── Bausteine ───────────────────────── */
 
@@ -351,7 +351,7 @@ const LOGS: LogLine[] = [
     target: 'beton_mcp::client',
     msg: (
       <>
-        mcp server sentry failed: 401 Unauthorized (Authorization: Bearer <mark className="bg-muted px-0.5">[REDACTED:bearer]</mark>)
+        mcp server sentry failed: 401 Unauthorized (Authorization: Bearer <mark className="bg-muted px-0.5 text-foreground">[REDACTED:bearer]</mark>)
       </>
     ),
     fields: { session_id: 'ses_01J9X7F3K', mcp_server: 'sentry' },

@@ -4,7 +4,7 @@ import { HarnessBadge, StatusMark } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { projects, sessions, type SessionSummary } from '@/mock/data'
-import { Btn, DialogPanel, FakeInput, FakeSelect, Menu, MenuItem, MenuSeparator, Overlay, PageHeader, Segmented, Tag } from './parts'
+import { Btn, DialogPanel, FakeInput, FakeSelect, Menu, MenuItem, MenuSeparator, Overlay, PageHeader, Segmented, Tag } from '@/app/kit/workspace'
 
 const pinned = new Set(['ses_6p9z'])
 

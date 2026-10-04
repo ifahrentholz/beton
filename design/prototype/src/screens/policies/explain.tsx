@@ -4,7 +4,7 @@ import { SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Shell, Tag, Verdict, type VerdictKind } from './kit'
+import { Btn, C, Shell, Tag, Verdict, type VerdictKind } from '@/app/kit/policies'
 
 type Hit = { scope: string; set?: string; rule?: string; v: VerdictKind; expr?: ReactNode; note?: ReactNode }
 

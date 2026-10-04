@@ -1,7 +1,7 @@
 import { Check, FileCode2, FlaskConical, Lock, Play, Save } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, CodeView, PrimaryButton, Shell, Tag, type CodeMark } from './kit'
+import { Btn, CodeView, PrimaryButton, Shell, Tag, type CodeMark } from '@/app/kit/policies'
 import { builtinTypes, contextVars, policyYaml } from './data'
 
 const tree: { scope: string; files: { name: string; path: string; ro?: boolean; active?: boolean }[] }[] = [

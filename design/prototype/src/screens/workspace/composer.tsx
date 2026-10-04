@@ -1,8 +1,7 @@
 import { FileText, Image, Sparkles, SquareSlash, TerminalSquare, X } from 'lucide-react'
 import { Composer } from '@/app/session-chrome'
 import { F } from '@/proto/feature-marker'
-import { ShortStream } from './bits'
-import { Menu, MenuItem, MenuLabel, MenuSeparator, SessionShell } from './parts'
+import { Menu, MenuItem, MenuLabel, MenuSeparator, SessionShell, ShortStream } from '@/app/kit/workspace'
 
 function MentionMenu() {
   const items = [

@@ -4,7 +4,7 @@ import { VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { Voice } from '@/mock/data'
-import { Btn, Code, Mark, Note, PageHeader, Pill, SectionTitle } from './kit'
+import { Btn, Code, Mark, Note, PageHeader, Pill, SectionTitle } from '@/app/kit/harnesses'
 import { HarnessSettings } from './shell'
 
 type SetupRow = {

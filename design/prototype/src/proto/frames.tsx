@@ -46,12 +46,13 @@ export function MobileFrame({ children }: { children: ReactNode }) {
   )
 }
 
+/** Terminal-Fenster: immer dunkel (Klasse `dark`), Farben aus den Tokens der aktiven Theme-Familie. */
 export function TerminalFrame({ title, children, className }: { title: string; children: ReactNode; className?: string }) {
   return (
-    <div className={cn('flex h-full min-h-[560px] flex-col overflow-hidden rounded-lg border border-[#363a40] bg-[#16181a] text-[#dcddd8] shadow-lg', className)}>
-      <div className="flex h-8 shrink-0 items-center gap-3 border-b border-[#2a2d31] px-3">
+    <div className={cn('dark flex h-full min-h-[560px] flex-col overflow-hidden rounded-lg border border-border bg-sunken text-foreground shadow-lg', className)}>
+      <div className="flex h-8 shrink-0 items-center gap-3 border-b border-border px-3">
         <WindowDots />
-        <span className="flex-1 truncate text-center font-mono text-[11px] text-[#9a9ea4]">{title}</span>
+        <span className="flex-1 truncate text-center font-mono text-[11px] text-muted-foreground">{title}</span>
         <span className="w-[54px]" />
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-4 font-mono text-[12.5px] leading-[1.55]">{children}</div>

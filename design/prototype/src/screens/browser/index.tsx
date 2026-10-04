@@ -3,6 +3,7 @@ import { AppWindow, Check, Container, Download, ExternalLink, FolderOpen, Rotate
 import { AppLayout } from '@/app/app-layout'
 import { Composer, SessionHeader, WorkspaceRail } from '@/app/session-chrome'
 import { AgentMessage, ApprovalCard, SystemNote, TerminalOutput, ToolCall, UserMessage } from '@/app/stream'
+import { SettingsFrame } from '@/app/settings-shell'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
@@ -518,7 +519,7 @@ function BrowserSetupScreen({ state }: { state: string }) {
         ]
       : [{ name: 'Microsoft Edge', version: '118.0.2088', path: '/Applications/Microsoft Edge.app', status: 'old' }]
   return (
-    <AppLayout nav="settings" sessionList={false}>
+    <SettingsFrame active="browser">
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-6">
         <span className="text-[13px] text-muted-foreground">Einstellungen</span>
         <span className="text-muted-foreground">/</span>
@@ -660,7 +661,7 @@ erhalten  sha256:07aa…e3f1`}</TerminalOutput>
           </Section>
         </div>
       </div>
-    </AppLayout>
+    </SettingsFrame>
   )
 }
 

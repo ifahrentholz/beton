@@ -3,9 +3,8 @@ import { Composer, WorkspaceRail } from '@/app/session-chrome'
 import { ApprovalCard, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from '../workspace/bits'
-import { Avatar, Btn, Callout, FakeInput, NetNote, PanelHeader, Segmented, SessionShell, Tag } from '../workspace/parts'
-import { CheckRow, CrStateTag, OriginTag } from './parts'
+import { Avatar, Btn, Callout, FakeInput, NetNote, Segmented, SessionShell, ShortStream, Tag } from '@/app/kit/workspace'
+import { CheckRow, CrStateTag, OriginTag, PanelHeader } from './parts'
 
 /* ---------- PR-Panel ---------- */
 

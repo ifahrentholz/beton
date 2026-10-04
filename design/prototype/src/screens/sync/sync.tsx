@@ -4,7 +4,7 @@ import { Composer, SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Shell, Tag } from '../policies/kit'
+import { Btn, C, Callout, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Shell, Tag } from '@/app/kit/policies'
 
 /** Home-Knoten und Sync-Zustand an der Session (SYNC-001). */
 function HomeBadge({ home, epoch, sync }: { home: string; epoch: number; sync: 'synced' | 'behind' | 'offline' | 'local' | 'provisional' }) {

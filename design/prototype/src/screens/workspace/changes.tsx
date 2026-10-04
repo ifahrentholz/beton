@@ -4,9 +4,9 @@ import { Diff } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { rateLimiterDiff } from '@/mock/data'
-import { AddDel, FileStatus, ShortStream } from './bits'
+import { AddDel, FileStatus } from './bits'
+import { Btn, Callout, FakeSelect, Segmented, SessionShell, ShortStream } from '@/app/kit/workspace'
 import { branchFiles, serverDiff, specDiff, turnFiles, uncommitted, type ChangedFile } from './mock'
-import { Btn, Callout, FakeSelect, Segmented, SessionShell } from './parts'
 
 function FileList({ files, active }: { files: ChangedFile[]; active: string }) {
   return (

@@ -17,8 +17,10 @@ pnpm gen:features # src/catalog/features.json aus docs/spec neu erzeugen
 |---|---|
 | `src/proto/` | Rahmen des Prototyps: Shell, Registry, Katalog, Feature-Marker, Fensterrahmen. Nicht für Screens ändern. |
 | `src/app/` | Gemeinsame App-Bausteine: `AppLayout`, `SessionList`, `SessionHeader`, `Composer`, `WorkspaceRail`, Stream-Elemente, `Score` (Partitur), `HarnessBadge`, `StatusMark`. |
+| `src/app/settings-shell.tsx` | Die eine Einstellungs-Navigation: `SettingsFrame` mit `active="<bereich>"` und der gemeinsamen Sektionsliste. Jeder Einstellungs-Screen nutzt sie. |
+| `src/app/kit/` | Hilfsbausteine, die mehrere Screen-Gruppen nutzen (z. B. `kit/policies.tsx`, `kit/workspace.tsx`, `kit/term.tsx`). Screen-Gruppen importieren nur von hier, nicht voneinander. |
 | `src/components/ui/` | shadcn/ui-Komponenten (Radix). |
-| `src/mock/data.ts` | Gemeinsame Beispieldaten (Harnesses, Projekte, Sessions). |
+| `src/mock/data.ts` | Gemeinsame Beispieldaten (Harnesses, Projekte, Sessions, Inbox, Kontingente). Zähler wie das Inbox-Badge leiten sich daraus ab. |
 | `src/screens/<gruppe>/index.tsx` | Eine Screen-Gruppe; exportiert `group: ScreenGroup`. Wird automatisch eingesammelt. |
 | `src/catalog/features.json` | Generiert aus der Spec, nie von Hand ändern. |
 
@@ -29,7 +31,7 @@ Referenz für Aufbau und Stil: `src/screens/session/index.tsx`.
 1. **Jedes Feature wird zugeordnet:** entweder ein Screen führt die ID in `features` und markiert den Bereich mit `<F id="…">`, oder die Gruppe trägt sie in `noUi` ein – mit Begründung und, wenn möglich, `visibleIn` (Screen, in dem man die Wirkung sieht). `pnpm test` muss grün sein.
 2. **Zustände statt Varianten-Screens:** leer, lädt, Fehler, offline, Freigabe offen … über `states` und die `state`-Prop.
 3. **Design-System einhalten:**
-   - Farben nur über Tokens (`bg-card`, `text-muted-foreground`, `bg-signal`, `text-deny`, `bg-voice-claude` …), nie Hex-Werte.
+   - Farben nur über Tokens (`bg-card`, `text-muted-foreground`, `bg-signal`, `text-deny`, `bg-voice-claude` …), nie Hex-Werte. Themes (Sichtbeton, Nord, Hoher Kontrast, jeweils hell und dunkel) sind Token-Sätze in `src/index.css`; im Prototyp-Rahmen oben rechts umschaltbar. Was dauerhaft dunkel ist (Terminals), setzt die Klasse `dark` und bekommt so die Nachtwerte des aktiven Themes.
    - **Schalungsgelb (`signal`) heißt „du bist dran“** – nur für offene Freigaben, Fokus und die eine Primäraktion eines Screens. Nicht als Deko.
    - **Fase (`chamfer`, `chamfer-sm`)** nur an Elementen, die auf den Menschen warten.
    - Stimmfarben (`voice-*`) kennzeichnen Harness-Familien; überall gleich.
@@ -38,4 +40,4 @@ Referenz für Aufbau und Stil: `src/screens/session/index.tsx`.
    - Keine Karten-Raster aus identischen Boxen mit Schatten; Struktur über Linien, Abstände, Ausrichtung.
 4. **Texte:** Deutsch, aus Sicht der Nutzer, aktiv, konkret. Buttons sagen, was passiert („Session teilen“, nicht „OK“). Fehler erklären Ursache und nächsten Schritt.
 5. **Prämissen sichtbar machen:** Alles läuft lokal ohne externe Server (Ausnahme: Modell-Anbieter hinter den CLIs); Subscriptions über die offiziellen CLIs sind der Normalfall, API-Keys nur eine Option. Netzwerkzugriffe (Updates, Downloads, Telemetrie, Web-Push) sind opt-in und so beschriftet.
-6. **Gemeinsame Dateien** (`src/app`, `src/proto`, `src/mock/data.ts`) nur ändern, wenn es nicht anders geht; eigene Beispieldaten und Hilfskomponenten in die eigene Gruppe legen.
+6. **Gemeinsame Dateien** (`src/app`, `src/proto`, `src/mock/data.ts`) nur ändern, wenn es nicht anders geht; eigene Beispieldaten und Hilfskomponenten in die eigene Gruppe legen. Braucht eine zweite Gruppe denselben Baustein, wandert er nach `src/app/kit/`.

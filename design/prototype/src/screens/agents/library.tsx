@@ -5,7 +5,7 @@ import { HarnessBadge, VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { harnesses } from '@/mock/data'
-import { Btn, Code, Mark, Note, PageHeader, Pill, Segmented } from '@/screens/harnesses/kit'
+import { Btn, Code, Mark, Note, PageHeader, Pill, Segmented } from '@/app/kit/harnesses'
 import { agents, sourceLabel, type AgentEntry } from './data'
 
 function AgentRow({ a, warn, selected }: { a: AgentEntry; warn?: ReactNode; selected?: boolean }) {

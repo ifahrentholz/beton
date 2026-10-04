@@ -3,8 +3,9 @@ import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
 import { HarnessBadge } from '@/app/harness'
-import { Ask, Cursor, L, Prompt, S, TermBlock } from '../cli/term'
-import { Btn, C, KV, LabelChip, Mark, Premise, Section, SettingsShell, type MarkKind } from './settings-shell'
+import { Ask, Cursor, L, Prompt, S, TermBlock } from '@/app/kit/term'
+import { Btn, C, KV, Mark, Premise, Section, SettingsShell, type MarkKind } from '@/app/kit/hosts'
+import { LabelChip } from './parts'
 
 /* ───────────────────────── Beispieldaten ───────────────────────── */
 

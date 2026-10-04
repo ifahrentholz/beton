@@ -1,8 +1,8 @@
 import { KeyRound, Plus, ShieldCheck } from 'lucide-react'
-import { AppLayout } from '@/app/app-layout'
+import { SettingsFrame } from '@/app/settings-shell'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, NetNote, Overlay, PageHeader, Segmented, Tag } from '../workspace/parts'
+import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, NetNote, Overlay, PageHeader, Segmented, Tag } from '@/app/kit/workspace'
 
 type Host = {
   host: string
@@ -133,7 +133,7 @@ export function ConnectScreen({ state }: { state: string }) {
   const none = state === 'none'
   return (
     <div className="relative h-full">
-      <AppLayout nav="settings" sessionList={false}>
+      <SettingsFrame active="git-hosts">
         <PageHeader
           title="GitHub & GitLab"
           subtitle="Optional. Mit Verbindung zeigt beton zu jeder Session Pull- und Merge-Requests, Checks und Reviews. git selbst funktioniert auch ohne."
@@ -218,7 +218,7 @@ git@git.internal:legacy/tools.git              → kein Provider`}</pre>
             )}
           </div>
         </div>
-      </AppLayout>
+      </SettingsFrame>
       {state === 'add-host' && <AddHostDialog />}
     </div>
   )

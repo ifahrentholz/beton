@@ -4,7 +4,7 @@ import { StatusMark } from '@/app/harness'
 import { Composer, SessionHeader } from '@/app/session-chrome'
 import { F } from '@/proto/feature-marker'
 import { worktrees } from './mock'
-import { Btn, Callout, DialogPanel, LocalNote, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, PageHeader, Tag } from './parts'
+import { Btn, Callout, DialogPanel, LocalNote, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, PageHeader, Tag } from '@/app/kit/workspace'
 
 function DeleteDirty() {
   return (
@@ -179,7 +179,7 @@ export function NewSessionScreen({ state }: { state: string }) {
   return (
     <div className="relative h-full">
       <AppLayout activeSession="new">
-        <SessionHeader title="Neue Session" harness="claude" status="idle" />
+        <SessionHeader title="Neue Session" harness="claude" status="idle" context={{ used: 0, window: 200_000 }} />
         <div className="concrete-grain flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <p className="type-wide text-xl font-[700]">Woran soll der Agent arbeiten?</p>
           <F id="SES-013" className="max-w-md text-sm text-muted-foreground">

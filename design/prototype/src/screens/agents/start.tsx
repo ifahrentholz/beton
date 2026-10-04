@@ -2,7 +2,7 @@ import { X } from 'lucide-react'
 import { HarnessBadge } from '@/app/harness'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
-import { Btn, Code, FakeInput, FieldLabel, Mark, Note } from '@/screens/harnesses/kit'
+import { Btn, Code, FakeInput, FieldLabel, Mark, Note } from '@/app/kit/harnesses'
 import { AgentLibrary } from './library'
 
 function Dialog({ state }: { state: string }) {

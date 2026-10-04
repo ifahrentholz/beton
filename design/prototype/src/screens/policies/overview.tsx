@@ -1,7 +1,7 @@
 import { ChevronDown, FileCode2, Plus, RefreshCw } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Callout, PageHead, Premise, PrimaryButton, Scroll, Shell, Tag, Verdict, type VerdictKind } from './kit'
+import { Btn, Callout, PageHead, Premise, PrimaryButton, Scroll, Shell, Tag, Verdict, type VerdictKind } from '@/app/kit/policies'
 import { layers, scopeLabel, type Layer } from './data'
 
 function LayerBand({ layer, dimmed }: { layer: Layer; dimmed?: boolean }) {

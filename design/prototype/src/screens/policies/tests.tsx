@@ -1,7 +1,7 @@
 import { Check, Play, X } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, CodeView, PageHead, PrimaryButton, Scroll, Shell, Tag, Verdict } from './kit'
+import { Btn, CodeView, PageHead, PrimaryButton, Scroll, Shell, Tag, Verdict } from '@/app/kit/policies'
 
 type Case = { name: string; status: 'pass' | 'fail' | 'run' | 'queued'; ms?: number }
 

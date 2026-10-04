@@ -5,8 +5,7 @@ import { WorkspaceRail } from '@/app/session-chrome'
 import { AgentMessage, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from '../workspace/bits'
-import { Avatar, Btn, Callout, DialogPanel, FakeInput, FakeSelect, Menu, MenuItem, NetNote, Overlay, PageHeader, SessionShell, Tag } from '../workspace/parts'
+import { Avatar, Btn, Callout, DialogPanel, FakeInput, FakeSelect, Menu, MenuItem, NetNote, Overlay, PageHeader, SessionShell, ShortStream, Tag } from '@/app/kit/workspace'
 import { roleHint, roleLabel, shares, teamServer, type Role } from './mock'
 
 function Toggle({ on, label }: { on?: boolean; label: string }) {

@@ -262,7 +262,7 @@ function HtopLines() {
         {'   11.2G / 32.0G'}
       </Line>
       <Line />
-      <Line className="bg-ok/80 text-background">{'  PID USER       CPU%  MEM%  Command                              '}</Line>
+      <Line className="bg-ok text-background">{'  PID USER       CPU%  MEM%  Command                              '}</Line>
       <Line>{'48121 ingo       12.4   1.1  node …/vite/bin/vite.js'}</Line>
       <Line>{'48302 ingo        8.1   2.3  claude --output-format stream-json'}</Line>
       <Line>{'47710 ingo        3.0   0.4  beton host'}</Line>

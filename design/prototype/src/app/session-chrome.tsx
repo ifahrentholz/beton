@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { ArrowUp, ChevronDown, GitBranch, GitFork, Mic, Paperclip, Share2, Square } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { harnesses, type HarnessId, usage } from '@/mock/data'
+import { harnesses, quotas, sampleContext, type ContextUsage, type HarnessId, type Quota } from '@/mock/data'
 import { HarnessBadge, StatusMark } from './harness'
 import type { SessionStatus } from '@/mock/data'
 
@@ -14,6 +14,8 @@ export function SessionHeader({
   status,
   branch,
   extra,
+  context = sampleContext,
+  quota = quotas[harness],
 }: {
   title: string
   harness: HarnessId
@@ -21,8 +23,12 @@ export function SessionHeader({
   status: SessionStatus
   branch?: string
   extra?: ReactNode
+  /** Belegtes Kontextfenster; Standard: Beispielwerte. */
+  context?: ContextUsage
+  /** Subscription-Fenster; Standard: Kontingent des Harness aus den Beispieldaten, `null` blendet es aus. */
+  quota?: Quota | null
 }) {
-  const ctxPct = Math.round((usage.context.used / usage.context.window) * 100)
+  const ctxPct = Math.round((context.used / context.window) * 100)
   return (
     <div className="@container flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
       <StatusMark status={status} />
@@ -38,21 +44,29 @@ export function SessionHeader({
       <div className="ml-auto flex min-w-0 shrink items-center gap-3 overflow-hidden whitespace-nowrap">
         {extra}
         <F id={['USE-008', 'HAR-021']} badge="bottom-left" className="hidden @2xl:block">
-          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={`Kontext: ${usage.context.used.toLocaleString('de-DE')} von ${usage.context.window.toLocaleString('de-DE')} Tokens`}>
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={`Kontext: ${context.used.toLocaleString('de-DE')} von ${context.window.toLocaleString('de-DE')} Tokens`}>
             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
               <span className={cn('block h-full', ctxPct >= 95 ? 'bg-deny' : ctxPct >= 70 ? 'bg-warn' : 'bg-foreground/70')} style={{ width: `${ctxPct}%` }} />
             </span>
             <span className={cn(ctxPct >= 95 ? 'text-deny' : ctxPct >= 70 && 'text-warn')}>{ctxPct} % Kontext</span>
           </span>
         </F>
-        <F id="USE-004" badge="bottom-left" className="hidden @4xl:block">
-          <span
-            className={cn('text-[11px]', usage.subscription.windowUsedPct >= 90 ? 'font-semibold text-warn' : 'text-muted-foreground')}
-            title={`Subscription-Fenster setzt in ${usage.subscription.resetsIn} zurück`}
-          >
-            {usage.subscription.label}: {usage.subscription.windowUsedPct} % genutzt
-          </span>
-        </F>
+        {quota && (
+          <F id="USE-004" badge="bottom-left" className="hidden @4xl:block">
+            {quota.windowUsedPct === undefined ? (
+              <span className="text-[11px] text-muted-foreground" title="Der Harness meldet kein Subscription-Fenster">
+                {quota.label}: nicht gemeldet
+              </span>
+            ) : (
+              <span
+                className={cn('text-[11px]', quota.windowUsedPct >= 90 ? 'font-semibold text-warn' : 'text-muted-foreground')}
+                title={quota.resetsIn ? `Subscription-Fenster setzt in ${quota.resetsIn} zurück` : undefined}
+              >
+                {quota.label}: {quota.windowUsedPct} % genutzt
+              </span>
+            )}
+          </F>
+        )}
         <button className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-xs hover:bg-accent">
           <GitFork className="size-3.5" /> Fork
         </button>

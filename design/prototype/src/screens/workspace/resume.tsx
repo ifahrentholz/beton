@@ -2,8 +2,7 @@ import { GitFork, MonitorSmartphone, Play, RotateCw, Sparkles, SquareTerminal } 
 import { Composer } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, ToolCall, TurnFooter, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
-import { ShortStream } from './bits'
-import { Btn, Callout, SessionShell } from './parts'
+import { Btn, Callout, SessionShell, ShortStream } from '@/app/kit/workspace'
 
 function GeminiStream() {
   return (

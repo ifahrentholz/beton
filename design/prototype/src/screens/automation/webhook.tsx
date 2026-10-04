@@ -2,7 +2,7 @@ import { Copy, Plus } from 'lucide-react'
 import { HarnessBadge } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Code, CodeBlock, Mark, Note, Pill, SectionTitle } from '@/screens/harnesses/kit'
+import { Btn, Code, CodeBlock, Mark, Note, Pill, SectionTitle } from '@/app/kit/harnesses'
 import { AutomationShell } from './parts'
 
 const TRIGGERS = [

@@ -1,51 +1,13 @@
 import type { ReactNode } from 'react'
-import { AppLayout } from '@/app/app-layout'
+import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
- * Rahmen der Einstellungs- und Diagnose-Seiten (Paket D-6).
- * Links die Bereichsnavigation, rechts der Inhalt. Wird auch von `screens/diagnostics` genutzt.
+ * Bausteine der Einstellungs- und Diagnose-Seiten (Paket D-6, Gruppen settings und diagnostics).
+ *
+ * `SettingsShell`: Inhaltsrahmen mit Innenabstand; Navigation und Sektionsliste kommen aus
+ * `@/app/settings-shell`.
  */
-
-export type SettingsSection =
-  | 'appearance'
-  | 'notifications'
-  | 'mcp'
-  | 'privacy'
-  | 'data'
-  | 'flags'
-  | 'doctor'
-  | 'connection'
-  | 'logs'
-  | 'storage'
-  | 'metrics'
-  | 'bundle'
-
-const SECTIONS: { title: string; items: { id: SettingsSection; label: string }[] }[] = [
-  {
-    title: 'Einstellungen',
-    items: [
-      { id: 'appearance', label: 'Darstellung' },
-      { id: 'notifications', label: 'Benachrichtigungen' },
-      { id: 'mcp', label: 'MCP-Server' },
-      { id: 'privacy', label: 'Datenschutz' },
-      { id: 'data', label: 'Sessions & Daten' },
-      { id: 'flags', label: 'Experimentelle Funktionen' },
-    ],
-  },
-  {
-    title: 'Diagnose',
-    items: [
-      { id: 'doctor', label: 'Umgebung prüfen' },
-      { id: 'connection', label: 'Verbindung' },
-      { id: 'logs', label: 'Logs' },
-      { id: 'storage', label: 'Speicher' },
-      { id: 'metrics', label: 'Metriken & Traces' },
-      { id: 'bundle', label: 'Diagnose-Bundle' },
-    ],
-  },
-]
-
 export function SettingsShell({
   section,
   children,
@@ -55,46 +17,19 @@ export function SettingsShell({
 }: {
   /** Dialog über dem Inhalt (wird innerhalb des Fensters gezeigt, nicht als Portal). */
   overlay?: ReactNode
-  section: SettingsSection
+  section: SettingsSectionId
   children: ReactNode
   connection?: 'local' | 'server' | 'offline'
   /** Inhalt ohne Breitenbegrenzung (Tabellen, Log-Viewer). */
   wide?: boolean
 }) {
   return (
-    <AppLayout nav="settings" sessionList={false} connection={connection}>
-      <div className="flex min-h-0 flex-1">
-        <nav aria-label="Einstellungsbereiche" className="flex w-52 shrink-0 flex-col border-r border-border bg-sidebar py-3">
-          {SECTIONS.map((g) => (
-            <div key={g.title} className="mb-4">
-              <div className="px-4 pb-1 text-[11px] font-medium text-muted-foreground">{g.title}</div>
-              {g.items.map((it) => (
-                <button
-                  key={it.id}
-                  aria-current={it.id === section ? 'page' : undefined}
-                  className={cn(
-                    'block w-full border-l-2 px-4 py-1 text-left text-[13px]',
-                    it.id === section ? 'border-foreground bg-accent font-medium' : 'border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground',
-                  )}
-                >
-                  {it.label}
-                </button>
-              ))}
-            </div>
-          ))}
-          <div className="mt-auto px-4 text-[11px] leading-relaxed text-muted-foreground">
-            <button className="mb-2 block text-[12px] text-foreground underline-offset-2 hover:underline">Einrichtung erneut starten</button>
-            beton 0.9.2 · Kanal stable
-            <br />
-            Läuft lokal auf diesem Rechner
-          </div>
-        </nav>
-        <div className="relative min-w-0 flex-1 overflow-y-auto">
-          <div className={cn('px-8 py-6', !wide && 'max-w-3xl')}>{children}</div>
-          {overlay}
-        </div>
+    <SettingsFrame active={section} connection={connection}>
+      <div className="relative min-h-0 flex-1 overflow-y-auto">
+        <div className={cn('px-8 py-6', !wide && 'max-w-3xl')}>{children}</div>
+        {overlay}
       </div>
-    </AppLayout>
+    </SettingsFrame>
   )
 }
 

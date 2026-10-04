@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Check, HardDrive, Lock, Minus, Server, X } from 'lucide-react'
 import { AppLayout, type NavItem } from '@/app/app-layout'
+import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
@@ -62,10 +63,6 @@ export function Tag({ children, className, mono = true }: { children: ReactNode;
       {children}
     </span>
   )
-}
-
-export function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded-sm border border-border bg-card px-1 font-mono text-[10px]">{children}</kbd>
 }
 
 export function C({ children }: { children: ReactNode }) {
@@ -204,97 +201,22 @@ export function InlineDialog({ title, children, footer, width = 'w-[520px]', wai
   )
 }
 
-export type SettingsSection =
-  | 'sandbox'
-  | 'stages'
-  | 'proxy'
-  | 'egress-log'
-  | 'credentials'
-  | 'secrets'
-  | 'git'
-  | 'audit'
-  | 'redaction'
-  | 'local'
-  | 'team-server'
-  | 'members'
-  | 'devices'
-  | 'tokens'
-  | 'hardening'
-  | 'sync'
-
-const SETTINGS: { group: string; items: { id: SettingsSection; label: string; team?: boolean }[] }[] = [
-  {
-    group: 'Sicherheit',
-    items: [
-      { id: 'sandbox', label: 'Sandbox' },
-      { id: 'stages', label: 'Stufen & Harnesses' },
-      { id: 'proxy', label: 'Netzwerk & Egress-Proxy' },
-      { id: 'egress-log', label: 'Egress-Log' },
-      { id: 'credentials', label: 'Credentials für Agents' },
-      { id: 'secrets', label: 'Secrets' },
-      { id: 'git', label: 'Git-Verbindungen' },
-      { id: 'audit', label: 'Audit-Log' },
-      { id: 'redaction', label: 'Redaction' },
-    ],
-  },
-  {
-    group: 'Zugang',
-    items: [
-      { id: 'local', label: 'Lokaler Zugang' },
-      { id: 'devices', label: 'Geräte & Hosts' },
-      { id: 'tokens', label: 'Tokens' },
-    ],
-  },
-  {
-    group: 'Team-Betrieb (optional)',
-    items: [
-      { id: 'team-server', label: 'Team-Server & Sync', team: true },
-      { id: 'members', label: 'Mitglieder & Rollen', team: true },
-      { id: 'hardening', label: 'Server-Härtung', team: true },
-    ],
-  },
-]
-
-/** Einstellungen mit Unternavigation links. */
+/** Einstellungen mit Unternavigation links; Navigation und Sektionsliste aus `@/app/settings-shell`. */
 export function SettingsLayout({
   active,
   children,
   connection = 'local',
   overlay,
 }: {
-  active: SettingsSection
+  active: SettingsSectionId
   children: ReactNode
   connection?: 'local' | 'server' | 'offline'
   overlay?: ReactNode
 }) {
   return (
-    <div className="relative h-full">
-      <AppLayout nav="settings" connection={connection}>
-        <div className="flex min-h-0 flex-1">
-          <nav aria-label="Einstellungen" className="w-52 shrink-0 overflow-y-auto border-r border-border bg-sidebar py-3">
-            {SETTINGS.map((g) => (
-              <div key={g.group} className="mb-3">
-                <div className="px-4 pb-1 text-[11px] text-muted-foreground">{g.group}</div>
-                {g.items.map((i) => (
-                  <div
-                    key={i.id}
-                    aria-current={i.id === active ? 'page' : undefined}
-                    className={cn(
-                      'cursor-default border-l-2 px-4 py-1 text-[13px]',
-                      i.id === active ? 'border-foreground bg-accent font-medium' : 'border-transparent text-foreground/80 hover:bg-accent/60',
-                    )}
-                  >
-                    {i.label}
-                  </div>
-                ))}
-              </div>
-            ))}
-          </nav>
-          <div className="flex min-w-0 flex-1 flex-col">{children}</div>
-        </div>
-      </AppLayout>
-      {overlay}
-    </div>
+    <SettingsFrame active={active} connection={connection} overlay={overlay}>
+      {children}
+    </SettingsFrame>
   )
 }
 
@@ -444,62 +366,5 @@ export function CodeView({
         })}
       </div>
     </div>
-  )
-}
-
-/** Browser-Fenster im Desktop-Rahmen (für Login-, Pairing- und Einmal-Link-Seiten). */
-export function BrowserChrome({ url, children, secure = true, overlay }: { url: string; children: ReactNode; secure?: boolean; overlay?: ReactNode }) {
-  return (
-    <div className="relative flex h-full flex-col bg-background">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-sidebar px-3">
-        <span className="flex gap-1 text-muted-foreground" aria-hidden>
-          ‹ ›
-        </span>
-        <div className="flex h-7 flex-1 items-center gap-2 rounded-md border border-input bg-card px-2 font-mono text-[12px]">
-          {secure ? <Lock className="size-3 text-muted-foreground" /> : <span className="text-[11px] text-muted-foreground">http</span>}
-          <span className="truncate">{url}</span>
-        </div>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">{children}</div>
-      {overlay}
-    </div>
-  )
-}
-
-/** Einfaches QR-artiges Muster (nur Darstellung). */
-export function FakeQr({ size = 168, seed = 7 }: { size?: number; seed?: number }) {
-  const n = 25
-  const cells: boolean[] = []
-  let x = seed * 9301 + 49297
-  for (let i = 0; i < n * n; i++) {
-    x = (x * 9301 + 49297) % 233280
-    cells.push(x / 233280 > 0.52)
-  }
-  const finder = (r: number, c: number) => {
-    const inBox = (r0: number, c0: number) => r >= r0 && r < r0 + 7 && c >= c0 && c < c0 + 7
-    for (const [r0, c0] of [
-      [0, 0],
-      [0, n - 7],
-      [n - 7, 0],
-    ]) {
-      if (inBox(r0, c0)) {
-        const rr = r - r0
-        const cc = c - c0
-        return rr === 0 || rr === 6 || cc === 0 || cc === 6 || (rr >= 2 && rr <= 4 && cc >= 2 && cc <= 4)
-      }
-    }
-    return null
-  }
-  const s = size / n
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label="QR-Code zum Koppeln" className="bg-card p-0">
-      {cells.map((on, i) => {
-        const r = Math.floor(i / n)
-        const c = i % n
-        const f = finder(r, c)
-        const fill = f === null ? on : f
-        return fill ? <rect key={i} x={c * s} y={r * s} width={s} height={s} fill="var(--foreground)" /> : null
-      })}
-    </svg>
   )
 }

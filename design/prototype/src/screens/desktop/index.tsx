@@ -20,6 +20,7 @@ import { AppLayout } from '@/app/app-layout'
 import { StatusMark } from '@/app/harness'
 import { Composer, SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, Diff, TerminalOutput, ToolCall, UserMessage } from '@/app/stream'
+import { SettingsFrame } from '@/app/settings-shell'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
@@ -576,7 +577,7 @@ function ProfilesScreen({ state }: { state: string }) {
     )
   }
   return (
-    <AppLayout nav="settings" sessionList={false}>
+    <SettingsFrame active="servers">
       <SettingsHeader page="Server-Profile" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
         <div className="max-w-3xl">
@@ -638,7 +639,7 @@ function ProfilesScreen({ state }: { state: string }) {
           )}
         </div>
       </div>
-    </AppLayout>
+    </SettingsFrame>
   )
 }
 
@@ -648,7 +649,7 @@ function ProfilesScreen({ state }: { state: string }) {
 
 function UpdateSettings({ state }: { state: string }) {
   return (
-    <AppLayout nav="settings" sessionList={false}>
+    <SettingsFrame active="updates">
       <SettingsHeader page="Updates" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
         <div className="max-w-3xl">
@@ -692,7 +693,7 @@ function UpdateSettings({ state }: { state: string }) {
           </SettingsSection>
         </div>
       </div>
-    </AppLayout>
+    </SettingsFrame>
   )
 }
 

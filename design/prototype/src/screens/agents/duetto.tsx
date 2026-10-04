@@ -7,7 +7,7 @@ import { Score, type ScoreEvent, type ScoreVoice } from '@/app/score'
 import { AgentMessage, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Pill } from '@/screens/harnesses/kit'
+import { Pill } from '@/app/kit/harnesses'
 
 const ROUNDS = ['Antworten', 'Kritik 1', 'Kritik 2', 'Urteil']
 

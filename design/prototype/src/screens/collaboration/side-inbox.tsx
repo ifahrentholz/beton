@@ -5,8 +5,7 @@ import { Composer, WorkspaceRail } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from '../workspace/bits'
-import { Btn, NetNote, PageHeader, Segmented, SessionShell, Tag } from '../workspace/parts'
+import { Btn, NetNote, PageHeader, Segmented, SessionShell, ShortStream, Tag } from '@/app/kit/workspace'
 
 /* ---------- Side-Chats ---------- */
 

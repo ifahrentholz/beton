@@ -2,7 +2,7 @@ import { CheckCircle2, KeyRound, Link2, Lock, Plus, ShieldCheck } from 'lucide-r
 import { TerminalOutput } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, InlineDialog, KV, Mark, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Tag } from '../policies/kit'
+import { Btn, C, Callout, InlineDialog, KV, Mark, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Tag } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Secrets */
 

@@ -5,7 +5,7 @@ import { SessionHeader, WorkspaceRail } from '@/app/session-chrome'
 import { ApprovalCard } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Callout, DialogPanel, LocalNote, NetNote, Overlay, Tag } from '../workspace/parts'
+import { Btn, Callout, DialogPanel, LocalNote, NetNote, Overlay, Tag } from '@/app/kit/workspace'
 import { CrStateTag, OriginTag } from './parts'
 
 /*

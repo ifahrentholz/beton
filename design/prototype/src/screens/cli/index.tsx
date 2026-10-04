@@ -1,7 +1,8 @@
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { ApiReference } from './api'
-import { Ask, Bar, Blank, Comment, Cursor, ExitCode, L, Prompt, S, Term, type Tone } from './term'
+import { Ask, Blank, Comment, Cursor, ExitCode, L, Prompt, S, Term, type Tone } from '@/app/kit/term'
+import { Bar } from './term'
 
 /**
  * Gruppe „Kommandozeile“: echte Terminal-Sitzungen mit `beton`.

@@ -51,6 +51,33 @@ function Toggle({ on, onClick, label, children }: { on: boolean; onClick: () => 
   )
 }
 
+/** Theme-Familien (UX-005). Sichtbeton ist der Standard ohne Klasse; der Modus kommt von `.dark`. */
+const PALETTES = [
+  { id: 'concrete', label: 'Sichtbeton', className: '' },
+  { id: 'nord', label: 'Nord', className: 'theme-nord' },
+  { id: 'hc', label: 'Hoher Kontrast', className: 'theme-hc' },
+] as const
+type Palette = (typeof PALETTES)[number]['id']
+
+function PalettePicker({ value, onChange }: { value: Palette; onChange: (p: Palette) => void }) {
+  return (
+    <div role="radiogroup" aria-label="Theme" className="inline-flex h-7 items-center rounded-md border border-border p-0.5 text-xs">
+      {PALETTES.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          role="radio"
+          aria-checked={p.id === value}
+          onClick={() => onChange(p.id)}
+          className={cn('h-full rounded-[3px] px-2', p.id === value ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function DesignShell() {
   const [dark, setDark] = useState(() => {
     // Gespeicherte Wahl gewinnt, sonst die Vorgabe der Umgebung (data-theme bzw. System).
@@ -60,6 +87,10 @@ export function DesignShell() {
     if (attr) return attr === 'dark'
     return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
   })
+  const [palette, setPalette] = useState<Palette>(() => {
+    const stored = readPref('beton-proto-palette', 'concrete')
+    return PALETTES.some((p) => p.id === stored) ? (stored as Palette) : 'concrete'
+  })
   const [overlay, setOverlay] = useState(() => readPref('beton-proto-overlay', 'off') === 'on')
   const path = useRouterState({ select: (s) => s.location.pathname })
   const stats = coverageStats()
@@ -68,6 +99,10 @@ export function DesignShell() {
     document.documentElement.classList.toggle('dark', dark)
     writePref('beton-proto-theme', dark ? 'dark' : 'light')
   }, [dark])
+  useEffect(() => {
+    for (const p of PALETTES) if (p.className) document.documentElement.classList.toggle(p.className, p.id === palette)
+    writePref('beton-proto-palette', palette)
+  }, [palette])
   useEffect(() => writePref('beton-proto-overlay', overlay ? 'on' : 'off'), [overlay])
 
   return (
@@ -92,6 +127,7 @@ export function DesignShell() {
           <Toggle on={overlay} onClick={() => setOverlay((v) => !v)} label="Feature-IDs">
             <Tags className="size-3.5" />
           </Toggle>
+          <PalettePicker value={palette} onChange={setPalette} />
           <Toggle on={dark} onClick={() => setDark((v) => !v)} label={dark ? 'Dunkel' : 'Hell'}>
             {dark ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
           </Toggle>
