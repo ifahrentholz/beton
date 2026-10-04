@@ -490,6 +490,53 @@ async fn agt_009_ac1_claude_parent_starts_codex_child_in_its_own_worktree() {
     env.daemon.shutdown().await;
 }
 
+/// HAR-017, HAR-027 bei Sub-Agents: Effort und Permission-Mode kommen aus dem `executor` des
+/// Sub-Agents; `yolo` ohne Sandbox wird vor dem Anlegen abgelehnt (`sandbox_required`).
+#[tokio::test]
+async fn agt_009_child_takes_effort_and_mode_from_its_executor_and_never_yolo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let claude_s = scenario(
+        tmp.path(),
+        "claude.yaml",
+        json!([turn(
+            Some("los"),
+            vec![
+                call("session_spawn", json!({"agent": "wild", "prompt": "w"})),
+                call("session_spawn", json!({"agent": "careful", "prompt": "c"})),
+                msg("fertig"),
+            ]
+        )]),
+    );
+    let codex_s = scenario(
+        tmp.path(),
+        "codex.yaml",
+        json!([turn(Some("c"), vec![msg("gelesen"), usage(None)])]),
+    );
+    let env = Env::start(Options {
+        vars: vec![claude(&claude_s), codex(&codex_s)],
+        prepare: Some(project_agent(
+            "lead",
+            "spec_version: 1\nname: lead\nexecutor: { harness: claude }\nagents:\n  wild:\n    executor: { harness: codex, permission_mode: yolo }\n  careful:\n    executor: { harness: codex, permission_mode: plan, reasoning_effort: high }\nspawn: { agents: [wild, careful] }\n",
+        )),
+        ..Options::default()
+    })
+    .await;
+    let id = env.run_agent("lead", "los").await;
+    let events = env.first_turn(&id).await;
+    let results = tool_results(&events, "session_spawn");
+    assert!(results[0].contains("sandbox_required"), "{}", results[0]);
+    assert!(results[1].contains("gelesen"), "{}", results[1]);
+    let all = nodes(&env.tree(&id).await);
+    assert_eq!(all.len(), 2, "kein Child für yolo");
+    let child = all[1]["id"].as_str().unwrap();
+    let created = &env.events(child).await[0]["payload"];
+    assert_eq!(created["permission_mode"], "plan");
+    assert_eq!(created["effort"], "high");
+    // Sub-Agents haben einen Titel (ihr Agent) und bekommen keinen generierten (SES-010).
+    assert_eq!(all[1]["title"], "careful");
+    env.daemon.shutdown().await;
+}
+
 #[tokio::test]
 async fn agt_009_ac2_max_depth_two_stops_the_great_grandchild() {
     let tmp = tempfile::tempdir().unwrap();

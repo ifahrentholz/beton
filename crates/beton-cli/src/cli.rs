@@ -127,9 +127,18 @@ pub struct RunArgs {
     /// Prompt für den Skript-Modus; `-` liest ihn von stdin.
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     pub prompt: Option<String>,
-    /// Modell (sofern der Harness es unterstützt).
+    /// Modell (sofern der Harness es unterstützt); mit `-c`/`--resume` ein Wechsel ab dem
+    /// nächsten Turn.
     #[arg(long, value_name = "M")]
     pub model: Option<String>,
+    /// Reasoning-Effort; eine Stufe, die der Harness nicht kennt, wird auf die nächstniedrigere
+    /// gemappt (HAR-017).
+    #[arg(long, value_enum, value_name = "LEVEL")]
+    pub effort: Option<EffortArg>,
+    /// Wie viel der Agent ohne Rückfrage darf (HAR-027). `yolo` startet nur mit Tool-Sandbox
+    /// und Egress-Proxy.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub permission_mode: Option<PermissionModeArg>,
     /// Arbeitsverzeichnis der Session (Default: aktuelles Verzeichnis).
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<std::path::PathBuf>,
@@ -188,6 +197,51 @@ pub struct RunArgs {
     /// Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`.
     #[arg(long = "param", value_name = "NAME=WERT")]
     pub params: Vec<String>,
+}
+
+/// Reasoning-Effort (HAR-017).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EffortArg {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl EffortArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+        }
+    }
+}
+
+/// Permission-Mode (HAR-027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PermissionModeArg {
+    /// Nur lesen und planen.
+    Plan,
+    /// Standard des Harness; Freigaben laut Policy.
+    Default,
+    /// Datei-Edits im Worktree ohne Rückfrage.
+    #[value(name = "accept_edits")]
+    AcceptEdits,
+    /// Keine Rückfragen des Agents; nur mit Sandbox und Egress-Proxy.
+    Yolo,
+}
+
+impl PermissionModeArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Default => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::Yolo => "yolo",
+        }
+    }
 }
 
 /// Workspace eines Forks (SES-006).

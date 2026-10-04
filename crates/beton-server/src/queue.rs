@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use beton_core::event::{
-    Actor, ErrorEvent, Event, EventPayload, MessageCompleted, MessageRole, QueueItem, QueueUpdated,
-    SessionStatus, SystemComponent,
+    Actor, Attachment, ErrorEvent, Event, EventPayload, MessageCompleted, MessageRole, QueueItem,
+    QueueUpdated, SessionStatus, SystemComponent,
 };
 use beton_core::id::{InputId, OrgId, PrincipalId, SessionId};
 use beton_core::time::Timestamp;
@@ -304,7 +304,12 @@ impl Guard {
     }
 
     /// Reiht einen Input ein; neuer Input hebt eine Pause auf (SES-005).
-    pub async fn push(&mut self, text: String, by: PrincipalId) -> Result<InputId, Problem> {
+    pub async fn push(
+        &mut self,
+        text: String,
+        attachments: Vec<Attachment>,
+        by: PrincipalId,
+    ) -> Result<InputId, Problem> {
         let id = InputId::new();
         {
             let mut st = self.state();
@@ -312,7 +317,7 @@ impl Guard {
                 id: id.to_string(),
                 author: by,
                 text,
-                attachments: Vec::new(),
+                attachments,
                 created_at: Timestamp::now(),
             });
             st.paused = false;
@@ -394,11 +399,12 @@ impl Guard {
         &mut self,
         input_id: InputId,
         text: String,
+        attachments: Vec<Attachment>,
         by: PrincipalId,
         actor: Actor,
     ) -> Result<Accepted, Problem> {
         self.state().busy = true;
-        let result = self.deliver_turn(&text, by, actor).await;
+        let result = self.deliver_turn(&text, &attachments, by, actor).await;
         match result {
             Ok(turn_id) => Ok(Accepted::Started { input_id, turn_id }),
             Err(e) => {
@@ -411,26 +417,96 @@ impl Guard {
     async fn deliver_turn(
         &self,
         text: &str,
+        attachments: &[Attachment],
         by: PrincipalId,
         actor: Actor,
     ) -> Result<String, Problem> {
         // Die Eingabe gehört zum Verlauf (Chat, Replay, Export): als Nachricht des Nutzers
         // vor der Zustellung, damit sie vor der Antwort steht.
-        self.user_message(text, by, actor).await?;
+        self.user_message(text, attachments, by, actor).await?;
+        let (text, ids) = self.deliver_attachments(text, attachments).await?;
         let result = self
             .ctx
             .runners
             .deliver(
                 self.session,
                 "input.submit",
-                json!({"text": text}),
+                json!({"text": text, "attachments": ids}),
                 self.ctx.cmd_timeout,
             )
             .await?;
         Ok(result["turn_id"].as_str().unwrap_or_default().to_owned())
     }
 
-    async fn user_message(&self, text: &str, by: PrincipalId, actor: Actor) -> Result<(), Problem> {
+    /// Anhänge an den Runner (WEB-006): Textdateien als Teil des Texts, Bilder und PDF je als
+    /// `input.attachment` (Base64), damit kein Tunnel-Frame zu groß wird.
+    async fn deliver_attachments(
+        &self,
+        text: &str,
+        attachments: &[Attachment],
+    ) -> Result<(String, Vec<String>), Problem> {
+        use base64::Engine as _;
+        let mut text = text.to_owned();
+        let mut ids = Vec::new();
+        for (i, a) in attachments.iter().enumerate() {
+            let bytes = self
+                .ctx
+                .events
+                .store
+                .session_blob(self.ctx.org, self.session, &a.blob)
+                .await?;
+            match crate::attachments::kind(&a.mime) {
+                Some(k) if k.binary() => {
+                    let id = format!("att_{i}");
+                    self.ctx
+                        .runners
+                        .deliver(
+                            self.session,
+                            "input.attachment",
+                            json!({
+                                "id": id,
+                                "name": a.name,
+                                "mime": a.mime,
+                                "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                            }),
+                            self.ctx.cmd_timeout,
+                        )
+                        .await?;
+                    ids.push(id);
+                }
+                _ => {
+                    text.push_str(&format!(
+                        "\n\n<datei name=\"{}\">\n{}\n</datei>",
+                        a.name.replace('"', "'"),
+                        String::from_utf8_lossy(&bytes)
+                    ));
+                }
+            }
+        }
+        Ok((text, ids))
+    }
+
+    async fn user_message(
+        &self,
+        text: &str,
+        attachments: &[Attachment],
+        by: PrincipalId,
+        actor: Actor,
+    ) -> Result<(), Problem> {
+        let mut content = Vec::with_capacity(attachments.len() + 1);
+        if !text.is_empty() {
+            content.push(json!({"type": "text", "text": text}));
+        }
+        // Anhänge als Referenz auf den Blob der Session (WEB-006, DATA-006).
+        for a in attachments {
+            content.push(json!({
+                "type": "attachment",
+                "blob": a.blob,
+                "name": a.name,
+                "mime": a.mime,
+                "size": a.size,
+            }));
+        }
         append(
             &self.ctx.events,
             self.ctx.org,
@@ -439,7 +515,7 @@ impl Guard {
             EventPayload::MessageCompleted(MessageCompleted {
                 message_id: format!("msg_user_{}", InputId::new()),
                 role: MessageRole::User,
-                content: vec![json!({"type": "text", "text": text})],
+                content,
                 author: Some(by),
             }),
         )
@@ -461,7 +537,7 @@ impl Guard {
             .await
         {
             Ok(_) => {
-                self.user_message(text, by, user_actor(by)).await?;
+                self.user_message(text, &[], by, user_actor(by)).await?;
                 Ok(true)
             }
             // Der Turn startet gerade erst oder ist eben zu Ende: Das Turn-Ende in den
@@ -484,7 +560,13 @@ impl Guard {
         self.publish(system()).await?;
         let input_id: InputId = next.id.parse().unwrap_or_else(|_| InputId::new());
         if let Err(p) = self
-            .start_turn(input_id, next.text, next.author, user_actor(next.author))
+            .start_turn(
+                input_id,
+                next.text,
+                next.attachments,
+                next.author,
+                user_actor(next.author),
+            )
             .await
         {
             // Niemand wartet auf diese Antwort: als Fehler im Verlauf sichtbar machen.

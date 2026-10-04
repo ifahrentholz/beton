@@ -5,6 +5,7 @@ import type { CompactionSupport } from "./CompactionSupport";
 import type { ForkHistory } from "./ForkHistory";
 import type { InstructionsDelivery } from "./InstructionsDelivery";
 import type { Mode } from "./Mode";
+import type { PermissionMode } from "./PermissionMode";
 import type { ResumeSupport } from "./ResumeSupport";
 import type { Subagents } from "./Subagents";
 import type { SwitchSupport } from "./SwitchSupport";
@@ -33,6 +34,11 @@ models_stale?: boolean,
  * Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.
  */
 efforts?: Array<string>, 
+/**
+ * Permission-Modes, die der Harness abbilden kann (HAR-027); andere lehnt beton mit
+ * `capability_unsupported` ab. `yolo` braucht zusätzlich Sandbox und Egress-Proxy.
+ */
+permission_modes?: Array<PermissionMode>, 
 /**
  * Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des
  * Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].

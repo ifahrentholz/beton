@@ -78,6 +78,24 @@ describe('REST-Client', () => {
     expect(seen).toEqual(['GET /v1/sessions/ses_1/subagents'])
   })
 
+  it('HAR-017, HAR-027: Modell, Effort und Permission-Mode per PATCH; yolo ohne Sandbox als Problem', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      if (text.includes('yolo')) return [409, { type: 'urn:beton:problem:sandbox_required', code: 'sandbox_required', title: 'Sandbox erforderlich', status: 409 }]
+      return [200, { id: 'ses_1', harness: 'claude' }]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    await client.session('ses_1').update({ model: 'opus', effort: 'high', permission_mode: 'plan' })
+    const err = await client.session('ses_1').update({ permission_mode: 'yolo' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(BetonError)
+    expect((err as BetonError).code).toBe('sandbox_required')
+    expect(seen).toEqual([
+      'PATCH /v1/sessions/ses_1 {"model":"opus","effort":"high","permission_mode":"plan"}',
+      'PATCH /v1/sessions/ses_1 {"permission_mode":"yolo"}',
+    ])
+  })
+
   it('meldet Fehler als RFC-9457-Problem', async () => {
     const url = await serve(() => [404, { status: 404, code: 'not_found', title: 'Nicht gefunden' }])
     const client = new BetonClient({ baseUrl: url })
@@ -85,6 +103,28 @@ describe('REST-Client', () => {
     expect(err).toBeInstanceOf(BetonError)
     expect((err as BetonError).code).toBe('not_found')
     expect((err as BetonError).status).toBe(404)
+  })
+
+  it('WEB-006 AC1: lädt Anhänge roh hoch und sendet sie mit der Eingabe', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${req.headers['content-type']} ${text}`)
+      if (req.url?.includes('/attachments')) {
+        return [201, { blob: `sha256:${'a'.repeat(64)}`, name: 'bild 1.png', mime: 'image/png', size: 3 }]
+      }
+      return [202, { input_id: 'i', status: 'started' }]
+    })
+    const s = new BetonClient({ baseUrl: url, token: 'tok' }).session('ses_1')
+    const att = await s.uploadAttachment(new Uint8Array([1, 2, 3]), 'bild 1.png', 'image/png')
+    await s.send('Was ist das?', undefined, [att])
+    expect(seen[0]).toBe('POST /v1/sessions/ses_1/attachments?name=bild%201.png image/png \u0001\u0002\u0003')
+    expect(JSON.parse(seen[1]!.split(' application/json ')[1]!)).toEqual({ text: 'Was ist das?', attachments: [att] })
+  })
+
+  it('API-003: URL des SSE-Stroms für Skripte', () => {
+    const s = new BetonClient({ baseUrl: 'http://127.0.0.1:7420/' }).session('ses_1')
+    expect(s.eventStreamUrl()).toBe('http://127.0.0.1:7420/v1/sessions/ses_1/events/stream?from_seq=0')
+    expect(s.eventStreamUrl(42, true)).toBe('http://127.0.0.1:7420/v1/sessions/ses_1/events/stream?from_seq=42&transient=true')
   })
 
   it('SES-017: Workspace-Pfade segmentweise kodiert, Schreiben mit If-Match, 412 als BetonError', async () => {

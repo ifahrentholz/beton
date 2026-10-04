@@ -82,6 +82,8 @@ async fn data_002_ac2_log_survives_kill() {
                 harness: "fake".into(),
                 cwd: "/".into(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

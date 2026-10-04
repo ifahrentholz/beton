@@ -432,7 +432,8 @@ pub fn file_routes() -> UtoipaMethodRouter<AppState> {
 pub struct SearchQuery {
     /// Suchbegriff (wörtlich; Smart-Case).
     pub q: String,
-    /// `name` (Dateinamen, Default) oder `content` (Inhalte).
+    /// `name` (Dateinamen, Default), `content` (Inhalte) oder `fuzzy` (Dateinamen unscharf,
+    /// nach Treffergüte; für `@` im Composer, leere Anfrage erlaubt).
     #[param(inline)]
     pub mode: Option<SearchMode>,
     pub limit: Option<String>,
@@ -460,6 +461,10 @@ pub struct SearchHit {
 pub struct SearchPage {
     pub items: Vec<SearchHit>,
     pub next_cursor: Option<String>,
+    /// Nur bei `mode=fuzzy`: Zahl der Dateien im Index (WEB-006).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub total: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -487,6 +492,29 @@ pub async fn search(
     let (_, ws) = open(&state, auth, &id).await?;
     let mode = q.mode.unwrap_or_default();
     let query = q.q;
+    if mode == SearchMode::Fuzzy {
+        // `@`-Suche (WEB-006 AC2): aus dem Dateiindex, ohne Cursor.
+        let cache = state.runtime.file_index.clone();
+        let (items, total) = blocking(move || {
+            let files = cache.get(ws.root());
+            let items = crate::file_index::fuzzy(&files, &query, limit)
+                .into_iter()
+                .map(|path| SearchHit {
+                    path: path.to_owned(),
+                    line: None,
+                    column: None,
+                    text: None,
+                })
+                .collect();
+            Ok((items, files.len() as u64))
+        })
+        .await?;
+        return Ok(axum::Json(SearchPage {
+            items,
+            next_cursor: None,
+            total: Some(total),
+        }));
+    }
     let (hits, more) =
         blocking(move || ws.search(&query, mode, after, limit).map_err(path_problem)).await?;
     let next_cursor = more
@@ -510,6 +538,7 @@ pub async fn search(
             })
             .collect(),
         next_cursor,
+        total: None,
     }))
 }
 

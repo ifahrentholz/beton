@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use beton_core::event::{
-    Actor, Empty, Event, EventPayload, SessionKind, SessionTitleChanged, SessionTrigger,
-    TitleSource,
+    Actor, Attachment, Empty, Event, EventPayload, SessionKind, SessionTitleChanged,
+    SessionTrigger, TitleSource,
 };
 use beton_core::id::{InputId, OrgId, PrincipalId, RunnerId, SessionId, UserId};
 use beton_host::{RunnerBoot, RunnerHandle, RunnerProvider, RunnerSpec, TerminateMode};
@@ -55,6 +55,13 @@ pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
 }
 
+impl Launched {
+    /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
+    pub async fn pid(&self, session: SessionId) -> Option<u32> {
+        self.handles.lock().await.get(&session).and_then(|h| h.pid)
+    }
+}
+
 impl std::fmt::Debug for Launched {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Launched")
@@ -92,6 +99,8 @@ pub struct SessionsConfig {
     pub vendor_env: beton_harness::HostEnv,
     /// Importe laufen nacheinander, damit der Dedup-Schlüssel nicht doppelt vergeben wird.
     pub import_lock: Arc<Mutex<()>>,
+    /// Skill-Verzeichnisse des Users für das Slash-Menü (WEB-006, AGT-008).
+    pub skill_paths: crate::session_skills::SkillPaths,
 }
 
 impl SessionsConfig {
@@ -164,6 +173,10 @@ pub struct CreateSession {
     pub cwd: String,
     pub title: Option<String>,
     pub model: Option<String>,
+    /// Reasoning-Effort ab dem ersten Turn (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode ab dem Start (HAR-027); `yolo` ohne Sandbox wird abgelehnt.
+    pub permission_mode: Option<String>,
     pub harness_opts: Value,
     /// Eigener Worktree (SES-015).
     pub worktree: Option<WorktreeSpec>,
@@ -326,6 +339,18 @@ impl<'a> SessionManager<'a> {
                 .map_err(|e| Problem::new(ProblemCode::AgentInvalid).detail(e.to_string()))?;
             self.check_agent_harness(&spec, &harness, std::path::Path::new(&req.cwd))?;
         }
+        // Effort und Permission-Mode: Anfrage vor `executor` des Agents (AGT-004). Vor dem
+        // Anlegen geprüft; `yolo` ohne Sandbox nie, auch nicht aus einem Agent (HAR-027).
+        let (agent_effort, agent_mode) =
+            crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
+        let effort = req.effort.clone().or(agent_effort);
+        let permission_mode = req.permission_mode.clone().or(agent_mode);
+        crate::settings::validate_start(
+            self.harness_capabilities(&harness, Path::new(&req.cwd))
+                .as_ref(),
+            effort.as_deref(),
+            permission_mode.as_deref(),
+        )?;
         let id = SessionId::new();
         let worktree = match &req.worktree {
             Some(spec) => Some(self.create_worktree(id, &req, spec).await?),
@@ -346,6 +371,8 @@ impl<'a> SessionManager<'a> {
                         Some(a) => a.model.clone(),
                         None => req.model.clone(),
                     },
+                    effort: effort.clone(),
+                    permission_mode: permission_mode.clone(),
                     agent_ref: req.agent.clone(),
                     project_id: None,
                     parent_id: None,
@@ -495,7 +522,7 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Startoptionen aus `session.created`.
-    pub(crate) async fn created(
+    pub async fn created(
         &self,
         session: SessionId,
     ) -> Result<beton_core::event::SessionCreated, Problem> {
@@ -547,6 +574,10 @@ impl<'a> SessionManager<'a> {
         let workspace = self.workspace_root(session).await?;
         let project = beton_harness::registry::HarnessesConfig::load_project(&workspace)
             .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
+        // HAR-020 AC3: Was der vorige Runner offen ließ, endet jetzt im Log.
+        self.close_interrupted(session.id).await?;
+        // Modell, Effort und Mode laut letztem Stand, nicht nur `session.created` (HAR-020).
+        let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
         let agent_snapshot = self.snapshot_file(session.id).await?;
         let token = self
@@ -580,7 +611,9 @@ impl<'a> SessionManager<'a> {
                     epoch: session.epoch,
                     harness: session.harness.clone(),
                     scenario: created.harness_opts["scenario"].as_str().map(PathBuf::from),
-                    model: created.model.clone(),
+                    model: settings.model,
+                    effort: settings.effort,
+                    permission_mode: settings.permission_mode,
                     dev: self.fake_allowed(),
                     resume,
                     agent_ref: created.agent_ref.clone(),
@@ -628,6 +661,28 @@ impl<'a> SessionManager<'a> {
         Ok(self.state.store.session(self.org(), session).await?)
     }
 
+    /// Läuft (oder startet gerade) ein Runner für die Session?
+    async fn runner_alive(&self, session: SessionId) -> bool {
+        if self.state.runtime.runners.connected(session) {
+            return true;
+        }
+        let handle = self
+            .cfg()
+            .launched
+            .handles
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        match &handle {
+            Some(h) => matches!(
+                self.cfg().provider.status(h).await,
+                Ok(beton_host::RunnerStatus::Running)
+            ),
+            None => false,
+        }
+    }
+
     /// Startet bzw. verbindet den Runner, falls nötig (SES-003 AC3).
     pub(crate) async fn ensure_runner(&self, session: SessionId) -> Result<(), Problem> {
         if self.state.runtime.runners.connected(session) {
@@ -659,13 +714,18 @@ impl<'a> SessionManager<'a> {
     /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
     /// Capabilities aus dem letzten `session.started` (HAR-002).
     async fn can_steer(&self, session: SessionId) -> Result<bool, Problem> {
+        self.capability(session, "steering").await
+    }
+
+    /// Boolesche Capability laut letztem `session.started` (HAR-002).
+    async fn capability(&self, session: SessionId, name: &str) -> Result<bool, Problem> {
         let started = self
             .state
             .store
             .last_event_of_type(self.org(), session, "session.started")
             .await?;
         Ok(match started.as_ref().and_then(Event::payload) {
-            Some(EventPayload::SessionStarted(s)) => s.capabilities["steering"] == true,
+            Some(EventPayload::SessionStarted(s)) => s.capabilities[name] == true,
             _ => false,
         })
     }
@@ -680,7 +740,21 @@ impl<'a> SessionManager<'a> {
         by: PrincipalId,
         mode: InputMode,
     ) -> Result<Value, Problem> {
-        self.input_as(session, text, by, mode, user_actor(by)).await
+        self.input_as(session, text, Vec::new(), by, mode, user_actor(by))
+            .await
+    }
+
+    /// Eingabe mit Anhängen (WEB-006).
+    pub async fn input_with(
+        &self,
+        session: SessionId,
+        text: String,
+        attachments: Vec<Attachment>,
+        by: PrincipalId,
+        mode: InputMode,
+    ) -> Result<Value, Problem> {
+        self.input_as(session, text, attachments, by, mode, user_actor(by))
+            .await
     }
 
     /// Wie [`Self::input`], mit eigenem Akteur der Nachricht (z. B. der Parent-Agent).
@@ -688,11 +762,12 @@ impl<'a> SessionManager<'a> {
         &self,
         session: SessionId,
         text: String,
+        attachments: Vec<Attachment>,
         by: PrincipalId,
         mode: InputMode,
         actor: Actor,
     ) -> Result<Value, Problem> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(Problem::new(ProblemCode::ValidationFailed).detail("text ist leer"));
         }
         let record = self.state.store.session(self.org(), session).await?;
@@ -701,7 +776,21 @@ impl<'a> SessionManager<'a> {
                 .detail("Archivierte Session; erst wiederherstellen"));
         }
         crate::exports::ensure_runnable(&self.state.store, self.org(), session).await?;
+        if !attachments.is_empty() {
+            let images = self.capability(session, "images").await?;
+            crate::attachments::validate(self.state, session, &attachments, images).await?;
+        }
         let mut q = self.state.queue().lock(session).await?;
+        if q.busy() && !self.runner_alive(session).await {
+            // Der Runner endete mitten im Turn (Absturz, Neustart): Turn und Freigaben im Log
+            // abschließen, dann normal weiter (HAR-020 AC3).
+            self.close_interrupted(session).await?;
+        }
+        if mode == InputMode::Steer && q.busy() && !attachments.is_empty() {
+            return Err(Problem::new(ProblemCode::ValidationFailed).detail(
+                "Anhänge gehen nur mit einer neuen Nachricht, nicht in den laufenden Turn",
+            ));
+        }
         if mode == InputMode::Steer && q.busy() {
             // SES-004 AC4: ohne Capability `steering` lehnt die API ab.
             if !self.can_steer(session).await? {
@@ -717,7 +806,7 @@ impl<'a> SessionManager<'a> {
             }
         }
         if q.busy() || !q.is_empty() {
-            let input_id = q.push(text, by).await?;
+            let input_id = q.push(text, attachments, by).await?;
             if !q.busy() {
                 self.ensure_runner(session).await?;
                 q.drain().await?;
@@ -725,7 +814,7 @@ impl<'a> SessionManager<'a> {
             return Ok(Accepted::Queued { input_id }.to_json());
         }
         self.ensure_runner(session).await?;
-        Ok(q.start_turn(InputId::new(), text, by, actor)
+        Ok(q.start_turn(InputId::new(), text, attachments, by, actor)
             .await?
             .to_json())
     }
@@ -852,8 +941,10 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Einstellungen ändern, z. B. Modell (HAR-002 AC3: ohne Capability `capability_unsupported`).
-    pub async fn set(&self, session: SessionId, args: Value) -> Result<(), Problem> {
+    pub async fn set(&self, session: SessionId, args: Value) -> Result<Value, Problem> {
         self.state.store.session(self.org(), session).await?;
+        // Ungültige Werte und `yolo` ohne Sandbox erreichen den Runner nicht (HAR-027).
+        crate::settings::precheck_switch(&args)?;
         if !self.state.runtime.runners.connected(session) {
             return Err(
                 Problem::new(ProblemCode::Conflict).detail("Session läuft nicht; erst fortsetzen")
@@ -869,7 +960,6 @@ impl<'a> SessionManager<'a> {
                 self.state.runtime.tunnel.cmd_timeout,
             )
             .await
-            .map(|_| ())
     }
 
     /// Entscheidung für eine offene Freigabe an den Runner (WEB-018, HAR-005).

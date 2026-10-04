@@ -14,15 +14,17 @@ pub mod handover;
 mod id;
 pub mod import;
 pub mod jsonrpc;
+pub mod permission;
 pub mod process;
 pub mod registry;
 pub mod scenario;
 
 pub use crate::adapter::{
     AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateRequest,
-    HarnessAdapter, HarnessError, HarnessSession, HostEnv, McpInjection, McpLaunch, Mode,
-    NormalizedEvent, PermissionMode, ProbeReport, RebuildRequest, SessionSpec, Shutdown,
-    SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS, prefix_instructions,
+    HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment, InvalidPermissionMode,
+    McpInjection, McpLaunch, Mode, NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode,
+    ProbeReport, RebuildRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
+    VENDOR_DIR_VARS, prefix_instructions,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,
@@ -30,3 +32,4 @@ pub use crate::capabilities::{
     Subagents, SwitchSupport, ToolCallGate, UsageReporting, map_effort,
 };
 pub use crate::id::{HarnessId, InvalidHarnessId};
+pub use crate::permission::{SandboxStatus, check_permission_mode};

@@ -80,7 +80,7 @@ impl ContractSubject for DirectSubject {
     async fn start(
         &self,
         scenario: &Path,
-        _resume: Option<String>,
+        _opts: contract::StartOptions,
         gate: Arc<dyn Gate>,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
         let sc = Scenario::load(scenario).map_err(|e| HarnessError::StartRefused(e.to_string()))?;

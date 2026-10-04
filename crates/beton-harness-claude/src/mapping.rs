@@ -34,6 +34,8 @@ pub struct MapState {
     /// Zuletzt gemeldeter Kontext (`context.usage`).
     pub last_context: Option<u64>,
     pub context_window: Option<u64>,
+    /// Welche Permission-Modes die CLI melden darf (HAR-027).
+    pub expected_mode: crate::permission::ModeGuard,
 }
 
 /// `system`-Untertypen, die beton nicht als Event braucht.
@@ -233,6 +235,25 @@ fn map_tool_results(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
             })
         })
         .collect()
+}
+
+/// `cost.delta` aus dem `result` eines Einmal-Aufrufs (SES-010); `purpose` setzt der Aufrufer.
+pub fn result_cost(v: &Value, auth: AuthSource) -> CostDelta {
+    let st = MapState {
+        auth_source: Some(auth),
+        ..MapState::default()
+    };
+    match cost_delta(v, &st, None).0 {
+        EventPayload::CostDelta(c) => c,
+        _ => unreachable!("cost_delta liefert immer cost.delta"),
+    }
+}
+
+/// Modell laut `modelUsage` eines `result`.
+pub fn result_model(v: &Value) -> Option<String> {
+    v["modelUsage"]
+        .as_object()
+        .and_then(|m| m.keys().next().cloned())
 }
 
 fn cost_delta(v: &Value, st: &MapState, purpose: Option<&str>) -> (EventPayload, String) {

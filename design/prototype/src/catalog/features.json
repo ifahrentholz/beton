@@ -336,7 +336,7 @@
   "summary": "Startet ein Runner neu (Crash, Host-Reboot, Update), setzt beton laufende Sessions mit Capability `resume: warm` über die native Session-Referenz fort (Claude `--resume`, Codex `thread/resume`, ACP `session/load`). Ohne Warm-Resume greift HAR-018 (Präambel).",
   "acs": [
    "Nach Kill des Runners während einer idle Claude-Session nimmt die neu gestartete Session die nächste Nachricht mit erhaltenem Kontext an.",
-   "`native_session_ref` wird bei `harness.ready` persistiert; ein Test prüft, dass sie im Log steht, bevor der erste Turn startet.",
+   "`native_session_ref` wird bei `session.started` bzw. `harness.ready` persistiert; ein Test prüft, dass sie im Log steht, bevor der erste Turn startet.",
    "War zum Zeitpunkt des Absturzes ein Turn aktiv, endet er im Log mit `turn.failed` (Problem `runner_restarted`); offene Approvals werden als `approval.resolved { decision: \"abort\", via: \"system\" }` geschlossen."
   ]
  },
@@ -1853,7 +1853,7 @@
   "chapter": "05-security-identity.md",
   "chapterTitle": "05 — Security & Identity",
   "anchor": "auth-003--websocket-origin-allowlist",
-  "summary": "WebSocket-Handshakes werden vor dem Upgrade gegen `auth.ws_allowed_origins` geprüft (Schutz gegen Cross-Site-WebSocket-Hijacking). Default: Origin der `public_url` bzw. lokale Loopback-Origins sowie die Tauri-Origins (`tauri://localhost`, `http://tauri.localhost`). Wildcards nur als Subdomain-Präfix (`https://*.example.com`). Handshakes ohne `Origin` sind nur mit `Authorization`-Header (nicht per Cookie) zulässig.",
+  "summary": "WebSocket-Handshakes werden vor dem Upgrade gegen `auth.ws_allowed_origins` geprüft (Schutz gegen Cross-Site-WebSocket-Hijacking). Default: Origin der `public_url` bzw. lokale Loopback-Origins sowie die Tauri-Origins (`tauri://localhost`, `http://tauri.localhost`). Wildcards nur als Subdomain-Präfix (`https://*.example.com`). Handshakes ohne `Origin` sind nur mit `Authorization`-Header (nicht per Cookie) zulässig. Dieselbe Regel gilt für den SSE-Strom `GET /v1/sessions/{id}/events/stream` (PROTO-012): eine mitgeschickte `Origin` muss erlaubt sein; mit Cookie und ohne `Origin` (EventSource derselben Origin) nur mit `Sec-Fetch-Site: same-origin` bzw. `none`, fehlende Fetch-Metadaten werden abgelehnt (fail closed).",
   "acs": [
    "Handshake mit `Origin: https://evil.test` und gültigem Cookie wird mit 403 abgelehnt, bevor ein WS-Frame fließt.",
    "Handshake ohne `Origin`, mit Cookie und ohne `Authorization` wird abgelehnt; mit gültigem Bearer-Token akzeptiert (SDK-Fall).",

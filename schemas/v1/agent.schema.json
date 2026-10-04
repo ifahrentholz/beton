@@ -538,12 +538,27 @@
     },
     "PermissionMode": {
       "description": "Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.",
-      "type": "string",
-      "enum": [
-        "plan",
-        "default",
-        "accept_edits",
-        "yolo"
+      "oneOf": [
+        {
+          "description": "Nur lesen und planen.",
+          "type": "string",
+          "const": "plan"
+        },
+        {
+          "description": "Vendor-Default; Freigaben laut Policy.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Datei-Edits im Worktree ohne Rückfrage.",
+          "type": "string",
+          "const": "accept_edits"
+        },
+        {
+          "description": "Keine Vendor-Rückfragen; nur mit Tool-Sandbox Stufe 2 und Egress-Proxy startbar.",
+          "type": "string",
+          "const": "yolo"
+        }
       ]
     },
     "PolicyEntry": {

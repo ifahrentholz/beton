@@ -30,6 +30,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |
 | `not_a_git_repo` | 409 | Kein Git-Repository |
 | `spawn_denied` | 409 | Sub-Agent nicht gestartet |
+| `sandbox_required` | 409 | Sandbox erforderlich |
 | `worktree_dirty` | 409 | Worktree hat uncommittete Änderungen |
 | `worktree_unpushed` | 409 | Branch hat ungepushte Commits |
 | `imported_read_only` | 409 | Importierte Session läuft hier nicht |

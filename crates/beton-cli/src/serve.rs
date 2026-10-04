@@ -115,6 +115,23 @@ pub fn web_dir() -> Option<PathBuf> {
 }
 
 /// Store-Einstellungen aus der Konfiguration (`events.store_raw`, PROTO-001 AC3).
+/// `titles.*` aus der User-Konfiguration (SES-010).
+pub fn titles_config(t: &crate::config::TitlesSettings) -> beton_server::titles::TitlesConfig {
+    use crate::config::TitleGeneratorSetting as S;
+    use beton_server::titles::TitleGenerator as G;
+    beton_server::titles::TitlesConfig {
+        generator: match t.generator {
+            S::Auto => G::Auto,
+            S::Direct => G::Direct,
+            S::Harness => G::Harness,
+            S::Off => G::Off,
+        },
+        instructions: t.instructions.clone(),
+        provider: t.provider.clone(),
+        ..beton_server::titles::TitlesConfig::default()
+    }
+}
+
 pub fn store_options(settings: &crate::config::Settings) -> beton_store::StoreOptions {
     beton_store::StoreOptions {
         store_raw: settings.events.store_raw,
@@ -271,6 +288,11 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runner_command = vec![exe.display().to_string(), "__runner".to_owned()];
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
+    let titles = titles_config(&settings.titles);
+    let attachments = beton_server::attachments::AttachmentLimits {
+        max_file_bytes: settings.attachments.max_file_bytes,
+        max_files: settings.attachments.max_files,
+    };
     // Provider des Direkt-API-Harness nur aus der User-Konfiguration (HAR-011); die
     // Modell-Discovery läuft nur hier im Daemon und nur für konfigurierte Provider.
     let providers = settings.providers.clone();
@@ -302,6 +324,8 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.sessions.providers = providers;
         r.harnesses = registry;
         r.features = Arc::new(features);
+        r.titles = titles;
+        r.attachments = attachments;
         r
     })
     .await

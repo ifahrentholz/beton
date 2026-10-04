@@ -310,6 +310,8 @@ async fn ses_016_ac3_doctor_lists_orphaned_worktrees_with_path_and_size() {
                 harness: "fake".into(),
                 cwd: "/projekt".into(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

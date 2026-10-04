@@ -71,6 +71,8 @@ problem_codes! {
     /// Ein Sub-Agent wurde nicht gestartet (AGT-009); `detail` beginnt mit dem Grund
     /// `max_depth`, `max_concurrent` oder `not_allowed`.
     SpawnDenied = "spawn_denied", 409, "Sub-Agent nicht gestartet";
+    /// `yolo` ohne Tool-Sandbox Stufe 2 und Egress-Proxy (HAR-027 AC1).
+    SandboxRequired = "sandbox_required", 409, "Sandbox erforderlich";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
     WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
     /// Die Session stammt aus einer Exportdatei und läuft auf diesem Host nicht (SES-009).

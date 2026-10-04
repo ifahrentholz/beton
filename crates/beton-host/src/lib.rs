@@ -93,6 +93,10 @@ pub struct RunnerBoot {
     pub harness: String,
     pub scenario: Option<PathBuf>,
     pub model: Option<String>,
+    /// Reasoning-Effort beim Start (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode beim Start (HAR-027).
+    pub permission_mode: Option<String>,
     pub dev: bool,
     /// Native Session-Referenz zum Fortsetzen (SES-003).
     pub resume: Option<String>,
@@ -243,6 +247,8 @@ macro_rules! runner_provider_contract {
                     harness: "fake".into(),
                     scenario: None,
                     model: None,
+                    effort: None,
+                    permission_mode: None,
                     dev: true,
                     resume: None,
                     harnesses: Default::default(),

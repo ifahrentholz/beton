@@ -45,6 +45,8 @@ async fn fixture_with(t: TestApp) -> Fixture {
                 harness: "fake".into(),
                 cwd: work.path().display().to_string(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

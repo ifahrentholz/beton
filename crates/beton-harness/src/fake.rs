@@ -11,10 +11,9 @@ use async_trait::async_trait;
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
     Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired, HarnessExited,
-    HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, ResolvedVia,
-    SessionSettingsChanged, SettingsMechanism, TextDelta, TimeoutAction, ToolCallCompleted,
-    ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus, TurnCompleted, TurnFailed,
-    TurnInterrupted, TurnStarted,
+    HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, ResolvedVia, TextDelta,
+    TimeoutAction, ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus,
+    TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -24,8 +23,8 @@ use tokio::task::JoinHandle;
 
 use crate::adapter::{
     AdapterContext, AuthStatus, ExitInfo, Gate, GateDecision, GateRequest, HarnessAdapter,
-    HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, PermissionMode, ProbeReport,
-    SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
+    HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, OneShotReply, OneShotRequest,
+    PermissionMode, ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
 };
 use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CompactionSupport, ForkHistory, InstructionsDelivery,
@@ -36,6 +35,44 @@ use crate::scenario::{Scenario, StartBehavior, Step};
 
 /// Kennung, unter der die Fake-Session sich beim Harness meldet.
 pub const FAKE_SESSION_REF: &str = "fake-session";
+
+/// „Nativer“ Verlauf einer Fake-Session: Ein Neustart mit `resume` setzt beim nächsten
+/// Szenario-Turn fort und kennt die bisherigen Eingaben (`echo_history`), wie ein Vendor-Harness
+/// mit Warm-Resume (HAR-017 AC2, HAR-020). Liegt wie die Session-Dateien einer Vendor-CLI
+/// außerhalb des Arbeitsverzeichnisses (Temp-Verzeichnis), damit auch ein neuer Runner-Prozess
+/// ihn findet.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Native {
+    next_turn: usize,
+    history: Vec<String>,
+}
+
+fn native_path(key: &str) -> std::path::PathBuf {
+    // FNV-1a: stabil über Prozesse hinweg.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    std::env::temp_dir()
+        .join("beton-fake-native")
+        .join(format!("{h:016x}.json"))
+}
+
+fn native_load(key: &str) -> Option<Native> {
+    let text = std::fs::read_to_string(native_path(key)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn native_store(key: &str, state: &Native) {
+    let path = native_path(key);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(text) = serde_json::to_string(state) {
+        let _ = std::fs::write(path, text);
+    }
+}
 
 /// Der Fake-Harness.
 #[derive(Debug, Default, Clone, Copy)]
@@ -66,6 +103,7 @@ pub fn default_capabilities() -> Capabilities {
         models: vec!["fake-small".into(), "fake-large".into()],
         models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
+        permission_modes: PermissionMode::ALL.to_vec(),
         context_window: Some(crate::capabilities::DEFAULT_CONTEXT_WINDOW),
         native_project_files: Vec::new(),
     }
@@ -121,12 +159,76 @@ impl HarnessAdapter for FakeAdapter {
         let resumed = spec.resume.is_some();
         let mut session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
         session.workdir = spec.workdir;
+        let key = format!("{}@{}", session.session_ref, path.display());
+        if resumed && let Some(native) = native_load(&key) {
+            session.next_turn = native.next_turn;
+            session.history = native.history;
+        }
+        session.native_key = Some(key);
+        session.effort = spec.effort;
+        if let Some(mode) = spec.permission_mode {
+            session.capabilities_check_mode(mode)?;
+            session.permission_mode = mode;
+        }
         // `first_message_prefix` (AGT-005): eine fortgesetzte Session hat sie schon.
         if !resumed {
             session.instructions = spec.instructions;
         }
         Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
+
+    /// Einmal-Aufruf (SES-010): Antwort laut `one_shot` im Szenario.
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        _ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let behavior = match &request.scenario {
+            Some(path) => {
+                Scenario::load(path)
+                    .map_err(|e| HarnessError::StartRefused(e.to_string()))?
+                    .one_shot
+            }
+            None => None,
+        }
+        .unwrap_or_default();
+        if let Some(reason) = behavior.fail {
+            return Err(HarnessError::Protocol(reason));
+        }
+        let text = behavior
+            .reply
+            .unwrap_or_else(|| crate::scenario::ONE_SHOT_DEFAULT_REPLY.to_owned());
+        let model = request.model.clone().unwrap_or_else(|| "fake-mini".into());
+        Ok(OneShotReply {
+            cost: Some(CostDelta {
+                harness: HarnessId::FAKE.into(),
+                model: model.clone(),
+                input_tokens: (request.instructions.len() + request.prompt.len()).div_ceil(4)
+                    as u64,
+                output_tokens: text.len().div_ceil(4) as u64,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_micro: Some(0),
+                currency: "USD".into(),
+                source: CostSource::Reported,
+                auth_source: AuthSource::None,
+                purpose: None,
+            }),
+            text,
+            model,
+        })
+    }
+}
+
+/// Text für `echo_input`: die Eingabe und je Anhang eine Zeile
+/// `[Anhang: <name>, <mime>, <bytes> Bytes]` (WEB-006).
+fn echo_text(input: &UserInput) -> String {
+    let mut text = input.text.clone();
+    for a in &input.attachments {
+        let len = a.data_base64.trim_end_matches('=').len() * 3 / 4;
+        text.push_str(&format!("\n[Anhang: {}, {}, {len} Bytes]", a.name, a.mime));
+    }
+    text
 }
 
 /// Eine laufende Fake-Session.
@@ -134,6 +236,8 @@ pub struct FakeSession {
     scenario: Arc<Scenario>,
     capabilities: Capabilities,
     model: String,
+    effort: Option<String>,
+    permission_mode: PermissionMode,
     gate: Arc<dyn Gate>,
     tx: Option<mpsc::Sender<NormalizedEvent>>,
     rx: Option<mpsc::Receiver<NormalizedEvent>>,
@@ -147,6 +251,11 @@ pub struct FakeSession {
     steer: Option<mpsc::UnboundedSender<String>>,
     /// Arbeitsverzeichnis für `write_file`-Schritte.
     workdir: std::path::PathBuf,
+    /// Bisherige Eingaben (für `echo_history`).
+    history: Vec<String>,
+    /// Schlüssel des „nativen“ Verlaufs: Referenz und Szenario-Datei, damit parallele Sessions
+    /// im selben Prozess (Tests) sich nicht überschreiben.
+    native_key: Option<String>,
     /// Instructions für die erste Nachricht (`first_message_prefix`, AGT-005).
     instructions: Option<String>,
 }
@@ -207,6 +316,8 @@ impl FakeSession {
             scenario: Arc::new(scenario),
             capabilities,
             model: model.unwrap_or_else(|| "fake-model".into()),
+            effort: None,
+            permission_mode: PermissionMode::Default,
             gate,
             tx: Some(tx),
             rx: Some(rx),
@@ -218,12 +329,27 @@ impl FakeSession {
             workdir: std::env::current_dir().unwrap_or_default(),
             session_ref,
             steer: None,
+            history: Vec::new(),
+            native_key: None,
             instructions: None,
         })
     }
 
     pub fn capabilities(&self) -> &Capabilities {
         &self.capabilities
+    }
+
+    /// Aktuelles Modell, Effort und Permission-Mode (für Tests).
+    pub fn settings(&self) -> (&str, Option<&str>, PermissionMode) {
+        (&self.model, self.effort.as_deref(), self.permission_mode)
+    }
+
+    fn capabilities_check_mode(&self, mode: PermissionMode) -> Result<(), HarnessError> {
+        if self.capabilities.permission_modes.contains(&mode) {
+            Ok(())
+        } else {
+            Err(crate::capabilities::CapabilityUnsupported(Action::PermissionMode).into())
+        }
     }
 
     fn sender(&self) -> Result<mpsc::Sender<NormalizedEvent>, HarnessError> {
@@ -266,12 +392,25 @@ impl HarnessSession for FakeSession {
             });
         }
         self.next_turn += 1;
+        let id = input.turn_id.unwrap_or_else(|| turn_id(index));
+        let history = self.history.clone();
+        self.history.push(input.text.clone());
+        if let Some(key) = &self.native_key {
+            native_store(
+                key,
+                &Native {
+                    next_turn: self.next_turn,
+                    history: self.history.clone(),
+                },
+            );
+        }
         // Was beim Modell ankommt: die erste Nachricht mit den Instructions davor.
+        // Anhänge stehen als Zeile `[Anhang: …]` dahinter (WEB-006).
+        let text = echo_text(&input);
         let delivered = match self.instructions.take() {
-            Some(i) => crate::adapter::prefix_instructions(&i, &input.text),
-            None => input.text,
+            Some(i) => crate::adapter::prefix_instructions(&i, &text),
+            None => text,
         };
-        let id = turn_id(index);
         let (steer_tx, steer_rx) = mpsc::unbounded_channel();
         self.steer = Some(steer_tx);
         let player = Player {
@@ -290,6 +429,9 @@ impl HarnessSession for FakeSession {
             steer: steer_rx,
             workdir: self.workdir.clone(),
             input: delivered,
+            history,
+            effort: self.effort.clone(),
+            permission_mode: self.permission_mode,
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -315,47 +457,32 @@ impl HarnessSession for FakeSession {
 
     async fn set_model(
         &mut self,
-        model: String,
+        model: Option<String>,
         effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
-        self.capabilities.check(Action::ModelSwitch)?;
-        let live = self.capabilities.model_switch == SwitchSupport::Live;
-        self.model.clone_from(&model);
-        self.emit(EventPayload::SessionSettingsChanged(
-            SessionSettingsChanged {
-                model: Some(model),
-                effort,
-                mechanism: Some(if live {
-                    SettingsMechanism::Live
-                } else {
-                    SettingsMechanism::Restart
-                }),
-                ..SessionSettingsChanged::default()
-            },
-        ))
-        .await?;
-        Ok(if live {
-            SwitchOutcome::Live
-        } else {
-            SwitchOutcome::Restarted
-        })
+        // Live wechselt der Fake selbst; `restart` erledigt der Runner per Neustart mit Resume.
+        if model.is_some() && self.capabilities.model_switch != SwitchSupport::Live {
+            return Err(crate::capabilities::CapabilityUnsupported(Action::ModelSwitch).into());
+        }
+        if effort.is_some()
+            && (self.capabilities.effort_switch != SwitchSupport::Live
+                || self.capabilities.efforts.is_empty())
+        {
+            return Err(crate::capabilities::CapabilityUnsupported(Action::EffortSwitch).into());
+        }
+        if let Some(model) = model {
+            self.model = model;
+        }
+        if effort.is_some() {
+            self.effort = effort;
+        }
+        Ok(SwitchOutcome::Live)
     }
 
     async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError> {
-        let name = match mode {
-            PermissionMode::Plan => "plan",
-            PermissionMode::Default => "default",
-            PermissionMode::AcceptEdits => "accept_edits",
-            PermissionMode::Yolo => "yolo",
-        };
-        self.emit(EventPayload::SessionSettingsChanged(
-            SessionSettingsChanged {
-                permission_mode: Some(name.into()),
-                mechanism: Some(SettingsMechanism::Live),
-                ..SessionSettingsChanged::default()
-            },
-        ))
-        .await
+        self.capabilities_check_mode(mode)?;
+        self.permission_mode = mode;
+        Ok(())
     }
 
     async fn compact(&mut self) -> Result<(), HarnessError> {
@@ -415,6 +542,10 @@ struct Player {
     workdir: std::path::PathBuf,
     /// Eingabe dieses Turns (für `echo_input`).
     input: String,
+    /// Frühere Eingaben der Session (für `echo_history`).
+    history: Vec<String>,
+    effort: Option<String>,
+    permission_mode: PermissionMode,
 }
 
 enum Outcome {
@@ -698,8 +829,20 @@ impl Player {
             self.text = self.input.clone();
             self.flush_message().await;
         } else if step.echo_history {
-            // Der Fake-Harness hat keinen nativen Verlauf (Capability `fork_history: preamble`).
-            self.text = String::from("(kein Verlauf)");
+            // Nativer Verlauf nur innerhalb der Session bzw. nach Warm-Resume im selben Prozess;
+            // Forks bekommen ihn als Präambel (Capability `fork_history: preamble`).
+            self.text = if self.history.is_empty() {
+                String::from("(kein Verlauf)")
+            } else {
+                self.history.join("\n")
+            };
+            self.flush_message().await;
+        } else if step.echo_settings {
+            self.text = crate::scenario::settings_text(
+                &self.model,
+                self.effort.as_deref(),
+                self.permission_mode.as_str(),
+            );
             self.flush_message().await;
         } else if let Some(write) = step.write_file {
             let workdir = self.workdir.clone();
@@ -866,7 +1009,7 @@ turns:
         let s =
             Scenario::from_yaml("capabilities: { model_switch: none, interrupt: false }").unwrap();
         let mut s = FakeSession::start(s, None, Arc::new(AllowAll)).unwrap();
-        let err = s.set_model("opus".into(), None).await.unwrap_err();
+        let err = s.set_model(Some("opus".into()), None).await.unwrap_err();
         assert_eq!(err.code(), "capability_unsupported");
         assert_eq!(
             s.interrupt().await.unwrap_err().code(),

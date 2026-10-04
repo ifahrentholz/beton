@@ -12,12 +12,16 @@
 //!       - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }
 //! ```
 //!
+//! `one_shot: { reply: "Titel" }` bzw. `one_shot: { fail: "Grund" }` bestimmt die Antwort auf
+//! Einmal-Aufrufe (SES-010, Session-Titel); ohne Angabe antwortet der Fake mit `Fake-Titel`.
+//!
 //! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
 //! `select: by_input` wählt zu jeder Eingabe den ersten noch nicht gespielten Turn mit genau
 //! dieser `expect_input` (sonst den ersten ohne `expect_input`); so bedient eine Datei mehrere
 //! Sessions desselben Harness, z. B. Parent und Sub-Agents (AGT-009).
-//! `echo_input: true` gibt die Eingabe des Turns zurück, `echo_history: true` die
-//! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019).
+//! `echo_input: true` gibt die Eingabe des Turns zurück (mit einer Zeile je Anhang), `echo_history: true` die
+//! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019), `echo_settings: true`
+//! Modell, Effort und Permission-Mode, mit denen der Turn läuft (HAR-017, HAR-027).
 
 use std::path::Path;
 
@@ -43,6 +47,9 @@ pub struct Scenario {
     /// Wie der Turn zu einer Eingabe gewählt wird (Default: der Reihe nach).
     #[serde(default, skip_serializing_if = "TurnSelect::is_sequential")]
     pub select: TurnSelect,
+    /// Antwort auf Einmal-Aufrufe (SES-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub one_shot: Option<OneShotBehavior>,
     #[serde(default)]
     pub turns: Vec<Turn>,
 }
@@ -98,6 +105,20 @@ impl TurnCursor {
         }
     }
 }
+/// Verhalten bei Einmal-Aufrufen (`claude -p`, `codex exec`; SES-010).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OneShotBehavior {
+    /// Antworttext (Default [`ONE_SHOT_DEFAULT_REPLY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+    /// Statt zu antworten mit diesem Grund scheitern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail: Option<String>,
+}
+
+/// Antwort des Fakes auf Einmal-Aufrufe ohne `one_shot` im Szenario.
+pub const ONE_SHOT_DEFAULT_REPLY: &str = "Fake-Titel";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -213,6 +234,11 @@ pub struct Step {
     /// `stream-json` mit `--persist` hat einen Verlauf; sonst ist die Nachricht leer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub echo_history: bool,
+    /// Modell, Effort und Permission-Mode, mit denen der Harness diesen Turn ausführt, als
+    /// Nachricht des Agents: `model=<m> effort=<e> mode=<p>` (`-` für nicht gesetzt; HAR-017,
+    /// HAR-027).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub echo_settings: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +347,29 @@ pub fn resolve_echo(steps: &[Step], input: &str, history: &[String]) -> Vec<Step
         .collect()
 }
 
+/// Text von `echo_settings` (HAR-017, HAR-027).
+pub fn settings_text(model: &str, effort: Option<&str>, mode: &str) -> String {
+    format!("model={model} effort={} mode={mode}", effort.unwrap_or("-"))
+}
+
+/// Ersetzt `echo_settings` (auch in `on_gate`-Zweigen) durch einen `message`-Schritt.
+pub fn resolve_settings(steps: &[Step], text: &str) -> Vec<Step> {
+    steps
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            if s.echo_settings {
+                s.echo_settings = false;
+                s.message = Some(text.to_owned());
+            } else if let Some(g) = &mut s.on_gate {
+                g.allow = resolve_settings(&g.allow, text);
+                g.deny = resolve_settings(&g.deny, text);
+            }
+            s
+        })
+        .collect()
+}
+
 impl Step {
     /// Namen der gesetzten Aktionen (für die Validierung).
     fn actions(&self) -> Vec<&'static str> {
@@ -347,6 +396,7 @@ impl Step {
         add(self.write_file.is_some(), "write_file");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
+        add(self.echo_settings, "echo_settings");
         out
     }
 

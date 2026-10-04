@@ -171,8 +171,16 @@ fn agt_011_ac5_agt_012_ac4_builtins_need_no_api_key() {
     for name in ["maestra", "duetto"] {
         let (spec, snapshot) = builtin(name);
         let mut harnesses = vec![spec.executor.harness.to_string()];
+        // Nie `yolo` (HAR-027: braucht Sandbox und Egress-Proxy).
+        assert_ne!(spec.executor.permission_mode, Some(PermissionMode::Yolo));
         for a in spec.spawn.as_ref().unwrap().agents.clone() {
-            harnesses.push(sub(&snapshot, &a).executor.harness.to_string());
+            let s = sub(&snapshot, &a);
+            assert_ne!(
+                s.executor.permission_mode,
+                Some(PermissionMode::Yolo),
+                "{a}"
+            );
+            harnesses.push(s.executor.harness.to_string());
         }
         assert!(
             harnesses.iter().all(|h| h == "claude" || h == "codex"),

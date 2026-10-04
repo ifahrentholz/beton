@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::adapter::{Mode, Transport};
+use crate::adapter::{Mode, PermissionMode, Transport};
 
 macro_rules! cap_enum {
     ($(#[$m:meta])* $name:ident { $first:ident $(, $rest:ident)* $(,)? }) => {
@@ -93,6 +93,11 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub efforts: Vec<String>,
+    /// Permission-Modes, die der Harness abbilden kann (HAR-027); andere lehnt beton mit
+    /// `capability_unsupported` ab. `yolo` braucht zusätzlich Sandbox und Egress-Proxy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<PermissionMode>>", optional)]
+    pub permission_modes: Vec<PermissionMode>,
     /// Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des
     /// Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,6 +139,7 @@ impl Capabilities {
             models: Vec::new(),
             models_stale: false,
             efforts: Vec::new(),
+            permission_modes: Vec::new(),
             context_window: None,
             native_project_files: Vec::new(),
         }
@@ -156,6 +162,7 @@ impl Capabilities {
             Action::Compact => self.compaction != CompactionSupport::None,
             Action::Images => self.images,
             Action::TranscriptImport => self.transcript_import,
+            Action::PermissionMode => !self.permission_modes.is_empty(),
         };
         if supported {
             Ok(())
@@ -178,6 +185,7 @@ pub enum Action {
     Compact,
     Images,
     TranscriptImport,
+    PermissionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

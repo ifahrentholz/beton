@@ -442,6 +442,15 @@ impl Registry {
         spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        // HAR-027 AC1: Kein Harness startet `yolo` ohne Tool-Sandbox und Egress-Proxy, egal
+        // woher der Modus kommt (fail closed, vor jedem Prozessstart).
+        if spec.permission_mode == Some(crate::PermissionMode::Yolo)
+            && !crate::SandboxStatus::current().allows_yolo()
+        {
+            return Err(HarnessError::SandboxRequired(
+                "YOLO startet nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy".into(),
+            ));
+        }
         let adapter = self
             .adapters
             .get(id)
@@ -484,6 +493,26 @@ fn info(adapter: &dyn HarnessAdapter, probe: ProbeReport) -> HarnessInfo {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn har_027_ac1_registry_never_starts_yolo_without_sandbox() {
+        // Jeder Harness-Start läuft hier durch; `yolo` ohne Sandbox scheitert vor dem Adapter.
+        let mut registry = Registry::new(RegistryOptions { dev: true });
+        registry.register(std::sync::Arc::new(crate::fake::FakeAdapter));
+        let id: HarnessId = HarnessId::FAKE.parse().unwrap();
+        let ctx = crate::AdapterContext {
+            gate: std::sync::Arc::new(crate::AllowAll),
+            launcher: std::sync::Arc::new(crate::process::RealLauncher),
+            env: crate::HostEnv::default(),
+        };
+        let spec = crate::SessionSpec {
+            permission_mode: Some(crate::PermissionMode::Yolo),
+            scenario: Some("/gibt/es/nicht.yaml".into()),
+            ..crate::SessionSpec::default()
+        };
+        let err = registry.start(&id, spec, ctx).await.err().unwrap();
+        assert_eq!(err.code(), "sandbox_required");
+    }
+
     #[test]
     fn har_003_project_config_is_read_from_the_workspace() {
         let dir = tempfile::tempdir().unwrap();

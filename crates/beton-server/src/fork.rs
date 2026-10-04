@@ -51,6 +51,10 @@ pub struct ForkSession {
     /// Ziel-Harness; ohne Angabe der Harness der Quelle.
     pub harness: Option<String>,
     pub model: Option<String>,
+    /// Reasoning-Effort des Forks (HAR-017, #110).
+    pub effort: Option<String>,
+    /// Permission-Mode des Forks (HAR-027, #110).
+    pub permission_mode: Option<String>,
     /// Ohne Angabe `new_worktree`, wenn die Quelle in einem Git-Repository arbeitet, sonst
     /// `shared`.
     pub workspace: Option<ForkWorkspace>,
@@ -158,8 +162,20 @@ impl SessionManager<'_> {
         }
         // Workspace (SES-006, SES-015).
         let source_root = self.workspace_root(&record).await?;
-        self.check_target(&target, source, created.agent_ref.as_deref(), &source_root)
+        let target_caps = self
+            .check_target(&target, source, created.agent_ref.as_deref(), &source_root)
             .await?;
+        // Effort und Permission-Mode gegen den Ziel-Harness (HAR-017, HAR-027, #110); ohne
+        // Angabe die des Agents der Quelle (`executor`, AGT-004), sonst die Defaults.
+        let snapshot = self.load_snapshot(source).await?;
+        let (agent_effort, agent_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        let effort = req.effort.clone().or(agent_effort);
+        let permission_mode = req.permission_mode.clone().or(agent_mode);
+        crate::settings::validate_start(
+            Some(&target_caps),
+            effort.as_deref(),
+            permission_mode.as_deref(),
+        )?;
         let in_repo = {
             let root = source_root.clone();
             tokio::task::spawn_blocking(move || beton_git::worktree::main_checkout(&root).is_ok())
@@ -238,6 +254,8 @@ impl SessionManager<'_> {
                     harness: target.to_string(),
                     cwd,
                     model: req.model.clone(),
+                    effort,
+                    permission_mode,
                     agent_ref: created.agent_ref.clone(),
                     project_id: record.project_id,
                     parent_id: None,
@@ -371,14 +389,14 @@ impl SessionManager<'_> {
     }
 
     /// Prüft den Ziel-Harness (SES-007): bekannt, Verlauf übernehmbar und passend zum Agent
-    /// der Quelle (aus ihrem Snapshot, AGT-004).
+    /// der Quelle (aus ihrem Snapshot, AGT-004). Liefert seine Capabilities laut Katalog.
     async fn check_target(
         &self,
         target: &beton_harness::HarnessId,
         source: SessionId,
         agent_ref: Option<&str>,
         workdir: &std::path::Path,
-    ) -> Result<(), Problem> {
+    ) -> Result<beton_harness::Capabilities, Problem> {
         let Some(caps) = self.harness_capabilities(target, workdir) else {
             return Err(incompatible(format!(
                 "Harness `{target}` ist auf diesem Host nicht verfügbar."
@@ -392,7 +410,8 @@ impl SessionManager<'_> {
         }
         if let Some(snapshot) = self.load_snapshot(source).await? {
             let (spec, _) = snapshot.agent().map_err(|e| Problem::internal(&e))?;
-            return self.check_agent_harness(&spec, target, workdir);
+            self.check_agent_harness(&spec, target, workdir)?;
+            return Ok(caps);
         }
         if let Some(agent) = agent_ref {
             // Ohne Snapshot (ältere Sessions): Agent von der Platte.
@@ -405,7 +424,7 @@ impl SessionManager<'_> {
                 )));
             }
         }
-        Ok(())
+        Ok(caps)
     }
 
     /// Übernimmt Inhalts-Events in die neue Session (neue IDs und `seq`, sonst unverändert).

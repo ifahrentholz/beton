@@ -405,6 +405,15 @@ impl SessionManager<'_> {
                 "Der Fake-Harness gibt es nur im Entwicklermodus (--dev).",
             ));
         }
+        // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027);
+        // `yolo` ohne Sandbox endet mit `sandbox_required`, bevor etwas angelegt wird.
+        let (effort, permission_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        crate::settings::validate_start(
+            self.harness_capabilities(&harness, std::path::Path::new(&created.cwd))
+                .as_ref(),
+            effort.as_deref(),
+            permission_mode.as_deref(),
+        )?;
 
         // Gleichzeitige Childs (AC3): Platz reservieren, bevor etwas angelegt wird.
         let id = SessionId::new();
@@ -426,6 +435,8 @@ impl SessionManager<'_> {
                 agent: &agent,
                 harness: &harness,
                 model,
+                effort,
+                permission_mode,
                 snapshot,
                 mode: requested_worktree.unwrap_or(limits.worktree),
                 in_background,
@@ -501,6 +512,8 @@ impl SessionManager<'_> {
                     harness: c.harness.to_string(),
                     cwd: parent_root.display().to_string(),
                     model: c.model,
+                    effort: c.effort,
+                    permission_mode: c.permission_mode,
                     agent_ref: c.snapshot.as_ref().map(|s| s.reference.clone()),
                     project_id: c.parent.project_id,
                     parent_id: Some(c.parent.id),
@@ -588,6 +601,7 @@ impl SessionManager<'_> {
             .input_as(
                 child.id,
                 text,
+                Vec::new(),
                 PrincipalId::User(parent_record.owner),
                 InputMode::Queue,
                 self.parent_actor(&parent_record, &created),
@@ -1013,6 +1027,8 @@ struct StartChild<'a> {
     agent: &'a str,
     harness: &'a beton_harness::HarnessId,
     model: Option<String>,
+    effort: Option<String>,
+    permission_mode: Option<String>,
     snapshot: Option<beton_agents::AgentSnapshot>,
     mode: WorktreeMode,
     in_background: bool,

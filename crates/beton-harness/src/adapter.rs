@@ -119,6 +119,13 @@ pub struct SessionSpec {
     /// Höchstzahl der Model-Requests je User-Turn (`executor.max_turns`, HAR-010); nur
     /// Harnesses mit eigenem Agent-Loop werten sie aus.
     pub max_turns: Option<u32>,
+    /// Reasoning-Effort ab dem ersten Turn, bereits auf eine Stufe des Harness gemappt
+    /// (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode ab dem Start (HAR-027); ohne Angabe der Vendor-Default. Der Runner hat
+    /// ihn gegen die Capabilities und die Sandbox geprüft; [`crate::registry::Registry::start`]
+    /// prüft `yolo` zusätzlich (fail closed).
+    pub permission_mode: Option<PermissionMode>,
     /// Instructions des Agents (AGT-005), fertig zusammengesetzt. Der Adapter liefert sie je
     /// Capability `instructions_delivery` genau einmal aus.
     pub instructions: Option<String>,
@@ -173,26 +180,118 @@ pub struct RebuildRequest {
     pub model: Option<String>,
 }
 
+/// Einmal-Aufruf ohne Session (SES-010), z. B. für einen Session-Titel: der
+/// nicht-interaktive Modus der Vendor-CLI (`claude -p`, `codex exec`) mit ihrer eigenen
+/// Anmeldung (HAR-015), nie über einen API-Key von beton (ADR-0034).
+#[derive(Debug, Clone, Default)]
+pub struct OneShotRequest {
+    /// Anweisung an das Modell (System-Prompt bzw. vorangestellt).
+    pub instructions: String,
+    /// Inhalt, z. B. die erste Nachricht der Session. Geht über stdin, nie über argv.
+    pub prompt: String,
+    pub workdir: PathBuf,
+    /// Modell; ohne Angabe wählt der Adapter sein kleinstes bzw. den Default der CLI.
+    pub model: Option<String>,
+    /// Höchstdauer; danach wird der Prozess beendet.
+    pub timeout: Duration,
+    /// Nur Fake-Harness: Szenario-Datei (Abschnitt `one_shot`).
+    pub scenario: Option<PathBuf>,
+}
+
+/// Antwort eines Einmal-Aufrufs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OneShotReply {
+    /// Antworttext des Modells.
+    pub text: String,
+    /// Tatsächlich genutztes Modell, soweit die CLI es meldet.
+    pub model: String,
+    /// Verbrauch des Aufrufs (`purpose` setzt der Aufrufer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<beton_core::event::CostDelta>,
+}
+
 /// Eingabe eines Nutzers für einen Turn.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UserInput {
     pub text: String,
+    /// Vom Runner vorab vergebene Turn-ID, z. B. weil ein `session.settings_changed` schon auf
+    /// diesen Turn verweist (`effective_from_turn`, HAR-017). Ohne Angabe vergibt der Adapter
+    /// die ID selbst.
+    pub turn_id: Option<TurnId>,
+    /// Bilder und PDF zur Eingabe (WEB-006); nur bei Capability `images`. Textdateien stehen
+    /// schon im Text.
+    pub attachments: Vec<InputAttachment>,
+}
+
+/// Ein binärer Anhang einer Eingabe (WEB-006).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InputAttachment {
+    /// Dateiname (nur Anzeige).
+    pub name: String,
+    /// Medientyp, z. B. `image/png` oder `application/pdf`.
+    pub mime: String,
+    /// Inhalt als Base64 (Standard-Alphabet mit Padding).
+    pub data_base64: String,
 }
 
 impl From<&str> for UserInput {
     fn from(text: &str) -> Self {
-        Self { text: text.into() }
+        Self {
+            text: text.into(),
+            turn_id: None,
+            attachments: Vec::new(),
+        }
     }
 }
 
 /// Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
+    /// Nur lesen und planen.
     Plan,
+    /// Vendor-Default; Freigaben laut Policy.
     Default,
+    /// Datei-Edits im Worktree ohne Rückfrage.
     AcceptEdits,
+    /// Keine Vendor-Rückfragen; nur mit Tool-Sandbox Stufe 2 und Egress-Proxy startbar.
     Yolo,
+}
+
+impl PermissionMode {
+    pub const ALL: [Self; 4] = [Self::Plan, Self::Default, Self::AcceptEdits, Self::Yolo];
+
+    /// Name im Wire-Format, z. B. `accept_edits`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Default => "default",
+            Self::AcceptEdits => "accept_edits",
+            Self::Yolo => "yolo",
+        }
+    }
+}
+
+impl std::fmt::Display for PermissionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Unbekannter Permission-Mode.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unbekannter Permission-Mode `{0}` (erlaubt: plan, default, accept_edits, yolo)")]
+pub struct InvalidPermissionMode(pub String);
+
+impl std::str::FromStr for PermissionMode {
+    type Err = InvalidPermissionMode;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.as_str() == s)
+            .ok_or_else(|| InvalidPermissionMode(s.to_owned()))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,8 +427,15 @@ pub enum HarnessError {
     /// Die Aktion geht nicht, solange ein Turn läuft (z. B. Compaction, SES-011).
     #[error("turn_active: {0}")]
     Busy(String),
+    /// `yolo` ohne Tool-Sandbox Stufe 2 und Egress-Proxy (HAR-027 AC1).
+    #[error("sandbox_required: {0}")]
+    SandboxRequired(String),
     #[error("protocol_error: {0}")]
     Protocol(String),
+    #[error("capability_unsupported: dieser Harness hat keinen Einmal-Modus")]
+    OneShotUnsupported,
+    #[error("timeout: {0}")]
+    Timeout(String),
     #[error("E/A-Fehler: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -344,7 +450,10 @@ impl HarnessError {
             Self::UnexpectedInput { .. } => "unexpected_input",
             Self::Closed => "session_closed",
             Self::Busy(_) => "turn_active",
+            Self::SandboxRequired(_) => "sandbox_required",
             Self::Protocol(_) => "protocol_error",
+            Self::OneShotUnsupported => "capability_unsupported",
+            Self::Timeout(_) => "timeout",
             Self::Io(_) => "internal",
         }
     }
@@ -382,6 +491,16 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         let _ = (request, env);
         Err(crate::capabilities::CapabilityUnsupported(crate::capabilities::Action::Fork).into())
     }
+    /// Einmal-Aufruf über den nicht-interaktiven Modus der Vendor-CLI mit deren eigener
+    /// Anmeldung (SES-010, ADR-0034). Ohne Einmal-Modus `capability_unsupported`.
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let _ = (request, ctx);
+        Err(HarnessError::OneShotUnsupported)
+    }
     /// Import vorhandener Chats der Vendor-CLI (HAR-023, HAR-024, Capability
     /// `transcript_import`); ohne Unterstützung `None`.
     fn transcript_importer(&self) -> Option<Arc<dyn crate::import::TranscriptImporter>> {
@@ -397,11 +516,16 @@ pub trait HarnessSession: Send {
     /// Eingabe in einen laufenden Turn (Capability `steering`).
     async fn steer(&mut self, input: UserInput) -> Result<(), HarnessError>;
     async fn interrupt(&mut self) -> Result<(), HarnessError>;
+    /// Modell und/oder Effort live wechseln (HAR-017), wirksam ab dem nächsten Turn. Der Runner
+    /// ruft das nur ohne laufenden Turn und nur bei Capability `live` auf; `effort` ist bereits
+    /// gemappt. Das Event `session.settings_changed` schreibt der Runner, nicht der Adapter.
     async fn set_model(
         &mut self,
-        model: String,
+        model: Option<String>,
         effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError>;
+    /// Permission-Mode live wechseln (HAR-027). Ein Modus außerhalb von
+    /// `capabilities.permission_modes` wird mit `capability_unsupported` abgelehnt.
     async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError>;
     async fn compact(&mut self) -> Result<(), HarnessError>;
     /// Der Event-Strom; kann genau einmal entnommen werden. Er endet, wenn der Harness endet.

@@ -495,6 +495,10 @@ payload!(SessionCreated {
     harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] agent_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] model: Option<String>,
+    /// Reasoning-Effort beim Start (HAR-017), wie angefragt; gemappt meldet ihn der Runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] effort: Option<String>,
+    /// Permission-Mode beim Start (HAR-027): `plan`, `default`, `accept_edits`, `yolo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] permission_mode: Option<String>,
     cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] project_id: Option<ProjectId>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] parent_session_id: Option<SessionId>,
@@ -587,13 +591,26 @@ payload!(RunnerStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] reason: Option<String>,
 });
 
+// Ein Anhang einer Eingabe (WEB-006): Inhalt im Blob-Store der Session (DATA-006), in
+// Nachrichten als Inhaltsblock `{"type": "attachment", …}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Attachment {
+    pub blob: BlobRef,
+    /// Dateiname, wie hochgeladen (nur Anzeige).
+    pub name: String,
+    /// Medientyp, z. B. `image/png`, `application/pdf`, `text/plain`.
+    pub mime: String,
+    /// Größe in Bytes.
+    pub size: u64,
+}
 // Ein eingereihter Input (SES-004). `text` ist vollständig, damit jeder Client mit `drive`
 // ihn bearbeiten kann.
 payload!(QueueItem {
     id: String,
     author: PrincipalId,
     text: String,
-    attachments: Vec<String>,
+    #[serde(default)]
+    attachments: Vec<Attachment>,
     created_at: Timestamp,
 });
 // Vollständiger Queue-Stand nach jeder Änderung (SES-004); `paused` nach einem Interrupt

@@ -12,9 +12,8 @@ use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
     Compaction, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
     HarnessAuthRequired, MessageCompleted, MessageRole, Notice, NoticeLevel, ReasoningCompleted,
-    ResolvedVia, SessionSettingsChanged, SettingsMechanism, SystemComponent, TextDelta,
-    TimeoutAction, ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolStatus,
-    TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
+    ResolvedVia, SystemComponent, TextDelta, TimeoutAction, ToolCallCompleted, ToolCallRequested,
+    ToolCallStarted, ToolStatus, TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -951,7 +950,7 @@ impl HarnessSession for DirectSession {
         if self.shared.running.swap(true, Ordering::SeqCst) {
             return Err(HarnessError::Busy("ein Turn läuft bereits".into()));
         }
-        let turn = TurnId::new();
+        let turn = input.turn_id.unwrap_or_default();
         self.shared
             .emit(
                 EventPayload::TurnStarted(TurnStarted {
@@ -982,31 +981,28 @@ impl HarnessSession for DirectSession {
 
     async fn set_model(
         &mut self,
-        model: String,
+        model: Option<String>,
         effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
         if effort.is_some() {
             self.shared.capabilities.check(Action::EffortSwitch)?;
         }
-        if let Ok(mut m) = self.shared.model.lock() {
-            m.clone_from(&model);
+        if let Some(model) = model
+            && let Ok(mut m) = self.shared.model.lock()
+        {
+            *m = model;
         }
-        self.shared
-            .emit(
-                EventPayload::SessionSettingsChanged(SessionSettingsChanged {
-                    model: Some(model),
-                    mechanism: Some(SettingsMechanism::Live),
-                    ..SessionSettingsChanged::default()
-                }),
-                None,
-            )
-            .await;
         Ok(SwitchOutcome::Live)
     }
 
-    async fn set_permission_mode(&mut self, _mode: PermissionMode) -> Result<(), HarnessError> {
-        // Jeder Tool-Call geht ohnehin durch das Gate; Modi wirken über die Policies (M2).
-        Ok(())
+    async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError> {
+        // Jeder Tool-Call geht ohnehin durch das Gate; andere Modi als den Default bildet der
+        // Direkt-API-Harness (noch) nicht ab und lehnt sie ab statt sie zu ignorieren (HAR-027).
+        if self.shared.capabilities.permission_modes.contains(&mode) {
+            Ok(())
+        } else {
+            Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into())
+        }
     }
 
     async fn compact(&mut self) -> Result<(), HarnessError> {
