@@ -15,7 +15,6 @@ use beton_harness::registry::{BinarySource, Registry, VersionProbe, resolve_bina
 use beton_harness::{AuthStatus, HarnessId, HostEnv};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// Eine bekannte Vendor-CLI.
 #[derive(Debug, Clone, Copy)]
@@ -96,9 +95,6 @@ pub fn default_local_servers() -> Vec<(&'static str, SocketAddr)> {
         ("lmstudio", SocketAddr::from(([127, 0, 0, 1], 1234))),
     ]
 }
-
-/// Höchstdauer je Probe eines lokalen Servers.
-pub const LOCAL_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Startet Prozesse für Installation und Login (im Test ersetzbar).
 #[async_trait]
@@ -225,28 +221,9 @@ pub async fn check(
     }
 }
 
-/// Fragt einen lokalen Server mit 500 ms Timeout ab (nur Loopback, ADR-0033).
+/// Fragt einen lokalen Server ab (über das SDK: CLI-Code macht selbst kein HTTP, API-005).
 pub async fn probe_local_server(id: &str, addr: SocketAddr) -> bool {
-    if !addr.ip().is_loopback() {
-        return false;
-    }
-    let path = if id == "ollama" { "/" } else { "/v1/models" };
-    let attempt = async {
-        let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
-        let request = format!("GET {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-        stream.write_all(request.as_bytes()).await.ok()?;
-        let mut buf = Vec::new();
-        let _ = (&mut stream).take(4096).read_to_end(&mut buf).await;
-        Some(String::from_utf8_lossy(&buf).into_owned())
-    };
-    let Ok(Some(response)) = tokio::time::timeout(LOCAL_PROBE_TIMEOUT, attempt).await else {
-        return false;
-    };
-    let ok_status = response.lines().next().is_some_and(|l| l.contains(" 200"));
-    match id {
-        "ollama" => ok_status && response.contains("Ollama"),
-        _ => ok_status && response.contains("\"data\""),
-    }
+    beton_sdk::probe::local_server(id, addr).await
 }
 
 fn auth_text(status: AuthStatus) -> &'static str {
@@ -348,6 +325,8 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
 
