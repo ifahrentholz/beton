@@ -19,6 +19,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `loopback_only` | 403 | Nur über Loopback erreichbar |
 | `path_outside_workspace` | 403 | Pfad außerhalb des Workspace |
 | `not_found` | 404 | Nicht gefunden |
+| `agent_not_found` | 404 | Agent nicht gefunden |
 | `feature_disabled` | 404 | Funktion nicht aktiviert |
 | `method_not_allowed` | 405 | Methode nicht erlaubt |
 | `conflict` | 409 | Konflikt |
@@ -37,6 +38,9 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unsupported_media_type` | 415 | Medientyp nicht unterstützt |
 | `idempotency_key_reused` | 422 | Idempotency-Key mit anderem Inhalt wiederverwendet |
 | `base_not_found` | 422 | Base-Branch nicht auflösbar |
+| `agent_invalid` | 422 | Agent ungültig |
+| `invalid_param` | 422 | Parameter ungültig |
+| `params_required` | 422 | Pflichtparameter fehlen |
 | `harness_incompatible` | 422 | Ziel-Harness passt nicht |
 | `unsupported_format_version` | 422 | Exportformat zu neu |
 | `import_seq_gap` | 422 | Import abgelehnt: Lücke im Verlauf |

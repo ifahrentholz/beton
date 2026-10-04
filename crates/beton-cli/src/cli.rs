@@ -120,7 +120,9 @@ pub struct McpArgs {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Harness, z. B. `claude` (Default: `harnesses.default`, sonst `claude`).
+    /// Harness (`claude`, `codex`, `acp:<slug>`, `direct:<provider>`, `fake`) oder Agent:
+    /// Name, Pfad (`./agents/x`) oder `builtin:<name>` (Default: `harnesses.default`, sonst
+    /// `claude`).
     pub target: Option<String>,
     /// Prompt für den Skript-Modus; `-` liest ihn von stdin.
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
@@ -145,8 +147,9 @@ pub struct RunArgs {
         conflicts_with_all = ["continue_last", "resume", "worktree"]
     )]
     pub fork: Option<String>,
-    /// Harness des Forks (wie TARGET); ein anderer Harness bekommt eine Übergabe (SES-007).
-    #[arg(long, value_name = "HARNESS", requires = "fork")]
+    /// Harness des Forks (wie TARGET; ein anderer Harness bekommt eine Übergabe, SES-007) bzw.
+    /// eines Agents statt `executor.harness` (AGT-004).
+    #[arg(long, value_name = "HARNESS")]
     pub harness: Option<String>,
     /// Dateien des Forks: neuer Worktree (Default im Git-Repository), gemeinsam oder leer.
     #[arg(long, value_enum, value_name = "MODE", requires = "fork")]
@@ -182,6 +185,9 @@ pub struct RunArgs {
     /// Szenario-Datei, nur für den Harness `fake` (HAR-026).
     #[arg(long, value_name = "FILE")]
     pub scenario: Option<std::path::PathBuf>,
+    /// Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`.
+    #[arg(long = "param", value_name = "NAME=WERT")]
+    pub params: Vec<String>,
 }
 
 /// Workspace eines Forks (SES-006).

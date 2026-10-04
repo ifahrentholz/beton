@@ -68,26 +68,16 @@ pub fn load_agent(
 }
 
 fn load_dir(dir: AgentDir) -> Result<LoadedAgent, String> {
-    let text = dir
-        .read(beton_agents::dir::AGENT_YAML)
-        .ok_or_else(|| format!("{}: agent.yaml fehlt", dir.display()))?;
-    let text = String::from_utf8_lossy(&text);
-    let file = format!("{}/agent.yaml", dir.display());
-    let parsed = beton_agents::load::parse_agent_yaml(&text, &file);
-    if let Some(d) = parsed.diagnostics.iter().find(|d| d.is_error()) {
-        return Err(format!("{}:{}:{}: {}", d.file, d.line, d.column, d.message));
-    }
-    let spec = parsed
-        .spec
-        .ok_or_else(|| format!("{file}: Agent ungültig"))?;
+    let spec = beton_agents::snapshot::load_spec(&dir)?;
     Ok(LoadedAgent { spec, dir })
 }
 
-/// `<agent>/skills` im Dateisystem; Built-ins werden nach `scratch` ausgepackt.
+/// `<agent>/skills` im Dateisystem; Built-ins und Snapshots werden nach `scratch`
+/// ausgepackt.
 pub fn agent_skills_dir(agent: &LoadedAgent, scratch: &Path) -> std::io::Result<Option<PathBuf>> {
     match &agent.dir {
         AgentDir::Fs(dir) => Ok(Some(dir.join("skills"))),
-        AgentDir::Builtin { .. } => {
+        AgentDir::Builtin { .. } | AgentDir::Snapshot { .. } => {
             let mut any = false;
             for (rel, bytes) in agent.dir.files() {
                 let Some(inner) = rel.strip_prefix("skills/") else {
@@ -149,29 +139,9 @@ fn spawn_targets(agent: &LoadedAgent, notices: &mut Vec<String>) -> Vec<SpawnTar
 }
 
 fn resolve_ref(agent: &LoadedAgent, reference: &str) -> Result<LoadedAgent, String> {
-    match AgentRef::parse(reference)? {
-        AgentRef::Path(p) if p.is_relative() => {
-            let rel = p.to_string_lossy().replace('\\', "/");
-            let dir = agent
-                .dir
-                .join(&rel)
-                .ok_or_else(|| format!("{reference} liegt außerhalb des Agents"))?;
-            load_dir(dir)
-        }
-        other => {
-            let search = SearchPath {
-                project: None,
-                user: None,
-                builtins: Builtins::embedded(),
-            };
-            let base = match &agent.dir {
-                AgentDir::Fs(d) => d.clone(),
-                AgentDir::Builtin { .. } => PathBuf::from("."),
-            };
-            let located = search.resolve(&other, &base).map_err(|e| e.to_string())?;
-            load_dir(located.dir)
-        }
-    }
+    let dir =
+        beton_agents::resolve::resolve_subagent(&agent.dir, reference, &Builtins::embedded())?;
+    load_dir(dir)
 }
 
 fn load_layer(path: &Path, notices: &mut Vec<String>) -> McpFile {

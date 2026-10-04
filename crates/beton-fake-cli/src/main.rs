@@ -5,6 +5,7 @@
 //! beton-fake-cli --protocol app-server  --scenario <datei.yaml> [app-server …]
 //! beton-fake-cli --protocol acp         --scenario <datei.yaml> [Agent-Flags …]
 //! beton-fake-cli [--protocol …] --version
+//! beton-fake-cli … --record <datei>          # Kontext je Eingabe als JSON-Zeilen (AGT-005)
 //! beton-fake-cli --protocol mcp-server --tools a,b   # Test-MCP-Server (HAR-009)
 //! ```
 //!
@@ -56,6 +57,10 @@ struct Args {
     mcp_config: Option<String>,
     /// Tools des Test-MCP-Servers (`--protocol mcp-server`).
     tools: Vec<String>,
+    /// `--append-system-prompt-file` von Claude Code (AGT-005).
+    append_system_prompt_file: Option<PathBuf>,
+    /// Kontext-Aufzeichnung (`--record <datei>`, sonst `BETON_FAKE_RECORD`).
+    record: Option<PathBuf>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -75,6 +80,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--fork-session" => out.fork_session = true,
             "--persist" => out.persist = true,
             "--mcp-config" => out.mcp_config = args.next(),
+            "--record" => out.record = args.next().map(PathBuf::from),
+            "--append-system-prompt-file" => {
+                out.append_system_prompt_file = args.next().map(PathBuf::from);
+            }
             "--tools" => {
                 out.tools = args
                     .next()
@@ -202,6 +211,17 @@ fn main() -> ExitCode {
     scenario.faults.hang_after = f.hang_after.or(scenario.faults.hang_after);
     scenario.faults.malformed_line = f.malformed_line.or(scenario.faults.malformed_line);
 
+    io::set_record(args.record.clone());
+    // Wie Claude Code: die Datei beim Start lesen und an den System-Prompt hängen.
+    if let Some(file) = &args.append_system_prompt_file {
+        match std::fs::read_to_string(file) {
+            Ok(text) => io::record_context("append_system_prompt", &text),
+            Err(e) => {
+                eprintln!("beton-fake-cli: {}: {e}", file.display());
+                return ExitCode::from(1);
+            }
+        }
+    }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let persist = if args.persist {

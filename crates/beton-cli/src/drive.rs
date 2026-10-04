@@ -317,7 +317,7 @@ pub async fn drive(
             Outcome::Interrupted => "interrupted",
             Outcome::Denied => "denied",
             Outcome::Detached => "detached",
-            Outcome::TimedOut => "timeout",
+            Outcome::TimedOut => "timed_out",
         };
         match format {
             OutputFormat::Text => {
@@ -372,6 +372,9 @@ fn on_event(st: &mut State, e: &Value, script: bool) {
     };
     match e["type"].as_str().unwrap_or_default() {
         "session.status" => {
+            if script && st.live && p["reason"] == "timed_out" && st.outcome.is_none() {
+                st.outcome = Some(Outcome::TimedOut);
+            }
             if let Some(s) = p["status"].as_str() {
                 st.status = s.to_owned();
                 if matches!(s, "running" | "waiting_approval") {
@@ -403,7 +406,10 @@ fn on_event(st: &mut State, e: &Value, script: bool) {
             if ours(st) {
                 st.busy = false;
                 if script && st.live && st.our_turn.is_some() {
-                    st.outcome = Some(if st.denied_by_on_ask {
+                    st.outcome = Some(if p["reason"] == "timed_out" {
+                        // `executor.timeout` des Agents (AGT-004 AC3).
+                        Outcome::TimedOut
+                    } else if st.denied_by_on_ask {
                         Outcome::Denied
                     } else {
                         Outcome::Interrupted

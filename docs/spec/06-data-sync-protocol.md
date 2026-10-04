@@ -77,7 +77,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `turn.started` | D | `turn_id, input_id?, author` |
 | | `turn.completed` | D | `turn_id, stop_reason, usage_summary` |
 | | `turn.failed` | D | `turn_id, problem` |
-| | `turn.interrupted` | D | `turn_id, by` |
+| | `turn.interrupted` | D | `turn_id, by, reason?` (`timed_out`: `executor.timeout`, AGT-004) |
 | Nachrichten | `message.delta` | T | `message_id, text` |
 | | `message.completed` | D | `message_id, role: user\|assistant, content: [text\|image\|file_ref\|code], author?` |
 | | `reasoning.delta` | T | `message_id, text` |

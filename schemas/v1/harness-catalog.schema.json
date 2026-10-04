@@ -103,6 +103,13 @@
           "description": "`models` ist die zuletzt erfolgreich abgerufene Liste, weil die Modell-Discovery des\nAnbieters gerade fehlschlägt (HAR-011 AC3); der Picker kennzeichnet sie als veraltet.",
           "type": "boolean"
         },
+        "native_project_files": {
+          "description": "Projektdateien, die der Harness selbst liest (z. B. Claude `CLAUDE.md`, Codex\n`AGENTS.md`); bei `project_files: auto` liefert beton nur die übrigen (AGT-005).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "resume": {
           "$ref": "#/$defs/ResumeSupport"
         },

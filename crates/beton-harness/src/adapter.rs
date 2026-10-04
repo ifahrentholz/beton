@@ -119,6 +119,15 @@ pub struct SessionSpec {
     /// Höchstzahl der Model-Requests je User-Turn (`executor.max_turns`, HAR-010); nur
     /// Harnesses mit eigenem Agent-Loop werten sie aus.
     pub max_turns: Option<u32>,
+    /// Instructions des Agents (AGT-005), fertig zusammengesetzt. Der Adapter liefert sie je
+    /// Capability `instructions_delivery` genau einmal aus.
+    pub instructions: Option<String>,
+}
+
+/// Erste Nachricht mit vorangestellten Instructions (`instructions_delivery:
+/// first_message_prefix`, AGT-005).
+pub fn prefix_instructions(instructions: &str, text: &str) -> String {
+    format!("[Anweisungen für diese Session]\n{instructions}\n[Ende der Anweisungen]\n\n{text}")
 }
 
 /// Ein MCP-Server, wie ihn der Harness starten soll (HAR-009). Immer ein stdio-Relay

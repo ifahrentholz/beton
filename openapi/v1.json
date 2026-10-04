@@ -940,6 +940,16 @@
               }
             }
           },
+          "404": {
+            "description": "Agent nicht gefunden (`agent_not_found`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Worktree gewünscht, aber kein Git-Repository",
             "content": {
@@ -951,7 +961,7 @@
             }
           },
           "422": {
-            "description": "Base nicht auflösbar; nennt die verfügbaren Branches",
+            "description": "Base nicht auflösbar (`base_not_found`), Agent ungültig (`agent_invalid`), Parameter ungültig (`invalid_param`) oder Pflichtparameter fehlen (`params_required`), Harness passt nicht zum Agent (`harness_incompatible`)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4087,13 +4097,26 @@
       "CreateSessionRequest": {
         "type": "object",
         "required": [
-          "target",
           "cwd"
         ],
         "properties": {
           "target": {
-            "type": "string",
-            "description": "Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`. Mit `agent` optional: dann\nein Override von `executor.harness`, vermerkt in `agent.resolved.overrides` (AGT-004)."
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Agent-Ref (AGT-003): Name (`pr-fixer`), Pfad (`./agents/x`) oder `builtin:<name>`. Der\nAgent wird beim Start aufgelöst und als Snapshot festgehalten (`agent.resolved`)."
+          },
+          "params": {
+            "type": "object",
+            "description": "Parameterwerte des Agents (AGT-010); Texte werden in den deklarierten Typ umgewandelt.\nUngültige Werte: 422 `invalid_param`; fehlende Pflichtwerte: 422 `params_required` mit\n`errors[].pointer = /params/<name>`."
           },
           "cwd": {
             "type": "string",
@@ -4942,6 +4965,7 @@
           "loopback_only",
           "path_outside_workspace",
           "not_found",
+          "agent_not_found",
           "feature_disabled",
           "method_not_allowed",
           "conflict",
@@ -4960,6 +4984,9 @@
           "unsupported_media_type",
           "idempotency_key_reused",
           "base_not_found",
+          "agent_invalid",
+          "invalid_param",
+          "params_required",
           "harness_incompatible",
           "unsupported_format_version",
           "import_seq_gap",

@@ -389,6 +389,7 @@ fn turn_completed(turn: &Value, st: &mut MapState) -> Vec<EventPayload> {
         Some("interrupted") => out.push(EventPayload::TurnInterrupted(TurnInterrupted {
             turn_id,
             by: PrincipalId::User(UserId::LOCAL),
+            reason: None,
         })),
         _ => {
             let error = match &turn["error"] {
