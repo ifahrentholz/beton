@@ -34,6 +34,7 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Roadmap neu erzeugen | `python3 scripts/gen_roadmap.py` (CI prüft, dass `docs/spec/roadmap.md` aktuell ist) |
 | Feature-Katalog des Design-Prototyps neu erzeugen | `python3 scripts/gen_feature_catalog.py` (nach jeder Spec-Änderung; CI prüft `design/prototype/src/catalog/features.json`) |
 | Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schema nach `schemas/v1/`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
+| TypeScript-SDK | `pnpm test` · `pnpm typecheck` · `pnpm build` in `packages/sdk-ts` |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` in `apps/web` *(folgt mit WP-14)* |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen Fake-Harness) *(folgt mit WP-15)* |
 

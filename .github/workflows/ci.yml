@@ -139,6 +139,7 @@ jobs:
         # covers: QA-003 AC2
         run: cargo xtask golden-scan
       - name: Generierte Schemas und Typen sind aktuell
+        # covers: API-004 AC1
         run: cargo xtask codegen --check
       # covers: PROTO-013 AC3 (OpenAPI 3.1 mit Linter validiert)
       - name: OpenAPI-Linter
@@ -191,6 +192,32 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"
+
+  sdk-ts:
+    name: sdk-ts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: packages/sdk-ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: packages/sdk-ts/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - name: Paket bauen und in Node importieren (ESM)
+        # covers: API-004 AC3
+        run: |
+          pnpm build
+          node -e "import('./dist/index.js').then((m) => { if (!m.BetonClient) process.exit(1) })"
 
   design:
     name: design-prototyp
