@@ -5,7 +5,6 @@ use std::os::unix::fs::PermissionsExt as _;
 
 use async_trait::async_trait;
 use beton_agents::spec::SystemTool;
-use tokio::io::AsyncWriteExt as _;
 use tokio::net::UnixStream;
 
 use super::*;
