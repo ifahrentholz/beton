@@ -1,0 +1,7 @@
+[beton · Übergabe] Du setzt die Session „Rate-Limiter für die Login-API“ fort, die bisher mit Claude Code lief (bis Ereignis 21). Du arbeitest jetzt als Codex.
+Ziel: Die Login-Route braucht einen Rate-Limiter: höchstens 5 Versuche pro Minute und IP. Bitte mit Tests.
+Zuletzt geändert: `src/middleware/rate-limit.spec.ts`, `src/middleware/rate-limit.ts`
+Branch: `beton/rate-limiter-7f3k`
+Offen: Tests schreiben; Register-Route absichern
+Letzter Stand: Hinter einem Proxy ist `req.ip` die Adresse des Proxys; ich nutze `X-Forwarded-For` nur mit `trust proxy`.
+Den Verlauf (2 Turns, davon 2 vollständig, ca. 443 Tokens, 1 % des Kontextfensters) findest du in `.beton/handover/ses_x.md`. Lies die Datei, bevor du weitermachst.

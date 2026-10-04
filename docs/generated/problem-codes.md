@@ -36,6 +36,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unsupported_media_type` | 415 | Medientyp nicht unterstützt |
 | `idempotency_key_reused` | 422 | Idempotency-Key mit anderem Inhalt wiederverwendet |
 | `base_not_found` | 422 | Base-Branch nicht auflösbar |
+| `harness_incompatible` | 422 | Ziel-Harness passt nicht |
 | `rate_limited` | 429 | Zu viele Anfragen |
 | `internal` | 500 | Interner Fehler |
 | `blob_corrupt` | 500 | Blob beschädigt |

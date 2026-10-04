@@ -130,6 +130,8 @@ pub fn capabilities() -> Capabilities {
         transcript_import: false,
         models: Vec::new(),
         efforts: vec!["low".into(), "medium".into(), "high".into()],
+        // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
+        context_window: Some(272_000),
     }
 }
 

@@ -6,6 +6,7 @@
 //! entfernt bei `auth: subscription` API-Key-Variablen aus der Umgebung.
 
 pub mod mapping;
+pub mod rebuild;
 pub mod record;
 
 use std::sync::Arc;
@@ -109,6 +110,8 @@ pub fn capabilities() -> Capabilities {
         // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
         models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
         efforts: Vec::new(),
+        // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
+        context_window: Some(200_000),
     }
 }
 
@@ -137,6 +140,10 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
     }
     if let Some(resume) = &spec.resume {
         args.extend(["--resume".into(), resume.clone()]);
+        if spec.fork_session {
+            // Native History übernehmen, die Quelle aber nicht fortschreiben (HAR-019).
+            args.push("--fork-session".into());
+        }
     }
     if isolated {
         // `--safe-mode` schaltet auch per `--mcp-config` und `--plugin-dir` übergebene Server
@@ -229,6 +236,18 @@ impl HarnessAdapter for ClaudeAdapter {
             Ok(out) => parse_auth_status(&out.stdout),
             Err(_) => AuthStatus::Unknown,
         }
+    }
+
+    async fn rebuild_history(
+        &self,
+        request: &beton_harness::RebuildRequest,
+        env: &HostEnv,
+    ) -> Result<String, HarnessError> {
+        let request = request.clone();
+        let env = env.clone();
+        tokio::task::spawn_blocking(move || rebuild::rebuild(&request, &env))
+            .await
+            .map_err(|e| HarnessError::Protocol(e.to_string()))?
     }
 
     async fn start(

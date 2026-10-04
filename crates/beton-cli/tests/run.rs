@@ -748,3 +748,100 @@ async fn ses_016_ac1_session_delete_asks_before_losing_uncommitted_work() {
     assert!(!path.exists());
     assert!(serve.client().all_sessions(true).await.unwrap().is_empty());
 }
+
+// --------------------------------------------------------------------------- SES-006 / CLI-002
+
+/// Inhalts-Events (Typ und Nutzlast) einer Session.
+fn content_of(events: &[Value]) -> Vec<(Value, Value)> {
+    events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e["type"].as_str(),
+                Some(
+                    "message.completed" | "turn.started" | "turn.completed" | "tool.call.requested"
+                )
+            )
+        })
+        .map(|e| (e["type"].clone(), e["payload"].clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn ses_006_ac4_run_fork_creates_the_same_fork_as_the_api() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(
+        "turns:\n  - emit: [{ message: \"eins\" }]\n  - emit: [{ message: \"zwei\" }, { message: \"drei\" }]\n",
+    );
+    let client = serve.client();
+    let created = client
+        .create_session(&json!({
+            "target": "fake", "cwd": serve.work.path(), "title": "Quelle",
+            "harness_opts": {"scenario": scenario},
+        }))
+        .await
+        .unwrap();
+    let source = created["id"].as_str().unwrap().to_owned();
+    for (n, text) in ["erste", "zweite"].into_iter().enumerate() {
+        wait_until("idle", || async {
+            status(&client, &source).await == "idle"
+        })
+        .await;
+        client.input(&source, text).await.unwrap();
+        wait_until("Turn-Ende", || async {
+            events(&client, &source)
+                .await
+                .iter()
+                .filter(|e| e["type"] == "turn.completed")
+                .count()
+                > n
+        })
+        .await;
+    }
+    // Mitten im zweiten Turn: zwischen „zwei“ und „drei“.
+    let log = events(&client, &source).await;
+    let mid = log
+        .iter()
+        .find(|e| e["type"] == "message.completed" && e["payload"]["content"][0]["text"] == "zwei")
+        .unwrap()["seq"]
+        .as_u64()
+        .unwrap();
+
+    let api = client
+        .fork_session(&source, &json!({"at_seq": mid}))
+        .await
+        .unwrap();
+    let out =
+        run(beton(serve.home()).args(["run", "--fork", &format!("{source}@{mid}"), "--detach"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let cli = stdout(&out).trim().to_owned();
+    assert!(
+        stderr(&out).contains("mitten in einem Turn"),
+        "{}",
+        stderr(&out)
+    );
+    let api_id = api["session"]["id"].as_str().unwrap();
+    assert_ne!(api_id, cli);
+    let a = client.session(api_id).await.unwrap();
+    let c = client.session(&cli).await.unwrap();
+    for field in ["harness", "title", "kind"] {
+        assert_eq!(a[field], c[field], "{field}");
+    }
+    let forked = |events: &[Value]| {
+        events
+            .iter()
+            .find(|e| e["type"] == "session.forked")
+            .map(|e| e["payload"].clone())
+    };
+    wait_until("session.forked", || async {
+        forked(&events(&client, api_id).await).is_some()
+            && forked(&events(&client, &cli).await).is_some()
+    })
+    .await;
+    let a_events = events(&client, api_id).await;
+    let c_events = events(&client, &cli).await;
+    assert_eq!(forked(&a_events), forked(&c_events));
+    assert_eq!(forked(&a_events).unwrap()["at_seq"], api["effective_seq"]);
+    assert_eq!(content_of(&a_events), content_of(&c_events));
+    assert!(!content_of(&c_events).is_empty());
+}

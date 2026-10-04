@@ -74,6 +74,9 @@ problem_codes! {
     UnsupportedMediaType = "unsupported_media_type", 415, "Medientyp nicht unterstützt";
     IdempotencyKeyReused = "idempotency_key_reused", 422, "Idempotency-Key mit anderem Inhalt wiederverwendet";
     BaseNotFound = "base_not_found", 422, "Base-Branch nicht auflösbar";
+    /// Der Ziel-Harness eines Forks passt nicht, z. B. ohne `fork_history` oder ohne eine
+    /// Capability, die der Agent braucht (SES-007).
+    HarnessIncompatible = "harness_incompatible", 422, "Ziel-Harness passt nicht";
     RateLimited = "rate_limited", 429, "Zu viele Anfragen";
     Internal = "internal", 500, "Interner Fehler";
     BlobCorrupt = "blob_corrupt", 500, "Blob beschädigt";

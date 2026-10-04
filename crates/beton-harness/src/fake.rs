@@ -65,6 +65,7 @@ pub fn default_capabilities() -> Capabilities {
         transcript_import: false,
         models: vec!["fake-small".into(), "fake-large".into()],
         efforts: vec!["low".into(), "medium".into(), "high".into()],
+        context_window: Some(crate::capabilities::DEFAULT_CONTEXT_WINDOW),
     }
 }
 
@@ -268,6 +269,7 @@ impl HarnessSession for FakeSession {
             last_decision: None,
             steer: steer_rx,
             workdir: self.workdir.clone(),
+            input: input.text,
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -391,6 +393,8 @@ struct Player {
     last_decision: Option<bool>,
     steer: mpsc::UnboundedReceiver<String>,
     workdir: std::path::PathBuf,
+    /// Eingabe dieses Turns (für `echo_input`).
+    input: String,
 }
 
 enum Outcome {
@@ -667,6 +671,13 @@ impl Player {
                 .await;
                 return Outcome::Stop;
             }
+        } else if step.echo_input {
+            self.text = self.input.clone();
+            self.flush_message().await;
+        } else if step.echo_history {
+            // Der Fake-Harness hat keinen nativen Verlauf (Capability `fork_history: preamble`).
+            self.text = String::from("(kein Verlauf)");
+            self.flush_message().await;
         } else if let Some(write) = step.write_file {
             let workdir = self.workdir.clone();
             let _ = tokio::task::spawn_blocking(move || write.apply(&workdir)).await;
