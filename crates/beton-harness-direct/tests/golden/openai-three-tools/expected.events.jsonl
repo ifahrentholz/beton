@@ -1,0 +1,29 @@
+{"payload":{"author":"usr_local","turn_id":"<id:1>"},"type":"turn.started"}
+{"payload":{"message_id":"<id:2>","text":"Ich le"},"type":"message.delta"}
+{"payload":{"message_id":"<id:2>","text":"ge die"},"type":"message.delta"}
+{"payload":{"message_id":"<id:2>","text":" Datei"},"type":"message.delta"}
+{"payload":{"message_id":"<id:2>","text":" an."},"type":"message.delta"}
+{"payload":{"content":[{"text":"Ich lege die Datei an.","type":"text"}],"message_id":"<id:2>","role":"assistant"},"type":"message.completed"}
+{"payload":{"args":{"content":"hallo","path":"notiz.txt"},"call_id":"<id:3>","mcp_server":"beton-workspace","source":"harness","tool":"fs_write"},"type":"tool.call.requested"}
+{"payload":{"approval_id":"<id:4>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"content":"hallo","path":"notiz.txt"},"call_id":"<id:3>","tool":"fs_write"}},"type":"approval.requested"}
+{"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:4>","decision":"allow","via":"user"},"type":"approval.resolved"}
+{"payload":{"call_id":"<id:3>"},"type":"tool.call.started"}
+{"payload":{"call_id":"<id:3>","duration_ms":0,"result":"5 Bytes nach notiz.txt geschrieben","status":"ok"},"type":"tool.call.completed"}
+{"payload":{"args":{"path":"notiz.txt"},"call_id":"<id:5>","mcp_server":"beton-workspace","source":"harness","tool":"fs_read"},"type":"tool.call.requested"}
+{"payload":{"approval_id":"<id:6>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"path":"notiz.txt"},"call_id":"<id:5>","tool":"fs_read"}},"type":"approval.requested"}
+{"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:6>","decision":"allow","via":"user"},"type":"approval.resolved"}
+{"payload":{"call_id":"<id:5>"},"type":"tool.call.started"}
+{"payload":{"call_id":"<id:5>","duration_ms":0,"result":"hallo","status":"ok"},"type":"tool.call.completed"}
+{"payload":{"args":{"command":"cat notiz.txt"},"call_id":"<id:7>","mcp_server":"beton-workspace","source":"harness","tool":"shell_exec"},"type":"tool.call.requested"}
+{"payload":{"approval_id":"<id:8>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"cat notiz.txt"},"call_id":"<id:7>","tool":"shell_exec"}},"type":"approval.requested"}
+{"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:8>","decision":"allow","via":"user"},"type":"approval.resolved"}
+{"payload":{"call_id":"<id:7>"},"type":"tool.call.started"}
+{"payload":{"call_id":"<id:7>","duration_ms":0,"result":"exit_code: 0\nhallo","status":"ok"},"type":"tool.call.completed"}
+{"payload":{"message_id":"<id:9>","text":"Fertig: "},"type":"message.delta"}
+{"payload":{"message_id":"<id:9>","text":"notiz.tx"},"type":"message.delta"}
+{"payload":{"message_id":"<id:9>","text":"t enthäl"},"type":"message.delta"}
+{"payload":{"message_id":"<id:9>","text":"t hallo."},"type":"message.delta"}
+{"payload":{"content":[{"text":"Fertig: notiz.txt enthält hallo.","type":"text"}],"message_id":"<id:9>","role":"assistant"},"type":"message.completed"}
+{"payload":{"auth_source":"api_key","cache_read_tokens":0,"cache_write_tokens":0,"currency":"USD","harness":"direct:mock","input_tokens":780,"model":"mock-model","output_tokens":85,"source":"estimated"},"type":"cost.delta"}
+{"payload":{"source":"harness","used_tokens":275,"window_tokens":100000},"type":"context.usage"}
+{"payload":{"stop_reason":"end_turn","turn_id":"<id:1>","usage_summary":{"input_tokens":780,"output_tokens":85,"requests":4}},"type":"turn.completed"}

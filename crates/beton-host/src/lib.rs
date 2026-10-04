@@ -69,6 +69,10 @@ pub struct RunnerSpec {
     pub workspace: PathBuf,
     /// Zusätzlich durchgereichte Env-Variablen (deny-by-default).
     pub env_allowlist: Vec<String>,
+    /// Variablen des Daemons, deren Werte der Runner als Secret bekommt (API-Keys für
+    /// `api_key_env`, HAR-011): über stdin, nie als Env-Variable des Runners oder argv, damit
+    /// sie keine Kindprozesse (Tools, MCP-Server) erben.
+    pub secret_env: Vec<String>,
 }
 
 /// Ergebnis von `provision`.
@@ -224,6 +228,7 @@ macro_rules! runner_provider_contract {
                     harness: "fake".into(),
                     workspace: ws.to_path_buf(),
                     env_allowlist: Vec::new(),
+                    secret_env: Vec::new(),
                 }
             }
 

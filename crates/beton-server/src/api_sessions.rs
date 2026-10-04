@@ -357,6 +357,21 @@ pub async fn interrupt_session(
     Ok(axum::Json(serde_json::json!({})))
 }
 
+/// Kontext kompaktieren (SES-011, HAR-022): Der Harness kompaktiert (Claude: `/compact`,
+/// Direkt-API: eigene Compaction); das Ergebnis folgt als `compaction.started`,
+/// `compaction.completed` und `context.usage`.
+#[utoipa::path(post, path = "/v1/sessions/{id}/compact", tag = "sessions",
+    params(("id" = String, Path)),
+    responses((status = 202, description = "Compaction angestoßen", body = Object),
+              (status = 409, description = "Harness ohne Capability `compaction` (`capability_unsupported`), Session gestoppt oder Turn läuft (`conflict`)", body = Problem, content_type = "application/problem+json")))]
+pub async fn compact_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    state.sessions().compact(session_id(&id)?).await?;
+    Ok((StatusCode::ACCEPTED, axum::Json(serde_json::json!({}))).into_response())
+}
+
 /// Gestoppte Session fortsetzen (SES-003).
 #[utoipa::path(post, path = "/v1/sessions/{id}/resume", tag = "sessions",
     params(("id" = String, Path)),
@@ -907,6 +922,27 @@ impl Command for TurnInterrupt {
     }
 }
 
+struct SessionCompact;
+
+#[async_trait]
+impl Command for SessionCompact {
+    fn name(&self) -> &'static str {
+        "session.compact"
+    }
+    fn rest_twin(&self) -> (&'static str, &'static str) {
+        ("post", "/v1/sessions/{id}/compact")
+    }
+    async fn run(
+        &self,
+        ctx: &CommandCtx,
+        session: Option<SessionId>,
+        _: Value,
+    ) -> Result<Value, Problem> {
+        ctx.state.sessions().compact(need_session(session)?).await?;
+        Ok(serde_json::json!({}))
+    }
+}
+
 struct SessionSet;
 
 #[async_trait]
@@ -1041,6 +1077,7 @@ pub fn register_commands(reg: &mut CommandRegistry) {
     reg.register(Arc::new(TurnInterrupt));
     reg.register(Arc::new(ApprovalResolve));
     reg.register(Arc::new(SessionSet));
+    reg.register(Arc::new(SessionCompact));
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams)]

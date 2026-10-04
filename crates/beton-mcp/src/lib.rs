@@ -7,6 +7,8 @@
 //!   konfigurierte stdio-/HTTP-Server weiter und filtert deren Tools laut `allow`.
 //! - [`relay`]: das stdio-Relay `beton mcp serve|proxy`, das der Harness startet.
 //! - [`plan`]: was eine Session bekommt (Server, System-Tools, Skills, Sub-Agents).
+//! - [`workspace`]: der eingebaute Server `beton-workspace` mit den Coding-Tools des
+//!   Direkt-API-Harness (HAR-010).
 //!
 //! Spec: `docs/spec/01-harnesses.md` (HAR-009), `docs/spec/02-agents.md` (AGT-006 bis AGT-008).
 
@@ -18,3 +20,4 @@ pub mod protocol;
 pub mod relay;
 pub mod skills;
 pub mod system;
+pub mod workspace;

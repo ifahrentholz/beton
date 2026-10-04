@@ -76,6 +76,9 @@ pub struct Sim<R, W> {
     initialized: bool,
     mcp_configs: Vec<ServerConfig>,
     mcp: Clients,
+    /// Belegter Kontext nach dem letzten `result` und bekanntes Kontextfenster (SES-011).
+    context: u64,
+    window: Option<u64>,
 }
 
 impl<R: BufRead, W: Write> Sim<R, W> {
@@ -126,6 +129,8 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             initialized: false,
             mcp_configs,
             mcp: Clients::default(),
+            context: 0,
+            window: None,
         }
     }
 
@@ -180,6 +185,26 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                             "tools": tools, "mcp_servers": self.mcp.status(),
                             "permissionMode": "default", "apiKeySource": "none",
                         }))?;
+                    }
+                    // Wie die echte CLI: `/compact` fasst den Verlauf zusammen, meldet
+                    // `compact_boundary` und ein `result`, ohne einen Szenario-Turn zu verbrauchen.
+                    if text == "/compact" {
+                        let before = self.context;
+                        self.emit(json!({
+                            "type": "system", "subtype": "compact_boundary",
+                            "session_id": self.session_id,
+                            "compact_metadata": {"trigger": "manual", "pre_tokens": before},
+                        }))?;
+                        let after = (before / 10).max(1);
+                        let usage = Usage {
+                            input_tokens: before,
+                            output_tokens: after,
+                            context_window: self.window,
+                            ..Usage::default()
+                        };
+                        self.result(TurnEnd::Done, "", &usage)?;
+                        self.context = after;
+                        continue;
                     }
                     let Some(turn) = turns.next() else {
                         self.result(
@@ -422,7 +447,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 ("error_during_execution", true, why)
             }
         };
-        self.emit(json!({
+        let mut msg = json!({
             "type": "result", "subtype": subtype, "is_error": is_error,
             "duration_ms": 0, "duration_api_ms": 0, "num_turns": 1,
             "result": result, "session_id": self.session_id, "api_error_status": api_status,
@@ -432,7 +457,14 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 "cache_read_input_tokens": usage.cache_read_tokens,
                 "cache_creation_input_tokens": usage.cache_write_tokens,
             },
-        }))
+        });
+        // Wie die echte CLI: Kontextfenster je Modell in `modelUsage` (SES-011).
+        self.window = usage.context_window.or(self.window);
+        self.context = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        if let Some(window) = self.window {
+            msg["modelUsage"] = json!({ self.model.clone(): {"contextWindow": window} });
+        }
+        self.emit(msg)
     }
 }
 

@@ -104,6 +104,8 @@ pub struct McpSetup {
     /// Events beim Start (Hinweise, nicht injizierbare Server).
     pub initial: Vec<EventPayload>,
     pub dirs: Vec<DirGuard>,
+    /// `executor.max_turns` des Agents (HAR-010), für Harnesses mit eigenem Loop.
+    pub max_turns: Option<u32>,
 }
 
 /// Wo die Dateien des Nutzers liegen.
@@ -195,6 +197,7 @@ pub async fn prepare(
         )?),
         None => None,
     };
+    setup.max_turns = agent.as_ref().and_then(|a| a.spec.executor.max_turns);
     let suffix = random_suffix();
     let agent_skills = match &agent {
         Some(a) => {

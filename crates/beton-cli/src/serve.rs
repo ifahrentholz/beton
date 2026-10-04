@@ -271,22 +271,35 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runner_command = vec![exe.display().to_string(), "__runner".to_owned()];
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
-    let (registry, problems) = beton_runner::builtin_registry_with_problems(
+    // Provider des Direkt-API-Harness nur aus der User-Konfiguration (HAR-011); die
+    // Modell-Discovery läuft nur hier im Daemon und nur für konfigurierte Provider.
+    let providers = settings.providers.clone();
+    let (registry, problems, provider_problems) = beton_runner::builtin_registry_with_options(
         &HarnessLayers {
             user: harnesses_user.clone(),
             user_file: Some(ctx.paths().user),
+            providers: providers.clone(),
             ..HarnessLayers::default()
         },
         fake,
+        &beton_harness_direct::DirectOptions {
+            keys: Arc::new(beton_harness_direct::secret::ProcessEnv),
+            discover_models: true,
+        },
     );
     for p in problems {
         // HAR-008 AC3: gemeldet mit Datei und Zeile, übrige Harnesses unbeeinträchtigt.
         tracing::warn!("Konfiguration: ACP-Agent übersprungen: {p}");
     }
+    for p in provider_problems {
+        // HAR-011 AC4: Pfad und Grund, übrige Provider unbeeinträchtigt.
+        tracing::warn!("Konfiguration: Provider übersprungen: {p}");
+    }
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
         r.sessions.harnesses_user = harnesses_user;
+        r.sessions.providers = providers;
         r.harnesses = registry;
         r.features = Arc::new(features);
         r

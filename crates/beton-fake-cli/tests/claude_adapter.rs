@@ -398,3 +398,91 @@ async fn qa_002_stream_deltas_share_the_id_of_the_completed_message() {
         "{delta_ids:?} vs {completed}"
     );
 }
+
+/// Events, bis `pred` zutrifft.
+async fn until(
+    rx: &mut mpsc::Receiver<NormalizedEvent>,
+    pred: impl Fn(&EventPayload) -> bool,
+) -> Vec<EventPayload> {
+    let mut out = Vec::new();
+    while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
+        let stop = pred(&e.payload);
+        out.push(e.payload);
+        if stop {
+            break;
+        }
+    }
+    out
+}
+
+fn context_used(events: &[EventPayload]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            EventPayload::ContextUsage(u) => Some(u.used_tokens),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn har_022_ac1_compact_on_claude_emits_compaction_and_lowers_context() {
+    let (_dir, path) = scenario(
+        "turns:\n  - emit:\n      - { message: \"lang\" }\n      - { usage: { input_tokens: 150000, output_tokens: 900, context_window: 200000 } }\n  - emit:\n      - { message: \"weiter\" }\n",
+    );
+    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll), ClaudeAdapter::default()).await;
+    s.send("viel Kontext".into()).await.unwrap();
+    let turn = until_turn_end(&mut rx).await;
+    assert_eq!(context_used(&turn), [150_000]);
+    s.compact().await.unwrap();
+    let compaction = until(&mut rx, |e| matches!(e, EventPayload::ContextUsage(_))).await;
+    let names: Vec<&str> = compaction.iter().map(EventPayload::type_name).collect();
+    assert_eq!(
+        names,
+        [
+            "compaction.started",
+            "cost.delta",
+            "compaction.completed",
+            "context.usage"
+        ],
+        "{compaction:?}"
+    );
+    let Some(EventPayload::CompactionCompleted(c)) = compaction.get(2) else {
+        panic!("{compaction:?}")
+    };
+    assert_eq!(c.before_tokens, 150_000);
+    assert!(c.after_tokens.unwrap() < 150_000);
+    // `context.usage.used_tokens` sinkt.
+    assert!(context_used(&compaction)[0] < 150_000);
+    // Kein Turn-Ende für die Compaction; der nächste Turn läuft normal.
+    assert_eq!(count(&compaction, "turn.completed"), 0);
+    s.send("weiter".into()).await.unwrap();
+    let next = until_turn_end(&mut rx).await;
+    assert!(
+        matches!(next.last(), Some(EventPayload::TurnCompleted(_))),
+        "{next:?}"
+    );
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+#[tokio::test]
+async fn har_022_claude_compact_during_a_turn_is_refused() {
+    let (_dir, path) = scenario("turns:\n  - emit:\n      - { hang: true }\n");
+    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll), ClaudeAdapter::default()).await;
+    s.send("arbeite".into()).await.unwrap();
+    until(&mut rx, |e| matches!(e, EventPayload::TurnStarted(_))).await;
+    let err = s.compact().await.unwrap_err();
+    assert_eq!(err.code(), "turn_active");
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+#[test]
+fn har_022_claude_auto_compaction_is_reported() {
+    let mut st = beton_harness_claude::mapping::MapState::default();
+    let out = beton_harness_claude::mapping::map_line(
+        &json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto", "pre_tokens": 190000}}),
+        &mut st,
+    );
+    let names: Vec<&str> = out.iter().map(EventPayload::type_name).collect();
+    assert_eq!(names, ["compaction.started", "compaction.completed"]);
+}

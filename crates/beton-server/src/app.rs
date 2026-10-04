@@ -105,6 +105,7 @@ impl Runtime {
                 dev: cfg!(debug_assertions),
                 launched: Arc::default(),
                 harnesses_user: Default::default(),
+                providers: Default::default(),
                 worktrees_root: std::env::temp_dir().join("beton-worktrees"),
                 snapshots_root: std::env::temp_dir().join("beton-snapshots"),
                 forks_root: std::env::temp_dir().join("beton-forks"),
@@ -283,6 +284,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::archive_session))
         .routes(routes!(crate::api_sessions::unarchive_session))
         .routes(routes!(crate::api_sessions::interrupt_session))
+        .routes(routes!(crate::api_sessions::compact_session))
         .routes(routes!(crate::api_sessions::resume_session))
         .routes(routes!(crate::api_sessions::fork_session))
         .routes(routes!(crate::api_sessions::submit_input))
