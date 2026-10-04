@@ -164,9 +164,44 @@ impl CapabilityUnsupported {
     }
 }
 
+/// Reihenfolge der Effort-Stufen (HAR-017).
+pub const EFFORT_LEVELS: [&str; 4] = ["low", "medium", "high", "xhigh"];
+
+/// Effort-Mapping (HAR-017): Eine nicht unterstützte Stufe wird auf die nächstniedrigere
+/// unterstützte gemappt; gibt es keine niedrigere, auf die niedrigste unterstützte. Kennt der
+/// Harness keine Stufen, ist das Ergebnis `None` (der Wert wird nicht angewendet).
+pub fn map_effort(requested: &str, supported: &[String]) -> Option<String> {
+    if supported.iter().any(|s| s == requested) {
+        return Some(requested.to_owned());
+    }
+    let rank = |e: &str| EFFORT_LEVELS.iter().position(|l| *l == e);
+    let wanted = rank(requested)?;
+    let mut known: Vec<(usize, &String)> = supported
+        .iter()
+        .filter_map(|s| rank(s).map(|r| (r, s)))
+        .collect();
+    known.sort();
+    known
+        .iter()
+        .rev()
+        .find(|(r, _)| *r <= wanted)
+        .or_else(|| known.first())
+        .map(|(_, s)| (*s).clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effort_mapping_picks_the_next_lower_supported_level() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        let lmh = s(&["low", "medium", "high"]);
+        assert_eq!(map_effort("xhigh", &lmh).as_deref(), Some("high"));
+        assert_eq!(map_effort("medium", &lmh).as_deref(), Some("medium"));
+        assert_eq!(map_effort("low", &s(&["high"])).as_deref(), Some("high"));
+        assert_eq!(map_effort("high", &[]), None);
+    }
 
     #[test]
     fn har_002_ac3_unsupported_action_is_rejected() {
