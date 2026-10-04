@@ -4,6 +4,10 @@
 //! - `schemas/v1/events.schema.json` (JSON-Schema via `schemars`)
 //! - `schemas/v1/ws.schema.json` (WebSocket-Nachrichten, PROTO-004 ff.)
 //! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
+//! - `schemas/v1/config.schema.json` (`config.yaml`, CLI-008)
+//! - `schemas/v1/agent.schema.json` (`agent.yaml`, Agent-Format v1, AGT-002)
+//! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
+//! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
@@ -61,6 +65,28 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         PathBuf::from("schemas/v1/harness-catalog.schema.json"),
         json,
     );
+    let config = schemars::schema_for!(beton_cli::config::Settings);
+    let mut json = serde_json::to_string_pretty(&config)?;
+    json.push('\n');
+    files.insert(PathBuf::from("schemas/v1/config.schema.json"), json);
+    files.insert(
+        PathBuf::from("schemas/v1/agent.schema.json"),
+        beton_agents::schema_json(),
+    );
+    for (path, schema) in [
+        (
+            "schemas/v1/doctor.schema.json",
+            schemars::schema_for!(beton_cli::doctor::DoctorReport),
+        ),
+        (
+            "schemas/v1/setup-check.schema.json",
+            schemars::schema_for!(beton_cli::setup::SetupReport),
+        ),
+    ] {
+        let mut json = serde_json::to_string_pretty(&schema)?;
+        json.push('\n');
+        files.insert(PathBuf::from(path), json);
+    }
 
     let tmp = tempfile::tempdir()?;
     let cfg = ts_rs::Config::new()
@@ -70,6 +96,25 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     HarnessInfo::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     ClientMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     ServerMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    // REST-Modelle (API-004): Anfragen und Antworten der Session-API.
+    {
+        use beton_server::api::{Info, LoginCode, SessionPage, SessionSummary};
+        use beton_server::api_sessions::{
+            ApprovalPage, CreateSessionRequest, EventPage, InputAccepted, InputRequest,
+            ResolveApprovalRequest, SessionSettings,
+        };
+        Info::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        LoginCode::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionSummary::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ApprovalPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        CreateSessionRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        EventPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        InputAccepted::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        InputRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ResolveApprovalRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {
         let rel = path.strip_prefix(tmp.path())?.to_path_buf();

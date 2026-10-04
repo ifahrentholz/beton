@@ -116,7 +116,7 @@ const nativeRows: CatalogRow[] = [
       model: full('live'),
       resume: full('warm', 'aus dem Event-Log'),
       fork: full('Rebuild'),
-      usage: part('Tokens · 0 €'),
+      usage: part('Tokens · 0 $'),
       compact: full('durch beton'),
     },
   },

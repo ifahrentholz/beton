@@ -117,6 +117,13 @@ impl Store {
         })
     }
 
+    /// Schreib-Transaktion mit `BEGIN IMMEDIATE`: nimmt die Schreibsperre sofort. Bei
+    /// `DEFERRED` scheitert ein Lesen-dann-Schreiben im WAL-Modus sofort mit `SQLITE_BUSY`,
+    /// sobald ein anderer Schreiber dazwischen committet; der Busy-Timeout greift dort nicht.
+    pub(crate) async fn write_tx(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    }
+
     pub fn blobs(&self) -> &BlobStore {
         &self.blobs
     }
@@ -139,8 +146,38 @@ pub(crate) fn connect_options(db_path: &Path) -> SqliteConnectOptions {
         .foreign_keys(true)
 }
 
-/// Standard-Datenverzeichnis `~/.beton` (bzw. `%USERPROFILE%\.beton`).
+/// SQLite-Integritätsprüfung (`PRAGMA quick_check`) ohne Schreibzugriff und ohne Migrationen
+/// (OBS-005). Liefert die gemeldeten Probleme; leer heißt in Ordnung.
+pub async fn quick_check(db_path: &Path) -> Result<Vec<String>> {
+    use sqlx::{ConnectOptions as _, Row as _};
+    // Ohne `-wal` läuft kein Schreiber: `immutable` liest dann, ohne `-shm`/`-wal` anzulegen.
+    // Mit `-wal` (Daemon aktiv) liest es schreibgeschützt über die vorhandenen Dateien.
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let idle = !Path::new(&wal).exists();
+    let mut conn = SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .immutable(idle)
+        .create_if_missing(false)
+        .connect()
+        .await?;
+    let rows = sqlx::query("PRAGMA quick_check")
+        .fetch_all(&mut conn)
+        .await?;
+    let _ = sqlx::Connection::close(conn).await;
+    Ok(rows
+        .iter()
+        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .filter(|s| s != "ok")
+        .collect())
+}
+
+/// Standard-Datenverzeichnis: `$BETON_HOME`, sonst `~/.beton` (bzw. `%USERPROFILE%\.beton`).
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("BETON_HOME").filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".beton"))
@@ -171,5 +208,32 @@ pub(crate) mod testutil {
 
     pub(crate) fn org(t: &TestStore) -> OrgId {
         t.local.org
+    }
+}
+
+#[cfg(test)]
+mod quick_check_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn obs_005_quick_check_creates_no_side_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), StoreOptions::default())
+            .await
+            .unwrap();
+        store.ensure_local().await.unwrap();
+        store.close().await;
+        let db = dir.path().join("beton.db");
+        let names = || {
+            let mut v: Vec<String> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let before = names();
+        assert!(quick_check(&db).await.unwrap().is_empty());
+        assert_eq!(names(), before);
     }
 }

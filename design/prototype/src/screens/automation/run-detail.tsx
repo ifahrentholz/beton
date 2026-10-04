@@ -240,7 +240,7 @@ export function RunDetail({ state }: { state: string }) {
                 <Meter value={exceeded ? 150 : 41} max={150} label="Turns" detail={exceeded ? '150 von 150' : '41 von 150'} tone={exceeded ? 'deny' : undefined} />
                 <Meter value={exceeded ? 312 : 96} max={400} label="Tool-Calls" detail={exceeded ? '312 von 400' : '96 von 400'} />
                 <p className="text-[12px] text-muted-foreground">
-                  {r.harness === 'codex' ? 'ChatGPT Pro · 9 % des Fensters' : 'Claude Max · 3 % des Fensters'} · Kosten 0 € (Abo)
+                  {r.harness === 'codex' ? 'ChatGPT Pro · 9 % des Fensters' : 'Claude Max · 3 % des Fensters'} · Kosten 0 $ (Abo)
                 </p>
               </div>
             </F>

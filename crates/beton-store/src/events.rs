@@ -49,7 +49,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let prepared = self.prepare(session, events)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         let written = self
             .write_prepared(&mut tx, org, session, expected_head, epoch, prepared)
             .await?;
@@ -267,7 +267,7 @@ impl Store {
         bytes: &[u8],
     ) -> Result<BlobRef> {
         let blob = self.blobs.put(bytes)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_tx().await?;
         session_exists(&mut tx, org, session).await?;
         reference_blob(&mut tx, org, session, &blob, bytes.len() as u64).await?;
         tx.commit().await?;

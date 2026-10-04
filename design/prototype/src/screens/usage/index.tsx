@@ -20,11 +20,11 @@ const SERIES: Record<HarnessId, number[]> = {
   gemini: [0, 0, 120, 0, 90, 0, 0, 0, 0, 210, 0, 0, 0, 0],
   ollama: [0, 0, 0, 140, 0, 0, 0, 0, 380, 0, 0, 120, 0, 0],
 }
-/** Euro pro Tag aus API-Key-/Gateway-Sessions (nur Zustand „mit API-Key“). */
-const COST_EUR = [0, 0, 0.84, 0, 1.92, 0.31, 0, 0, 2.47, 0.62, 0, 3.18, 2.71, 0.59]
+/** USD pro Tag aus API-Key-/Gateway-Sessions (nur Zustand „mit API-Key“). */
+const COST_USD = [0, 0, 0.84, 0, 1.92, 0.31, 0, 0, 2.47, 0.62, 0, 3.18, 2.71, 0.59]
 
 const fmtTok = (k: number) => (k >= 1000 ? `${(k / 1000).toLocaleString('de-DE', { maximumFractionDigits: 1 })} Mio.` : `${k.toLocaleString('de-DE')} k`)
-const eur = (v: number) => v.toLocaleString('de-DE', { style: 'currency', currency: 'EUR' })
+const dollars = (v: number) => v.toLocaleString('de-DE', { style: 'currency', currency: 'USD' })
 
 type Dim = 'day' | 'session' | 'project' | 'harness' | 'model' | 'auth' | 'user' | 'team'
 const DIMS: { id: Dim; label: string; central?: boolean }[] = [
@@ -46,7 +46,7 @@ const LOCAL = <span className="text-muted-foreground">lokal, kostenlos</span>
 function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
   const api = (v: number, src: string) => (
     <span className="tabular-nums">
-      {eur(v)} <span className="text-[11px] text-muted-foreground">{src}</span>
+      {dollars(v)} <span className="text-[11px] text-muted-foreground">{src}</span>
     </span>
   )
   switch (dim) {
@@ -140,7 +140,7 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
             input: Math.round(tot * 0.86),
             output: Math.round(tot * 0.08),
             cache: Math.round(tot * 0.64),
-            billing: mixed && COST_EUR[idx] > 0 ? api(COST_EUR[idx], 'API & Gateway') : SUB,
+            billing: mixed && COST_USD[idx] > 0 ? api(COST_USD[idx], 'API & Gateway') : SUB,
           }
         })
   }
@@ -182,7 +182,7 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
       <div className="relative h-44 w-14 shrink-0 text-right text-[10px] text-muted-foreground tabular-nums">
         {ticks.map((t) => (
           <span key={t} className="absolute right-1 -translate-y-1/2" style={{ top: `${100 - (t / max) * 100}%` }}>
-            {mode === 'tokens' ? (t === 0 ? '0' : `${t / 1000} Mio.`) : eur(t).replace(',00', '')}
+            {mode === 'tokens' ? (t === 0 ? '0' : `${t / 1000} Mio.`) : dollars(t).replace(',00', '')}
           </span>
         ))}
       </div>
@@ -193,7 +193,7 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
           ))}
           <div className="absolute inset-0 flex items-end gap-[6px] px-1">
             {DAYS.map((d, i) => (
-              <div key={d} className="flex h-full flex-1 flex-col-reverse" title={`${d}: ${mode === 'tokens' ? fmtTok(totals[i]) + ' Tokens' : eur(COST_EUR[i])}`}>
+              <div key={d} className="flex h-full flex-1 flex-col-reverse" title={`${d}: ${mode === 'tokens' ? fmtTok(totals[i]) + ' Tokens' : dollars(COST_USD[i])}`}>
                 {mode === 'tokens' ? (
                   order.map((h) =>
                     SERIES[h][i] ? (
@@ -204,8 +204,8 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
                       />
                     ) : null,
                   )
-                ) : COST_EUR[i] ? (
-                  <span className="block w-full rounded-t-[2px] bg-foreground/75" style={{ height: `${(COST_EUR[i] / max) * 100}%` }} />
+                ) : COST_USD[i] ? (
+                  <span className="block w-full rounded-t-[2px] bg-foreground/75" style={{ height: `${(COST_USD[i] / max) * 100}%` }} />
                 ) : null}
                 {i === 13 && <span className="sr-only">heute</span>}
               </div>
@@ -227,19 +227,20 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
 /** Kontingent-Balken eines Rate-Limit-Fensters (USE-004). */
 function QuotaBar({ label, pct, reset, warn }: { label: string; pct: number; reset: string; warn?: boolean }) {
   const high = pct >= 90
+  const full = pct >= 100
   return (
     <div className="grid grid-cols-[120px_1fr_auto] items-center gap-3 py-1">
       <span className="text-[12px] text-muted-foreground">{label}</span>
       <span className="relative h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
-        <span className={cn('absolute inset-y-0 left-0', high ? 'bg-deny' : 'bg-foreground/70')} style={{ width: `${pct}%` }} />
+        <span className={cn('absolute inset-y-0 left-0', full ? 'bg-deny' : high ? 'bg-warn' : 'bg-foreground/70')} style={{ width: `${pct}%` }} />
         {[25, 50, 75].map((m) => (
           <span key={m} className="absolute inset-y-0 w-px bg-background/70" style={{ left: `${m}%` }} />
         ))}
       </span>
       <span className="text-[12px] whitespace-nowrap tabular-nums">
-        <strong className={cn('font-semibold', high && 'text-deny')}>{pct} %</strong>
+        <strong className={cn('font-semibold', full ? 'text-deny' : high && 'text-warn')}>{pct} %</strong>
         <span className="text-muted-foreground"> genutzt · {reset}</span>
-        {high && warn && <span className="ml-2 text-deny">fast aufgebraucht</span>}
+        {high && warn && <span className={cn('ml-2', full ? 'text-deny' : 'text-warn')}>{full ? 'aufgebraucht' : 'fast aufgebraucht'}</span>}
       </span>
     </div>
   )
@@ -272,7 +273,7 @@ function UsageOverview({ state }: { state: string }) {
         <div className="concrete-grain flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
           <p className="type-wide text-xl font-[700]">Noch kein Verbrauch</p>
           <p className="max-w-md text-sm text-muted-foreground">
-            Sobald eine Session läuft, siehst du hier Tokens und die Kontingente deiner Subscriptions. Euro-Kosten erscheinen nur,
+            Sobald eine Session läuft, siehst du hier Tokens und die Kontingente deiner Subscriptions. Kosten in Dollar erscheinen nur,
             wenn du einen API-Key oder ein Gateway nutzt.
           </p>
         </div>
@@ -307,7 +308,7 @@ function UsageOverview({ state }: { state: string }) {
             <Kpi label="Letzte 7 Tage" value={fmtTok(15_010)} sub="Tokens · 99 Turns" />
             <Kpi label="Oktober" value={fmtTok(7_100)} sub="Tokens · 3 Tage" />
             {mixed ? (
-              <Kpi label="Kosten 7 Tage" value={eur(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
+              <Kpi label="Kosten 7 Tage" value={dollars(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
             ) : (
               <Kpi label="Kosten" value="keine" sub="alle Sessions über Subscriptions oder lokal" />
             )}
@@ -316,10 +317,10 @@ function UsageOverview({ state }: { state: string }) {
           <F id="USE-004" className="mt-6">
             <div className="flex items-baseline gap-3">
               <h2 className="text-[14px] font-semibold">Subscriptions</h2>
-              <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – nicht in Euro</span>
+              <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – kein Geldbetrag</span>
             </div>
             <div className="mt-2 divide-y divide-border rounded-md border border-border">
-              <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-deny-soft/50')}>
+              <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-warn-soft/60')}>
                 <div>
                   <HarnessBadge id="claude" />
                   <div className="mt-0.5 text-[11px] text-muted-foreground">Claude Max · angemeldet über claude-CLI</div>
@@ -446,7 +447,7 @@ function UsageOverview({ state }: { state: string }) {
               <Info className="size-3" /> Preise aus dem mitgelieferten Katalog <span className="font-mono">2026-10-01</span> (mit beton 0.9.2, kein
               Online-Abruf)
             </span>
-            <span>Anzeige in Euro zum festen Kurs 1 USD = 0,92 € (in den Einstellungen änderbar)</span>
+            <span>Beträge in USD; Anzeige in Euro optional zum festen Kurs (Einstellungen)</span>
             <a className="underline underline-offset-2">Preise & eigene Preise</a>
           </F>
         </div>
@@ -543,7 +544,7 @@ function UsagePricing({ state }: { state: string }) {
             <div className="mt-2 flex items-center gap-2">
               <button className="inline-flex h-8 items-center rounded-md border border-border px-3 text-[13px] hover:bg-accent">Eigenen Preis hinzufügen</button>
               <button className="inline-flex h-8 items-center rounded-md border border-border px-3 text-[13px] hover:bg-accent">Herleitung für ein Modell anzeigen …</button>
-              <span className="ml-2 text-[12px] text-muted-foreground">Preise in USD, wie bei den Anbietern; Anzeige in Euro zum festen Kurs.</span>
+              <span className="ml-2 text-[12px] text-muted-foreground">Preise in USD, wie bei den Anbietern; Anzeige in Euro optional zum festen Kurs.</span>
             </div>
 
             {state === 'explain' && (
@@ -649,16 +650,16 @@ function ContextRing({ used, window }: { used: number; window: number | null }) 
             cy="12"
             r={r}
             fill="none"
-            stroke={level === 'high' || level === 'full' ? 'var(--deny)' : level === 'warn' ? 'var(--foreground)' : 'var(--muted-foreground)'}
+            stroke={level === 'full' ? 'var(--deny)' : level === 'warn' || level === 'high' ? 'var(--warn)' : 'var(--muted-foreground)'}
             strokeWidth={level === 'ok' ? 3 : 4}
             strokeDasharray={`${(c * pct) / 100} ${c}`}
           />
         </svg>
       )}
-      <span className={cn('text-[12px] tabular-nums', (level === 'high' || level === 'full') && 'font-semibold text-deny', level === 'warn' && 'font-semibold')}>
+      <span className={cn('text-[12px] tabular-nums', level === 'full' && 'font-semibold text-deny', (level === 'warn' || level === 'high') && 'font-semibold text-warn')}>
         {pct !== null ? `${pct} % Kontext` : `${Math.round(used / 1000)} k Tokens`}
       </span>
-      {label && <span className={cn('text-[11px]', level === 'warn' ? 'text-foreground' : 'text-deny')}>· {label}</span>}
+      {label && <span className={cn('text-[11px]', level === 'full' ? 'text-deny' : 'text-warn')}>· {label}</span>}
     </span>
   )
 }
@@ -835,7 +836,7 @@ export const group: ScreenGroup = {
       id: 'usage-overview',
       title: 'Verbrauch',
       description:
-        'Tokens nach Tag, Session, Projekt, Harness, Modell und Anmeldung; Subscription-Kontingente je CLI-Login als Rate-Limit-Fenster. Euro nur für API-Key- und Gateway-Sessions.',
+        'Tokens nach Tag, Session, Projekt, Harness, Modell und Anmeldung; Subscription-Kontingente je CLI-Login als Rate-Limit-Fenster. Kosten in USD nur für API-Key- und Gateway-Sessions.',
       features: ['USE-001', 'USE-002', 'USE-004', 'USE-005', 'USE-006'],
       states: [
         { id: 'subscriptions', title: 'Nur Subscriptions (Normalfall)' },

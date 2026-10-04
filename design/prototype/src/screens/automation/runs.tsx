@@ -28,7 +28,7 @@ const RUNS: Run[] = [
   { id: 'run_99z', agent: 'pr-fixer', task: 'CI auf feat/coupons (PR 421)', harness: 'claude', trigger: 'webhook', triggerName: 'ci-failed', status: 'queued', statusExtra: 'Position 1', start: '–', duration: '–', usage: '–', runner: '–' },
   { id: 'run_98k', agent: 'a11y-auditor', task: 'Checkout-Formular erneut prüfen', harness: 'gemini', trigger: 'timer', triggerName: 'in 2 Std. · Session Checkout a11y', status: 'completed', start: '06:58', duration: '6 Min.', usage: 'Google-Konto', runner: 'dieser Mac' },
   { id: 'run_97b', agent: 'dep-updater', task: 'Abhängigkeiten aktualisieren', harness: 'codex', trigger: 'schedule', triggerName: 'weekly-deps', status: 'budget_exceeded', statusExtra: '150 von 150 Turns', start: '26.09. 07:30', duration: '58 Min.', usage: 'ChatGPT Pro · 9 %', runner: 'dieser Mac' },
-  { id: 'run_96c', agent: 'local-scout', task: 'Übersicht für infra schreiben', harness: 'ollama', trigger: 'spawn', triggerName: 'aus Session Terraform-Plan', status: 'failed', statusExtra: 'Ollama nicht erreichbar', start: 'Fr. 16:20', duration: '0 Min.', usage: '0 €', runner: 'dieser Mac' },
+  { id: 'run_96c', agent: 'local-scout', task: 'Übersicht für infra schreiben', harness: 'ollama', trigger: 'spawn', triggerName: 'aus Session Terraform-Plan', status: 'failed', statusExtra: 'Ollama nicht erreichbar', start: 'Fr. 16:20', duration: '0 Min.', usage: '0 $', runner: 'dieser Mac' },
   { id: 'run_95d', agent: 'pr-fixer', task: 'CI von develop prüfen und beheben', harness: 'claude', trigger: 'schedule', triggerName: 'nightly-ci', status: 'timed_out', statusExtra: 'nach 2 Std.', start: 'Fr. 03:00', duration: '2 Std.', usage: 'Claude Max · 11 %', runner: 'dieser Mac' },
 ]
 

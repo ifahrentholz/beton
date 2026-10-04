@@ -194,7 +194,7 @@ function CliScript({ state }: { state: string }) {
             <S tone="codex">"duration_ms"</S>: 26410
           </L>
           <L>{'}'}</L>
-          <Comment>Subscription: kein Euro-Betrag, cost_usd bleibt null</Comment>
+          <Comment>Subscription: kein Geldbetrag, cost_usd bleibt null</Comment>
         </F>
       )}
       {state === 'stream' && (
@@ -773,7 +773,7 @@ function CliUsage({ state }: { state: string }) {
             <Prompt>beton usage --by model --since 2026-10-01</Prompt>
             <L tone="dim">Zeitraum 01.10.–03.10.2026 · lokal gezählt</L>
             <Blank />
-            <L tone="bold">Subscriptions · Nutzung des Abo-Fensters, kein Euro-Betrag</L>
+            <L tone="bold">Subscriptions · Nutzung des Abo-Fensters, kein Geldbetrag</L>
             <L tone="dim">{'MODELL            HARNESS        SESSIONS  TOKENS EIN   TOKENS AUS  FENSTER'}</L>
             <L>
               {'claude-opus-5-5   '}
@@ -799,7 +799,7 @@ function CliUsage({ state }: { state: string }) {
             <L>
               {'qwen3-coder:30b   '}
               <H name="Ollama (lokal)" pad={15} />
-              {' 3        120.400      18.300      0,00 €'}
+              {' 3        120.400      18.300      0,00 $'}
             </L>
             <Blank />
             <L tone="dim">Subscription- und API-Nutzung werden nie zusammengerechnet.</L>
@@ -1502,7 +1502,7 @@ export const group: ScreenGroup = {
     {
       id: 'cli-usage',
       title: 'usage',
-      description: 'Verbrauch nach Modell: Subscriptions zeigen Tokens und Abo-Fenster statt Euro, API-/lokale Nutzung getrennt mit Kosten – nie zusammengerechnet.',
+      description: 'Verbrauch nach Modell: Subscriptions zeigen Tokens und Abo-Fenster statt Geldbetrag, API-/lokale Nutzung getrennt mit Kosten – nie zusammengerechnet.',
       features: ['CLI-010'],
       frame: 'terminal',
       states: [

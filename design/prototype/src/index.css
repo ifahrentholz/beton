@@ -12,6 +12,8 @@
  * - Beton: ruhige, materialhafte Grautöne (hell: Sichtbeton am Tag, dunkel: bei Nacht).
  * - Schalungsgelb (--signal) ist die einzige laute Farbe und bedeutet immer „du bist dran“:
  *   offene Freigaben, Fokus, die eine Primäraktion eines Screens.
+ * - Rost (--warn, wie Rost an Bewehrungsstahl) heißt „wird knapp“: Kontext ab 70 %, Kontingent
+ *   ab 90 %. Nie für „du bist dran“ (Gelb) oder für Fehler und Ablehnungen (--deny).
  * - Stimmen (--voice-*): jede Harness-Familie hat eine feste Farbe für Partitur, Badges, Avatare.
  * - Fase (.chamfer): 45°-Ecken für Elemente, die auf den Menschen warten.
  * Schriften werden mitgeliefert (kein CDN, ADR-0033).
@@ -50,6 +52,8 @@
   --color-ok-soft: var(--ok-soft);
   --color-deny: var(--deny);
   --color-deny-soft: var(--deny-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
   --color-voice-claude: var(--voice-claude);
   --color-voice-codex: var(--voice-codex);
   --color-voice-acp: var(--voice-acp);
@@ -112,6 +116,8 @@
   --ok-soft: #cfe3d4;
   --deny: #b8352b;
   --deny-soft: #f0d2ce;
+  --warn: #a14b0c;
+  --warn-soft: #f3d9c4;
   --destructive: #b8352b;
   --voice-claude: #6f55a0;
   --voice-codex: #26727a;
@@ -149,6 +155,8 @@
   --ok-soft: #233a2b;
   --deny: #ec7d71;
   --deny-soft: #42231f;
+  --warn: #e8803c;
+  --warn-soft: #40281a;
   --destructive: #ec7d71;
   --voice-claude: #ad99da;
   --voice-codex: #56b0b7;
@@ -187,6 +195,8 @@
   --ok-soft: #dbe7d5;
   --deny: #a5383f;
   --deny-soft: #f2dadc;
+  --warn: #9a4f1c;
+  --warn-soft: #f0dccb;
   --destructive: #a5383f;
   --voice-claude: #775173;
   --voice-codex: #286572;
@@ -225,6 +235,8 @@
   --ok-soft: #36443f;
   --deny: #e4a9ae;
   --deny-soft: #47363e;
+  --warn: #e0a084;
+  --warn-soft: #4a3a35;
   --destructive: #e4a9ae;
   --voice-claude: #cbb0c6;
   --voice-codex: #88c0d0;
@@ -263,6 +275,8 @@
   --ok-soft: #e3f3e7;
   --deny: #8e0d0d;
   --deny-soft: #fde4e4;
+  --warn: #7a3300;
+  --warn-soft: #ffe6d1;
   --destructive: #8e0d0d;
   --voice-claude: #4a2a85;
   --voice-codex: #004e56;
@@ -301,6 +315,8 @@
   --ok-soft: #002d14;
   --deny: #ff9f97;
   --deny-soft: #3d0a0a;
+  --warn: #ffa05a;
+  --warn-soft: #3a2410;
   --destructive: #ff9f97;
   --voice-claude: #cdb6ff;
   --voice-codex: #6fe6ee;

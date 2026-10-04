@@ -46,9 +46,9 @@ export function SessionHeader({
         <F id={['USE-008', 'HAR-021']} badge="bottom-left" className="hidden @2xl:block">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={`Kontext: ${context.used.toLocaleString('de-DE')} von ${context.window.toLocaleString('de-DE')} Tokens`}>
             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-              <span className="block h-full bg-foreground/70" style={{ width: `${ctxPct}%` }} />
+              <span className={cn('block h-full', ctxPct >= 95 ? 'bg-deny' : ctxPct >= 70 ? 'bg-warn' : 'bg-foreground/70')} style={{ width: `${ctxPct}%` }} />
             </span>
-            {ctxPct} % Kontext
+            <span className={cn(ctxPct >= 95 ? 'text-deny' : ctxPct >= 70 && 'text-warn')}>{ctxPct} % Kontext</span>
           </span>
         </F>
         {quota && (
@@ -58,7 +58,10 @@ export function SessionHeader({
                 {quota.label}: nicht gemeldet
               </span>
             ) : (
-              <span className="text-[11px] text-muted-foreground" title={quota.resetsIn ? `Subscription-Fenster setzt in ${quota.resetsIn} zurück` : undefined}>
+              <span
+                className={cn('text-[11px]', quota.windowUsedPct >= 90 ? 'font-semibold text-warn' : 'text-muted-foreground')}
+                title={quota.resetsIn ? `Subscription-Fenster setzt in ${quota.resetsIn} zurück` : undefined}
+              >
                 {quota.label}: {quota.windowUsedPct} % genutzt
               </span>
             )}

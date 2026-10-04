@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 anyhow.workspace = true
+beton-agents.workspace = true
+beton-cli.workspace = true
 beton-core.workspace = true
 beton-harness.workspace = true
 beton-proto.workspace = true

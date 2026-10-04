@@ -146,7 +146,7 @@ function SettingsAppearance({ state }: { state: string }) {
           <span className="font-mono text-[12px] text-muted-foreground tabular-nums">
             {now.toLocaleDateString(loc, { day: '2-digit', month: '2-digit', year: 'numeric' })} ·{' '}
             {now.toLocaleTimeString(loc, { hour: '2-digit', minute: '2-digit' })} · {(1234.5).toLocaleString(loc)} ·{' '}
-            {(4.82).toLocaleString(loc, { style: 'currency', currency: 'EUR' })}
+            {(4.82).toLocaleString(loc, { style: 'currency', currency: 'USD' })}
           </span>
         </Row>
       </F>

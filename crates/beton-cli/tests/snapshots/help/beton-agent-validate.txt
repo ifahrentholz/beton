@@ -1,0 +1,34 @@
+Agent gegen Schema und semantische Regeln prüfen; Exit 0 gültig, 1 Fehler
+
+Usage: beton agent validate [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          Agent-Verzeichnis (oder dessen `agent.yaml`); sonst ein Agent-Ref
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

@@ -234,7 +234,7 @@ function Side({ state, children }: { state: string; children?: ReactNode }) {
           <Meter value={4} max={100} label="ChatGPT Pro" detail="4 % des 5-Std.-Fensters · gesamt 12 %" />
           <Meter value={done ? 44 : 31} max={120} label="Laufzeit" detail={`${done ? 44 : 31} von 120 Min.`} />
           <Meter value={done ? 63 : 48} max={150} label="Turns" detail={`${done ? 63 : 48} von 150`} />
-          <p className="text-[12px] text-muted-foreground">Kosten: 0 € – alle Stimmen laufen über deine Abos.</p>
+          <p className="text-[12px] text-muted-foreground">Kosten: 0 $ – alle Stimmen laufen über deine Abos.</p>
         </div>
       </F>
       {children}

@@ -64,7 +64,7 @@
    "Golden-Transcripts für mindestens: reiner Text-Turn, Turn mit Bash-Tool, Turn mit Datei-Edit, Turn mit Reasoning, Fehler-Result (`error_max_turns`) sind grün (HAR-025).",
    "`interrupt()` bricht einen laufenden Turn ab; das Log enthält `turn.interrupted` und die Session nimmt danach eine neue Eingabe an.",
    "Eine unbekannte stdout-Zeile führt nicht zum Abbruch, sondern zu einem `harness.unmapped`-Event und einer `tracing`-Warnung.",
-   "Instructions des Agents (AGT-005, ab M1, siehe 02) werden über `--append-system-prompt-file` geliefert; ein Test prüft den generierten Dateiinhalt."
+   "(ab M1) Instructions des Agents (AGT-005, siehe 02) werden über `--append-system-prompt-file` geliefert; ein Test prüft den generierten Dateiinhalt."
   ]
  },
  {
@@ -349,7 +349,7 @@
   "chapter": "01-harnesses.md",
   "chapterTitle": "01 — Harnesses",
   "anchor": "har-021--usage---kontext-reporting",
-  "summary": "Adapter liefern Token-Verbrauch und, falls vom Harness gemeldet, Kosten als `cost.delta` sowie den Kontext-Füllstand als `context.usage`. Bei Subscription-Nutzung wird statt Euro die Token-/Rate-Limit-Nutzung gemeldet. Preisberechnung und Usage-Seite liegen in USE-001 bzw. USE-006 (siehe 11-platform-features.md).",
+  "summary": "Adapter liefern Token-Verbrauch und, falls vom Harness gemeldet, Kosten als `cost.delta` sowie den Kontext-Füllstand als `context.usage`. Bei Subscription-Nutzung wird statt eines Geldbetrags die Token-/Rate-Limit-Nutzung gemeldet. Preisberechnung und Usage-Seite liegen in USE-001 bzw. USE-006 (siehe 11-platform-features.md).",
   "acs": [
    "Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log.",
    "Bei `auth_source: vendor_cli` ist `cost_micro` leer und `source: subscription`; ein API-Äquivalent erscheint nie als tatsächliche Ausgabe (USE-004).",
@@ -479,9 +479,9 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-002--json-schema-veröffentlichung--validierung",
-  "summary": "Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/agent.v1.json` im Repo versioniert und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema und semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).",
+  "summary": "Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/v1/agent.schema.json` im Repo versioniert (`cargo xtask codegen`, wie alle Schemas unter `schemas/v1/`) und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema und semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).",
   "acs": [
-   "Snapshot-Test: generiertes Schema == eingechecktes `schemas/agent.v1.json`; Abweichung lässt CI fehlschlagen.",
+   "Snapshot-Test: generiertes Schema == eingechecktes `schemas/v1/agent.schema.json`; Abweichung lässt CI fehlschlagen.",
    "`beton agent validate` liefert Exit-Code 0/1 und mit `--json` eine Liste von `{ path, line, column, code, message }`.",
    "Ein Sub-Agent-Zyklus (A → B → A) wird als Fehler `agent_cycle` erkannt.",
    "`reasoning_effort: xhigh` auf einem Harness/Modell ohne diese Stufe erzeugt eine Warnung mit dem effektiven Wert (Mapping wie HAR-017)."
@@ -890,7 +890,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-001--policy-dokumentformat-ladeorte--hot-reload",
-  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/policy.v1.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.",
+  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.",
   "acs": [
    "Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.",
    "Wird eine Projekt-Policy-Datei während einer laufenden Session geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart.",
@@ -2465,7 +2465,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "proto-009--heartbeats--reconnect",
-  "summary": "Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort (mit Jitter) reconnecten.",
+  "summary": "Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort reconnecten, gleichverteilt über 2 s (so bleiben es bei 100 Clients höchstens 20 je 100 ms). Nach `4401`, `4403` oder `4404` verbinden Clients nicht neu.",
   "acs": [
    "Ein Client ohne Pong wird nach spätestens 60 s getrennt; serverseitige Ressourcen der Verbindung sind danach freigegeben.",
    "Nach Server-Neustart sind 100 Clients binnen 35 s wieder verbunden, ohne dass mehr als 20 gleichzeitig im selben 100-ms-Fenster reconnecten.",
@@ -2562,7 +2562,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "proto-015--tunnel-protokoll-hostrunner--server",
-  "summary": "Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.",
+  "summary": "Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); scheitert das Speichern eines Pushs, antwortet der Server mit `problem` statt ihn still zu verwerfen. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.",
   "acs": [
    "Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.",
    "Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.",
@@ -2595,7 +2595,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "data-002--event-log-speicherung-append-only",
-  "summary": "Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen.",
+  "summary": "Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen. Schreibtransaktionen beginnen mit `BEGIN IMMEDIATE` (SQLite), damit gleichzeitige Schreiber nicht mit `SQLITE_BUSY` scheitern.",
   "acs": [
    "Zwei konkurrierende Appends mit gleicher erwarteter `head_seq` → genau einer gelingt, der andere erhält `seq_conflict`.",
    "Nach Kill des Prozesses während Appends (Crash-Test, 1 000 Iterationen) ist das Log lückenlos und `head_seq` = max(`seq`).",
@@ -2872,10 +2872,10 @@
   "anchor": "sync-007--budget-leases",
   "summary": "Server-seitige Budgets (Org/Team/User, POL-012 in 03-policies.md) werden für Knoten, die Kosten lokal verursachen, über Leases gemäß Algorithmus im Design durchgesetzt: Anforderung, Reservierung, lokaler Verbrauch, periodische kumulative Meldung, Abrechnung bei Reconnect oder Ablauf, Overrun-Buchung. Ist die Lease erschöpft oder abgelaufen und keine Aufstockung möglich, greift `on_lease_exhausted: ask | deny` bis zum Reconnect. SYNC-007 ist Owner von Lease-Protokoll und Abrechnung; die Policy-Auswertung offline (Variablen `budget.*`, `on_lease_exhausted`) beschreibt POL-021.",
   "acs": [
-   "Bei Restbudget 30 € und `lease_fraction 0,5`, `max_lease 10 €` erhält ein Knoten 10 €; das Server-Restbudget zeigt 20 € verfügbar + 10 € reserviert.",
-   "Offline: Nach Verbrauch von 10 € erzeugt der nächste Model-Request `budget.exhausted` und eine Approval (bzw. `deny` bei `on_lease_exhausted: deny`).",
+   "Bei Restbudget 30 USD und `lease_fraction 0,5`, `max_lease 10 USD` erhält ein Knoten 10 USD; das Server-Restbudget zeigt 20 USD verfügbar + 10 USD reserviert.",
+   "Offline: Nach Verbrauch von 10 USD erzeugt der nächste Model-Request `budget.exhausted` und eine Approval (bzw. `deny` bei `on_lease_exhausted: deny`).",
    "Doppelt gesendete `budget.lease.report` mit gleichem `consumed_total` buchen nichts doppelt.",
-   "Reconnect nach Verbrauch von 7 € einer 10-€-Lease: Server bucht 7 €, gibt 3 € frei, Lease ist `settled`.",
+   "Reconnect nach Verbrauch von 7 USD einer 10-USD-Lease: Server bucht 7 USD, gibt 3 USD frei, Lease ist `settled`.",
    "Ein Knoten, der bis `expires_at + 72 h` nicht meldet, verliert die Reservierung (Lease `unsettled`); eine spätere Meldung wird gebucht und ein Overrun gemeldet, falls das Budget dadurch überschritten wird."
   ]
  },
@@ -4160,7 +4160,7 @@
   "summary": "Tabellarische Kosten-/Usage-Übersicht (gruppiert nach Session, Tag, Harness, Modell; Subscription-Usage separat) mit `--json`. Datenmodell und Implementierung: Owner USE-005/USE-007 (siehe 11-platform-features.md); CLI-010 regelt nur die Konsistenz der CLI-Oberfläche.",
   "acs": [
    "`beton usage --by model --since 2026-10-01 --json` liefert dieselben Summen wie die Usage-Seite.",
-   "Subscription-Harnesses erscheinen mit Token-/Rate-Limit-Nutzung statt Euro-Betrag; Mischsummen werden nicht gebildet."
+   "Subscription-Harnesses erscheinen mit Token-/Rate-Limit-Nutzung statt Geldbetrag; Mischsummen werden nicht gebildet."
   ]
  },
  {
@@ -4371,7 +4371,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "api-005--rust-sdk",
-  "summary": "Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe.",
+  "summary": "Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe (auch für Proben lokaler Modell-Server, `beton_sdk::probe`).",
   "acs": [
    "`beton-cli` und `beton-tui` haben keine direkten HTTP-Aufrufe außerhalb von `beton-sdk` (Lint/`cargo deny`-Regel oder Architekturtest).",
    "Beispiel `examples/stream.rs` erstellt eine Session gegen den Fake-Harness und gibt Deltas aus (läuft in CI)."
@@ -5340,7 +5340,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "use-004--subscription-usage",
-  "summary": "Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt Euro. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(Annahme: gegen aktuelle CLI-Versionen verifizieren, siehe HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.",
+  "summary": "Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt eines Geldbetrags. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(Annahme: gegen aktuelle CLI-Versionen verifizieren, siehe HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.",
   "acs": [
    "Eine Claude-Subscription-Session zeigt Token-Summen pro Modell und kein Geld-Feld; optional das API-Äquivalent, klar als „informativ“ gekennzeichnet.",
    "Ein `usage.subscription {window: \"5h\", used_pct: 72, resets_at}` erscheint als Fortschrittsbalken mit Reset-Uhrzeit in Nutzer-Zeitzone.",
@@ -5801,7 +5801,7 @@
   "acs": [
    "Fehlt `claude` im PATH, meldet `doctor` `warn` mit Installationshinweis und Exit-Code 1.",
    "`--json` folgt einem veröffentlichten Schema (Snapshot-Test) und enthält pro Check `id`, `status`, `message`, `hint`.",
-   "Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.",
+   "(ab M2) Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.",
    "`doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch) und läuft ohne Netzwerk (nur Loopback) ohne Verbindungsversuch nach außen durch."
   ]
  },

@@ -13,6 +13,7 @@ authors = ["Ingo Fahrentholz"]
 [workspace.dependencies]
 # interne Crates
 beton-core = { path = "crates/beton-core", version = "0.0.0" }
+beton-agents = { path = "crates/beton-agents", version = "0.0.0" }
 beton-proto = { path = "crates/beton-proto", version = "0.0.0" }
 beton-store = { path = "crates/beton-store", version = "0.0.0" }
 beton-server = { path = "crates/beton-server", version = "0.0.0" }
@@ -21,12 +22,15 @@ beton-runner = { path = "crates/beton-runner", version = "0.0.0" }
 beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
 beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
+beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 
 # extern
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.23"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
 fastrand = "2"
 fs4 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
@@ -36,6 +40,7 @@ http-body-util = "0.1"
 process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 proptest = "1"
 regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 rustix = { version = "1", features = ["process"] }
 schemars = "1"
 semver = { version = "1", features = ["serde"] }
@@ -58,6 +63,8 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "registry"] }
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 ulid = "3"
+# Marked-Event-Parser für Zeilen/Spalten in Agent-YAML (AGT-001); ohne `encoding`.
+yaml-rust2 = { version = "0.13", default-features = false }
 utoipa = { version = "6", features = ["preserve_order"] }
 utoipa-axum = "0.3"
 

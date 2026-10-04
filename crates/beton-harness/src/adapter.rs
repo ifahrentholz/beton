@@ -118,7 +118,9 @@ impl From<&str> for UserInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Plan,
     Default,
@@ -286,6 +288,12 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn capabilities(&self, mode: Mode, probe: &ProbeReport) -> Capabilities;
     /// Binary finden, Version prüfen, Login-Status über die Vendor-CLI erfragen.
     async fn probe(&self, env: &HostEnv) -> ProbeReport;
+    /// Login-Status über das Statuskommando der Vendor-CLI (HAR-016), nie aus Token-Dateien.
+    /// Ohne solches Kommando `unknown`.
+    async fn auth_status(&self, env: &HostEnv) -> AuthStatus {
+        let _ = env;
+        AuthStatus::Unknown
+    }
     async fn start(
         &self,
         spec: SessionSpec,
