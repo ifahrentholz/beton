@@ -78,6 +78,18 @@ pub struct LoginCode {
     pub expires_in_s: u64,
 }
 
+/// Eine heruntergeladene Exportdatei (SES-009).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportDownload {
+    pub bytes: Vec<u8>,
+    /// Anzahl der Events (Header `beton-export-events`).
+    pub events: u64,
+    /// Anzahl der Blobs im Archiv (Header `beton-export-blobs`).
+    pub blobs: u64,
+    /// `.tar.zst` statt JSONL.
+    pub archive: bool,
+}
+
 /// Client für einen beton-Server.
 #[derive(Clone)]
 pub struct Client {
@@ -188,6 +200,97 @@ impl Client {
             self.http
                 .post(self.url(&format!("/v1/sessions/{id}/fork")))
                 .json(request),
+        )
+        .await
+    }
+
+    /// `GET /v1/imports/candidates`: lokale Chats einer Vendor-CLI (eine Seite, SES-008).
+    pub async fn import_candidates(
+        &self,
+        harness: &str,
+        limit: Option<u32>,
+        cursor: Option<&str>,
+    ) -> Result<Page<Value>> {
+        let mut query = vec![("harness", harness.to_owned())];
+        if let Some(l) = limit {
+            query.push(("limit", l.to_string()));
+        }
+        if let Some(c) = cursor {
+            query.push(("cursor", c.to_owned()));
+        }
+        self.send(
+            self.http
+                .get(self.url("/v1/imports/candidates"))
+                .query(&query),
+        )
+        .await
+    }
+
+    /// `POST /v1/imports`: Chats einer Vendor-CLI übernehmen (SES-008).
+    pub async fn import_sessions(&self, request: &Value) -> Result<Value> {
+        self.post("/v1/imports", request).await
+    }
+
+    /// `GET /v1/sessions/{id}/export`: Exportdatei (JSONL bzw. `.tar.zst`, SES-009).
+    pub async fn export_session(
+        &self,
+        id: &str,
+        with_raw: bool,
+        with_blobs: bool,
+    ) -> Result<ExportDownload> {
+        let res = self
+            .http
+            .get(self.url(&format!("/v1/sessions/{id}/export")))
+            .query(&[("with_raw", with_raw), ("with_blobs", with_blobs)])
+            .bearer_auth(&self.token)
+            .send()
+            .await
+            .map_err(|e| Error::Unreachable {
+                url: self.base.clone(),
+                reason: root_cause(&e),
+            })?;
+        let status = res.status();
+        let count = |name: &str| {
+            res.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        };
+        let (events, blobs) = (count("beton-export-events"), count("beton-export-blobs"));
+        let archive = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .is_some_and(|v| v.as_bytes().starts_with(b"application/zstd"));
+        let bytes = res.bytes().await.map_err(|e| Error::Unreachable {
+            url: self.base.clone(),
+            reason: root_cause(&e),
+        })?;
+        if !status.is_success() {
+            return Err(problem(status, &bytes));
+        }
+        Ok(ExportDownload {
+            bytes: bytes.to_vec(),
+            events,
+            blobs,
+            archive,
+        })
+    }
+
+    /// `POST /v1/sessions/import`: Exportdatei als neue Session importieren (SES-009).
+    /// Antwort: `{status, reason?, session_id, title, events, blobs, imported_from}`.
+    pub async fn import_file(&self, bytes: Vec<u8>, force: bool) -> Result<Value> {
+        let content_type = if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
+            "application/zstd"
+        } else {
+            "application/x-ndjson"
+        };
+        self.send(
+            self.http
+                .post(self.url("/v1/sessions/import"))
+                .query(&[("force", force)])
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .body(bytes),
         )
         .await
     }
