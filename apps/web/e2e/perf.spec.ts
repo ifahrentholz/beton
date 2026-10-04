@@ -62,8 +62,10 @@ test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und
 
   // Im Browser gemessen: Klick bis der erste Inhalt im DOM steht. Playwrights `expect`
   // pollt in Stufen (0/20/100/500 ms) und würde die Messung verfälschen.
-  const open = (id: string) =>
-    page.evaluate(
+  const open = async (id: string) => {
+    // Erst warten, bis die Liste den Eintrag gerendert hat; gemessen wird ab dem Klick.
+    await page.locator(`[data-session="${id}"]`).waitFor()
+    return page.evaluate(
       ({ id, title, needsMessage }) =>
         new Promise<number>((resolve) => {
           const ready = () => {
@@ -83,6 +85,7 @@ test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und
         }),
       { id, title: id === big ? 'Groß' : 'Klein', needsMessage: id === big },
     )
+  }
   const cold = await open(big)
   expect(cold).toBeLessThanOrEqual(800)
   await open(small)
