@@ -637,7 +637,7 @@ impl Forwarder {
                 Ok(e) if !e.is_empty() => e,
                 _ => break,
             };
-            if let Flow::Stop = self.check_overflow(self.last) {
+            if let Flow::Stop = self.wait_for_drain().await {
                 return Flow::Stop;
             }
             let mut chunk = Vec::new();
@@ -662,6 +662,19 @@ impl Forwarder {
         }
         if first && has_more == Some(true) {
             self.send_events(Vec::new(), has_more);
+        }
+        Flow::Continue
+    }
+
+    /// Beim Nachliefern aus dem Store bestimmt der Server das Tempo (PROTO-008 AC1): Statt
+    /// `overflow` zu senden, wartet er, bis der Client die Warteschlange abgebaut hat. Sonst
+    /// holt ein langsamer, aber lesender Client einen großen Rückstand nie auf.
+    async fn wait_for_drain(&self) -> Flow {
+        while self.out.queued() > self.cfg().overflow_bytes / 2 {
+            if self.out.tx.is_closed() {
+                return Flow::Stop;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
         Flow::Continue
     }
