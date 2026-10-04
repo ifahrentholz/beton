@@ -138,7 +138,10 @@ async fn api_002_ac2_every_route_requires_authentication() {
         if PUBLIC_PATHS.contains(&path.as_str()) {
             continue;
         }
-        let path = path.replace("{id}", "hst_local");
+        let path = path
+            .replace("{id}", "hst_local")
+            .replace("{approval_id}", "x")
+            .replace("{hash}", "x");
         let req = Request::builder()
             .method(method.as_str())
             .uri(&path)
@@ -165,17 +168,24 @@ async fn api_001_ac2_every_route_is_documented() {
             path.display()
         );
     }
-    // Jede dokumentierte Operation ist erreichbar (kein 404/405).
+    // Jede dokumentierte Operation ist erreichbar: kein 405 und kein 404 des Router-Fallbacks
+    // (ein 404 „Ressource unbekannt“ des Handlers ist in Ordnung).
     let t = app().await;
     for (method, path) in operations() {
-        let path = path.replace("{id}", "hst_local");
+        let path = path
+            .replace("{id}", "hst_local")
+            .replace("{approval_id}", "x")
+            .replace("{hash}", "x");
         let req = t.authed(&method, &path).body(Body::empty()).unwrap();
         let res = t.send(req).await;
-        assert!(
-            ![404, 405].contains(&res.status),
-            "{method} {path}: {}",
-            res.status
-        );
+        assert_ne!(res.status, 405, "{method} {path}");
+        if res.status == 404 {
+            assert_ne!(
+                res.json()["detail"],
+                beton_server::app::NO_ROUTE,
+                "{method} {path}"
+            );
+        }
     }
 }
 
@@ -231,6 +241,7 @@ async fn create_sessions(t: &TestApp, n: usize) {
                     parent_id: None,
                     trigger: SessionTrigger::User,
                     home_node: local.node,
+                    harness_opts: serde_json::Value::Null,
                 },
             )
             .await

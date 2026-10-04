@@ -26,6 +26,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 beton-host.workspace = true
+futures-util.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
 tempfile.workspace = true

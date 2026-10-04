@@ -47,7 +47,7 @@ pub struct LocalProvider {
     state_dir: PathBuf,
     /// Umgebung, aus der die Allowlist schöpft (Default: die des Daemons).
     inherit: BTreeMap<String, String>,
-    provisioned: Mutex<HashMap<RunnerId, Provisioned>>,
+    provisioned: Mutex<HashMap<RunnerId, (Provisioned, Vec<String>)>>,
     running: Mutex<HashMap<RunnerId, Box<dyn ProcessHandle>>>,
 }
 
@@ -79,7 +79,12 @@ impl LocalProvider {
     fn env_for(&self, allow: &[String]) -> Vec<(String, String)> {
         self.inherit
             .iter()
-            .filter(|(k, _)| ENV_ALLOWLIST.contains(&k.as_str()) || allow.contains(k))
+            .filter(|(k, _)| {
+                ENV_ALLOWLIST.contains(&k.as_str())
+                    || allow.contains(k)
+                    // Binary-Präzedenz der Harnesses (HAR-003), z. B. BETON_CLAUDE_PATH.
+                    || (k.starts_with("BETON_") && k.ends_with("_PATH"))
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     }
@@ -115,7 +120,7 @@ impl RunnerProvider for LocalProvider {
 
     async fn provision(&self, spec: &RunnerSpec) -> Result<Provisioned, RunnerError> {
         let mut map = self.provisioned.lock().await;
-        if let Some(p) = map.get(&spec.runner_id) {
+        if let Some((p, _)) = map.get(&spec.runner_id) {
             return Ok(p.clone());
         }
         if !spec.workspace.is_dir() {
@@ -129,7 +134,7 @@ impl RunnerProvider for LocalProvider {
             runner_id: spec.runner_id,
             workdir: spec.workspace.clone(),
         };
-        map.insert(spec.runner_id, p.clone());
+        map.insert(spec.runner_id, (p.clone(), spec.env_allowlist.clone()));
         Ok(p)
     }
 
@@ -143,7 +148,7 @@ impl RunnerProvider for LocalProvider {
             .lock()
             .await
             .get(&env.runner_id)
-            .map(|_| Vec::<String>::new())
+            .map(|(_, allow)| allow.clone())
             .unwrap_or_default();
         let mut vars = self.env_for(&allow);
         let pairs = [
@@ -167,6 +172,9 @@ impl RunnerProvider for LocalProvider {
         vars.extend(pairs.into_iter().map(|(k, v)| (k.to_owned(), v)));
         if let Some(s) = &boot.scenario {
             vars.push((beton_runner::env::SCENARIO.into(), s.display().to_string()));
+        }
+        if let Some(r) = &boot.resume {
+            vars.push((beton_runner::env::RESUME.into(), r.clone()));
         }
         if let Some(m) = &boot.model {
             vars.push((beton_runner::env::MODEL.into(), m.clone()));
@@ -215,7 +223,7 @@ impl RunnerProvider for LocalProvider {
             .lock()
             .await
             .get(&h.runner_id)
-            .map(|p| p.workdir.clone())
+            .map(|(p, _)| p.workdir.clone())
             .ok_or_else(|| RunnerError::NotFound(h.runner_id.to_string()))?;
         let out = tokio::process::Command::new(&req.program)
             .args(&req.args)

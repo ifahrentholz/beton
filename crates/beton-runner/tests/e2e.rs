@@ -60,6 +60,7 @@ async fn fixture(
                 parent_id: None,
                 trigger: SessionTrigger::User,
                 home_node: local.node,
+                harness_opts: serde_json::Value::Null,
             },
         )
         .await
@@ -112,6 +113,7 @@ impl Fixture {
                     scenario: Some(scenario.to_path_buf()),
                     model: None,
                     dev: true,
+                    resume: None,
                 },
             )
             .await
@@ -430,6 +432,7 @@ async fn runner_token_only_opens_its_own_session() {
                 scenario: Some(f.scenario("turns: []")),
                 model: None,
                 dev: true,
+                resume: None,
             },
         )
         .await

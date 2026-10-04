@@ -3641,6 +3641,9 @@
         "harness": {
           "type": "string"
         },
+        "harness_opts": {
+          "description": "Harness-spezifische Startoptionen aus `POST /v1/sessions` (z. B. Fake-Szenario)."
+        },
         "kind": {
           "$ref": "#/$defs/SessionKind"
         },

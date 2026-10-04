@@ -10,6 +10,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod api;
+pub mod api_sessions;
 pub mod app;
 pub mod commands;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod local_auth;
 pub mod problem;
 pub mod security;
 pub mod serve;
+pub mod sessions;
 pub mod tunnel;
 pub mod ws;
 

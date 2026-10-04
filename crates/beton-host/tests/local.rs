@@ -52,6 +52,7 @@ fn boot() -> RunnerBoot {
         scenario: None,
         model: None,
         dev: true,
+        resume: None,
     }
 }
 

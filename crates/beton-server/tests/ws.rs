@@ -125,6 +125,7 @@ async fn fixture(customize: impl FnOnce(Runtime) -> Runtime) -> Fixture {
                 parent_id: None,
                 trigger: SessionTrigger::User,
                 home_node: local.node,
+                harness_opts: serde_json::Value::Null,
             },
         )
         .await
@@ -447,6 +448,7 @@ fn proto_006_ac3_every_command_has_a_rest_twin() {
     // Die eingebauten Kommandos (ab WP-09) prüft derselbe Test über die Standard-Registry.
     assert!(
         Runtime::new(tokio::sync::watch::channel(false).1)
+            .with_default_commands()
             .commands
             .missing_rest_twins(&doc)
             .is_empty()

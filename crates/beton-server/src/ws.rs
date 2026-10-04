@@ -449,8 +449,7 @@ impl Conn {
             }
         }
         let ctx = CommandCtx {
-            events: self.state.events(),
-            local: self.state.local,
+            state: self.state.clone(),
             auth: self.auth,
         };
         match command.run(&ctx, session, args).await {
