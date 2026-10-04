@@ -4,7 +4,8 @@
 //! Ein langlebiger Prozess pro Session. Ablauf (verifiziert gegen codex-cli 0.153.2 per
 //! `codex app-server generate-json-schema` und Handshake ohne Modellaufruf):
 //! `initialize` → `initialized` → `thread/start` bzw. `thread/resume` → je Turn
-//! `turn/start`; Abbruch mit `turn/interrupt`, Eingaben in den laufenden Turn mit `turn/steer`. Freigaben kommen als Server-Requests
+//! `turn/start`; Abbruch mit `turn/interrupt`, Eingaben in den laufenden Turn mit
+//! `turn/steer` (SES-004). Freigaben kommen als Server-Requests
 //! `item/commandExecution/requestApproval` und `item/fileChange/requestApproval` und gehen an
 //! das Gate. Subscriptions laufen ausschließlich über die CLI selbst: beton liest, speichert
 //! oder erneuert keine OpenAI-Tokens (ADR-0005) und entfernt bei `auth: subscription`
