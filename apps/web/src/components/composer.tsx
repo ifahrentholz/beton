@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BetonError, type Attachment, type Capabilities, type HarnessInfo } from '@beton/sdk'
+import { BetonError, type Attachment, type Capabilities, type HarnessInfo, type PermissionMode } from '@beton/sdk'
 import { ArrowUp, Paperclip, Square } from 'lucide-react'
 import { client } from '@/lib/client'
 import { ACCEPT, DEFAULT_LIMITS, insertMention, kindOf, mentionAt, mimeOf, pastedName, rejection, slashQuery, type AttachmentLimits } from '@/lib/composer'
@@ -9,6 +9,7 @@ import { AttachmentStrip, type DraftAttachment, type Rejected } from './attachme
 import { MentionMenu, SlashMenu, type SlashEntry } from './composer-menus'
 import { HarnessMenu } from './fork'
 import { HarnessBadge } from './harness'
+import { ModePicker, ModelPicker, settingsOptions, type SettingsPatch } from './settings-picker'
 
 const DRAFT_PREFIX = 'beton.draft.'
 
@@ -35,46 +36,10 @@ export function saveDraft(sessionId: string, text: string): void {
   }
 }
 
-/** Wählbare Werte eines Pickers laut Capabilities (WEB-004 AC1). */
+/** Wählbare Modelle und Effort-Stufen laut Capabilities (WEB-004 AC1); siehe `settingsOptions`. */
 export function pickerOptions(caps: Capabilities | undefined): { models: string[]; efforts: string[] } {
-  if (!caps) return { models: [], efforts: [] }
-  return {
-    models: caps.models ?? [],
-    efforts: caps.effort_switch === 'none' ? [] : (caps.efforts ?? []),
-  }
-}
-
-export function Picker({
-  label,
-  value,
-  options,
-  onChange,
-  disabled,
-}: {
-  label: string
-  value: string
-  options: string[]
-  onChange: (v: string) => void
-  disabled?: boolean
-}) {
-  return (
-    <label className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">
-      <span className="sr-only">{label}</span>
-      <select
-        aria-label={label}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        className="cursor-pointer bg-transparent font-mono text-[12px] outline-none disabled:cursor-default"
-      >
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
+  const { models, efforts } = settingsOptions(caps)
+  return { models, efforts }
 }
 
 /** Eigener Befehl von beton im Slash-Menü, z. B. `/fork`. */
@@ -108,7 +73,9 @@ function problemText(e: unknown): string {
 let nextKey = 0
 
 /**
- * Eingabe mit Pickern (WEB-004) und Erweiterungen (WEB-006): Anhänge per Button, Drop oder
+ * Eingabe mit Pickern (WEB-004): Harness, Modell, Effort und Permission-Mode laut Capabilities;
+ * ein Wechsel geht per `PATCH` an den Server und gilt ab dem nächsten Turn (HAR-017, HAR-027).
+ * Erweiterungen (WEB-006): Anhänge per Button, Drop oder
  * Paste, `@` für Dateien im Workspace, `/` für Befehle und Skills. Senden mit ⏎,
  * Zeilenumbruch mit ⇧⏎. Während eines Turns heißt der Senden-Button „Einreihen“; die Queue
  * (WEB-005) steht über dem Eingabefeld.
@@ -117,12 +84,14 @@ export function Composer({
   sessionId,
   harness,
   model,
+  effort,
+  permissionMode,
   capabilities,
   running,
   queue,
   onSend,
   onInterrupt,
-  onModel,
+  onSettings,
   continueWith,
   onContinue,
   commands = [],
@@ -130,13 +99,16 @@ export function Composer({
   sessionId: string
   harness: string
   model?: string | null | undefined
+  effort?: string | null | undefined
+  permissionMode?: PermissionMode | null | undefined
   capabilities?: Capabilities | undefined
   running: boolean
   /** Serverseitige Queue über dem Eingabefeld (WEB-005). */
   queue?: ReactNode
   onSend: (text: string, attachments: Attachment[]) => void
   onInterrupt: () => void
-  onModel?: ((model: string) => void) | undefined
+  /** Modell, Effort oder Permission-Mode wechseln (HAR-017, HAR-027). */
+  onSettings?: ((patch: SettingsPatch) => void) | undefined
   /** Harnesses für „Weiter mit …“ im Harness-Picker (SES-007 AC5). */
   continueWith?: HarnessInfo[] | undefined
   /** Fork ab dem letzten `seq` auf einen anderen Harness. */
@@ -168,8 +140,7 @@ export function Composer({
       pendingCaret.current = undefined
     }
   }, [text])
-  const { models, efforts } = pickerOptions(capabilities)
-  const [effort, setEffort] = useState(efforts[0] ?? '')
+  const { models, efforts, modes, modelSwitch } = settingsOptions(capabilities)
 
   const info = useQuery({ queryKey: ['info'], queryFn: () => client.info(), staleTime: 60_000 })
   const limits: AttachmentLimits = info.data?.attachments ?? DEFAULT_LIMITS
@@ -410,16 +381,17 @@ export function Composer({
                 <HarnessBadge harness={harness} />
               </span>
             )}
-            {models.length > 0 && (
-              <Picker
-                label="Modell"
-                value={model && models.includes(model) ? model : (models[0] ?? '')}
-                options={models}
-                onChange={(m) => onModel?.(m)}
-                disabled={!onModel}
-              />
-            )}
-            {efforts.length > 0 && <Picker label="Effort" value={effort} options={efforts} onChange={setEffort} disabled />}
+            <ModelPicker
+              harness={harness}
+              model={model}
+              effort={effort}
+              models={models}
+              efforts={efforts}
+              modelSwitch={modelSwitch}
+              running={running}
+              onChange={onSettings}
+            />
+            <ModePicker harness={harness} mode={permissionMode} modes={modes} running={running} onChange={onSettings} />
             <div className="ml-auto flex items-center gap-1">
               {running && (
                 <button onClick={onInterrupt} className="flex h-7 items-center gap-1 rounded-md border border-foreground/40 px-2 text-xs" aria-label="Unterbrechen">

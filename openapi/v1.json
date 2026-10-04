@@ -951,7 +951,7 @@
             }
           },
           "409": {
-            "description": "Worktree gewünscht, aber kein Git-Repository",
+            "description": "Worktree gewünscht, aber kein Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported`, wenn der Harness Effort bzw. Permission-Mode nicht kennt",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1285,7 +1285,7 @@
         "tags": [
           "sessions"
         ],
-        "summary": "Einstellungen ändern (z. B. Modell); ohne Capability `capability_unsupported` (HAR-002 AC3).",
+        "summary": "Einstellungen ändern: Titel, Modell, Effort, Permission-Mode (HAR-017, HAR-027). Ohne\nCapability `capability_unsupported` (HAR-002 AC3), `yolo` ohne Sandbox\n`sandbox_required`. Während eines Turns gilt ein Wechsel ab dem nächsten Turn; er erscheint\nals `session.settings_changed` mit `effective_from_turn`.",
         "operationId": "patch_session",
         "parameters": [
           {
@@ -1309,7 +1309,7 @@
         },
         "responses": {
           "200": {
-            "description": "Geändert",
+            "description": "Geändert bzw. für das Turn-Ende vorgemerkt",
             "content": {
               "application/json": {
                 "schema": {
@@ -1340,6 +1340,16 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`capability_unsupported`, `sandbox_required` oder Session läuft nicht",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2296,7 +2306,7 @@
             }
           },
           "409": {
-            "description": "`new_worktree` ohne Git-Repository",
+            "description": "`new_worktree` ohne Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported` bei Effort bzw. Permission-Mode, die der Ziel-Harness nicht kennt",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4485,6 +4495,20 @@
               "null"
             ]
           },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reasoning-Effort (`low`, `medium`, `high`, `xhigh`); eine Stufe, die der Harness nicht\nkennt, wird auf die nächstniedrigere gemappt (HAR-017)."
+          },
+          "permission_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`; HAR-027). `yolo` braucht\nTool-Sandbox und Egress-Proxy, sonst `409 sandbox_required`."
+          },
           "harness_opts": {
             "type": "object",
             "description": "Harness-spezifische Optionen, z. B. `{\"scenario\": \"…\"}` beim Fake-Harness."
@@ -4728,6 +4752,20 @@
               "string",
               "null"
             ]
+          },
+          "effort": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reasoning-Effort des Forks (HAR-017), gegen den Ziel-Harness geprüft."
+          },
+          "permission_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Permission-Mode des Forks (HAR-027); `yolo` ohne Sandbox: `409 sandbox_required`."
           },
           "workspace": {
             "oneOf": [
@@ -5341,6 +5379,7 @@
           "stale_epoch",
           "seq_ahead",
           "not_a_git_repo",
+          "sandbox_required",
           "worktree_dirty",
           "worktree_unpushed",
           "imported_read_only",
@@ -5689,6 +5728,13 @@
               "string",
               "null"
             ]
+          },
+          "permission_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`plan`, `default`, `accept_edits` oder `yolo` (HAR-027)."
           }
         }
       },

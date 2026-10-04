@@ -22,6 +22,8 @@ fn new_session(t: &TestStore, harness: &str) -> NewSession {
         harness: harness.into(),
         cwd: "/tmp/projekt".into(),
         model: None,
+        effort: None,
+        permission_mode: None,
         agent_ref: None,
         project_id: None,
         parent_id: None,

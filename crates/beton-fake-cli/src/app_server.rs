@@ -39,6 +39,9 @@ pub struct AppServer<R, W> {
     total: Usage,
     /// Injizierte MCP-Server (HAR-009).
     mcp: crate::mcp::Clients,
+    /// Effort und Sandbox aus `turn/start` bzw. `thread/start` (für `echo_settings`).
+    effort: Option<String>,
+    sandbox: String,
 }
 
 /// Was ein Turn erlebt hat.
@@ -78,6 +81,8 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             requests: 0,
             total: Usage::default(),
             mcp: crate::mcp::Clients::default(),
+            effort: None,
+            sandbox: "workspace-write".into(),
         }
     }
 
@@ -182,6 +187,9 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                 if let Some(model) = params["model"].as_str() {
                     self.model = model.to_owned();
                 }
+                if let Some(sandbox) = params["sandbox"].as_str() {
+                    self.sandbox = sandbox.to_owned();
+                }
                 let response = self.thread_response(params);
                 self.respond(id, response)?;
                 let thread = self.thread();
@@ -216,6 +224,14 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             self.model = model.to_owned();
         }
         crate::io::record_context("user", &input_text(params));
+        if let Some(effort) = params["effort"].as_str() {
+            self.effort = Some(effort.to_owned());
+        }
+        match params["sandboxPolicy"]["type"].as_str() {
+            Some("readOnly") => self.sandbox = "read-only".into(),
+            Some("workspaceWrite") => self.sandbox = "workspace-write".into(),
+            _ => {}
+        }
         let index = self.next_turn;
         self.next_turn += 1;
         let mut state = TurnState {
@@ -238,10 +254,21 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                         message: format!("erwartet `{expected}`, erhalten `{text}`"),
                         info: "badRequest",
                     },
-                    _ => self.steps(
-                        &beton_harness::scenario::resolve_echo(&t.emit, &text, &[]),
-                        &mut state,
-                    )?,
+                    _ => {
+                        // `mode` meldet die Codex-Sandbox (`read-only` bei `plan`, HAR-027).
+                        let settings = beton_harness::scenario::settings_text(
+                            &self.model,
+                            self.effort.as_deref(),
+                            &self.sandbox,
+                        );
+                        self.steps(
+                            &beton_harness::scenario::resolve_settings(
+                                &beton_harness::scenario::resolve_echo(&t.emit, &text, &[]),
+                                &settings,
+                            ),
+                            &mut state,
+                        )?
+                    }
                 }
             }
         };

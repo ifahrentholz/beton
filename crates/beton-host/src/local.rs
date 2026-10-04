@@ -203,6 +203,12 @@ impl RunnerProvider for LocalProvider {
         if let Some(m) = &boot.model {
             vars.push((beton_runner::env::MODEL.into(), m.clone()));
         }
+        if let Some(e) = &boot.effort {
+            vars.push((beton_runner::env::EFFORT.into(), e.clone()));
+        }
+        if let Some(p) = &boot.permission_mode {
+            vars.push((beton_runner::env::PERMISSION_MODE.into(), p.clone()));
+        }
         if let Some(a) = &boot.agent_ref {
             vars.push((beton_runner::env::AGENT_REF.into(), a.clone()));
         }

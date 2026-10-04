@@ -57,6 +57,13 @@ pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
 }
 
+impl Launched {
+    /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
+    pub async fn pid(&self, session: SessionId) -> Option<u32> {
+        self.handles.lock().await.get(&session).and_then(|h| h.pid)
+    }
+}
+
 impl std::fmt::Debug for Launched {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Launched")
@@ -164,6 +171,10 @@ pub struct CreateSession {
     pub cwd: String,
     pub title: Option<String>,
     pub model: Option<String>,
+    /// Reasoning-Effort ab dem ersten Turn (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode ab dem Start (HAR-027); `yolo` ohne Sandbox wird abgelehnt.
+    pub permission_mode: Option<String>,
     pub harness_opts: Value,
     /// Eigener Worktree (SES-015).
     pub worktree: Option<WorktreeSpec>,
@@ -326,6 +337,18 @@ impl<'a> SessionManager<'a> {
                 .map_err(|e| Problem::new(ProblemCode::AgentInvalid).detail(e.to_string()))?;
             self.check_agent_harness(&spec, &harness, std::path::Path::new(&req.cwd))?;
         }
+        // Effort und Permission-Mode: Anfrage vor `executor` des Agents (AGT-004). Vor dem
+        // Anlegen geprüft; `yolo` ohne Sandbox nie, auch nicht aus einem Agent (HAR-027).
+        let (agent_effort, agent_mode) =
+            crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
+        let effort = req.effort.clone().or(agent_effort);
+        let permission_mode = req.permission_mode.clone().or(agent_mode);
+        crate::settings::validate_start(
+            self.harness_capabilities(&harness, Path::new(&req.cwd))
+                .as_ref(),
+            effort.as_deref(),
+            permission_mode.as_deref(),
+        )?;
         let id = SessionId::new();
         let worktree = match &req.worktree {
             Some(spec) => Some(self.create_worktree(id, &req, spec).await?),
@@ -346,6 +369,8 @@ impl<'a> SessionManager<'a> {
                         Some(a) => a.model.clone(),
                         None => req.model.clone(),
                     },
+                    effort: effort.clone(),
+                    permission_mode: permission_mode.clone(),
                     agent_ref: req.agent.clone(),
                     project_id: None,
                     parent_id: None,
@@ -547,6 +572,10 @@ impl<'a> SessionManager<'a> {
         let workspace = self.workspace_root(session).await?;
         let project = beton_harness::registry::HarnessesConfig::load_project(&workspace)
             .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
+        // HAR-020 AC3: Was der vorige Runner offen ließ, endet jetzt im Log.
+        self.close_interrupted(session.id).await?;
+        // Modell, Effort und Mode laut letztem Stand, nicht nur `session.created` (HAR-020).
+        let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
         let agent_snapshot = self.snapshot_file(session.id).await?;
         let token = self
@@ -580,7 +609,9 @@ impl<'a> SessionManager<'a> {
                     epoch: session.epoch,
                     harness: session.harness.clone(),
                     scenario: created.harness_opts["scenario"].as_str().map(PathBuf::from),
-                    model: created.model.clone(),
+                    model: settings.model,
+                    effort: settings.effort,
+                    permission_mode: settings.permission_mode,
                     dev: self.fake_allowed(),
                     resume,
                     agent_ref: created.agent_ref.clone(),
@@ -626,6 +657,28 @@ impl<'a> SessionManager<'a> {
         }
         self.wait_connected(session).await?;
         Ok(self.state.store.session(self.org(), session).await?)
+    }
+
+    /// Läuft (oder startet gerade) ein Runner für die Session?
+    async fn runner_alive(&self, session: SessionId) -> bool {
+        if self.state.runtime.runners.connected(session) {
+            return true;
+        }
+        let handle = self
+            .cfg()
+            .launched
+            .handles
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        match &handle {
+            Some(h) => matches!(
+                self.cfg().provider.status(h).await,
+                Ok(beton_host::RunnerStatus::Running)
+            ),
+            None => false,
+        }
     }
 
     /// Startet bzw. verbindet den Runner, falls nötig (SES-003 AC3).
@@ -726,6 +779,11 @@ impl<'a> SessionManager<'a> {
             crate::attachments::validate(self.state, session, &attachments, images).await?;
         }
         let mut q = self.state.queue().lock(session).await?;
+        if q.busy() && !self.runner_alive(session).await {
+            // Der Runner endete mitten im Turn (Absturz, Neustart): Turn und Freigaben im Log
+            // abschließen, dann normal weiter (HAR-020 AC3).
+            self.close_interrupted(session).await?;
+        }
         if mode == InputMode::Steer && q.busy() && !attachments.is_empty() {
             return Err(Problem::new(ProblemCode::ValidationFailed).detail(
                 "Anhänge gehen nur mit einer neuen Nachricht, nicht in den laufenden Turn",
@@ -879,8 +937,10 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Einstellungen ändern, z. B. Modell (HAR-002 AC3: ohne Capability `capability_unsupported`).
-    pub async fn set(&self, session: SessionId, args: Value) -> Result<(), Problem> {
+    pub async fn set(&self, session: SessionId, args: Value) -> Result<Value, Problem> {
         self.state.store.session(self.org(), session).await?;
+        // Ungültige Werte und `yolo` ohne Sandbox erreichen den Runner nicht (HAR-027).
+        crate::settings::precheck_switch(&args)?;
         if !self.state.runtime.runners.connected(session) {
             return Err(
                 Problem::new(ProblemCode::Conflict).detail("Session läuft nicht; erst fortsetzen")
@@ -896,7 +956,6 @@ impl<'a> SessionManager<'a> {
                 self.state.runtime.tunnel.cmd_timeout,
             )
             .await
-            .map(|_| ())
     }
 
     /// Entscheidung für eine offene Freigabe an den Runner (WEB-018, HAR-005).
@@ -962,6 +1021,14 @@ impl<'a> SessionManager<'a> {
         // Instructions, Tools und Parameter des Childs aus dem Snapshot des Parents (AGT-004,
         // AGT-005, AGT-010).
         let snapshot = self.child_snapshot(parent, &agent, &args["params"]).await?;
+        // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027).
+        let (child_effort, child_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        crate::settings::validate_start(
+            self.harness_capabilities(&harness, Path::new(&created.cwd))
+                .as_ref(),
+            child_effort.as_deref(),
+            child_mode.as_deref(),
+        )?;
         let child = self
             .state
             .store
@@ -974,6 +1041,8 @@ impl<'a> SessionManager<'a> {
                     harness: harness.to_string(),
                     cwd: created.cwd.clone(),
                     model: args["model"].as_str().map(str::to_owned),
+                    effort: child_effort,
+                    permission_mode: child_mode,
                     agent_ref: snapshot.as_ref().map(|s| s.reference.clone()),
                     project_id: record.project_id,
                     parent_id: Some(parent),

@@ -7,6 +7,7 @@
 
 pub mod fork;
 pub mod mcp;
+pub mod settings;
 pub mod state;
 pub mod workspace;
 
@@ -48,6 +49,10 @@ pub mod env {
     pub const HARNESS: &str = "BETON_HARNESS";
     pub const SCENARIO: &str = "BETON_SCENARIO";
     pub const MODEL: &str = "BETON_MODEL";
+    /// Reasoning-Effort beim Start (HAR-017).
+    pub const EFFORT: &str = "BETON_EFFORT";
+    /// Permission-Mode beim Start (HAR-027); `yolo` startet ohne Sandbox nie.
+    pub const PERMISSION_MODE: &str = "BETON_PERMISSION_MODE";
     pub const PARENT_PID: &str = "BETON_RUNNER_PARENT_PID";
     pub const DEV: &str = "BETON_DEV";
     /// Native Session-Referenz zum Fortsetzen (SES-003).
@@ -79,6 +84,10 @@ pub struct RunnerBoot {
     pub workdir: PathBuf,
     pub scenario: Option<PathBuf>,
     pub model: Option<String>,
+    /// Effort beim Start, noch ungemappt (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode beim Start (HAR-027).
+    pub permission_mode: Option<String>,
     pub parent_pid: Option<u32>,
     pub dev: bool,
     pub resume: Option<String>,
@@ -142,6 +151,10 @@ impl RunnerBoot {
             workdir: std::env::current_dir().map_err(|e| RunnerError::Boot(e.to_string()))?,
             scenario: std::env::var_os(env::SCENARIO).map(PathBuf::from),
             model: std::env::var(env::MODEL).ok(),
+            effort: std::env::var(env::EFFORT).ok().filter(|v| !v.is_empty()),
+            permission_mode: std::env::var(env::PERMISSION_MODE)
+                .ok()
+                .filter(|v| !v.is_empty()),
             parent_pid: std::env::var(env::PARENT_PID)
                 .ok()
                 .and_then(|p| p.parse().ok()),
@@ -590,23 +603,42 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let one_shot_ctx = ctx.clone();
     let (one_shot_tx, mut one_shot_rx) =
         mpsc::unbounded_channel::<(String, Result<Value, Value>)>();
-    let session = registry
-        .start(
-            &boot.harness,
-            SessionSpec {
-                workdir: boot.workdir.clone(),
-                model: boot.model.clone(),
-                scenario: boot.scenario.clone(),
-                resume: forked.resume.or_else(|| boot.resume.clone()),
-                fork_session: forked.fork_session,
-                mcp: setup.injection.clone(),
-                max_turns: setup.max_turns,
-                instructions: setup.instructions.clone(),
-                ..SessionSpec::default()
-            },
-            ctx,
-        )
-        .await;
+    // Modell, Effort und Permission-Mode ab dem Start (HAR-017, HAR-027); `yolo` ohne Sandbox
+    // scheitert hier (fail closed).
+    let fallback_caps = beton_harness::Capabilities::minimal(
+        beton_harness::Mode::Native,
+        beton_harness::Transport::Native,
+    );
+    let (start_settings, mapped_effort) = match settings::at_start(
+        boot.model.clone(),
+        boot.effort.as_deref(),
+        boot.permission_mode.as_deref(),
+        caps.as_ref().unwrap_or(&fallback_caps),
+        beton_harness::SandboxStatus::current(),
+    ) {
+        Ok(s) => s,
+        Err(rejected) => {
+            let e = settings::start_error(&rejected);
+            report_start_failure(&boot, &e).await;
+            return Err(e.into());
+        }
+    };
+    let mut spec = SessionSpec {
+        workdir: boot.workdir.clone(),
+        model: start_settings.model.clone(),
+        effort: start_settings.effort.clone(),
+        permission_mode: start_settings.permission_mode,
+        scenario: boot.scenario.clone(),
+        resume: forked.resume.or_else(|| boot.resume.clone()),
+        fork_session: forked.fork_session,
+        mcp: setup.injection.clone(),
+        max_turns: setup.max_turns,
+        instructions: setup.instructions.clone(),
+        ..SessionSpec::default()
+    };
+    // Für einen Neustart mit Resume (Capability `restart`, HAR-017 AC2).
+    let restart_ctx = ctx.clone();
+    let session = registry.start(&boot.harness, spec.clone(), ctx).await;
     let mut session = match session {
         Ok(s) => s,
         Err(e) => {
@@ -615,11 +647,19 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
-    // Weicht die Session vom Adapter ab (Fake-Szenario), gelten ihre Capabilities.
+    // Weicht die Session vom Adapter ab (Fake-Szenario, ACP), gelten ihre Capabilities.
+    let mut session_caps = session
+        .capabilities()
+        .or_else(|| caps.clone())
+        .unwrap_or_else(|| fallback_caps.clone());
     let capabilities = session
         .capabilities()
         .and_then(|c| serde_json::to_value(c).ok())
         .unwrap_or(capabilities);
+    // HAR-020 AC2: Die native Referenz steht im Log, bevor der erste Turn startet.
+    let native_ref = session.native_session_ref().or_else(|| boot.resume.clone());
+    // Ein Neustart setzt diese Session fort, nicht die Quelle eines Forks.
+    spec.fork_session = false;
     // SES-001: nach `session.created` folgt `session.started`.
     pending_status.insert(
         0,
@@ -635,7 +675,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 harness: boot.harness.to_string(),
                 harness_version: probe.version.unwrap_or_default(),
                 capabilities,
-                harness_session_ref: boot.resume.clone(),
+                harness_session_ref: native_ref,
             }),
         ),
     );
@@ -644,6 +684,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }
     for payload in forked.notices {
         pending_status.push(system_event(&boot, payload));
+    }
+    if let Some(mapped) = mapped_effort {
+        // HAR-017 AC3: der gemappte Startwert, mit dem angefragten.
+        pending_status.push(system_event(
+            &boot,
+            EventPayload::SessionSettingsChanged(mapped),
+        ));
     }
     if boot.resume.is_some() {
         pending_status.insert(
@@ -709,6 +756,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
+    // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
+    let mut deferred: Option<settings::Change> = None;
+    // Anzuwendender Wechsel und ggf. das Kommando, das auf die Antwort wartet.
+    let mut apply: Option<(Option<String>, settings::Change)> = None;
+    // Vorab vergebene ID des nächsten Turns (`effective_from_turn`).
+    let mut next_turn: Option<TurnId> = None;
     // `executor.timeout` (AGT-004 AC3): Wanduhr ab dem ersten Turn dieses Runs. Danach wird der
     // laufende Turn unterbrochen und der Run endet mit `timed_out`.
     let run_timeout = setup.timeout;
@@ -774,6 +827,105 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
 
         let outcome: Option<Exit> = loop {
+            // Einstellungen wechseln, solange kein Turn läuft (HAR-017, HAR-027).
+            if !turn_running && let Some((cmd_id, change)) = apply.take() {
+                let mechanism = change.mechanism(&session_caps);
+                let result = if mechanism == beton_core::event::SettingsMechanism::Restart {
+                    // Neustart mit Resume: den alten Harness beenden, den neuen mit der nativen
+                    // Referenz und den neuen Einstellungen starten (HAR-017 AC2).
+                    spec.resume = session.native_session_ref().or_else(|| spec.resume.clone());
+                    change.apply_to(&mut spec);
+                    let _ = session
+                        .shutdown(Shutdown::Graceful {
+                            timeout: Duration::from_secs(10),
+                        })
+                        .await;
+                    match registry
+                        .start(&boot.harness, spec.clone(), restart_ctx.clone())
+                        .await
+                    {
+                        Ok(mut s) => {
+                            let Some(rx) = s.events() else {
+                                return Err(RunnerError::Boot("Event-Strom fehlt".into()));
+                            };
+                            harness_rx = rx;
+                            session_caps = s.capabilities().unwrap_or_else(|| session_caps.clone());
+                            session = s;
+                            Ok(())
+                        }
+                        Err(e) => {
+                            // Ohne Harness geht es nicht weiter: melden, Session `failed`.
+                            let problem = json!({"type": format!("urn:beton:problem:{}", e.code()), "code": e.code(), "title": e.to_string()});
+                            let mut batch = vec![system_event(
+                                &boot,
+                                EventPayload::Error(beton_core::event::ErrorEvent {
+                                    problem: problem.clone(),
+                                }),
+                            )];
+                            status(
+                                &mut lifecycle,
+                                RunnerState::Failed,
+                                Some(e.to_string()),
+                                &mut batch,
+                            );
+                            batch.push(system_event(
+                                &boot,
+                                EventPayload::SessionStatus(SessionStatusChanged {
+                                    status: SessionStatus::Failed,
+                                    reason: Some("Neustart des Harness gescheitert".into()),
+                                }),
+                            ));
+                            if let Some(cmd_id) = cmd_id {
+                                let _ = send(
+                                    &mut ws,
+                                    &TunnelUp::CmdResult {
+                                        cmd_id,
+                                        result: None,
+                                        problem: Some(problem),
+                                    },
+                                )
+                                .await;
+                            }
+                            let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                            drain_acks(&mut ws, &mut unacked).await;
+                            return Ok(Exit::HarnessExited { code: None });
+                        }
+                    }
+                } else {
+                    apply_live(&mut *session, &change).await
+                };
+                let reply = match result {
+                    Ok(()) => {
+                        // Gilt ab dem nächsten Turn; seine ID steht schon im Event (HAR-017 AC4).
+                        let turn = *next_turn.get_or_insert_with(TurnId::new);
+                        change.apply_to(&mut spec);
+                        let event = system_event(
+                            &boot,
+                            EventPayload::SessionSettingsChanged(
+                                change.event(Some(mechanism), Some(turn)),
+                            ),
+                        );
+                        if !push(&mut ws, &boot, &mut unacked, vec![event]).await {
+                            break None;
+                        }
+                        TunnelUp::CmdResult {
+                            cmd_id: cmd_id.clone().unwrap_or_default(),
+                            result: Some(
+                                json!({"mechanism": mechanism, "effective_from_turn": turn}),
+                            ),
+                            problem: None,
+                        }
+                    }
+                    Err(r) => TunnelUp::CmdResult {
+                        cmd_id: cmd_id.clone().unwrap_or_default(),
+                        result: None,
+                        problem: Some(r.to_problem()),
+                    },
+                };
+                if cmd_id.is_some() && !send(&mut ws, &reply).await {
+                    break None;
+                }
+            }
             let paused = unacked.bytes > MAX_UNACKED_BYTES;
             tokio::select! {
                 ev = harness_rx.recv(), if !paused => {
@@ -849,7 +1001,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         }
                         batch.push(to_event(&boot, &actor, ev));
                         if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; held_context = None; }
-                        if done { status(&mut lifecycle, RunnerState::Idle, None, &mut batch); turn_running = false; }
+                        if done {
+                            status(&mut lifecycle, RunnerState::Idle, None, &mut batch);
+                            turn_running = false;
+                            // Aufgeschobene Wechsel jetzt anwenden (HAR-017 AC4).
+                            if let Some(change) = deferred.take() {
+                                apply = Some((None, change));
+                            }
+                        }
                         if let Some(st) = next_status {
                             tracker.set(&boot, st, &mut batch);
                         }
@@ -927,7 +1086,31 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             {
                                 pending_before = workspace::poll(t).await.map(|(_, tree)| tree);
                             }
-                            let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut pending_attachments).await;
+                            if name == "session.set" {
+                                // HAR-017, HAR-027: prüfen, dann sofort bzw. nach dem Turn anwenden.
+                                match settings::parse(&args, &session_caps, beton_harness::SandboxStatus::current()) {
+                                    Err(r) => {
+                                        let msg = TunnelUp::CmdResult { cmd_id, result: None, problem: Some(r.to_problem()) };
+                                        if !send(&mut ws, &msg).await { break None; }
+                                    }
+                                    Ok(change) if change.is_empty() => {
+                                        let msg = TunnelUp::CmdResult { cmd_id, result: Some(Value::Null), problem: None };
+                                        if !send(&mut ws, &msg).await { break None; }
+                                    }
+                                    Ok(change) if turn_running => {
+                                        deferred.get_or_insert_with(settings::Change::default).merge(change);
+                                        let msg = TunnelUp::CmdResult { cmd_id, result: Some(json!({"deferred": true})), problem: None };
+                                        if !send(&mut ws, &msg).await { break None; }
+                                    }
+                                    Ok(change) => apply = Some((Some(cmd_id), change)),
+                                }
+                                continue;
+                            }
+                            let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await;
+                            // Ab der Zustellung läuft ein Turn, auch bevor `turn.started` ankommt.
+                            if name == "input.submit" && reply.is_ok() {
+                                turn_running = true;
+                            }
                             let msg = match reply {
                                 Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
                                 Err(problem) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(problem) },
@@ -1317,6 +1500,24 @@ fn gate_decision(args: &Value) -> GateDecision {
 }
 
 /// Kommandos vom Server an den Harness (`cmd.deliver`).
+/// Wechselt Modell, Effort und Permission-Mode live (HAR-017, HAR-027).
+async fn apply_live(
+    session: &mut dyn HarnessSession,
+    change: &settings::Change,
+) -> Result<(), settings::Rejected> {
+    if change.model.is_some() || change.effort.is_some() {
+        session
+            .set_model(change.model.clone(), change.effort.clone())
+            .await?;
+    }
+    if let Some(mode) = change.permission_mode {
+        session.set_permission_mode(mode).await?;
+    }
+    Ok(())
+}
+
+// Zustand des Runner-Loops, den genau dieses Kommando braucht; ein eigener Typ brächte nichts.
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     session: &mut dyn HarnessSession,
     gate: &RunnerGate,
@@ -1324,6 +1525,7 @@ async fn deliver(
     args: Value,
     turn_running: bool,
     handover: &mut Option<String>,
+    next_turn: &mut Option<TurnId>,
     pending: &mut HashMap<String, beton_harness::InputAttachment>,
 ) -> Result<Value, Value> {
     let problem = |code: &str, detail: String| json!({"code": code, "detail": detail});
@@ -1360,9 +1562,16 @@ async fn deliver(
                 })
                 .unwrap_or_default();
             pending.clear();
-            let sent = session.send(UserInput { text, attachments }).await;
+            let sent = session
+                .send(UserInput {
+                    text,
+                    turn_id: *next_turn,
+                    attachments,
+                })
+                .await;
             if sent.is_ok() {
                 *handover = None;
+                *next_turn = None;
             }
             sent.map(|turn| json!({"turn_id": turn}))
                 .map_err(|e| problem(e.code(), e.to_string()))
@@ -1396,17 +1605,6 @@ async fn deliver(
             .await
             .map(|()| Value::Null)
             .map_err(|e| problem(e.code(), e.to_string())),
-        "session.set" => {
-            let model = args["model"].as_str().map(str::to_owned);
-            match model {
-                Some(model) => session
-                    .set_model(model, args["effort"].as_str().map(str::to_owned))
-                    .await
-                    .map(|_| Value::Null)
-                    .map_err(|e| problem(e.code(), e.to_string())),
-                None => Ok(Value::Null),
-            }
-        }
         "approval.resolve" => {
             let call_id = args["call_id"].as_str().unwrap_or_default();
             let decision = gate_decision(&args);

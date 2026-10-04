@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { Event } from '@beton/sdk'
-import { openApprovals, timeline } from '@/lib/timeline'
+import { openApprovals, settingsNotes, timeline } from '@/lib/timeline'
 import { ev, resetSeq } from './fixtures'
 
 const empty = { streaming: {}, reasoning: {}, toolOutput: {} }
@@ -80,5 +80,33 @@ describe('Timeline', () => {
     delete offloaded.payload
     const items = timeline({ ...empty, events: [offloaded as unknown as Event] })
     expect(items).toEqual([{ kind: 'offloaded', key: 'e1', eventType: 'message.completed', ref: 'sha256:abc', seq: 1 }])
+  })
+
+  it('HAR-017 AC1, AC4: Modellwechsel als Hinweis mit dem Turn, ab dem er gilt', () => {
+    const events = [
+      ev('session.created', { harness: 'claude', model: 'claude-opus-5-5', cwd: '/', owner: 'usr_local', kind: 'main', trigger: 'api' }),
+      ev('turn.started', { turn_id: 'trn_1', author: 'usr_local' }),
+      ev('turn.completed', { turn_id: 'trn_1', stop_reason: 'end_turn', usage_summary: {} }),
+      ev('session.settings_changed', { model: 'claude-sonnet-5-5', mechanism: 'live', effective_from_turn: 'trn_2' }),
+      ev('turn.started', { turn_id: 'trn_2', author: 'usr_local' }),
+    ]
+    const notes = timeline({ ...empty, events }).filter((i) => i.kind === 'note')
+    expect(notes.map((n) => n.kind === 'note' && n.text)).toEqual([
+      'Modell gewechselt: claude-opus-5-5 → claude-sonnet-5-5 · sofort wirksam, ab Turn 2 · Verlauf bleibt erhalten',
+    ])
+  })
+
+  it('HAR-017 AC2: Wechsel per Neustart nennt den Neustart', () => {
+    expect(settingsNotes({ model: 'gemini-3-flash', mechanism: 'restart' }, { harness: 'claude', turn: 3 })).toEqual([
+      'Modell gewechselt auf gemini-3-flash · Claude Code wurde neu gestartet und hat die Session fortgesetzt',
+    ])
+  })
+
+  it('HAR-017 AC3: gemappter Effort zeigt angefragte und aktive Stufe', () => {
+    expect(settingsNotes({ effort: 'high', requested_effort: 'xhigh', mechanism: 'live' }, { harness: 'codex', previousModel: 'gpt-5.3', turn: 1 })).toEqual([
+      'Effort: „sehr hoch“ angefragt, „hoch“ aktiv – gpt-5.3 unterstützt keine höhere Stufe',
+    ])
+    // Reiner Effort- oder Moduswechsel: kein Hinweis (der Picker zeigt den Stand).
+    expect(settingsNotes({ effort: 'low', permission_mode: 'plan' } as never, { harness: 'codex', turn: 1 })).toEqual([])
   })
 })

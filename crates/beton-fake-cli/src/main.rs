@@ -66,6 +66,13 @@ struct Args {
     mcp_config: Option<String>,
     /// Tools des Test-MCP-Servers (`--protocol mcp-server`).
     tools: Vec<String>,
+    /// `--model`, `--effort`, `--permission-mode` und `--session-id` von Claude Code.
+    model: Option<String>,
+    effort: Option<String>,
+    permission_mode: Option<String>,
+    session_id: Option<String>,
+    /// Fehlerinjektion: diesen Permission-Mode melden, egal was gesetzt ist (HAR-027).
+    report_mode: Option<String>,
     /// `-p`/`--print` von Claude Code.
     print: bool,
     /// `--output-format` von Claude Code (`json` = Einmal-Modus).
@@ -95,12 +102,16 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--fork-session" => out.fork_session = true,
             "--persist" => out.persist = true,
             "--mcp-config" => out.mcp_config = args.next(),
+            "--model" => out.model = args.next(),
+            "--effort" => out.effort = args.next(),
+            "--permission-mode" => out.permission_mode = args.next(),
+            "--session-id" => out.session_id = args.next(),
+            "--report-mode" => out.report_mode = args.next(),
             "-p" | "--print" => out.print = true,
             "--json" => out.json = true,
             "--output-format" => out.output_format = args.next(),
             // Flags der echten CLIs mit Wert: der Wert ist kein Unterkommando.
-            "--model"
-            | "-m"
+            "-m"
             | "--system-prompt"
             | "--sandbox"
             | "-s"
@@ -295,7 +306,14 @@ fn main() -> ExitCode {
                 session: args.resume.clone(),
                 fork: args.fork_session,
                 persist,
+                session_id: args.session_id.clone(),
             },
+            stream_json::Settings::from_flags(
+                args.model.clone(),
+                args.effort.clone(),
+                args.permission_mode.clone(),
+                args.report_mode.clone(),
+            ),
             args.mcp_config
                 .as_deref()
                 .map(mcp::from_claude_config)

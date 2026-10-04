@@ -22,8 +22,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    EventPayload, HarnessExited, HarnessReady, RawJson, ResolvedVia, SessionSettingsChanged,
-    SettingsMechanism, TimeoutAction, TurnFailed, TurnStarted,
+    EventPayload, HarnessExited, HarnessReady, RawJson, ResolvedVia, TimeoutAction, TurnFailed,
+    TurnStarted,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -60,6 +60,22 @@ pub const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const APPROVAL_POLICY: &str = "untrusted";
 /// Codex-eigene Sandbox, solange die beton-Sandbox Stufe 2 fehlt (ab M2 `danger-full-access`).
 pub const SANDBOX_MODE: &str = "workspace-write";
+
+/// Sandbox beim Start je Permission-Mode: `plan` liest nur (HAR-027).
+pub fn sandbox_mode(mode: Option<PermissionMode>) -> &'static str {
+    match mode {
+        Some(PermissionMode::Plan) => "read-only",
+        _ => SANDBOX_MODE,
+    }
+}
+
+/// Sandbox-Override für `turn/start` nach einem Moduswechsel (HAR-027).
+pub fn sandbox_policy(mode: PermissionMode) -> Value {
+    match mode {
+        PermissionMode::Plan => json!({"type": "readOnly"}),
+        _ => json!({"type": "workspaceWrite"}),
+    }
+}
 
 /// Wertet `codex login status` aus (Text auf stderr, Exit-Code 1 ohne Login). Kontodaten
 /// werden nicht übernommen (HAR-016).
@@ -133,6 +149,14 @@ pub fn capabilities() -> Capabilities {
         models: Vec::new(),
         models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
+        // `plan`: Sandbox `read-only`; `accept_edits`: Datei-Änderungen im Workspace beantwortet
+        // der Adapter selbst. `yolo` (Rückfragen automatisch laut Policy) kommt mit der
+        // Policy-Engine (HAR-027 AC2, M2).
+        permission_modes: vec![
+            PermissionMode::Plan,
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+        ],
         // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
         context_window: Some(272_000),
         // Codex liest `AGENTS.md` selbst, `CLAUDE.md` nicht (AGT-005).
@@ -361,6 +385,15 @@ impl HarnessAdapter for CodexAdapter {
         let mut process = ctx.launcher.launch(launch).await?;
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let process = Arc::new(Mutex::new(process));
+        if let Some(mode) = spec.permission_mode
+            && !capabilities().permission_modes.contains(&mode)
+        {
+            let _ = process.lock().await.kill().await;
+            return Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into());
+        }
+        let accept_edits = Arc::new(AtomicBool::new(
+            spec.permission_mode == Some(PermissionMode::AcceptEdits),
+        ));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
         match handshake(&rpc, &spec, self.handshake_timeout).await {
             Ok(thread) => {
@@ -395,6 +428,7 @@ impl HarnessAdapter for CodexAdapter {
                         process: process.clone(),
                         closing: closing.clone(),
                         cancel: cancel.clone(),
+                        accept_edits: accept_edits.clone(),
                     },
                 ));
                 Ok(Box::new(CodexSession {
@@ -406,7 +440,12 @@ impl HarnessAdapter for CodexAdapter {
                     closing,
                     cancel,
                     thread_id,
-                    next: NextTurn::default(),
+                    // Effort gilt ab dem ersten `turn/start` (HAR-017).
+                    next: NextTurn {
+                        effort: spec.effort.clone(),
+                        ..NextTurn::default()
+                    },
+                    accept_edits,
                 }))
             }
             Err(e) => {
@@ -492,7 +531,7 @@ async fn handshake(
     let mut params = json!({
         "cwd": spec.workdir.display().to_string(),
         "approvalPolicy": APPROVAL_POLICY,
-        "sandbox": SANDBOX_MODE,
+        "sandbox": sandbox_mode(spec.permission_mode),
     });
     if let Some(model) = &spec.model {
         params["model"] = json!(model);
@@ -557,6 +596,8 @@ struct Dispatcher {
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<AtomicBool>,
     cancel: Arc<Notify>,
+    /// Permission-Mode `accept_edits`: Datei-Änderungen im Workspace ohne Rückfrage (HAR-027).
+    accept_edits: Arc<AtomicBool>,
 }
 
 async fn send(
@@ -701,9 +742,35 @@ async fn server_request(
     }
 }
 
+/// `accept_edits` (HAR-027): Eine Datei-Änderung ohne zusätzliche Schreibwurzel (`grantRoot`)
+/// bleibt im Workspace, den die Codex-Sandbox (`workspace-write`) begrenzt; sie läuft ohne
+/// Rückfrage. Shell-Befehle und Änderungen außerhalb fragen weiter.
+pub fn auto_accepts(accept_edits: bool, method: &str, params: &Value) -> bool {
+    accept_edits && method == "item/fileChange/requestApproval" && params["grantRoot"].is_null()
+}
+
 async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw: Option<RawJson>) {
     let call_id = params["itemId"].as_str().unwrap_or_default().to_owned();
     let command = method == "item/commandExecution/requestApproval";
+    if auto_accepts(d.accept_edits.load(Ordering::SeqCst), method, params) {
+        let (turn, pre) = {
+            let mut st = d.state.lock().await;
+            let pre = requested(
+                &json!({"type": "fileChange", "id": call_id, "changes": params["changes"]}),
+                &mut st,
+            );
+            (st.turn, pre)
+        };
+        if let Some(e) = pre {
+            send(&d.tx, e, raw, turn).await;
+        }
+        let _ = d.rpc.respond(id, json!({"decision": "accept"})).await;
+        let started = started(&call_id, &mut *d.state.lock().await);
+        if let Some(e) = started {
+            send(&d.tx, e, None, turn).await;
+        }
+        return;
+    }
     let item_type = if command {
         "commandExecution"
     } else {
@@ -854,6 +921,7 @@ pub struct CodexSession {
     cancel: Arc<Notify>,
     thread_id: String,
     next: NextTurn,
+    accept_edits: Arc<AtomicBool>,
 }
 
 impl CodexSession {
@@ -877,7 +945,7 @@ impl CodexSession {
 #[async_trait]
 impl HarnessSession for CodexSession {
     async fn send(&mut self, input: UserInput) -> Result<TurnId, HarnessError> {
-        let turn = TurnId::new();
+        let turn = input.turn_id.unwrap_or_default();
         {
             let mut st = self.state.lock().await;
             if st.turn.is_some() {
@@ -953,50 +1021,35 @@ impl HarnessSession for CodexSession {
 
     async fn set_model(
         &mut self,
-        model: String,
+        model: Option<String>,
         effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
-        self.next.model = Some(model.clone());
-        if effort.is_some() {
-            self.next.effort.clone_from(&effort);
+        // HAR-017: `model`/`effort` als Override im nächsten `turn/start` (live).
+        if let Some(effort) = &effort
+            && !capabilities().efforts.contains(effort)
+        {
+            return Err(beton_harness::CapabilityUnsupported(Action::EffortSwitch).into());
         }
-        self.state.lock().await.model.clone_from(&model);
-        let _ = self
-            .tx
-            .send(NormalizedEvent::new(
-                EventPayload::SessionSettingsChanged(SessionSettingsChanged {
-                    model: Some(model),
-                    effort,
-                    mechanism: Some(SettingsMechanism::Live),
-                    ..SessionSettingsChanged::default()
-                }),
-                None,
-            ))
-            .await;
+        if let Some(model) = model {
+            self.state.lock().await.model.clone_from(&model);
+            self.next.model = Some(model);
+        }
+        if effort.is_some() {
+            self.next.effort = effort;
+        }
         Ok(SwitchOutcome::Live)
     }
 
     async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError> {
+        if !capabilities().permission_modes.contains(&mode) {
+            return Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into());
+        }
         // Die Freigabe-Politik bleibt `untrusted`; `plan` macht die Codex-Sandbox
-        // schreibgeschützt (HAR-027).
-        let (name, policy) = match mode {
-            PermissionMode::Plan => ("plan", json!({"type": "readOnly"})),
-            PermissionMode::Default => ("default", json!({"type": "workspaceWrite"})),
-            PermissionMode::AcceptEdits => ("accept_edits", json!({"type": "workspaceWrite"})),
-            PermissionMode::Yolo => ("yolo", json!({"type": "workspaceWrite"})),
-        };
-        self.next.sandbox_policy = Some(policy);
-        let _ = self
-            .tx
-            .send(NormalizedEvent::new(
-                EventPayload::SessionSettingsChanged(SessionSettingsChanged {
-                    permission_mode: Some(name.into()),
-                    mechanism: Some(SettingsMechanism::Live),
-                    ..SessionSettingsChanged::default()
-                }),
-                None,
-            ))
-            .await;
+        // schreibgeschützt, `accept_edits` gibt Datei-Änderungen im Workspace ohne Rückfrage
+        // frei (HAR-027).
+        self.next.sandbox_policy = Some(sandbox_policy(mode));
+        self.accept_edits
+            .store(mode == PermissionMode::AcceptEdits, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1036,6 +1089,36 @@ impl HarnessSession for CodexSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn har_027_accept_edits_auto_accepts_only_workspace_file_changes() {
+        let file = "item/fileChange/requestApproval";
+        let cmd = "item/commandExecution/requestApproval";
+        assert!(auto_accepts(true, file, &json!({"itemId": "i"})));
+        // Außerhalb des Workspace (zusätzliche Schreibwurzel) wird weiter gefragt.
+        assert!(!auto_accepts(true, file, &json!({"grantRoot": "/etc"})));
+        // Shell-Befehle fragen immer.
+        assert!(!auto_accepts(true, cmd, &json!({})));
+        // Ohne `accept_edits` nichts automatisch.
+        assert!(!auto_accepts(false, file, &json!({})));
+    }
+
+    #[test]
+    fn har_027_plan_starts_read_only() {
+        assert_eq!(sandbox_mode(Some(PermissionMode::Plan)), "read-only");
+        assert_eq!(sandbox_mode(None), SANDBOX_MODE);
+        assert_eq!(
+            sandbox_mode(Some(PermissionMode::AcceptEdits)),
+            SANDBOX_MODE
+        );
+        assert_eq!(sandbox_policy(PermissionMode::Plan)["type"], "readOnly");
+        // `yolo` bildet der Codex-Adapter (noch) nicht ab.
+        assert!(
+            !capabilities()
+                .permission_modes
+                .contains(&PermissionMode::Yolo)
+        );
+    }
 
     #[test]
     fn har_016_login_status_reads_only_the_state() {

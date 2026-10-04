@@ -52,6 +52,8 @@ fn boot() -> RunnerBoot {
         harness: "fake".into(),
         scenario: None,
         model: None,
+        effort: None,
+        permission_mode: None,
         dev: true,
         resume: None,
         harnesses: Default::default(),

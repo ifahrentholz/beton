@@ -319,6 +319,7 @@ dependencies = [
  "async-trait",
  "beton-core",
  "beton-harness",
+ "fastrand",
  "serde_json",
  "tempfile",
  "time",

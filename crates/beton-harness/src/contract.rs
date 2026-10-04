@@ -5,7 +5,8 @@
 //! später Harness-Plugins (PLG-013); sie hängt deshalb nur am [`ContractSubject`].
 //!
 //! Prüfungen: Streaming, Usage-Reporting, Approval-Roundtrip (allow und deny), Interrupt,
-//! Resume, Modellwechsel und die Fehlerpfade Turn-Fehler, Absturz und abgelaufener Login.
+//! Resume, Modell- und Effort-Wechsel (live bzw. per Neustart mit Resume, HAR-017),
+//! Permission-Modes (HAR-027) und die Fehlerpfade Turn-Fehler, Absturz und abgelaufener Login.
 //! Eine Capability, die ein Adapter nicht deklariert, muss er mit `capability_unsupported`
 //! ablehnen statt still zu ignorieren (HAR-002 AC3).
 
@@ -20,7 +21,7 @@ use tokio::sync::mpsc;
 
 use crate::adapter::{
     AdapterContext, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError, HarnessSession,
-    HostEnv, Mode, NormalizedEvent, SessionSpec, Shutdown, UserInput,
+    HostEnv, Mode, NormalizedEvent, PermissionMode, SessionSpec, Shutdown, UserInput,
 };
 use crate::capabilities::{
     ApprovalMechanism, Capabilities, ResumeSupport, SwitchSupport, UsageReporting,
@@ -42,9 +43,27 @@ pub trait ContractSubject: Send + Sync {
     async fn start(
         &self,
         scenario: &Path,
-        resume: Option<String>,
+        opts: StartOptions,
         gate: Arc<dyn Gate>,
     ) -> Result<Box<dyn HarnessSession>, HarnessError>;
+}
+
+/// Startparameter einer Prüfung (Teilmenge von [`SessionSpec`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StartOptions {
+    /// Native Session-Referenz zum Fortsetzen.
+    pub resume: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+}
+
+impl StartOptions {
+    pub fn resume(reference: Option<String>) -> Self {
+        Self {
+            resume: reference,
+            ..Self::default()
+        }
+    }
 }
 
 /// Erzeugt die Umgebung, unter der ein Adapter ein Szenario abspielt, z. B.
@@ -83,7 +102,7 @@ impl ContractSubject for AdapterSubject {
     async fn start(
         &self,
         scenario: &Path,
-        resume: Option<String>,
+        opts: StartOptions,
         gate: Arc<dyn Gate>,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
         let ctx = AdapterContext {
@@ -96,7 +115,9 @@ impl ContractSubject for AdapterSubject {
                 SessionSpec {
                     workdir: self.workdir.clone(),
                     scenario: Some(scenario.to_path_buf()),
-                    resume,
+                    resume: opts.resume,
+                    model: opts.model,
+                    permission_mode: opts.permission_mode,
                     ..SessionSpec::default()
                 },
                 ctx,
@@ -294,8 +315,17 @@ async fn start(
     resume: Option<String>,
     gate: Arc<dyn Gate>,
 ) -> Result<Started, String> {
+    start_with(subject, scenario, StartOptions::resume(resume), gate).await
+}
+
+async fn start_with(
+    subject: &dyn ContractSubject,
+    scenario: &Path,
+    opts: StartOptions,
+    gate: Arc<dyn Gate>,
+) -> Result<Started, String> {
     let mut session = subject
-        .start(scenario, resume, gate)
+        .start(scenario, opts, gate)
         .await
         .map_err(|e| format!("Start fehlgeschlagen: {e}"))?;
     let rx = session.events().ok_or("Event-Strom fehlt")?;
@@ -364,6 +394,14 @@ pub async fn run(subject: &dyn ContractSubject, scratch: &Path) -> ContractRepor
     push(
         "model_switch",
         check_model_switch(subject, &streaming, &caps).await,
+    );
+    push(
+        "effort_switch",
+        check_effort_switch(subject, &streaming, &caps).await,
+    );
+    push(
+        "permission_mode",
+        check_permission_mode(subject, &streaming, &caps).await,
     );
     push("turn_error", check_turn_error(subject, &turn_error).await);
     push("crash", check_crash(subject, &crash, &caps).await);
@@ -728,49 +766,159 @@ async fn check_resume(
     outcome(resumed)
 }
 
+/// Modell des letzten `cost.delta`, falls der Turn eines meldet.
+fn reported_model(events: &[EventPayload]) -> Option<&str> {
+    events.iter().rev().find_map(|e| match e {
+        EventPayload::CostDelta(c) => Some(c.model.as_str()),
+        _ => None,
+    })
+}
+
+/// Ein Turn nach dem Wechsel: endet regulär, und ein gemeldetes Modell ist das neue (HAR-017
+/// AC1: sichtbar in `cost.delta.model` des nächsten Turns).
+async fn turn_uses_model(s: &mut Started, model: &str) -> Result<(), String> {
+    s.session
+        .send(UserInput::from("Sag hallo"))
+        .await
+        .map_err(|e| format!("send nach dem Wechsel: {e}"))?;
+    let events = until_turn_end(&mut s.rx).await?;
+    if !matches!(events.last(), Some(EventPayload::TurnCompleted(_))) {
+        return Err(format!("Turn nach dem Wechsel: {:?}", names(&events)));
+    }
+    match reported_model(&events) {
+        Some(m) if m != model => Err(format!("cost.delta.model ist {m}, erwartet {model}")),
+        _ => Ok(()),
+    }
+}
+
 async fn check_model_switch(
     subject: &dyn ContractSubject,
     scenario: &Path,
     caps: &Capabilities,
 ) -> Outcome {
-    let mut s = match start(subject, scenario, None, FixedGate::new(true)).await {
-        Ok(s) => s,
-        Err(e) => return Outcome::Failed(e),
-    };
     let model = caps
         .models
         .last()
         .cloned()
         .unwrap_or_else(|| "contract-model".into());
-    let result = s.session.set_model(model.clone(), None).await;
+    if caps.model_switch == SwitchSupport::Restart {
+        // Der Runner startet den Harness mit Resume und neuem Modell neu (HAR-017 AC2).
+        if caps.resume != ResumeSupport::Warm {
+            return Outcome::Failed("model_switch: restart braucht resume: warm".into());
+        }
+        return outcome(restart_with_model(subject, scenario, &model).await);
+    }
+    let mut s = match start(subject, scenario, None, FixedGate::new(true)).await {
+        Ok(s) => s,
+        Err(e) => return Outcome::Failed(e),
+    };
+    // Die Session kann genauer sein als der Katalog (z. B. ACP nach `session/new`).
+    let caps = &s.session.capabilities().unwrap_or_else(|| caps.clone());
+    let model = caps.models.last().cloned().unwrap_or(model);
+    let result = s.session.set_model(Some(model.clone()), None).await;
     let checked = async {
         if caps.model_switch == SwitchSupport::None {
             return match result {
-                Err(e) if e.code() == "capability_unsupported" => Ok(Some(
-                    "model_switch: none, korrekt abgelehnt".to_owned(),
-                )),
+                Err(e) if e.code() == "capability_unsupported" => {
+                    Ok(Some("model_switch: none, korrekt abgelehnt".to_owned()))
+                }
                 other => Err(format!(
                     "model_switch: none deklariert, aber set_model liefert {other:?}"
                 )),
             };
         }
         result.map_err(|e| format!("set_model: {e}"))?;
+        turn_uses_model(&mut s, &model).await.map(|()| None)
+    }
+    .await;
+    stop(s).await;
+    match checked {
+        Ok(None) => Outcome::Passed,
+        Ok(Some(skip)) => Outcome::Skipped(skip),
+        Err(e) => Outcome::Failed(e),
+    }
+}
+
+/// Neustart mit Resume und anderem Modell: Der Verlauf bleibt, das Modell wechselt.
+async fn restart_with_model(
+    subject: &dyn ContractSubject,
+    scenario: &Path,
+    model: &str,
+) -> Result<(), String> {
+    let mut s = start(subject, scenario, None, FixedGate::new(true)).await?;
+    let first = async {
         s.session
             .send(UserInput::from("Sag hallo"))
             .await
-            .map_err(|e| format!("send nach set_model: {e}"))?;
-        let mut events = Vec::new();
-        events.extend(until_turn_end(&mut s.rx).await?);
-        let changed = events.iter().any(|e| {
-            matches!(e, EventPayload::SessionSettingsChanged(c) if c.model.as_deref() == Some(model.as_str()))
-        });
-        if !changed {
-            return Err("kein session.settings_changed mit dem neuen Modell".into());
+            .map_err(|e| format!("send: {e}"))?;
+        until_turn_end(&mut s.rx).await?;
+        s.session
+            .native_session_ref()
+            .ok_or_else(|| "keine native Session-Referenz für den Neustart".to_owned())
+    }
+    .await;
+    stop(s).await;
+    let reference = first?;
+    let opts = StartOptions {
+        resume: Some(reference.clone()),
+        model: Some(model.to_owned()),
+        ..StartOptions::default()
+    };
+    let mut s = start_with(subject, scenario, opts, FixedGate::new(true)).await?;
+    let r = async {
+        turn_uses_model(&mut s, model).await?;
+        match s.session.native_session_ref() {
+            Some(r) if r == reference => Ok(()),
+            other => Err(format!(
+                "Neustart von {reference} liefert Referenz {other:?}"
+            )),
         }
+    }
+    .await;
+    stop(s).await;
+    r
+}
+
+async fn check_effort_switch(
+    subject: &dyn ContractSubject,
+    scenario: &Path,
+    caps: &Capabilities,
+) -> Outcome {
+    if caps.effort_switch == SwitchSupport::Restart {
+        return Outcome::Skipped("effort_switch: restart, Neustart durch den Runner".into());
+    }
+    let mut s = match start(subject, scenario, None, FixedGate::new(true)).await {
+        Ok(s) => s,
+        Err(e) => return Outcome::Failed(e),
+    };
+    let caps = &s.session.capabilities().unwrap_or_else(|| caps.clone());
+    let effort = caps
+        .efforts
+        .last()
+        .cloned()
+        .unwrap_or_else(|| "high".into());
+    let result = s.session.set_model(None, Some(effort.clone())).await;
+    let checked = async {
+        if caps.effort_switch == SwitchSupport::None || caps.efforts.is_empty() {
+            return match result {
+                Err(e) if e.code() == "capability_unsupported" => {
+                    Ok(Some("effort_switch: none, korrekt abgelehnt".to_owned()))
+                }
+                other => Err(format!(
+                    "Effort nicht deklariert, aber set_model(effort) liefert {other:?}"
+                )),
+            };
+        }
+        result.map_err(|e| format!("set_model(effort): {e}"))?;
+        s.session
+            .send(UserInput::from("Sag hallo"))
+            .await
+            .map_err(|e| format!("send nach dem Effort-Wechsel: {e}"))?;
+        let events = until_turn_end(&mut s.rx).await?;
         match events.last() {
             Some(EventPayload::TurnCompleted(_)) => Ok(None),
             other => Err(format!(
-                "Turn nach Modellwechsel endet mit {:?}",
+                "Turn nach Effort-Wechsel endet mit {:?}",
                 other.map(EventPayload::type_name)
             )),
         }
@@ -780,6 +928,84 @@ async fn check_model_switch(
     match checked {
         Ok(None) => Outcome::Passed,
         Ok(Some(skip)) => Outcome::Skipped(skip),
+        Err(e) => Outcome::Failed(e),
+    }
+}
+
+/// HAR-027: Jeder deklarierte Modus (außer `yolo`, den nur der Runner mit Sandbox freigibt)
+/// lässt sich beim Start und live setzen; ein nicht deklarierter wird mit
+/// `capability_unsupported` abgelehnt statt still ignoriert.
+async fn check_permission_mode(
+    subject: &dyn ContractSubject,
+    scenario: &Path,
+    caps: &Capabilities,
+) -> Outcome {
+    let declared: Vec<PermissionMode> = caps
+        .permission_modes
+        .iter()
+        .copied()
+        .filter(|m| *m != PermissionMode::Yolo)
+        .collect();
+    let undeclared: Vec<PermissionMode> = PermissionMode::ALL
+        .into_iter()
+        .filter(|m| *m != PermissionMode::Yolo && !caps.permission_modes.contains(m))
+        .collect();
+    let initial = declared.first().copied();
+    let opts = StartOptions {
+        permission_mode: initial,
+        ..StartOptions::default()
+    };
+    let mut s = match start_with(subject, scenario, opts, FixedGate::new(true)).await {
+        Ok(s) => s,
+        Err(e) => return Outcome::Failed(e),
+    };
+    // Modi, die erst die Session kennt (ACP: vom Agent angeboten).
+    let (declared, undeclared) = match s.session.capabilities() {
+        Some(c) => (
+            c.permission_modes
+                .iter()
+                .copied()
+                .filter(|m| *m != PermissionMode::Yolo)
+                .collect::<Vec<_>>(),
+            PermissionMode::ALL
+                .into_iter()
+                .filter(|m| *m != PermissionMode::Yolo && !c.permission_modes.contains(m))
+                .collect::<Vec<_>>(),
+        ),
+        None => (declared, undeclared),
+    };
+    let checked = async {
+        for mode in declared.iter().rev() {
+            s.session
+                .set_permission_mode(*mode)
+                .await
+                .map_err(|e| format!("set_permission_mode({mode}): {e}"))?;
+        }
+        for mode in &undeclared {
+            match s.session.set_permission_mode(*mode).await {
+                Err(e) if e.code() == "capability_unsupported" => {}
+                other => {
+                    return Err(format!(
+                        "{mode} nicht deklariert, aber set_permission_mode liefert {other:?}"
+                    ));
+                }
+            }
+        }
+        s.session
+            .send(UserInput::from("Sag hallo"))
+            .await
+            .map_err(|e| format!("send nach Moduswechsel: {e}"))?;
+        let events = until_turn_end(&mut s.rx).await?;
+        if !matches!(events.last(), Some(EventPayload::TurnCompleted(_))) {
+            return Err(format!("Turn nach Moduswechsel: {:?}", names(&events)));
+        }
+        Ok(declared.is_empty())
+    }
+    .await;
+    stop(s).await;
+    match checked {
+        Ok(false) => Outcome::Passed,
+        Ok(true) => Outcome::Skipped("keine Permission-Modes deklariert, korrekt abgelehnt".into()),
         Err(e) => Outcome::Failed(e),
     }
 }
@@ -976,7 +1202,7 @@ mod tests {
         }
         async fn set_model(
             &mut self,
-            model: String,
+            model: Option<String>,
             effort: Option<String>,
         ) -> Result<SwitchOutcome, HarnessError> {
             self.inner.set_model(model, effort).await

@@ -137,3 +137,28 @@ async fn ses_010_api_key_auth_keeps_the_environment() {
     assert_eq!(cost.source, CostSource::Reported);
     assert_eq!(cost.cost_micro, Some(24157));
 }
+
+#[test]
+fn har_027_one_shot_never_runs_in_a_looser_mode_or_with_tools() {
+    // Wie die Session (HAR-027): Modus ausdrücklich, sonst gälte `permissions.defaultMode`
+    // aus `.claude/settings.json` des Repositorys. `dontAsk` lehnt alles ab, was nicht vorab
+    // erlaubt ist; ohne eingebaute Tools und ohne MCP-Server des Nutzers bzw. Projekts gibt
+    // es nichts auszuführen.
+    for isolated in [false, true] {
+        let args = beton_harness_claude::one_shot_args(&request(), isolated);
+        let after = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1))
+                .map(String::as_str)
+        };
+        assert_eq!(after("--permission-mode"), Some("dontAsk"), "{args:?}");
+        assert_eq!(after("--tools"), Some(""));
+        assert!(args.iter().any(|a| a == "--strict-mcp-config"), "{args:?}");
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.contains("bypass") || a == "--mcp-config")
+        );
+    }
+}

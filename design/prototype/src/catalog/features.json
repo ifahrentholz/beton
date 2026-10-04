@@ -336,7 +336,7 @@
   "summary": "Startet ein Runner neu (Crash, Host-Reboot, Update), setzt beton laufende Sessions mit Capability `resume: warm` über die native Session-Referenz fort (Claude `--resume`, Codex `thread/resume`, ACP `session/load`). Ohne Warm-Resume greift HAR-018 (Präambel).",
   "acs": [
    "Nach Kill des Runners während einer idle Claude-Session nimmt die neu gestartete Session die nächste Nachricht mit erhaltenem Kontext an.",
-   "`native_session_ref` wird bei `harness.ready` persistiert; ein Test prüft, dass sie im Log steht, bevor der erste Turn startet.",
+   "`native_session_ref` wird bei `session.started` bzw. `harness.ready` persistiert; ein Test prüft, dass sie im Log steht, bevor der erste Turn startet.",
    "War zum Zeitpunkt des Absturzes ein Turn aktiv, endet er im Log mit `turn.failed` (Problem `runner_restarted`); offene Approvals werden als `approval.resolved { decision: \"abort\", via: \"system\" }` geschlossen."
   ]
  },

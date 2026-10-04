@@ -31,6 +31,7 @@ pub mod security;
 pub mod serve;
 pub mod session_skills;
 pub mod sessions;
+pub mod settings;
 pub mod sse;
 pub mod titles;
 pub mod tunnel;

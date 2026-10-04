@@ -60,6 +60,11 @@ pub struct Meta {
     /// echten CLI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_with: Option<String>,
+    /// Nachträgliche Änderung an `raw.jsonl` mit Begründung (z. B. ein Feld, das die Aufnahme
+    /// ohne ein später eingeführtes CLI-Flag anders meldete). Fehlt das Feld, ist die Aufnahme
+    /// unverändert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrated: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

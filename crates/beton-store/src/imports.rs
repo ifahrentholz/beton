@@ -130,6 +130,8 @@ mod tests {
                     harness: "claude".into(),
                     cwd: "/w".into(),
                     model: None,
+                    effort: None,
+                    permission_mode: None,
                     agent_ref: None,
                     project_id: None,
                     parent_id: None,

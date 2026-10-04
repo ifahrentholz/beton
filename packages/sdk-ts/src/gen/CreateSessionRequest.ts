@@ -23,6 +23,16 @@ params?: Record<string, unknown>,
  */
 cwd: string, title?: string, model?: string, 
 /**
+ * Reasoning-Effort (`low`, `medium`, `high`, `xhigh`); eine Stufe, die der Harness nicht
+ * kennt, wird auf die nächstniedrigere gemappt (HAR-017).
+ */
+effort?: string, 
+/**
+ * Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`; HAR-027). `yolo` braucht
+ * Tool-Sandbox und Egress-Proxy, sonst `409 sandbox_required`.
+ */
+permission_mode?: string, 
+/**
  * Harness-spezifische Optionen, z. B. `{"scenario": "…"}` beim Fake-Harness.
  */
 harness_opts?: Record<string, unknown>, 

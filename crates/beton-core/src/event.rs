@@ -495,6 +495,10 @@ payload!(SessionCreated {
     harness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] agent_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] model: Option<String>,
+    /// Reasoning-Effort beim Start (HAR-017), wie angefragt; gemappt meldet ihn der Runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] effort: Option<String>,
+    /// Permission-Mode beim Start (HAR-027): `plan`, `default`, `accept_edits`, `yolo`.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] permission_mode: Option<String>,
     cwd: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] project_id: Option<ProjectId>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] parent_session_id: Option<SessionId>,

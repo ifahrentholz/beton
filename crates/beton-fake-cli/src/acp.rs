@@ -36,6 +36,11 @@ pub struct Agent<R, W> {
     requests: i64,
     /// Injizierte MCP-Server (HAR-009).
     mcp: crate::mcp::Clients,
+    /// Modus und Modell der Session (`session/set_mode`, `session/set_model`).
+    mode: String,
+    model: String,
+    /// Bietet `session/set_model` an (Szenario ohne `model_switch: none`).
+    models_offered: bool,
 }
 
 enum TurnEnd {
@@ -81,6 +86,13 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             calls: 0,
             requests: 0,
             mcp: crate::mcp::Clients::default(),
+            mode: "default".into(),
+            model: "acp-small".into(),
+            models_offered: scenario
+                .capabilities
+                .get("model_switch")
+                .and_then(Value::as_str)
+                != Some("none"),
         }
     }
 
@@ -139,7 +151,23 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 self.session_id = Some(session.clone());
                 self.mcp =
                     crate::mcp::Clients::connect(&crate::mcp::from_acp(&params["mcpServers"]));
-                self.respond(id, json!({"sessionId": session}))
+                // Modi und Modelle wie Claude Code über ACP (HAR-017, HAR-027); ohne
+                // `model_switch` im Szenario keine Modellwahl.
+                let mut result = json!({
+                    "sessionId": session,
+                    "modes": {"currentModeId": self.mode, "availableModes": [
+                        {"id": "default", "name": "Default"},
+                        {"id": "plan", "name": "Plan"},
+                        {"id": "acceptEdits", "name": "Accept edits"},
+                    ]},
+                });
+                if self.models_offered {
+                    result["models"] = json!({"currentModelId": self.model, "availableModels": [
+                        {"modelId": "acp-small", "name": "Klein"},
+                        {"modelId": "acp-large", "name": "Groß"},
+                    ]});
+                }
+                self.respond(id, result)
             }
             "session/load" if self.load_session => {
                 self.session_id = params["sessionId"].as_str().map(str::to_owned);
@@ -148,7 +176,19 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 self.respond(id, Value::Null)
             }
             "session/prompt" => self.prompt(id, params),
-            "session/set_mode" | "authenticate" => self.respond(id, json!({})),
+            "session/set_mode" => {
+                if let Some(m) = params["modeId"].as_str() {
+                    self.mode = m.to_owned();
+                }
+                self.respond(id, json!({}))
+            }
+            "session/set_model" if self.models_offered => {
+                if let Some(m) = params["modelId"].as_str() {
+                    self.model = m.to_owned();
+                }
+                self.respond(id, json!({}))
+            }
+            "authenticate" => self.respond(id, json!({})),
             _ => self.respond_error(id, -32601, &format!("Method not found: {method}")),
         }
     }
@@ -172,10 +212,17 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                         code: -32602,
                         message: format!("erwartet `{expected}`, erhalten `{text}`"),
                     },
-                    _ => self.steps(
-                        &beton_harness::scenario::resolve_echo(&turn.emit, &text, &[]),
-                        &mut TurnState::default(),
-                    )?,
+                    _ => {
+                        let settings =
+                            beton_harness::scenario::settings_text(&self.model, None, &self.mode);
+                        self.steps(
+                            &beton_harness::scenario::resolve_settings(
+                                &beton_harness::scenario::resolve_echo(&turn.emit, &text, &[]),
+                                &settings,
+                            ),
+                            &mut TurnState::default(),
+                        )?
+                    }
                 }
             }
         };

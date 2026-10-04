@@ -3,4 +3,8 @@ export type SessionSettings = {
 /**
  * Neuer Titel; braucht keinen laufenden Runner.
  */
-title?: string, model?: string, effort?: string, };
+title?: string, model?: string, effort?: string, 
+/**
+ * `plan`, `default`, `accept_edits` oder `yolo` (HAR-027).
+ */
+permission_mode?: string, };

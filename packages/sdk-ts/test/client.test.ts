@@ -57,6 +57,24 @@ describe('REST-Client', () => {
     expect(seen).toEqual(['POST /v1/sessions/ses_1/fork {"at_seq":122,"harness":"codex","workspace":"shared"}'])
   })
 
+  it('HAR-017, HAR-027: Modell, Effort und Permission-Mode per PATCH; yolo ohne Sandbox als Problem', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      if (text.includes('yolo')) return [409, { type: 'urn:beton:problem:sandbox_required', code: 'sandbox_required', title: 'Sandbox erforderlich', status: 409 }]
+      return [200, { id: 'ses_1', harness: 'claude' }]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    await client.session('ses_1').update({ model: 'opus', effort: 'high', permission_mode: 'plan' })
+    const err = await client.session('ses_1').update({ permission_mode: 'yolo' }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(BetonError)
+    expect((err as BetonError).code).toBe('sandbox_required')
+    expect(seen).toEqual([
+      'PATCH /v1/sessions/ses_1 {"model":"opus","effort":"high","permission_mode":"plan"}',
+      'PATCH /v1/sessions/ses_1 {"permission_mode":"yolo"}',
+    ])
+  })
+
   it('meldet Fehler als RFC-9457-Problem', async () => {
     const url = await serve(() => [404, { status: 404, code: 'not_found', title: 'Nicht gefunden' }])
     const client = new BetonClient({ baseUrl: url })

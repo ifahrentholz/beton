@@ -122,7 +122,14 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
         return text;
     };
     if v["type"] == "control_response" && v["response"]["request_id"] == "beton_init" {
-        v["response"]["response"] = serde_json::json!({"sanitized": "Initialize-Antwort entfernt (Konto- und Benutzerdaten)"});
+        // Nur der Permission-Mode bleibt (HAR-027: der Adapter prüft ihn); Konto- und
+        // Benutzerdaten fliegen raus.
+        let mode = v["response"]["response"]["current_permission_mode"].clone();
+        let mut kept = serde_json::json!({"sanitized": "Initialize-Antwort entfernt (Konto- und Benutzerdaten)"});
+        if mode.is_string() {
+            kept["current_permission_mode"] = mode;
+        }
+        v["response"]["response"] = kept;
     }
     clean(&mut v);
     v.to_string()
@@ -238,6 +245,7 @@ pub async fn record(s: &Scenario, root: &Path, version: &str) -> Result<(), Stri
         platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         exit_code: 0,
         recorded_with: None,
+        migrated: None,
     };
     let dir = root.join(s.name);
     let _ = std::fs::remove_dir_all(&dir);

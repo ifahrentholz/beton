@@ -50,6 +50,8 @@ async fn sample(t: &TestStore) -> SessionRecord {
                 harness: "claude".into(),
                 cwd: "/tmp/quelle".into(),
                 model: Some("sonnet".into()),
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

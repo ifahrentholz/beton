@@ -3666,6 +3666,13 @@
         "cwd": {
           "type": "string"
         },
+        "effort": {
+          "description": "Reasoning-Effort beim Start (HAR-017), wie angefragt; gemappt meldet ihn der Runner.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "harness": {
           "type": "string"
         },
@@ -3692,6 +3699,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "permission_mode": {
+          "description": "Permission-Mode beim Start (HAR-027): `plan`, `default`, `accept_edits`, `yolo`.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "project_id": {

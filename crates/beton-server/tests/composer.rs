@@ -26,6 +26,8 @@ async fn session(t: &TestApp, cwd: &Path, agent: Option<&str>) -> String {
                 harness: "claude".into(),
                 cwd: cwd.display().to_string(),
                 model: None,
+                effort: None,
+                permission_mode: None,
                 agent_ref: agent.map(str::to_owned),
                 project_id: None,
                 parent_id: None,
