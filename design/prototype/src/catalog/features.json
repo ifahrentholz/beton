@@ -434,7 +434,7 @@
   "acs": [
    "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts` und der vom Runner vergebenen `evt_`-IDs; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
    "Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.",
-   "Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag verfügbar und erscheint sonst nicht im Katalog."
+   "Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag (`fake_harness`, UX-007) verfügbar und erscheint sonst nicht im Katalog."
   ]
  },
  {
@@ -3802,7 +3802,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-005--queue---steer-ui",
-  "summary": "Über dem Composer zeigt eine einklappbare Liste die serverseitige Queue mit Autor, Bearbeiten, Löschen, Drag-&-Drop-Reihenfolge und „Als Steer senden“. Interrupt-Button (`Esc` doppelt *(Annahme)*) im Composer.",
+  "summary": "Über dem Composer zeigt eine einklappbare Liste die serverseitige Queue mit Autor, Bearbeiten, Löschen, Drag-&-Drop-Reihenfolge und „Als Steer senden“. Interrupt-Button (`Esc` doppelt, wie in den Shortcut-Defaults von UX-004) im Composer.",
   "acs": [
    "Drag-&-Drop-Reorder wird an alle Clients propagiert.",
    "„Als Steer senden“ ist deaktiviert (mit Tooltip), wenn der Harness kein Steering unterstützt."
