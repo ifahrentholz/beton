@@ -514,6 +514,10 @@ impl Player {
                     })
                     .await;
                 let allowed = matches!(decision, GateDecision::Allow { .. });
+                let comment = match &decision {
+                    GateDecision::Deny { reason } => reason.clone(),
+                    GateDecision::Allow { .. } => None,
+                };
                 self.send(EventPayload::ApprovalResolved(ApprovalResolved {
                     approval_id,
                     decision: if allowed {
@@ -528,7 +532,7 @@ impl Player {
                     },
                     via: ResolvedVia::User,
                     remember: None,
-                    comment: None,
+                    comment,
                     on_timeout_applied: None,
                 }))
                 .await;
