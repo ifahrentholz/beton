@@ -199,6 +199,7 @@ pub struct RenameArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct SetupArgs {
     /// Keine Rückfragen; installiert und meldet nie etwas an.
     #[arg(long)]
@@ -206,6 +207,33 @@ pub struct SetupArgs {
     /// Nur prüfen und ausgeben (mit `--json` maschinenlesbar).
     #[arg(long)]
     pub check: bool,
+    #[command(subcommand)]
+    pub command: Option<SetupCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SetupCommand {
+    /// ACP-Agents registrieren (HAR-008).
+    #[command(subcommand)]
+    Acp(SetupAcpCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SetupAcpCommand {
+    /// ACP-Agent in `~/.beton/config.yaml` eintragen; danach ist er als `acp:<SLUG>` nutzbar.
+    Add(SetupAcpAddArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SetupAcpAddArgs {
+    /// Kurzname des Agents (`[a-z0-9-]`), z. B. `mein-agent`.
+    pub slug: String,
+    /// Programm (Name in `PATH` oder Pfad).
+    #[arg(long, value_name = "C")]
+    pub command: String,
+    /// Argument, mit dem der Agent ACP über stdio spricht (mehrfach möglich).
+    #[arg(long = "arg", value_name = "A", allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Args)]

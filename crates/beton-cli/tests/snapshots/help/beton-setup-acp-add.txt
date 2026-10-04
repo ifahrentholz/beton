@@ -1,22 +1,22 @@
-Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
+ACP-Agent in `~/.beton/config.yaml` eintragen; danach ist er als `acp:<SLUG>` nutzbar
 
-Usage: beton setup [OPTIONS]
-       beton setup <COMMAND>
+Usage: beton setup acp add [OPTIONS] --command <C> <SLUG>
 
-Commands:
-  acp  ACP-Agents registrieren (HAR-008)
+Arguments:
+  <SLUG>
+          Kurzname des Agents (`[a-z0-9-]`), z. B. `mein-agent`
 
 Options:
-      --non-interactive
-          Keine Rückfragen; installiert und meldet nie etwas an
+      --command <C>
+          Programm (Name in `PATH` oder Pfad)
 
       --server <URL>
           Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
           
           [env: BETON_SERVER]
 
-      --check
-          Nur prüfen und ausgeben (mit `--json` maschinenlesbar)
+      --arg <A>
+          Argument, mit dem der Agent ACP über stdio spricht (mehrfach möglich)
 
       --json
           Maschinenlesbare Ausgabe (JSON) auf stdout

@@ -149,19 +149,23 @@ fn runner_exit(code: std::process::ExitCode) -> CliResult {
 }
 
 async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
-    let settings = ctx
+    if let Some(crate::cli::SetupCommand::Acp(crate::cli::SetupAcpCommand::Add(add))) = args.command
+    {
+        return setup_acp_add(ctx, add);
+    }
+    let layers = ctx
         .layers()?
-        .settings()
+        .harness_layers()
         .map_err(|e| CliError::new(Exit::General, e))?;
-    let layers = beton_harness::registry::HarnessLayers {
-        user: settings.harnesses.clone(),
-        project: Default::default(),
-    };
     let env = beton_harness::HostEnv {
-        user: settings.harnesses,
+        user: layers.user.clone(),
+        project: layers.project.clone(),
         ..beton_harness::HostEnv::from_process()
     };
-    let registry = beton_runner::builtin_registry(&layers, false);
+    let (registry, problems) = beton_runner::builtin_registry_with_problems(&layers, false);
+    for p in &problems {
+        ctx.note(format!("ACP-Agent übersprungen: {p}"));
+    }
     let report = crate::setup::check(&env, &registry, &crate::setup::default_local_servers()).await;
     if args.check && ctx.global.json {
         print_json(&serde_json::to_value(&report).context("Bericht")?)?;
@@ -194,6 +198,27 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
             Exit::General,
             anyhow::anyhow!("Mindestens eine nutzbare Harness-CLI fehlt"),
         ))
+    }
+}
+
+/// `beton setup acp add` (HAR-008 AC1).
+fn setup_acp_add(ctx: &Ctx, add: crate::cli::SetupAcpAddArgs) -> CliResult {
+    let mut layers = ctx.layers()?;
+    layers
+        .add_acp_agent(&add.slug, &add.command, &add.args)
+        .map_err(|e| CliError::new(Exit::Usage, e))?;
+    if ctx.global.json {
+        print_json(&json!({
+            "id": format!("acp:{}", add.slug),
+            "file": layers.paths.user.display().to_string(),
+        }))
+    } else {
+        ctx.note(format!(
+            "acp:{} eingetragen in {}",
+            add.slug,
+            layers.paths.user.display()
+        ));
+        Ok(())
     }
 }
 
@@ -606,12 +631,48 @@ async fn rebuild_projections(ctx: &Ctx, session: Option<&str>) -> CliResult {
 }
 
 async fn record_golden(ctx: &Ctx, args: RecordGoldenArgs) -> CliResult {
-    if args.harness != "claude" {
-        return Err(CliError::usage(format!(
-            "Für `{}` gibt es noch keine Aufnahme-Szenarien (verfügbar: claude)",
-            args.harness
-        )));
+    match args.harness.as_str() {
+        "claude" => record_claude(ctx, args).await,
+        "codex" => record_codex(ctx, args).await,
+        other => Err(CliError::usage(format!(
+            "Für `{other}` gibt es noch keine Aufnahme-Szenarien (verfügbar: claude, codex)"
+        ))),
     }
+}
+
+async fn record_codex(ctx: &Ctx, args: RecordGoldenArgs) -> CliResult {
+    use beton_harness_codex::record;
+    let all = record::scenarios();
+    for wanted in &args.scenario {
+        if !all.iter().any(|s| s.name == wanted) {
+            let names: Vec<&str> = all.iter().map(|s| s.name).collect();
+            return Err(CliError::usage(format!(
+                "unbekanntes Szenario `{wanted}` (verfügbar: {})",
+                names.join(", ")
+            )));
+        }
+    }
+    let out = args.out.unwrap_or_else(|| record::default_root(&ctx.cwd));
+    let version = record::cli_version()
+        .await
+        .map_err(|e| CliError::new(Exit::Harness, anyhow::anyhow!(e)))?;
+    ctx.note(format!(
+        "Nehme mit codex {version} nach {} auf …",
+        out.display()
+    ));
+    for s in all
+        .iter()
+        .filter(|s| args.scenario.is_empty() || args.scenario.iter().any(|w| w == s.name))
+    {
+        record::record(s, &out, &version)
+            .await
+            .map_err(|e| CliError::new(Exit::Harness, anyhow::anyhow!(e)))?;
+        ctx.note(format!("  {} aufgenommen", s.name));
+    }
+    Ok(())
+}
+
+async fn record_claude(ctx: &Ctx, args: RecordGoldenArgs) -> CliResult {
     use beton_harness_claude::record;
     let all = record::scenarios();
     for wanted in &args.scenario {

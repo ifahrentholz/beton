@@ -253,13 +253,18 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runner_command = vec![exe.display().to_string(), "__runner".to_owned()];
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
-    let registry = beton_runner::builtin_registry(
+    let (registry, problems) = beton_runner::builtin_registry_with_problems(
         &HarnessLayers {
             user: harnesses_user.clone(),
-            project: Default::default(),
+            user_file: Some(ctx.paths().user),
+            ..HarnessLayers::default()
         },
         dev,
     );
+    for p in problems {
+        // HAR-008 AC3: gemeldet mit Datei und Zeile, übrige Harnesses unbeeinträchtigt.
+        tracing::warn!("Konfiguration: ACP-Agent übersprungen: {p}");
+    }
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;

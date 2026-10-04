@@ -644,11 +644,29 @@ async fn har_002_ac3_action_without_capability_is_rejected() {
 #[tokio::test]
 async fn har_002_ac1_catalog_lists_harnesses_with_capabilities() {
     let dir = tmp();
-    let d = daemon(dir.path(), |r| r).await;
+    // Ein registrierter ACP-Agent neben den Presets (HAR-008).
+    let mut layers = beton_harness::registry::HarnessLayers::default();
+    layers.user.acp.agents.insert(
+        "mein-agent".into(),
+        json!({"command": "./agent", "args": ["acp"]}),
+    );
+    let d = daemon(dir.path(), move |mut r| {
+        r.harnesses = beton_runner::builtin_registry(&layers, true);
+        r
+    })
+    .await;
     let (status, page) = d.http("GET", "/v1/harnesses?host=hst_local", None).await;
     assert_eq!(status, 200, "{page}");
     let items = page["items"].as_array().unwrap();
-    for id in ["claude", "fake"] {
+    for id in [
+        "claude",
+        "codex",
+        "acp:gemini",
+        "acp:goose",
+        "acp:qwen",
+        "acp:mein-agent",
+        "fake",
+    ] {
         let entry = items
             .iter()
             .find(|h| h["id"] == id)

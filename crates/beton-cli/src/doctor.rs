@@ -201,9 +201,26 @@ fn auth_word(s: AuthStatus) -> &'static str {
 }
 
 async fn harnesses(env: &HostEnv, layers: &HarnessLayers) -> Vec<Check> {
-    let registry = beton_runner::builtin_registry(layers, false);
+    let (registry, problems) = beton_runner::builtin_registry_with_problems(layers, false);
     let catalog = registry.catalog(env).await;
     let mut out = Vec::new();
+    if !problems.is_empty() {
+        // HAR-008 AC3: übersprungene Einträge mit Datei und Zeile.
+        let mut c = check(
+            "config.acp",
+            CheckStatus::Warn,
+            problems
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+            Some("Eintrag unter harnesses.acp.agents korrigieren"),
+        );
+        c.details = Some(
+            json!({ "skipped": problems.iter().map(ToString::to_string).collect::<Vec<_>>() }),
+        );
+        out.push(c);
+    }
     for info in catalog {
         let id = info.id.to_string();
         let Some(adapter) = registry.get(&info.id) else {
@@ -216,13 +233,23 @@ async fn harnesses(env: &HostEnv, layers: &HarnessLayers) -> Vec<Check> {
             .capabilities
             .first()
             .and_then(|c| c.version_range.clone());
+        if !info.probe.installed && id.starts_with("acp:") {
+            // Presets sind optional und nur aktiv, wenn ihr Binary gefunden wird (HAR-008).
+            out.push(check(
+                &format!("harness.{id}"),
+                CheckStatus::Ok,
+                format!("{id}: nicht installiert (optional)"),
+                None,
+            ));
+            continue;
+        }
         if !info.probe.installed {
             out.push(check(
                 &format!("harness.{id}"),
                 CheckStatus::Warn,
                 format!(
-                    "{id}: nicht gefunden (PATH, BETON_{}_PATH, harnesses.{id}.command)",
-                    id.to_uppercase()
+                    "{id}: nicht gefunden (PATH, {}, harnesses.{id}.command)",
+                    info.id.path_env_var()
                 ),
                 Some(&format!(
                     "Installieren mit: {}",
@@ -342,14 +369,11 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
 
     let harness_layers = layers
         .as_ref()
-        .and_then(|l| l.settings().ok())
-        .map(|s| HarnessLayers {
-            user: s.harnesses,
-            project: Default::default(),
-        })
+        .and_then(|l| l.harness_layers().ok())
         .unwrap_or_default();
     let env = HostEnv {
         user: harness_layers.user.clone(),
+        project: harness_layers.project.clone(),
         ..HostEnv::from_process()
     };
     checks.extend(harnesses(&env, &harness_layers).await);

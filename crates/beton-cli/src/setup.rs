@@ -26,7 +26,7 @@ pub struct VendorCli {
     pub install: &'static str,
     pub login: &'static [&'static str],
     pub api_key_env: &'static str,
-    /// In diesem Release als Harness nutzbar (Codex folgt mit M1).
+    /// In diesem Release als Harness nutzbar.
     pub supported: bool,
 }
 
@@ -47,7 +47,7 @@ pub const VENDOR_CLIS: [VendorCli; 2] = [
         install: "npm install -g @openai/codex",
         login: &["login"],
         api_key_env: "OPENAI_API_KEY",
-        supported: false,
+        supported: true,
     },
 ];
 
@@ -249,7 +249,7 @@ pub async fn run(
         let later = if h.supported {
             ""
         } else {
-            " (Harness folgt in M1)"
+            " (Harness folgt später)"
         };
         if h.installed {
             writeln!(
