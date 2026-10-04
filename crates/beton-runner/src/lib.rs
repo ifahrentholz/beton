@@ -857,36 +857,36 @@ fn to_event(boot: &RunnerBoot, actor: &Actor, ev: NormalizedEvent) -> Event {
     e
 }
 
-/// Sendet dauerhafte Events (mit `rseq`) bzw. transiente direkt.
+/// Sendet dauerhafte Events (mit `rseq`) bzw. transiente direkt – in der Reihenfolge des
+/// Batches: aufeinanderfolgende Events gleicher Art gehen gemeinsam, ein `turn.started` kommt
+/// also vor den Deltas desselben Turns an.
 async fn push(ws: &mut Ws, boot: &RunnerBoot, unacked: &mut Unacked, events: Vec<Event>) -> bool {
-    let (transient, durable): (Vec<Event>, Vec<Event>) = events
-        .into_iter()
-        .partition(|e| e.payload().is_some_and(EventPayload::is_transient));
-    if !transient.is_empty()
-        && !send(
-            ws,
-            &TunnelUp::TransientPush {
+    let mut runs: Vec<(bool, Vec<Event>)> = Vec::new();
+    for e in events {
+        let transient = e.payload().is_some_and(EventPayload::is_transient);
+        match runs.last_mut() {
+            Some((t, run)) if *t == transient => run.push(e),
+            _ => runs.push((transient, vec![e])),
+        }
+    }
+    for (transient, run) in runs {
+        let msg = if transient {
+            TunnelUp::TransientPush {
                 session_id: boot.session_id,
-                events: transient,
-            },
-        )
-        .await
-    {
-        return false;
+                events: run,
+            }
+        } else {
+            TunnelUp::EventsPush {
+                session_id: boot.session_id,
+                epoch: boot.epoch,
+                batch: run.into_iter().map(|e| unacked.push(e)).collect(),
+            }
+        };
+        if !send(ws, &msg).await {
+            return false;
+        }
     }
-    if durable.is_empty() {
-        return true;
-    }
-    let batch: Vec<RseqEvent> = durable.into_iter().map(|e| unacked.push(e)).collect();
-    send(
-        ws,
-        &TunnelUp::EventsPush {
-            session_id: boot.session_id,
-            epoch: boot.epoch,
-            batch,
-        },
-    )
-    .await
+    true
 }
 
 /// Wartet kurz auf ausstehende Bestätigungen.
