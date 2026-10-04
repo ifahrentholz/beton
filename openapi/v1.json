@@ -649,7 +649,7 @@
         "tags": [
           "sessions"
         ],
-        "summary": "Session anlegen und Runner starten (SES-001).",
+        "summary": "Session anlegen und Runner starten (SES-001); optional mit eigenem Worktree (SES-015).",
         "operationId": "create_session",
         "requestBody": {
           "content": {
@@ -694,6 +694,26 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Worktree gewünscht, aber kein Git-Repository",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Base nicht auflösbar; nennt die verfügbaren Branches",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -799,7 +819,7 @@
         "tags": [
           "sessions"
         ],
-        "summary": "Session löschen (nur Owner, SES-001 AC3).",
+        "summary": "Session löschen (nur Owner, SES-001 AC3). Ein Worktree wird kontrolliert entfernt\n(SES-016): uncommittete Änderungen bzw. ungepushte Commits ohne Entscheidung liefern `409`\nund verändern nichts; ein gemergter Branch wird mitgelöscht.",
         "operationId": "delete_session",
         "parameters": [
           {
@@ -808,6 +828,24 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "uncommitted",
+            "in": "query",
+            "description": "Antwort auf `409 worktree_dirty`: `commit` (WIP-Commit) oder `discard`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/UncommittedAction"
+            }
+          },
+          {
+            "name": "branch",
+            "in": "query",
+            "description": "Antwort auf `409 worktree_unpushed`: `keep` oder `delete`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/BranchAction"
             }
           }
         ],
@@ -837,6 +875,16 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`worktree_dirty` oder `worktree_unpushed`: Rückfrage nötig, nichts verändert",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -1657,6 +1705,669 @@
         }
       }
     },
+    "/v1/sessions/{id}/workspace/changes": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Änderungsübersicht in drei Sichten (SES-018): `uncommitted`, `branch` (wie\n`git diff <merge-base>...HEAD`), `turn` (auch ohne Git). In einem Verzeichnis ohne Git liefern\n`uncommitted` und `branch` `409 not_a_git_repo`.",
+        "operationId": "changes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`uncommitted` (Default), `branch` oder `turn`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ChangeScope"
+            }
+          },
+          {
+            "name": "turn",
+            "in": "query",
+            "description": "Turn-ID bei `scope=turn`; ohne Angabe der letzte Turn.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Geänderte Dateien",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangesPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Kein Git-Repository",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/workspace/diff": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Unified Diff einer Datei mit zeilengenau adressierbaren Hunks und `base_sha`/`head_sha`\n(SES-018).",
+        "operationId": "diff",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Dateipfad relativ zum Workspace.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`uncommitted` (Default), `branch` oder `turn`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ChangeScope"
+            }
+          },
+          {
+            "name": "turn",
+            "in": "query",
+            "description": "Turn-ID bei `scope=turn`; ohne Angabe der letzte Turn.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Diff der Datei",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileDiff"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Datei in dieser Sicht unverändert",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Kein Git-Repository",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/workspace/files/{path}": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Datei lesen: JSON mit Inhalt und `ETag` (SHA-256), über 5 MiB nur Metadaten; mit\n`?download=true` die Rohdaten (SES-017).",
+        "operationId": "get_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Dateipfad relativ zum Workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "description": "`true`: Rohdaten als Download statt JSON (für Dateien über 5 MiB).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Datei",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Pfad außerhalb des Workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session oder Datei unbekannt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Datei schreiben; mit `If-Match: <sha256>` nur, wenn sie seitdem unverändert ist, sonst\n`412` ohne Änderung (SES-017 AC2). Erzeugt `fs.changed` mit dem User als Actor.",
+        "operationId": "put_file",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "description": "Dateipfad relativ zum Workspace",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "SHA-256 (ETag) des zuletzt gelesenen Inhalts",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteFileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Geschrieben",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WrittenFile"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Angelegt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WrittenFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Pfad außerhalb des Workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match veraltet; Datei unverändert",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/workspace/search": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Dateinamen- und Inhaltssuche mit ripgrep-Semantik (`.gitignore` respektiert) (SES-017).",
+        "operationId": "search",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Suchbegriff (wörtlich; Smart-Case).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "`name` (Dateinamen, Default) oder `content` (Inhalte).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SearchMode"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Treffer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/workspace/tree": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Eine Ebene des Dateibaums, nach Namen sortiert, ohne `.git` (SES-017).",
+        "operationId": "tree",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Verzeichnis relativ zum Workspace (leer = Wurzel).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Einträge des Verzeichnisses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TreePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Pfad außerhalb des Workspace",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session oder Verzeichnis unbekannt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/tombstones": {
       "get": {
         "tags": [
@@ -1854,6 +2565,107 @@
           }
         }
       },
+      "ChangeScope": {
+        "type": "string",
+        "description": "Sicht der Änderungsübersicht.",
+        "enum": [
+          "uncommitted",
+          "branch",
+          "turn"
+        ]
+      },
+      "ChangeStatus": {
+        "type": "string",
+        "enum": [
+          "added",
+          "modified",
+          "deleted",
+          "renamed"
+        ]
+      },
+      "ChangedFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "status"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Alter Pfad bei Umbenennung."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus"
+          },
+          "additions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Hinzugefügte Zeilen; fehlt bei Binärdateien.",
+            "minimum": 0
+          },
+          "deletions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Entfernte Zeilen; fehlt bei Binärdateien.",
+            "minimum": 0
+          }
+        }
+      },
+      "ChangesPage": {
+        "type": "object",
+        "required": [
+          "scope",
+          "base_sha",
+          "items"
+        ],
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/ChangeScope"
+          },
+          "base_sha": {
+            "type": "string",
+            "description": "Vergleichsbasis: `HEAD` (uncommitted), Merge-Base (branch) bzw. Snapshot vor dem Turn."
+          },
+          "head_sha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Vergleichsstand: `HEAD` (branch) bzw. Snapshot nach dem Turn; fehlt bei `uncommitted`\n(Arbeitsverzeichnis)."
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Turn bei `scope=turn`."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChangedFile"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "CreateSessionRequest": {
         "type": "object",
         "required": [
@@ -1884,6 +2696,17 @@
           "harness_opts": {
             "type": "object",
             "description": "Harness-spezifische Optionen, z. B. `{\"scenario\": \"…\"}` beim Fake-Harness."
+          },
+          "worktree": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WorktreeRequest",
+                "description": "Eigener `git worktree` mit eigenem Branch für die Session (SES-015). `cwd` muss dann in\neinem Git-Repository liegen; die Session arbeitet im Worktree."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -1892,6 +2715,104 @@
         "enum": [
           "allow",
           "deny"
+        ]
+      },
+      "DiffHunk": {
+        "type": "object",
+        "required": [
+          "header",
+          "old_start",
+          "old_lines",
+          "new_start",
+          "new_lines",
+          "lines"
+        ],
+        "properties": {
+          "header": {
+            "type": "string"
+          },
+          "old_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "old_lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "new_start": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "new_lines": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffLine"
+            }
+          }
+        }
+      },
+      "DiffLine": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text",
+          "no_newline"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/DiffLineKind"
+          },
+          "old_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Zeilennummer auf der alten Seite (fehlt bei hinzugefügten Zeilen).",
+            "minimum": 0
+          },
+          "new_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Zeilennummer auf der neuen Seite (fehlt bei entfernten Zeilen).",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          },
+          "no_newline": {
+            "type": "boolean",
+            "description": "Zeile endet ohne Zeilenumbruch."
+          }
+        }
+      },
+      "DiffLineKind": {
+        "type": "string",
+        "enum": [
+          "context",
+          "add",
+          "delete"
+        ]
+      },
+      "EntryKind": {
+        "type": "string",
+        "description": "Art eines Eintrags im Dateibaum.",
+        "enum": [
+          "file",
+          "dir",
+          "symlink",
+          "other"
         ]
       },
       "EventPage": {
@@ -1931,6 +2852,59 @@
           }
         },
         "additionalProperties": false
+      },
+      "FileDiff": {
+        "type": "object",
+        "required": [
+          "path",
+          "status",
+          "binary",
+          "scope",
+          "base_sha",
+          "patch",
+          "hunks"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "old_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ChangeStatus"
+          },
+          "binary": {
+            "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/ChangeScope"
+          },
+          "base_sha": {
+            "type": "string"
+          },
+          "head_sha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fehlt bei `uncommitted` (Arbeitsverzeichnis)."
+          },
+          "patch": {
+            "type": "string",
+            "description": "Unified Diff."
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DiffHunk"
+            },
+            "description": "Zeilengenau adressierbar über `old_line`/`new_line` zusammen mit `base_sha`/`head_sha`."
+          }
+        }
       },
       "HarnessPage": {
         "type": "object",
@@ -2169,18 +3143,23 @@
           "host_not_allowed",
           "origin_not_allowed",
           "loopback_only",
+          "path_outside_workspace",
           "not_found",
           "method_not_allowed",
           "conflict",
           "seq_conflict",
           "stale_epoch",
           "seq_ahead",
+          "not_a_git_repo",
+          "worktree_dirty",
+          "worktree_unpushed",
           "tombstoned",
           "precondition_failed",
           "payload_too_large",
           "unsupported_media_type",
           "idempotency_key_reused",
           "capability_unsupported",
+          "base_not_found",
           "rate_limited",
           "internal",
           "blob_corrupt",
@@ -2293,6 +3272,62 @@
           }
         }
       },
+      "SearchHit": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Zeile (1-basiert), nur bei `mode=content`.",
+            "minimum": 0
+          },
+          "column": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Spalte (1-basiert, Zeichen), nur bei `mode=content`.",
+            "minimum": 0
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Zeilentext (gekürzt), nur bei `mode=content`."
+          }
+        }
+      },
+      "SearchPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "SessionPage": {
         "type": "object",
         "description": "Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).",
@@ -2389,6 +3424,44 @@
           },
           "last_activity_at": {
             "type": "string"
+          },
+          "worktree": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionWorktree",
+                "description": "Eigener Worktree der Session (SES-015); fehlt ohne Worktree."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "SessionWorktree": {
+        "type": "object",
+        "description": "Worktree einer Session (aus `git.worktree_created`).",
+        "required": [
+          "path",
+          "branch",
+          "base",
+          "base_sha"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Verzeichnis des Worktrees (Workspace der Session)."
+          },
+          "branch": {
+            "type": "string"
+          },
+          "base": {
+            "type": "string",
+            "description": "Base, von der der Branch abzweigt, z. B. `origin/main`."
+          },
+          "base_sha": {
+            "type": "string",
+            "description": "Commit der Base beim Anlegen."
           }
         }
       },
@@ -2439,6 +3512,98 @@
           }
         }
       },
+      "TreeEntry": {
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "kind"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Pfad relativ zum Workspace, mit `/` getrennt."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/EntryKind"
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Größe in Bytes (nur Dateien).",
+            "minimum": 0
+          }
+        }
+      },
+      "TreePage": {
+        "type": "object",
+        "required": [
+          "path",
+          "items"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TreeEntry"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "WorkspaceFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "binary",
+          "too_large"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "description": "SHA-256 des Inhalts; zugleich das `ETag` für `If-Match`."
+          },
+          "binary": {
+            "type": "boolean",
+            "description": "Inhalt ist kein UTF-8-Text."
+          },
+          "too_large": {
+            "type": "boolean",
+            "description": "Größer als 5 MiB: kein Inline-Inhalt, Download über `?download=true`."
+          },
+          "content": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Text der Datei (nur UTF-8 und höchstens 5 MiB)."
+          }
+        }
+      },
       "WorkspaceMode": {
         "type": "string",
         "enum": [
@@ -2447,6 +3612,71 @@
           "volume",
           "clone"
         ]
+      },
+      "WorktreeRequest": {
+        "type": "object",
+        "description": "Worktree-Wunsch beim Anlegen einer Session (SES-015).",
+        "properties": {
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Branch-Name; Default `beton/<titel-slug>-<id4>`. Ein vorhandener Branch wird ausgecheckt."
+          },
+          "base": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Base; Default `origin/HEAD`, sonst der aktuelle Branch."
+          },
+          "fetch": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`git fetch <remote> <branch>` vor dem Anlegen bei Remote-Tracking-Bases (Default `true`,\nTimeout 15 s). Ist das Remote nicht erreichbar, entsteht der Worktree aus dem lokalen\nStand und die Session erhält einen Hinweis."
+          }
+        }
+      },
+      "WriteFileRequest": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Neuer Inhalt (UTF-8)."
+          }
+        }
+      },
+      "WrittenFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "created"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean",
+            "description": "Die Datei wurde neu angelegt."
+          }
+        }
       }
     },
     "securitySchemes": {

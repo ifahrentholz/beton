@@ -141,7 +141,8 @@ async fn api_002_ac2_every_route_requires_authentication() {
         let path = path
             .replace("{id}", "hst_local")
             .replace("{approval_id}", "x")
-            .replace("{hash}", "x");
+            .replace("{hash}", "x")
+            .replace("{path}", "x");
         let req = Request::builder()
             .method(method.as_str())
             .uri(&path)
@@ -175,7 +176,8 @@ async fn api_001_ac2_every_route_is_documented() {
         let path = path
             .replace("{id}", "hst_local")
             .replace("{approval_id}", "x")
-            .replace("{hash}", "x");
+            .replace("{hash}", "x")
+            .replace("{path}", "x");
         let req = t.authed(&method, &path).body(Body::empty()).unwrap();
         let res = t.send(req).await;
         assert_ne!(res.status, 405, "{method} {path}");
@@ -339,8 +341,11 @@ fn proto_010_ac4_openapi_lint() {
     property_names(&doc["paths"], &mut names);
     for (_, item) in doc["paths"].as_object().unwrap() {
         for op in item.as_object().unwrap().values() {
+            // HTTP-Header (z. B. `If-Match`) heißen wie im Standard, nicht snake_case.
             for p in op["parameters"].as_array().into_iter().flatten() {
-                names.push(p["name"].as_str().unwrap().to_owned());
+                if p["in"] != "header" {
+                    names.push(p["name"].as_str().unwrap().to_owned());
+                }
             }
         }
     }

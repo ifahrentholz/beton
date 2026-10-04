@@ -107,6 +107,22 @@ pub struct SessionSummary {
     pub cost_micro: i64,
     pub created_at: String,
     pub last_activity_at: String,
+    /// Eigener Worktree der Session (SES-015); fehlt ohne Worktree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub worktree: Option<SessionWorktree>,
+}
+
+/// Worktree einer Session (aus `git.worktree_created`).
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct SessionWorktree {
+    /// Verzeichnis des Worktrees (Workspace der Session).
+    pub path: String,
+    pub branch: String,
+    /// Base, von der der Branch abzweigt, z. B. `origin/main`.
+    pub base: String,
+    /// Commit der Base beim Anlegen.
+    pub base_sha: String,
 }
 
 /// Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).
@@ -153,6 +169,12 @@ pub fn summary(s: beton_store::SessionRecord) -> SessionSummary {
         cost_micro: s.cost_micro,
         created_at: s.created_at.to_string(),
         last_activity_at: s.last_activity_at.to_string(),
+        worktree: s.worktree.map(|w| SessionWorktree {
+            path: w.path,
+            branch: w.branch,
+            base: w.base,
+            base_sha: w.base_sha,
+        }),
     }
 }
 

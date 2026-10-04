@@ -117,6 +117,12 @@ pub async fn start_with(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
     let store_for_tunnel = store.clone();
+    let janitor = tokio::spawn(crate::sessions::worktree_janitor(
+        store.clone(),
+        local.org,
+        runtime.sessions.clone(),
+        stop_rx.clone(),
+    ));
     let router = app::build(AppParts {
         store,
         local,
@@ -129,7 +135,7 @@ pub async fn start_with(
         web_dir: config.web_dir.clone(),
     });
 
-    let mut tasks = Vec::new();
+    let mut tasks = vec![janitor];
     for listener in listeners {
         let app = router
             .clone()
