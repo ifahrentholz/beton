@@ -35,6 +35,19 @@ pub async fn app_with(
     extra: impl FnOnce(Router<AppState>) -> Router<AppState>,
     peer: &str,
 ) -> TestApp {
+    app_full(extra, peer, |r| r).await
+}
+
+/// App mit angepasster Laufzeit (z. B. Feature-Flags, Harness-Katalog).
+pub async fn app_runtime(customize: impl FnOnce(app::Runtime) -> app::Runtime) -> TestApp {
+    app_full(|r| r, "127.0.0.1:50000", customize).await
+}
+
+pub async fn app_full(
+    extra: impl FnOnce(Router<AppState>) -> Router<AppState>,
+    peer: &str,
+    customize: impl FnOnce(app::Runtime) -> app::Runtime,
+) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path(), StoreOptions::default())
         .await
@@ -63,8 +76,9 @@ pub async fn app_with(
             hosts: vec![HOST.into(), "localhost:7420".into(), "[::1]:7420".into()],
             origins: vec![ORIGIN.into(), "tauri://localhost".into()],
             primary_host: HOST.into(),
-            runtime: app::Runtime::new(tokio::sync::watch::channel(false).1)
-                .with_default_commands(),
+            runtime: customize(
+                app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands(),
+            ),
             web_dir: Some(web),
         },
     )

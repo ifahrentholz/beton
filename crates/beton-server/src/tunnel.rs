@@ -188,6 +188,7 @@ fn runner_code(problem: &Value) -> ProblemCode {
         "capability_unsupported" => ProblemCode::CapabilityUnsupported,
         "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
         "not_found" => ProblemCode::NotFound,
+        "no_active_turn" => ProblemCode::NoActiveTurn,
         "unknown_command" => ProblemCode::UnknownCommand,
         "session_closed" => ProblemCode::Unavailable,
         _ => ProblemCode::Conflict,
@@ -210,6 +211,20 @@ pub struct TunnelState {
     pub config: TunnelConfig,
     /// Ohne Handler werden System-Tools abgelehnt (fail closed).
     pub system: Option<Arc<dyn SystemCalls>>,
+    /// Queues der Sessions: Turn-Ende arbeitet die nächste Eingabe ab (SES-004).
+    pub queues: Arc<crate::queue::Queues>,
+}
+
+impl TunnelState {
+    fn queue(&self) -> crate::queue::QueueCtx {
+        crate::queue::QueueCtx {
+            events: self.events.clone(),
+            org: self.local.org,
+            runners: self.runners.clone(),
+            cmd_timeout: self.config.cmd_timeout,
+            queues: self.queues.clone(),
+        }
+    }
 }
 
 /// Upgrade auf den Tunnel; Token vor dem Upgrade prüfen.
@@ -424,7 +439,9 @@ async fn append_status(
             reason: Some(reason.into()),
         }),
     );
-    let _ = append(state, session, vec![event]).await;
+    if let Ok(written) = append(state, session, vec![event]).await {
+        state.queue().observe(session, &written);
+    }
 }
 
 /// Anhängen mit Wiederholung, falls der Kopf sich parallel bewegt hat.
@@ -541,6 +558,7 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                                 });
                             }
                         };
+                    state.queue().observe(session, &written);
                     Some((written.first()?.seq, written.last()?.seq))
                 };
             lock(&runners.persisted).insert(session, upto);

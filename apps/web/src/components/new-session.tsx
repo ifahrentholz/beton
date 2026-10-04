@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import type { HarnessInfo } from '@beton/sdk'
 import { X } from 'lucide-react'
 import { client } from '@/lib/client'
+import { harnessVisible, useFeatures } from '@/lib/features'
 import { harnessName } from './harness'
 
 const LAST_CWD = 'beton.lastCwd'
@@ -15,7 +16,10 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
     queryKey: ['harnesses'],
     queryFn: () => client.request<{ items: HarnessInfo[] }>('GET', '/v1/harnesses'),
   })
-  const usable = (catalog.data?.items ?? []).filter((h) => h.probe.installed && !h.incompatible)
+  const features = useFeatures()
+  const usable = (catalog.data?.items ?? []).filter(
+    (h) => h.probe.installed && !h.incompatible && harnessVisible(h.id, features),
+  )
   const [harness, setHarness] = useState('')
   const [model, setModel] = useState('')
   const [cwd, setCwd] = useState(() => localStorage.getItem(LAST_CWD) ?? '')

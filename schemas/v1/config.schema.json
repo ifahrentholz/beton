@@ -16,6 +16,14 @@
         "store_raw": true
       }
     },
+    "features": {
+      "description": "Eingeschaltete Feature-Flags, z. B. `[fake_harness]` (UX-007); zusätzlich\n`BETON_FEATURES=a,b`. Unbekannte Namen erzeugen nur eine Warnung.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "harnesses": {
       "description": "Harnesses: Binary, Argumente, Auth-Herkunft (HAR-003, HAR-015).",
       "$ref": "#/$defs/HarnessesConfig",

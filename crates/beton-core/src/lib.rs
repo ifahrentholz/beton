@@ -3,6 +3,7 @@
 //! Spec-Einstieg: `docs/spec/00-overview.md`.
 
 pub mod event;
+pub mod feature;
 pub mod id;
 pub mod network;
 pub mod registry;

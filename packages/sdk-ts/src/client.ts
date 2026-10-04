@@ -8,6 +8,8 @@ import type { ResolveApprovalRequest } from './gen/ResolveApprovalRequest.js'
 import type { SessionPage } from './gen/SessionPage.js'
 import type { SessionSettings } from './gen/SessionSettings.js'
 import type { SessionSummary } from './gen/SessionSummary.js'
+import type { InputMode } from './gen/InputMode.js'
+import type { QueueView } from './gen/QueueView.js'
 import type { Event } from './gen/Event.js'
 import { defaultWebSocketFactory, eventStream, type StreamOptions, type WebSocketFactory } from './stream.js'
 
@@ -18,6 +20,21 @@ export interface ClientOptions {
   token?: string
   fetch?: typeof fetch
   webSocketFactory?: WebSocketFactory
+}
+
+/** Optionen für `GET /v1/sessions`. */
+export interface SessionListOptions {
+  limit?: number
+  cursor?: string
+  includeArchived?: boolean
+  /** Nur Sessions, die sich danach für den User geändert haben (Listen-Deltas, WEB-003). */
+  updatedAfter?: string
+  filter?: 'own' | 'shared' | 'archived' | 'all'
+  /** Volltext über Titel und Nachrichten. */
+  q?: string
+  harness?: string
+  status?: string
+  projectId?: string
 }
 
 /** Client der beton-API (API-004). */
@@ -40,13 +57,17 @@ export class BetonClient {
   }
 
   readonly sessions = {
-    list: (
-      opts: { limit?: number; cursor?: string; includeArchived?: boolean; updatedAfter?: string } = {},
-    ): Promise<SessionPage> => {
+    list: (opts: SessionListOptions = {}): Promise<SessionPage> => {
       const q = new URLSearchParams()
       if (opts.limit !== undefined) q.set('limit', String(opts.limit))
       if (opts.cursor) q.set('cursor', opts.cursor)
       if (opts.includeArchived) q.set('include_archived', 'true')
+      // Segment, Filter und Volltextsuche (SES-012).
+      if (opts.filter) q.set('filter', opts.filter)
+      if (opts.q) q.set('q', opts.q)
+      if (opts.harness) q.set('harness', opts.harness)
+      if (opts.status) q.set('status', opts.status)
+      if (opts.projectId) q.set('project_id', opts.projectId)
       // Nur Sessions mit Aktivität danach (Listen-Deltas, WEB-003).
       if (opts.updatedAfter) q.set('updated_after', opts.updatedAfter)
       const qs = q.toString()
@@ -118,8 +139,45 @@ export class Session {
     return this.client.request('GET', `/v1/sessions/${enc(this.id)}/events?after_seq=${afterSeq}&limit=${limit}`)
   }
 
-  send(text: string): Promise<InputAccepted> {
-    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/input`, { text })
+  /** Eingabe: sofort oder eingereiht; mit `steer` in den laufenden Turn (SES-004). */
+  send(text: string, mode?: InputMode): Promise<InputAccepted> {
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/input`, mode ? { text, mode } : { text })
+  }
+
+  /** Serverseitige Queue (SES-004). */
+  queue(): Promise<QueueView> {
+    return this.client.request('GET', `/v1/sessions/${enc(this.id)}/queue`)
+  }
+
+  editQueued(itemId: string, text: string): Promise<void> {
+    return this.client.request('PATCH', `/v1/sessions/${enc(this.id)}/queue/${enc(itemId)}`, { text })
+  }
+
+  deleteQueued(itemId: string): Promise<void> {
+    return this.client.request('DELETE', `/v1/sessions/${enc(this.id)}/queue/${enc(itemId)}`)
+  }
+
+  /** Verschiebt einen Eintrag an `position` (0 = als Nächstes). */
+  moveQueued(itemId: string, position: number): Promise<void> {
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/queue/${enc(itemId)}/move`, { position })
+  }
+
+  /** „Als Steer senden“: Eintrag in den laufenden Turn einspeisen. */
+  steerQueued(itemId: string): Promise<InputAccepted> {
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/queue/${enc(itemId)}/steer`)
+  }
+
+  resumeQueue(): Promise<void> {
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/queue/resume`)
+  }
+
+  /** Gelesen bis `seq`, gilt auf allen Geräten (SES-012). */
+  markRead(seq: number): Promise<SessionSummary> {
+    return this.client.request('PUT', `/v1/sessions/${enc(this.id)}/read-state`, { seq })
+  }
+
+  pin(pinned: boolean): Promise<SessionSummary> {
+    return this.client.request('PUT', `/v1/sessions/${enc(this.id)}/pin`, { pinned })
   }
 
   interrupt(): Promise<void> {

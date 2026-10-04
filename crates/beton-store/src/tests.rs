@@ -603,7 +603,8 @@ fn data_001_ac2_every_query_filters_by_org() {
         let path = entry.unwrap().path();
         if path
             .file_name()
-            .is_some_and(|n| n == "tests.rs" || n == "schema.rs" || n == "migrate.rs")
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with("tests.rs") || n == "schema.rs" || n == "migrate.rs")
         {
             continue;
         }

@@ -354,5 +354,10 @@ pub trait HarnessSession: Send {
     fn events(&mut self) -> Option<mpsc::Receiver<NormalizedEvent>>;
     /// Z. B. Claude-Session-UUID oder Codex-Thread-ID.
     fn native_session_ref(&self) -> Option<String>;
+    /// Capabilities dieser Session, wenn sie von denen des Adapters abweichen (z. B. die
+    /// Überschreibungen eines Fake-Szenarios, HAR-026 AC2).
+    fn capabilities(&self) -> Option<Capabilities> {
+        None
+    }
     async fn shutdown(self: Box<Self>, how: Shutdown) -> Result<ExitInfo, HarnessError>;
 }

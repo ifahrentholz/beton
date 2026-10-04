@@ -126,8 +126,21 @@ pub(crate) async fn introspect(conn: &mut SqliteConnection) -> Result<Schema> {
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Volltext-Indizes (FTS5) sind dialektspezifisch: virtuelle Tabellen und ihre
+    // Schattentabellen (`<name>_data`, `_idx`, …) gehören nicht zum Datenmodell.
+    let virtual_tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let mut schema = Schema::default();
     for name in names {
+        if virtual_tables
+            .iter()
+            .any(|v| name == *v || name.starts_with(&format!("{v}_")))
+        {
+            continue;
+        }
         let mut table = Table::default();
         let mut pk: Vec<(i64, String)> = Vec::new();
         for row in sqlx::query("SELECT name, type, \"notnull\", pk FROM pragma_table_info(?)")

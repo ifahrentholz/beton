@@ -415,6 +415,54 @@ async fn harnesses(env: &HostEnv, layers: &HarnessLayers) -> Vec<Check> {
     out
 }
 
+/// Feature-Flags aus Config und `BETON_FEATURES` (UX-007 AC2, AC3): Unbekanntes und
+/// Entferntes ist eine Warnung, kein Fehler.
+pub fn features(config: &[String], env: Option<&str>) -> Check {
+    use beton_core::feature::FeatureSet;
+    let set = FeatureSet::from_sources(config, env);
+    let active: Vec<Value> = set
+        .active()
+        .map(|(id, source)| json!({"id": id, "source": source}))
+        .collect();
+    let problems = set.problems();
+    let mut c = if problems.is_empty() {
+        let names: Vec<&str> = set.active().map(|(id, _)| id).collect();
+        check(
+            "features",
+            CheckStatus::Ok,
+            if names.is_empty() {
+                "keine experimentellen Funktionen eingeschaltet".to_owned()
+            } else {
+                format!("{} aktiv", names.join(", "))
+            },
+            None,
+        )
+    } else {
+        let hint = problems
+            .iter()
+            .find_map(|p| p.suggestion.map(|s| format!("Meintest du „{s}“?")))
+            .unwrap_or_else(|| {
+                "Namen in BETON_FEATURES bzw. `features:` der Konfiguration prüfen".into()
+            });
+        check(
+            "features",
+            CheckStatus::Warn,
+            problems
+                .iter()
+                .map(beton_core::feature::FlagProblem::message)
+                .collect::<Vec<_>>()
+                .join("; "),
+            Some(&hint),
+        )
+    };
+    c.details = Some(json!({
+        "active": active,
+        "unknown": problems.iter().filter(|p| !p.removed).map(|p| &p.id).collect::<Vec<_>>(),
+        "removed": problems.iter().filter(|p| p.removed).map(|p| &p.id).collect::<Vec<_>>(),
+    }));
+    c
+}
+
 /// Führt alle M0-Prüfungen aus.
 pub async fn run(ctx: &Ctx) -> DoctorReport {
     let mut checks = vec![check(
@@ -451,6 +499,15 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
             None
         }
     };
+    let configured = layers
+        .as_ref()
+        .and_then(|l| l.daemon_settings().ok())
+        .map(|s| s.features)
+        .unwrap_or_default();
+    checks.push(features(
+        &configured,
+        std::env::var(beton_core::feature::ENV_VAR).ok().as_deref(),
+    ));
     checks.push(permissions(&ctx.home));
     checks.push(database(&ctx.home).await);
     checks.push(worktrees(&ctx.home).await);
@@ -510,6 +567,22 @@ mod tests {
         assert_eq!(r.exit_code(), 1);
         r.status = CheckStatus::Fail;
         assert_eq!(r.exit_code(), 2);
+    }
+
+    #[test]
+    fn ux_007_ac2_unknown_flag_is_a_warning_with_suggestion() {
+        let c = features(&[], Some("unknown_flag"));
+        assert_eq!(c.status, CheckStatus::Warn);
+        assert!(
+            c.message
+                .contains("BETON_FEATURES enthält unbekanntes Flag „unknown_flag“")
+        );
+        let c = features(&[], Some("fake_harnes"));
+        assert_eq!(c.hint.as_deref(), Some("Meintest du „fake_harness“?"));
+        let c = features(&["fake_harness".into()], None);
+        assert_eq!(c.status, CheckStatus::Ok);
+        assert_eq!(c.message, "fake_harness aktiv");
+        assert_eq!(c.details.unwrap()["active"][0]["source"], "config");
     }
 
     #[test]

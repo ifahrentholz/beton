@@ -10,7 +10,8 @@
 //! (Freigabe über `item/commandExecution/requestApproval`), `kind: file_edit|file_write` →
 //! `fileChange` (`item/fileChange/requestApproval`), sonst `mcpToolCall`; `usage` →
 //! `thread/tokenUsage/updated`; `error`/`auth_expired` → `error`-Notification und
-//! `turn/completed` mit Status `failed`; `hang` wartet auf `turn/interrupt`.
+//! `turn/completed` mit Status `failed`; `hang` wartet auf `turn/interrupt`; `await_steer`
+//! wartet auf `turn/steer` und setzt den Turn danach fort.
 
 use std::io::{BufRead, Write};
 use std::time::Duration;
@@ -446,8 +447,45 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                     return Ok(TurnEnd::Interrupted);
                 }
             }
+        } else if let Some(expected) = &step.await_steer {
+            return self.await_steer(expected, state);
         }
         Ok(TurnEnd::Done)
+    }
+
+    /// Wartet auf `turn/steer` für den laufenden Turn (SES-004 AC3). Wie die echte CLI
+    /// prüft der Fake `expectedTurnId` und legt die Eingabe als Item `userMessage` an.
+    fn await_steer(&mut self, expected: &str, state: &TurnState) -> Result<TurnEnd, Stop> {
+        loop {
+            let msg = self.io.read()?;
+            if msg["method"] != "turn/steer" {
+                if self.interrupt_request(&msg)? {
+                    return Ok(TurnEnd::Interrupted);
+                }
+                continue;
+            }
+            let Some(id) = msg.get("id").cloned() else {
+                continue;
+            };
+            let params = &msg["params"];
+            if params["expectedTurnId"].as_str() != Some(state.turn_id.as_str()) {
+                self.respond_error(&id, -32600, "expectedTurnId passt nicht zum aktiven Turn")?;
+                continue;
+            }
+            let text = input_text(params);
+            self.respond(&id, json!({"turnId": state.turn_id}))?;
+            let item_id = self.next_item("user");
+            let item = json!({"type": "userMessage", "id": item_id, "content": params["input"]});
+            self.item("item/started", state, item.clone())?;
+            self.item("item/completed", state, item)?;
+            if !expected.is_empty() && text != expected {
+                return Ok(TurnEnd::Failed {
+                    message: format!("Steer: erwartet `{expected}`, erhalten `{text}`"),
+                    info: "badRequest",
+                });
+            }
+            return Ok(TurnEnd::Done);
+        }
     }
 
     /// Beantwortet `turn/interrupt`; `true`, wenn es eine war.

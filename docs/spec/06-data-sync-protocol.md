@@ -73,7 +73,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `harness.incompatible` | D | `detected_version, expected_range` (HAR-002) |
 | | `mcp.server_failed` | D | `name, error` (HAR-009) |
 | | `runner.status` | D | `runner_id, from, to, reason?` (RUN-003) |
-| Input & Turn | `queue.updated` | D | `items: [{id, author, text_preview, attachments, created_at}], paused` |
+| Input & Turn | `queue.updated` | D | `items: [{id, author, text, attachments, created_at}], paused` (vollständiger Stand, SES-004) |
 | | `turn.started` | D | `turn_id, input_id?, author` |
 | | `turn.completed` | D | `turn_id, stop_reason, usage_summary` |
 | | `turn.failed` | D | `turn_id, problem` |
@@ -156,7 +156,7 @@ Client                                         Server
   │── credit {channel_id:5, bytes:262144} ─►│
 ```
 
-Die erste Protokollversion ist `1.0`; die Beispiele oben zeigen eine spätere Minor. Kommandos (gleichwertig zu REST): `input.submit`, `queue.edit|delete|reorder|resume`, `turn.interrupt`, `approval.resolve`, `comment.add|update|resolve|delete|address`, `session.set`, `terminal.resize`, `browser.input`, `presence.update`, `voice.start|stop` (Audio-Kanal; Transkripte kommen als `voice.partial|final` direkt an den Client, nicht ins Session-Log). Close-Codes: `4400` Protokoll/Version, `4401` nicht (mehr) authentisiert, `4403` verboten/Share widerrufen, `4404` Session unbekannt, `4408` Heartbeat-Timeout, `4429` Rate-Limit, `4500` intern, `4503` Server fährt herunter (Reconnect).
+Die erste Protokollversion ist `1.0`; die Beispiele oben zeigen eine spätere Minor. Kommandos (gleichwertig zu REST): `input.submit` (`mode: queue|steer`), `queue.edit|delete|reorder|steer|resume`, `turn.interrupt`, `approval.resolve`, `comment.add|update|resolve|delete|address`, `session.set`, `terminal.resize`, `browser.input`, `presence.update`, `voice.start|stop` (Audio-Kanal; Transkripte kommen als `voice.partial|final` direkt an den Client, nicht ins Session-Log). Close-Codes: `4400` Protokoll/Version, `4401` nicht (mehr) authentisiert, `4403` verboten/Share widerrufen, `4404` Session unbekannt, `4408` Heartbeat-Timeout, `4429` Rate-Limit, `4500` intern, `4503` Server fährt herunter (Reconnect).
 
 ### Tunnel-Protokoll (Host/Runner/Knoten → Server)
 

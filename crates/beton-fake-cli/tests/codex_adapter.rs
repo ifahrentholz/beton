@@ -390,3 +390,24 @@ async fn har_016_login_status_comes_from_the_cli() {
         AuthStatus::LoggedIn
     );
 }
+
+#[tokio::test]
+async fn ses_004_ac3_codex_steer_is_processed_in_the_running_turn() {
+    let (_d, path) = scenario(
+        "turns:\n  - emit:\n      - { message: \"Ich fange an.\" }\n      - { await_steer: \"Bitte auch die README\" }\n      - { message: \"README ergänze ich mit.\" }\n",
+    );
+    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll)).await;
+    assert!(beton_harness_codex::capabilities().steering);
+    s.send("Los".into()).await.unwrap();
+    s.steer("Bitte auch die README".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    assert_eq!(count(&events, "turn.started"), 1, "{:?}", names(&events));
+    assert_eq!(count(&events, "turn.interrupted"), 0);
+    assert_eq!(names(&events).last(), Some(&"turn.completed"));
+    // Die Antwort nach dem Steer gehört zum selben Turn.
+    assert!(events.iter().any(|e| matches!(e,
+        EventPayload::MessageCompleted(m) if m.content[0]["text"] == "README ergänze ich mit.")));
+    // Ohne laufenden Turn lehnt der Adapter ab.
+    assert!(s.steer("zu spät".into()).await.is_err());
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}

@@ -19,8 +19,11 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `loopback_only` | 403 | Nur über Loopback erreichbar |
 | `path_outside_workspace` | 403 | Pfad außerhalb des Workspace |
 | `not_found` | 404 | Nicht gefunden |
+| `feature_disabled` | 404 | Funktion nicht aktiviert |
 | `method_not_allowed` | 405 | Methode nicht erlaubt |
 | `conflict` | 409 | Konflikt |
+| `capability_unsupported` | 409 | Vom Harness nicht unterstützt |
+| `no_active_turn` | 409 | Kein laufender Turn |
 | `seq_conflict` | 409 | Sequenzkonflikt |
 | `stale_epoch` | 409 | Veraltete Epoch |
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |
@@ -32,7 +35,6 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `payload_too_large` | 413 | Anfrage zu groß |
 | `unsupported_media_type` | 415 | Medientyp nicht unterstützt |
 | `idempotency_key_reused` | 422 | Idempotency-Key mit anderem Inhalt wiederverwendet |
-| `capability_unsupported` | 422 | Vom Harness nicht unterstützt |
 | `base_not_found` | 422 | Base-Branch nicht auflösbar |
 | `rate_limited` | 429 | Zu viele Anfragen |
 | `internal` | 500 | Interner Fehler |

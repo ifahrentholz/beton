@@ -1,34 +1,84 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type { SessionSummary } from '@beton/sdk'
 import { Archive, Plus, Search } from 'lucide-react'
+import { client } from '@/lib/client'
 import { ago } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { sortSessions, useSessions } from '@/store/sessions'
 import { harnessName, listStatus, StatusMark, VoiceDot, voiceOf } from './harness'
 import { useLayout } from './layout-state'
 
-/** Linke Spalte (WEB-003): Sessions nach Aktivität, Suche, Archiv; virtualisiert. */
+/** Wartezeit nach dem Tippen, bevor die Volltextsuche läuft. */
+const SEARCH_DEBOUNCE_MS = 200
+
+type Row = { kind: 'heading'; label: string } | { kind: 'session'; session: SessionSummary }
+
+/**
+ * Zeilen der Liste: angepinnte Sessions als eigene Gruppe oben (SES-012 AC3), danach alle
+ * übrigen nach jüngster Aktivität. Bei einer Suche nur die Treffer des Servers.
+ */
+export function listRows(sessions: SessionSummary[], archived: boolean, hits?: Set<string>): Row[] {
+  const list = sortSessions(sessions).filter((s) => s.archived === archived && (!hits || hits.has(s.id)))
+  const pinned = list.filter((s) => s.pinned)
+  if (pinned.length === 0) return list.map((session) => ({ kind: 'session', session }))
+  return [
+    { kind: 'heading', label: 'Angepinnt' },
+    ...pinned.map((session) => ({ kind: 'session' as const, session })),
+    ...list.filter((s) => !s.pinned).map((session) => ({ kind: 'session' as const, session })),
+  ]
+}
+
+/** Treffer der Volltextsuche über Titel und Nachrichten (SES-012). */
+function useSearch(query: string, archived: boolean): Set<string> | undefined {
+  const [hits, setHits] = useState<Set<string> | undefined>()
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) {
+      setHits(undefined)
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      client.sessions
+        .list({ q, limit: 200, filter: archived ? 'archived' : undefined })
+        .then((page) => {
+          if (cancelled) return
+          useSessions.getState().upsert(page.items)
+          setHits(new Set(page.items.map((s) => s.id)))
+        })
+        .catch(() => undefined)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [query, archived])
+  return query.trim() ? hits : undefined
+}
+
+/** Linke Spalte (WEB-003): Sessions nach Aktivität, angepinnte oben, Suche, Archiv; virtualisiert. */
 export function SessionList({ active, onNew }: { active?: string | undefined; onNew: () => void }) {
   const byId = useSessions((s) => s.byId)
   const loaded = useSessions((s) => s.loaded)
   const [query, setQuery] = useState('')
   const [archived, setArchived] = useState(false)
   const closeList = useLayout((s) => s.closeList)
-  const list = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return sortSessions(Object.values(byId)).filter(
-      (s) => s.archived === archived && (!q || s.title.toLowerCase().includes(q) || s.id.includes(q)),
-    )
-  }, [byId, query, archived])
+  const hits = useSearch(query, archived)
+  const rows = useMemo(() => listRows(Object.values(byId), archived, hits), [byId, archived, hits])
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
-    count: list.length,
+    count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 48,
+    estimateSize: (i) => (rows[i]?.kind === 'heading' ? 28 : 48),
     overscan: 12,
-    getItemKey: (i) => list[i]?.id ?? i,
+    getItemKey: (i) => {
+      const r = rows[i]
+      return r?.kind === 'session' ? r.session.id : `h:${r?.label ?? i}`
+    },
   })
+  const sessionCount = rows.filter((r) => r.kind === 'session').length
   return (
     <nav aria-label="Sessions" className="flex h-full w-full flex-col bg-sidebar">
       <div className="flex items-center gap-1 p-2">
@@ -49,8 +99,21 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto pb-2" data-testid="session-list">
         <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((v) => {
-            const s = list[v.index]
-            if (!s) return null
+            const row = rows[v.index]
+            if (!row) return null
+            if (row.kind === 'heading') {
+              return (
+                <div
+                  key={v.key}
+                  data-testid="session-group"
+                  className="absolute left-0 flex h-7 w-full items-end px-3 pb-1 text-xs font-semibold"
+                  style={{ transform: `translateY(${v.start}px)` }}
+                >
+                  {row.label}
+                </div>
+              )
+            }
+            const s = row.session
             return (
               <Link
                 key={v.key}
@@ -59,6 +122,8 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
                 onClick={closeList}
                 data-testid="session-row"
                 data-session={s.id}
+                data-pinned={s.pinned || undefined}
+                data-unread={s.unread || undefined}
                 className={cn(
                   'absolute left-0 flex h-12 w-full items-center gap-2 border-l-2 px-3',
                   s.id === active ? 'border-signal bg-accent' : 'border-transparent hover:bg-accent/60',
@@ -67,7 +132,10 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
               >
                 <StatusMark status={listStatus(s.status)} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]">{s.title || 'Neue Session'}</div>
+                  <div className={cn('truncate text-[13px]', s.unread && 'font-semibold')}>
+                    {s.title || 'Neue Session'}
+                    {s.unread && <span className="sr-only"> (ungelesen)</span>}
+                  </div>
                   <div className="flex items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-muted-foreground">
                     <VoiceDot voice={voiceOf(s.harness)} className="size-1.5" />
                     <span>{harnessName(s.harness)}</span>
@@ -78,7 +146,7 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
             )
           })}
         </div>
-        {loaded && list.length === 0 && (
+        {loaded && sessionCount === 0 && (
           <p className="px-3 py-4 text-[12px] text-muted-foreground">
             {query ? 'Keine Session passt zur Suche.' : archived ? 'Keine archivierten Sessions.' : 'Noch keine Sessions. Starte eine mit dem Plus oder `beton run`.'}
           </p>

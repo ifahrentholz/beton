@@ -4,7 +4,8 @@
 //! Ein langlebiger Prozess pro Session. Ablauf (verifiziert gegen codex-cli 0.153.2 per
 //! `codex app-server generate-json-schema` und Handshake ohne Modellaufruf):
 //! `initialize` → `initialized` → `thread/start` bzw. `thread/resume` → je Turn
-//! `turn/start`; Abbruch mit `turn/interrupt`. Freigaben kommen als Server-Requests
+//! `turn/start`; Abbruch mit `turn/interrupt`, Eingaben in den laufenden Turn mit
+//! `turn/steer` (SES-004). Freigaben kommen als Server-Requests
 //! `item/commandExecution/requestApproval` und `item/fileChange/requestApproval` und gehen an
 //! das Gate. Subscriptions laufen ausschließlich über die CLI selbst: beton liest, speichert
 //! oder erneuert keine OpenAI-Tokens (ADR-0005) und entfernt bei `auth: subscription`
@@ -116,7 +117,8 @@ pub fn capabilities() -> Capabilities {
         resume: ResumeSupport::Warm,
         fork_history: ForkHistory::Preamble,
         interrupt: true,
-        steering: false,
+        // `turn/steer` speist Eingaben in den laufenden Turn (SES-004 AC3).
+        steering: true,
         subagents: Subagents::None,
         usage_reporting: UsageReporting::Tokens,
         // `thread/compact/start` folgt mit HAR-022.
@@ -683,6 +685,26 @@ struct NextTurn {
     sandbox_policy: Option<Value>,
 }
 
+/// Warum es keine Codex-Turn-ID gibt.
+#[derive(Debug)]
+enum NoTurn {
+    /// Kein laufender Turn.
+    Idle,
+    /// `turn/start` blieb unbeantwortet.
+    Unanswered,
+}
+
+impl From<NoTurn> for HarnessError {
+    fn from(e: NoTurn) -> Self {
+        match e {
+            NoTurn::Idle => HarnessError::Protocol("kein laufender Turn".into()),
+            NoTurn::Unanswered => {
+                HarnessError::Protocol("Turn-ID von Codex fehlt; turn/start unbeantwortet".into())
+            }
+        }
+    }
+}
+
 /// Eine laufende Codex-Session.
 pub struct CodexSession {
     rpc: RpcClient,
@@ -694,6 +716,24 @@ pub struct CodexSession {
     cancel: Arc<Notify>,
     thread_id: String,
     next: NextTurn,
+}
+
+impl CodexSession {
+    /// Turn-ID des laufenden Turns laut Codex; wartet kurz auf die Antwort von `turn/start`.
+    async fn codex_turn(&self) -> Result<String, NoTurn> {
+        for _ in 0..100 {
+            let st = self.state.lock().await;
+            if st.turn.is_none() {
+                return Err(NoTurn::Idle);
+            }
+            if let Some(t) = &st.codex_turn {
+                return Ok(t.clone());
+            }
+            drop(st);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Err(NoTurn::Unanswered)
+    }
 }
 
 #[async_trait]
@@ -737,31 +777,31 @@ impl HarnessSession for CodexSession {
         Ok(turn)
     }
 
-    async fn steer(&mut self, _input: UserInput) -> Result<(), HarnessError> {
+    async fn steer(&mut self, input: UserInput) -> Result<(), HarnessError> {
         capabilities().check(Action::Steer)?;
+        let turn_id = self.codex_turn().await?;
+        // `expectedTurnId` verhindert, dass die Eingabe in einem anderen Turn landet.
+        self.rpc
+            .request_timeout(
+                "turn/steer",
+                json!({
+                    "threadId": self.thread_id,
+                    "expectedTurnId": turn_id,
+                    "input": [{"type": "text", "text": input.text}],
+                }),
+                Duration::from_secs(10),
+            )
+            .await?;
         Ok(())
     }
 
     async fn interrupt(&mut self) -> Result<(), HarnessError> {
         // Offene Rückfragen beantwortet der Dispatcher mit `cancel`.
         self.cancel.notify_waiters();
-        let mut codex_turn = None;
-        for _ in 0..100 {
-            let st = self.state.lock().await;
-            if st.turn.is_none() {
-                return Ok(());
-            }
-            if let Some(t) = &st.codex_turn {
-                codex_turn = Some(t.clone());
-                break;
-            }
-            drop(st);
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let Some(turn_id) = codex_turn else {
-            return Err(HarnessError::Protocol(
-                "Turn-ID von Codex fehlt; turn/start unbeantwortet".into(),
-            ));
+        let turn_id = match self.codex_turn().await {
+            Ok(t) => t,
+            Err(NoTurn::Idle) => return Ok(()),
+            Err(e) => return Err(e.into()),
         };
         self.rpc
             .request_timeout(

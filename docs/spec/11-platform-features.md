@@ -321,6 +321,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-007 — Interne Feature-Flags
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Ein `FeatureFlag`-Enum in `beton-core` mit Status `experimental | beta | stable | removed`. Aktivierung über Config (`features: [voice, browser]`) oder Env `BETON_FEATURES=voice,browser`; im zentralen Betrieb server-autoritativ. Aktive Flags werden in `GET /v1/info` ausgeliefert; die UI blendet nicht aktivierte Funktionen aus. Unbekannte Flags erzeugen eine Warnung, keinen Startabbruch.
+- **Details:** Konvention: ADR-0035. Katalog `beton_core::feature::CATALOG`; `stable` ist immer an, `experimental`/`beta` nur nach Aktivierung. `features:` gilt nur aus der User-Konfiguration (das Projekt darf keine Flags setzen); `BETON_FEATURES` ergänzt sie. `GET /v1/info` liefert `features: [<aktive Namen>]`; eine Funktion hinter einem nicht aktiven Flag antwortet `404 feature_disabled`. `beton doctor` meldet unter `features` aktive Flags bzw. als Warnung unbekannte (mit Vorschlag bei Tippfehlern, „Meintest du …?“) und entfernte Flags; dieselben Warnungen schreibt der Daemon beim Start ins Log. Erstes Flag: `fake_harness` (experimentell, HAR-026 AC3), `--dev` aktiviert es ebenfalls.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein `experimental`-Flag ist ohne explizite Aktivierung in API und UI nicht erreichbar (API antwortet 404 `feature_disabled`).
   - [ ] AC2 — `BETON_FEATURES=unknown_flag` startet mit Warnung im Log und in `beton doctor`.

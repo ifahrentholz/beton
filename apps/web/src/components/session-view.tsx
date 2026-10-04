@@ -6,13 +6,18 @@ import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
 import { payloadOf } from '@/lib/events'
 import { cost } from '@/lib/format'
+import { queueOf } from '@/lib/queue'
 import { openApprovals, timeline, type Item } from '@/lib/timeline'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
 import { Composer } from './composer'
+import { QueueList } from './queue'
 import { HarnessBadge, listStatus, StatusMark } from './harness'
 import { useLayout } from './layout-state'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
+
+/** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
+export const ESC_ESC_MS = 600
 
 /** Metadaten aus dem Log: Harness, Modell, Capabilities, Titel, Status. */
 function useMeta(sessionId: string) {
@@ -76,34 +81,45 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   )
   const waiting = openApprovals(items).length > 0
   const running = meta.status === 'running' || meta.status === 'waiting_approval'
-  const [queue, setQueue] = useState<string[]>([])
+  const queue = useMemo(() => queueOf(log?.events), [log?.events])
   const [sendError, setSendError] = useState<string | undefined>()
   const toggleList = useLayout((s) => s.toggleList)
   const costMicro = useSessions((s) => s.byId[sessionId]?.cost_micro ?? 0)
-
-  // Eingereihte Nachrichten senden, sobald die Session bereit ist. Nach dem Senden wartet
-  // die nächste, bis ein Turn-Ende nach diesem Zeitpunkt im Log steht.
-  const [sentAtSeq, setSentAtSeq] = useState<number | undefined>()
   const lastSeq = log?.events.at(-1)?.seq ?? 0
-  const turnEndedSince = useMemo(() => {
-    if (sentAtSeq === undefined) return true
-    return (log?.events ?? []).some(
-      (e) => e.seq > sentAtSeq && (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.interrupted'),
-    )
-  }, [log, sentAtSeq])
+
+  // Gelesen bis zur angezeigten `seq`, auf allen Geräten (SES-012 AC2). Während des Replays
+  // wartet die Meldung, bis keine neuen Events mehr nachkommen.
   useEffect(() => {
-    if (running || !turnEndedSince || queue.length === 0 || meta.status !== 'idle') return
-    const [next, ...rest] = queue
-    setQueue(rest)
-    setSentAtSeq(lastSeq)
-    client
-      .session(sessionId)
-      .send(next!)
-      .catch((e: unknown) => {
-        setSentAtSeq(undefined)
-        setSendError(e instanceof Error ? e.message : 'Senden fehlgeschlagen')
-      })
-  }, [running, turnEndedSince, queue, meta.status, sessionId, lastSeq])
+    if (lastSeq === 0) return
+    if ((useSessions.getState().byId[sessionId]?.read_seq ?? 0) >= lastSeq) return
+    const timer = setTimeout(() => {
+      if (document.visibilityState !== 'visible') return
+      client
+        .session(sessionId)
+        .markRead(lastSeq)
+        .then((s) => useSessions.getState().upsert([s]))
+        .catch(() => undefined)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [sessionId, lastSeq])
+
+  // `Esc` zweimal kurz hintereinander unterbricht den laufenden Turn (WEB-005, UX-004).
+  useEffect(() => {
+    if (!running) return
+    let last = 0
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const now = Date.now()
+      if (now - last < ESC_ESC_MS) {
+        last = 0
+        void client.session(sessionId).interrupt().catch(() => undefined)
+      } else {
+        last = now
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [running, sessionId])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -173,10 +189,23 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         model={meta.model}
         capabilities={meta.capabilities}
         running={running}
-        queued={queue}
+        queue={
+          <QueueList
+            sessionId={sessionId}
+            items={queue.items}
+            harness={meta.harness}
+            steering={meta.capabilities?.steering ?? false}
+            running={running}
+            onError={setSendError}
+          />
+        }
         onSend={(text) => {
           setSendError(undefined)
-          setQueue((q) => [...q, text])
+          // Der Server entscheidet: sofort starten oder einreihen (SES-004).
+          client
+            .session(sessionId)
+            .send(text)
+            .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Senden fehlgeschlagen'))
         }}
         onInterrupt={() => void client.session(sessionId).interrupt().catch(() => undefined)}
       />

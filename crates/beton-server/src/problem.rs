@@ -54,8 +54,14 @@ problem_codes! {
     LoopbackOnly = "loopback_only", 403, "Nur über Loopback erreichbar";
     PathOutsideWorkspace = "path_outside_workspace", 403, "Pfad außerhalb des Workspace";
     NotFound = "not_found", 404, "Nicht gefunden";
+    /// Die Funktion liegt hinter einem nicht aktivierten Feature-Flag (UX-007).
+    FeatureDisabled = "feature_disabled", 404, "Funktion nicht aktiviert";
     MethodNotAllowed = "method_not_allowed", 405, "Methode nicht erlaubt";
     Conflict = "conflict", 409, "Konflikt";
+    /// Der Harness der Session kann das nicht (HAR-002 AC3, SES-004 AC4).
+    CapabilityUnsupported = "capability_unsupported", 409, "Vom Harness nicht unterstützt";
+    /// Steer ohne laufenden Turn (SES-004).
+    NoActiveTurn = "no_active_turn", 409, "Kein laufender Turn";
     SeqConflict = "seq_conflict", 409, "Sequenzkonflikt";
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
@@ -67,7 +73,6 @@ problem_codes! {
     PayloadTooLarge = "payload_too_large", 413, "Anfrage zu groß";
     UnsupportedMediaType = "unsupported_media_type", 415, "Medientyp nicht unterstützt";
     IdempotencyKeyReused = "idempotency_key_reused", 422, "Idempotency-Key mit anderem Inhalt wiederverwendet";
-    CapabilityUnsupported = "capability_unsupported", 422, "Vom Harness nicht unterstützt";
     BaseNotFound = "base_not_found", 422, "Base-Branch nicht auflösbar";
     RateLimited = "rate_limited", 429, "Zu viele Anfragen";
     Internal = "internal", 500, "Interner Fehler";

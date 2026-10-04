@@ -20,6 +20,7 @@ pub mod hub;
 pub mod idempotency;
 pub mod local_auth;
 pub mod problem;
+pub mod queue;
 pub mod security;
 pub mod serve;
 pub mod sessions;

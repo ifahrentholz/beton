@@ -30,6 +30,9 @@ pub struct Settings {
     pub events: EventsSettings,
     /// Harnesses: Binary, Argumente, Auth-Herkunft (HAR-003, HAR-015).
     pub harnesses: HarnessesConfig,
+    /// Eingeschaltete Feature-Flags, z. B. `[fake_harness]` (UX-007); zusätzlich
+    /// `BETON_FEATURES=a,b`. Unbekannte Namen erzeugen nur eine Warnung.
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

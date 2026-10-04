@@ -134,6 +134,8 @@ pub struct FakeSession {
     interrupt: Arc<Notify>,
     crashed: Arc<Mutex<bool>>,
     session_ref: String,
+    /// Steer-Eingaben in den laufenden Turn (Schritt `await_steer`, SES-004).
+    steer: Option<mpsc::UnboundedSender<String>>,
     /// Arbeitsverzeichnis für `write_file`-Schritte.
     workdir: std::path::PathBuf,
 }
@@ -203,6 +205,7 @@ impl FakeSession {
             crashed: Arc::new(Mutex::new(false)),
             workdir: std::env::current_dir().unwrap_or_default(),
             session_ref,
+            steer: None,
         })
     }
 
@@ -248,6 +251,8 @@ impl HarnessSession for FakeSession {
         }
         self.next_turn += 1;
         let id = turn_id(index);
+        let (steer_tx, steer_rx) = mpsc::unbounded_channel();
+        self.steer = Some(steer_tx);
         let player = Player {
             tx: self.sender()?,
             gate: self.gate.clone(),
@@ -261,15 +266,20 @@ impl HarnessSession for FakeSession {
             text: String::new(),
             last_call: None,
             last_decision: None,
+            steer: steer_rx,
             workdir: self.workdir.clone(),
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
     }
 
-    async fn steer(&mut self, _input: UserInput) -> Result<(), HarnessError> {
+    async fn steer(&mut self, input: UserInput) -> Result<(), HarnessError> {
         self.capabilities.check(Action::Steer)?;
-        Ok(())
+        let running = self.running.as_ref().is_some_and(|h| !h.is_finished());
+        match &self.steer {
+            Some(tx) if running => tx.send(input.text).map_err(|_| HarnessError::Closed),
+            _ => Err(HarnessError::Protocol("kein laufender Turn".into())),
+        }
     }
 
     async fn interrupt(&mut self) -> Result<(), HarnessError> {
@@ -348,6 +358,10 @@ impl HarnessSession for FakeSession {
         Some(self.session_ref.clone())
     }
 
+    fn capabilities(&self) -> Option<Capabilities> {
+        Some(self.capabilities.clone())
+    }
+
     async fn shutdown(mut self: Box<Self>, _how: Shutdown) -> Result<ExitInfo, HarnessError> {
         if let Some(running) = self.running.take() {
             running.abort();
@@ -375,6 +389,7 @@ struct Player {
     text: String,
     last_call: Option<String>,
     last_decision: Option<bool>,
+    steer: mpsc::UnboundedReceiver<String>,
     workdir: std::path::PathBuf,
 }
 
@@ -641,6 +656,17 @@ impl Player {
             return Outcome::Stop;
         } else if step.hang {
             std::future::pending::<()>().await;
+        } else if let Some(expected) = step.await_steer {
+            // SES-004 AC3: Die Eingabe fließt in den laufenden Turn, kein neuer Turn.
+            let got = self.steer.recv().await.unwrap_or_default();
+            if !expected.is_empty() && got != expected {
+                self.send(EventPayload::TurnFailed(TurnFailed {
+                    turn_id: self.turn,
+                    problem: json!({"type": "unexpected_input", "title": format!("Steer: erwartet `{expected}`, erhalten `{got}`")}),
+                }))
+                .await;
+                return Outcome::Stop;
+            }
         } else if let Some(write) = step.write_file {
             let workdir = self.workdir.clone();
             let _ = tokio::task::spawn_blocking(move || write.apply(&workdir)).await;
@@ -937,5 +963,42 @@ turns:
             "{:?}",
             start.elapsed()
         );
+    }
+
+    #[tokio::test]
+    async fn ses_004_steer_flows_into_running_turn() {
+        let yaml = "turns:\n  - emit:\n      - { message: \"Ich lege los.\" }\n      - { await_steer: \"Bitte auch X\" }\n      - { message: \"Mache X mit.\" }\n";
+        let mut s =
+            FakeSession::start(Scenario::from_yaml(yaml).unwrap(), None, Arc::new(AllowAll))
+                .unwrap();
+        let mut rx = s.events().unwrap();
+        // Ohne laufenden Turn kein Steer.
+        assert!(s.steer("zu früh".into()).await.is_err());
+        s.send("los".into()).await.unwrap();
+        s.steer("Bitte auch X".into()).await.unwrap();
+        s.running.take().unwrap().await.unwrap();
+        Box::new(s).shutdown(Shutdown::Kill).await.unwrap();
+        let mut out = Vec::new();
+        while let Some(e) = rx.recv().await {
+            out.push(e);
+        }
+        let t = types(&out);
+        assert_eq!(t.iter().filter(|x| **x == "turn.started").count(), 1);
+        assert!(!t.contains(&"turn.interrupted"));
+        assert_eq!(t.last(), Some(&"turn.completed"));
+
+        let mut s = FakeSession::start(
+            Scenario::from_yaml(
+                "capabilities: { steering: false }\nturns: [{ emit: [{ hang: true }] }]",
+            )
+            .unwrap(),
+            None,
+            Arc::new(AllowAll),
+        )
+        .unwrap();
+        s.send("los".into()).await.unwrap();
+        let err = s.steer("x".into()).await.unwrap_err();
+        assert_eq!(err.code(), "capability_unsupported");
+        Box::new(s).shutdown(Shutdown::Kill).await.unwrap();
     }
 }

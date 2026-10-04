@@ -244,6 +244,24 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))
     .ok();
 
+    // UX-007: Flags aus Config und Env; Unbekanntes und Entferntes nur als Warnung.
+    let mut features = beton_core::feature::FeatureSet::from_sources(
+        &settings.features,
+        std::env::var(beton_core::feature::ENV_VAR).ok().as_deref(),
+    );
+    for warning in features.warnings() {
+        tracing::warn!("Feature-Flags: {warning}");
+    }
+    if dev {
+        features.activate(
+            beton_core::feature::FeatureFlag::FakeHarness,
+            beton_core::feature::FlagSource::Dev,
+        );
+    }
+    // Der Fake-Harness ist nur mit `--dev` oder Flag `fake_harness` verfügbar (HAR-026 AC3).
+    let fake = features.is_active(beton_core::feature::FeatureFlag::FakeHarness);
+    let active: Vec<String> = features.active_ids();
+
     let lock = DaemonLock::acquire(&ctx.home)?;
     let store = beton_store::Store::open(&ctx.home, store_options(&settings))
         .await
@@ -259,7 +277,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
             user_file: Some(ctx.paths().user),
             ..HarnessLayers::default()
         },
-        dev,
+        fake,
     );
     for p in problems {
         // HAR-008 AC3: gemeldet mit Datei und Zeile, übrige Harnesses unbeeinträchtigt.
@@ -270,6 +288,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.sessions.dev = dev;
         r.sessions.harnesses_user = harnesses_user;
         r.harnesses = registry;
+        r.features = Arc::new(features);
         r
     })
     .await
@@ -292,7 +311,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     });
 
     let urls: Vec<String> = daemon.addrs.iter().map(|a| format!("http://{a}")).collect();
-    tracing::info!(addrs = ?daemon.addrs, dev, "Daemon gestartet");
+    tracing::info!(addrs = ?daemon.addrs, dev, features = ?active, "Daemon gestartet");
     ctx.note(format!(
         "beton {} lauscht auf {} (Strg+C beendet)",
         crate::VERSION,

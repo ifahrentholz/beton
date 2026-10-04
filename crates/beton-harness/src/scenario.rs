@@ -11,6 +11,8 @@
 //!       - { on_gate: { allow: [{ tool_result: "ok" }], deny: [{ message: "Push abgelehnt." }] } }
 //!       - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }
 //! ```
+//!
+//! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
 
 use std::path::Path;
 
@@ -133,6 +135,11 @@ pub struct Step {
     /// Nichts mehr tun, bis unterbrochen wird.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hang: bool,
+    /// Im laufenden Turn auf eine Steer-Eingabe warten (Capability `steering`, SES-004 AC3)
+    /// und danach weitermachen. Der Wert ist der erwartete Text; leer heißt beliebig. Eine
+    /// andere Eingabe lässt den Turn scheitern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub await_steer: Option<String>,
     /// Datei im Arbeitsverzeichnis schreiben, wie es ein Edit-Tool täte (für `fs.changed` und
     /// Diffs, SES-017/SES-018). Der Pfad ist relativ; `..` und absolute Pfade sind ungültig.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +248,7 @@ impl Step {
         add(self.crash.is_some(), "crash");
         add(self.auth_expired.is_some(), "auth_expired");
         add(self.hang, "hang");
+        add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
         out
     }
