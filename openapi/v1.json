@@ -2416,7 +2416,7 @@
           "workspace"
         ],
         "summary": "Überblick über den Workspace der Session (SES-018): Clients wählen damit die Sicht der\nÄnderungen, ohne eine erwartbar fehlschlagende Abfrage zu stellen.",
-        "operationId": "info",
+        "operationId": "workspace_info",
         "parameters": [
           {
             "name": "id",

@@ -117,7 +117,7 @@ pub struct WorkspaceInfo {
     params(("id" = String, Path)),
     responses((status = 200, description = "Überblick", body = WorkspaceInfo),
               (status = 404, description = "Session oder Workspace unbekannt", body = Problem, content_type = "application/problem+json")))]
-pub async fn info(
+pub async fn workspace_info(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
     Path(id): Path<String>,
