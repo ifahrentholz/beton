@@ -62,7 +62,7 @@ export function OverviewPage() {
             <p className="type-wide text-3xl font-[750]">Archivo, breit</p>
             <p className="text-xl">Archivo, normal: Sessions, Freigaben, Policies</p>
             <p className="type-narrow text-base text-muted-foreground">
-              Archivo, schmal für dichte Tabellen: 1.284 Events · 0,42 € · 18 Tool-Calls
+              Archivo, schmal für dichte Tabellen: 1.284 Events · 0,42 $ · 18 Tool-Calls
             </p>
             <p className="mt-2 font-mono text-[13px]">IBM Plex Mono: cargo nextest run --workspace</p>
             <h3 className="mt-5 mb-2 text-sm font-semibold">Die Fase</h3>

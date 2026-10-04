@@ -3,6 +3,7 @@
 //! Enthält den Kommandobaum (CLI-001), die Konfiguration (CLI-008), `serve` (CLI-004) und
 //! Querschnittsbausteine, die alle Modi (`serve`, Runner, CLI) teilen.
 
+pub mod agent;
 pub mod cli;
 pub mod commands;
 pub mod config;

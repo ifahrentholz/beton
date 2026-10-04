@@ -11,7 +11,7 @@ Bezug: ADR-0021 (weitere v1-Features), ADR-0023 (Spracheingabe nur lokal), ADR-0
 | **Usage-Record** | Normalisierter Verbrauchseintrag pro `cost.delta`: Tokens (input/output/cache_read/cache_write), Modell, Harness, `auth_source`, berechnete Kosten, Preisquelle. |
 | **Preis-Katalog** | Versionierte, mit beton ausgelieferte Preistabelle (USD pro 1 Mio. Tokens) inkl. Kontextfenster je Modell. |
 | **Preis-Override** | Vom User/Admin definierter Preis für Gateway-/Self-hosted-Modelle (inkl. Cache-Raten oder `free`). |
-| **API-Äquivalent** | Rechnerischer Preis einer Subscription-Nutzung zu API-Preisen; nur informativ, nie Teil von €-/$-Budgets. |
+| **API-Äquivalent** | Rechnerischer Preis einer Subscription-Nutzung zu API-Preisen; nur informativ, nie Teil von Geld-Budgets. |
 | **Subscription-Usage** | Token- und Rate-Limit-Nutzung bei `auth_source: vendor_cli` (Subscription über die offizielle CLI: Claude Pro/Max, ChatGPT Plus/Pro; HAR-015). |
 | **Inbox-Item** | Offene Aufgabe für einen User: Approval, Frage, fertiger Async-Agent, Mention u.a. |
 | **Diktat** | Sprachaufnahme → lokale Whisper-Transkription → Text im Composer. |
@@ -28,7 +28,7 @@ Für jedes `cost.delta` mit `auth_source ∈ {api_key, gateway}` bestimmt `beton
 3. **Preis-Katalog** (USE-002) → `cost_source: catalog`, mit `pricing_version`.
 4. Sonst `cost_usd: null`, `cost_source: none` → als „ohne Preis“ markiert.
 
-Bei `auth_source: vendor_cli` (Subscription) fließt nichts in Geld-Summen; zusätzlich wird optional das API-Äquivalent (Katalog) als `equivalent_usd` gespeichert. Cache-Raten fehlen → Fallback `cache_read = 0,1 × input`, `cache_write = 1,25 × input`. Interne Rechnung in USD (Dezimal, 6 Nachkommastellen); Anzeige optional in EUR mit manuell konfiguriertem Kurs (`usage.display_currency: EUR`, `usage.fx_rate_usd_eur: 0.92`) *(Annahme: kein automatischer Kursabruf)*.
+Bei `auth_source: vendor_cli` (Subscription) fließt nichts in Geld-Summen; zusätzlich wird optional das API-Äquivalent (Katalog) als `equivalent_usd` gespeichert. Cache-Raten fehlen → Fallback `cache_read = 0,1 × input`, `cache_write = 1,25 × input`. Interne Rechnung in USD (Ganzzahlen in Mikro-USD, also 6 Nachkommastellen; Felder `*_micro`); alle Geldbeträge in Spec, Policies und Protokoll sind USD, angezeigt als „0,42 $“; Anzeige optional in EUR mit manuell konfiguriertem Kurs (`usage.display_currency: EUR`, `usage.fx_rate_usd_eur: 0.92`) *(Annahme: kein automatischer Kursabruf)*.
 
 ### Preis-Katalog (Ausschnitt, Werte illustrativ)
 
@@ -123,7 +123,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 
 ### USE-004 — Subscription-Usage
 - **Meilenstein:** M2 · **Priorität:** Must
-- **Beschreibung:** Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt Euro. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(Annahme: gegen aktuelle CLI-Versionen verifizieren, siehe HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.
+- **Beschreibung:** Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt eines Geldbetrags. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(Annahme: gegen aktuelle CLI-Versionen verifizieren, siehe HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eine Claude-Subscription-Session zeigt Token-Summen pro Modell und kein Geld-Feld; optional das API-Äquivalent, klar als „informativ“ gekennzeichnet.
   - [ ] AC2 — Ein `usage.subscription {window: "5h", used_pct: 72, resets_at}` erscheint als Fortschrittsbalken mit Reset-Uhrzeit in Nutzer-Zeitzone.

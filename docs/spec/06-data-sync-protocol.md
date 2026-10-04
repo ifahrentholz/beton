@@ -193,14 +193,14 @@ Verzeichnis der Home-Knoten (`sessions.home_node_id`, `epoch`) ist auf dem Team-
 
 ```
 Anfordern:   Knoten → S: budget.lease.request {scope: "user:usr_x/daily", requested_micro, unit}
-Gewähren:    granted = min(requested, remaining(scope) × lease_fraction (0,5), max_lease (Default 10 €))
+Gewähren:    granted = min(requested, remaining(scope) × lease_fraction (0,5), max_lease (Default 10 USD))
              remaining(scope) -= granted   (Reservierung)
              → budget.lease.grant {lease_id, granted_micro, expires_at = min(now+24h, Periodenende)}
 Verbrauchen: lokal je cost.delta: balance -= cost_micro
              online & balance < 20 % granted → Aufstockung (neue Anforderung, gleicher Scope)
              balance ≤ 0 → on_lease_exhausted: ask | deny (Event budget.exhausted) bis Reconnect/Aufstockung
              now > expires_at → Lease ungültig, Verhalten wie erschöpft
-Melden:      online alle 60 s oder je 1 €: budget.lease.report {lease_id, consumed_total_micro}  (kumulativ → idempotent)
+Melden:      online alle 60 s oder je 1 USD: budget.lease.report {lease_id, consumed_total_micro}  (kumulativ → idempotent)
              S bucht delta = consumed_total − zuletzt_gemeldet
 Abrechnen:   bei Reconnect/Ablauf: budget.lease.settle {lease_id, consumed_total_micro, cost_event_refs}
              S bucht Rest, gibt unverbrauchte Reservierung frei, schließt Lease
@@ -209,7 +209,7 @@ Abrechnen:   bei Reconnect/Ablauf: budget.lease.settle {lease_id, consumed_total
              späte Meldung wird trotzdem gebucht (ggf. Overrun)
 ```
 
-Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {currency, tokens}` (Subscription-Budgets zählen Tokens).
+Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge sind immer USD, siehe USE-001); `unit ∈ {currency, tokens}` (Subscription-Budgets zählen Tokens).
 
 ### Konfliktfälle
 
@@ -551,10 +551,10 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 - **Meilenstein:** M4 · **Priorität:** Must
 - **Beschreibung:** Server-seitige Budgets (Org/Team/User, POL-012 in 03-policies.md) werden für Knoten, die Kosten lokal verursachen, über Leases gemäß Algorithmus im Design durchgesetzt: Anforderung, Reservierung, lokaler Verbrauch, periodische kumulative Meldung, Abrechnung bei Reconnect oder Ablauf, Overrun-Buchung. Ist die Lease erschöpft oder abgelaufen und keine Aufstockung möglich, greift `on_lease_exhausted: ask | deny` bis zum Reconnect. SYNC-007 ist Owner von Lease-Protokoll und Abrechnung; die Policy-Auswertung offline (Variablen `budget.*`, `on_lease_exhausted`) beschreibt POL-021.
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Bei Restbudget 30 € und `lease_fraction 0,5`, `max_lease 10 €` erhält ein Knoten 10 €; das Server-Restbudget zeigt 20 € verfügbar + 10 € reserviert.
-  - [ ] AC2 — Offline: Nach Verbrauch von 10 € erzeugt der nächste Model-Request `budget.exhausted` und eine Approval (bzw. `deny` bei `on_lease_exhausted: deny`).
+  - [ ] AC1 — Bei Restbudget 30 USD und `lease_fraction 0,5`, `max_lease 10 USD` erhält ein Knoten 10 USD; das Server-Restbudget zeigt 20 USD verfügbar + 10 USD reserviert.
+  - [ ] AC2 — Offline: Nach Verbrauch von 10 USD erzeugt der nächste Model-Request `budget.exhausted` und eine Approval (bzw. `deny` bei `on_lease_exhausted: deny`).
   - [ ] AC3 — Doppelt gesendete `budget.lease.report` mit gleichem `consumed_total` buchen nichts doppelt.
-  - [ ] AC4 — Reconnect nach Verbrauch von 7 € einer 10-€-Lease: Server bucht 7 €, gibt 3 € frei, Lease ist `settled`.
+  - [ ] AC4 — Reconnect nach Verbrauch von 7 USD einer 10-USD-Lease: Server bucht 7 USD, gibt 3 USD frei, Lease ist `settled`.
   - [ ] AC5 — Ein Knoten, der bis `expires_at + 72 h` nicht meldet, verliert die Reservierung (Lease `unsettled`); eine spätere Meldung wird gebucht und ein Overrun gemeldet, falls das Budget dadurch überschritten wird.
 - **Abhängigkeiten:** SYNC-001, POL-012, POL-021 (siehe 03-policies.md), USE-001 (siehe 11-platform-features.md)
 - **Referenz:** ADR-0010

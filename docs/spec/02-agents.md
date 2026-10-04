@@ -38,7 +38,8 @@ Dieses Kapitel spezifiziert eigene Agents und ihre autonome Ausführung. Teil **
 ### Vollständiges Beispiel `agent.yaml`
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/ifahrentholz/beton/main/schemas/agent.v1.json
+# Schema: lokale Datei, die `beton agent new` unter .beton/schemas/v1/ ablegt (AGT-013), nie eine URL
+# yaml-language-server: $schema=../../schemas/v1/agent.schema.json
 spec_version: 1
 name: pr-fixer                       # [a-z0-9-], eindeutig im Suchpfad
 description: Behebt fehlschlagende CI-Checks auf einem Branch und öffnet einen PR.
@@ -121,9 +122,10 @@ policies:
     params: { scope: run, limit_usd: 5, ask_at_usd: [3] }
 
 sandbox:                             # Felder und Semantik: SBX (04-sandbox.md)
-  profile: workspace_write
-  network:
-    allow: ["GET,POST api.github.com/**", "GET registry.npmjs.org/**"]
+  preset: default
+  workspace: rw
+  allow_network: true
+  egress_rules: ["GET,POST api.github.com/**", "GET registry.npmjs.org/**"]
 ```
 
 ### System-Tools (MCP-Server `beton`)
@@ -148,7 +150,7 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-001 — Agent-Format v1 (YAML)
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Agents werden in genau einer kanonischen YAML-Schreibweise beschrieben (Felder siehe Beispiel). Top-Level-Felder: `spec_version`, `name`, `description`, `version`, `executor`, `instructions`, `params`, `tools`, `skills`, `agents`, `spawn`, `timers`, `schedules`, `async`, `policies`, `sandbox`. Unbekannte Felder sind Fehler (keine stillen Tippfehler); `x-`-präfixierte Felder sind für Erweiterungen erlaubt.
-- **Details:** Template-Ausdrücke `{{ params.x }}`, `{{ trigger.payload.x }}`, `{{ now }}` nur in `prompt`/`instructions.append`/Schedule-Feldern (Minimal-Templating ohne Logik). Secret-Referenzen `${secret:<name>}` werden zur Laufzeit in `bt_cred_*`-Platzhalter aufgelöst (SEC-001/PRX-006, ab M2), nie in Klartext. Die Felder `timers`, `schedules` und `async` werden ab M5 ausgewertet (ASY-001 ff.). `sandbox` ist kanonisch; `os_env` wird nicht als Alias akzeptiert *(Annahme)*.
+- **Details:** Template-Ausdrücke `{{ params.x }}`, `{{ trigger.payload.x }}`, `{{ now }}` nur in `prompt`/`instructions.append`/Schedule-Feldern (Minimal-Templating ohne Logik). Secret-Referenzen `${secret:<name>}` werden zur Laufzeit in `bt_cred_*`-Platzhalter aufgelöst (SEC-001/PRX-006, ab M2), nie in Klartext. Die Felder `timers`, `schedules` und `async` werden ab M5 ausgewertet (ASY-001 ff.). `sandbox` ist kanonisch; `os_env` wird nicht als Alias akzeptiert *(Annahme)*. `x-`-Felder sind nur auf oberster Ebene erlaubt. Felder späterer Meilensteine (`policies`, `sandbox` ab M2; `timers`, `schedules`, `async` ab M5) liest und prüft v1 bereits, wertet sie aber nicht aus; bei Inline-Policy-Regeln prüft v1 nur `ref`/`id`, die Regelfelder prüft ab M2 das Policy-Schema (POL-001). Der `sandbox`-Block hat die Felder der Sandbox-Konfiguration (SBX, 04-sandbox.md). Parameter vom Typ `enum` listen ihre Werte unter `values`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Das Beispiel-`agent.yaml` dieses Kapitels wird fehlerfrei geladen (Fixture-Test).
   - [ ] AC2 — Ein unbekanntes Feld `instruction:` (Tippfehler) führt zu Fehler mit Datei, Zeile, Spalte und Vorschlag `instructions`.
@@ -159,9 +161,10 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 
 ### AGT-002 — JSON-Schema-Veröffentlichung & Validierung
 - **Meilenstein:** M1 · **Priorität:** Must
-- **Beschreibung:** Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/agent.v1.json` im Repo versioniert und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema **und** semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).
+- **Beschreibung:** Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/v1/agent.schema.json` im Repo versioniert (`cargo xtask codegen`, wie alle Schemas unter `schemas/v1/`) und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema **und** semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).
+- **Details:** Befunde haben die Form `{ file, path, line, column, code, message, severity }` (`severity`: `error` oder `warning`). Warnungen lassen den Exit-Code bei 0, z. B. `harness_unavailable` (gültige Harness-ID, in dieser Installation aber nicht registriert) und `effort_mapped`. Weitere Codes: `unknown_field`, `missing_field`, `invalid_value`, `unknown_harness`, `unsupported_spec_version`, `file_not_found`, `path_outside_agent`, `skill_not_found`, `unknown_subagent`, `agent_cycle`, `agent_not_found`, `conflicting_fields`, `invalid_param`, `duplicate_key`, `yaml_syntax`.
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Snapshot-Test: generiertes Schema == eingechecktes `schemas/agent.v1.json`; Abweichung lässt CI fehlschlagen.
+  - [ ] AC1 — Snapshot-Test: generiertes Schema == eingechecktes `schemas/v1/agent.schema.json`; Abweichung lässt CI fehlschlagen.
   - [ ] AC2 — `beton agent validate` liefert Exit-Code 0/1 und mit `--json` eine Liste von `{ path, line, column, code, message }`.
   - [ ] AC3 — Ein Sub-Agent-Zyklus (A → B → A) wird als Fehler `agent_cycle` erkannt.
   - [ ] AC4 — `reasoning_effort: xhigh` auf einem Harness/Modell ohne diese Stufe erzeugt eine Warnung mit dem effektiven Wert (Mapping wie HAR-017).
@@ -170,7 +173,7 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-003 — Agent-Verzeichnis & Auflösung
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Agents werden über einen Suchpfad gefunden: Projekt `.beton/agents/<name>/` → User `~/.beton/agents/<name>/` → Built-ins (in das Binary eingebettet, Quelle `agents/` im Repo). Der erste Treffer gewinnt; Verschattung eines Built-ins erzeugt eine Warnung. Pfade (`./x`, `/abs/x`) umgehen den Suchpfad; `builtin:<name>` erzwingt das Built-in.
-- **Details:** `beton run <agent-ref> [-p "prompt"] [--param k=v]`. Zentral (M4) können Agents zusätzlich serverseitig registriert werden; der Runner erhält dann das Agent-Bundle als Blob (tar.zst) mit Hash *(Annahme)*.
+- **Details:** `beton run <agent-ref> [-p "prompt"] [--param k=v]`; den Start liefert AGT-004 (CLI-002), die Auflösung samt Verschattungswarnung dieses Feature. Das Projekt ist dasselbe wie für `.beton/config.yaml` (CLI-008). Zentral (M4) können Agents zusätzlich serverseitig registriert werden; der Runner erhält dann das Agent-Bundle als Blob (tar.zst) mit Hash *(Annahme)*.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Existiert `maestra` im Projekt und als Built-in, startet `beton run maestra` die Projektversion und gibt eine Verschattungswarnung aus; `beton run builtin:maestra` startet das Built-in.
   - [ ] AC2 — `beton agent list` zeigt Name, Quelle (`project|user|builtin|server`), Version, Harness und Pfad.
@@ -293,6 +296,7 @@ Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind
 ### AGT-013 — Agent-CLI
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** `beton agent list | show <ref> | validate <pfad> | new <name> [--from builtin:maestra]`. `show` gibt den aufgelösten Agent (inkl. Herkunft jedes Felds) aus, `new` erzeugt ein Gerüst mit `$schema`-Kommentar (verweist auf die von beton lokal abgelegte Schema-Datei, nicht auf eine URL, ADR-0033), Prompt-Datei und Beispiel-Skill. AGT-013 ist Owner der Semantik; CLI-009 regelt nur die Konsistenz der CLI-Oberfläche.
+- **Details:** `new` legt das Gerüst unter `<projekt>/.beton/agents/<name>/` an und schreibt das aktuelle Schema nach `<projekt>/.beton/schemas/v1/agent.schema.json`; `agent.yaml` verweist relativ darauf (`# yaml-language-server: $schema=../../schemas/v1/agent.schema.json`). `--from <ref>` kopiert einen vorhandenen Agent und setzt `name`. `show --json` liefert `{ name, version, source, path, hash, spec, origins, warnings }`: `origins` nennt je Feld `agent.yaml:<zeile>` oder `default`, `hash` ist `sha256` über Pfade und Inhalte aller Dateien des Agent-Verzeichnisses. `list --all` zeigt zusätzlich verschattete und ungültige Einträge. `schema` gibt das JSON-Schema auf stdout aus.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton agent new demo` erzeugt `.beton/agents/demo/` mit einer Struktur, die `beton agent validate` sofort besteht.
   - [ ] AC2 — `beton agent show maestra --json` liefert den Resolved Agent inkl. `hash`.
