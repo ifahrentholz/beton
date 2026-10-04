@@ -282,6 +282,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-008 — Workspace-Rail mit Tabs
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Rechte Seitenleiste mit Tabs: Files (Baum + Suche), Changes (Sichten uncommitted/branch/turn), Terminals (M3), Browser (M3, BRW-009 in 09-browser.md), Agents (Sub-Agent-Graph), PR/MR (M4), Side-Chats (M4), Kommentare (M4). Breite verstellbar, Tabs per Shortcut wechselbar; mehrere Datei-Tabs möglich.
+- **Details:** Tabs wechseln mit `Alt+1` … in der Reihenfolge der sichtbaren Tabs; die Breite wird am linken Rand gezogen (Doppelklick setzt den Standard je Tab zurück) und bleibt im Browser gespeichert. Der Knopf „Workspace“ im Session-Kopf blendet die Rail ein und aus; unter 1024 px öffnet er sie als Vollbild. Das Change-Badge zählt die Dateien aus `fs.changed` seit dem letzten Blick auf den Tab; beim ersten Öffnen gilt der Gelesen-Stand der Session (SES-012) als gesehen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `fs.changed` setzt ein Change-Badge am Files-/Changes-Tab.
   - [ ] AC2 — Nicht verfügbare Tabs (fehlende Rolle, Feature-Meilenstein, Harness-Capability) sind ausgeblendet, nicht kaputt.
@@ -307,6 +308,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-011 — Diff-Ansicht
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Unified- und Split-Diff mit Shiki-Highlighting, Wrap-Umschalter, Datei-Navigation und Zeilenankern (Grundlage für Inline-Kommentare in M4 und „An Agent anhängen“). Große Diffs werden pro Datei lazy geladen.
+- **Details:** Teilbarer Link auf eine Zeile: `/s/<session>?tab=changes&scope=<sicht>[&turn=<turn>]&file=<pfad>&line=N16` (`N` neue, `A` alte Seite); er öffnet die Rail mit Sicht, Datei und markierter Zeile. Ohne Git-Repository (`GET …/workspace` → `git_repo: false`, SES-018) zeigt die Ansicht gleich die Änderungen pro Turn.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Diff mit 5 000 geänderten Zeilen bleibt flüssig scrollbar (virtualisiert).
   - [ ] AC2 — Klick auf eine Zeilennummer erzeugt einen teilbaren Link auf diese Zeile.
