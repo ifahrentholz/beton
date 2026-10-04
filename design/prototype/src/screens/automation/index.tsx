@@ -9,7 +9,7 @@ import { WebhookScreen } from './webhook'
 /**
  * Automationen (Design-Paket D-3): Async-Läufe, Schedules, Timer und Webhook-Trigger.
  * Lokal-first: Alles läuft auf diesem Rechner, solange beton läuft; kein Aufwecken, dafür catch_up.
- * Mit Abo zählen Laufzeit, Turns und Kontingent statt Euro.
+ * Mit Abo zählen Laufzeit, Turns und Kontingent statt Geldbetrag.
  */
 export const group: ScreenGroup = {
   id: 'automation',

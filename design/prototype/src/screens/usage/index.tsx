@@ -20,7 +20,7 @@ const SERIES: Record<HarnessId, number[]> = {
   gemini: [0, 0, 120, 0, 90, 0, 0, 0, 0, 210, 0, 0, 0, 0],
   ollama: [0, 0, 0, 140, 0, 0, 0, 0, 380, 0, 0, 120, 0, 0],
 }
-/** Euro pro Tag aus API-Key-/Gateway-Sessions (nur Zustand „mit API-Key“). */
+/** USD pro Tag aus API-Key-/Gateway-Sessions (nur Zustand „mit API-Key“). */
 const COST_USD = [0, 0, 0.84, 0, 1.92, 0.31, 0, 0, 2.47, 0.62, 0, 3.18, 2.71, 0.59]
 
 const fmtTok = (k: number) => (k >= 1000 ? `${(k / 1000).toLocaleString('de-DE', { maximumFractionDigits: 1 })} Mio.` : `${k.toLocaleString('de-DE')} k`)
@@ -272,7 +272,7 @@ function UsageOverview({ state }: { state: string }) {
         <div className="concrete-grain flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
           <p className="type-wide text-xl font-[700]">Noch kein Verbrauch</p>
           <p className="max-w-md text-sm text-muted-foreground">
-            Sobald eine Session läuft, siehst du hier Tokens und die Kontingente deiner Subscriptions. Euro-Kosten erscheinen nur,
+            Sobald eine Session läuft, siehst du hier Tokens und die Kontingente deiner Subscriptions. Kosten in Dollar erscheinen nur,
             wenn du einen API-Key oder ein Gateway nutzt.
           </p>
         </div>
@@ -316,7 +316,7 @@ function UsageOverview({ state }: { state: string }) {
           <F id="USE-004" className="mt-6">
             <div className="flex items-baseline gap-3">
               <h2 className="text-[14px] font-semibold">Subscriptions</h2>
-              <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – nicht in Euro</span>
+              <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – kein Geldbetrag</span>
             </div>
             <div className="mt-2 divide-y divide-border rounded-md border border-border">
               <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-deny-soft/50')}>
@@ -543,7 +543,7 @@ function UsagePricing({ state }: { state: string }) {
             <div className="mt-2 flex items-center gap-2">
               <button className="inline-flex h-8 items-center rounded-md border border-border px-3 text-[13px] hover:bg-accent">Eigenen Preis hinzufügen</button>
               <button className="inline-flex h-8 items-center rounded-md border border-border px-3 text-[13px] hover:bg-accent">Herleitung für ein Modell anzeigen …</button>
-              <span className="ml-2 text-[12px] text-muted-foreground">Preise in USD, wie bei den Anbietern; Anzeige in Euro zum festen Kurs.</span>
+              <span className="ml-2 text-[12px] text-muted-foreground">Preise in USD, wie bei den Anbietern; Anzeige in Euro optional zum festen Kurs.</span>
             </div>
 
             {state === 'explain' && (
@@ -835,7 +835,7 @@ export const group: ScreenGroup = {
       id: 'usage-overview',
       title: 'Verbrauch',
       description:
-        'Tokens nach Tag, Session, Projekt, Harness, Modell und Anmeldung; Subscription-Kontingente je CLI-Login als Rate-Limit-Fenster. Euro nur für API-Key- und Gateway-Sessions.',
+        'Tokens nach Tag, Session, Projekt, Harness, Modell und Anmeldung; Subscription-Kontingente je CLI-Login als Rate-Limit-Fenster. Kosten in USD nur für API-Key- und Gateway-Sessions.',
       features: ['USE-001', 'USE-002', 'USE-004', 'USE-005', 'USE-006'],
       states: [
         { id: 'subscriptions', title: 'Nur Subscriptions (Normalfall)' },
