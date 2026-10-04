@@ -121,6 +121,19 @@ pub struct RunArgs {
     /// Titel der neuen Session.
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
+    /// Session in einem eigenen `git worktree` mit eigenem Branch starten (Default-Branch
+    /// `beton/<titel>-<id4>`; ein vorhandener Branch wird ausgecheckt).
+    #[arg(
+        long,
+        value_name = "BRANCH",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["continue_last", "resume"]
+    )]
+    pub worktree: Option<String>,
+    /// Base des Worktrees (Default: `origin/HEAD`, sonst der aktuelle Branch).
+    #[arg(long, value_name = "BRANCH", requires = "worktree")]
+    pub base: Option<String>,
     /// Session anlegen, ID ausgeben und nicht anhängen.
     #[arg(long, conflicts_with = "prompt")]
     pub detach: bool,
@@ -194,6 +207,34 @@ pub struct SessionRefArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct DeleteArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+    /// Uncommittete Änderungen im Worktree: als WIP-Commit sichern oder verwerfen.
+    #[arg(long, value_enum, value_name = "WAS")]
+    pub uncommitted: Option<UncommittedChoice>,
+    /// Branch mit ungepushten Commits: behalten oder löschen.
+    #[arg(long, value_enum, value_name = "WAS")]
+    pub branch: Option<BranchChoice>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UncommittedChoice {
+    /// WIP-Commit auf dem Branch.
+    Commit,
+    /// Änderungen verwerfen.
+    Discard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum BranchChoice {
+    /// Branch behalten.
+    Keep,
+    /// Branch löschen.
+    Delete,
+}
+
+#[derive(Debug, Args)]
 pub struct RenameArgs {
     /// Session (ID, eindeutiges Präfix oder `last`).
     pub session: String,
@@ -257,8 +298,8 @@ pub enum SessionCommand {
     Archive(SessionRefArgs),
     /// Archivierte Session wiederherstellen.
     Unarchive(SessionRefArgs),
-    /// Session endgültig löschen.
-    Delete(SessionRefArgs),
+    /// Session endgültig löschen (entfernt ihren Worktree kontrolliert).
+    Delete(DeleteArgs),
     /// Laufenden Turn abbrechen.
     Interrupt(SessionRefArgs),
 }

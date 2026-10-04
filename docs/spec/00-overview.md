@@ -118,7 +118,7 @@ crates/
   beton-agents         # Agent-YAML, JSON-Schema, Skills, Built-in-Agents
   beton-browser        # CDP, Screencast, Inspect-Mode
   beton-pty            # PTY-Multiplexing (ohne tmux)
-  beton-git            # Worktrees, Git-Provider-Trait, GitHub, GitLab
+  beton-git            # Worktrees, Änderungen/Diffs, Turn-Snapshots (M1); Git-Provider-Trait, GitHub, GitLab (M4)
   beton-voice          # Whisper
   beton-plugin         # Out-of-Process-Plugin-Host, WASM-Host
   beton-plugin-sdk     # Rust-SDK für Out-of-Process-Plugins, auf crates.io veröffentlicht (PLG-012)

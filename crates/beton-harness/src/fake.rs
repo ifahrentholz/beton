@@ -115,7 +115,8 @@ impl HarnessAdapter for FakeAdapter {
         })?;
         let scenario =
             Scenario::load(&path).map_err(|e| HarnessError::StartRefused(e.to_string()))?;
-        let session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
+        let mut session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
+        session.workdir = spec.workdir;
         Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
 }
@@ -133,6 +134,8 @@ pub struct FakeSession {
     interrupt: Arc<Notify>,
     crashed: Arc<Mutex<bool>>,
     session_ref: String,
+    /// Arbeitsverzeichnis für `write_file`-Schritte.
+    workdir: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for FakeSession {
@@ -198,6 +201,7 @@ impl FakeSession {
             running: None,
             interrupt: Arc::new(Notify::new()),
             crashed: Arc::new(Mutex::new(false)),
+            workdir: std::env::current_dir().unwrap_or_default(),
             session_ref,
         })
     }
@@ -257,6 +261,7 @@ impl HarnessSession for FakeSession {
             text: String::new(),
             last_call: None,
             last_decision: None,
+            workdir: self.workdir.clone(),
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -370,6 +375,7 @@ struct Player {
     text: String,
     last_call: Option<String>,
     last_decision: Option<bool>,
+    workdir: std::path::PathBuf,
 }
 
 enum Outcome {
@@ -616,6 +622,9 @@ impl Player {
             return Outcome::Stop;
         } else if step.hang {
             std::future::pending::<()>().await;
+        } else if let Some(write) = step.write_file {
+            let workdir = self.workdir.clone();
+            let _ = tokio::task::spawn_blocking(move || write.apply(&workdir)).await;
         }
         Outcome::Continue
     }

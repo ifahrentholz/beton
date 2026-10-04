@@ -54,12 +54,38 @@ pub struct CreateSessionRequest {
     #[schema(value_type = Object)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub harness_opts: Value,
+    /// Eigener `git worktree` mit eigenem Branch für die Session (SES-015). `cwd` muss dann in
+    /// einem Git-Repository liegen; die Session arbeitet im Worktree.
+    #[serde(default)]
+    #[ts(optional)]
+    pub worktree: Option<WorktreeRequest>,
 }
 
-/// Session anlegen und Runner starten (SES-001).
+/// Worktree-Wunsch beim Anlegen einer Session (SES-015).
+#[derive(Debug, Default, Deserialize, Serialize, ToSchema, TS)]
+pub struct WorktreeRequest {
+    /// Branch-Name; Default `beton/<titel-slug>-<id4>`. Ein vorhandener Branch wird ausgecheckt.
+    #[serde(default)]
+    #[ts(optional)]
+    pub branch: Option<String>,
+    /// Base; Default `origin/HEAD`, sonst der aktuelle Branch.
+    #[serde(default)]
+    #[ts(optional)]
+    pub base: Option<String>,
+    /// `git fetch <remote> <branch>` vor dem Anlegen bei Remote-Tracking-Bases (Default `true`,
+    /// Timeout 15 s). Ist das Remote nicht erreichbar, entsteht der Worktree aus dem lokalen
+    /// Stand und die Session erhält einen Hinweis.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fetch: Option<bool>,
+}
+
+/// Session anlegen und Runner starten (SES-001); optional mit eigenem Worktree (SES-015).
 #[utoipa::path(post, path = "/v1/sessions", tag = "sessions",
     request_body = CreateSessionRequest,
-    responses((status = 201, description = "Session angelegt", body = SessionSummary)))]
+    responses((status = 201, description = "Session angelegt", body = SessionSummary),
+              (status = 409, description = "Worktree gewünscht, aber kein Git-Repository", body = Problem, content_type = "application/problem+json"),
+              (status = 422, description = "Base nicht auflösbar; nennt die verfügbaren Branches", body = Problem, content_type = "application/problem+json")))]
 pub async fn create_session(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
@@ -76,6 +102,11 @@ pub async fn create_session(
                 title: req.title,
                 model: req.model,
                 harness_opts: req.harness_opts,
+                worktree: req.worktree.map(|w| crate::sessions::WorktreeSpec {
+                    branch: w.branch,
+                    base: w.base,
+                    fetch: w.fetch.unwrap_or(true),
+                }),
             },
         )
         .await?;
@@ -139,18 +170,67 @@ pub async fn patch_session(
     )))
 }
 
-/// Session löschen (nur Owner, SES-001 AC3).
+/// Was mit uncommitteten Änderungen im Worktree geschehen soll (SES-016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UncommittedAction {
+    /// WIP-Commit auf dem Branch.
+    Commit,
+    /// Verwerfen.
+    Discard,
+}
+
+/// Was mit einem Branch mit ungepushten, nicht gemergten Commits geschehen soll (SES-016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchAction {
+    Keep,
+    Delete,
+}
+
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeleteSessionQuery {
+    /// Antwort auf `409 worktree_dirty`: `commit` (WIP-Commit) oder `discard`.
+    #[param(inline)]
+    pub uncommitted: Option<UncommittedAction>,
+    /// Antwort auf `409 worktree_unpushed`: `keep` oder `delete`.
+    #[param(inline)]
+    pub branch: Option<BranchAction>,
+}
+
+/// Session löschen (nur Owner, SES-001 AC3). Ein Worktree wird kontrolliert entfernt
+/// (SES-016): uncommittete Änderungen bzw. ungepushte Commits ohne Entscheidung liefern `409`
+/// und verändern nichts; ein gemergter Branch wird mitgelöscht.
 #[utoipa::path(delete, path = "/v1/sessions/{id}", tag = "sessions",
-    params(("id" = String, Path)),
-    responses((status = 204, description = "Gelöscht; Tombstone angelegt")))]
+    params(("id" = String, Path), DeleteSessionQuery),
+    responses((status = 204, description = "Gelöscht; Tombstone angelegt"),
+              (status = 409, description = "`worktree_dirty` oder `worktree_unpushed`: Rückfrage nötig, nichts verändert", body = Problem, content_type = "application/problem+json")))]
 pub async fn delete_session(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
     Path(id): Path<String>,
+    ApiQuery(q): ApiQuery<DeleteSessionQuery>,
 ) -> ApiResult<StatusCode> {
+    use beton_git::worktree as wt;
     state
         .sessions()
-        .delete(session_id(&id)?, principal(auth).1)
+        .delete(
+            session_id(&id)?,
+            principal(auth).1,
+            crate::sessions::DeleteOptions {
+                worktree: wt::RemoveOptions {
+                    uncommitted: q.uncommitted.map(|u| match u {
+                        UncommittedAction::Commit => wt::Uncommitted::Commit,
+                        UncommittedAction::Discard => wt::Uncommitted::Discard,
+                    }),
+                    branch: q.branch.map(|b| match b {
+                        BranchAction::Keep => wt::BranchAction::Keep,
+                        BranchAction::Delete => wt::BranchAction::Delete,
+                    }),
+                },
+            },
+        )
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -1,4 +1,6 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { WorktreeRequest } from "./WorktreeRequest";
+
 export type CreateSessionRequest = { 
 /**
  * Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`.
@@ -11,4 +13,9 @@ cwd: string, title?: string, model?: string,
 /**
  * Harness-spezifische Optionen, z. B. `{"scenario": "…"}` beim Fake-Harness.
  */
-harness_opts?: Record<string, unknown>, };
+harness_opts?: Record<string, unknown>, 
+/**
+ * Eigener `git worktree` mit eigenem Branch für die Session (SES-015). `cwd` muss dann in
+ * einem Git-Repository liegen; die Session arbeitet im Worktree.
+ */
+worktree?: WorktreeRequest, };

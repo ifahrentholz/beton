@@ -129,6 +129,28 @@ pub struct Step {
     /// Nichts mehr tun, bis unterbrochen wird.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hang: bool,
+    /// Datei im Arbeitsverzeichnis schreiben, wie es ein Edit-Tool täte (für `fs.changed` und
+    /// Diffs, SES-017/SES-018). Der Pfad ist relativ; `..` und absolute Pfade sind ungültig.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_file: Option<WriteFileStep>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteFileStep {
+    pub path: String,
+    pub content: String,
+}
+
+impl WriteFileStep {
+    /// Schreibt die Datei unterhalb von `workdir` (legt Verzeichnisse an).
+    pub fn apply(&self, workdir: &Path) -> std::io::Result<()> {
+        let target = workdir.join(&self.path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(target, &self.content)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -204,6 +226,7 @@ impl Step {
         add(self.crash.is_some(), "crash");
         add(self.auth_expired.is_some(), "auth_expired");
         add(self.hang, "hang");
+        add(self.write_file.is_some(), "write_file");
         out
     }
 
@@ -223,6 +246,18 @@ impl Step {
             return Err(ScenarioError::Invalid(format!(
                 "{at}: `chunk` muss > 0 sein"
             )));
+        }
+        if let Some(w) = &self.write_file {
+            let p = Path::new(&w.path);
+            if w.path.is_empty()
+                || p.is_absolute()
+                || p.components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                return Err(ScenarioError::Invalid(format!(
+                    "{at}: write_file.path muss relativ sein und darf kein `..` enthalten"
+                )));
+            }
         }
         if self.gate && self.tool_call.is_none() {
             return Err(ScenarioError::Invalid(format!(
@@ -306,5 +341,16 @@ turns:
         assert!(Scenario::from_yaml("turns: [{ emit: [{ chunk_delay_ms: 5 }] }]").is_err());
         assert!(Scenario::from_yaml("turns: [{ emit: [{ message: a, gate: true }] }]").is_err());
         assert!(Scenario::from_yaml("turns: [{ emit: [{ unbekannt: 1 }] }]").is_err());
+        assert!(
+            Scenario::from_yaml(
+                "turns: [{ emit: [{ write_file: { path: a/b.txt, content: x } }] }]"
+            )
+            .is_ok()
+        );
+        for bad in ["../x", "/etc/x", "a/../../x", ""] {
+            let yaml =
+                format!("turns: [{{ emit: [{{ write_file: {{ path: '{bad}', content: x }} }}] }}]");
+            assert!(Scenario::from_yaml(&yaml).is_err(), "{bad}");
+        }
     }
 }

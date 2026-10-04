@@ -1,4 +1,4 @@
-Session endgültig löschen
+Session endgültig löschen (entfernt ihren Worktree kontrolliert)
 
 Usage: beton session delete [OPTIONS] <SESSION>
 
@@ -11,6 +11,20 @@ Options:
           Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
           
           [env: BETON_SERVER]
+
+      --uncommitted <WAS>
+          Uncommittete Änderungen im Worktree: als WIP-Commit sichern oder verwerfen
+
+          Possible values:
+          - commit:  WIP-Commit auf dem Branch
+          - discard: Änderungen verwerfen
+
+      --branch <WAS>
+          Branch mit ungepushten Commits: behalten oder löschen
+
+          Possible values:
+          - keep:   Branch behalten
+          - delete: Branch löschen
 
       --json
           Maschinenlesbare Ausgabe (JSON) auf stdout
@@ -28,7 +42,7 @@ Options:
           User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 
   -V, --version
           Print version

@@ -8,7 +8,7 @@ Commands:
   rename     Session umbenennen
   archive    Session archivieren (Runner stoppt)
   unarchive  Archivierte Session wiederherstellen
-  delete     Session endgültig löschen
+  delete     Session endgültig löschen (entfernt ihren Worktree kontrolliert)
   interrupt  Laufenden Turn abbrechen
 
 Options:
