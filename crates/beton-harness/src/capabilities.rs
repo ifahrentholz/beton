@@ -84,6 +84,11 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub models: Vec<String>,
+    /// `models` ist die zuletzt erfolgreich abgerufene Liste, weil die Modell-Discovery des
+    /// Anbieters gerade fehlschlägt (HAR-011 AC3); der Picker kennzeichnet sie als veraltet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub models_stale: bool,
     /// Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<String>>", optional)]
@@ -122,6 +127,7 @@ impl Capabilities {
             images: false,
             transcript_import: false,
             models: Vec::new(),
+            models_stale: false,
             efforts: Vec::new(),
             context_window: None,
         }

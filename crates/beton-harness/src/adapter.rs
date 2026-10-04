@@ -116,6 +116,9 @@ pub struct SessionSpec {
     pub scenario: Option<PathBuf>,
     /// MCP-Server und Skills, die der Harness bekommt (HAR-009, AGT-008).
     pub mcp: McpInjection,
+    /// Höchstzahl der Model-Requests je User-Turn (`executor.max_turns`, HAR-010); nur
+    /// Harnesses mit eigenem Agent-Loop werten sie aus.
+    pub max_turns: Option<u32>,
 }
 
 /// Ein MCP-Server, wie ihn der Harness starten soll (HAR-009). Immer ein stdio-Relay
@@ -313,6 +316,9 @@ pub enum HarnessError {
     UnexpectedInput { expected: String, got: String },
     #[error("session_closed: der Harness läuft nicht mehr")]
     Closed,
+    /// Die Aktion geht nicht, solange ein Turn läuft (z. B. Compaction, SES-011).
+    #[error("turn_active: {0}")]
+    Busy(String),
     #[error("protocol_error: {0}")]
     Protocol(String),
     #[error("E/A-Fehler: {0}")]
@@ -328,6 +334,7 @@ impl HarnessError {
             Self::Unsupported(e) => e.code(),
             Self::UnexpectedInput { .. } => "unexpected_input",
             Self::Closed => "session_closed",
+            Self::Busy(_) => "turn_active",
             Self::Protocol(_) => "protocol_error",
             Self::Io(_) => "internal",
         }

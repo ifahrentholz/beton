@@ -207,6 +207,7 @@ dependencies = [
  "beton-harness-acp",
  "beton-harness-claude",
  "beton-harness-codex",
+ "beton-harness-direct",
  "beton-host",
  "beton-mcp",
  "beton-runner",
@@ -340,6 +341,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "beton-harness-direct"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "beton-harness-direct",
+ "beton-mcp",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_yaml_ng",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "beton-host"
 version = "0.0.0"
 dependencies = [
@@ -368,6 +393,8 @@ dependencies = [
  "beton-harness",
  "getrandom 0.4.3",
  "hex",
+ "ignore",
+ "regex",
  "reqwest",
  "schemars",
  "serde",
@@ -405,6 +432,7 @@ dependencies = [
  "beton-harness-acp",
  "beton-harness-claude",
  "beton-harness-codex",
+ "beton-harness-direct",
  "beton-host",
  "beton-mcp",
  "beton-proto",
@@ -454,6 +482,7 @@ dependencies = [
  "beton-harness-acp",
  "beton-harness-claude",
  "beton-harness-codex",
+ "beton-harness-direct",
  "beton-host",
  "beton-mcp",
  "beton-proto",

@@ -25,6 +25,11 @@ version_range?: string, auth_sources: Array<AuthSource>, approval: ApprovalMecha
  */
 models?: Array<string>, 
 /**
+ * `models` ist die zuletzt erfolgreich abgerufene Liste, weil die Modell-Discovery des
+ * Anbieters gerade fehlschlägt (HAR-011 AC3); der Picker kennzeichnet sie als veraltet.
+ */
+models_stale?: boolean, 
+/**
  * Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.
  */
 efforts?: Array<string>, 

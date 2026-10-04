@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react'
 import { AppLayout } from '@/components/app-layout'
 import { useLayout } from '@/components/layout-state'
 import { SessionView } from '@/components/session-view'
+import { validateWorkspaceSearch } from '@/lib/workspace'
 import { useSessions } from '@/store/sessions'
 
 function Root() {
@@ -58,7 +59,13 @@ function SessionRoute() {
 
 const rootRoute = createRootRoute({ component: Root })
 const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: Home })
-const sessionRoute = createRoute({ getParentRoute: () => rootRoute, path: '/s/$sessionId', component: SessionRoute })
+const sessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/s/$sessionId',
+  component: SessionRoute,
+  // Teilbare Links auf Diff-Zeilen (WEB-011 AC2).
+  validateSearch: validateWorkspaceSearch,
+})
 
 export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute]) })
 

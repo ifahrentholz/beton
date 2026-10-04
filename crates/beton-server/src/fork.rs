@@ -347,19 +347,26 @@ impl SessionManager<'_> {
         } else if let Some(a) = self.state().runtime.harnesses.get(target) {
             Some(a.capabilities(mode, &probe))
         } else {
-            // ACP-Agents aus User- und Projekt-Konfiguration (HAR-008).
+            // ACP-Agents (HAR-008) und Direkt-API-Provider (HAR-011) aus der Konfiguration.
             let layers = beton_harness::registry::HarnessLayers {
                 user: self.cfg().harnesses_user.clone(),
                 project: beton_harness::registry::HarnessesConfig::load_project(workdir)
                     .unwrap_or_default(),
                 user_file: None,
                 project_file: None,
+                // Direkt-API-Provider nur aus der User-Konfiguration (HAR-011).
+                providers: self.cfg().providers.clone(),
             };
             let mut r =
                 beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions {
                     dev: false,
                 });
             beton_harness_acp::register(&mut r, &layers);
+            beton_harness_direct::register(
+                &mut r,
+                &layers.providers,
+                &beton_harness_direct::DirectOptions::default(),
+            );
             r.get(target).map(|a| a.capabilities(mode, &probe))
         };
         let Some(caps) = caps else {

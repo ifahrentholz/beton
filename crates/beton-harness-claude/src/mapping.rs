@@ -6,8 +6,8 @@
 //! `harness.unmapped` (AC4).
 
 use beton_core::event::{
-    AuthSource, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload, HarnessReady,
-    HarnessUnmapped, MessageCompleted, MessageRole, ReasoningCompleted, TextDelta,
+    AuthSource, Compaction, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
+    HarnessReady, HarnessUnmapped, MessageCompleted, MessageRole, ReasoningCompleted, TextDelta,
     ToolCallCompleted, ToolCallRequested, ToolSource, ToolStatus, TurnCompleted, TurnFailed,
     TurnInterrupted, UsageSubscription,
 };
@@ -26,17 +26,24 @@ pub struct MapState {
     pub session_ref: Option<String>,
     /// Tool-Calls, die beton über die Permission-Bridge abgelehnt hat.
     pub denied: std::collections::HashSet<String>,
+    /// `/compact` läuft (HAR-022): Das nächste `result` beendet die Compaction, keinen Turn.
+    pub compacting: bool,
+    /// `pre_tokens` bzw. `post_tokens` aus `compact_boundary`.
+    pub compact_before: Option<u64>,
+    pub compact_after: Option<u64>,
+    /// Zuletzt gemeldeter Kontext (`context.usage`).
+    pub last_context: Option<u64>,
+    pub context_window: Option<u64>,
 }
 
 /// `system`-Untertypen, die beton nicht als Event braucht.
-const IGNORED_SYSTEM: [&str; 9] = [
+const IGNORED_SYSTEM: [&str; 8] = [
     "status",
     "hook_started",
     "hook_response",
     "commands_changed",
     "thinking_tokens",
     "post_turn_summary",
-    "compact_boundary",
     "api_retry",
     "task_summary",
 ];
@@ -88,6 +95,28 @@ fn map_system(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
                 tools: names("tools"),
                 mcp_servers: names("mcp_servers"),
             })]
+        }
+        // Compaction (HAR-022): `/compact` von beton oder automatisch durch die CLI.
+        Some("compact_boundary") => {
+            let meta = &v["compact_metadata"];
+            let pre = meta["pre_tokens"].as_u64();
+            let post = meta["post_tokens"].as_u64();
+            if st.compacting {
+                st.compact_before = pre.or(st.compact_before);
+                st.compact_after = post;
+                return Vec::new();
+            }
+            let before = pre.or(st.last_context).unwrap_or(0);
+            vec![
+                EventPayload::CompactionStarted(Compaction {
+                    before_tokens: before,
+                    after_tokens: None,
+                }),
+                EventPayload::CompactionCompleted(Compaction {
+                    before_tokens: before,
+                    after_tokens: post,
+                }),
+            ]
         }
         Some(sub) if IGNORED_SYSTEM.contains(&sub) => Vec::new(),
         _ => vec![unmapped(v)],
@@ -206,9 +235,7 @@ fn map_tool_results(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         .collect()
 }
 
-fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
-    let turn_id = st.turn.take().unwrap_or_default();
-    let mut out = Vec::new();
+fn cost_delta(v: &Value, st: &MapState, purpose: Option<&str>) -> (EventPayload, String) {
     let usage = &v["usage"];
     let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
     let model = v["modelUsage"]
@@ -218,7 +245,7 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     let auth = st.auth_source.unwrap_or(AuthSource::VendorCli);
     let subscription = auth == AuthSource::VendorCli;
     // Bei Subscription meldet die CLI nur ein API-Äquivalent; das ist keine Ausgabe (HAR-021 AC2).
-    out.push(EventPayload::CostDelta(CostDelta {
+    let cost = EventPayload::CostDelta(CostDelta {
         harness: "claude".into(),
         model: model.clone(),
         input_tokens: tok("input_tokens"),
@@ -239,13 +266,80 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
             CostSource::Reported
         },
         auth_source: auth,
-        purpose: None,
-    }));
+        purpose: purpose.map(str::to_owned),
+    });
+    (cost, model)
+}
+
+/// `result` nach `/compact` (HAR-022): `compaction.completed` und der neue Kontext; kein
+/// Turn-Ende. Ohne `post_tokens` gilt die Länge der Zusammenfassung als geschätzter Kontext.
+fn map_compaction_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
+    st.compacting = false;
+    let (cost, model) = cost_delta(v, st, Some("compaction"));
     if let Some(window) = v["modelUsage"][&model]["contextWindow"].as_u64() {
+        st.context_window = Some(window);
+    }
+    let before = st.compact_before.take().or(st.last_context).unwrap_or(0);
+    let reported = st.compact_after.take();
+    let mut out = vec![cost];
+    if v["is_error"] == true
+        || v["subtype"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("error"))
+    {
+        out.push(EventPayload::Notice(beton_core::event::Notice {
+            level: beton_core::event::NoticeLevel::Warn,
+            text: format!(
+                "Compaction fehlgeschlagen: {}",
+                v["result"]
+                    .as_str()
+                    .unwrap_or("Claude Code meldet einen Fehler")
+            ),
+        }));
+        out.push(EventPayload::CompactionCompleted(Compaction {
+            before_tokens: before,
+            after_tokens: None,
+        }));
+        return out;
+    }
+    let estimated = v["usage"]["output_tokens"].as_u64().filter(|n| *n > 0);
+    let after = reported.or(estimated);
+    out.push(EventPayload::CompactionCompleted(Compaction {
+        before_tokens: before,
+        after_tokens: after,
+    }));
+    if let (Some(used), Some(window)) = (after, st.context_window) {
+        st.last_context = Some(used);
         out.push(EventPayload::ContextUsage(ContextUsage {
-            used_tokens: tok("input_tokens")
-                + tok("cache_read_input_tokens")
-                + tok("cache_creation_input_tokens"),
+            used_tokens: used,
+            window_tokens: window,
+            source: if reported.is_some() {
+                ContextSource::Harness
+            } else {
+                ContextSource::Estimated
+            },
+        }));
+    }
+    out
+}
+
+fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
+    if st.compacting {
+        return map_compaction_result(v, st);
+    }
+    let turn_id = st.turn.take().unwrap_or_default();
+    let usage = &v["usage"];
+    let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
+    let (cost, model) = cost_delta(v, st, None);
+    let mut out = vec![cost];
+    if let Some(window) = v["modelUsage"][&model]["contextWindow"].as_u64() {
+        let used = tok("input_tokens")
+            + tok("cache_read_input_tokens")
+            + tok("cache_creation_input_tokens");
+        st.context_window = Some(window);
+        st.last_context = Some(used);
+        out.push(EventPayload::ContextUsage(ContextUsage {
+            used_tokens: used,
             window_tokens: window,
             source: ContextSource::Harness,
         }));

@@ -288,9 +288,25 @@ fn auth_word(s: AuthStatus) -> &'static str {
 }
 
 async fn harnesses(env: &HostEnv, layers: &HarnessLayers) -> Vec<Check> {
-    let (registry, problems) = beton_runner::builtin_registry_with_problems(layers, false);
+    let (registry, problems, provider_problems) = beton_runner::builtin_registry_with_options(
+        layers,
+        false,
+        &beton_harness_direct::DirectOptions::default(),
+    );
     let catalog = registry.catalog(env).await;
     let mut out = Vec::new();
+    if !provider_problems.is_empty() {
+        // HAR-011 AC4: ungültige Provider mit Pfad und Grund; die übrigen bleiben nutzbar.
+        let texts: Vec<String> = provider_problems.iter().map(ToString::to_string).collect();
+        let mut c = check(
+            "config.providers",
+            CheckStatus::Warn,
+            texts.join("; "),
+            Some("Eintrag unter providers korrigieren"),
+        );
+        c.details = Some(json!({ "skipped": texts }));
+        out.push(c);
+    }
     if !problems.is_empty() {
         // HAR-008 AC3: übersprungene Einträge mit Datei und Zeile.
         let mut c = check(
@@ -313,6 +329,30 @@ async fn harnesses(env: &HostEnv, layers: &HarnessLayers) -> Vec<Check> {
         let Some(adapter) = registry.get(&info.id) else {
             continue;
         };
+        if id.starts_with("direct:") {
+            // Direkt-API (HAR-011): optional, kein Binary; nur der Key muss da sein.
+            let auth = adapter.auth_status(env).await;
+            let endpoint = info.probe.path.clone().unwrap_or_default();
+            let mut c = match auth {
+                AuthStatus::LoggedOut => check(
+                    &format!("harness.{id}"),
+                    CheckStatus::Warn,
+                    format!("{id}: Direkt-API {endpoint}, API-Key fehlt"),
+                    Some(
+                        "Die unter providers.<name>.api_key_env genannte Variable für den Daemon setzen",
+                    ),
+                ),
+                _ => check(
+                    &format!("harness.{id}"),
+                    CheckStatus::Ok,
+                    format!("{id}: Direkt-API {endpoint}"),
+                    None,
+                ),
+            };
+            c.details = Some(json!({ "endpoint": endpoint, "auth_status": auth }));
+            out.push(c);
+            continue;
+        }
         let cli = VENDOR_CLIS.iter().find(|c| c.id == id);
         let source =
             resolve_binary(&info.id, cli.map_or(id.as_str(), |c| c.command), env).map(|b| b.source);
