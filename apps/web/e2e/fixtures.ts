@@ -1,7 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { test as base, type Page, type TestInfo } from '@playwright/test'
 
 const repo = resolve(import.meta.dirname, '..', '..', '..')
@@ -108,17 +108,34 @@ export class Daemon {
     return (text ? JSON.parse(text) : undefined) as T
   }
 
+  /** Eigenes Arbeitsverzeichnis unterhalb von `work`, optional als Git-Repository mit Dateien. */
+  workspace(files: Record<string, string>, git = false): string {
+    const dir = mkdtempSync(join(this.work, 'ws-'))
+    for (const [p, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, p)), { recursive: true })
+      writeFileSync(join(dir, p), content)
+    }
+    if (git) {
+      const run = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
+      run('init', '-q', '-b', 'main')
+      run('add', '-A')
+      run('-c', 'user.email=e2e@beton.invalid', '-c', 'user.name=e2e', 'commit', '-q', '-m', 'Ausgangsstand')
+    }
+    return dir
+  }
+
   scenario(name: string, yaml: string): string {
     const p = join(this.work, `${name}.yaml`)
     writeFileSync(p, yaml)
     return p
   }
 
-  async session(yaml: string, title = 'E2E'): Promise<string> {
+  /** Session mit Fake-Szenario; `cwd` ist sonst das gemeinsame Arbeitsverzeichnis. */
+  async session(yaml: string, title = 'E2E', cwd = this.work): Promise<string> {
     const scenario = this.scenario(`s${Date.now()}${Math.random().toString(36).slice(2)}`, yaml)
     const s = await this.api<{ id: string }>('POST', '/v1/sessions', {
       target: 'fake',
-      cwd: this.work,
+      cwd,
       title,
       harness_opts: { scenario },
     })
