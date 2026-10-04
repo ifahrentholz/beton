@@ -983,6 +983,124 @@
         }
       }
     },
+    "/v1/sessions/import": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Exportdatei als neue Session importieren (SES-009, DATA-010). Prüft die ganze Datei,\nbevor etwas angelegt wird; Fehler nennen die Zeile (`errors[].pointer`\n`/lines/<zeile>/<feld>`).",
+        "operationId": "import_session",
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "description": "Auch eine schon importierte Datei (gleicher Hash) erneut als neue Session anlegen.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Exportdatei: JSONL oder `.tar.zst` (bis 256 MiB)",
+          "content": {
+            "application/x-ndjson": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportFileBody"
+              }
+            },
+            "application/zstd": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportFileBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Importiert bzw. schon vorhanden (`skipped`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionImportResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Datei zu groß",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Medientyp nicht unterstützt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`unsupported_format_version`, `import_seq_gap` oder `import_invalid`; nichts angelegt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}": {
       "get": {
         "tags": [
@@ -1966,6 +2084,128 @@
           },
           "409": {
             "description": "`seq_ahead`: Startpunkt hinter `head_seq`",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/export": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Session als Datei exportieren (SES-009, DATA-010).",
+        "operationId": "export_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "with_raw",
+            "in": "query",
+            "description": "Redigiertes `raw` der Harnesses mitexportieren (Default `false`).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "with_blobs",
+            "in": "query",
+            "description": "`.tar.zst` mit `session.jsonl` und `blobs/<sha256>` statt JSONL (Default `false`).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exportdatei: JSONL (`application/x-ndjson`) bzw. mit `with_blobs` ein `.tar.zst` (`application/zstd`)",
+            "headers": {
+              "beton-export-blobs": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Anzahl der Blobs im Archiv"
+              },
+              "beton-export-events": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "description": "Anzahl der Events"
+              }
+            },
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportFileBody"
+                }
+              },
+              "application/zstd": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportFileBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Keine Leseberechtigung",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session unbekannt",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4388,6 +4628,11 @@
           }
         }
       },
+      "ExportFileBody": {
+        "type": "string",
+        "format": "binary",
+        "description": "Inhalt einer Exportdatei: JSONL bzw. `.tar.zst` (DATA-010)."
+      },
       "FieldError": {
         "type": "object",
         "description": "Ein Validierungsfehler mit JSON-Pointer auf das Feld.",
@@ -4820,6 +5065,29 @@
           }
         }
       },
+      "ImportedFromView": {
+        "type": "object",
+        "description": "Herkunft einer importierten Session.",
+        "required": [
+          "session_id",
+          "exported_at",
+          "export_sha256"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Session-ID in der exportierenden Instanz."
+          },
+          "exported_at": {
+            "type": "string",
+            "description": "Zeitpunkt des Exports (RFC 3339)."
+          },
+          "export_sha256": {
+            "type": "string",
+            "description": "SHA-256 der `session.jsonl`; Schlüssel der Idempotenz."
+          }
+        }
+      },
       "Info": {
         "type": "object",
         "description": "Server-Informationen.",
@@ -5075,6 +5343,7 @@
           "not_a_git_repo",
           "worktree_dirty",
           "worktree_unpushed",
+          "imported_read_only",
           "tombstoned",
           "precondition_failed",
           "payload_too_large",
@@ -5085,6 +5354,9 @@
           "invalid_param",
           "params_required",
           "harness_incompatible",
+          "unsupported_format_version",
+          "import_seq_gap",
+          "import_invalid",
           "rate_limited",
           "internal",
           "blob_corrupt",
@@ -5325,6 +5597,53 @@
             "format": "int64",
             "description": "Nur bei `mode=fuzzy`: Zahl der Dateien im Index (WEB-006).",
             "minimum": 0
+          }
+        }
+      },
+      "SessionImportResult": {
+        "type": "object",
+        "description": "Ergebnis von `POST /v1/sessions/import`.",
+        "required": [
+          "status",
+          "session_id",
+          "title",
+          "events",
+          "blobs",
+          "imported_from"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ImportStatus",
+            "description": "`imported` oder `skipped` (dieselbe Datei wurde schon importiert)."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bei `skipped`: `already_imported`."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Neue bzw. (bei `already_imported`) bestehende Session."
+          },
+          "title": {
+            "type": "string"
+          },
+          "events": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Anzahl der Events.",
+            "minimum": 0
+          },
+          "blobs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Anzahl der Blobs aus dem Archiv.",
+            "minimum": 0
+          },
+          "imported_from": {
+            "$ref": "#/components/schemas/ImportedFromView"
           }
         }
       },

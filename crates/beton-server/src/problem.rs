@@ -70,6 +70,8 @@ problem_codes! {
     NotAGitRepo = "not_a_git_repo", 409, "Kein Git-Repository";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
     WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
+    /// Die Session stammt aus einer Exportdatei und läuft auf diesem Host nicht (SES-009).
+    ImportedReadOnly = "imported_read_only", 409, "Importierte Session läuft hier nicht";
     Tombstoned = "tombstoned", 410, "Gelöscht";
     PreconditionFailed = "precondition_failed", 412, "Vorbedingung nicht erfüllt";
     PayloadTooLarge = "payload_too_large", 413, "Anfrage zu groß";
@@ -86,6 +88,12 @@ problem_codes! {
     /// Der Ziel-Harness eines Forks passt nicht, z. B. ohne `fork_history` oder ohne eine
     /// Capability, die der Agent braucht (SES-007).
     HarnessIncompatible = "harness_incompatible", 422, "Ziel-Harness passt nicht";
+    /// Exportdatei mit höherer Formatversion, als diese Version liest (DATA-010 AC4).
+    UnsupportedFormatVersion = "unsupported_format_version", 422, "Exportformat zu neu";
+    /// Exportdatei mit Lücke in `seq` (DATA-010 AC2); nichts wurde angelegt.
+    ImportSeqGap = "import_seq_gap", 422, "Import abgelehnt: Lücke im Verlauf";
+    /// Ungültige Exportdatei, z. B. eine Zeile gegen das Schema (DATA-010 AC2).
+    ImportInvalid = "import_invalid", 422, "Import abgelehnt: Datei ungültig";
     RateLimited = "rate_limited", 429, "Zu viele Anfragen";
     Internal = "internal", 500, "Interner Fehler";
     BlobCorrupt = "blob_corrupt", 500, "Blob beschädigt";

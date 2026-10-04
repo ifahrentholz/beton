@@ -4371,15 +4371,24 @@
       ]
     },
     "SystemComponent": {
-      "type": "string",
-      "enum": [
-        "server",
-        "policy",
-        "sandbox",
-        "proxy",
-        "scheduler",
-        "sync",
-        "runner"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "server",
+            "policy",
+            "sandbox",
+            "proxy",
+            "scheduler",
+            "sync",
+            "runner"
+          ]
+        },
+        {
+          "description": "Akteur importierter Events, deren User auf dieser Instanz unbekannt ist (DATA-010).",
+          "type": "string",
+          "const": "import"
+        }
       ]
     },
     "TerminalClosed": {

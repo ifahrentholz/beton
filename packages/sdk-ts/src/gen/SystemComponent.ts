@@ -1,2 +1,2 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
-export type SystemComponent = "server" | "policy" | "sandbox" | "proxy" | "scheduler" | "sync" | "runner";
+export type SystemComponent = "server" | "policy" | "sandbox" | "proxy" | "scheduler" | "sync" | "runner" | "import";

@@ -17,6 +17,7 @@ pub mod app;
 pub mod attachments;
 pub mod commands;
 pub mod config;
+pub mod exports;
 pub mod extract;
 pub mod file_index;
 pub mod fork;

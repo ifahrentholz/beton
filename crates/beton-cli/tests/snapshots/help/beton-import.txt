@@ -1,0 +1,54 @@
+Chats von Claude Code und Codex übernehmen oder eine Exportdatei importieren.
+
+Ohne Argumente zeigt `import` die gefundenen Chats zur Auswahl (nur auf einem Terminal; sonst die
+Liste und Exit-Code 2). Die Vendor-Dateien liest nur der lokale Daemon, und er ändert sie nie.
+
+Usage: beton import [OPTIONS] [FILE]
+
+Arguments:
+  [FILE]
+          Exportdatei von `beton export` (.jsonl oder .tar.zst); wird eine neue Session
+
+Options:
+      --harness <HARNESS>
+          Werkzeug, dessen Chats übernommen werden (Default: alle)
+
+          Possible values:
+          - claude: Claude Code (`~/.claude/projects`)
+          - codex:  Codex (`~/.codex/sessions`)
+          - all:    Beide
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+      --session <REF>
+          Chat mit dieser Session-ID des Werkzeugs übernehmen (mehrfach möglich)
+
+      --last <N>
+          Die N zuletzt geänderten Chats übernehmen
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+      --force
+          Schon übernommene Chats bzw. schon importierte Dateien erneut als neue Session anlegen
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
