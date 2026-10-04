@@ -111,6 +111,7 @@ impl MapState {
                 v => v.clone(),
             },
             source: ToolSource::Acp,
+            parent_call_id: None,
         }))
     }
 

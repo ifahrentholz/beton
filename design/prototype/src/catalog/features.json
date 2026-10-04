@@ -3025,7 +3025,7 @@
   "summary": "Bestehende Claude-Code- und Codex-Chats werden als beton-Sessions übernommen. Parsing der Vendor-Formate ist HAR-023/HAR-024 (siehe 01-harnesses.md); dieses Feature regelt Discovery, Deduplizierung, Metadaten und Resume-Fähigkeit der importierten Session.",
   "acs": [
    "Ein zweiter Import derselben Vendor-Session ohne `force` liefert `skipped: already_imported` mit der bestehenden Session-ID.",
-   "Eine importierte Claude-Session ist per `resume` nativ fortsetzbar, solange die Vendor-Datei existiert; sonst per Handover.",
+   "Eine importierte Claude-Session ist per `resume` nativ fortsetzbar, solange die Vendor-Datei existiert (`--resume <id> --fork-session`, die Datei bleibt unverändert); sonst per Rebuild (HAR-019) und, wenn der scheitert, per Handover.",
    "(ab M3) Importierte Sessions werden dem Projekt zugeordnet, dessen Root ihr `cwd` enthält (falls vorhanden)."
   ]
  },

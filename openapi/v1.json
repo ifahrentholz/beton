@@ -366,6 +366,199 @@
         }
       }
     },
+    "/v1/imports": {
+      "post": {
+        "tags": [
+          "imports"
+        ],
+        "summary": "Importiert Sessions einer Vendor-CLI als beton-Sessions (SES-008). Ergebnis je Session:\n`imported`, `skipped` (`already_imported`, mit der bestehenden Session) oder `failed`.",
+        "operationId": "import_sessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ergebnis je Session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`capability_unsupported`: Harness ohne Import",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/imports/candidates": {
+      "get": {
+        "tags": [
+          "imports"
+        ],
+        "summary": "Lokale Sessions einer Vendor-CLI (SES-008). Liest nur Verlaufsdateien.",
+        "operationId": "list_candidates",
+        "parameters": [
+          {
+            "name": "harness",
+            "in": "query",
+            "description": "`claude` oder `codex`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Kandidaten, zuletzt geänderte zuerst",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportCandidatePage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`capability_unsupported`: Harness ohne Import",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Verzeichnis der CLI unbekannt (kein `HOME`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/info": {
       "get": {
         "tags": [
@@ -3947,6 +4140,228 @@
             "items": {
               "$ref": "#/components/schemas/ProviderInfo"
             }
+          }
+        }
+      },
+      "ImportCandidate": {
+        "type": "object",
+        "description": "Eine lokale Session einer Vendor-CLI.",
+        "required": [
+          "harness",
+          "vendor_session_id",
+          "path",
+          "size_bytes"
+        ],
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "vendor_session_id": {
+            "type": "string",
+            "description": "Session-ID der Vendor-CLI; mit ihr wird importiert."
+          },
+          "path": {
+            "type": "string",
+            "description": "Verlaufsdatei auf dem Host (nur zur Anzeige)."
+          },
+          "cwd": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Arbeitsverzeichnis, in dem der Chat lief."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letzte Änderung der Datei (RFC 3339)."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "imported_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bereits importiert: die beton-Session."
+          }
+        }
+      },
+      "ImportCandidatePage": {
+        "type": "object",
+        "description": "Kandidaten, zuletzt geänderte zuerst.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportCandidate"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ImportRequest": {
+        "type": "object",
+        "description": "Import-Anfrage: entweder `refs` oder `last_n`.",
+        "required": [
+          "harness"
+        ],
+        "properties": {
+          "harness": {
+            "type": "string",
+            "description": "`claude` oder `codex`."
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Vendor-Session-IDs aus den Kandidaten."
+          },
+          "last_n": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Die `n` zuletzt geänderten Sessions.",
+            "minimum": 0
+          },
+          "force": {
+            "type": "boolean",
+            "description": "Auch bereits importierte Sessions erneut importieren (neue Session)."
+          }
+        }
+      },
+      "ImportResponse": {
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportResult"
+            }
+          }
+        }
+      },
+      "ImportResult": {
+        "type": "object",
+        "description": "Ergebnis je Vendor-Session.",
+        "required": [
+          "vendor_session_id",
+          "status",
+          "warnings"
+        ],
+        "properties": {
+          "vendor_session_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ImportStatus"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bei `skipped` bzw. `failed`, z. B. `already_imported`, `not_found`, `unknown_format`."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Neue bzw. (bei `already_imported`) bestehende Session."
+          },
+          "events": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Übernommene Inhalts-Events.",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportWarningView"
+            }
+          }
+        }
+      },
+      "ImportStatus": {
+        "type": "string",
+        "enum": [
+          "imported",
+          "skipped",
+          "failed"
+        ]
+      },
+      "ImportWarningView": {
+        "type": "object",
+        "description": "Hinweis des Parsers (ohne Inhalte, nur Zeilennummern und Zahlen).",
+        "required": [
+          "kind",
+          "detail"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "z. B. `corrupt_line`, `discarded_branches`, `unmapped`."
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "detail": {
+            "type": "string"
           }
         }
       },

@@ -125,6 +125,9 @@ pub fn messages(history: &[HistoryEvent]) -> Result<Vec<(String, Value)>, Harnes
                            "content": [{"type": "text", "text": text}]}),
                 ));
             }
+            // Tool-Calls eines Vendor-Sub-Agents (Import, HAR-023) gehören nicht in den
+            // Hauptverlauf; ihr Ergebnis steckt im Ergebnis des Task-Aufrufs.
+            EventPayload::ToolCallRequested(c) if c.parent_call_id.is_some() => {}
             EventPayload::ToolCallRequested(c) => {
                 let name = match &c.mcp_server {
                     Some(server) => format!("mcp__{server}__{}", c.tool),
@@ -243,6 +246,7 @@ mod tests {
                     mcp_server: None,
                     args: json!({"command": "ls"}),
                     source: ToolSource::Harness,
+                    parent_call_id: None,
                 }),
                 None,
             ),
@@ -264,6 +268,46 @@ mod tests {
         assert_eq!(m[1].1["content"][0]["text"], "aus raw");
         assert_eq!(m[2].1["content"][0]["type"], "tool_use");
         assert_eq!(m[3].1["content"][0]["tool_use_id"], "c1");
+    }
+
+    #[test]
+    fn har_023_nested_subagent_calls_stay_out_of_the_rebuilt_history() {
+        let call = |id: &str, parent: Option<&str>| {
+            EventPayload::ToolCallRequested(ToolCallRequested {
+                call_id: id.into(),
+                tool: "Grep".into(),
+                mcp_server: None,
+                args: json!({}),
+                source: ToolSource::Harness,
+                parent_call_id: parent.map(str::to_owned),
+            })
+        };
+        let done = |id: &str| {
+            EventPayload::ToolCallCompleted(ToolCallCompleted {
+                call_id: id.into(),
+                status: ToolStatus::Ok,
+                result: Some(json!("ok")),
+                result_ref: None,
+                duration_ms: 0,
+            })
+        };
+        let history = vec![
+            ev(1, msg(MessageRole::User, "Suche"), None),
+            ev(2, call("task", None), None),
+            ev(3, call("sub", Some("task")), None),
+            ev(4, done("sub"), None),
+            ev(5, done("task"), None),
+        ];
+        let m = messages(&history).unwrap();
+        let ids: Vec<&str> = m
+            .iter()
+            .filter_map(|(_, v)| {
+                v["content"][0]["id"]
+                    .as_str()
+                    .or(v["content"][0]["tool_use_id"].as_str())
+            })
+            .collect();
+        assert_eq!(ids, ["task", "task"]);
     }
 
     #[test]

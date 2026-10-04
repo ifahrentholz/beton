@@ -49,10 +49,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "session_search_and_user_state",
         sql: include_str!("../migrations/sqlite/0005_session_search_and_user_state.sql"),
     },
+    Migration {
+        version: 6,
+        name: "session_imports",
+        sql: include_str!("../migrations/sqlite/0006_session_imports.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,

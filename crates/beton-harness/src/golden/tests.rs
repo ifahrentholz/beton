@@ -110,6 +110,7 @@ impl HarnessAdapter for EchoAdapter {
                                     mcp_server: None,
                                     args: v["args"].clone(),
                                     source: ToolSource::Harness,
+                                    parent_call_id: None,
                                 }),
                                 raw: raw.clone(),
                                 turn_id,
