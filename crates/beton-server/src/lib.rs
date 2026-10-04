@@ -16,6 +16,7 @@ pub mod app;
 pub mod commands;
 pub mod config;
 pub mod extract;
+pub mod fork;
 pub mod hub;
 pub mod idempotency;
 pub mod local_auth;

@@ -52,6 +52,15 @@
         "compaction": {
           "$ref": "#/$defs/CompactionSupport"
         },
+        "context_window": {
+          "description": "Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des\nHandover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "effort_switch": {
           "$ref": "#/$defs/SwitchSupport"
         },

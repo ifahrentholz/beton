@@ -99,6 +99,18 @@ pub struct RunnerBoot {
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018); `None` =
     /// keine Workspace-Beobachtung.
     pub snapshots: Option<PathBuf>,
+    /// Session mit übernommenem Verlauf (Fork bzw. Resume eines Imports, HAR-018, HAR-019).
+    pub fork: Option<ForkBoot>,
+}
+
+/// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkBoot {
+    /// JSON-Datei mit dem Plan.
+    pub plan: PathBuf,
+    /// `session.forked` bzw. `session.resumed` steht schon im Log; der Runner rendert dann nur
+    /// noch die Präambel für den ersten Turn.
+    pub logged: bool,
 }
 
 /// Laufender Runner.
@@ -229,6 +241,7 @@ macro_rules! runner_provider_contract {
                     harnesses: Default::default(),
                     agent_ref: None,
                     snapshots: None,
+                    fork: None,
                 }
             }
 

@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// Variablen, die ein Runner erben darf (deny-by-default, analog SBX-005).
-pub const ENV_ALLOWLIST: [&str; 14] = [
+pub const ENV_ALLOWLIST: [&str; 16] = [
     "PATH",
     // Datenverzeichnis und Log-Filter für die Logs des Runners (OBS-001).
     "BETON_HOME",
@@ -41,6 +41,10 @@ pub const ENV_ALLOWLIST: [&str; 14] = [
     "SHELL",
     "TZ",
     "SYSTEMROOT",
+    // Konfigurationsverzeichnisse der Vendor-CLIs (nur Pfade): Der Harness soll dieselben
+    // Sessions sehen wie im Terminal des Nutzers (Resume, History-Rebuild HAR-019).
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
 ];
 
 /// Der lokale Provider.
@@ -190,6 +194,15 @@ impl RunnerProvider for LocalProvider {
                 beton_runner::env::SNAPSHOTS.into(),
                 dir.display().to_string(),
             ));
+        }
+        if let Some(fork) = &boot.fork {
+            vars.push((
+                beton_runner::env::FORK_PLAN.into(),
+                fork.plan.display().to_string(),
+            ));
+            if fork.logged {
+                vars.push((beton_runner::env::FORK_LOGGED.into(), "1".into()));
+            }
         }
         if boot.harnesses != beton_harness::registry::HarnessLayers::default() {
             vars.push((

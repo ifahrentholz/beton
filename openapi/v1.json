@@ -1466,6 +1466,107 @@
         }
       }
     },
+    "/v1/sessions/{id}/fork": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Neue Session ab einem Event abzweigen (SES-006), optional auf einem anderen Harness\n(SES-007). Die Quelle bleibt unverändert und erhält nur `session.fork_created`.",
+        "operationId": "fork_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Fork angelegt; Runner startet",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`new_worktree` ohne Git-Repository",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`harness_incompatible`: Ziel-Harness passt nicht",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/input": {
       "post": {
         "tags": [
@@ -3628,6 +3729,89 @@
           }
         }
       },
+      "ForkRequest": {
+        "type": "object",
+        "description": "Fork-Anfrage (SES-006, SES-007).",
+        "properties": {
+          "at_seq": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Fork-Punkt; ohne Angabe das Ende der Session. Liegt er mitten in einem Turn, beginnt der\nFork am letzten vollständigen Turn-Ende davor (`effective_seq`).",
+            "minimum": 0
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ziel-Harness, z. B. `codex`; ohne Angabe der Harness der Quelle. Ein anderer Harness\nbekommt den Verlauf als Übergabe-Präambel (HAR-018)."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ForkWorkspace",
+                "description": "`new_worktree` (Default, falls die Quelle in einem Git-Repository arbeitet), `shared`\noder `fresh`. Dateien werden nie auf den Stand von `at_seq` zurückgesetzt."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "harness_opts": {
+            "type": "object",
+            "description": "Harness-spezifische Startoptionen (wie bei `POST /v1/sessions`); ohne Angabe die der\nQuelle, falls der Harness gleich bleibt."
+          }
+        }
+      },
+      "ForkResponse": {
+        "type": "object",
+        "description": "Ergebnis eines Forks.",
+        "required": [
+          "session",
+          "effective_seq",
+          "workspace"
+        ],
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionSummary",
+            "description": "Die neue Session."
+          },
+          "effective_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tatsächlicher Fork-Punkt in der Quelle (letztes vollständiges Turn-Ende).",
+            "minimum": 0
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/ForkWorkspace",
+            "description": "Gewählter Workspace-Modus."
+          }
+        }
+      },
+      "ForkWorkspace": {
+        "type": "string",
+        "description": "Woher die Dateien des Forks kommen (SES-006).",
+        "enum": [
+          "shared",
+          "new_worktree",
+          "fresh"
+        ]
+      },
       "HarnessPage": {
         "type": "object",
         "required": [
@@ -3930,6 +4114,7 @@
           "unsupported_media_type",
           "idempotency_key_reused",
           "base_not_found",
+          "harness_incompatible",
           "rate_limited",
           "internal",
           "blob_corrupt",
