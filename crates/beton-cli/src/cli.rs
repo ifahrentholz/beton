@@ -59,7 +59,7 @@ pub struct GlobalArgs {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv).
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Gestoppte Session fortsetzen und anhängen.
     Resume(ResumeArgs),
     /// An eine laufende Session anhängen (Verlauf, dann live).
@@ -129,6 +129,20 @@ pub struct RunArgs {
     /// Diese Session fortsetzen (ID, Präfix oder `last`).
     #[arg(long, value_name = "ID")]
     pub resume: Option<String>,
+    /// Neue Session ab einem Event dieser Session abzweigen: `ID@SEQ`, ohne `@SEQ` ab dem
+    /// Ende (SES-006). Mitten in einem Turn beginnt der Fork am vorherigen Turn-Ende.
+    #[arg(
+        long,
+        value_name = "ID[@SEQ]",
+        conflicts_with_all = ["continue_last", "resume", "worktree"]
+    )]
+    pub fork: Option<String>,
+    /// Harness des Forks (wie TARGET); ein anderer Harness bekommt eine Übergabe (SES-007).
+    #[arg(long, value_name = "HARNESS", requires = "fork")]
+    pub harness: Option<String>,
+    /// Dateien des Forks: neuer Worktree (Default im Git-Repository), gemeinsam oder leer.
+    #[arg(long, value_enum, value_name = "MODE", requires = "fork")]
+    pub workspace: Option<ForkWorkspaceArg>,
     /// Titel der neuen Session.
     #[arg(long, value_name = "T")]
     pub title: Option<String>,
@@ -160,6 +174,27 @@ pub struct RunArgs {
     /// Szenario-Datei, nur für den Harness `fake` (HAR-026).
     #[arg(long, value_name = "FILE")]
     pub scenario: Option<std::path::PathBuf>,
+}
+
+/// Workspace eines Forks (SES-006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ForkWorkspaceArg {
+    /// Neuer `git worktree` vom Stand der Quelle inkl. WIP-Snapshot.
+    NewWorktree,
+    /// Dieselben Dateien wie die Quelle.
+    Shared,
+    /// Leeres Verzeichnis, nur der Verlauf.
+    Fresh,
+}
+
+impl ForkWorkspaceArg {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NewWorktree => "new_worktree",
+            Self::Shared => "shared",
+            Self::Fresh => "fresh",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

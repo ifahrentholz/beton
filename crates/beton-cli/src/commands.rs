@@ -95,7 +95,7 @@ pub async fn run(cli: Cli) -> CliResult {
         .ok()
     });
     match cli.command {
-        Command::Run(args) => crate::run::run(&ctx, args).await,
+        Command::Run(args) => crate::run::run(&ctx, *args).await,
         Command::Resume(args) => crate::run::resume(&ctx, args).await,
         Command::Attach(args) => crate::run::attach(&ctx, args).await,
         Command::Open(args) => open(&ctx, args).await,
