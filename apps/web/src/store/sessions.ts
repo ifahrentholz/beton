@@ -23,9 +23,11 @@ export const useSessions = create<SessionsState>()((set) => ({
   offline: false,
   upsert: (items) =>
     set((s) => {
-      if (items.length === 0) return s
+      // Deltas überlappen (DELTA_OVERLAP_MS): Unveränderte Einträge lösen kein Rendern aus.
+      const changed = items.filter((it) => JSON.stringify(s.byId[it.id]) !== JSON.stringify(it))
+      if (changed.length === 0) return s
       const byId = { ...s.byId }
-      for (const it of items) byId[it.id] = it
+      for (const it of changed) byId[it.id] = it
       return { byId }
     }),
   remove: (id) =>
@@ -35,6 +37,15 @@ export const useSessions = create<SessionsState>()((set) => ({
       return { byId }
     }),
 }))
+
+/** Abfragefenster für Deltas: Änderungen in derselben Millisekunde gehen nicht verloren. */
+export const DELTA_OVERLAP_MS = 2000
+
+/** `updated_after` für den nächsten Delta-Abruf. */
+export function deltaSince(since: string): string {
+  const t = Date.parse(since)
+  return Number.isNaN(t) ? since : new Date(Math.max(0, t - DELTA_OVERLAP_MS)).toISOString()
+}
 
 /** Sortierung der Liste: jüngste Aktivität zuerst. */
 export function sortSessions(list: SessionSummary[]): SessionSummary[] {
@@ -53,13 +64,14 @@ export function startSessionSync(): () => void {
   let stopped = false
   let since = ''
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Änderungen aus Sicht des Users: Aktivität, Gelesen-Stand, Pin (SES-012).
   const track = (items: SessionSummary[]) => {
-    for (const it of items) if (it.last_activity_at > since) since = it.last_activity_at
+    for (const it of items) if (it.changed_at > since) since = it.changed_at
   }
   const poll = async () => {
     if (stopped) return
     try {
-      const page = await client.sessions.list({ limit: 200, updatedAfter: since })
+      const page = await client.sessions.list({ limit: 200, updatedAfter: deltaSince(since) })
       useSessions.getState().upsert(page.items)
       track(page.items)
       useSessions.setState({ offline: false })

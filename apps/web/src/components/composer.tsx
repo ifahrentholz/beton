@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Capabilities } from '@beton/sdk'
 import { ArrowUp, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -68,7 +68,7 @@ export function Picker({
 
 /**
  * Eingabe mit Pickern (WEB-004). Senden mit ⏎, Zeilenumbruch mit ⇧⏎. Während eines Turns
- * heißt der Senden-Button „Einreihen“; eingereihte Nachrichten gehen nach dem Turn raus.
+ * heißt der Senden-Button „Einreihen“; die Queue (WEB-005) steht über dem Eingabefeld.
  */
 export function Composer({
   sessionId,
@@ -76,7 +76,7 @@ export function Composer({
   model,
   capabilities,
   running,
-  queued,
+  queue,
   onSend,
   onInterrupt,
   onModel,
@@ -86,7 +86,8 @@ export function Composer({
   model?: string | null | undefined
   capabilities?: Capabilities | undefined
   running: boolean
-  queued: string[]
+  /** Serverseitige Queue über dem Eingabefeld (WEB-005). */
+  queue?: ReactNode
   onSend: (text: string) => void
   onInterrupt: () => void
   onModel?: ((model: string) => void) | undefined
@@ -111,16 +112,7 @@ export function Composer({
   }
   return (
     <div className="shrink-0 border-t border-border p-3">
-      {queued.length > 0 && (
-        <div className="mb-2 flex flex-col gap-1">
-          {queued.map((q, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-md border border-dashed border-border px-2 py-1 text-[12px]">
-              <span className="text-muted-foreground">Eingereiht {i + 1}</span>
-              <span className="truncate">{q}</span>
-            </div>
-          ))}
-        </div>
-      )}
+      {queue}
       <div className="rounded-md border border-input bg-card focus-within:outline-2 focus-within:outline-ring">
         <textarea
           ref={ref}

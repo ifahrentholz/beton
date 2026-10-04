@@ -26,7 +26,7 @@ const base = {
 
 function renderComposer(caps: Capabilities, sessionId = 'ses_a') {
   return render(
-    <Composer sessionId={sessionId} harness="fake" capabilities={caps} running={false} queued={[]} onSend={() => undefined} onInterrupt={() => undefined} />,
+    <Composer sessionId={sessionId} harness="fake" capabilities={caps} running={false} onSend={() => undefined} onInterrupt={() => undefined} />,
   )
 }
 
@@ -63,7 +63,7 @@ describe('Composer', () => {
 
   it('Senden mit Enter, Zeilenumbruch mit Shift+Enter', () => {
     const sent: string[] = []
-    render(<Composer sessionId="ses_c" harness="fake" running={false} queued={[]} onSend={(t) => sent.push(t)} onInterrupt={() => undefined} />)
+    render(<Composer sessionId="ses_c" harness="fake" running={false} onSend={(t) => sent.push(t)} onInterrupt={() => undefined} />)
     const box = screen.getByLabelText('Nachricht')
     fireEvent.change(box, { target: { value: 'Zeile' } })
     act(() => {
