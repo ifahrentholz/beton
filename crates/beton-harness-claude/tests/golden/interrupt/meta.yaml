@@ -4,3 +4,4 @@ recorded_at: 2026-10-03T16:46:38.677Z
 scenario: Interrupt während der Antwort
 platform: macos-aarch64
 exit_code: 0
+migrated: "WP-28: In system/init permissionMode von `auto` auf `default` gesetzt. Aufgenommen vor WP-28 ohne `--permission-mode`, daher galt `permissions.defaultMode` der Benutzer-Einstellungen; seither setzt der Adapter den Modus immer ausdrücklich, und 2.1.285 meldet mit `--permission-mode default` `default` (ohne Modellaufruf geprüft)."

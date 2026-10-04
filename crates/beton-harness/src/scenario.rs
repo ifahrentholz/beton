@@ -14,7 +14,8 @@
 //!
 //! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
 //! `echo_input: true` gibt die Eingabe des Turns zurück, `echo_history: true` die
-//! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019).
+//! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019), `echo_settings: true`
+//! Modell, Effort und Permission-Mode, mit denen der Turn läuft (HAR-017, HAR-027).
 
 use std::path::Path;
 
@@ -155,6 +156,11 @@ pub struct Step {
     /// `stream-json` mit `--persist` hat einen Verlauf; sonst ist die Nachricht leer.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub echo_history: bool,
+    /// Modell, Effort und Permission-Mode, mit denen der Harness diesen Turn ausführt, als
+    /// Nachricht des Agents: `model=<m> effort=<e> mode=<p>` (`-` für nicht gesetzt; HAR-017,
+    /// HAR-027).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub echo_settings: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +269,29 @@ pub fn resolve_echo(steps: &[Step], input: &str, history: &[String]) -> Vec<Step
         .collect()
 }
 
+/// Text von `echo_settings` (HAR-017, HAR-027).
+pub fn settings_text(model: &str, effort: Option<&str>, mode: &str) -> String {
+    format!("model={model} effort={} mode={mode}", effort.unwrap_or("-"))
+}
+
+/// Ersetzt `echo_settings` (auch in `on_gate`-Zweigen) durch einen `message`-Schritt.
+pub fn resolve_settings(steps: &[Step], text: &str) -> Vec<Step> {
+    steps
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            if s.echo_settings {
+                s.echo_settings = false;
+                s.message = Some(text.to_owned());
+            } else if let Some(g) = &mut s.on_gate {
+                g.allow = resolve_settings(&g.allow, text);
+                g.deny = resolve_settings(&g.deny, text);
+            }
+            s
+        })
+        .collect()
+}
+
 impl Step {
     /// Namen der gesetzten Aktionen (für die Validierung).
     fn actions(&self) -> Vec<&'static str> {
@@ -289,6 +318,7 @@ impl Step {
         add(self.write_file.is_some(), "write_file");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
+        add(self.echo_settings, "echo_settings");
         out
     }
 

@@ -171,6 +171,15 @@ impl DirectAdapter {
         servers: Vec<String>,
         failures: Vec<EventPayload>,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        // HAR-027: nur der Default-Modus; andere werden abgelehnt statt ignoriert.
+        if let Some(mode) = spec.permission_mode
+            && mode != beton_harness::PermissionMode::Default
+        {
+            return Err(beton_harness::CapabilityUnsupported(
+                beton_harness::Action::PermissionMode,
+            )
+            .into());
+        }
         let key = match &self.provider.key {
             KeyRef::None => None,
             KeyRef::Env(var) => Some(self.keys.get(var).ok_or_else(|| {
@@ -281,6 +290,8 @@ impl HarnessAdapter for DirectAdapter {
             models,
             models_stale,
             efforts: Vec::new(),
+            // Jeder Tool-Call geht durch das Gate; weitere Modi folgen mit der Policy-Engine.
+            permission_modes: vec![beton_harness::PermissionMode::Default],
             // Kleinstes konfiguriertes Fenster: das Handover-Budget (HAR-018) passt dann auf
             // jedes Modell des Providers; ohne Angabe gilt der Default.
             context_window: self

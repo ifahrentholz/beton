@@ -31,6 +31,50 @@ pub struct Resume {
     pub fork: bool,
     /// Projektverzeichnis der Session-Dateien (`--persist`).
     pub persist: Option<PathBuf>,
+    /// `--session-id` für eine neue Session.
+    pub session_id: Option<String>,
+}
+
+/// Modell, Effort und Permission-Mode wie bei der echten CLI (HAR-017, HAR-027).
+#[derive(Debug, Clone, Default)]
+pub struct Settings {
+    model: Option<String>,
+    effort: Option<String>,
+    /// `--permission-mode`; ohne Flag gilt `permissions.defaultMode` aus
+    /// `.claude/settings.json` im Arbeitsverzeichnis (wie 2.1.285), sonst `default`.
+    mode: String,
+    /// Fehlerinjektion: Modus, den die CLI meldet, egal was gesetzt ist.
+    report: Option<String>,
+    /// Modus vor `plan`; `ExitPlanMode` stellt ihn wieder her (wie 2.1.285, `prePlanMode`).
+    pre_plan: String,
+}
+
+impl Settings {
+    pub fn from_flags(
+        model: Option<String>,
+        effort: Option<String>,
+        mode: Option<String>,
+        report: Option<String>,
+    ) -> Self {
+        let mode = mode.unwrap_or_else(|| {
+            std::fs::read_to_string(".claude/settings.json")
+                .ok()
+                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                .and_then(|v| v["permissions"]["defaultMode"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "default".into())
+        });
+        Self {
+            model,
+            effort,
+            mode,
+            report,
+            pre_plan: "default".into(),
+        }
+    }
+
+    fn reported(&self) -> &str {
+        self.report.as_deref().unwrap_or(&self.mode)
+    }
 }
 
 /// Projektverzeichnis wie bei Claude Code: `<config>/projects/<cwd>`, jedes Zeichen außer
@@ -79,6 +123,7 @@ pub struct Sim<R, W> {
     /// Belegter Kontext nach dem letzten `result` und bekanntes Kontextfenster (SES-011).
     context: u64,
     window: Option<u64>,
+    settings: Settings,
 }
 
 impl<R: BufRead, W: Write> Sim<R, W> {
@@ -86,6 +131,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         scenario: &Scenario,
         partial: bool,
         resume: Resume,
+        settings: Settings,
         mcp_configs: Vec<ServerConfig>,
         input: R,
         out: W,
@@ -94,10 +140,11 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         let uuid = |n: u64| format!("00000000-0000-4000-8000-{:012x}", n & 0xffff_ffff_ffff);
         // Wie die echte CLI: `--resume <id>` setzt die Session fort, mit `--fork-session` unter
         // neuer ID.
-        let session_id = match &resume.session {
-            Some(id) if resume.fork => uuid(fnv(&format!("fork:{id}"))),
-            Some(id) => id.clone(),
-            None => uuid(seed),
+        let session_id = match (&resume.session, &resume.session_id) {
+            (Some(id), _) if resume.fork => uuid(fnv(&format!("fork:{id}"))),
+            (Some(id), _) => id.clone(),
+            (None, Some(id)) => id.clone(),
+            (None, None) => uuid(seed),
         };
         let mut lines: Vec<Value> = Vec::new();
         if let (Some(dir), Some(id)) = (&resume.persist, &resume.session) {
@@ -124,13 +171,17 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             file,
             partial,
             session_id,
-            model: "claude-fake".into(),
+            model: settings
+                .model
+                .clone()
+                .unwrap_or_else(|| "claude-fake".into()),
             ids: 0,
             initialized: false,
             mcp_configs,
             mcp: Clients::default(),
             context: 0,
             window: None,
+            settings,
         }
     }
 
@@ -150,16 +201,47 @@ impl<R: BufRead, W: Write> Sim<R, W> {
     /// Beantwortet Steuerbefehle des Adapters. Liefert `true` bei `interrupt`.
     fn control(&mut self, msg: &Value) -> Result<bool, Stop> {
         let request_id = msg["request_id"].clone();
-        let subtype = msg["request"]["subtype"].as_str().unwrap_or_default();
-        if subtype == "set_model"
-            && let Some(m) = msg["request"]["model"].as_str()
-        {
-            self.model = m.to_owned();
+        let request = &msg["request"];
+        let subtype = request["subtype"].as_str().unwrap_or_default();
+        let mut response = json!({});
+        let mut status = false;
+        match subtype {
+            "initialize" => {
+                // Wie 2.1.285: der wirksame Modus steht in der Initialize-Antwort.
+                response = json!({"current_permission_mode": self.settings.reported()});
+            }
+            "set_model" => {
+                if let Some(m) = request["model"].as_str() {
+                    self.model = m.to_owned();
+                }
+            }
+            "apply_flag_settings" => {
+                if let Some(e) = request["settings"]["effortLevel"].as_str() {
+                    self.settings.effort = Some(e.to_owned());
+                }
+            }
+            "set_permission_mode" => {
+                if let Some(m) = request["mode"].as_str() {
+                    if m == "plan" && self.settings.mode != "plan" {
+                        self.settings.pre_plan = self.settings.mode.clone();
+                    }
+                    m.clone_into(&mut self.settings.mode);
+                    response = json!({"mode": m});
+                    status = true;
+                }
+            }
+            _ => {}
         }
         self.emit(json!({
             "type": "control_response",
-            "response": {"subtype": "success", "request_id": request_id, "response": {}},
+            "response": {"subtype": "success", "request_id": request_id, "response": response},
         }))?;
+        if status {
+            self.emit(json!({
+                "type": "system", "subtype": "status", "status": null,
+                "permissionMode": self.settings.reported(), "session_id": self.session_id,
+            }))?;
+        }
         Ok(subtype == "interrupt")
     }
 
@@ -183,7 +265,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                             "type": "system", "subtype": "init",
                             "session_id": self.session_id, "model": self.model,
                             "tools": tools, "mcp_servers": self.mcp.status(),
-                            "permissionMode": "default", "apiKeySource": "none",
+                            "permissionMode": self.settings.reported(), "apiKeySource": "none",
                         }))?;
                     }
                     // Wie die echte CLI: `/compact` fasst den Verlauf zusammen, meldet
@@ -221,7 +303,15 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         self.result(TurnEnd::Failed(why), "", &Usage::default())?;
                         continue;
                     }
-                    let steps = resolve_echo(&turn.emit, &text, &self.history);
+                    let settings = beton_harness::scenario::settings_text(
+                        &self.model,
+                        self.settings.effort.as_deref(),
+                        self.settings.reported(),
+                    );
+                    let steps = beton_harness::scenario::resolve_settings(
+                        &resolve_echo(&turn.emit, &text, &self.history),
+                        &settings,
+                    );
                     self.record("user", json!(text));
                     self.history.push(text);
                     let last = self.turn(&steps)?;
@@ -369,6 +459,14 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                     self.tool_result(&id, &json!("Permission denied"), true)?;
                 }
             }
+            // Wie die CLI: ein freigegebenes `ExitPlanMode` verlässt `plan` (HAR-027).
+            if call.name == "ExitPlanMode" && state.allowed && self.settings.mode == "plan" {
+                self.settings.mode = self.settings.pre_plan.clone();
+                self.emit(json!({
+                    "type": "system", "subtype": "status", "status": null,
+                    "permissionMode": self.settings.reported(), "session_id": self.session_id,
+                }))?;
+            }
             state.call = Some(id);
         } else if let Some(call) = &step.mcp_call {
             let id = self.next_id("toolu");
@@ -461,8 +559,10 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         // Wie die echte CLI: Kontextfenster je Modell in `modelUsage` (SES-011).
         self.window = usage.context_window.or(self.window);
         self.context = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+        // Wie die echte CLI: `modelUsage` je Modell, das den Turn bearbeitet hat (HAR-017 AC1).
+        msg["modelUsage"] = json!({ self.model.clone(): {} });
         if let Some(window) = self.window {
-            msg["modelUsage"] = json!({ self.model.clone(): {"contextWindow": window} });
+            msg["modelUsage"][&self.model]["contextWindow"] = json!(window);
         }
         self.emit(msg)
     }

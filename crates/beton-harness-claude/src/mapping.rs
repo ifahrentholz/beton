@@ -34,6 +34,8 @@ pub struct MapState {
     /// Zuletzt gemeldeter Kontext (`context.usage`).
     pub last_context: Option<u64>,
     pub context_window: Option<u64>,
+    /// Welche Permission-Modes die CLI melden darf (HAR-027).
+    pub expected_mode: crate::permission::ModeGuard,
 }
 
 /// `system`-Untertypen, die beton nicht als Event braucht.

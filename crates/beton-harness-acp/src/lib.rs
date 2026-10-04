@@ -210,7 +210,9 @@ impl HarnessAdapter for AcpAdapter {
             auth_sources: vec![AuthSource::VendorCli],
             approval: ApprovalMechanism::AcpPermission,
             tool_call_gate: ToolCallGate::ApprovalOnly,
-            // Modellwechsel (`session/set_model`) folgt mit HAR-017.
+            // `session/set_model` erst nach `session/new` bekannt; die Session meldet `live`,
+            // wenn der Agent Modelle anbietet (HAR-017). ACP kennt keinen Start-Parameter für
+            // das Modell, ein Neustart hilft daher nicht.
             model_switch: SwitchSupport::None,
             effort_switch: SwitchSupport::None,
             // Ohne `session/load` nur kalt fortsetzbar; Fork immer per Preamble (HAR-018).
@@ -233,6 +235,8 @@ impl HarnessAdapter for AcpAdapter {
             models: self.config().models.clone(),
             models_stale: false,
             efforts: Vec::new(),
+            // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
+            permission_modes: vec![PermissionMode::Default],
             context_window: None,
         }
     }
@@ -293,7 +297,7 @@ impl HarnessAdapter for AcpAdapter {
         let process = Arc::new(Mutex::new(process));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
         let opened = open_session(&rpc, &spec, self.handshake_timeout).await;
-        let (session_id, modes) = match opened {
+        let (session_id, modes, models) = match opened {
             Ok(s) => s,
             Err(e) => {
                 rpc.close().await;
@@ -307,6 +311,18 @@ impl HarnessAdapter for AcpAdapter {
                 });
             }
         };
+        let caps = session_capabilities(
+            self.capabilities(Mode::Native, &ProbeReport::default()),
+            &modes,
+            &models,
+        );
+        // Startwerte (HAR-017, HAR-027): Ein Modus, den der Agent nicht anbietet, wird
+        // abgelehnt statt ignoriert (fail closed).
+        if let Err(e) = apply_start_settings(&rpc, &session_id, &spec, &caps, &modes).await {
+            rpc.close().await;
+            let _ = process.lock().await.kill().await;
+            return Err(e);
+        }
         let (tx, rx) = mpsc::channel(4096);
         let _ = tx
             .send(NormalizedEvent::new(
@@ -318,6 +334,20 @@ impl HarnessAdapter for AcpAdapter {
                 None,
             ))
             .await;
+        if spec.model.is_some() && models.is_empty() {
+            // Kein stilles Ignorieren: Der Agent wählt sein Modell selbst.
+            let _ = tx
+                .send(NormalizedEvent::new(
+                    EventPayload::Notice(beton_core::event::Notice {
+                        level: beton_core::event::NoticeLevel::Warn,
+                        text: "Der Agent bietet keine Modellwahl an (ACP `session/set_model`); \
+                               er nutzt sein eigenes Modell."
+                            .into(),
+                    }),
+                    None,
+                ))
+                .await;
+        }
         let state = Arc::new(Mutex::new(Turn::default()));
         let closing = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(Notify::new());
@@ -337,7 +367,7 @@ impl HarnessAdapter for AcpAdapter {
             },
         ));
         Ok(Box::new(AcpSession {
-            caps: self.capabilities(Mode::Native, &ProbeReport::default()),
+            caps,
             rpc,
             state,
             tx,
@@ -398,7 +428,7 @@ async fn open_session(
     rpc: &RpcClient,
     spec: &SessionSpec,
     timeout: Duration,
-) -> Result<(String, Vec<String>), Opened> {
+) -> Result<(String, Vec<String>, Vec<String>), Opened> {
     let init = initialize(rpc, timeout).await?;
     let load = init["agentCapabilities"]["loadSession"] == true;
     let cwd = spec.workdir.display().to_string();
@@ -429,13 +459,86 @@ async fn open_session(
             .map(str::to_owned)
             .ok_or_else(|| HarnessError::Protocol("session/new ohne sessionId".into()))?,
     };
-    let modes = result["modes"]["availableModes"]
-        .as_array()
+    let ids = |list: &Value, key: &str| -> Vec<String> {
+        list.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m[key].as_str().map(str::to_owned))
+            .collect()
+    };
+    let modes = ids(&result["modes"]["availableModes"], "id");
+    // `models` (ACP, instabil): angebotene Modelle für `session/set_model`.
+    let models = ids(&result["models"]["availableModels"], "modelId");
+    Ok((session_id, modes, models))
+}
+
+/// ACP-Modus-ID eines beton-Modus (Benennung von Claude Code über ACP).
+pub fn acp_mode(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Plan => "plan",
+        PermissionMode::Default => "default",
+        PermissionMode::AcceptEdits => "acceptEdits",
+        PermissionMode::Yolo => "bypassPermissions",
+    }
+}
+
+/// Capabilities der Session: Modellwechsel live, wenn der Agent Modelle anbietet;
+/// Permission-Modes, die der Agent als Modus anbietet (HAR-017, HAR-027).
+pub fn session_capabilities(
+    mut caps: Capabilities,
+    modes: &[String],
+    models: &[String],
+) -> Capabilities {
+    if !models.is_empty() {
+        caps.model_switch = SwitchSupport::Live;
+        caps.models = models.to_vec();
+    }
+    caps.permission_modes = PermissionMode::ALL
         .into_iter()
-        .flatten()
-        .filter_map(|m| m["id"].as_str().map(str::to_owned))
+        .filter(|m| *m == PermissionMode::Default || modes.iter().any(|id| id == acp_mode(*m)))
         .collect();
-    Ok((session_id, modes))
+    caps
+}
+
+/// `session/set_model` (HAR-017).
+async fn set_model(rpc: &RpcClient, session_id: &str, model: &str) -> Result<(), HarnessError> {
+    rpc.request_timeout(
+        "session/set_model",
+        json!({"sessionId": session_id, "modelId": model}),
+        Duration::from_secs(10),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Modell und Permission-Mode beim Start setzen.
+async fn apply_start_settings(
+    rpc: &RpcClient,
+    session_id: &str,
+    spec: &SessionSpec,
+    caps: &Capabilities,
+    modes: &[String],
+) -> Result<(), HarnessError> {
+    if let Some(mode) = spec.permission_mode {
+        if !caps.permission_modes.contains(&mode) {
+            return Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into());
+        }
+        let id = acp_mode(mode);
+        if modes.iter().any(|m| m == id) {
+            rpc.request_timeout(
+                "session/set_mode",
+                json!({"sessionId": session_id, "modeId": id}),
+                Duration::from_secs(10),
+            )
+            .await?;
+        }
+    }
+    if let Some(model) = &spec.model
+        && caps.model_switch == SwitchSupport::Live
+    {
+        set_model(rpc, session_id, model).await?;
+    }
+    Ok(())
 }
 
 /// `mcpServers` für `session/new` bzw. `session/load` (HAR-009): stdio-Relays ohne Env.
@@ -753,7 +856,7 @@ pub struct AcpSession {
 #[async_trait]
 impl HarnessSession for AcpSession {
     async fn send(&mut self, input: UserInput) -> Result<TurnId, HarnessError> {
-        let turn = TurnId::new();
+        let turn = input.turn_id.unwrap_or_default();
         {
             let mut st = self.state.lock().await;
             if st.turn.is_some() {
@@ -803,24 +906,27 @@ impl HarnessSession for AcpSession {
 
     async fn set_model(
         &mut self,
-        _model: String,
-        _effort: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
-        self.caps.check(Action::ModelSwitch)?;
+        if effort.is_some() {
+            self.caps.check(Action::EffortSwitch)?;
+        }
+        if let Some(model) = model {
+            self.caps.check(Action::ModelSwitch)?;
+            set_model(&self.rpc, &self.session_id, &model).await?;
+        }
         Ok(SwitchOutcome::Live)
     }
 
     async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError> {
-        let wanted = match mode {
-            PermissionMode::Plan => "plan",
-            PermissionMode::Default => "default",
-            PermissionMode::AcceptEdits => "acceptEdits",
-            PermissionMode::Yolo => "bypassPermissions",
-        };
+        if !self.caps.permission_modes.contains(&mode) {
+            return Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into());
+        }
+        let wanted = acp_mode(mode);
         if !self.modes.iter().any(|m| m == wanted) {
-            return Err(HarnessError::Protocol(format!(
-                "der Agent bietet den Modus `{wanted}` nicht an"
-            )));
+            // `default` ohne eigenen Modus des Agents: nichts zu tun.
+            return Ok(());
         }
         self.rpc
             .request_timeout(
@@ -843,6 +949,10 @@ impl HarnessSession for AcpSession {
 
     fn native_session_ref(&self) -> Option<String> {
         Some(self.session_id.clone())
+    }
+
+    fn capabilities(&self) -> Option<Capabilities> {
+        Some(self.caps.clone())
     }
 
     async fn shutdown(self: Box<Self>, how: Shutdown) -> Result<ExitInfo, HarnessError> {

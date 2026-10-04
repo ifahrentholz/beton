@@ -196,7 +196,7 @@ impl HarnessSession for EchoSession {
     }
     async fn set_model(
         &mut self,
-        _: String,
+        _: Option<String>,
         _: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
         Ok(SwitchOutcome::Live)

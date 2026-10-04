@@ -7,6 +7,7 @@
 
 pub mod import;
 pub mod mapping;
+pub mod permission;
 pub mod rebuild;
 pub mod record;
 
@@ -16,8 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    EventPayload, HarnessExited, RawJson, ResolvedVia, SessionSettingsChanged, SettingsMechanism,
-    TimeoutAction, ToolCallStarted, TurnStarted,
+    EventPayload, HarnessExited, RawJson, ResolvedVia, TimeoutAction, ToolCallStarted, TurnStarted,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -35,6 +35,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, mpsc};
 
 use crate::mapping::{MapState, map_line, unmapped};
+use crate::permission::{ModeGuard, vendor_mode};
 
 /// Getestete CLI-Versionen (Golden-Transcripts unter `tests/golden/`).
 pub const TESTED_VERSIONS: [&str; 1] = ["2.1.285"];
@@ -94,8 +95,9 @@ pub fn capabilities() -> Capabilities {
         approval: ApprovalMechanism::NativeRequest,
         // Vollständig erst mit dem PreToolUse-Hook (HAR-005, ab M2).
         tool_call_gate: ToolCallGate::ApprovalOnly,
+        // `set_model` bzw. `apply_flag_settings {effortLevel}` (HAR-017, gegen 2.1.285 geprüft).
         model_switch: SwitchSupport::Live,
-        effort_switch: SwitchSupport::None,
+        effort_switch: SwitchSupport::Live,
         resume: ResumeSupport::Warm,
         fork_history: ForkHistory::Rebuild,
         interrupt: true,
@@ -112,7 +114,10 @@ pub fn capabilities() -> Capabilities {
         // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
         models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
         models_stale: false,
-        efforts: Vec::new(),
+        // `--effort` kennt zusätzlich `max`; beton bietet die gemeinsamen Stufen an.
+        efforts: vec!["low".into(), "medium".into(), "high".into(), "xhigh".into()],
+        // `--permission-mode` bzw. `set_permission_mode` (HAR-027).
+        permission_modes: PermissionMode::ALL.to_vec(),
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
     }
@@ -120,6 +125,23 @@ pub fn capabilities() -> Capabilities {
 
 fn harness_id() -> HarnessId {
     HarnessId::CLAUDE.parse().unwrap_or_else(|_| unreachable!())
+}
+
+/// Neue Session-ID (UUID v4) für `--session-id`: So kennt beton die native Referenz schon vor
+/// dem ersten Turn (HAR-020 AC2); die CLI meldet sie sonst erst mit `system/init`.
+pub fn new_session_id() -> String {
+    let mut b = fastrand::u128(..).to_be_bytes();
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 /// Kommandozeile für eine Session (HAR-004, gegen 2.1.285 verifiziert).
@@ -141,6 +163,15 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
     if let Some(model) = &spec.model {
         args.extend(["--model".into(), model.clone()]);
     }
+    if let Some(effort) = &spec.effort {
+        args.extend(["--effort".into(), effort.clone()]);
+    }
+    // Immer ausdrücklich: Ohne Flag gilt `permissions.defaultMode` aus `.claude/settings.json`
+    // des Repositorys (HAR-027).
+    args.extend([
+        "--permission-mode".into(),
+        vendor_mode(spec.permission_mode.unwrap_or(PermissionMode::Default)).into(),
+    ]);
     if let Some(resume) = &spec.resume {
         args.extend(["--resume".into(), resume.clone()]);
         if spec.fork_session {
@@ -269,6 +300,17 @@ impl HarnessAdapter for ClaudeAdapter {
             None => ("claude".into(), Vec::new()),
         };
         args.extend(command_args(&spec, self.isolated));
+        // Eigene Session-ID für neue Sessions; beim Fortsetzen bleibt die ID der CLI (ohne
+        // `--fork-session`), beim Abzweigen vergibt die CLI eine neue.
+        let session_ref = match (&spec.resume, spec.fork_session) {
+            (None, _) => {
+                let id = new_session_id();
+                args.extend(["--session-id".into(), id.clone()]);
+                Some(id)
+            }
+            (Some(id), false) => Some(id.clone()),
+            (Some(_), true) => None,
+        };
         let launch = LaunchSpec {
             program,
             args,
@@ -289,6 +331,10 @@ impl HarnessAdapter for ClaudeAdapter {
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
         let state = Arc::new(Mutex::new(MapState {
             auth_source: Some(self.auth),
+            session_ref,
+            expected_mode: ModeGuard::new(vendor_mode(
+                spec.permission_mode.unwrap_or(PermissionMode::Default),
+            )),
             ..MapState::default()
         }));
         let (tx, rx) = mpsc::channel(4096);
@@ -357,9 +403,25 @@ async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Read
             send(&r.tx, unmapped(&Value::String(line)), None, None).await;
             continue;
         };
+        // HAR-027: Meldet die CLI einen freizügigeren Modus als gesetzt, endet die Session.
+        if let Some(reported) = reported_mode(&v) {
+            let verdict = r.state.lock().await.expected_mode.check(reported);
+            if let Err(reason) = verdict {
+                // Nichts mehr verarbeiten, was die CLI schon ausgegeben hat (auch keine
+                // Freigabe-Anfragen); danach meldet die Schleife `harness.exited`.
+                fail_closed(&r, &reason).await;
+                break;
+            }
+        }
         match v["type"].as_str() {
             Some("control_request") => handle_control(&r, &v, raw).await,
-            Some("control_response") => {}
+            Some("control_response") => {
+                // Antwort auf `set_permission_mode`: Wechsel bestätigt oder abgelehnt.
+                if let Some(id) = v["response"]["request_id"].as_str() {
+                    let ok = v["response"]["subtype"] == "success";
+                    r.state.lock().await.expected_mode.answered(id, ok);
+                }
+            }
             _ => {
                 let (events, turn) = {
                     let mut st = r.state.lock().await;
@@ -395,6 +457,42 @@ async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Read
         )
         .await;
     }
+}
+
+/// Permission-Mode, den eine stdout-Zeile meldet: `current_permission_mode` der
+/// Initialize-Antwort oder `permissionMode` einer `system`-Zeile (`init`, `status`).
+fn reported_mode(v: &Value) -> Option<&str> {
+    match v["type"].as_str()? {
+        "control_response" if v["response"]["request_id"] == "beton_init" => {
+            v["response"]["response"]["current_permission_mode"].as_str()
+        }
+        "system" => v["permissionMode"].as_str(),
+        _ => None,
+    }
+}
+
+/// Fail closed (HAR-027): Fehler melden und die CLI sofort beenden; der Runner setzt die
+/// Session über `harness.exited` auf `failed`.
+async fn fail_closed(r: &Reader, reason: &str) {
+    tracing::warn!("claude: Permission-Mode weicht ab, Session wird beendet");
+    let turn = r.state.lock().await.turn;
+    send(
+        &r.tx,
+        EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({
+                "type": "urn:beton:problem:permission_mode_mismatch",
+                "code": "permission_mode_mismatch",
+                "title": "Permission-Mode weicht ab; Session aus Sicherheitsgründen beendet",
+                "detail": reason,
+            }),
+        }),
+        None,
+        turn,
+    )
+    .await;
+    // Ohne stdin nimmt die CLI nichts mehr an; danach der ganze Prozessbaum.
+    r.stdin.lock().await.take();
+    let _ = r.process.lock().await.kill().await;
 }
 
 async fn send(
@@ -487,11 +585,31 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     if decision == ApprovalDecision::Deny {
         r.state.lock().await.denied.insert(call_id.clone());
     }
+    // Ein freigegebenes `ExitPlanMode` verlässt `plan` zum Modus davor (HAR-027); das Log
+    // erfährt es, und der Wächter erwartet den neuen Modus.
+    let left_plan = if decision == ApprovalDecision::Allow && tool == "ExitPlanMode" {
+        r.state.lock().await.expected_mode.plan_exit_approved()
+    } else {
+        None
+    };
     let _ = write_json(
         &r.stdin,
         &json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}}),
     )
     .await;
+    if let Some(mode) = left_plan.as_deref().and_then(permission::beton_mode) {
+        send(
+            &r.tx,
+            EventPayload::SessionSettingsChanged(beton_core::event::SessionSettingsChanged {
+                permission_mode: Some(mode.as_str().to_owned()),
+                mechanism: Some(beton_core::event::SettingsMechanism::Live),
+                ..beton_core::event::SessionSettingsChanged::default()
+            }),
+            None,
+            turn,
+        )
+        .await;
+    }
     send(
         &r.tx,
         EventPayload::ApprovalResolved(ApprovalResolved {
@@ -559,11 +677,20 @@ pub struct ClaudeSession {
 }
 
 impl ClaudeSession {
-    async fn control(&mut self, request: Value) -> Result<(), HarnessError> {
+    fn next_request_id(&mut self) -> String {
         self.requests += 1;
+        format!("beton_{}", self.requests)
+    }
+
+    async fn control(&mut self, request: Value) -> Result<(), HarnessError> {
+        let id = self.next_request_id();
+        self.control_with_id(&id, request).await
+    }
+
+    async fn control_with_id(&mut self, id: &str, request: Value) -> Result<(), HarnessError> {
         write_json(
             &self.stdin,
-            &json!({"type": "control_request", "request_id": format!("beton_{}", self.requests), "request": request}),
+            &json!({"type": "control_request", "request_id": id, "request": request}),
         )
         .await
     }
@@ -572,7 +699,7 @@ impl ClaudeSession {
 #[async_trait]
 impl HarnessSession for ClaudeSession {
     async fn send(&mut self, input: UserInput) -> Result<TurnId, HarnessError> {
-        let turn = TurnId::new();
+        let turn = input.turn_id.unwrap_or_default();
         self.state.lock().await.turn = Some(turn);
         let _ = self
             .tx
@@ -605,37 +732,43 @@ impl HarnessSession for ClaudeSession {
 
     async fn set_model(
         &mut self,
-        model: String,
+        model: Option<String>,
         effort: Option<String>,
     ) -> Result<SwitchOutcome, HarnessError> {
-        if effort.is_some() {
+        // HAR-017: beides live über Control-Requests, wirksam ab dem nächsten Request (gegen
+        // 2.1.285 ohne Modellaufruf geprüft: `apply_flag_settings` setzt `effortLevel`).
+        if let Some(effort) = &effort {
             capabilities().check(Action::EffortSwitch)?;
+            if !capabilities().efforts.contains(effort) {
+                return Err(beton_harness::CapabilityUnsupported(Action::EffortSwitch).into());
+            }
         }
-        self.control(json!({"subtype": "set_model", "model": model}))
+        if let Some(model) = model {
+            self.control(json!({"subtype": "set_model", "model": model}))
+                .await?;
+        }
+        if let Some(effort) = effort {
+            self.control(
+                json!({"subtype": "apply_flag_settings", "settings": {"effortLevel": effort}}),
+            )
             .await?;
-        let _ = self
-            .tx
-            .send(NormalizedEvent::new(
-                EventPayload::SessionSettingsChanged(SessionSettingsChanged {
-                    model: Some(model),
-                    mechanism: Some(SettingsMechanism::Live),
-                    ..SessionSettingsChanged::default()
-                }),
-                None,
-            ))
-            .await;
+        }
         Ok(SwitchOutcome::Live)
     }
 
     async fn set_permission_mode(&mut self, mode: PermissionMode) -> Result<(), HarnessError> {
-        let mode = match mode {
-            PermissionMode::Plan => "plan",
-            PermissionMode::Default => "default",
-            PermissionMode::AcceptEdits => "acceptEdits",
-            PermissionMode::Yolo => "bypassPermissions",
-        };
-        self.control(json!({"subtype": "set_permission_mode", "mode": mode}))
-            .await
+        if !capabilities().permission_modes.contains(&mode) {
+            return Err(beton_harness::CapabilityUnsupported(Action::PermissionMode).into());
+        }
+        let vendor = vendor_mode(mode);
+        // Bis zur Antwort darf die CLI den alten oder den neuen Modus melden (`ModeGuard`).
+        let id = self.next_request_id();
+        self.state.lock().await.expected_mode.allow(&id, vendor);
+        self.control_with_id(
+            &id,
+            json!({"subtype": "set_permission_mode", "mode": vendor}),
+        )
+        .await
     }
 
     /// HAR-022: `/compact` als Nutzernachricht; die CLI meldet `compact_boundary` und ein
@@ -783,6 +916,55 @@ mod mcp_tests {
                 .iter()
                 .any(|a| a == "--mcp-config" || a == "--plugin-dir")
         );
+    }
+
+    #[test]
+    fn har_027_permission_mode_is_always_explicit() {
+        // Ohne Angabe ausdrücklich `default`: `.claude/settings.json` im Repository kann den
+        // Modus sonst lockern.
+        let args = command_args(&SessionSpec::default(), false);
+        assert_eq!(arg_after(&args, "--permission-mode"), Some("default"));
+        for (mode, vendor) in [
+            (PermissionMode::Plan, "plan"),
+            (PermissionMode::AcceptEdits, "acceptEdits"),
+        ] {
+            let args = command_args(
+                &SessionSpec {
+                    permission_mode: Some(mode),
+                    ..SessionSpec::default()
+                },
+                false,
+            );
+            assert_eq!(arg_after(&args, "--permission-mode"), Some(vendor));
+        }
+    }
+
+    #[test]
+    fn har_017_start_effort_and_model_go_to_the_cli() {
+        let args = command_args(
+            &SessionSpec {
+                model: Some("sonnet".into()),
+                effort: Some("high".into()),
+                ..SessionSpec::default()
+            },
+            false,
+        );
+        assert_eq!(arg_after(&args, "--model"), Some("sonnet"));
+        assert_eq!(arg_after(&args, "--effort"), Some("high"));
+        assert!(
+            !command_args(&SessionSpec::default(), false)
+                .iter()
+                .any(|a| a == "--effort")
+        );
+    }
+
+    #[test]
+    fn har_020_new_session_id_is_a_uuid() {
+        let id = new_session_id();
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.chars().filter(|c| *c == '-').count(), 4);
+        assert_eq!(&id[14..15], "4", "Version 4");
+        assert_ne!(id, new_session_id());
     }
 
     #[test]

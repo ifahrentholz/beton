@@ -204,6 +204,7 @@ async fn record(
         platform: "beton-fake-cli".into(),
         exit_code: 0,
         recorded_with: Some(format!("beton-fake-cli --protocol {protocol}")),
+        migrated: None,
     };
     let dir = root.join(case.name);
     let _ = std::fs::remove_dir_all(&dir);

@@ -64,6 +64,8 @@ async fn qa_016_ac2_claude_adapter_passes_the_suite() {
         "approval_deny",
         "resume",
         "model_switch",
+        "effort_switch",
+        "permission_mode",
     ] {
         assert_eq!(report.outcome(check), Some(&Outcome::Passed), "{check}");
     }
@@ -85,6 +87,8 @@ async fn qa_016_ac2_codex_adapter_passes_the_suite() {
         "approval_deny",
         "resume",
         "model_switch",
+        "effort_switch",
+        "permission_mode",
     ] {
         assert_eq!(report.outcome(check), Some(&Outcome::Passed), "{check}");
     }
@@ -108,12 +112,15 @@ async fn qa_016_ac2_acp_adapter_passes_the_suite() {
         "approval_allow",
         "approval_deny",
         "resume",
+        // `session/set_model` und `session/set_mode`, vom Agent angeboten (HAR-017, HAR-027).
+        "model_switch",
+        "permission_mode",
     ] {
         assert_eq!(report.outcome(check), Some(&Outcome::Passed), "{check}");
     }
     // Nicht deklariert und korrekt abgelehnt.
     assert!(matches!(
-        report.outcome("model_switch"),
+        report.outcome("effort_switch"),
         Some(Outcome::Skipped(_))
     ));
     assert!(matches!(
