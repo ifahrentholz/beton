@@ -192,8 +192,10 @@ pub enum BranchAction {
 #[into_params(parameter_in = Query)]
 pub struct DeleteSessionQuery {
     /// Antwort auf `409 worktree_dirty`: `commit` (WIP-Commit) oder `discard`.
+    #[param(inline)]
     pub uncommitted: Option<UncommittedAction>,
     /// Antwort auf `409 worktree_unpushed`: `keep` oder `delete`.
+    #[param(inline)]
     pub branch: Option<BranchAction>,
 }
 

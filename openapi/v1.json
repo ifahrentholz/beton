@@ -836,7 +836,12 @@
             "description": "Antwort auf `409 worktree_dirty`: `commit` (WIP-Commit) oder `discard`.",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/UncommittedAction"
+              "type": "string",
+              "description": "Was mit uncommitteten Änderungen im Worktree geschehen soll (SES-016).",
+              "enum": [
+                "commit",
+                "discard"
+              ]
             }
           },
           {
@@ -845,7 +850,12 @@
             "description": "Antwort auf `409 worktree_unpushed`: `keep` oder `delete`.",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/BranchAction"
+              "type": "string",
+              "description": "Was mit einem Branch mit ungepushten, nicht gemergten Commits geschehen soll (SES-016).",
+              "enum": [
+                "keep",
+                "delete"
+              ]
             }
           }
         ],
@@ -1727,7 +1737,13 @@
             "description": "`uncommitted` (Default), `branch` oder `turn`.",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/ChangeScope"
+              "type": "string",
+              "description": "Sicht der Änderungsübersicht.",
+              "enum": [
+                "uncommitted",
+                "branch",
+                "turn"
+              ]
             }
           },
           {
@@ -1851,7 +1867,13 @@
             "description": "`uncommitted` (Default), `branch` oder `turn`.",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/ChangeScope"
+              "type": "string",
+              "description": "Sicht der Änderungsübersicht.",
+              "enum": [
+                "uncommitted",
+                "branch",
+                "turn"
+              ]
             }
           },
           {
@@ -2188,7 +2210,12 @@
             "description": "`name` (Dateinamen, Default) oder `content` (Inhalte).",
             "required": false,
             "schema": {
-              "$ref": "#/components/schemas/SearchMode"
+              "type": "string",
+              "description": "Dateinamen- oder Inhaltssuche.",
+              "enum": [
+                "name",
+                "content"
+              ]
             }
           },
           {

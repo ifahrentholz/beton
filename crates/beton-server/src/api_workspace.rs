@@ -404,6 +404,7 @@ pub struct SearchQuery {
     /// Suchbegriff (wörtlich; Smart-Case).
     pub q: String,
     /// `name` (Dateinamen, Default) oder `content` (Inhalte).
+    #[param(inline)]
     pub mode: Option<SearchMode>,
     pub limit: Option<String>,
     pub cursor: Option<String>,
@@ -554,6 +555,7 @@ impl From<beton_git::ChangedFile> for ChangedFile {
 #[into_params(parameter_in = Query)]
 pub struct ChangesQuery {
     /// `uncommitted` (Default), `branch` oder `turn`.
+    #[param(inline)]
     pub scope: Option<ChangeScope>,
     /// Turn-ID bei `scope=turn`; ohne Angabe der letzte Turn.
     pub turn: Option<String>,
@@ -897,6 +899,7 @@ pub struct DiffQuery {
     /// Dateipfad relativ zum Workspace.
     pub path: String,
     /// `uncommitted` (Default), `branch` oder `turn`.
+    #[param(inline)]
     pub scope: Option<ChangeScope>,
     /// Turn-ID bei `scope=turn`; ohne Angabe der letzte Turn.
     pub turn: Option<String>,

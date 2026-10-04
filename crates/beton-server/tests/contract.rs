@@ -434,3 +434,32 @@ async fn run_001_ac3_host_reports_provider_capabilities_unchanged() {
     // Schema-Snapshot: RunnerCapabilities steht in der generierten OpenAPI.
     assert!(openapi()["components"]["schemas"]["RunnerCapabilities"].is_object());
 }
+
+fn refs(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(map) => {
+            if let Some(Value::String(r)) = map.get("$ref") {
+                out.push(r.clone());
+            }
+            map.values().for_each(|c| refs(c, out));
+        }
+        Value::Array(items) => items.iter().for_each(|i| refs(i, out)),
+        _ => {}
+    }
+}
+
+/// PROTO-013 AC3 lokal: Jede `$ref` im OpenAPI-Dokument zeigt auf ein vorhandenes Schema
+/// (der Linter in der CI prüft dasselbe).
+#[test]
+fn openapi_refs_resolve() {
+    let doc = openapi();
+    let mut all = Vec::new();
+    refs(&doc, &mut all);
+    for r in all {
+        let name = r.strip_prefix("#/components/schemas/").unwrap_or(&r);
+        assert!(
+            doc["components"]["schemas"].get(name).is_some(),
+            "unaufgelöste Referenz {r}"
+        );
+    }
+}
