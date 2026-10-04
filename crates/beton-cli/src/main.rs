@@ -1,18 +1,27 @@
 use std::process::ExitCode;
 
+use beton_cli::cli::Cli;
+use beton_cli::exit::Exit;
+use clap::Parser as _;
+
 fn main() -> ExitCode {
-    let first = std::env::args().nth(1);
-    match first.as_deref() {
-        Some("--version" | "-V" | "version") => {
-            println!("beton {}", beton_cli::VERSION);
-            ExitCode::SUCCESS
+    // Fehlerhafte Aufrufe: clap schreibt Usage und Hinweis auf stderr, Exit-Code 2 (CLI-001 AC2).
+    let cli = Cli::parse();
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("beton: Laufzeit nicht startbar: {e}");
+            return Exit::General.into();
         }
-        _ => {
-            eprintln!(
-                "beton {}: Der Kommandobaum folgt mit CLI-001 (WP-10). Verfügbar: --version",
-                beton_cli::VERSION
-            );
-            ExitCode::from(2)
+    };
+    match runtime.block_on(beton_cli::commands::run(cli)) {
+        Ok(()) => Exit::Ok.into(),
+        Err(e) => {
+            eprintln!("beton: {e}");
+            e.exit.into()
         }
     }
 }

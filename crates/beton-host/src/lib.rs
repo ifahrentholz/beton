@@ -92,6 +92,8 @@ pub struct RunnerBoot {
     pub dev: bool,
     /// Native Session-Referenz zum Fortsetzen (SES-003).
     pub resume: Option<String>,
+    /// `harnesses:` aus User- und Projekt-Konfiguration (HAR-003, HAR-015).
+    pub harnesses: beton_harness::registry::HarnessLayers,
 }
 
 /// Laufender Runner.
@@ -219,6 +221,7 @@ macro_rules! runner_provider_contract {
                     model: None,
                     dev: true,
                     resume: None,
+                    harnesses: Default::default(),
                 }
             }
 

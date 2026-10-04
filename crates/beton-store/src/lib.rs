@@ -139,8 +139,11 @@ pub(crate) fn connect_options(db_path: &Path) -> SqliteConnectOptions {
         .foreign_keys(true)
 }
 
-/// Standard-Datenverzeichnis `~/.beton` (bzw. `%USERPROFILE%\.beton`).
+/// Standard-Datenverzeichnis: `$BETON_HOME`, sonst `~/.beton` (bzw. `%USERPROFILE%\.beton`).
 pub fn default_data_dir() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("BETON_HOME").filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(home));
+    }
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".beton"))

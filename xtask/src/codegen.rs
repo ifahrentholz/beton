@@ -4,6 +4,7 @@
 //! - `schemas/v1/events.schema.json` (JSON-Schema via `schemars`)
 //! - `schemas/v1/ws.schema.json` (WebSocket-Nachrichten, PROTO-004 ff.)
 //! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
+//! - `schemas/v1/config.schema.json` (`config.yaml`, CLI-008)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
@@ -61,6 +62,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         PathBuf::from("schemas/v1/harness-catalog.schema.json"),
         json,
     );
+    let config = schemars::schema_for!(beton_cli::config::Settings);
+    let mut json = serde_json::to_string_pretty(&config)?;
+    json.push('\n');
+    files.insert(PathBuf::from("schemas/v1/config.schema.json"), json);
 
     let tmp = tempfile::tempdir()?;
     let cfg = ts_rs::Config::new()

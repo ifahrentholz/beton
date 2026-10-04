@@ -67,7 +67,7 @@ beton
 ├── attach <SESSION> [--read-only]
 ├── open     [SESSION]                                 # Web-UI per Einmal-Link öffnen (AUTH-004)
 ├── session  list|show|rename|archive|unarchive|delete|fork|share|unshare|interrupt|take [--force]
-├── serve    [--bind ADDR] [--port N] [--config FILE] [--database-url URL] [--foreground]
+├── serve    [--bind ADDR] [--port N] [--config FILE] [--database-url URL] [--foreground] [--dev]
 ├── host     [--server URL] [--label k=v]… [--background] | pair|enable|disable|status|stop
 ├── hosts    list
 ├── runners  list [--host H]|logs <ID>|stop <ID>
@@ -101,7 +101,7 @@ beton
 ├── tui      [SESSION]
 ├── completion <bash|zsh|fish|powershell>
 └── version
-(versteckt/intern: `mcp serve|proxy` (HAR-009), `hook` (HAR-005, HAR-013), `dev record-golden` (HAR-025), `__exec`/`__sandbox-exec` (SBX-002, SBX-008))
+(versteckt/intern: `mcp serve|proxy` (HAR-009), `hook` (HAR-005, HAR-013), `dev record-golden` (HAR-025), `__runner` (Runner-Prozess, RUN-002), `__exec`/`__sandbox-exec` (SBX-002, SBX-008))
 Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · --no-color · --config FILE
 ```
 
@@ -410,6 +410,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-004 — `serve` & `host`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `beton serve` startet den Server (lokal: localhost-Bindung auf Port 7420, Token-Datei 0600, siehe AUTH-001; zentral: Postgres, OIDC per Config). `beton host` startet den Host-Daemon, der sich per ausgehendem WebSocket am Server anmeldet; `host enable|disable` installiert ihn als User-Service (launchd/systemd --user).
+- **Details:** `serve` liest Default, User-Konfiguration und Env (nicht die Projektebene, CLI-008), hält einen exklusiven Lock auf `~/.beton/daemon.lock` (ein Daemon je Datenverzeichnis) und schreibt `~/.beton/run/daemon.json` (`pid`, `http`, `version`), über die CLI und SDK den Daemon finden. `--bind` ersetzt die Adressen aus `server.listen`, `--port` den Port (`0` = frei wählbar). Runner startet der Daemon als `beton __runner` aus demselben Binary (RUN-002). `--dev` (und Debug-Builds) schaltet den Fake-Harness frei (HAR-026). Der Blob-GC (DATA-006) läuft 10 min nach dem Start, danach täglich. `--foreground`, `--database-url` und `host` folgen mit dem Hintergrundbetrieb bzw. dem zentralen Server und RUN-006 (ab M4).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton serve` ohne Config bindet ausschließlich an Loopback; `--bind 0.0.0.0` ohne konfigurierte Auth wird verweigert.
   - [ ] AC2 — (ab M4, RUN-006) `beton host enable` erzeugt einen User-Service, der nach Reboot automatisch verbindet; `disable` entfernt ihn.
@@ -443,6 +444,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-008 — `config`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Lesen/Schreiben von Konfiguration auf User- (`~/.beton/config.yaml`) und Projekt-Ebene (`.beton/config.yaml`); `list` zeigt die effektive Konfiguration mit Herkunft je Key. Validierung gegen das veröffentlichte JSON-Schema.
+- **Details:** Vorrang `default` < `user` < `project` < `env`. Projektdatei ist das nächste `.beton/config.yaml` ab dem aktuellen Verzeichnis aufwärts (sonst unter der Git-Wurzel); das Datenverzeichnis `~/.beton` zählt nicht als Projekt. Env-Ebene: `BETON_CFG_<SCHLÜSSEL>` mit `__` als Trenner, Werte als YAML (z. B. `BETON_CFG_EVENTS__STORE_RAW=false`). Die Projektebene (also das Repository) darf nur `harnesses.*` setzen und dort keine Auth-Herkunft (HAR-015); daemonweite Schlüssel wie `server.*` und `events.*` gehören dem Benutzer. `set`/`unset` schreiben ohne Flag in die User-Datei; Werte werden als YAML gelesen (`false`, `7420`, `[a, b]`). Geprüft wird jede Ebene gegen `schemas/v1/config.schema.json` (generiert aus den Rust-Typen); beim Schreiben bleiben Kommentare der Datei derzeit nicht erhalten. `config edit` öffnet `$VISUAL`/`$EDITOR` und verwirft ungültige Änderungen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton config list` zeigt pro Key die Quelle (`default|user|project|env`).
   - [ ] AC2 — Ein ungültiger Wert wird mit Schema-Fehlermeldung abgelehnt, die Datei bleibt unverändert.

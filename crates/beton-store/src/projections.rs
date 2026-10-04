@@ -274,9 +274,9 @@ impl Store {
         .collect()
     }
 
-    /// Vollständiger, sortierter Inhalt aller Projektionen einer Org (Vergleich vor/nach Rebuild).
-    #[cfg(test)]
-    pub(crate) async fn projection_dump(&self, org: OrgId) -> Vec<String> {
+    /// Vollständiger, sortierter Inhalt aller Projektionen einer Org (Vergleich vor/nach Rebuild,
+    /// Diagnose).
+    pub async fn projection_dump(&self, org: OrgId) -> Result<Vec<String>> {
         let mut out = Vec::new();
         for sql in [
             "SELECT id, title, status, archived, cost_micro, last_activity_at FROM sessions \
@@ -287,16 +287,18 @@ impl Store {
             for row in sqlx::query(sql)
                 .bind(org.to_string())
                 .fetch_all(&self.pool)
-                .await
-                .unwrap()
+                .await?
             {
                 use sqlx::{Column, ValueRef};
                 let cells: Vec<String> = row
                     .columns()
                     .iter()
                     .map(|c| {
-                        let raw = row.try_get_raw(c.ordinal()).unwrap();
-                        if raw.is_null() {
+                        let null = row
+                            .try_get_raw(c.ordinal())
+                            .map(|raw| raw.is_null())
+                            .unwrap_or(false);
+                        if null {
                             "NULL".into()
                         } else {
                             row.try_get::<String, _>(c.ordinal())
@@ -310,6 +312,6 @@ impl Store {
                 out.push(cells.join("|"));
             }
         }
-        out
+        Ok(out)
     }
 }

@@ -88,8 +88,9 @@ pub fn default_log_dir() -> PathBuf {
     beton_home().join("logs")
 }
 
-fn beton_home() -> PathBuf {
-    if let Some(home) = std::env::var_os("BETON_HOME") {
+/// Datenverzeichnis: `$BETON_HOME`, sonst `~/.beton`.
+pub fn beton_home() -> PathBuf {
+    if let Some(home) = std::env::var_os("BETON_HOME").filter(|h| !h.is_empty()) {
         return PathBuf::from(home);
     }
     let user_home = std::env::var_os("HOME")

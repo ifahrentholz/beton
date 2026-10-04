@@ -87,6 +87,7 @@ impl Runtime {
                 tunnel_socket: None,
                 dev: cfg!(debug_assertions),
                 launched: Arc::default(),
+                harnesses_user: Default::default(),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -116,8 +117,8 @@ pub fn default_registry(dev: bool) -> beton_harness::registry::Registry {
     r
 }
 
-/// Runner-Kommando: `beton-runner` neben dem eigenen Binary, sonst aus `PATH`.
-/// (Mit WP-10 wird daraus `beton runner`.)
+/// Runner-Kommando für eingebettete Daemons (Tests): `beton-runner` neben dem eigenen Binary,
+/// sonst aus `PATH`. `beton serve` setzt stattdessen `beton __runner` (RUN-002).
 pub fn default_runner_command() -> Vec<String> {
     let sibling = std::env::current_exe()
         .ok()
