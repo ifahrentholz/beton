@@ -229,10 +229,14 @@ pub struct InputAccepted {
     responses((status = 202, description = "Turn gestartet", body = InputAccepted)))]
 pub async fn submit_input(
     State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
     Path(id): Path<String>,
     ApiJson(req): ApiJson<InputRequest>,
 ) -> ApiResult<Response> {
-    let result = state.sessions().input(session_id(&id)?, req.text).await?;
+    let result = state
+        .sessions()
+        .input(session_id(&id)?, req.text, principal(auth).1)
+        .await?;
     Ok((StatusCode::ACCEPTED, axum::Json(result)).into_response())
 }
 
@@ -490,7 +494,11 @@ impl Command for InputSubmit {
             .ok_or_else(|| Problem::new(ProblemCode::ValidationFailed).detail("text fehlt"))?;
         ctx.state
             .sessions()
-            .input(need_session(session)?, text.to_owned())
+            .input(
+                need_session(session)?,
+                text.to_owned(),
+                PrincipalId::User(UserId::LOCAL),
+            )
             .await
     }
 }

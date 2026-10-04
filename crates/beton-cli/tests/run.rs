@@ -282,7 +282,10 @@ fn normalized(events: &[Value], session: &str) -> String {
             Value::String(s) => {
                 if s == session {
                     *s = "<session>".into();
-                } else if s.starts_with("run_") || s.starts_with("evt_") {
+                } else if s.starts_with("run_")
+                    || s.starts_with("evt_")
+                    || s.starts_with("msg_user_")
+                {
                     *s = "<id>".into();
                 } else if s.contains("/T/") || s.starts_with("/tmp") || s.starts_with("/private") {
                     *s = "<pfad>".into();

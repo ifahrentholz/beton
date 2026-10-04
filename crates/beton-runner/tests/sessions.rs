@@ -796,7 +796,7 @@ async fn proto_001_ac4_large_payload_reaches_clients_via_blob_api() {
     let events = d.wait_for(&id, is("turn.completed")).await;
     let offloaded = events
         .iter()
-        .find(|e| e["type"] == "message.completed")
+        .find(|e| e["type"] == "message.completed" && e["actor"]["kind"] != "user")
         .unwrap();
     assert!(offloaded.get("payload").is_none(), "Payload ausgelagert");
     let blob = offloaded["payload_ref"].as_str().unwrap();
@@ -864,7 +864,7 @@ async fn har_004_claude_adapter_runs_a_turn_through_the_runner() {
     let events = d.wait_for(&id, is("turn.completed")).await;
     let text = events
         .iter()
-        .find(|e| e["type"] == "message.completed")
+        .find(|e| e["type"] == "message.completed" && e["payload"]["role"] == "assistant")
         .unwrap();
     assert_eq!(text["payload"]["content"][0]["text"], "Hallo!");
     d.daemon.shutdown().await;
@@ -945,5 +945,40 @@ async fn session_list_delta_contains_only_changed_sessions() {
         .http("GET", "/v1/sessions?updated_after=gestern", None)
         .await;
     assert_eq!(status, 400);
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_002_user_input_is_part_of_the_event_log() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.http(
+        "POST",
+        &format!("/v1/sessions/{id}/input"),
+        Some(json!({"text": "Bitte prüfen"})),
+    )
+    .await;
+    let events = d.wait_for(&id, is("turn.completed")).await;
+    let user = events
+        .iter()
+        .position(|e| e["type"] == "message.completed" && e["payload"]["role"] == "user")
+        .expect("Nachricht des Nutzers fehlt");
+    assert_eq!(
+        events[user]["payload"]["content"][0]["text"],
+        "Bitte prüfen"
+    );
+    assert_eq!(events[user]["payload"]["author"], "usr_local");
+    let turn = events
+        .iter()
+        .position(|e| e["type"] == "turn.started")
+        .unwrap();
+    assert!(user < turn, "Eingabe steht vor dem Turn");
     d.daemon.shutdown().await;
 }

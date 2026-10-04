@@ -187,6 +187,7 @@ pub async fn drive(
                     Update::Live { .. } => {
                         let first = !st.live;
                         st.live = true;
+                        renderer.replaying = false;
                         if first && !script && !read_only && tty && st.status == "idle" {
                             eprintln!("Eingabe senden mit Enter; Strg+C koppelt ab.");
                         }

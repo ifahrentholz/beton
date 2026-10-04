@@ -277,7 +277,12 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Eingabe zustellen; eine gestoppte Session wird dafür fortgesetzt (SES-003 AC3).
-    pub async fn input(&self, session: SessionId, text: String) -> Result<Value, Problem> {
+    pub async fn input(
+        &self,
+        session: SessionId,
+        text: String,
+        by: PrincipalId,
+    ) -> Result<Value, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
         if record.archived {
             return Err(Problem::new(ProblemCode::Conflict)
@@ -306,6 +311,19 @@ impl<'a> SessionManager<'a> {
             }
             self.wait_connected(session).await?;
         }
+        // Die Eingabe gehört zum Verlauf (Chat, Replay, Export): als Nachricht des Nutzers
+        // vor der Zustellung, damit sie vor der Antwort steht.
+        self.append(
+            session,
+            user_actor(by),
+            EventPayload::MessageCompleted(beton_core::event::MessageCompleted {
+                message_id: format!("msg_user_{}", RunnerId::new()),
+                role: beton_core::event::MessageRole::User,
+                content: vec![json!({"type": "text", "text": text})],
+                author: Some(by),
+            }),
+        )
+        .await?;
         let result = self
             .state
             .runtime
