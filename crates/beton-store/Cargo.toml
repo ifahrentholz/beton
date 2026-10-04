@@ -12,14 +12,18 @@ authors.workspace = true
 beton-core.workspace = true
 fs4.workspace = true
 hex.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_path_to_error.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+zstd.workspace = true
 
 [dev-dependencies]
 fastrand.workspace = true

@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 6. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 7. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -93,6 +93,14 @@ erDiagram
         TEXT doc
         TEXT body
     }
+    session_file_imports {
+        TEXT session_id PK,FK
+        TEXT org_id
+        TEXT export_sha256
+        TEXT source_session_id
+        TEXT exported_at
+        TEXT imported_at
+    }
     session_imports {
         TEXT org_id PK
         TEXT host_id PK,FK
@@ -168,6 +176,7 @@ erDiagram
     orgs ||--o{ idempotency_keys : "org_id"
     orgs ||--o{ nodes : "org_id"
     sessions ||--o{ search_docs : "session_id"
+    sessions ||--o{ session_file_imports : "session_id"
     nodes ||--o{ session_imports : "host_id"
     sessions ||--o{ session_imports : "session_id"
     sessions ||--o{ session_user_state : "session_id"

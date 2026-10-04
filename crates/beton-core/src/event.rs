@@ -306,7 +306,9 @@ string_enum!(SystemComponent {
     Proxy,
     Scheduler,
     Sync,
-    Runner
+    Runner,
+    /// Akteur importierter Events, deren User auf dieser Instanz unbekannt ist (DATA-010).
+    Import
 });
 
 /// Ob ein Event ins Log geschrieben wird (PROTO-003).
