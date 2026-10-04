@@ -82,7 +82,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `message.completed` | D | `message_id, role: user\|assistant, content: [text\|image\|file_ref\|code], author?` |
 | | `reasoning.delta` | T | `message_id, text` |
 | | `reasoning.completed` | D | `message_id, summary?, redacted` |
-| Tools | `tool.call.requested` | D | `call_id, tool, mcp_server?, args, source: harness\|beton_mcp\|acp` |
+| Tools | `tool.call.requested` | D | `call_id, tool, mcp_server?, args, source: harness\|beton_mcp\|acp, parent_call_id?` (`parent_call_id`: auslösender Tool-Call eines Vendor-Sub-Agents, HAR-023) |
 | | `tool.call.started` | D | `call_id, sandbox_stage?, args?` (ausgeführte Argumente, wenn das Gate sie geändert hat) |
 | | `tool.call.output.delta` | T | `call_id, stream: stdout\|stderr, text` |
 | | `tool.call.completed` | D | `call_id, status: ok\|error\|denied\|cancelled, result?\|result_ref?, duration_ms` |
@@ -98,7 +98,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `usage.subscription` | D | `vendor, window, used_pct, resets_at` |
 | | `context.usage` | D | `used_tokens, window_tokens, source: harness\|estimated` |
 | | `compaction.started` / `compaction.completed` | D | `before_tokens, after_tokens?` |
-| Workspace & Git | `fs.changed` | D | `changes: [{path, change: added\|modified\|deleted\|renamed, from?}], source` |
+| Workspace & Git | `fs.changed` | D | `changes: [{path, change: added\|modified\|deleted\|renamed, from?}], source: watcher\|api\|import` |
 | | `git.worktree_created` | D | `path, branch, base, base_sha` |
 | | `git.commit_created` | D | `sha, branch, subject` |
 | | `cr.linked` / `cr.unlinked` | D | `url, provider, number, origin: created\|attached\|inferred` |
