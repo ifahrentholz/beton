@@ -4,9 +4,14 @@ beobachten und steuern.
 Usage: beton [OPTIONS] <COMMAND>
 
 Commands:
+  run         Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv)
+  resume      Gestoppte Session fortsetzen und anhängen
+  attach      An eine laufende Session anhängen (Verlauf, dann live)
   open        Web-UI im Browser öffnen (Anmeldung per Einmal-Link)
   session     Sessions verwalten
   serve       Lokalen Server starten (nur Loopback)
+  setup       Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
+  doctor      Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler
   config      Konfiguration lesen und schreiben
   auth        Lokale Anmeldung verwalten
   admin       Wartung von Datenbank und Projektionen

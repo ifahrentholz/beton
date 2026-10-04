@@ -2308,6 +2308,13 @@
       "SessionSettings": {
         "type": "object",
         "properties": {
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Neuer Titel; braucht keinen laufenden Runner."
+          },
           "model": {
             "type": [
               "string",

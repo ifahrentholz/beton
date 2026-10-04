@@ -1,0 +1,77 @@
+Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv)
+
+Usage: beton run [OPTIONS] [TARGET]
+
+Arguments:
+  [TARGET]
+          Harness, z. B. `claude` (Default: `harnesses.default`, sonst `claude`)
+
+Options:
+  -p, --prompt <PROMPT>
+          Prompt für den Skript-Modus; `-` liest ihn von stdin
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+      --model <M>
+          Modell (sofern der Harness es unterstützt)
+
+      --cwd <DIR>
+          Arbeitsverzeichnis der Session (Default: aktuelles Verzeichnis)
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -c, --continue
+          Zuletzt genutzte Session in diesem Verzeichnis fortsetzen
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --resume <ID>
+          Diese Session fortsetzen (ID, Präfix oder `last`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+      --title <T>
+          Titel der neuen Session
+
+      --detach
+          Session anlegen, ID ausgeben und nicht anhängen
+
+      --output-format <FORMAT>
+          Ausgabe im Skript-Modus
+
+          Possible values:
+          - text:        Nur der Antworttext
+          - json:        Am Ende genau ein JSON-Objekt
+          - stream-json: NDJSON der Events
+          
+          [default: text]
+
+      --on-ask <MODE>
+          Verhalten bei Freigaben ohne Terminal: warten (Web-UI) oder sofort ablehnen
+          
+          [default: wait]
+          [possible values: wait, deny]
+
+      --timeout <DUR>
+          Abbruch nach dieser Dauer, z. B. `90s`, `5m` (Skript-Modus)
+
+      --scenario <FILE>
+          Szenario-Datei, nur für den Harness `fake` (HAR-026)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version

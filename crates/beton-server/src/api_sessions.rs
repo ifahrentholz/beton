@@ -96,7 +96,12 @@ pub async fn get_session(
 
 #[derive(Debug, Deserialize, Serialize, ToSchema)]
 pub struct SessionSettings {
+    /// Neuer Titel; braucht keinen laufenden Runner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
 }
 
@@ -107,12 +112,21 @@ pub struct SessionSettings {
     responses((status = 200, description = "Geändert", body = SessionSummary)))]
 pub async fn patch_session(
     State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
     Path(id): Path<String>,
-    ApiJson(req): ApiJson<SessionSettings>,
+    ApiJson(mut req): ApiJson<SessionSettings>,
 ) -> ApiResult<axum::Json<SessionSummary>> {
     let id = session_id(&id)?;
-    let args = serde_json::to_value(&req).map_err(|e| Problem::internal(&e))?;
-    state.sessions().set(id, args).await?;
+    if let Some(title) = req.title.take() {
+        state
+            .sessions()
+            .rename(id, &title, principal(auth).1)
+            .await?;
+    }
+    if req.model.is_some() || req.effort.is_some() {
+        let args = serde_json::to_value(&req).map_err(|e| Problem::internal(&e))?;
+        state.sessions().set(id, args).await?;
+    }
     Ok(axum::Json(summary(
         state.store.session(state.local.org, id).await?,
     )))

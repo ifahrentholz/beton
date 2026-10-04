@@ -3,7 +3,13 @@ Sessions verwalten
 Usage: beton session [OPTIONS] <COMMAND>
 
 Commands:
-  list  Sessions auflisten
+  list       Sessions auflisten
+  show       Details einer Session
+  rename     Session umbenennen
+  archive    Session archivieren (Runner stoppt)
+  unarchive  Archivierte Session wiederherstellen
+  delete     Session endgültig löschen
+  interrupt  Laufenden Turn abbrechen
 
 Options:
       --server <URL>

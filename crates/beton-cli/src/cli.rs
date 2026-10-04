@@ -58,6 +58,12 @@ pub struct GlobalArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv).
+    Run(RunArgs),
+    /// Gestoppte Session fortsetzen und anhängen.
+    Resume(ResumeArgs),
+    /// An eine laufende Session anhängen (Verlauf, dann live).
+    Attach(AttachArgs),
     /// Web-UI im Browser öffnen (Anmeldung per Einmal-Link).
     Open(OpenArgs),
     /// Sessions verwalten.
@@ -65,6 +71,10 @@ pub enum Command {
     Session(SessionCommand),
     /// Lokalen Server starten (nur Loopback).
     Serve(ServeArgs),
+    /// Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen.
+    Setup(SetupArgs),
+    /// Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler.
+    Doctor,
     /// Konfiguration lesen und schreiben.
     #[command(subcommand)]
     Config(ConfigCommand),
@@ -87,6 +97,118 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
+pub struct RunArgs {
+    /// Harness, z. B. `claude` (Default: `harnesses.default`, sonst `claude`).
+    pub target: Option<String>,
+    /// Prompt für den Skript-Modus; `-` liest ihn von stdin.
+    #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
+    pub prompt: Option<String>,
+    /// Modell (sofern der Harness es unterstützt).
+    #[arg(long, value_name = "M")]
+    pub model: Option<String>,
+    /// Arbeitsverzeichnis der Session (Default: aktuelles Verzeichnis).
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<std::path::PathBuf>,
+    /// Zuletzt genutzte Session in diesem Verzeichnis fortsetzen.
+    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    pub continue_last: bool,
+    /// Diese Session fortsetzen (ID, Präfix oder `last`).
+    #[arg(long, value_name = "ID")]
+    pub resume: Option<String>,
+    /// Titel der neuen Session.
+    #[arg(long, value_name = "T")]
+    pub title: Option<String>,
+    /// Session anlegen, ID ausgeben und nicht anhängen.
+    #[arg(long, conflicts_with = "prompt")]
+    pub detach: bool,
+    /// Ausgabe im Skript-Modus.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text, value_name = "FORMAT")]
+    pub output_format: OutputFormat,
+    /// Verhalten bei Freigaben ohne Terminal: warten (Web-UI) oder sofort ablehnen.
+    #[arg(long, value_enum, default_value_t = OnAsk::Wait, value_name = "MODE")]
+    pub on_ask: OnAsk,
+    /// Abbruch nach dieser Dauer, z. B. `90s`, `5m` (Skript-Modus).
+    #[arg(long, value_name = "DUR", value_parser = parse_duration)]
+    pub timeout: Option<std::time::Duration>,
+    /// Szenario-Datei, nur für den Harness `fake` (HAR-026).
+    #[arg(long, value_name = "FILE")]
+    pub scenario: Option<std::path::PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// Nur der Antworttext.
+    Text,
+    /// Am Ende genau ein JSON-Objekt.
+    Json,
+    /// NDJSON der Events.
+    StreamJson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OnAsk {
+    Wait,
+    Deny,
+}
+
+/// `90s`, `5m`, `1h` oder Sekunden.
+pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
+    let raw = raw.trim();
+    let (num, unit) = raw
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or((raw, "s"), |i| raw.split_at(i));
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("`{raw}` ist keine Dauer (z. B. 90s, 5m)"))?;
+    let secs = match unit {
+        "s" | "" => n,
+        "m" => n * 60,
+        "h" => n * 3600,
+        _ => return Err(format!("Einheit `{unit}` unbekannt (s, m, h)")),
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+#[derive(Debug, Args)]
+pub struct ResumeArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+}
+
+#[derive(Debug, Args)]
+pub struct AttachArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+    /// Nur zuschauen: keine Eingaben, keine Freigaben.
+    #[arg(long)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SessionRefArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+}
+
+#[derive(Debug, Args)]
+pub struct RenameArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+    /// Neuer Titel.
+    pub title: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// Keine Rückfragen; installiert und meldet nie etwas an.
+    #[arg(long)]
+    pub non_interactive: bool,
+    /// Nur prüfen und ausgeben (mit `--json` maschinenlesbar).
+    #[arg(long)]
+    pub check: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct OpenArgs {
     /// Session, die direkt geöffnet wird.
     pub session: Option<String>,
@@ -96,6 +218,18 @@ pub struct OpenArgs {
 pub enum SessionCommand {
     /// Sessions auflisten.
     List(SessionListArgs),
+    /// Details einer Session.
+    Show(SessionRefArgs),
+    /// Session umbenennen.
+    Rename(RenameArgs),
+    /// Session archivieren (Runner stoppt).
+    Archive(SessionRefArgs),
+    /// Archivierte Session wiederherstellen.
+    Unarchive(SessionRefArgs),
+    /// Session endgültig löschen.
+    Delete(SessionRefArgs),
+    /// Laufenden Turn abbrechen.
+    Interrupt(SessionRefArgs),
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +250,9 @@ pub struct ServeArgs {
     /// Entwicklermodus: Fake-Harness verfügbar (HAR-026).
     #[arg(long)]
     pub dev: bool,
+    /// Im Vordergrund laufen statt im Hintergrund.
+    #[arg(long)]
+    pub foreground: bool,
 }
 
 #[derive(Debug, Subcommand)]

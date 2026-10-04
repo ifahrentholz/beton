@@ -85,9 +85,15 @@ pub fn print_json(value: &Value) -> CliResult {
 pub async fn run(cli: Cli) -> CliResult {
     let ctx = Ctx::from_env(cli.global);
     match cli.command {
+        Command::Run(args) => crate::run::run(&ctx, args).await,
+        Command::Resume(args) => crate::run::resume(&ctx, args).await,
+        Command::Attach(args) => crate::run::attach(&ctx, args).await,
         Command::Open(args) => open(&ctx, args).await,
         Command::Session(SessionCommand::List(args)) => session_list(&ctx, args.archived).await,
+        Command::Session(cmd) => session(&ctx, cmd).await,
         Command::Serve(args) => crate::serve::serve(&ctx, args).await,
+        Command::Setup(args) => setup(&ctx, args).await,
+        Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
@@ -96,13 +102,90 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Completion(args) => completion(&args),
         Command::Version => version(&ctx),
         Command::Dev(DevCommand::RecordGolden(args)) => record_golden(&ctx, args).await,
-        Command::Runner => match beton_runner::main_from_env().await {
-            code if code == std::process::ExitCode::SUCCESS => Ok(()),
-            _ => Err(CliError::new(
+        Command::Runner => {
+            let _log = crate::logging::init(crate::logging::LogConfig {
+                stderr_human: false,
+                ..crate::logging::LogConfig::for_component(crate::logging::Component::Runner)
+            })
+            .ok();
+            runner_exit(beton_runner::main_from_env().await)
+        }
+    }
+}
+
+fn runner_exit(code: std::process::ExitCode) -> CliResult {
+    match code {
+        code if code == std::process::ExitCode::SUCCESS => Ok(()),
+        _ => Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!("Runner beendet mit Fehler"),
+        )),
+    }
+}
+
+async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
+    let settings = ctx
+        .layers()?
+        .settings()
+        .map_err(|e| CliError::new(Exit::General, e))?;
+    let layers = beton_harness::registry::HarnessLayers {
+        user: settings.harnesses.clone(),
+        project: Default::default(),
+    };
+    let env = beton_harness::HostEnv {
+        user: settings.harnesses,
+        ..beton_harness::HostEnv::from_process()
+    };
+    let registry = beton_runner::builtin_registry(&layers, false);
+    let report = crate::setup::check(&env, &registry, &crate::setup::default_local_servers()).await;
+    if args.check && ctx.global.json {
+        print_json(&serde_json::to_value(&report).context("Bericht")?)?;
+        let missing = report.harnesses.iter().any(|h| h.supported && !h.installed);
+        return if missing {
+            Err(CliError::new(
                 Exit::General,
-                anyhow::anyhow!("Runner beendet mit Fehler"),
-            )),
-        },
+                anyhow::anyhow!("Harness-CLI fehlt"),
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    // Ohne Terminal keine Rückfragen (wie --non-interactive).
+    let interactive = !args.non_interactive && !args.check && std::io::stdin().is_terminal();
+    let mut out = std::io::stdout().lock();
+    let code = crate::setup::run(
+        &report,
+        interactive,
+        &mut crate::setup::TerminalPrompt,
+        &crate::setup::RealSpawner,
+        &mut out,
+    )
+    .await
+    .context("stdout")?;
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!("Mindestens eine nutzbare Harness-CLI fehlt"),
+        ))
+    }
+}
+
+async fn doctor(ctx: &Ctx) -> CliResult {
+    let report = crate::doctor::run(ctx).await;
+    if ctx.global.json {
+        print_json(&serde_json::to_value(&report).context("Bericht")?)?;
+    } else {
+        crate::doctor::render(&report, &mut std::io::stdout().lock()).context("stdout")?;
+    }
+    match report.exit_code() {
+        0 => Ok(()),
+        1 => Err(CliError::new(Exit::General, anyhow::anyhow!("Warnungen"))),
+        _ => Err(CliError::new(
+            Exit::Usage,
+            anyhow::anyhow!("Fehler gefunden"),
+        )),
     }
 }
 
@@ -177,6 +260,73 @@ async fn session_list(ctx: &Ctx, include_archived: bool) -> CliResult {
         line(&mut out, [&r[0], &r[1], &r[2], &r[3]]).context("stdout")?;
     }
     Ok(())
+}
+
+async fn session(ctx: &Ctx, cmd: SessionCommand) -> CliResult {
+    let client = ctx.client()?;
+    let reference = match &cmd {
+        SessionCommand::List(_) => return Ok(()),
+        SessionCommand::Show(a)
+        | SessionCommand::Archive(a)
+        | SessionCommand::Unarchive(a)
+        | SessionCommand::Delete(a)
+        | SessionCommand::Interrupt(a) => a.session.clone(),
+        SessionCommand::Rename(a) => a.session.clone(),
+    };
+    let id = crate::sessionref::resolve(&client, &reference).await?;
+    let result = match cmd {
+        SessionCommand::List(_) => return Ok(()),
+        SessionCommand::Show(_) => {
+            let mut session = client.session(&id).await?;
+            if let Some(cwd) = crate::sessionref::cwd_of(&client, &id).await? {
+                session["cwd"] = Value::String(cwd);
+            }
+            session["url"] = Value::String(client.session_url(&id));
+            if ctx.global.json {
+                return print_json(&session);
+            }
+            let mut out = std::io::stdout().lock();
+            for key in [
+                "id",
+                "title",
+                "status",
+                "harness",
+                "cwd",
+                "head_seq",
+                "archived",
+                "created_at",
+                "last_activity_at",
+                "url",
+            ] {
+                let v = &session[key];
+                if !v.is_null() {
+                    writeln!(out, "{key:<17} {}", render(v)).context("stdout")?;
+                }
+            }
+            return Ok(());
+        }
+        SessionCommand::Rename(a) => {
+            client
+                .patch_session(&id, &json!({ "title": a.title }))
+                .await?
+        }
+        SessionCommand::Archive(_) => client.set_archived(&id, true).await?,
+        SessionCommand::Unarchive(_) => client.set_archived(&id, false).await?,
+        SessionCommand::Delete(_) => {
+            client.delete_session(&id).await?;
+            json!({ "id": id, "deleted": true })
+        }
+        SessionCommand::Interrupt(_) => {
+            client.interrupt(&id).await?;
+            json!({ "id": id, "interrupted": true })
+        }
+    };
+    if ctx.global.json {
+        print_json(&result)
+    } else {
+        ctx.note(format!("{id}: erledigt"));
+        Ok(())
+    }
 }
 
 /// URL für `beton open`: Einmal-Link, optional mit Weiterleitung zur Session.

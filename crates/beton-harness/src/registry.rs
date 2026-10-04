@@ -188,6 +188,43 @@ fn find_program(command: &str, env: &HostEnv) -> Option<PathBuf> {
     None
 }
 
+/// Ausgabe eines Status-Kommandos.
+#[derive(Debug, Clone, Default)]
+pub struct StatusOutput {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Führt ein Status-Kommando einer Vendor-CLI aus (z. B. `claude auth status --json`).
+/// Ohne stdin, mit Timeout; die Ausgabe wird nicht geloggt (sie kann Kontodaten enthalten).
+pub async fn run_status(
+    program: &Path,
+    args: &[&str],
+    remove_env: &[&str],
+    timeout: Duration,
+) -> Result<StatusOutput, String> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    for k in remove_env {
+        cmd.env_remove(k);
+    }
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Err(_) => Err(format!(
+            "`{}` antwortet nicht innerhalb von {timeout:?}",
+            program.display()
+        )),
+        Ok(Err(e)) => Err(format!("`{}`: {e}", program.display())),
+        Ok(Ok(out)) => Ok(StatusOutput {
+            success: out.status.success(),
+            stdout: out.stdout,
+            stderr: out.stderr,
+        }),
+    }
+}
+
 /// Cache-Schlüssel: Pfad und Änderungszeit des Binaries.
 type ProbeKey = (PathBuf, Option<SystemTime>);
 

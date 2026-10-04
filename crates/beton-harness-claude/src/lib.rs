@@ -43,6 +43,24 @@ pub const SUBSCRIPTION_ENV_REMOVE: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_
 /// Höchstens so lange wartet der Adapter auf das Gate; danach `deny` (HAR-005 AC4).
 pub const GATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// Höchstdauer für `claude auth status`.
+pub const AUTH_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wertet nur `loggedIn` aus `claude auth status --json` aus; Konto-Felder (E-Mail,
+/// Organisation) werden verworfen (HAR-016).
+pub fn parse_auth_status(stdout: &[u8]) -> AuthStatus {
+    serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .and_then(|v| v.get("loggedIn")?.as_bool())
+        .map_or(AuthStatus::Unknown, |logged_in| {
+            if logged_in {
+                AuthStatus::LoggedIn
+            } else {
+                AuthStatus::LoggedOut
+            }
+        })
+}
+
 /// Der Claude-Code-Adapter.
 #[derive(Debug, Clone)]
 pub struct ClaudeAdapter {
@@ -153,6 +171,28 @@ impl HarnessAdapter for ClaudeAdapter {
             // liest beton nie (HAR-015).
             auth_status: AuthStatus::Unknown,
             probe_failed: failed,
+        }
+    }
+
+    async fn auth_status(&self, env: &HostEnv) -> AuthStatus {
+        let Some(bin) = resolve_binary(&harness_id(), "claude", env) else {
+            return AuthStatus::Unknown;
+        };
+        let remove: &[&str] = if self.auth == AuthSource::VendorCli {
+            &SUBSCRIPTION_ENV_REMOVE
+        } else {
+            &[]
+        };
+        match beton_harness::registry::run_status(
+            &bin.program,
+            &["auth", "status", "--json"],
+            remove,
+            AUTH_STATUS_TIMEOUT,
+        )
+        .await
+        {
+            Ok(out) => parse_auth_status(&out.stdout),
+            Err(_) => AuthStatus::Unknown,
         }
     }
 
@@ -566,5 +606,24 @@ impl HarnessSession for ClaudeSession {
             }
         };
         Ok(exit)
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    #[test]
+    fn har_016_auth_status_reads_only_logged_in() {
+        assert_eq!(
+            parse_auth_status(br#"{"loggedIn":true,"email":"x@y.z","orgName":"O"}"#),
+            AuthStatus::LoggedIn
+        );
+        assert_eq!(
+            parse_auth_status(br#"{"loggedIn":false}"#),
+            AuthStatus::LoggedOut
+        );
+        assert_eq!(parse_auth_status(b"Logged in as x"), AuthStatus::Unknown);
+        assert_eq!(parse_auth_status(b""), AuthStatus::Unknown);
     }
 }

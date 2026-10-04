@@ -9,14 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+beton-core.workspace = true
+beton-proto.workspace = true
+futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio.workspace = true
 
 [lints]
 workspace = true

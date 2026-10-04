@@ -61,6 +61,45 @@ pub fn server_config(
     Ok(config)
 }
 
+/// `beton serve` ohne `--foreground`: Daemon abgelöst starten und zurückkehren.
+async fn serve_background(ctx: &Ctx, args: &ServeArgs) -> CliResult {
+    if let Some(running) = crate::daemon::running(&ctx.home).await {
+        return Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!(
+                "Für {} läuft bereits ein Daemon ({})",
+                ctx.home.display(),
+                running.base_url()
+            ),
+        ));
+    }
+    let mut extra = Vec::new();
+    if let Some(bind) = args.bind {
+        extra.extend(["--bind".to_owned(), bind.to_string()]);
+    }
+    if let Some(port) = args.port {
+        extra.extend(["--port".to_owned(), port.to_string()]);
+    }
+    if args.dev {
+        extra.push("--dev".to_owned());
+    }
+    let client = crate::daemon::start_background(ctx, &extra).await?;
+    if ctx.global.json {
+        let info = DaemonInfo::read(&ctx.home);
+        crate::commands::print_json(&serde_json::json!({
+            "url": client.base_url(),
+            "pid": info.map(|i| i.pid),
+        }))?;
+    }
+    ctx.note(format!(
+        "beton {} läuft im Hintergrund: {} (Logs: {})",
+        crate::VERSION,
+        client.base_url(),
+        ctx.home.join("logs").display()
+    ));
+    Ok(())
+}
+
 /// Store-Einstellungen aus der Konfiguration (`events.store_raw`, PROTO-001 AC3).
 pub fn store_options(settings: &crate::config::Settings) -> beton_store::StoreOptions {
     beton_store::StoreOptions {
@@ -179,6 +218,9 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         .daemon_settings()
         .map_err(|e| CliError::new(Exit::General, e))?;
     let config = server_config(&ctx.home, &settings, &args)?;
+    if !args.foreground {
+        return serve_background(ctx, &args).await;
+    }
     let dev = args.dev || cfg!(debug_assertions);
 
     let _log = crate::logging::init(crate::logging::LogConfig {
@@ -259,6 +301,7 @@ mod tests {
             bind: bind.map(|b| b.parse().unwrap()),
             port,
             dev: false,
+            foreground: true,
         }
     }
 

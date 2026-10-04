@@ -142,6 +142,29 @@ pub enum ServerMsg {
     },
 }
 
+impl ServerMsg {
+    /// Liest eine Nachricht. Wie `serde_json::from_str`, nur dass Events mit `raw` gelingen
+    /// (intern getaggte Enums puffern, daraus lässt sich `RawValue` nicht lesen).
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Batch {
+            session_id: SessionId,
+            events: Vec<Event>,
+            #[serde(default)]
+            has_more: Option<bool>,
+        }
+        if crate::tagged::tag(text)? == "events" {
+            let b: Batch = serde_json::from_str(text)?;
+            return Ok(Self::Events {
+                session_id: b.session_id,
+                events: b.events,
+                has_more: b.has_more,
+            });
+        }
+        serde_json::from_str(text)
+    }
+}
+
 /// Ergebnis der Versionsaushandlung.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Supported {
@@ -205,6 +228,35 @@ impl Backoff {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn proto_005_event_batches_with_raw_can_be_read() {
+        use beton_core::event::{Actor, EventPayload, Notice, RawJson};
+        let session: SessionId = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C".parse().unwrap();
+        let mut event = Event::new(
+            session,
+            1,
+            Actor::default(),
+            EventPayload::Notice(Notice::default()),
+        );
+        event.raw = Some(RawJson::from_string(r#"{"z":1,"a":[2]}"#.into()).unwrap());
+        let msg = ServerMsg::Events {
+            session_id: session,
+            events: vec![event],
+            has_more: None,
+        };
+        let text = serde_json::to_string(&msg).unwrap();
+        assert!(
+            serde_json::from_str::<ServerMsg>(&text).is_err(),
+            "serde allein scheitert"
+        );
+        assert_eq!(ServerMsg::from_json(&text).unwrap(), msg);
+        let live = r#"{"t":"live","session_id":"ses_01JB8Y2D0M3K4J5H6G7F8E9D0C","head_seq":3}"#;
+        assert!(matches!(
+            ServerMsg::from_json(live).unwrap(),
+            ServerMsg::Live { head_seq: 3, .. }
+        ));
+    }
+
     use super::*;
 
     #[test]

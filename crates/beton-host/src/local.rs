@@ -25,8 +25,11 @@ use crate::{
 };
 
 /// Variablen, die ein Runner erben darf (deny-by-default, analog SBX-005).
-pub const ENV_ALLOWLIST: [&str; 12] = [
+pub const ENV_ALLOWLIST: [&str; 14] = [
     "PATH",
+    // Datenverzeichnis und Log-Filter für die Logs des Runners (OBS-001).
+    "BETON_HOME",
+    "BETON_LOG",
     "HOME",
     "USER",
     "LOGNAME",

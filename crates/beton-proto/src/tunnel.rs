@@ -109,9 +109,75 @@ pub enum TunnelDown {
     Problem { problem: Value },
 }
 
+impl TunnelUp {
+    /// Liest eine Nachricht. Wie `serde_json::from_str`, nur dass Events mit `raw` gelingen
+    /// (siehe `tagged`): Event-Pushes werden direkt als Struct gelesen.
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        #[derive(Deserialize)]
+        struct Push {
+            session_id: SessionId,
+            epoch: u64,
+            batch: Vec<RseqEvent>,
+        }
+        #[derive(Deserialize)]
+        struct Transient {
+            session_id: SessionId,
+            events: Vec<Event>,
+        }
+        match crate::tagged::tag(text)?.as_str() {
+            "events.push" => {
+                let p: Push = serde_json::from_str(text)?;
+                Ok(Self::EventsPush {
+                    session_id: p.session_id,
+                    epoch: p.epoch,
+                    batch: p.batch,
+                })
+            }
+            "transient.push" => {
+                let p: Transient = serde_json::from_str(text)?;
+                Ok(Self::TransientPush {
+                    session_id: p.session_id,
+                    events: p.events,
+                })
+            }
+            _ => serde_json::from_str(text),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proto_015_events_with_raw_survive_the_tunnel() {
+        use beton_core::event::{Actor, EventPayload, Notice, RawJson};
+        let session: SessionId = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C".parse().unwrap();
+        let mut event = Event::new(
+            session,
+            0,
+            Actor::default(),
+            EventPayload::Notice(Notice::default()),
+        );
+        event.raw =
+            Some(RawJson::from_string(r#"{"type":"assistant","b":1,"a":2}"#.into()).unwrap());
+        let up = TunnelUp::EventsPush {
+            session_id: session,
+            epoch: 1,
+            batch: vec![RseqEvent { rseq: 1, event }],
+        };
+        let text = serde_json::to_string(&up).unwrap();
+        let back = TunnelUp::from_json(&text).unwrap();
+        assert_eq!(back, up);
+        // Der Originaltext bleibt byte-genau.
+        let TunnelUp::EventsPush { batch, .. } = back else {
+            panic!()
+        };
+        assert_eq!(
+            batch[0].event.raw.as_ref().unwrap().get(),
+            r#"{"type":"assistant","b":1,"a":2}"#
+        );
+    }
 
     #[test]
     fn tunnel_messages_use_dotted_names() {

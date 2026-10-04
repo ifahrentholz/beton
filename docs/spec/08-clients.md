@@ -392,6 +392,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-002 — `beton run`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Startet eine Session mit Harness oder Agent (`TARGET` = Harness-ID, Agent-Referenz wie `builtin:<name>` oder Pfad zu Agent-Verzeichnis) und attacht interaktiv im Terminal (Zeilenmodus mit Streaming) oder mit `--mode tui` die Vendor-TUI im PTY (HAR-012, ab M3, siehe 01-harnesses.md). Startet bei Bedarf den lokalen Daemon. Druckt die Web-URL der Session auf stderr. Skript-Modus (`-p`) siehe API-006.
+- **Details:** Ohne `TARGET` gilt `harnesses.default`, sonst `claude`. Läuft für `BETON_HOME` kein Daemon, startet `run` ihn abgelöst (`beton serve` im Hintergrund, Ausgaben in `~/.beton/logs/serve.out`); `serve --foreground` bleibt im Vordergrund. `-c` wählt unter den nicht archivierten Sessions die mit der jüngsten Aktivität, deren `session.created.cwd` dem aktuellen Verzeichnis entspricht; gestoppte Sessions werden dabei fortgesetzt (SES-003). Interaktiv: Zeilen von stdin sind Eingaben (während eines Turns gepuffert), Freigaben fragt das Terminal mit `[y/N]` (Enter = Nein); ohne Terminal gilt `--on-ask`. Endet stdin, wartet `run` den laufenden Turn ab und koppelt ab. `--detach` legt die Session an und gibt nur ihre ID aus. In M0 umgesetzt sind `TARGET`, `-p`, `--model`, `--cwd`, `-c`, `--resume`, `--title`, `--detach`, `--output-format`, `--on-ask`, `--timeout`, `--scenario`; die übrigen Flags folgen mit ihren Features.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run claude` ohne laufenden Daemon startet ihn, erstellt eine Session und streamt die Antwort; die Session ist danach in der Web-UI sichtbar.
   - [ ] AC2 — `beton run -c` setzt die zuletzt genutzte Session im aktuellen Verzeichnis fort.
@@ -402,6 +403,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-003 — `resume`, `attach` & `session`-Verwaltung
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `attach` verbindet sich mit einer laufenden Session (Replay + Live, `--read-only` ohne Eingaberecht), `resume` startet eine gestoppte Session neu. `session …` bietet Liste, Details, Umbenennen, Archivieren, Löschen, Fork, Freigabe (M4) und Interrupt. Session-Referenzen akzeptieren ID, ID-Präfix (eindeutig) oder `last`.
+- **Details:** `last` ist die nicht archivierte Session mit der jüngsten Aktivität; ein Präfix darf `ses_` weglassen. `attach` zeigt den Verlauf ab `seq` 0 und danach live; `--read-only` sendet weder Eingaben noch Freigaben. `session rename` setzt den Titel über `PATCH /v1/sessions/{id}` (`title`, ohne laufenden Runner); `session show` ergänzt `cwd` und die Web-URL.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton attach <präfix>` mit mehrdeutigem Präfix listet die Kandidaten und endet mit Exit-Code 2.
   - [ ] AC2 — (ab M1) `beton session fork <id>@120 --harness codex` erzeugt einen Fork laut SES-006/SES-007 (siehe 07-sessions-collaboration.md).
@@ -420,6 +422,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-005 — `setup`, `doctor` & `diagnose`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `setup` führt interaktiv durch die Erstkonfiguration (erkennt `claude`/`codex`-CLIs und deren Login, **bietet** Installation fehlender CLIs an, nie still). `doctor` prüft Umgebung und gibt Handlungsempfehlungen; `diagnose` (M3) erzeugt ein secret-freies Support-Bundle. Inhalte der Prüfungen, `--json`-Schema und Exit-Codes: Owner OBS-005, `diagnose`: OBS-006 (siehe 11-platform-features.md); Setup-Logik: Owner HAR-016 (siehe 01-harnesses.md). CLI-005 regelt nur die CLI-Oberfläche.
+- **Details:** `setup` fragt nur auf einem Terminal nach (`[y/N]`, Enter = Nein); ohne Terminal, mit `--non-interactive` oder `--check` installiert und meldet es nie etwas an. Exit-Code 1, wenn die CLI eines in diesem Release nutzbaren Harness fehlt (M0: `claude`; `codex` wird erkannt und angeboten, der Harness folgt in M1). `setup --check --json` folgt `schemas/v1/setup-check.schema.json`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `setup --non-interactive` installiert nie etwas und meldet fehlende CLIs mit Exit-Code ≠ 0.
   - [ ] AC2 — `doctor --json` liefert pro Check `{id, status: ok|warn|fail, message, hint}` (OBS-005).
