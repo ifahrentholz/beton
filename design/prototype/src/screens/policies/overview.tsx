@@ -6,7 +6,7 @@ import { layers, scopeLabel, type Layer } from './data'
 
 function LayerBand({ layer, dimmed }: { layer: Layer; dimmed?: boolean }) {
   return (
-    <div className={cn('flex border-b border-border last:border-b-0', dimmed && 'opacity-55')}>
+    <div className={cn('flex border-b border-border last:border-b-0', dimmed && 'dimmed')}>
       <div className="w-44 shrink-0 border-r border-border bg-sunken/60 px-3 py-2.5">
         <div className="type-wide text-[13px] font-semibold">{scopeLabel[layer.scope]}</div>
         <div className="mt-0.5 text-[11px] leading-snug [overflow-wrap:anywhere] text-muted-foreground">{layer.origin}</div>

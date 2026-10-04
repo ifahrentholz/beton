@@ -87,7 +87,7 @@ function ShareDialog({ viewOnly }: { viewOnly?: boolean }) {
 
         <dl className="mt-4 grid grid-cols-[170px_1fr] gap-x-3 gap-y-1.5 text-[12px]">
           {(Object.keys(roleLabel) as Role[]).map((r) => (
-            <div key={r} className={cn('contents', viewOnly && r !== 'view' && 'opacity-50')}>
+            <div key={r} className={cn('contents', viewOnly && r !== 'view' && 'dimmed')}>
               <dt className="font-medium">{roleLabel[r]}</dt>
               <dd className="text-muted-foreground">
                 {roleHint[r]}

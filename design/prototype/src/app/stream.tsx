@@ -8,7 +8,7 @@ import { VoiceDot, voiceVar } from './harness'
 /** Nachricht eines Menschen. Bei geteilten Sessions mit Autor (Co-Drive). */
 export function UserMessage({ author = 'Ingo', children, queued }: { author?: string; children: ReactNode; queued?: boolean }) {
   return (
-    <div className={cn('flex gap-3', queued && 'opacity-60')}>
+    <div className={cn('flex gap-3', queued && 'dimmed')}>
       <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground text-[10px] font-semibold text-background">
         {author.slice(0, 2).toUpperCase()}
       </span>

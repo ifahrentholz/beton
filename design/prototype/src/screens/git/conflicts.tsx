@@ -63,7 +63,8 @@ function CodePane({
                 m === 'marker' && 'border-l-deny bg-deny-soft text-deny',
               )}
             >
-              <span className="w-9 shrink-0 pr-2 text-right text-muted-foreground select-none">{start + i}</span>
+              {/* Auf stimmfarbig getönten Zeilen reicht --muted-foreground nicht für AA (UX-005). */}
+              <span className={cn('w-9 shrink-0 pr-2 text-right select-none', m === 'ours' || m === 'theirs' ? 'text-foreground/85' : 'text-muted-foreground')}>{start + i}</span>
               <span className="pr-3 whitespace-pre">{l}</span>
             </div>
           )

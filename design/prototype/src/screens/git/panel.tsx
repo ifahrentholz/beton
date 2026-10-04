@@ -237,7 +237,7 @@ export function PrPanelScreen({ state }: { state: string }) {
 
 function ReviewThread({ resolved, address }: { resolved?: boolean; address?: boolean }) {
   return (
-    <div className={cn('rounded-md border border-border bg-card font-sans', resolved && 'opacity-55')}>
+    <div className={cn('rounded-md border border-border bg-card font-sans', resolved && 'dimmed')}>
       <div className="flex items-center gap-2 border-b border-border px-2.5 py-1.5 text-[11px] text-muted-foreground">
         <span className="font-mono">{resolved ? 'src/routes/auth.ts Z. 3' : 'src/middleware/rate-limit.ts Z. 12'}</span>
         <span className="ml-auto">{resolved ? <Tag tone="muted">erledigt</Tag> : <Tag>Änderung gewünscht</Tag>}</span>

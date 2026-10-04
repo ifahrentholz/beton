@@ -577,7 +577,7 @@ Waiting for sign-in to complete …`}
           <strong>Brauchst du nicht</strong>, wenn du über deine Abos arbeitest. Nur für Abrechnung per API, ein Firmen-Gateway oder lokale Modelle über eine
           eigene URL.
         </p>
-        <div className="mt-5 max-w-xl space-y-2 opacity-90">
+        <div className="mt-5 max-w-xl space-y-2">
           {['Anthropic API-Key', 'OpenAI API-Key', 'Gateway (z. B. LiteLLM, OpenRouter)'].map((l) => (
             <div key={l} className="grid grid-cols-[200px_1fr] items-center gap-3">
               <span className="text-[13px] text-muted-foreground">{l}</span>

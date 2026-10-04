@@ -260,7 +260,7 @@ function InstallDialog({ state }: { state: string }) {
       description="Plugins fügen Harnesses, Runner-Provider und Git-Provider hinzu."
       actions={<Btn variant="primary">Plugin installieren…</Btn>}
     >
-      <div className="pointer-events-none opacity-40">
+      <div inert className="opacity-40">
         <PluginTable rows={installed.slice(0, 3)} />
       </div>
       <div className="absolute inset-0 z-10 flex items-start justify-center overflow-y-auto bg-foreground/20 py-10">

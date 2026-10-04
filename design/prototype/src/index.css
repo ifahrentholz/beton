@@ -112,17 +112,17 @@
   --signal: #e2b33b;
   --signal-foreground: #24272b;
   --signal-soft: #f1e2b4;
-  --ok: #2f7a4b;
+  --ok: #1a683b;
   --ok-soft: #cfe3d4;
-  --deny: #b8352b;
+  --deny: #ac2920;
   --deny-soft: #f0d2ce;
-  --warn: #a14b0c;
+  --warn: #974200;
   --warn-soft: #f3d9c4;
-  --destructive: #b8352b;
-  --voice-claude: #6f55a0;
-  --voice-codex: #26727a;
-  --voice-acp: #6a7536;
-  --voice-direct: #4f5d78;
+  --destructive: #ac2920;
+  --voice-claude: #674d97;
+  --voice-codex: #13646c;
+  --voice-acp: #566021;
+  --voice-direct: #4d5b76;
   --voice-human: #24272b;
 }
 
@@ -358,6 +358,13 @@
 }
 
 @layer utilities {
+  /* Gedämpft: inaktive, veraltete oder verschattete Inhalte. Statt opacity, damit Text AA behält
+     (UX-005): Vordergrund wird zu --muted-foreground, Rollenfarben bleiben, wie sie sind. */
+  .dimmed {
+    --foreground: var(--muted-foreground);
+    --card-foreground: var(--muted-foreground);
+    color: var(--muted-foreground);
+  }
   /* Fase: 45°-Ecken wie die Dreikantleiste an Betonkanten. Für Elemente, die auf dich warten. */
   .chamfer {
     clip-path: polygon(

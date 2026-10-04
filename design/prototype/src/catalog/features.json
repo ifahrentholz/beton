@@ -2390,7 +2390,7 @@
   "acs": [
    "Client 1.4 ↔ Server 1.3 und Client 1.3 ↔ Server 1.4 verbinden sich mit 1.3; Client 1.2 ↔ Server 1.4 erhält `4400` mit `{supported:{min:\"1.3\",max:\"1.4\"}}`.",
    "Ohne `hello` innerhalb von 10 s schließt der Server mit `4400`.",
-   "Kompatibilitätstests in CI fahren den aktuellen Server gegen den Client der Vorversion (und umgekehrt) mit derselben E2E-Suite."
+   "(ab M3, sobald es ein erstes Release gibt) Kompatibilitätstests in CI fahren den aktuellen Server gegen den Client der Vorversion (und umgekehrt) mit derselben E2E-Suite."
   ]
  },
  {
@@ -2568,7 +2568,7 @@
    "Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.",
    "Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.",
    "Der Host öffnet keinen lauschenden Port (Test: `ss -ltn`/`lsof` zeigt keine Listener des Host-/Runner-Prozesses außer Loopback-Proxy).",
-   "Ab M4: ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen."
+   "(ab M4) Ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen."
   ]
  },
  {
@@ -6225,7 +6225,7 @@
    "Der Claude-Adapter läuft mit `BETON_CLAUDE_PATH=beton-fake-cli --protocol stream-json --scenario …` ein Tool-Approval-Szenario vollständig durch (Integrationstest).",
    "Identisches Szenario + Eingabe ergeben byte-identische stdout-Ausgaben des Fake-CLIs über 100 Läufe.",
    "Fehlerinjektionen `crash_after`, `hang`, `malformed_line` sind konfigurierbar; der Adapter behandelt jede ohne Panic.",
-   "Die Fake-CLI ist nicht Teil von Release-Artefakten (Prüfung der Release-Archive)."
+   "(ab M3, mit der Release-Pipeline) Die Fake-CLI ist nicht Teil von Release-Artefakten (Prüfung der Release-Archive)."
   ]
  },
  {

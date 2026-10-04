@@ -113,16 +113,19 @@ export function Premise({ kind, children }: { kind: 'local' | 'network'; childre
 export function Btn({
   children,
   variant = 'outline',
+  disabled,
   className,
 }: {
   children: ReactNode
   variant?: 'primary' | 'outline' | 'ghost' | 'signal' | 'danger'
+  disabled?: boolean
   className?: string
 }) {
   return (
     <button
+      disabled={disabled}
       className={cn(
-        'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] whitespace-nowrap',
+        'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12.5px] whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-40',
         variant === 'primary' && 'bg-foreground font-semibold text-background',
         variant === 'outline' && 'border border-border hover:bg-accent',
         variant === 'ghost' && 'text-muted-foreground hover:bg-accent hover:text-foreground',
