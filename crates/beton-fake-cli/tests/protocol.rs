@@ -126,11 +126,23 @@ fn qa_002_stream_json_tool_approval_flow() {
 #[test]
 fn qa_002_partial_messages_stream_deltas() {
     let (out, _) = drive(&push_ask(), &["--include-partial-messages"], true);
-    let deltas = lines(&out)
-        .iter()
+    let events: Vec<Value> = lines(&out)
+        .into_iter()
         .filter(|v| v["type"] == "stream_event")
+        .collect();
+    // Wie die echte CLI: zuerst `message_start` mit der ID der späteren Nachricht.
+    assert_eq!(events[0]["event"]["type"], "message_start");
+    let deltas = events
+        .iter()
+        .filter(|v| v["event"]["type"] == "content_block_delta")
         .count();
     assert_eq!(deltas, 4, "16 Zeichen in Stücken von 4");
+    let id = events[0]["event"]["message"]["id"].clone();
+    let assistant = lines(&out)
+        .into_iter()
+        .find(|v| v["type"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant["message"]["id"], id);
 }
 
 #[test]

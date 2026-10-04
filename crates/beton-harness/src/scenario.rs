@@ -76,8 +76,8 @@ pub struct Turn {
     pub emit: Vec<Step>,
 }
 
-/// Ein Schritt. Genau eine Aktion; `delay_ms` verzögert jeden Schritt, `chunk` gilt für
-/// `message_delta`, `gate` für `tool_call`.
+/// Ein Schritt. Genau eine Aktion; `delay_ms` verzögert jeden Schritt, `chunk` und
+/// `chunk_delay_ms` gelten für `message_delta`, `gate` für `tool_call`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Step {
@@ -88,6 +88,10 @@ pub struct Step {
     pub message_delta: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunk: Option<usize>,
+    /// Pause zwischen zwei Stücken von `message_delta` (gleichmäßiges Streaming, z. B. für
+    /// Performance-Tests); `delay_ms` wirkt nur einmal vor dem Schritt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_delay_ms: Option<u64>,
     /// Vollständige Nachricht des Assistenten ohne Streaming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -288,6 +292,14 @@ turns:
         let err = Scenario::from_yaml("turns: [{ emit: [{ message: a, error: b }] }]").unwrap_err();
         assert!(err.to_string().contains("genau eine Aktion"), "{err}");
         assert!(Scenario::from_yaml("turns: [{ emit: [{ delay_ms: 5 }] }]").is_err());
+        // `chunk_delay_ms` ist keine eigene Aktion.
+        assert!(
+            Scenario::from_yaml(
+                "turns: [{ emit: [{ message_delta: ab, chunk: 1, chunk_delay_ms: 5 }] }]"
+            )
+            .is_ok()
+        );
+        assert!(Scenario::from_yaml("turns: [{ emit: [{ chunk_delay_ms: 5 }] }]").is_err());
         assert!(Scenario::from_yaml("turns: [{ emit: [{ message: a, gate: true }] }]").is_err());
         assert!(Scenario::from_yaml("turns: [{ emit: [{ unbekannt: 1 }] }]").is_err());
     }

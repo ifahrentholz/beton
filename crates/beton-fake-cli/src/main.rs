@@ -318,6 +318,11 @@ impl<R: BufRead, W: Write> Sim<R, W> {
 
     fn assistant(&mut self, content: Value) -> Result<(), Stop> {
         let id = self.next_id("msg");
+        self.assistant_with_id(id, content)
+    }
+
+    /// Wie die echte CLI: dieselbe ID wie im vorangehenden `message_start`.
+    fn assistant_with_id(&mut self, id: String, content: Value) -> Result<(), Stop> {
         self.emit(json!({
             "type": "assistant",
             "message": {
@@ -331,10 +336,24 @@ impl<R: BufRead, W: Write> Sim<R, W> {
 
     fn step(&mut self, step: &Step, state: &mut TurnState) -> Result<TurnEnd, Stop> {
         if let Some(text) = &step.message_delta {
+            let id = self.next_id("msg");
             if self.partial {
+                self.emit(json!({
+                    "type": "stream_event",
+                    "event": {"type": "message_start",
+                              "message": {"id": id, "type": "message", "role": "assistant",
+                                          "model": self.model, "content": []}},
+                    "parent_tool_use_id": null,
+                    "session_id": self.session_id,
+                }))?;
                 let chunk = step.chunk.unwrap_or(usize::MAX);
                 let chars: Vec<char> = text.chars().collect();
-                for piece in chars.chunks(chunk.min(chars.len().max(1))) {
+                for (i, piece) in chars.chunks(chunk.min(chars.len().max(1))).enumerate() {
+                    if i > 0
+                        && let Some(ms) = step.chunk_delay_ms
+                    {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
                     let piece: String = piece.iter().collect();
                     self.emit(json!({
                         "type": "stream_event",
@@ -346,7 +365,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 }
             }
             state.last_text.clone_from(text);
-            self.assistant(json!({"type": "text", "text": text}))?;
+            self.assistant_with_id(id, json!({"type": "text", "text": text}))?;
         } else if let Some(text) = &step.message {
             state.last_text.clone_from(text);
             self.assistant(json!({"type": "text", "text": text}))?;

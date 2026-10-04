@@ -27,8 +27,10 @@ test('WEB-018 AC1: Freigabe-Karte, „Erlauben“ setzt fort, „Ablehnen“ lie
 
 test('WEB-018 AC2: entscheidet ein Client, zeigt der andere „entschieden“', async ({ daemon, browser }) => {
   const id = await daemon.session(PUSH_ASK, 'Zwei Clients')
-  const a = await (await browser.newContext()).newPage()
-  const b = await (await browser.newContext()).newPage()
+  const ctxA = await browser.newContext()
+  const ctxB = await browser.newContext()
+  const a = await ctxA.newPage()
+  const b = await ctxB.newPage()
   await daemon.login(a, `/s/${id}`)
   await daemon.login(b, `/s/${id}`)
   await a.getByLabel('Nachricht').fill('Bitte pushen')
@@ -39,4 +41,6 @@ test('WEB-018 AC2: entscheidet ein Client, zeigt der andere „entschieden“', 
   await expect(b.getByTestId('approval-card')).toHaveAttribute('data-decided', 'true')
   await expect(b.getByTestId('approval-card')).toContainText('entschieden')
   await expect(b.getByTestId('approval-card').getByRole('button', { name: 'Erlauben' })).toHaveCount(0)
+  await ctxA.close()
+  await ctxB.close()
 })

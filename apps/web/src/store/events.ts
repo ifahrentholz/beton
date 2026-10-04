@@ -77,6 +77,12 @@ export function applyEvents(log: SessionLog, batch: Event[]): SessionLog {
         reasoning = { ...reasoning }
         delete reasoning[e.payload.message_id]
       }
+      // Turn-Ende: was noch als Stream offen ist, ist verwaist (z. B. Delta ohne passende
+      // Nachrichten-ID) und würde sonst neben der fertigen Nachricht stehen bleiben.
+      if (e.type === 'turn.completed' || e.type === 'turn.failed' || e.type === 'turn.interrupted') {
+        if (Object.keys(streaming).length) streaming = {}
+        if (Object.keys(reasoning).length) reasoning = {}
+      }
     }
   }
   if (fresh.length) events = events.concat(fresh)

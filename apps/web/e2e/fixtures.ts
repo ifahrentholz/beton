@@ -1,48 +1,90 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { test as base, type Page } from '@playwright/test'
+import { test as base, type Page, type TestInfo } from '@playwright/test'
 
 const repo = resolve(import.meta.dirname, '..', '..', '..')
 export const BETON = process.env.BETON_BIN ?? join(repo, 'target', 'debug', 'beton')
 const WEB_DIR = resolve(import.meta.dirname, '..', 'dist')
 
+/** Freier Port auf Loopback (für Neustarts auf demselben Port). */
+export async function freePort(): Promise<number> {
+  const { createServer } = await import('node:net')
+  return new Promise((resolve) => {
+    const srv = createServer()
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as { port: number }).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+export interface DaemonOptions {
+  /** Zusätzliche Umgebung für den Daemon (und damit die Runner), z. B. `BETON_CLAUDE_PATH`. */
+  env?: Record<string, string>
+  /** Fester Port statt eines beliebigen freien. */
+  port?: number
+}
+
 /** Ein laufender Daemon mit eigenem Datenverzeichnis. */
 export class Daemon {
   readonly home: string
   readonly work: string
-  private readonly child: ChildProcess
-  readonly url: string
+  private child: ChildProcess
+  url: string
   private readonly token: string
+  private readonly options: DaemonOptions
 
-  private constructor(home: string, work: string, child: ChildProcess, url: string, token: string) {
+  private constructor(home: string, work: string, child: ChildProcess, url: string, token: string, options: DaemonOptions) {
     this.home = home
     this.work = work
     this.child = child
     this.url = url
     this.token = token
+    this.options = options
   }
 
-  static async start(): Promise<Daemon> {
+  static async start(options: DaemonOptions = {}): Promise<Daemon> {
     if (!existsSync(BETON)) throw new Error(`beton fehlt unter ${BETON} (cargo build -p beton-cli)`)
     if (!existsSync(join(WEB_DIR, 'index.html'))) throw new Error('Web-UI fehlt: pnpm build')
     const home = mkdtempSync(join(tmpdir(), 'beton-e2e-home-'))
     const work = mkdtempSync(join(tmpdir(), 'beton-e2e-work-'))
-    writeFileSync(join(home, 'config.yaml'), 'server:\n  listen: ["127.0.0.1:0"]\n')
+    writeFileSync(join(home, 'config.yaml'), `server:\n  listen: ["127.0.0.1:${options.port ?? 0}"]\n`)
+    const { child, url } = await Daemon.spawn(home, options)
+    const token = readFileSync(join(home, 'auth', 'local.token'), 'utf8').trim()
+    return new Daemon(home, work, child, url, token, options)
+  }
+
+  private static async spawn(home: string, options: DaemonOptions): Promise<{ child: ChildProcess; url: string }> {
+    const info = join(home, 'run', 'daemon.json')
+    rmSync(info, { force: true })
     const child = spawn(BETON, ['serve', '--foreground', '--dev', '-q'], {
-      env: { ...process.env, BETON_HOME: home, BETON_WEB_DIR: WEB_DIR },
+      env: { ...process.env, BETON_HOME: home, BETON_WEB_DIR: WEB_DIR, ...options.env },
       stdio: 'ignore',
     })
-    const info = join(home, 'run', 'daemon.json')
     const deadline = Date.now() + 30_000
     while (!existsSync(info)) {
       if (Date.now() > deadline) throw new Error('daemon.json erscheint nicht')
       await new Promise((r) => setTimeout(r, 50))
     }
     const { http } = JSON.parse(readFileSync(info, 'utf8')) as { http: string }
-    const token = readFileSync(join(home, 'auth', 'local.token'), 'utf8').trim()
-    return new Daemon(home, work, child, `http://${http}`, token)
+    return { child, url: `http://${http}` }
+  }
+
+  /** Daemon geordnet beenden (SIGTERM) und mit demselben Datenverzeichnis neu starten. */
+  async restart(): Promise<void> {
+    const exited = new Promise((r) => this.child.once('exit', r))
+    this.child.kill('SIGTERM')
+    await exited
+    const { child, url } = await Daemon.spawn(this.home, this.options)
+    this.child = child
+    this.url = url
+  }
+
+  /** Logs des Daemons und der Runner (für CI-Artefakte, QA-007 AC3). */
+  logsDir(): string {
+    return join(this.home, 'logs')
   }
 
   stop(): void {
@@ -118,7 +160,19 @@ export const PUSH_ASK = `turns:
       - { on_gate: { allow: [{ tool_result: "ok" }, { message: "Push erledigt." }], deny: [{ message: "Push abgelehnt." }] } }
 `
 
-export const test = base.extend<object, { daemon: Daemon }>({
+/** Hängt bei Fehlschlag die Daemon-Logs an den Bericht (QA-007 AC3). */
+export async function attachLogs(daemon: Daemon, testInfo: TestInfo): Promise<void> {
+  if (testInfo.status === testInfo.expectedStatus) return
+  const dir = daemon.logsDir()
+  if (!existsSync(dir)) return
+  const target = testInfo.outputPath('daemon-logs')
+  cpSync(dir, target, { recursive: true })
+  for (const f of readdirSync(target)) {
+    await testInfo.attach(`daemon-logs/${f}`, { path: join(target, f) })
+  }
+}
+
+export const test = base.extend<{ daemonLogs: void }, { daemon: Daemon }>({
   daemon: [
     // oxlint-disable-next-line no-empty-pattern -- Playwright verlangt hier das Objektmuster.
     async ({}, use) => {
@@ -127,6 +181,13 @@ export const test = base.extend<object, { daemon: Daemon }>({
       d.stop()
     },
     { scope: 'worker' },
+  ],
+  daemonLogs: [
+    async ({ daemon }, use, testInfo) => {
+      await use()
+      await attachLogs(daemon, testInfo)
+    },
+    { auto: true },
   ],
 })
 
