@@ -259,7 +259,7 @@ release-please PR gemergt → Tag
 
 ### QA-002 — Protokoll-Fake-CLIs
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Test-Binary `beton-fake-cli` *(Annahme: Crate `crates/beton-fake-cli`, `publish = false`)* simuliert die Wire-Protokolle der Vendor-CLIs: `--protocol stream-json` (Claude Code), `app-server` (Codex, ab M1), `acp` (ab M1). Es spielt Szenarien im YAML-Format des Fake-Harness (Owner des Formats: HAR-026, siehe 01-harnesses.md) ab, erwartet Eingaben, sendet Permission-/Approval-Requests und reagiert auf Entscheidungen, Interrupts und Fehlerinjektion (Crash, Hänger, ungültiges JSON). So werden die **echten** Adapter über ihre Prozessgrenze getestet, deterministisch und ohne Subscription.
+- **Beschreibung:** Test-Binary `beton-fake-cli` *(Annahme: Crate `crates/beton-fake-cli`, `publish = false`)* simuliert die Wire-Protokolle der Vendor-CLIs: `--protocol stream-json` (Claude Code), `app-server` (Codex, ab M1; nach `codex app-server generate-json-schema`), `acp` (ab M1; deterministischer ACP-Test-Agent). Es spielt Szenarien im YAML-Format des Fake-Harness (Owner des Formats: HAR-026, siehe 01-harnesses.md) ab, erwartet Eingaben, sendet Permission-/Approval-Requests und reagiert auf Entscheidungen, Interrupts und Fehlerinjektion (Crash, Hänger, ungültiges JSON). So werden die **echten** Adapter über ihre Prozessgrenze getestet, deterministisch und ohne Subscription.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Der Claude-Adapter läuft mit `BETON_CLAUDE_PATH=beton-fake-cli --protocol stream-json --scenario …` ein Tool-Approval-Szenario vollständig durch (Integrationstest).
   - [ ] AC2 — Identisches Szenario + Eingabe ergeben byte-identische stdout-Ausgaben des Fake-CLIs über 100 Läufe.
@@ -423,6 +423,7 @@ release-please PR gemergt → Tag
 ### QA-016 — Harness-Contract-Suite
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Eine gemeinsame Contract-Suite prüft jeden Harness-Adapter (über Fake-CLI) gegen seine deklarierten Capabilities: Streaming, Interrupt, Approval-Roundtrip, Resume, Modellwechsel, Usage-Reporting, Fehlerpfade. Dieselbe Suite wird für Harness-Plugins wiederverwendet (PLG-013, siehe 10-runners-extensibility.md).
+- **Details:** Modul `beton_harness::contract` (Trait `ContractSubject`); Prüfungen `streaming`, `usage_reporting`, `approval_allow`, `approval_deny`, `interrupt`, `resume`, `model_switch`, `turn_error`, `crash`, `auth_expired`. Eine nicht deklarierte Capability muss mit `capability_unsupported` abgelehnt werden (HAR-002 AC3); `resume: cold` verlangt nur einen fortsetzbaren Turn, `warm` dieselbe native Session.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Adapter, der `interrupt: true` deklariert, aber nach Interrupt weiter Deltas sendet, fällt durch.
   - [ ] AC2 — Claude-, Codex- und ACP-Adapter bestehen die Suite in CI.

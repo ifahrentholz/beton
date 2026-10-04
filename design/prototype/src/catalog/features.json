@@ -6219,7 +6219,7 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "qa-002--protokoll-fake-clis",
-  "summary": "Test-Binary `beton-fake-cli` *(Annahme: Crate `crates/beton-fake-cli`, `publish = false`)* simuliert die Wire-Protokolle der Vendor-CLIs: `--protocol stream-json` (Claude Code), `app-server` (Codex, ab M1), `acp` (ab M1). Es spielt Szenarien im YAML-Format des Fake-Harness (Owner des Formats: HAR-026, siehe 01-harnesses.md) ab, erwartet Eingaben, sendet Permission-/Approval-Requests und reagiert auf Entscheidungen, Interrupts und Fehlerinjektion (Crash, Hänger, ungültiges JSON). So werden die echten Adapter über ihre Prozessgrenze getestet, deterministisch und ohne Subscription.",
+  "summary": "Test-Binary `beton-fake-cli` *(Annahme: Crate `crates/beton-fake-cli`, `publish = false`)* simuliert die Wire-Protokolle der Vendor-CLIs: `--protocol stream-json` (Claude Code), `app-server` (Codex, ab M1; nach `codex app-server generate-json-schema`), `acp` (ab M1; deterministischer ACP-Test-Agent). Es spielt Szenarien im YAML-Format des Fake-Harness (Owner des Formats: HAR-026, siehe 01-harnesses.md) ab, erwartet Eingaben, sendet Permission-/Approval-Requests und reagiert auf Entscheidungen, Interrupts und Fehlerinjektion (Crash, Hänger, ungültiges JSON). So werden die echten Adapter über ihre Prozessgrenze getestet, deterministisch und ohne Subscription.",
   "acs": [
    "Der Claude-Adapter läuft mit `BETON_CLAUDE_PATH=beton-fake-cli --protocol stream-json --scenario …` ein Tool-Approval-Szenario vollständig durch (Integrationstest).",
    "Identisches Szenario + Eingabe ergeben byte-identische stdout-Ausgaben des Fake-CLIs über 100 Läufe.",
