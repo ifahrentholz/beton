@@ -423,7 +423,7 @@ release-please PR gemergt → Tag
 ### QA-016 — Harness-Contract-Suite
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Eine gemeinsame Contract-Suite prüft jeden Harness-Adapter (über Fake-CLI) gegen seine deklarierten Capabilities: Streaming, Interrupt, Approval-Roundtrip, Resume, Modellwechsel, Usage-Reporting, Fehlerpfade. Dieselbe Suite wird für Harness-Plugins wiederverwendet (PLG-013, siehe 10-runners-extensibility.md).
-- **Details:** Modul `beton_harness::contract` (Trait `ContractSubject`); Prüfungen `streaming`, `usage_reporting`, `approval_allow`, `approval_deny`, `interrupt`, `resume`, `model_switch`, `turn_error`, `crash`, `auth_expired`. Eine nicht deklarierte Capability muss mit `capability_unsupported` abgelehnt werden (HAR-002 AC3); `resume: cold` verlangt nur einen fortsetzbaren Turn, `warm` dieselbe native Session.
+- **Details:** Modul `beton_harness::contract` (Trait `ContractSubject`); Prüfungen `streaming`, `usage_reporting`, `approval_allow`, `approval_deny`, `interrupt`, `resume`, `model_switch` (live: nächster Turn mit dem neuen Modell in `cost.delta.model`; `restart`: Neustart mit Resume und neuem Modell, gleiche native Referenz), `effort_switch`, `permission_mode` (jeder deklarierte Modus außer `yolo` beim Start und live; nicht deklarierte werden abgelehnt), `turn_error`, `crash`, `auth_expired`. Eine nicht deklarierte Capability muss mit `capability_unsupported` abgelehnt werden (HAR-002 AC3); `resume: cold` verlangt nur einen fortsetzbaren Turn, `warm` dieselbe native Session.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Adapter, der `interrupt: true` deklariert, aber nach Interrupt weiter Deltas sendet, fällt durch.
   - [ ] AC2 — Claude-, Codex- und ACP-Adapter bestehen die Suite in CI.
