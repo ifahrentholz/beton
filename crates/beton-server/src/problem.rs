@@ -54,6 +54,8 @@ problem_codes! {
     LoopbackOnly = "loopback_only", 403, "Nur über Loopback erreichbar";
     PathOutsideWorkspace = "path_outside_workspace", 403, "Pfad außerhalb des Workspace";
     NotFound = "not_found", 404, "Nicht gefunden";
+    /// Agent-Ref im Suchpfad nicht gefunden (AGT-003).
+    AgentNotFound = "agent_not_found", 404, "Agent nicht gefunden";
     /// Die Funktion liegt hinter einem nicht aktivierten Feature-Flag (UX-007).
     FeatureDisabled = "feature_disabled", 404, "Funktion nicht aktiviert";
     MethodNotAllowed = "method_not_allowed", 405, "Methode nicht erlaubt";
@@ -74,6 +76,13 @@ problem_codes! {
     UnsupportedMediaType = "unsupported_media_type", 415, "Medientyp nicht unterstützt";
     IdempotencyKeyReused = "idempotency_key_reused", 422, "Idempotency-Key mit anderem Inhalt wiederverwendet";
     BaseNotFound = "base_not_found", 422, "Base-Branch nicht auflösbar";
+    /// Der Agent besteht die Validierung nicht (AGT-002); `errors` nennt die Befunde.
+    AgentInvalid = "agent_invalid", 422, "Agent ungültig";
+    /// Ein Parameterwert passt nicht zur Deklaration oder ist unbekannt (AGT-010 AC1).
+    InvalidParam = "invalid_param", 422, "Parameter ungültig";
+    /// Pflichtparameter ohne Default fehlen (AGT-010 AC2); `errors` nennt sie je
+    /// `/params/<name>`, damit die UI nachfragen kann.
+    ParamsRequired = "params_required", 422, "Pflichtparameter fehlen";
     /// Der Ziel-Harness eines Forks passt nicht, z. B. ohne `fork_history` oder ohne eine
     /// Capability, die der Agent braucht (SES-007).
     HarnessIncompatible = "harness_incompatible", 422, "Ziel-Harness passt nicht";

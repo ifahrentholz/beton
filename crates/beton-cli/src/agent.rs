@@ -26,7 +26,7 @@ fn beton_dir(ctx: &Ctx) -> PathBuf {
         .map_or_else(|| ctx.cwd.join(".beton"), Path::to_path_buf)
 }
 
-fn search_path(ctx: &Ctx) -> SearchPath {
+pub(crate) fn search_path(ctx: &Ctx) -> SearchPath {
     SearchPath {
         project: Some(beton_dir(ctx).join("agents")),
         user: Some(ctx.home.join("agents")),

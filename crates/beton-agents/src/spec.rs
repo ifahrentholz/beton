@@ -64,6 +64,40 @@ pub struct AgentSpec {
     pub extensions: BTreeMap<String, Value>,
 }
 
+impl AgentSpec {
+    /// Ein Inline-Sub-Agent (`agents.<name>` mit `executor`) als eigenständige Definition;
+    /// relative Dateien gelten weiter ab dem Verzeichnis des Parents (AGT-009).
+    pub fn from_inline(name: &str, sub: &SubAgent) -> Result<Self, String> {
+        let executor = sub
+            .executor
+            .clone()
+            .ok_or_else(|| format!("Sub-Agent „{name}“ ohne executor"))?;
+        Ok(Self {
+            spec_version: SPEC_VERSION,
+            name: name.parse().or_else(|_| {
+                name.to_ascii_lowercase()
+                    .replace(|c: char| !(c.is_ascii_alphanumeric() || c == '-'), "-")
+                    .parse()
+            })?,
+            description: sub.description.clone(),
+            version: None,
+            executor,
+            instructions: sub.instructions.clone(),
+            params: sub.params.clone(),
+            tools: sub.tools.clone(),
+            skills: sub.skills.clone(),
+            agents: sub.agents.clone(),
+            spawn: sub.spawn.clone(),
+            timers: None,
+            schedules: Vec::new(),
+            async_: None,
+            policies: sub.policies.clone(),
+            sandbox: sub.sandbox.clone(),
+            extensions: BTreeMap::new(),
+        })
+    }
+}
+
 /// Name eines Agents: `[a-z0-9]` gefolgt von `[a-z0-9-]`, höchstens 64 Zeichen.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AgentName(String);
@@ -133,6 +167,21 @@ pub struct DurationText(String);
 impl DurationText {
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Als Dauer; `None` bei Überlauf.
+    pub fn to_duration(&self) -> Option<std::time::Duration> {
+        let digits = self.0.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+        let n: u64 = digits.parse().ok()?;
+        let ms = match &self.0[digits.len()..] {
+            "ms" => Some(n),
+            "s" => n.checked_mul(1_000),
+            "m" => n.checked_mul(60_000),
+            "h" => n.checked_mul(3_600_000),
+            "d" => n.checked_mul(86_400_000),
+            _ => None,
+        }?;
+        Some(std::time::Duration::from_millis(ms))
     }
 
     pub fn is_valid(s: &str) -> bool {

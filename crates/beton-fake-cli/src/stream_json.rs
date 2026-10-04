@@ -221,6 +221,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         self.result(TurnEnd::Failed(why), "", &Usage::default())?;
                         continue;
                     }
+                    crate::io::record_context("user", &text);
                     let steps = resolve_echo(&turn.emit, &text, &self.history);
                     self.record("user", json!(text));
                     self.history.push(text);

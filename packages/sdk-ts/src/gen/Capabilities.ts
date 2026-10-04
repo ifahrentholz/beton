@@ -37,4 +37,9 @@ efforts?: Array<string>,
  * Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des
  * Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].
  */
-context_window?: number, };
+context_window?: number, 
+/**
+ * Projektdateien, die der Harness selbst liest (z. B. Claude `CLAUDE.md`, Codex
+ * `AGENTS.md`); bei `project_files: auto` liefert beton nur die übrigen (AGT-005).
+ */
+native_project_files?: Array<string>, };

@@ -22,7 +22,7 @@ pub use crate::adapter::{
     AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateRequest,
     HarnessAdapter, HarnessError, HarnessSession, HostEnv, McpInjection, McpLaunch, Mode,
     NormalizedEvent, PermissionMode, ProbeReport, RebuildRequest, SessionSpec, Shutdown,
-    SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
+    SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS, prefix_instructions,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,

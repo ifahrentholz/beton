@@ -166,6 +166,9 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
         }
         match method {
             "thread/start" | "thread/resume" => {
+                if let Some(text) = params["developerInstructions"].as_str() {
+                    crate::io::record_context("developer_instructions", text);
+                }
                 self.thread_id = Some(match params["threadId"].as_str() {
                     Some(t) if method == "thread/resume" => t.to_owned(),
                     _ => format!(
@@ -212,6 +215,7 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
         if let Some(model) = params["model"].as_str() {
             self.model = model.to_owned();
         }
+        crate::io::record_context("user", &input_text(params));
         let index = self.next_turn;
         self.next_turn += 1;
         let mut state = TurnState {

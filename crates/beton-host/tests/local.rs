@@ -56,6 +56,7 @@ fn boot() -> RunnerBoot {
         resume: None,
         harnesses: Default::default(),
         agent_ref: None,
+        agent_snapshot: None,
         snapshots: None,
         fork: None,
     }
