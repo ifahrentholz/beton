@@ -32,6 +32,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `sandbox_required` | 409 | Sandbox erforderlich |
 | `worktree_dirty` | 409 | Worktree hat uncommittete Änderungen |
 | `worktree_unpushed` | 409 | Branch hat ungepushte Commits |
+| `imported_read_only` | 409 | Importierte Session läuft hier nicht |
 | `tombstoned` | 410 | Gelöscht |
 | `precondition_failed` | 412 | Vorbedingung nicht erfüllt |
 | `payload_too_large` | 413 | Anfrage zu groß |
@@ -42,6 +43,9 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `invalid_param` | 422 | Parameter ungültig |
 | `params_required` | 422 | Pflichtparameter fehlen |
 | `harness_incompatible` | 422 | Ziel-Harness passt nicht |
+| `unsupported_format_version` | 422 | Exportformat zu neu |
+| `import_seq_gap` | 422 | Import abgelehnt: Lücke im Verlauf |
+| `import_invalid` | 422 | Import abgelehnt: Datei ungültig |
 | `rate_limited` | 429 | Zu viele Anfragen |
 | `internal` | 500 | Interner Fehler |
 | `blob_corrupt` | 500 | Blob beschädigt |

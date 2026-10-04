@@ -2723,9 +2723,9 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "data-010--export-import-format-jsonl",
-  "summary": "Das Austauschformat für den Session-Export/-Import (SES-009, siehe 07-sessions-collaboration.md); DATA-010 ist Owner von Format und Import-/Export-Implementierung, die CLI-Front ist CLI-007: Zeile 1 `{\"type\":\"beton.export\",\"format_version\":1,\"exported_at\",\"session\":{…Metadaten}}`, danach je Zeile ein Event als Envelope in `seq`-Reihenfolge. Mit Blobs als `.tar.zst` (`session.jsonl` + `blobs/<sha256>`). Import validiert jede Zeile gegen das Schema, vergibt eine neue Session-ID (`imported_from` in Metadaten), behält `seq`, mappt unbekannte Actors auf `system`/`import` und ist anhand des Export-Hashes idempotent.",
+  "summary": "Das Austauschformat für den Session-Export/-Import (SES-009, siehe 07-sessions-collaboration.md); DATA-010 ist Owner von Format und Import-/Export-Implementierung, die CLI-Front ist CLI-007: Zeile 1 `{\"type\":\"beton.export\",\"format_version\":1,\"exported_at\",\"session\":{…Metadaten}}`, danach je Zeile ein Event als Envelope in `seq`-Reihenfolge. Mit Blobs als `.tar.zst` (`session.jsonl` + `blobs/<sha256>`). Import validiert jede Zeile gegen das Schema, vergibt eine neue Session-ID (`imported_from` in Metadaten) und neue Event-IDs, behält `seq`, mappt unbekannte Actors auf `system`/`import` und ist anhand des Export-Hashes idempotent.",
   "acs": [
-   "Export → Import → Export ergibt (bis auf Session-ID, Zeitstempel des Exports und Actor-Mapping) identische Event-Zeilen.",
+   "Export → Import → Export ergibt (bis auf Session-ID, Event-IDs samt `causation_id`, Zeitstempel des Exports und Actor-Mapping) identische Event-Zeilen.",
    "Eine Datei mit Lücke in `seq` oder ungültiger Zeile wird vollständig abgelehnt, mit Zeilennummer im Problem.",
    "Exporte enthalten nur redigierte Payloads; `raw` (ebenfalls redigiert) ist nur mit `--with-raw` enthalten (Default: weggelassen).",
    "Ein Export-Format `format_version: 2` wird von einer v1-Implementierung mit `unsupported_format_version` abgelehnt."

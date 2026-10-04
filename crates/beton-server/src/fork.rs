@@ -130,6 +130,7 @@ impl SessionManager<'_> {
         req: ForkSession,
     ) -> Result<Forked, Problem> {
         let record = self.state().store.session(self.org(), source).await?;
+        crate::exports::ensure_runnable(&self.state().store, self.org(), source).await?;
         let created = self.created(source).await?;
         let events = self.all_events(source).await?;
         let head = record.head_seq;

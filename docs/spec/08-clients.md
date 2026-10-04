@@ -77,7 +77,7 @@ beton
 ├── profile  list|add|use|remove
 ├── doctor   [--json]
 ├── diagnose [-o FILE] [--anonymize] [--include-session ID]
-├── import   [--harness claude|codex|all] [--session REF]… [--last N] [--force] [FILE.jsonl]
+├── import   [--harness claude|codex|all] [--session REF]… [--last N] [--force] [FILE.jsonl|FILE.tar.zst]
 ├── export   <SESSION> [-o FILE] [--with-blobs] [--with-raw]
 ├── config   get|set|unset|list|edit [--global|--project]
 ├── usage    [--by day|session|project|harness|model|user|team] [--since DATE|DUR] [--from DATE --to DATE]
@@ -444,6 +444,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-007 — `import` & `export`
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** CLI-Front für den Import fremder Chats und JSONL-Export/-Import (SES-008/SES-009 in 07-sessions-collaboration.md; Format-Owner DATA-010). Ohne Argumente listet `import` Kandidaten interaktiv zur Auswahl.
+- **Details:** `import` ohne `FILE`, `--session` und `--last` zeigt die Kandidaten aller gewählten Harnesses (`--harness`, Default `all`), jüngste zuerst, mit Werkzeug, Titel, Projekt (letzte Komponente von `cwd`), relativer Zeit und Dateigröße; ↑/↓ bewegen, Leertaste wählt, Enter importiert die Auswahl (ohne Auswahl die Zeile unter dem Cursor), Esc oder Strg+C bricht ab (Exit 130). Die Auswahl zeichnet auf stderr. Ohne Terminal gibt `import` die Kandidaten auf stdout aus (mit `--json` als Array) und endet mit Exit-Code 2. `--last N` (1–500) nimmt die N jüngsten, `--session REF` (mehrfach) bestimmte Vendor-Session-IDs. Je Session eine Zeile auf stdout: `✓ <beton-ID>  <Titel>` bzw. `– <beton-ID>  <Titel> (schon übernommen)`; Fehler mit `✗` auf stderr und Exit-Code 1; mit `--json` `{results: [...]}`. `import FILE` lädt eine Exportdatei (JSONL oder `.tar.zst`) hoch und meldet `✓ <beton-ID>  <Titel> (inhaltsgleich, neue ID)`; Prüffehler nennen die Zeile (Exit-Code 1). `export <SESSION> [-o FILE]` schreibt ohne `-o` auf stdout; mit `-o` entsteht die Datei mit Rechten `0600` (erst vollständig, dann umbenannt), auf stderr steht `✓ <Datei> · <n> Events [· <n> Anhänge] · <Größe>`. `--with-blobs` ohne `-o` auf ein Terminal ist ein Usage-Fehler.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton import --harness claude --last 5` importiert die fünf jüngsten Claude-Sessions und gibt deren beton-IDs aus.
   - [ ] AC2 — `beton export <id> -o s.jsonl && beton import s.jsonl` erzeugt eine inhaltsgleiche Session.
@@ -567,7 +568,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
   | Ressource | Endpunkte (Auszug) | Kapitel |
   | --- | --- | --- |
   | System | `GET /v1/info`, `/healthz`, `/metrics` | OBS |
-  | Sessions | `GET|POST /v1/sessions`, `GET|PATCH|DELETE /v1/sessions/{id}`, `POST …/archive|unarchive|interrupt|fork|compact|resume`, `GET …/events?after_seq=`, `POST …/input`, `GET|POST|PATCH|DELETE …/queue`, `GET …/export`, `GET …/events/stream` (SSE, PROTO-012) | 07 |
+  | Sessions | `GET|POST /v1/sessions`, `GET|PATCH|DELETE /v1/sessions/{id}`, `POST …/archive|unarchive|interrupt|fork|compact|resume`, `GET …/events?after_seq=`, `POST …/input`, `GET|POST|PATCH|DELETE …/queue`, `GET …/export`, `POST /v1/sessions/import`, `GET …/events/stream` (SSE, PROTO-012) | 07 |
   | Workspace | `GET …/workspace/tree|search|changes|diff`, `GET|PUT …/workspace/files/{path}`, `GET|POST|DELETE …/terminals` | 07 |
   | Approvals | `GET …/approvals`, `POST …/approvals/{aid}/resolve` | 03 |
   | Collaboration | `…/shares`, `…/comments` (+ `/address`), `…/side-chats`, `GET /v1/inbox` | 07 |

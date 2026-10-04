@@ -1,0 +1,43 @@
+Session als JSONL exportieren (mit `--with-blobs` als .tar.zst mit Anhängen)
+
+Usage: beton export [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>
+          Session (ID, eindeutiges Präfix oder `last`)
+
+Options:
+  -o, --output <FILE>
+          Zieldatei (Default: stdout); wird nur für den Eigentümer lesbar angelegt
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+      --with-blobs
+          Mit Anhängen als .tar.zst (`session.jsonl` und `blobs/<sha256>`)
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+      --with-raw
+          Rohausgaben der Harnesses (redigiert) einschließen, z. B. für Fehlerberichte
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

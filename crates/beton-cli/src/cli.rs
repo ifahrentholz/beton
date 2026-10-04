@@ -73,6 +73,14 @@ pub enum Command {
     Serve(ServeArgs),
     /// Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen.
     Setup(SetupArgs),
+    /// Chats von Claude Code und Codex übernehmen oder eine Exportdatei importieren.
+    ///
+    /// Ohne Argumente zeigt `import` die gefundenen Chats zur Auswahl (nur auf einem
+    /// Terminal; sonst die Liste und Exit-Code 2). Die Vendor-Dateien liest nur der lokale
+    /// Daemon, und er ändert sie nie.
+    Import(ImportArgs),
+    /// Session als JSONL exportieren (mit `--with-blobs` als .tar.zst mit Anhängen).
+    Export(ExportArgs),
     /// Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler.
     Doctor,
     /// Konfiguration lesen und schreiben.
@@ -384,6 +392,56 @@ pub struct SetupAcpAddArgs {
     /// Argument, mit dem der Agent ACP über stdio spricht (mehrfach möglich).
     #[arg(long = "arg", value_name = "A", allow_hyphen_values = true)]
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct ImportArgs {
+    /// Exportdatei von `beton export` (.jsonl oder .tar.zst); wird eine neue Session.
+    #[arg(value_name = "FILE", conflicts_with_all = ["harness", "session", "last"])]
+    pub file: Option<PathBuf>,
+    /// Werkzeug, dessen Chats übernommen werden (Default: alle).
+    #[arg(long, value_enum, value_name = "HARNESS")]
+    pub harness: Option<ImportHarness>,
+    /// Chat mit dieser Session-ID des Werkzeugs übernehmen (mehrfach möglich).
+    #[arg(long = "session", value_name = "REF")]
+    pub session: Vec<String>,
+    /// Die N zuletzt geänderten Chats übernehmen.
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with = "session",
+        value_parser = clap::value_parser!(u32).range(1..=500)
+    )]
+    pub last: Option<u32>,
+    /// Schon übernommene Chats bzw. schon importierte Dateien erneut als neue Session anlegen.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Herkunft fremder Chats (SES-008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ImportHarness {
+    /// Claude Code (`~/.claude/projects`).
+    Claude,
+    /// Codex (`~/.codex/sessions`).
+    Codex,
+    /// Beide.
+    All,
+}
+
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`).
+    pub session: String,
+    /// Zieldatei (Default: stdout); wird nur für den Eigentümer lesbar angelegt.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: Option<PathBuf>,
+    /// Mit Anhängen als .tar.zst (`session.jsonl` und `blobs/<sha256>`).
+    #[arg(long)]
+    pub with_blobs: bool,
+    /// Rohausgaben der Harnesses (redigiert) einschließen, z. B. für Fehlerberichte.
+    #[arg(long)]
+    pub with_raw: bool,
 }
 
 #[derive(Debug, Args)]
