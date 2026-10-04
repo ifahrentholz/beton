@@ -19,7 +19,8 @@ pub use crate::adapter::{
     ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
 };
 pub use crate::capabilities::{
-    Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport, ForkHistory,
-    InstructionsDelivery, ResumeSupport, Subagents, SwitchSupport, ToolCallGate, UsageReporting,
+    Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,
+    EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ResumeSupport, Subagents, SwitchSupport,
+    ToolCallGate, UsageReporting, map_effort,
 };
 pub use crate::id::{HarnessId, InvalidHarnessId};

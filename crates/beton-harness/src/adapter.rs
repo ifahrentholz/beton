@@ -118,7 +118,9 @@ impl From<&str> for UserInput {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Plan,
     Default,

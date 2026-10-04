@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+beton-agents.workspace = true
 beton-core.workspace = true
 beton-harness.workspace = true
 beton-harness-claude.workspace = true
