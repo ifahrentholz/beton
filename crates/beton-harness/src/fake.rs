@@ -23,8 +23,8 @@ use tokio::task::JoinHandle;
 
 use crate::adapter::{
     AdapterContext, AuthStatus, ExitInfo, Gate, GateDecision, GateRequest, HarnessAdapter,
-    HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, PermissionMode, ProbeReport,
-    SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
+    HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, OneShotReply, OneShotRequest,
+    PermissionMode, ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
 };
 use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CompactionSupport, ForkHistory, InstructionsDelivery,
@@ -176,6 +176,59 @@ impl HarnessAdapter for FakeAdapter {
         }
         Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
+
+    /// Einmal-Aufruf (SES-010): Antwort laut `one_shot` im Szenario.
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        _ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let behavior = match &request.scenario {
+            Some(path) => {
+                Scenario::load(path)
+                    .map_err(|e| HarnessError::StartRefused(e.to_string()))?
+                    .one_shot
+            }
+            None => None,
+        }
+        .unwrap_or_default();
+        if let Some(reason) = behavior.fail {
+            return Err(HarnessError::Protocol(reason));
+        }
+        let text = behavior
+            .reply
+            .unwrap_or_else(|| crate::scenario::ONE_SHOT_DEFAULT_REPLY.to_owned());
+        let model = request.model.clone().unwrap_or_else(|| "fake-mini".into());
+        Ok(OneShotReply {
+            cost: Some(CostDelta {
+                harness: HarnessId::FAKE.into(),
+                model: model.clone(),
+                input_tokens: (request.instructions.len() + request.prompt.len()).div_ceil(4)
+                    as u64,
+                output_tokens: text.len().div_ceil(4) as u64,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost_micro: Some(0),
+                currency: "USD".into(),
+                source: CostSource::Reported,
+                auth_source: AuthSource::None,
+                purpose: None,
+            }),
+            text,
+            model,
+        })
+    }
+}
+
+/// Text für `echo_input`: die Eingabe und je Anhang eine Zeile
+/// `[Anhang: <name>, <mime>, <bytes> Bytes]` (WEB-006).
+fn echo_text(input: &UserInput) -> String {
+    let mut text = input.text.clone();
+    for a in &input.attachments {
+        let len = a.data_base64.trim_end_matches('=').len() * 3 / 4;
+        text.push_str(&format!("\n[Anhang: {}, {}, {len} Bytes]", a.name, a.mime));
+    }
+    text
 }
 
 /// Eine laufende Fake-Session.
@@ -347,9 +400,11 @@ impl HarnessSession for FakeSession {
             );
         }
         // Was beim Modell ankommt: die erste Nachricht mit den Instructions davor.
+        // Anhänge stehen als Zeile `[Anhang: …]` dahinter (WEB-006).
+        let text = echo_text(&input);
         let delivered = match self.instructions.take() {
-            Some(i) => crate::adapter::prefix_instructions(&i, &input.text),
-            None => input.text,
+            Some(i) => crate::adapter::prefix_instructions(&i, &text),
+            None => text,
         };
         let (steer_tx, steer_rx) = mpsc::unbounded_channel();
         self.steer = Some(steer_tx);

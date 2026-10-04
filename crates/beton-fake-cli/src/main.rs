@@ -7,7 +7,15 @@
 //! beton-fake-cli [--protocol …] --version
 //! beton-fake-cli … --record <datei>          # Kontext je Eingabe als JSON-Zeilen (AGT-005)
 //! beton-fake-cli --protocol mcp-server --tools a,b   # Test-MCP-Server (HAR-009)
+//! beton-fake-cli --protocol stream-json -p --output-format json …   # Einmal-Modus (SES-010)
+//! beton-fake-cli --protocol app-server exec --json … -               # Einmal-Modus (SES-010)
 //! ```
+//!
+//! Einmal-Aufrufe lesen den Inhalt von stdin und antworten laut `one_shot` im Szenario. Mit
+//! `--record <datei>` (bzw. `BETON_FAKE_RECORD=<datei>`) hängt die Fake-CLI je Aufruf eine
+//! JSON-Zeile `{"source": "one_shot", argv, api_key_vars, …}` mit den Namen gesetzter
+//! API-Key-Variablen an (nie deren Werte), damit Tests Aufruf und bereinigte Umgebung prüfen
+//! können.
 //!
 //! Spielt Szenarien im Format des Fake-Harness (HAR-026, `beton_harness::scenario`) über das
 //! Wire-Protokoll einer Vendor-CLI ab:
@@ -25,6 +33,7 @@ mod acp;
 mod app_server;
 mod io;
 mod mcp;
+mod one_shot;
 mod stream_json;
 
 use std::path::PathBuf;
@@ -64,6 +73,12 @@ struct Args {
     session_id: Option<String>,
     /// Fehlerinjektion: diesen Permission-Mode melden, egal was gesetzt ist (HAR-027).
     report_mode: Option<String>,
+    /// `-p`/`--print` von Claude Code.
+    print: bool,
+    /// `--output-format` von Claude Code (`json` = Einmal-Modus).
+    output_format: Option<String>,
+    /// `--json` von `codex exec`.
+    json: bool,
     /// `--append-system-prompt-file` von Claude Code (AGT-005).
     append_system_prompt_file: Option<PathBuf>,
     /// Kontext-Aufzeichnung (`--record <datei>`, sonst `BETON_FAKE_RECORD`).
@@ -92,6 +107,21 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--permission-mode" => out.permission_mode = args.next(),
             "--session-id" => out.session_id = args.next(),
             "--report-mode" => out.report_mode = args.next(),
+            "-p" | "--print" => out.print = true,
+            "--json" => out.json = true,
+            "--output-format" => out.output_format = args.next(),
+            // Flags der echten CLIs mit Wert: der Wert ist kein Unterkommando.
+            "-m"
+            | "--system-prompt"
+            | "--sandbox"
+            | "-s"
+            | "--input-format"
+            | "--permission-prompt-tool"
+            | "--plugin-dir"
+            | "-C"
+            | "--cd" => {
+                let _ = args.next();
+            }
             "--record" => out.record = args.next().map(PathBuf::from),
             "--append-system-prompt-file" => {
                 out.append_system_prompt_file = args.next().map(PathBuf::from);
@@ -213,6 +243,27 @@ fn main() -> ExitCode {
         eprintln!("beton-fake-cli: --protocol stream-json|app-server|acp fehlt");
         return ExitCode::from(2);
     };
+    // Einmal-Modus (SES-010): `claude -p --output-format json` bzw. `codex exec --json`.
+    let one_shot = match protocol.as_str() {
+        "stream-json" if args.print && args.output_format.as_deref() == Some("json") => {
+            Some(one_shot::Flavor::Claude)
+        }
+        "app-server" if args.command().first() == Some(&"exec") && args.json => {
+            Some(one_shot::Flavor::Codex)
+        }
+        _ => None,
+    };
+    if let Some(flavor) = one_shot {
+        let behavior = scenario
+            .as_ref()
+            .and_then(|s| s.one_shot.clone())
+            .unwrap_or_default();
+        let record = args
+            .record
+            .clone()
+            .or_else(|| std::env::var_os("BETON_FAKE_RECORD").map(PathBuf::from));
+        return one_shot::run(flavor, &behavior, record.as_deref());
+    }
     let Some(mut scenario) = scenario else {
         eprintln!("beton-fake-cli: --scenario <datei> fehlt");
         return ExitCode::from(2);

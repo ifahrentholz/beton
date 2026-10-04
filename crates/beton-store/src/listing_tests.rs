@@ -421,3 +421,46 @@ async fn ses_012_view_carries_the_full_session_record() {
         .unwrap();
     assert_eq!(view.session, t.store.session(org(&t), s.id).await.unwrap());
 }
+
+#[tokio::test]
+async fn ux_009_ac2_generated_title_never_replaces_a_user_title() {
+    let t = store().await;
+    let s = create(&t, "claude").await;
+    let title = |title: &str, source| {
+        EventPayload::SessionTitleChanged(SessionTitleChanged {
+            title: title.into(),
+            source,
+        })
+    };
+    assert_eq!(
+        t.store.session(org(&t), s.id).await.unwrap().title_source,
+        None
+    );
+    append(&t, &s, title("Erzeugt", TitleSource::Generated)).await;
+    let r = t.store.session(org(&t), s.id).await.unwrap();
+    assert_eq!(
+        (r.title.as_str(), r.title_source),
+        ("Erzeugt", Some(TitleSource::Generated))
+    );
+    append(&t, &s, title("Von mir", TitleSource::User)).await;
+    // Ein später eintreffender generierter Titel wird nicht angewendet.
+    append(&t, &s, title("Zu spät", TitleSource::Generated)).await;
+    let r = t.store.session(org(&t), s.id).await.unwrap();
+    assert_eq!(
+        (r.title.as_str(), r.title_source),
+        ("Von mir", Some(TitleSource::User))
+    );
+    // Auch nach dem Neuaufbau der Projektionen.
+    t.store
+        .rebuild_projections(org(&t), Some(s.id))
+        .await
+        .unwrap();
+    let r = t.store.session(org(&t), s.id).await.unwrap();
+    assert_eq!(
+        (r.title.as_str(), r.title_source),
+        ("Von mir", Some(TitleSource::User))
+    );
+    // Der User darf jederzeit wieder umbenennen.
+    append(&t, &s, title("Neu", TitleSource::User)).await;
+    assert_eq!(t.store.session(org(&t), s.id).await.unwrap().title, "Neu");
+}

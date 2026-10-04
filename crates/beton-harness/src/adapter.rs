@@ -180,6 +180,36 @@ pub struct RebuildRequest {
     pub model: Option<String>,
 }
 
+/// Einmal-Aufruf ohne Session (SES-010), z. B. für einen Session-Titel: der
+/// nicht-interaktive Modus der Vendor-CLI (`claude -p`, `codex exec`) mit ihrer eigenen
+/// Anmeldung (HAR-015), nie über einen API-Key von beton (ADR-0034).
+#[derive(Debug, Clone, Default)]
+pub struct OneShotRequest {
+    /// Anweisung an das Modell (System-Prompt bzw. vorangestellt).
+    pub instructions: String,
+    /// Inhalt, z. B. die erste Nachricht der Session. Geht über stdin, nie über argv.
+    pub prompt: String,
+    pub workdir: PathBuf,
+    /// Modell; ohne Angabe wählt der Adapter sein kleinstes bzw. den Default der CLI.
+    pub model: Option<String>,
+    /// Höchstdauer; danach wird der Prozess beendet.
+    pub timeout: Duration,
+    /// Nur Fake-Harness: Szenario-Datei (Abschnitt `one_shot`).
+    pub scenario: Option<PathBuf>,
+}
+
+/// Antwort eines Einmal-Aufrufs.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OneShotReply {
+    /// Antworttext des Modells.
+    pub text: String,
+    /// Tatsächlich genutztes Modell, soweit die CLI es meldet.
+    pub model: String,
+    /// Verbrauch des Aufrufs (`purpose` setzt der Aufrufer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<beton_core::event::CostDelta>,
+}
+
 /// Eingabe eines Nutzers für einen Turn.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UserInput {
@@ -188,6 +218,20 @@ pub struct UserInput {
     /// diesen Turn verweist (`effective_from_turn`, HAR-017). Ohne Angabe vergibt der Adapter
     /// die ID selbst.
     pub turn_id: Option<TurnId>,
+    /// Bilder und PDF zur Eingabe (WEB-006); nur bei Capability `images`. Textdateien stehen
+    /// schon im Text.
+    pub attachments: Vec<InputAttachment>,
+}
+
+/// Ein binärer Anhang einer Eingabe (WEB-006).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InputAttachment {
+    /// Dateiname (nur Anzeige).
+    pub name: String,
+    /// Medientyp, z. B. `image/png` oder `application/pdf`.
+    pub mime: String,
+    /// Inhalt als Base64 (Standard-Alphabet mit Padding).
+    pub data_base64: String,
 }
 
 impl From<&str> for UserInput {
@@ -195,6 +239,7 @@ impl From<&str> for UserInput {
         Self {
             text: text.into(),
             turn_id: None,
+            attachments: Vec::new(),
         }
     }
 }
@@ -387,6 +432,10 @@ pub enum HarnessError {
     SandboxRequired(String),
     #[error("protocol_error: {0}")]
     Protocol(String),
+    #[error("capability_unsupported: dieser Harness hat keinen Einmal-Modus")]
+    OneShotUnsupported,
+    #[error("timeout: {0}")]
+    Timeout(String),
     #[error("E/A-Fehler: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -403,6 +452,8 @@ impl HarnessError {
             Self::Busy(_) => "turn_active",
             Self::SandboxRequired(_) => "sandbox_required",
             Self::Protocol(_) => "protocol_error",
+            Self::OneShotUnsupported => "capability_unsupported",
+            Self::Timeout(_) => "timeout",
             Self::Io(_) => "internal",
         }
     }
@@ -439,6 +490,16 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     ) -> Result<String, HarnessError> {
         let _ = (request, env);
         Err(crate::capabilities::CapabilityUnsupported(crate::capabilities::Action::Fork).into())
+    }
+    /// Einmal-Aufruf über den nicht-interaktiven Modus der Vendor-CLI mit deren eigener
+    /// Anmeldung (SES-010, ADR-0034). Ohne Einmal-Modus `capability_unsupported`.
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let _ = (request, ctx);
+        Err(HarnessError::OneShotUnsupported)
     }
     /// Import vorhandener Chats der Vendor-CLI (HAR-023, HAR-024, Capability
     /// `transcript_import`); ohne Unterstützung `None`.

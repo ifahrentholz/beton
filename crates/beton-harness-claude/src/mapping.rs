@@ -237,6 +237,25 @@ fn map_tool_results(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         .collect()
 }
 
+/// `cost.delta` aus dem `result` eines Einmal-Aufrufs (SES-010); `purpose` setzt der Aufrufer.
+pub fn result_cost(v: &Value, auth: AuthSource) -> CostDelta {
+    let st = MapState {
+        auth_source: Some(auth),
+        ..MapState::default()
+    };
+    match cost_delta(v, &st, None).0 {
+        EventPayload::CostDelta(c) => c,
+        _ => unreachable!("cost_delta liefert immer cost.delta"),
+    }
+}
+
+/// Modell laut `modelUsage` eines `result`.
+pub fn result_model(v: &Value) -> Option<String> {
+    v["modelUsage"]
+        .as_object()
+        .and_then(|m| m.keys().next().cloned())
+}
+
 fn cost_delta(v: &Value, st: &MapState, purpose: Option<&str>) -> (EventPayload, String) {
     let usage = &v["usage"];
     let tok = |k: &str| usage[k].as_u64().unwrap_or(0);

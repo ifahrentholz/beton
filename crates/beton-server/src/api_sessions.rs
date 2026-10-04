@@ -447,6 +447,11 @@ pub struct InputRequest {
     #[serde(default)]
     #[ts(optional)]
     pub mode: Option<InputMode>,
+    /// Anhänge aus `POST /v1/sessions/{id}/attachments` (WEB-006).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<beton_core::event::Attachment>>", optional)]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub attachments: Vec<beton_core::event::Attachment>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
@@ -475,9 +480,10 @@ pub async fn submit_input(
 ) -> ApiResult<Response> {
     let result = state
         .sessions()
-        .input(
+        .input_with(
             session_id(&id)?,
             req.text,
+            req.attachments,
             principal(auth).1,
             req.mode.unwrap_or_default(),
         )
@@ -935,6 +941,12 @@ impl Command for InputSubmit {
         let text = args["text"]
             .as_str()
             .ok_or_else(|| Problem::new(ProblemCode::ValidationFailed).detail("text fehlt"))?;
+        let attachments: Vec<beton_core::event::Attachment> = match args.get("attachments") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(a) => serde_json::from_value(a.clone()).map_err(|_| {
+                Problem::new(ProblemCode::ValidationFailed).detail("attachments ist ungültig")
+            })?,
+        };
         let mode = match args.get("mode") {
             None | Some(Value::Null) => InputMode::Queue,
             Some(m) => serde_json::from_value(m.clone()).map_err(|_| {
@@ -943,9 +955,10 @@ impl Command for InputSubmit {
         };
         ctx.state
             .sessions()
-            .input(
+            .input_with(
                 need_session(session)?,
                 text.to_owned(),
+                attachments,
                 PrincipalId::User(UserId::LOCAL),
                 mode,
             )

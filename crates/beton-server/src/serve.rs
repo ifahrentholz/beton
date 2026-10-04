@@ -174,7 +174,10 @@ pub async fn start_with(
             runners: runtime.runners.clone(),
             config: runtime.tunnel,
             queues: runtime.queues.clone(),
-            system: Some(Arc::new(crate::sessions::ServerSystemCalls(system_state))),
+            system: Some(Arc::new(crate::sessions::ServerSystemCalls(
+                system_state.clone(),
+            ))),
+            observer: Some(Arc::new(crate::titles::TitleObserver(system_state))),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

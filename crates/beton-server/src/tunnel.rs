@@ -203,6 +203,12 @@ pub trait SystemCalls: Send + Sync {
     async fn call(&self, session: SessionId, tool: &str, args: Value) -> Result<Value, Value>;
 }
 
+/// Reagiert auf gespeicherte Runner-Events, ohne den Tunnel aufzuhalten (z. B. Titel nach dem
+/// ersten Turn, SES-010).
+pub trait EventObserver: Send + Sync {
+    fn observe(&self, session: SessionId, written: &[Event]);
+}
+
 /// Zustand des Tunnel-Endpunkts.
 #[derive(Clone)]
 pub struct TunnelState {
@@ -214,6 +220,8 @@ pub struct TunnelState {
     pub system: Option<Arc<dyn SystemCalls>>,
     /// Queues der Sessions: Turn-Ende arbeitet die nächste Eingabe ab (SES-004).
     pub queues: Arc<crate::queue::Queues>,
+    /// Weitere Beobachter gespeicherter Events (Session-Titel, SES-010).
+    pub observer: Option<Arc<dyn EventObserver>>,
 }
 
 impl TunnelState {
@@ -560,6 +568,9 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                             }
                         };
                     state.queue().observe(session, &written);
+                    if let Some(o) = &state.observer {
+                        o.observe(session, &written);
+                    }
                     Some((written.first()?.seq, written.last()?.seq))
                 };
             lock(&runners.persisted).insert(session, upto);

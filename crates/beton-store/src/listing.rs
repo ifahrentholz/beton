@@ -63,7 +63,7 @@ impl SessionView {
 
 const VIEW_COLUMNS: &str = "s.id, s.org_id, s.owner_id, s.project_id, s.parent_id, s.kind, \
     s.harness, s.home_node_id, s.epoch, s.head_seq, s.created_at, s.updated_at, s.title, \
-    s.status, s.archived, s.cost_micro, s.last_activity_at, s.worktree_path, s.worktree_branch, \
+    s.title_source, s.status, s.archived, s.cost_micro, s.last_activity_at, s.worktree_path, s.worktree_branch, \
     s.worktree_base, s.worktree_base_sha, COALESCE(u.pinned, 0) AS pinned, COALESCE(u.read_seq, 0) AS read_seq, \
     MAX(s.last_activity_at, COALESCE(u.updated_at, s.last_activity_at)) AS changed_at";
 

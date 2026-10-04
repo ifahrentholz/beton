@@ -12,8 +12,11 @@
 //!       - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }
 //! ```
 //!
+//! `one_shot: { reply: "Titel" }` bzw. `one_shot: { fail: "Grund" }` bestimmt die Antwort auf
+//! Einmal-Aufrufe (SES-010, Session-Titel); ohne Angabe antwortet der Fake mit `Fake-Titel`.
+//!
 //! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
-//! `echo_input: true` gibt die Eingabe des Turns zurück, `echo_history: true` die
+//! `echo_input: true` gibt die Eingabe des Turns zurück (mit einer Zeile je Anhang), `echo_history: true` die
 //! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019), `echo_settings: true`
 //! Modell, Effort und Permission-Mode, mit denen der Turn läuft (HAR-017, HAR-027).
 
@@ -38,9 +41,27 @@ pub struct Scenario {
     /// Fehlerinjektion der Fake-CLI auf Protokollebene (QA-002 AC3).
     #[serde(default, skip_serializing_if = "Faults::is_empty")]
     pub faults: Faults,
+    /// Antwort auf Einmal-Aufrufe (SES-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub one_shot: Option<OneShotBehavior>,
     #[serde(default)]
     pub turns: Vec<Turn>,
 }
+
+/// Verhalten bei Einmal-Aufrufen (`claude -p`, `codex exec`; SES-010).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OneShotBehavior {
+    /// Antworttext (Default [`ONE_SHOT_DEFAULT_REPLY`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+    /// Statt zu antworten mit diesem Grund scheitern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail: Option<String>,
+}
+
+/// Antwort des Fakes auf Einmal-Aufrufe ohne `one_shot` im Szenario.
+pub const ONE_SHOT_DEFAULT_REPLY: &str = "Fake-Titel";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

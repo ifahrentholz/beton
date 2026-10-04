@@ -5,6 +5,7 @@ import type { SessionSummary } from '@beton/sdk'
 import { Archive, Plus, Search } from 'lucide-react'
 import { client } from '@/lib/client'
 import { ago } from '@/lib/format'
+import { PLACEHOLDER } from '@/lib/title'
 import { cn } from '@/lib/utils'
 import { sortSessions, useSessions } from '@/store/sessions'
 import { harnessName, listStatus, StatusMark, VoiceDot, voiceOf } from './harness'
@@ -132,8 +133,16 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
               >
                 <StatusMark status={listStatus(s.status)} />
                 <div className="min-w-0 flex-1">
-                  <div className={cn('truncate text-[13px]', s.unread && 'font-semibold')}>
-                    {s.title || 'Neue Session'}
+                  <div
+                    key={s.title}
+                    className={cn(
+                      'truncate text-[13px]',
+                      s.unread && 'font-semibold',
+                      !s.title && 'text-muted-foreground italic',
+                      s.title && s.title_source === 'generated' && 'animate-title-in',
+                    )}
+                  >
+                    {s.title || PLACEHOLDER}
                     {s.unread && <span className="sr-only"> (ungelesen)</span>}
                   </div>
                   <div className="flex items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-muted-foreground">

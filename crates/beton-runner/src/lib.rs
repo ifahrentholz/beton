@@ -598,6 +598,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     };
     let forked = forked.unwrap_or_default();
     let mut handover = forked.handover;
+    // Einmal-Aufrufe (SES-010) laufen über denselben Adapter und dieselbe Umgebung.
+    let one_shot_adapter = registry.get(&boot.harness).cloned();
+    let one_shot_ctx = ctx.clone();
+    let (one_shot_tx, mut one_shot_rx) =
+        mpsc::unbounded_channel::<(String, Result<Value, Value>)>();
     // Modell, Effort und Permission-Mode ab dem Start (HAR-017, HAR-027); `yolo` ohne Sandbox
     // scheitert hier (fail closed).
     let fallback_caps = beton_harness::Capabilities::minimal(
@@ -739,6 +744,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         tokio::spawn(watch_workspace(t.clone(), turn_rx, fs_tx.clone()));
     }
     let mut pending_before: Option<String> = None;
+    let mut pending_attachments: HashMap<String, beton_harness::InputAttachment> = HashMap::new();
 
     let mut unacked = Unacked::default();
     let mut tracker = StatusTracker::default();
@@ -1061,6 +1067,17 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     match down {
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
+                        TunnelDown::CmdDeliver { cmd_id, name, args } if name == ONE_SHOT_CMD => {
+                            // Kann dauern (Modellaufruf): nicht im Lese-Loop warten.
+                            let adapter = one_shot_adapter.clone();
+                            let ctx = one_shot_ctx.clone();
+                            let tx = one_shot_tx.clone();
+                            let request = one_shot_request(&boot, &args);
+                            tokio::spawn(async move {
+                                let reply = run_one_shot(adapter, request, ctx).await;
+                                let _ = tx.send((cmd_id, reply));
+                            });
+                        }
                         TunnelDown::CmdDeliver { cmd_id, name, args } => {
                             // Stand vor dem Turn festhalten, bevor der Harness die Eingabe sieht.
                             if name == "input.submit"
@@ -1089,7 +1106,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 }
                                 continue;
                             }
-                            let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn).await;
+                            let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await;
                             // Ab der Zustellung läuft ein Turn, auch bevor `turn.started` ankommt.
                             if name == "input.submit" && reply.is_ok() {
                                 turn_running = true;
@@ -1126,6 +1143,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         }
                         TunnelDown::Welcome { .. } => {}
                     }
+                }
+                Some((cmd_id, reply)) = one_shot_rx.recv() => {
+                    let msg = match reply {
+                        Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
+                        Err(problem) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(problem) },
+                    };
+                    if !send(&mut ws, &msg).await { break None; }
                 }
                 Some((turn, changes)) = fs_rx.recv() => {
                     if !push(&mut ws, &boot, &mut unacked, vec![fs_changed(&boot, &actor, turn, changes)]).await {
@@ -1421,6 +1445,46 @@ async fn drain_acks(ws: &mut Ws, unacked: &mut Unacked) {
     }
 }
 
+/// Kommando für einen Einmal-Aufruf über den Harness der Session (SES-010, z. B. Titel).
+/// Argumente: `instructions`, `prompt`, optional `model` und `timeout_ms`; Ergebnis:
+/// [`beton_harness::OneShotReply`].
+pub const ONE_SHOT_CMD: &str = "harness.one_shot";
+
+/// Höchstdauer eines Einmal-Aufrufs ohne Angabe des Servers.
+pub const ONE_SHOT_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn one_shot_request(boot: &RunnerBoot, args: &Value) -> beton_harness::OneShotRequest {
+    beton_harness::OneShotRequest {
+        instructions: args["instructions"].as_str().unwrap_or_default().to_owned(),
+        prompt: args["prompt"].as_str().unwrap_or_default().to_owned(),
+        workdir: boot.workdir.clone(),
+        model: args["model"].as_str().map(str::to_owned),
+        timeout: args["timeout_ms"]
+            .as_u64()
+            .map_or(ONE_SHOT_TIMEOUT, Duration::from_millis),
+        scenario: boot.scenario.clone(),
+    }
+}
+
+async fn run_one_shot(
+    adapter: Option<Arc<dyn beton_harness::HarnessAdapter>>,
+    request: beton_harness::OneShotRequest,
+    ctx: AdapterContext,
+) -> Result<Value, Value> {
+    let problem = |code: &str, detail: String| json!({"code": code, "detail": detail});
+    let Some(adapter) = adapter else {
+        return Err(problem("unavailable", "Harness nicht verfügbar".into()));
+    };
+    match adapter.one_shot(&request, &ctx).await {
+        Ok(reply) => serde_json::to_value(reply).map_err(|e| problem("internal", e.to_string())),
+        Err(e) => {
+            // Inhalte der CLI-Ausgabe nicht ins Log (Prompts, OBS-001).
+            tracing::debug!(code = e.code(), "Einmal-Aufruf gescheitert");
+            Err(problem(e.code(), e.to_string()))
+        }
+    }
+}
+
 /// Entscheidung aus `approval.resolve`. `updated_args: null` (so serialisiert die REST-API
 /// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“.
 fn gate_decision(args: &Value) -> GateDecision {
@@ -1452,6 +1516,8 @@ async fn apply_live(
     Ok(())
 }
 
+// Zustand des Runner-Loops, den genau dieses Kommando braucht; ein eigener Typ brächte nichts.
+#[allow(clippy::too_many_arguments)]
 async fn deliver(
     session: &mut dyn HarnessSession,
     gate: &RunnerGate,
@@ -1460,19 +1526,47 @@ async fn deliver(
     turn_running: bool,
     handover: &mut Option<String>,
     next_turn: &mut Option<TurnId>,
+    pending: &mut HashMap<String, beton_harness::InputAttachment>,
 ) -> Result<Value, Value> {
     let problem = |code: &str, detail: String| json!({"code": code, "detail": detail});
     match name {
+        // Anhang für die nächste Eingabe (WEB-006); `input.submit` nennt seine `id`.
+        "input.attachment" => {
+            let id = args["id"].as_str().unwrap_or_default().to_owned();
+            if id.is_empty() || pending.len() >= 64 {
+                return Err(problem("validation_failed", "Anhang ohne id".into()));
+            }
+            pending.insert(
+                id,
+                beton_harness::InputAttachment {
+                    name: args["name"].as_str().unwrap_or_default().to_owned(),
+                    mime: args["mime"].as_str().unwrap_or_default().to_owned(),
+                    data_base64: args["data"].as_str().unwrap_or_default().to_owned(),
+                },
+            );
+            Ok(Value::Null)
+        }
         "input.submit" => {
             let mut text = args["text"].as_str().unwrap_or_default().to_owned();
             // Der erste Turn nach einem Fork per Präambel bekommt die Kurzfassung (HAR-018).
             if let Some(brief) = handover.as_deref() {
                 text = beton_harness::handover::Preamble::first_message(brief, &text);
             }
+            // Vorher zugestellte Anhänge dieser Eingabe (WEB-006).
+            let attachments = args["attachments"]
+                .as_array()
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().and_then(|id| pending.remove(id)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            pending.clear();
             let sent = session
                 .send(UserInput {
                     text,
                     turn_id: *next_turn,
+                    attachments,
                 })
                 .await;
             if sent.is_ok() {
@@ -1489,10 +1583,7 @@ async fn deliver(
         "input.steer" => {
             let text = args["text"].as_str().unwrap_or_default().to_owned();
             session
-                .steer(UserInput {
-                    text,
-                    turn_id: None,
-                })
+                .steer(UserInput::from(text.as_str()))
                 .await
                 .map(|()| Value::Null)
                 .map_err(|e| problem(e.code(), e.to_string()))

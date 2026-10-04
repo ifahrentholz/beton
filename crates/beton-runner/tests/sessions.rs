@@ -454,6 +454,9 @@ async fn ses_002_ac2_reconnect_from_seq_500_gets_exactly_the_rest() {
             }
         }
     }
+    // Nach dem Turn-Ende schreibt der Server ggf. noch den Session-Titel (SES-010); hier
+    // zählt nur der Stand bis `head`.
+    seqs.retain(|s| *s <= head);
     assert_eq!(seqs, (501..=head).collect::<Vec<_>>());
     d.daemon.shutdown().await;
 }
@@ -1384,6 +1387,8 @@ async fn ses_012_ac2_read_on_device_a_is_read_on_device_b_within_2s() {
         .await;
     d.input(&id, json!({"text": "los"})).await;
     d.wait_for(&id, is("turn.completed")).await;
+    // Nach dem ersten Turn kommt noch der Session-Titel (SES-010).
+    d.wait_for(&id, is("session.title_changed")).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     // Gerät B kennt die Liste und fragt danach nur Deltas ab (wie die Web-UI).
     let (_, list) = d.http("GET", "/v1/sessions", None).await;

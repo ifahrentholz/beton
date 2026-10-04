@@ -6,6 +6,10 @@
 //! 3. Authentisierung: `Authorization: Bearer <lokales Token>` oder Session-Cookie. Mit Cookie
 //!    brauchen zustandsändernde Requests eine erlaubte `Origin` und `Sec-Fetch-Site`
 //!    `same-origin` bzw. `none` (CSRF).
+//! 4. SSE-Strom (PROTO-012): wie der WebSocket ein dauerhafter Zugang zu Session-Daten, daher
+//!    dieselbe Origin-Regel: eine mitgeschickte `Origin` muss erlaubt sein; mit Cookie und ohne
+//!    `Origin` (EventSource derselben Origin) muss `Sec-Fetch-Site` `same-origin` bzw. `none`
+//!    sein. Fehlen die Fetch-Metadaten, wird abgelehnt (fail closed).
 //!
 //! Es werden keine CORS-Header gesetzt; Preflights fremder Origins bleiben unbeantwortet.
 
@@ -126,6 +130,41 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     header_str(headers, header::UPGRADE).is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
+/// Pfad des SSE-Stroms einer Session: `/v1/sessions/{id}/events/stream` (PROTO-012).
+pub fn is_event_stream_path(path: &str) -> bool {
+    path.strip_prefix("/v1/sessions/")
+        .and_then(|rest| rest.strip_suffix("/events/stream"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// `Sec-Fetch-Site` einer Anfrage derselben Origin bzw. einer direkten Navigation.
+fn same_origin_fetch(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s == "same-origin" || s == "none")
+}
+
+/// Origin-Regel für den SSE-Strom (PROTO-012); `None` = erlaubt.
+fn event_stream_origin(
+    headers: &HeaderMap,
+    origins: &OriginPolicy,
+    auth: Authenticated,
+) -> Option<Response> {
+    match header_str(headers, header::ORIGIN) {
+        Some(origin) if !origins.allows(origin) => Some(reject(
+            ProblemCode::OriginNotAllowed,
+            "Origin nicht erlaubt",
+        )),
+        Some(_) => None,
+        None if auth == Authenticated::Cookie && !same_origin_fetch(headers) => Some(reject(
+            ProblemCode::OriginNotAllowed,
+            "SSE mit Cookie nur von derselben Origin; Skripte nutzen den Authorization-Header",
+        )),
+        None => None,
+    }
+}
+
 fn is_state_changing(method: &Method) -> bool {
     !matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
@@ -176,11 +215,7 @@ pub async fn guard(State(g): State<Guard>, mut req: Request, next: Next) -> Resp
         if is_state_changing(req.method()) {
             let origin_ok =
                 header_str(headers, header::ORIGIN).is_some_and(|o| g.origins.allows(o));
-            let site_ok = headers
-                .get("sec-fetch-site")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|s| s == "same-origin" || s == "none");
-            if !origin_ok || !site_ok {
+            if !origin_ok || !same_origin_fetch(headers) {
                 return reject(
                     ProblemCode::OriginNotAllowed,
                     "zustandsändernde Cookie-Requests nur von erlaubter Origin",
@@ -210,6 +245,12 @@ pub async fn guard(State(g): State<Guard>, mut req: Request, next: Next) -> Resp
             "lokales Token oder Anmeldung erforderlich",
         );
     };
+    // 4. SSE-Strom: Origin-Regel wie beim WebSocket (PROTO-012).
+    if is_event_stream_path(req.uri().path())
+        && let Some(res) = event_stream_origin(headers, &g.origins, auth)
+    {
+        return res;
+    }
     req.extensions_mut().insert(auth);
     next.run(req).await
 }
@@ -230,6 +271,15 @@ mod tests {
         assert!(p.allows("tauri://localhost"));
         assert!(!p.allows("null"));
         assert!(!p.allows("https://a.example.com/pfad"));
+    }
+
+    #[test]
+    fn proto_012_event_stream_path_is_recognized_exactly() {
+        assert!(is_event_stream_path("/v1/sessions/ses_1/events/stream"));
+        assert!(!is_event_stream_path("/v1/sessions/ses_1/events"));
+        assert!(!is_event_stream_path("/v1/sessions//events/stream"));
+        assert!(!is_event_stream_path("/v1/sessions/a/b/events/stream"));
+        assert!(!is_event_stream_path("/v1/sessions/ses_1/events/stream/x"));
     }
 
     #[test]

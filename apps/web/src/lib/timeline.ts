@@ -1,4 +1,4 @@
-import type { Event } from '@beton/sdk'
+import type { Attachment, Event } from '@beton/sdk'
 import { harnessName } from '@/components/harness'
 import { effortLabel } from '@/components/settings-picker'
 import type { SessionLog } from '@/store/events'
@@ -8,7 +8,7 @@ import { isInline, isOffloaded, textOf } from './events'
 export type ToolState = 'requested' | 'running' | 'completed' | 'failed' | 'denied'
 
 export type Item =
-  | { kind: 'user'; key: string; text: string }
+  | { kind: 'user'; key: string; text: string; attachments: Attachment[] }
   | { kind: 'assistant'; key: string; text: string; streaming: boolean }
   | { kind: 'reasoning'; key: string; text: string; streaming: boolean }
   | {
@@ -98,6 +98,15 @@ export function settingsNotes(
   return notes
 }
 
+/** Anhänge einer Nachricht (Inhaltsblöcke `{"type": "attachment", …}`, WEB-006). */
+export function attachmentsOf(content: unknown[]): Attachment[] {
+  return content.flatMap((b) => {
+    const a = (b ?? {}) as Partial<Attachment> & { type?: unknown }
+    if (a.type !== 'attachment' || typeof a.blob !== 'string' || typeof a.name !== 'string' || typeof a.mime !== 'string') return []
+    return [{ blob: a.blob, name: a.name, mime: a.mime, size: Number(a.size ?? 0) }]
+  })
+}
+
 /**
  * Leitet die Elemente des Chat-Streams aus dem Log ab (WEB-002, WEB-018). Rein und ohne
  * Seiteneffekte; laufende Deltas erscheinen am Ende.
@@ -140,7 +149,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
       }
       case 'message.completed': {
         const text = textOf(e.payload.content)
-        if (e.payload.role === 'user') items.push({ kind: 'user', key, text })
+        if (e.payload.role === 'user') items.push({ kind: 'user', key, text, attachments: attachmentsOf(e.payload.content) })
         else if (e.payload.role === 'assistant' && text) items.push({ kind: 'assistant', key, text, streaming: false })
         break
       }
