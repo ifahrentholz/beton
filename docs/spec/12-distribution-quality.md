@@ -264,7 +264,7 @@ release-please PR gemergt → Tag
   - [ ] AC1 — Der Claude-Adapter läuft mit `BETON_CLAUDE_PATH=beton-fake-cli --protocol stream-json --scenario …` ein Tool-Approval-Szenario vollständig durch (Integrationstest).
   - [ ] AC2 — Identisches Szenario + Eingabe ergeben byte-identische stdout-Ausgaben des Fake-CLIs über 100 Läufe.
   - [ ] AC3 — Fehlerinjektionen `crash_after`, `hang`, `malformed_line` sind konfigurierbar; der Adapter behandelt jede ohne Panic.
-  - [ ] AC4 — Die Fake-CLI ist nicht Teil von Release-Artefakten (Prüfung der Release-Archive).
+  - [ ] AC4 — (ab M3, mit der Release-Pipeline) Die Fake-CLI ist nicht Teil von Release-Artefakten (Prüfung der Release-Archive).
 - **Abhängigkeiten:** HAR-026 (siehe 01-harnesses.md)
 - **Referenz:** ADR-0031
 

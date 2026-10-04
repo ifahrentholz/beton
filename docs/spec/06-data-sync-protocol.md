@@ -268,7 +268,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Client 1.4 ↔ Server 1.3 und Client 1.3 ↔ Server 1.4 verbinden sich mit 1.3; Client 1.2 ↔ Server 1.4 erhält `4400` mit `{supported:{min:"1.3",max:"1.4"}}`.
   - [ ] AC2 — Ohne `hello` innerhalb von 10 s schließt der Server mit `4400`.
-  - [ ] AC3 — Kompatibilitätstests in CI fahren den aktuellen Server gegen den Client der Vorversion (und umgekehrt) mit derselben E2E-Suite.
+  - [ ] AC3 — (ab M3, sobald es ein erstes Release gibt) Kompatibilitätstests in CI fahren den aktuellen Server gegen den Client der Vorversion (und umgekehrt) mit derselben E2E-Suite.
 - **Abhängigkeiten:** PROTO-001, AUTH-001, AUTH-003 (siehe 05-security-identity.md)
 - **Referenz:** ADR-0019 (Versionsaushandlung)
 
@@ -373,7 +373,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
   - [ ] AC1 — Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.
   - [ ] AC2 — Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.
   - [ ] AC3 — Der Host öffnet keinen lauschenden Port (Test: `ss -ltn`/`lsof` zeigt keine Listener des Host-/Runner-Prozesses außer Loopback-Proxy).
-  - [ ] AC4 — Ab M4: ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen.
+  - [ ] AC4 — (ab M4) Ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen.
 - **Abhängigkeiten:** PROTO-001, DATA-002, AUTH-001, AUTH-011 (ab M4, siehe 05-security-identity.md), RUN-002, RUN-004 (ab M4, siehe 10-runners-extensibility.md)
 - **Referenz:** ADR-0003; Omnigent Runner-/Host-Tunnel (1.6)
 
