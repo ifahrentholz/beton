@@ -140,6 +140,9 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         SearchPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ChangesPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         FileDiff::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Sub-Agent-Baum (AGT-009, WEB-012).
+        beton_server::subagents::SubagentTree::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
         // Import fremder Chats (SES-008).
         use beton_server::imports::{ImportCandidatePage, ImportRequest, ImportResponse};
         ImportCandidatePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;

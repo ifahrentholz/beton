@@ -29,6 +29,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `stale_epoch` | 409 | Veraltete Epoch |
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |
 | `not_a_git_repo` | 409 | Kein Git-Repository |
+| `spawn_denied` | 409 | Sub-Agent nicht gestartet |
 | `worktree_dirty` | 409 | Worktree hat uncommittete Änderungen |
 | `worktree_unpushed` | 409 | Branch hat ungepushte Commits |
 | `tombstoned` | 410 | Gelöscht |

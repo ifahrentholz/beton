@@ -84,6 +84,8 @@ pub struct Runtime {
     pub features: Arc<beton_core::feature::FeatureSet>,
     /// Serverseitige Queues (SES-004).
     pub queues: Arc<crate::queue::Queues>,
+    /// Aufträge an Sub-Agents (AGT-009).
+    pub subagents: Arc<crate::subagents::Registry>,
 }
 
 impl Runtime {
@@ -119,6 +121,7 @@ impl Runtime {
             shutdown,
             features: Arc::default(),
             queues: Arc::default(),
+            subagents: Arc::default(),
         }
     }
 
@@ -291,6 +294,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::compact_session))
         .routes(routes!(crate::api_sessions::resume_session))
         .routes(routes!(crate::api_sessions::fork_session))
+        .routes(routes!(crate::subagents::get_subagents))
         .routes(routes!(crate::api_sessions::submit_input))
         .routes(routes!(crate::api_sessions::get_queue))
         .routes(routes!(

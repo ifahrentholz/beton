@@ -1,0 +1,39 @@
+# Built-in-Agent maestra (AGT-011): Orchestrator über Harness-Grenzen.
+# yaml-language-server: $schema=../../schemas/v1/agent.schema.json
+spec_version: 1
+name: maestra
+description: >-
+  Orchestriert Implementierung und Review über Harness-Grenzen: zerlegt ein Ziel, lässt die
+  Teilaufgaben parallel in eigenen Worktrees implementieren und jedes Ergebnis von einem Agent
+  eines anderen Vendors reviewen. Schreibt selbst keinen Code und merged nie.
+version: 1.0.0
+
+executor:
+  harness: claude
+  permission_mode: plan
+
+instructions:
+  file: prompts/system.md
+  project_files: auto
+
+agents:
+  impl-claude:   { ref: ./agents/impl-claude }
+  impl-codex:    { ref: ./agents/impl-codex }
+  review-claude: { ref: ./agents/review-claude }
+  review-codex:  { ref: ./agents/review-codex }
+
+spawn:
+  agents: [impl-claude, impl-codex, review-claude, review-codex]
+  max_depth: 1
+  max_concurrent: 4
+  worktree: new
+
+tools:
+  system: [session_spawn, session_send, session_wait, session_status, session_list, session_cancel, policy_query]
+
+skills: [plan, fanout, cross-review, investigate]
+
+# Ausgewertet ab M2 (POL-015, POL-017); bis dahin nur gelesen und geprüft.
+policies:
+  - { id: maestra-no-code, type: tool_allowlist, params: { allow_kinds: [system, file_read, search] } }
+  - { id: maestra-no-merge, type: git_guard, params: { merge: deny, push: deny } }

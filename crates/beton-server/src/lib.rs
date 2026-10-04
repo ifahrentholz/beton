@@ -27,6 +27,7 @@ pub mod queue;
 pub mod security;
 pub mod serve;
 pub mod sessions;
+pub mod subagents;
 pub mod tunnel;
 pub mod web;
 pub mod workspace;

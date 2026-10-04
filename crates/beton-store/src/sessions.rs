@@ -73,6 +73,17 @@ pub struct SessionWorktree {
     pub base_sha: String,
 }
 
+/// Eine Session im Sub-Agent-Baum (AGT-009, WEB-012) mit ihren Token-Zählern.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TreeEntry {
+    pub session: SessionRecord,
+    /// Abstand zur Wurzel der Abfrage (0 = Wurzel).
+    pub depth: u32,
+    /// Summe aus `cost.delta` (Eingabe inkl. Cache).
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 /// Grund, aus dem jemand eine Session löschen darf (DATA-008 AC3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteAuthority {
@@ -341,6 +352,49 @@ impl Store {
             .await?
             .ok_or_else(|| Error::NotFound(format!("Session {id}")))?;
         session_from_row(&row)
+    }
+
+    /// Eine Session und alle Nachfahren über `parent_id` (AGT-009), Wurzel zuerst, sonst nach
+    /// Tiefe und Anlage; mit Token-Summen aus `usage_daily`.
+    pub async fn session_tree(&self, org: OrgId, root: SessionId) -> Result<Vec<TreeEntry>> {
+        let cols = SESSION_COLUMNS
+            .split(", ")
+            .map(|c| format!("s.{}", c.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH RECURSIVE tree (id, depth) AS ( \
+               SELECT id, 0 FROM sessions WHERE org_id = ?1 AND id = ?2 \
+               UNION ALL \
+               SELECT c.id, t.depth + 1 FROM sessions c JOIN tree t ON c.parent_id = t.id \
+               WHERE c.org_id = ?1 \
+             ) \
+             SELECT {cols}, t.depth AS depth, \
+               COALESCE((SELECT SUM(u.input_tokens + u.cache_read_tokens + u.cache_write_tokens) \
+                 FROM usage_daily u WHERE u.org_id = ?1 AND u.session_id = s.id), 0) AS tokens_in, \
+               COALESCE((SELECT SUM(u.output_tokens) FROM usage_daily u \
+                 WHERE u.org_id = ?1 AND u.session_id = s.id), 0) AS tokens_out \
+             FROM tree t JOIN sessions s ON s.id = t.id AND s.org_id = ?1 \
+             ORDER BY t.depth, s.created_at, s.id"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(org.to_string())
+            .bind(root.to_string())
+            .fetch_all(&self.pool)
+            .await?;
+        if rows.is_empty() {
+            return Err(Error::NotFound(format!("Session {root}")));
+        }
+        rows.iter()
+            .map(|row| {
+                Ok(TreeEntry {
+                    session: session_from_row(row)?,
+                    depth: u32::try_from(row.try_get::<i64, _>("depth")?).unwrap_or(u32::MAX),
+                    input_tokens: to_u64(row.try_get("tokens_in")?)?,
+                    output_tokens: to_u64(row.try_get("tokens_out")?)?,
+                })
+            })
+            .collect()
     }
 
     /// Session-Liste, neueste Aktivität zuerst.

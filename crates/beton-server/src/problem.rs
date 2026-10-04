@@ -68,6 +68,9 @@ problem_codes! {
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
     NotAGitRepo = "not_a_git_repo", 409, "Kein Git-Repository";
+    /// Ein Sub-Agent wurde nicht gestartet (AGT-009); `detail` beginnt mit dem Grund
+    /// `max_depth`, `max_concurrent` oder `not_allowed`.
+    SpawnDenied = "spawn_denied", 409, "Sub-Agent nicht gestartet";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
     WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
     Tombstoned = "tombstoned", 410, "Gelöscht";

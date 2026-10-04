@@ -970,7 +970,7 @@
           }
         },
         "budget_share": {
-          "description": "Maximaler Anteil am Run-Budget je Kind (0–1).",
+          "description": "Maximaler Anteil am Run-Budget je Kind (0–1); ausgewertet ab M5 (ASY-010).",
           "type": [
             "number",
             "null"
@@ -980,23 +980,25 @@
           "minimum": 0.0
         },
         "max_concurrent": {
+          "description": "Höchstzahl gleichzeitig laufender Childs (Default 3).",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
-          "minimum": 0
+          "minimum": 1
         },
         "max_depth": {
+          "description": "Größte Tiefe des Session-Baums unter diesem Agent (Default 1: nur direkte Childs).",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
-          "minimum": 0
+          "minimum": 1
         },
         "worktree": {
-          "description": "Default für Kinder: `new`, `inherit` oder `none`.",
+          "description": "Workspace der Kinder: `new` (eigener Worktree vom HEAD des Parents), `inherit`\n(Workspace des Parents, Default) oder `none` (Workspace des Parents, nur lesend ab M2).",
           "anyOf": [
             {
               "$ref": "#/$defs/WorktreeMode"

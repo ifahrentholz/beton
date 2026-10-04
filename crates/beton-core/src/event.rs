@@ -911,6 +911,7 @@ payload!(AgentCompleted {
     status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] cost_micro: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] cancel_reason: Option<String>,
 });
 payload!(AgentResolved {
     name: String,

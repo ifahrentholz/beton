@@ -544,6 +544,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 source,
                 &boot.harnesses,
                 &mcp::Paths::from_process(run_dir),
+                Some((&registry, &ctx.env)),
             )
             .await
         }

@@ -99,6 +99,12 @@
     "AgentCompleted": {
       "type": "object",
       "properties": {
+        "cancel_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "child_session_id": {
           "$ref": "#/$defs/SessionId"
         },

@@ -4,10 +4,12 @@
 //! Freischaltungsregeln (Tabelle in `docs/spec/02-agents.md`) begrenzen. Ein direkter Aufruf
 //! eines nicht freigeschalteten Tools wird mit `tool_not_enabled` abgelehnt (fail closed).
 //!
-//! Verfügbar in M1: `policy_query`, `session_spawn` (synchron), `skill_load`,
-//! `skill_read_file`. `inbox_read` und `ask_user` folgen mit der Inbox (UX-001, ab M2),
-//! `session_send`/`session_wait`/`session_status`/`session_list`/`session_cancel` mit den
-//! Sub-Agents (AGT-009), `timer_*` und `schedule_*` ab M5 (ASY-003, ASY-011).
+//! Verfügbar in M1: `policy_query`, `session_spawn` (synchron oder mit `async: true` im
+//! Hintergrund), `session_send`, `session_wait`, `session_status`, `session_list`,
+//! `session_cancel` (Sub-Agents, AGT-009), `skill_load`, `skill_read_file`. `inbox_read` und
+//! `ask_user` folgen mit der Inbox (UX-001, ab M2), `timer_*` und `schedule_*` ab M5 (ASY-003,
+//! ASY-011). Die `session_*`-Tools führt der Server aus (`system.call`, PROTO-015); er prüft
+//! Grenzen (`max_depth`, `max_concurrent`) und dass nur eigene Childs angesprochen werden.
 
 use std::sync::Arc;
 
@@ -20,11 +22,25 @@ use crate::protocol::{self, Kind, codes};
 use crate::skills::{self, SkillSet};
 
 /// System-Tools, die diese Version anbietet.
-pub const AVAILABLE: [SystemTool; 4] = [
+pub const AVAILABLE: [SystemTool; 9] = [
     SystemTool::PolicyQuery,
     SystemTool::SessionSpawn,
+    SystemTool::SessionSend,
+    SystemTool::SessionWait,
+    SystemTool::SessionStatus,
+    SystemTool::SessionList,
+    SystemTool::SessionCancel,
     SystemTool::SkillLoad,
     SystemTool::SkillReadFile,
+];
+
+/// Die Tools, die nur mit `session_spawn` freigeschaltet sind (AGT-009).
+const CHILD_TOOLS: [SystemTool; 5] = [
+    SystemTool::SessionSend,
+    SystemTool::SessionWait,
+    SystemTool::SessionStatus,
+    SystemTool::SessionList,
+    SystemTool::SessionCancel,
 ];
 
 /// Name eines System-Tools, z. B. `session_spawn`.
@@ -44,7 +60,12 @@ fn unlocked(tool: SystemTool, agent: Option<&AgentSpec>, skills_active: bool) ->
     match tool {
         SystemTool::PolicyQuery => true,
         SystemTool::SkillLoad | SystemTool::SkillReadFile => skills_active,
-        SystemTool::SessionSpawn => {
+        SystemTool::SessionSpawn
+        | SystemTool::SessionSend
+        | SystemTool::SessionWait
+        | SystemTool::SessionStatus
+        | SystemTool::SessionList
+        | SystemTool::SessionCancel => {
             agent.is_some_and(|a| a.spawn.as_ref().is_some_and(|s| !s.agents.is_empty()))
         }
         _ => false,
@@ -61,11 +82,15 @@ pub fn enabled_tools(agent: Option<&AgentSpec>, skills_active: bool) -> Vec<Syst
         Some(t) if !t.system.is_empty() => t.system.clone(),
         _ => AVAILABLE.to_vec(),
     };
+    // Wer `session_spawn` auswählt, bekommt die Tools für seine Childs dazu (AGT-009).
+    let spawn_selected = requested.contains(&SystemTool::SessionSpawn);
     AVAILABLE
         .into_iter()
         .filter(|t| {
             let skill_tool = matches!(t, SystemTool::SkillLoad | SystemTool::SkillReadFile);
-            (requested.contains(t) || skill_tool) && unlocked(*t, agent, skills_active)
+            let child_tool = spawn_selected && CHILD_TOOLS.contains(t);
+            (requested.contains(t) || skill_tool || child_tool)
+                && unlocked(*t, agent, skills_active)
         })
         .collect()
 }
@@ -79,6 +104,9 @@ pub struct SpawnTarget {
     /// Harness des Childs laut `executor.harness`.
     pub harness: String,
     pub model: Option<String>,
+    /// Grund, falls der Harness auf diesem Host nicht eingerichtet ist (nicht installiert,
+    /// nicht angemeldet); der Runner prüft das beim Start (AGT-011, AGT-012 Preflight).
+    pub unavailable: Option<String>,
 }
 
 /// Fehler eines Tool-Aufrufs, wie ihn das Modell sieht (`isError: true`).
@@ -102,9 +130,13 @@ impl ToolFailure {
 pub trait SystemBackend: Send + Sync {
     /// „Wäre Aktion X erlaubt?“ → Entscheidung und Begründung (ohne Seiteneffekte).
     async fn policy_query(&self, args: &Value) -> Result<Value, ToolFailure>;
-    /// Child-Session für einen erlaubten Sub-Agent starten und (synchron) ihr Ergebnis liefern.
+    /// Child-Session für einen erlaubten Sub-Agent starten; synchron mit ihrem Ergebnis, mit
+    /// `async: true` sofort mit `session_id`.
     async fn session_spawn(&self, target: &SpawnTarget, args: &Value)
     -> Result<Value, ToolFailure>;
+    /// `session_send`, `session_wait`, `session_status`, `session_list`, `session_cancel`
+    /// (AGT-009): führt der Server für die eigenen Childs aus.
+    async fn session_tool(&self, tool: SystemTool, args: &Value) -> Result<Value, ToolFailure>;
 }
 
 /// Der MCP-Server `beton` einer Session.
@@ -164,27 +196,81 @@ impl SystemServer {
                 let list = self
                     .spawn
                     .iter()
-                    .map(|s| match &s.description {
-                        Some(d) => format!("- {} ({}): {d}", s.name, s.harness),
-                        None => format!("- {} ({})", s.name, s.harness),
+                    .map(|s| {
+                        let harness = match &s.unavailable {
+                            Some(_) => format!("{}, hier nicht eingerichtet", s.harness),
+                            None => s.harness.clone(),
+                        };
+                        match &s.description {
+                            Some(d) => format!("- {} ({harness}): {d}", s.name),
+                            None => format!("- {} ({harness})", s.name),
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
                 json!({
                     "name": name,
-                    "description": format!("Startet eine Child-Session für einen erlaubten Sub-Agent, wartet auf ihr Ende und liefert ihre Abschlussnachricht.\nErlaubte Agents:\n{list}"),
+                    "description": format!("Startet eine Child-Session (eigene Session, ggf. auf einem anderen Harness) für einen erlaubten Sub-Agent. Ohne `async` wartet der Aufruf auf das Ende ihres Auftrags und liefert die Abschlussnachricht; mit `async: true` kehrt er sofort mit `session_id` zurück, das Ergebnis holst du mit session_wait.\nErlaubte Agents:\n{list}"),
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "agent": {"type": "string", "enum": names},
                             "prompt": {"type": "string", "description": "Auftrag an den Sub-Agent."},
                             "params": {"type": "object", "description": "Parameter des Sub-Agents (AGT-010), z. B. {\"branch\": \"main\"}."},
-                            "async": {"type": "boolean", "description": "Nur `false` (Default); asynchrone Childs folgen mit ASY-002."}
+                            "async": {"type": "boolean", "description": "`true`: im Hintergrund starten und sofort zurückkehren (Ergebnis über session_wait). Default `false`."},
+                            "worktree": {"type": "string", "enum": ["new", "inherit", "none"], "description": "Workspace des Childs: `new` = eigener Git-Worktree mit eigenem Branch vom aktuellen HEAD, `inherit` = dein Workspace, `none` = dein Workspace nur zum Lesen. Default: `spawn.worktree` des Agents."}
                         },
                         "required": ["agent", "prompt"]
                     }
                 })
             }
+            SystemTool::SessionSend => json!({
+                "name": name,
+                "description": "Gibt einer eigenen Child-Session einen weiteren Auftrag (z. B. Review-Befunde beheben). Kehrt sofort zurück; das Ergebnis holst du mit session_wait. Läuft das Child noch, wird abgelehnt.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "session_id": {"type": "string", "description": "ID des Childs aus session_spawn."},
+                        "text": {"type": "string", "description": "Der Auftrag."}
+                    },
+                    "required": ["session_id", "text"]
+                }
+            }),
+            SystemTool::SessionWait => json!({
+                "name": name,
+                "description": "Wartet auf die Ergebnisse eigener Child-Sessions: `mode: all` (Default) bis alle fertig sind, `any` bis eine fertig ist. Ohne `ids` alle laufenden Childs. Nach `timeout` (Default 30m, höchstens 24h) kommt der Zwischenstand (`done: false`).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "ids": {"type": "array", "items": {"type": "string"}, "description": "IDs der Childs; leer = alle laufenden."},
+                        "mode": {"type": "string", "enum": ["all", "any"]},
+                        "timeout": {"type": "string", "description": "Dauer wie `90s`, `30m`, `2h`."}
+                    }
+                }
+            }),
+            SystemTool::SessionStatus => json!({
+                "name": name,
+                "description": "Status einer eigenen Child-Session: Agent, Harness, Status des Auftrags, Ergebnis und Worktree.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"session_id": {"type": "string"}},
+                    "required": ["session_id"]
+                }
+            }),
+            SystemTool::SessionList => json!({
+                "name": name,
+                "description": "Listet deine Child-Sessions mit Status sowie die startbaren Sub-Agents mit Harness und ob dieser Harness hier eingerichtet ist (`available`). Nutze es als Vorab-Prüfung, bevor du Arbeit verteilst.",
+                "inputSchema": {"type": "object", "properties": {}}
+            }),
+            SystemTool::SessionCancel => json!({
+                "name": name,
+                "description": "Bricht eine laufende eigene Child-Session ab (samt ihrer eigenen Childs).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"session_id": {"type": "string"}},
+                    "required": ["session_id"]
+                }
+            }),
             SystemTool::SkillLoad => {
                 let names: Vec<&str> = self
                     .skills
@@ -273,6 +359,11 @@ impl SystemServer {
         let outcome = match tool {
             SystemTool::PolicyQuery => self.backend.policy_query(&args).await,
             SystemTool::SessionSpawn => self.spawn(&args).await,
+            SystemTool::SessionSend
+            | SystemTool::SessionWait
+            | SystemTool::SessionStatus
+            | SystemTool::SessionCancel => self.backend.session_tool(tool, &args).await,
+            SystemTool::SessionList => self.list(&args).await,
             SystemTool::SkillLoad => {
                 let name = args["name"].as_str().unwrap_or_default();
                 return protocol::result(
@@ -309,6 +400,33 @@ impl SystemServer {
         )
     }
 
+    /// `session_list`: Childs vom Server, startbare Sub-Agents samt Verfügbarkeit von hier.
+    async fn list(&self, args: &Value) -> Result<Value, ToolFailure> {
+        let mut out = self
+            .backend
+            .session_tool(SystemTool::SessionList, args)
+            .await?;
+        let agents: Vec<Value> = self
+            .spawn
+            .iter()
+            .map(|t| {
+                let mut a = json!({
+                    "name": t.name,
+                    "harness": t.harness,
+                    "available": t.unavailable.is_none(),
+                });
+                if let Some(why) = &t.unavailable {
+                    a["reason"] = Value::String(why.clone());
+                }
+                a
+            })
+            .collect();
+        if let Value::Object(m) = &mut out {
+            m.insert("agents".into(), Value::Array(agents));
+        }
+        Ok(out)
+    }
+
     async fn spawn(&self, args: &Value) -> Result<Value, ToolFailure> {
         let agent = args["agent"].as_str().unwrap_or_default();
         let target = self.spawn.iter().find(|t| t.name == agent).ok_or_else(|| {
@@ -317,14 +435,30 @@ impl SystemServer {
                 format!("„{agent}“ steht nicht in spawn.agents"),
             )
         })?;
-        if args["async"] == true {
+        if !matches!(args["async"], Value::Null | Value::Bool(_)) {
             return Err(ToolFailure::new(
-                "not_supported",
-                "async: true folgt mit ASY-002 (M5); bitte async: false",
+                "invalid_args",
+                "`async` muss true oder false sein",
             ));
+        }
+        match &args["worktree"] {
+            Value::Null => {}
+            Value::String(w) if matches!(w.as_str(), "new" | "inherit" | "none") => {}
+            _ => {
+                return Err(ToolFailure::new(
+                    "invalid_args",
+                    "`worktree` ist `new`, `inherit` oder `none`",
+                ));
+            }
         }
         if args["prompt"].as_str().is_none_or(|p| p.trim().is_empty()) {
             return Err(ToolFailure::new("invalid_args", "`prompt` fehlt"));
+        }
+        if let Some(why) = &target.unavailable {
+            return Err(ToolFailure::new(
+                "harness_unavailable",
+                format!("„{agent}“ läuft auf {}: {why}", target.harness),
+            ));
         }
         self.backend.session_spawn(target, args).await
     }
@@ -358,6 +492,13 @@ mod tests {
                 .push((target.name.clone(), args.clone()));
             Ok(json!({"session_id": "ses_x", "status": "completed", "result": "fertig"}))
         }
+        async fn session_tool(&self, tool: SystemTool, args: &Value) -> Result<Value, ToolFailure> {
+            self.spawned
+                .lock()
+                .unwrap()
+                .push((tool_name(tool), args.clone()));
+            Ok(json!({"tool": tool_name(tool), "children": []}))
+        }
     }
 
     fn agent(yaml: &str) -> AgentSpec {
@@ -379,6 +520,7 @@ mod tests {
                         description: None,
                         harness: "codex".into(),
                         model: None,
+                        unavailable: (n == "offline").then(|| "nicht installiert".to_owned()),
                     })
                     .collect()
             })
@@ -440,7 +582,18 @@ mod tests {
             "{BASE}agents:\n  quick-check:\n    executor: {{ harness: codex }}\n  other:\n    executor: {{ harness: codex }}\nspawn: {{ agents: [quick-check] }}\n"
         ));
         let s = server(Some(&spec), backend.clone());
-        assert_eq!(list(&s).await, ["policy_query", "session_spawn"]);
+        assert_eq!(
+            list(&s).await,
+            [
+                "policy_query",
+                "session_spawn",
+                "session_send",
+                "session_wait",
+                "session_status",
+                "session_list",
+                "session_cancel"
+            ]
+        );
         let ok = call(
             &s,
             "session_spawn",
@@ -464,14 +617,90 @@ mod tests {
                 .unwrap()
                 .starts_with("spawn_denied")
         );
-        let not_async = call(
+        let bad = call(
             &s,
             "session_spawn",
-            json!({"agent": "quick-check", "prompt": "p", "async": true}),
+            json!({"agent": "quick-check", "prompt": "p", "worktree": "irgendwo"}),
         )
         .await;
-        assert_eq!(not_async["result"]["isError"], true);
-        assert_eq!(backend.spawned.lock().unwrap().len(), 1);
+        assert_eq!(bad["result"]["isError"], true);
+        let in_background = call(
+            &s,
+            "session_spawn",
+            json!({"agent": "quick-check", "prompt": "p", "async": true, "worktree": "new"}),
+        )
+        .await;
+        assert_eq!(in_background["result"]["isError"], false, "{in_background}");
+        assert_eq!(backend.spawned.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn agt_009_child_tools_come_with_session_spawn_and_go_to_the_server() {
+        let backend = Arc::new(Recorder::default());
+        let spec = agent(&format!(
+            "{BASE}agents:\n  quick-check:\n    executor: {{ harness: codex }}\nspawn: {{ agents: [quick-check] }}\ntools: {{ system: [session_spawn] }}\n"
+        ));
+        let s = server(Some(&spec), backend.clone());
+        assert_eq!(
+            list(&s).await,
+            [
+                "session_spawn",
+                "session_send",
+                "session_wait",
+                "session_status",
+                "session_list",
+                "session_cancel"
+            ]
+        );
+        for tool in [
+            "session_send",
+            "session_wait",
+            "session_status",
+            "session_list",
+            "session_cancel",
+        ] {
+            let r = call(&s, tool, json!({"session_id": "ses_x"})).await;
+            assert_eq!(r["result"]["structuredContent"]["tool"], tool, "{r}");
+        }
+        // session_list ergänzt die startbaren Agents samt Verfügbarkeit.
+        let r = call(&s, "session_list", json!({})).await;
+        assert_eq!(
+            r["result"]["structuredContent"]["agents"],
+            json!([{"name": "quick-check", "harness": "codex", "available": true}]),
+            "{r}"
+        );
+        // Ein nicht eingerichteter Harness wird nicht gestartet (Preflight, AGT-011 AC4).
+        let spec = agent(&format!(
+            "{BASE}agents:\n  offline:\n    executor: {{ harness: codex }}\nspawn: {{ agents: [offline] }}\n"
+        ));
+        let s = server(Some(&spec), backend.clone());
+        let before = backend.spawned.lock().unwrap().len();
+        let r = call(
+            &s,
+            "session_spawn",
+            json!({"agent": "offline", "prompt": "p"}),
+        )
+        .await;
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("harness_unavailable"),
+            "{r}"
+        );
+        assert_eq!(backend.spawned.lock().unwrap().len(), before);
+        let r = call(&s, "session_list", json!({})).await;
+        assert_eq!(
+            r["result"]["structuredContent"]["agents"][0]["available"],
+            false
+        );
+        // Ohne spawn.agents gibt es sie nicht (fail closed).
+        let plain = agent(&format!("{BASE}tools: {{ system: [session_wait] }}\n"));
+        let s = server(Some(&plain), backend.clone());
+        assert!(list(&s).await.is_empty());
+        let r = call(&s, "session_wait", json!({})).await;
+        assert_eq!(r["error"]["data"]["code"], "tool_not_enabled");
     }
 
     #[tokio::test]
