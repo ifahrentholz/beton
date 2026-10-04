@@ -165,9 +165,14 @@ pub fn requested(item: &Value, st: &mut MapState) -> Option<EventPayload> {
     Some(EventPayload::ToolCallRequested(ToolCallRequested {
         call_id: id,
         tool,
+        // System-Tools des Servers `beton` (AGT-007) als `source: beton_mcp`.
+        source: if mcp_server.as_deref() == Some("beton") {
+            ToolSource::BetonMcp
+        } else {
+            ToolSource::Harness
+        },
         mcp_server,
         args,
-        source: ToolSource::Harness,
     }))
 }
 

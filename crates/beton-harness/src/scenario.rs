@@ -103,6 +103,10 @@ pub struct Step {
     pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call: Option<ToolCallStep>,
+    /// Ein Tool eines injizierten MCP-Servers aufrufen (HAR-009). Nur die Fake-CLI führt den
+    /// Aufruf wirklich über MCP aus; der Fake-Harness meldet ihn als Fehler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_call: Option<McpCallStep>,
     /// Vor der Ausführung eine Entscheidung einholen.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gate: bool,
@@ -138,6 +142,16 @@ pub struct ToolCallStep {
     /// Kanonische Klasse (POL-005), z. B. `shell`.
     #[serde(default = "other")]
     pub kind: String,
+    #[serde(default)]
+    pub args: Value,
+}
+
+/// Aufruf eines MCP-Tools: Server-Name (z. B. `beton`), Tool und Argumente.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpCallStep {
+    pub server: String,
+    pub tool: String,
     #[serde(default)]
     pub args: Value,
 }
@@ -196,6 +210,7 @@ impl Step {
         add(self.message.is_some(), "message");
         add(self.reasoning.is_some(), "reasoning");
         add(self.tool_call.is_some(), "tool_call");
+        add(self.mcp_call.is_some(), "mcp_call");
         add(self.on_gate.is_some(), "on_gate");
         add(self.tool_result.is_some(), "tool_result");
         add(self.tool_error.is_some(), "tool_error");

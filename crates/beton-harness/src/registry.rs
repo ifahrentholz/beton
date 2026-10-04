@@ -33,6 +33,9 @@ pub struct HarnessCommandConfig {
     /// Benutzer-Anpassungen der Vendor-CLI (Hooks, Skills, Plugins, MCP) abschalten (HAR-004).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolated: Option<bool>,
+    /// System-Tools (MCP-Server `beton`) an diesen Harness geben (HAR-009); Default `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_bridge: Option<bool>,
 }
 
 /// Auth-Herkunft in der Konfiguration (HAR-015): `subscription` = Login der offiziellen CLI.

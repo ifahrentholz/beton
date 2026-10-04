@@ -557,6 +557,25 @@ impl Player {
             }
             self.last_call = Some(call_id);
             self.last_decision = Some(allowed);
+        } else if let Some(call) = step.mcp_call {
+            // Der Fake-Harness hat keine MCP-Injektion (Capability `mcp_injection: false`);
+            // echte MCP-Aufrufe spielt die Fake-CLI ab (HAR-009).
+            self.calls += 1;
+            let call_id = format!("call_{}_{}", self.turn_index + 1, self.calls);
+            self.send(EventPayload::ToolCallRequested(ToolCallRequested {
+                call_id: call_id.clone(),
+                tool: call.tool,
+                mcp_server: Some(call.server),
+                args: call.args,
+                source: ToolSource::Harness,
+            }))
+            .await;
+            self.last_call = Some(call_id);
+            self.complete_call(
+                ToolStatus::Error,
+                Value::String("mcp_injection: der Fake-Harness hat keine MCP-Server".into()),
+            )
+            .await;
         } else if let Some(on_gate) = step.on_gate {
             let branch = if self.last_decision.unwrap_or(true) {
                 on_gate.allow
