@@ -10,7 +10,7 @@
 //! Es werden keine CORS-Header gesetzt; Preflights fremder Origins bleiben unbeantwortet.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::SystemTime;
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, header};
@@ -171,7 +171,7 @@ pub async fn guard(State(g): State<Guard>, mut req: Request, next: Next) -> Resp
         }
         Authenticated::Bearer
     } else if let Some(value) = cookie(headers, COOKIE_NAME)
-        && g.logins.verify_cookie(value, Instant::now())
+        && g.logins.verify_cookie(value, SystemTime::now())
     {
         if is_state_changing(req.method()) {
             let origin_ok =
