@@ -1,14 +1,16 @@
 import { useState } from 'react'
+import type { Attachment } from '@beton/sdk'
 import { Check, ChevronRight, ShieldAlert, SquareTerminal, X } from 'lucide-react'
 import { client } from '@/lib/client'
 import { argSummary, seconds } from '@/lib/format'
 import type { Item, ToolState } from '@/lib/timeline'
 import { cn } from '@/lib/utils'
 import { harnessName, voiceOf, voiceVar } from './harness'
+import { SentAttachment } from './attachments'
 import { Markdown } from './markdown'
 
-/** Nachricht des Menschen. */
-export function UserMessage({ text }: { text: string }) {
+/** Nachricht des Menschen, mit Anhängen (WEB-006). */
+export function UserMessage({ text, sessionId, attachments = [] }: { text: string; sessionId?: string; attachments?: Attachment[] }) {
   return (
     <div className="flex gap-3">
       <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-foreground text-[10px] font-semibold text-background">
@@ -16,7 +18,14 @@ export function UserMessage({ text }: { text: string }) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="text-xs text-muted-foreground">Du</div>
-        <div className="mt-0.5 text-[14px] leading-relaxed whitespace-pre-wrap break-words">{text}</div>
+        {text && <div className="mt-0.5 text-[14px] leading-relaxed whitespace-pre-wrap break-words">{text}</div>}
+        {sessionId && attachments.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap items-end gap-2">
+            {attachments.map((a) => (
+              <SentAttachment key={a.blob + a.name} sessionId={sessionId} attachment={a} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

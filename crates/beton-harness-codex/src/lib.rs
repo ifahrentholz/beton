@@ -33,9 +33,9 @@ use beton_harness::registry::{VersionProbe, resolve_binary};
 use beton_harness::{
     Action, AdapterContext, ApprovalMechanism, AuthStatus, Capabilities, CompactionSupport,
     ExitInfo, ForkHistory, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError,
-    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
-    PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents, SwitchOutcome,
-    SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
+    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent, OneShotReply,
+    OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents,
+    SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
@@ -152,6 +152,95 @@ fn incompatible(detected: Option<String>, why: &str) -> HarnessError {
     }
 }
 
+impl CodexAdapter {
+    /// Variablen, die bei `auth: subscription` nicht in den CLI-Prozess dürfen (HAR-015).
+    pub fn env_remove(&self) -> Vec<String> {
+        if self.auth == AuthSource::VendorCli {
+            SUBSCRIPTION_ENV_REMOVE
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Kommandozeile des Einmal-Modus (SES-010, Flags gegen codex-cli 0.153.2 verifiziert):
+/// JSONL-Ereignisse, keine gespeicherte Session, nur lesende Sandbox. Der Inhalt kommt über
+/// stdin (`-`), nicht über argv. Ohne Modell gilt der Default der CLI-Konfiguration.
+pub fn one_shot_args(req: &OneShotRequest) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    if let Some(model) = &req.model {
+        args.extend(["-m".into(), model.clone()]);
+    }
+    args.push("-".into());
+    args
+}
+
+/// Wertet die JSONL-Ausgabe von `codex exec --json` aus (SES-010): letzte
+/// `agent_message`, Tokens aus `turn.completed`; `turn.failed` bzw. `error` sind Fehler.
+pub fn parse_one_shot(
+    stdout: &[u8],
+    model: Option<&str>,
+    auth: AuthSource,
+) -> Result<OneShotReply, HarnessError> {
+    let mut text = None;
+    let mut usage = None;
+    let mut failure = None;
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match v["type"].as_str() {
+            Some("item.completed") if v["item"]["type"] == "agent_message" => {
+                text = v["item"]["text"].as_str().map(str::to_owned);
+            }
+            Some("turn.completed") => usage = Some(v["usage"].clone()),
+            Some("turn.failed") => failure = Some("turn.failed".to_owned()),
+            Some("error") => failure = Some("error".to_owned()),
+            _ => {}
+        }
+    }
+    if let Some(kind) = failure.filter(|_| text.is_none()) {
+        return Err(HarnessError::Protocol(format!("codex exec meldet {kind}")));
+    }
+    let text = text.ok_or_else(|| HarnessError::Protocol("codex exec ohne Antwort".into()))?;
+    let model = model.unwrap_or_default().to_owned();
+    let cost = usage.map(|u| {
+        let tok = |k: &str| u[k].as_u64().unwrap_or(0);
+        beton_core::event::CostDelta {
+            harness: "codex".into(),
+            model: model.clone(),
+            input_tokens: tok("input_tokens").saturating_sub(tok("cached_input_tokens")),
+            output_tokens: tok("output_tokens"),
+            cache_read_tokens: tok("cached_input_tokens"),
+            cache_write_tokens: 0,
+            // Codex meldet nur Tokens; Preise folgen mit dem Katalog (USE-002, ab M2).
+            cost_micro: None,
+            currency: "USD".into(),
+            source: if auth == AuthSource::VendorCli {
+                beton_core::event::CostSource::Subscription
+            } else {
+                beton_core::event::CostSource::Estimated
+            },
+            auth_source: auth,
+            purpose: None,
+        }
+    });
+    Ok(OneShotReply { text, model, cost })
+}
+
 #[async_trait]
 impl HarnessAdapter for CodexAdapter {
     fn id(&self) -> HarnessId {
@@ -213,6 +302,44 @@ impl HarnessAdapter for CodexAdapter {
         Some(Arc::new(import::CodexImporter::default()))
     }
 
+    /// `codex exec` mit der Anmeldung der CLI (SES-010, ADR-0034).
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let (program, mut args) = match resolve_binary(&harness_id(), "codex", &ctx.env) {
+            Some(bin) => (bin.program, bin.args),
+            None => ("codex".into(), Vec::new()),
+        };
+        args.extend(one_shot_args(request));
+        let launch = LaunchSpec {
+            program,
+            args,
+            env: Vec::new(),
+            env_remove: self.env_remove(),
+            clear_env: false,
+            cwd: Some(request.workdir.clone()),
+        };
+        let input = if request.instructions.is_empty() {
+            request.prompt.clone()
+        } else {
+            format!("{}\n\n{}", request.instructions, request.prompt)
+        };
+        let out = beton_harness::process::run_once(
+            ctx.launcher.as_ref(),
+            launch,
+            input.as_bytes(),
+            request.timeout,
+        )
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::TimedOut => HarnessError::Timeout(e.to_string()),
+            _ => HarnessError::Io(e),
+        })?;
+        parse_one_shot(&out.stdout, request.model.as_deref(), self.auth)
+    }
+
     async fn start(
         &self,
         spec: SessionSpec,
@@ -227,14 +354,7 @@ impl HarnessAdapter for CodexAdapter {
             program,
             args,
             env: Vec::new(),
-            env_remove: if self.auth == AuthSource::VendorCli {
-                SUBSCRIPTION_ENV_REMOVE
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),
         };

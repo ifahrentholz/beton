@@ -66,6 +66,28 @@ describe('REST-Client', () => {
     expect((err as BetonError).status).toBe(404)
   })
 
+  it('WEB-006 AC1: lädt Anhänge roh hoch und sendet sie mit der Eingabe', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${req.headers['content-type']} ${text}`)
+      if (req.url?.includes('/attachments')) {
+        return [201, { blob: `sha256:${'a'.repeat(64)}`, name: 'bild 1.png', mime: 'image/png', size: 3 }]
+      }
+      return [202, { input_id: 'i', status: 'started' }]
+    })
+    const s = new BetonClient({ baseUrl: url, token: 'tok' }).session('ses_1')
+    const att = await s.uploadAttachment(new Uint8Array([1, 2, 3]), 'bild 1.png', 'image/png')
+    await s.send('Was ist das?', undefined, [att])
+    expect(seen[0]).toBe('POST /v1/sessions/ses_1/attachments?name=bild%201.png image/png \u0001\u0002\u0003')
+    expect(JSON.parse(seen[1]!.split(' application/json ')[1]!)).toEqual({ text: 'Was ist das?', attachments: [att] })
+  })
+
+  it('API-003: URL des SSE-Stroms für Skripte', () => {
+    const s = new BetonClient({ baseUrl: 'http://127.0.0.1:7420/' }).session('ses_1')
+    expect(s.eventStreamUrl()).toBe('http://127.0.0.1:7420/v1/sessions/ses_1/events/stream?from_seq=0')
+    expect(s.eventStreamUrl(42, true)).toBe('http://127.0.0.1:7420/v1/sessions/ses_1/events/stream?from_seq=42&transient=true')
+  })
+
   it('SES-017: Workspace-Pfade segmentweise kodiert, Schreiben mit If-Match, 412 als BetonError', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

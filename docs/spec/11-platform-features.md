@@ -343,6 +343,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-009 — Automatische Session-Titel (UI)
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** UI-Seite von SES-010 (Owner der Generierung, siehe 07-sessions-collaboration.md): Neue Sessions zeigen „Neue Session“ als Platzhalter; trifft `session.title_changed` ein, wird der Titel ohne Layout-Sprung eingeblendet (Sidebar, Fenstertitel, Tab). Inline-Umbenennen per Doppelklick bzw. `F2`; danach wird nicht mehr automatisch generiert. Einstellung „Titel automatisch erzeugen“ pro User.
+- **Details:** Der Kopf zeigt die Herkunft („automatisch“ bzw. „von dir benannt“, aus `title_source` der Session-Liste); generierte Titel blenden ein (ohne Bewegung bei `prefers-reduced-motion`). Fenstertitel: `<Titel> · beton`. Die Einstellung „Titel automatisch erzeugen“ entspricht im lokalen Modus `titles.generator` (aus = `off`) in der User-Konfiguration; der Schalter in der Web-UI folgt als eigenes Issue.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein `session.title_changed {source: generated}` aktualisiert Sidebar und Fenstertitel aller verbundenen Clients innerhalb von 1 s.
   - [ ] AC2 — Nach Inline-Umbenennung zeigt die Session den User-Titel; nachfolgende generierte Titel werden nicht angewendet.

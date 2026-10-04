@@ -369,6 +369,34 @@
         "run_id"
       ]
     },
+    "Attachment": {
+      "type": "object",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/BlobRef"
+        },
+        "mime": {
+          "description": "Medientyp, z. B. `image/png`, `application/pdf`, `text/plain`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Dateiname, wie hochgeladen (nur Anzeige).",
+          "type": "string"
+        },
+        "size": {
+          "description": "Größe in Bytes.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "blob",
+        "name",
+        "mime",
+        "size"
+      ]
+    },
     "AuthSource": {
       "type": "string",
       "enum": [
@@ -3563,8 +3591,9 @@
       "properties": {
         "attachments": {
           "type": "array",
+          "default": [],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/Attachment"
           }
         },
         "author": {
@@ -3584,7 +3613,6 @@
         "id",
         "author",
         "text",
-        "attachments",
         "created_at"
       ]
     },

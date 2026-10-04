@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 7. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 8. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -139,6 +139,7 @@ erDiagram
         TEXT worktree_branch "nullable"
         TEXT worktree_base "nullable"
         TEXT worktree_base_sha "nullable"
+        TEXT title_source
     }
     tombstones {
         TEXT org_id

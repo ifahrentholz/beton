@@ -84,6 +84,15 @@ pub struct Runtime {
     pub features: Arc<beton_core::feature::FeatureSet>,
     /// Serverseitige Queues (SES-004).
     pub queues: Arc<crate::queue::Queues>,
+    /// SSE-Strom für Skripte (PROTO-012).
+    pub sse: crate::sse::SseConfig,
+    /// Automatische Session-Titel (SES-010).
+    pub titles: crate::titles::TitlesConfig,
+    pub title_jobs: Arc<crate::titles::TitleJobs>,
+    /// Grenzen für Anhänge (WEB-006).
+    pub attachments: crate::attachments::AttachmentLimits,
+    /// Dateiindex für die `@`-Suche (WEB-006).
+    pub file_index: Arc<crate::file_index::FileIndexCache>,
 }
 
 impl Runtime {
@@ -114,11 +123,17 @@ impl Runtime {
                 beton_home: std::env::temp_dir().join("beton-home"),
                 vendor_env: beton_harness::HostEnv::from_process(),
                 import_lock: Arc::default(),
+                skill_paths: crate::session_skills::SkillPaths::from_process(),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
             features: Arc::default(),
             queues: Arc::default(),
+            sse: crate::sse::SseConfig::default(),
+            titles: crate::titles::TitlesConfig::default(),
+            title_jobs: Arc::default(),
+            attachments: crate::attachments::AttachmentLimits::default(),
+            file_index: Arc::default(),
         }
     }
 
@@ -139,6 +154,10 @@ impl Runtime {
         r.sessions.fresh_root = config.data_dir.join("workspaces");
         r.sessions.agent_snapshots_root = config.data_dir.join("agent-snapshots");
         r.sessions.beton_home.clone_from(&config.data_dir);
+        r.sessions
+            .skill_paths
+            .beton_home
+            .clone_from(&config.data_dir);
         r
     }
 }
@@ -303,9 +322,12 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::put_read_state))
         .routes(routes!(crate::api_sessions::put_pin))
         .routes(routes!(crate::api_sessions::list_events))
+        .routes(routes!(crate::sse::stream_events))
         .routes(routes!(crate::api_sessions::list_approvals))
         .routes(routes!(crate::api_sessions::resolve_approval))
         .routes(routes!(crate::api_sessions::get_blob))
+        .routes(crate::attachments::routes())
+        .routes(routes!(crate::session_skills::list))
         .routes(routes!(crate::api_sessions::list_tombstones))
         .routes(routes!(crate::api_workspace::workspace_info))
         .routes(routes!(crate::imports::list_candidates))

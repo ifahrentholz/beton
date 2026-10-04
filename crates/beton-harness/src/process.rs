@@ -410,3 +410,80 @@ mod tests {
         );
     }
 }
+
+/// Höchstens so viel stdout liest [`run_once`] (Einmal-Aufrufe liefern kurze Antworten).
+pub const ONE_SHOT_MAX_STDOUT: usize = 4 * 1024 * 1024;
+
+/// Ergebnis von [`run_once`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnceOutput {
+    pub stdout: Vec<u8>,
+    pub exit: ExitInfo,
+}
+
+/// Startet einen Prozess für einen Einmal-Aufruf (SES-010): schreibt `stdin` und schließt es,
+/// liest stdout bis zum Ende und wartet auf das Prozessende. Nach `timeout` wird der gesamte
+/// Prozessbaum beendet.
+pub async fn run_once(
+    launcher: &dyn ProcessLauncher,
+    spec: LaunchSpec,
+    stdin: &[u8],
+    timeout: Duration,
+) -> io::Result<OnceOutput> {
+    use tokio::io::AsyncWriteExt;
+    let mut process = launcher.launch(spec).await?;
+    let io = process
+        .take_io()
+        .ok_or_else(|| io::Error::other("stdin/stdout fehlen"))?;
+    let ProcessIo {
+        stdin: mut input,
+        stdout: mut output,
+    } = io;
+    let input_bytes = stdin.to_vec();
+    let work = async move {
+        let writer = async move {
+            // Ein Prozess, der stdin nicht liest, darf das Lesen von stdout nicht blockieren.
+            let _ = input.write_all(&input_bytes).await;
+            let _ = input.shutdown().await;
+            drop(input);
+        };
+        let reader = async move {
+            let mut out = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                match output.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if out.len() + n > ONE_SHOT_MAX_STDOUT {
+                            return Err(io::Error::other("Ausgabe zu groß"));
+                        }
+                        out.extend_from_slice(&buf[..n]);
+                    }
+                }
+            }
+            Ok(out)
+        };
+        let ((), out) = tokio::join!(writer, reader);
+        out
+    };
+    match tokio::time::timeout(timeout, work).await {
+        Ok(Ok(stdout)) => {
+            let exit = match tokio::time::timeout(Duration::from_secs(5), process.wait()).await {
+                Ok(r) => r?,
+                Err(_) => process.kill().await?,
+            };
+            Ok(OnceOutput { stdout, exit })
+        }
+        Ok(Err(e)) => {
+            let _ = process.kill().await;
+            Err(e)
+        }
+        Err(_) => {
+            let _ = process.kill().await;
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("keine Antwort innerhalb von {timeout:?}"),
+            ))
+        }
+    }
+}

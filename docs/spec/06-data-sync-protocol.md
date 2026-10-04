@@ -342,6 +342,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 ### PROTO-012 — SSE read-only
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Für Skripte bietet `GET /v1/sessions/{id}/events/stream` (`text/event-stream`) einen read-only Strom: `id: <seq>`, `event: <type>`, `data: <Envelope>`; Resume über `Last-Event-ID` oder `?from_seq=`. Transiente Events nur mit `?transient=true` (ohne `id:`-Zeile). Heartbeat-Kommentar `: hb` alle 15 s. Authentisierung per `Authorization`-Header (PAT) oder Same-Origin-Cookie. PROTO-012 ist Owner des SSE-Endpunkts; API-003 beschreibt nur die Skript-Sicht.
+- **Details:** `Last-Event-ID` hat Vorrang vor `?from_seq=` (ein `EventSource` verbindet mit derselben URL und der letzten `id` neu); ohne beides beginnt der Strom bei `seq 1`. Ein Startpunkt hinter `head_seq` ergibt `409 seq_ahead`, ungültige Werte `400`. Andere Methoden als `GET` liefern `405 method_not_allowed`. Origin-Regeln wie beim WebSocket (AUTH-003, siehe 05-security-identity.md). Der Strom abonniert zuerst den Live-Verteiler und liefert dann aus dem Store nach; Lücken und verpasste Live-Events schließt er aus dem Store. Das TypeScript-SDK liefert die URL über `Session.eventStreamUrl()`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `curl -N -H "Last-Event-ID: 50" …/events/stream` liefert ab `seq 51` lückenlos.
   - [ ] AC2 — Über SSE ist keine Aktion möglich; der Endpunkt akzeptiert nur `GET`.

@@ -49,6 +49,17 @@ pub struct Info {
     pub org_id: OrgId,
     /// Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus.
     pub features: Vec<String>,
+    /// Grenzen für Anhänge (WEB-006).
+    pub attachments: AttachmentLimitsView,
+}
+
+/// Grenzen für Anhänge im Composer (WEB-006, `attachments.*`).
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct AttachmentLimitsView {
+    /// Höchstgröße je Datei in Bytes.
+    pub max_file_bytes: u64,
+    /// Höchstzahl der Dateien je Nachricht.
+    pub max_files: u32,
 }
 
 /// Version, Schema- und Protokollversion des Servers und aktive Feature-Flags.
@@ -62,6 +73,10 @@ pub async fn info(State(state): State<AppState>) -> axum::Json<Info> {
         mode: "local".into(),
         org_id: state.local.org,
         features: state.runtime.features.active_ids(),
+        attachments: AttachmentLimitsView {
+            max_file_bytes: state.runtime.attachments.max_file_bytes,
+            max_files: state.runtime.attachments.max_files,
+        },
     })
 }
 
@@ -100,6 +115,10 @@ pub struct SessionSummary {
     #[schema(value_type = String, example = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C")]
     pub id: SessionId,
     pub title: String,
+    /// Herkunft des Titels: `user`, `generated` oder `harness` (SES-010); fehlt ohne Titel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title_source: Option<String>,
     /// Siehe `SessionStatus` im Event-Schema.
     pub status: String,
     pub kind: String,
@@ -235,6 +254,7 @@ pub fn summary(v: beton_store::SessionView) -> SessionSummary {
     SessionSummary {
         id: s.id,
         title: s.title,
+        title_source: s.title_source.map(|t| enum_str(&t)),
         status: enum_str(&s.status),
         kind: enum_str(&s.kind),
         harness: s.harness,

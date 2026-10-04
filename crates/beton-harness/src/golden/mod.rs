@@ -266,7 +266,7 @@ pub async fn drive(
     for input in &script.inputs {
         if let Some(text) = &input.send {
             session
-                .send(UserInput { text: text.clone() })
+                .send(UserInput::from(text.as_str()))
                 .await
                 .map_err(|e| e.to_string())?;
         }

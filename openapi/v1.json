@@ -1612,6 +1612,122 @@
         }
       }
     },
+    "/v1/sessions/{id}/attachments": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Anhang hochladen (WEB-006): Rohdaten im Body, Medientyp im `Content-Type`. Liefert die\nReferenz für `attachments` in `POST /v1/sessions/{id}/input`.",
+        "operationId": "upload",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "description": "Dateiname (nur Anzeige).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Inhalt der Datei; `Content-Type` ist ihr Medientyp (Bild, PDF, Text)",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Gespeichert",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Datei zu groß",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Medientyp nicht erlaubt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/blobs/{hash}": {
       "get": {
         "tags": [
@@ -1847,6 +1963,127 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/events/stream": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "Read-only Event-Strom einer Session als Server-Sent Events (PROTO-012, API-003).",
+        "operationId": "stream_events",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "description": "Letzte empfangene `seq`; der Strom setzt danach fort und hat Vorrang vor `from_seq`",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "from_seq",
+            "in": "query",
+            "description": "Events ab `seq > from_seq` (Default 0: alles). `Last-Event-ID` hat Vorrang.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "transient",
+            "in": "query",
+            "description": "`true`: auch transiente Events (Deltas), ohne `id:`-Zeile.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`text/event-stream`: je Event `id: <seq>`, `event: <type>`, `data: <Envelope>`; Heartbeat `: hb` alle 15 s",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session unbekannt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`seq_ahead`: Startpunkt hinter `head_seq`",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -2964,6 +3201,97 @@
         }
       }
     },
+    "/v1/sessions/{id}/skills": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Skills des aktiven Agents und des Workspace für das Slash-Menü (WEB-006 AC3).",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Aufrufbare Skills mit Beschreibung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSkills"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/unarchive": {
       "post": {
         "tags": [
@@ -3608,14 +3936,15 @@
           {
             "name": "mode",
             "in": "query",
-            "description": "`name` (Dateinamen, Default) oder `content` (Inhalte).",
+            "description": "`name` (Dateinamen, Default), `content` (Inhalte) oder `fuzzy` (Dateinamen unscharf,\nnach Treffergüte; für `@` im Composer, leere Anfrage erlaubt).",
             "required": false,
             "schema": {
               "type": "string",
               "description": "Dateinamen- oder Inhaltssuche.",
               "enum": [
                 "name",
-                "content"
+                "content",
+                "fuzzy"
               ]
             }
           },
@@ -3989,6 +4318,28 @@
           "requested_seq": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "AttachmentLimitsView": {
+        "type": "object",
+        "description": "Grenzen für Anhänge im Composer (WEB-006, `attachments.*`).",
+        "required": [
+          "max_file_bytes",
+          "max_files"
+        ],
+        "properties": {
+          "max_file_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Höchstgröße je Datei in Bytes.",
+            "minimum": 0
+          },
+          "max_files": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Höchstzahl der Dateien je Nachricht.",
             "minimum": 0
           }
         }
@@ -4746,7 +5097,8 @@
           "protocol_version",
           "mode",
           "org_id",
-          "features"
+          "features",
+          "attachments"
         ],
         "properties": {
           "version": {
@@ -4775,6 +5127,10 @@
               "type": "string"
             },
             "description": "Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus."
+          },
+          "attachments": {
+            "$ref": "#/components/schemas/AttachmentLimitsView",
+            "description": "Grenzen für Anhänge (WEB-006)."
           }
         }
       },
@@ -4828,6 +5184,16 @@
                 "type": "null"
               }
             ]
+          },
+          "attachments": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object"
+            },
+            "description": "Anhänge aus `POST /v1/sessions/{id}/attachments` (WEB-006)."
           }
         }
       },
@@ -5222,6 +5588,15 @@
               "string",
               "null"
             ]
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Nur bei `mode=fuzzy`: Zahl der Dateien im Index (WEB-006).",
+            "minimum": 0
           }
         }
       },
@@ -5317,6 +5692,57 @@
           }
         }
       },
+      "SessionSkill": {
+        "type": "object",
+        "description": "Ein Skill im Slash-Menü.",
+        "required": [
+          "name",
+          "description",
+          "origin"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Aufruf als `/<name>`."
+          },
+          "description": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string",
+            "description": "Herkunft: `agent`, `project`, `user` oder `builtin`."
+          }
+        }
+      },
+      "SessionSkills": {
+        "type": "object",
+        "description": "Skills einer Session.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name des aktiven Agents, falls die Session einen hat."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionSkill"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Immer leer: die Liste ist vollständig."
+          }
+        }
+      },
       "SessionSummary": {
         "type": "object",
         "description": "Eine Session in der Liste.",
@@ -5343,6 +5769,13 @@
           },
           "title": {
             "type": "string"
+          },
+          "title_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Herkunft des Titels: `user`, `generated` oder `harness` (SES-010); fehlt ohne Titel."
           },
           "status": {
             "type": "string",

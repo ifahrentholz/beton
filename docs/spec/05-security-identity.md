@@ -163,7 +163,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 
 ### AUTH-003 — WebSocket-Origin-Allowlist
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** WebSocket-Handshakes werden vor dem Upgrade gegen `auth.ws_allowed_origins` geprüft (Schutz gegen Cross-Site-WebSocket-Hijacking). Default: Origin der `public_url` bzw. lokale Loopback-Origins sowie die Tauri-Origins (`tauri://localhost`, `http://tauri.localhost`). Wildcards nur als Subdomain-Präfix (`https://*.example.com`). Handshakes ohne `Origin` sind nur mit `Authorization`-Header (nicht per Cookie) zulässig.
+- **Beschreibung:** WebSocket-Handshakes werden vor dem Upgrade gegen `auth.ws_allowed_origins` geprüft (Schutz gegen Cross-Site-WebSocket-Hijacking). Default: Origin der `public_url` bzw. lokale Loopback-Origins sowie die Tauri-Origins (`tauri://localhost`, `http://tauri.localhost`). Wildcards nur als Subdomain-Präfix (`https://*.example.com`). Handshakes ohne `Origin` sind nur mit `Authorization`-Header (nicht per Cookie) zulässig. Dieselbe Regel gilt für den SSE-Strom `GET /v1/sessions/{id}/events/stream` (PROTO-012): eine mitgeschickte `Origin` muss erlaubt sein; mit Cookie und ohne `Origin` (EventSource derselben Origin) nur mit `Sec-Fetch-Site: same-origin` bzw. `none`, fehlende Fetch-Metadaten werden abgelehnt (fail closed).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Handshake mit `Origin: https://evil.test` und gültigem Cookie wird mit 403 abgelehnt, bevor ein WS-Frame fließt.
   - [ ] AC2 — Handshake ohne `Origin`, mit Cookie und ohne `Authorization` wird abgelehnt; mit gültigem Bearer-Token akzeptiert (SDK-Fall).
