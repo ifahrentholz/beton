@@ -713,6 +713,11 @@ async fn ses_017_tree_and_search() {
     let sc = scenario(dir.path(), "turns: []");
     let r = d.create(session_body(&repo, &sc, None)).await;
     let id = r.body["id"].as_str().unwrap();
+    let info = d
+        .http("GET", &format!("/v1/sessions/{id}/workspace"), None)
+        .await;
+    assert_eq!(info.status, 200, "{}", info.body);
+    assert_eq!(info.body, json!({"git_repo": true}));
     let tree = d
         .http("GET", &format!("/v1/sessions/{id}/workspace/tree"), None)
         .await;
@@ -1092,6 +1097,11 @@ turns:
         )
         .await;
     assert_eq!(res.status, 409);
+    // Clients erfahren vorab, dass nur die Sicht pro Turn geht (WEB-011, ohne 409).
+    let info = d
+        .http("GET", &format!("/v1/sessions/{id}/workspace"), None)
+        .await;
+    assert_eq!(info.body, json!({"git_repo": false}));
     assert!(!ws.join(".git").exists(), "kein Git im Workspace angelegt");
     d.daemon.shutdown().await;
 }

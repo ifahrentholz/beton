@@ -129,9 +129,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Workspace-API (SES-017, SES-018).
         use beton_server::api_workspace::{
-            ChangesPage, FileDiff, SearchPage, TreePage, WorkspaceFile, WriteFileRequest,
-            WrittenFile,
+            ChangesPage, FileDiff, SearchPage, TreePage, WorkspaceFile, WorkspaceInfo,
+            WriteFileRequest, WrittenFile,
         };
+        WorkspaceInfo::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         TreePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         WorkspaceFile::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         WriteFileRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
