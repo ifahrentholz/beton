@@ -179,6 +179,7 @@ impl HarnessAdapter for ClaudeAdapter {
             } else {
                 Vec::new()
             },
+            clear_env: false,
             cwd: Some(spec.workdir.clone()),
         };
         let mut process = ctx.launcher.launch(launch).await?;

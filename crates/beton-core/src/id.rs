@@ -166,7 +166,8 @@ ids! {
     AgentId => "agt",
     PolicyId => "pol",
     SecretId => "sec",
-    HostId => "hst",
+    /// Host; lokal genau `hst_local` (RUN-002).
+    HostId => "hst" + local,
     RunnerId => "run",
     DeviceId => "dev",
     ScheduleId => "sch",
@@ -185,6 +186,11 @@ impl OrgId {
 
 impl UserId {
     /// Der einzige User im lokalen Modus.
+    pub const LOCAL: Self = Self(Ulid(0));
+}
+
+impl HostId {
+    /// Der lokale Daemon als einziger Host.
     pub const LOCAL: Self = Self(Ulid(0));
 }
 

@@ -22,6 +22,7 @@ use crate::idempotency::{self, Idempotency};
 use crate::local_auth::{BrowserLogins, LocalToken};
 use crate::problem::{FieldError, PROBLEM_CONTENT_TYPE, Problem, ProblemCode};
 use crate::security::{self, Guard, OriginPolicy, PUBLIC_PATHS};
+use crate::tunnel::{RunnerRegistry, TunnelConfig};
 use crate::ws::{Authorizer, LocalAuthorizer, WsConfig};
 use tokio::sync::watch;
 
@@ -53,6 +54,10 @@ pub struct Runtime {
     pub commands: Arc<CommandRegistry>,
     pub authorizer: Arc<dyn Authorizer>,
     pub ws: WsConfig,
+    pub runners: Arc<RunnerRegistry>,
+    pub tunnel: TunnelConfig,
+    /// Der Host dieses Knotens mit seinen Providern.
+    pub host: crate::api::HostInfo,
     /// `true` beim Herunterfahren (Close 4503).
     pub shutdown: watch::Receiver<bool>,
 }
@@ -64,6 +69,9 @@ impl Runtime {
             commands: Arc::new(CommandRegistry::default()),
             authorizer: Arc::new(LocalAuthorizer),
             ws: WsConfig::default(),
+            runners: Arc::new(RunnerRegistry::default()),
+            tunnel: TunnelConfig::default(),
+            host: crate::api::HostInfo::local(),
             shutdown,
         }
     }
@@ -173,6 +181,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(api::redeem_login_code))
         .routes(routes!(api::openapi_json))
         .routes(routes!(crate::ws::ws_upgrade))
+        .routes(routes!(api::get_host))
         .split_for_parts();
     // Erst nach dem Einsammeln aller Pfade, sonst sehen die Modifier keine Operationen.
     Security.modify(&mut doc);

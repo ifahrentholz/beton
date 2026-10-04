@@ -200,6 +200,20 @@ dependencies = [
 [[package]]
 name = "beton-host"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "beton-runner",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "utoipa",
+]
 
 [[package]]
 name = "beton-proto"
@@ -217,6 +231,24 @@ dependencies = [
 [[package]]
 name = "beton-runner"
 version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "beton-core",
+ "beton-harness",
+ "beton-harness-claude",
+ "beton-host",
+ "beton-proto",
+ "beton-server",
+ "beton-store",
+ "futures-util",
+ "rustix",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
 
 [[package]]
 name = "beton-sdk"
@@ -230,6 +262,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "beton-core",
+ "beton-host",
  "beton-proto",
  "beton-store",
  "futures-util",

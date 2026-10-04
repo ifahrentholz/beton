@@ -196,6 +196,88 @@
         }
       }
     },
+    "/v1/hosts/{id}": {
+      "get": {
+        "tags": [
+          "hosts"
+        ],
+        "summary": "Ein Host mit den unverändert gemeldeten Provider-Capabilities (RUN-001 AC3).",
+        "operationId": "get_host",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Host-ID, lokal `hst_local`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Host mit Providern",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Host unbekannt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/info": {
       "get": {
         "tags": [
@@ -553,6 +635,30 @@
           }
         }
       },
+      "HostInfo": {
+        "type": "object",
+        "description": "Ein Host (lokal genau `hst_local`).",
+        "required": [
+          "id",
+          "name",
+          "providers"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "hst_local"
+          },
+          "name": {
+            "type": "string"
+          },
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderInfo"
+            }
+          }
+        }
+      },
       "Info": {
         "type": "object",
         "description": "Server-Informationen.",
@@ -585,6 +691,14 @@
             "example": "org_local"
           }
         }
+      },
+      "Isolation": {
+        "type": "string",
+        "enum": [
+          "process",
+          "container",
+          "pod"
+        ]
       },
       "LoginCode": {
         "type": "object",
@@ -717,6 +831,87 @@
           "unavailable"
         ]
       },
+      "ProviderInfo": {
+        "type": "object",
+        "description": "Ein Provider eines Hosts mit seinen Capabilities (RUN-001).",
+        "required": [
+          "id",
+          "capabilities"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/RunnerCapabilities"
+          }
+        }
+      },
+      "ResourceKind": {
+        "type": "string",
+        "enum": [
+          "cpu",
+          "memory",
+          "pids",
+          "disk",
+          "timeout"
+        ]
+      },
+      "RunnerCapabilities": {
+        "type": "object",
+        "description": "Was ein Provider kann (RUN-001). Der Server kennt Provider nur hierüber.",
+        "required": [
+          "isolation",
+          "workspace_modes",
+          "persistent_workspace",
+          "interactive_exec",
+          "snapshot",
+          "resource_limits",
+          "platforms"
+        ],
+        "properties": {
+          "isolation": {
+            "$ref": "#/components/schemas/Isolation"
+          },
+          "workspace_modes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceMode"
+            }
+          },
+          "persistent_workspace": {
+            "type": "boolean"
+          },
+          "interactive_exec": {
+            "type": "boolean",
+            "description": "PTY-Exec, z. B. für Device-Flow-Logins."
+          },
+          "snapshot": {
+            "type": "boolean"
+          },
+          "resource_limits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ResourceKind"
+            }
+          },
+          "platforms": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`os/arch` der erzeugten Runner, z. B. `linux/x86_64`."
+          },
+          "max_concurrent": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "SessionPage": {
         "type": "object",
         "description": "Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).",
@@ -791,6 +986,15 @@
             "type": "string"
           }
         }
+      },
+      "WorkspaceMode": {
+        "type": "string",
+        "enum": [
+          "host_path",
+          "bind",
+          "volume",
+          "clone"
+        ]
       }
     },
     "securitySchemes": {

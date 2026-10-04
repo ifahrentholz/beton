@@ -15,6 +15,7 @@ futures-util.workspace = true
 axum.workspace = true
 base64.workspace = true
 beton-core.workspace = true
+beton-host.workspace = true
 beton-store.workspace = true
 getrandom.workspace = true
 hex.workspace = true
@@ -36,6 +37,7 @@ utoipa-axum.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+beton-host.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 http-body-util.workspace = true

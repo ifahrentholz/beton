@@ -17,6 +17,8 @@ pub struct ServerConfig {
     pub listen: Vec<SocketAddr>,
     /// Unix-Socket (Default `<data_dir>/run/beton.sock`); `None` = keiner.
     pub socket: Option<PathBuf>,
+    /// Tunnel-Socket für Runner (Default `<data_dir>/run/tunnel.sock`, PROTO-015).
+    pub tunnel_socket: Option<PathBuf>,
     /// Zusätzlich erlaubte `Host`-Header (`server.allowed_hosts`).
     pub allowed_hosts: Vec<String>,
     /// Zusätzlich erlaubte Origins für WebSocket und Cookie-Requests (`auth.ws_allowed_origins`).
@@ -32,6 +34,7 @@ impl ServerConfig {
                 SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), DEFAULT_PORT),
             ],
             socket: cfg!(unix).then(|| data_dir.join("run").join("beton.sock")),
+            tunnel_socket: cfg!(unix).then(|| data_dir.join("run").join("tunnel.sock")),
             allowed_hosts: Vec::new(),
             allowed_origins: Vec::new(),
             data_dir,

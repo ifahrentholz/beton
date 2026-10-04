@@ -20,6 +20,7 @@ pub mod local_auth;
 pub mod problem;
 pub mod security;
 pub mod serve;
+pub mod tunnel;
 pub mod ws;
 
 pub use crate::app::openapi;

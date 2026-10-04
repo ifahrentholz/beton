@@ -138,6 +138,7 @@ async fn api_002_ac2_every_route_requires_authentication() {
         if PUBLIC_PATHS.contains(&path.as_str()) {
             continue;
         }
+        let path = path.replace("{id}", "hst_local");
         let req = Request::builder()
             .method(method.as_str())
             .uri(&path)
@@ -167,6 +168,7 @@ async fn api_001_ac2_every_route_is_documented() {
     // Jede dokumentierte Operation ist erreichbar (kein 404/405).
     let t = app().await;
     for (method, path) in operations() {
+        let path = path.replace("{id}", "hst_local");
         let req = t.authed(&method, &path).body(Body::empty()).unwrap();
         let res = t.send(req).await;
         assert!(
@@ -386,4 +388,33 @@ fn proto_010_ac4_openapi_lint() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn run_001_ac3_host_reports_provider_capabilities_unchanged() {
+    let t = app().await;
+    let res = t
+        .send(
+            t.authed("GET", "/v1/hosts/hst_local")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status, 200);
+    let host = res.json();
+    assert_eq!(host["id"], "hst_local");
+    assert_eq!(
+        host["providers"][0]["capabilities"],
+        serde_json::to_value(beton_host::local::capabilities()).unwrap()
+    );
+    let missing = t
+        .send(
+            t.authed("GET", "/v1/hosts/hst_01JB8Y2D0M3K4J5H6G7F8E9D0C")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(missing.status, 404);
+    // Schema-Snapshot: RunnerCapabilities steht in der generierten OpenAPI.
+    assert!(openapi()["components"]["schemas"]["RunnerCapabilities"].is_object());
 }

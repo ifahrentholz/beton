@@ -3075,7 +3075,7 @@
       "examples": [
         "hst_01JB8Y2D0M3K4J5H6G7F8E9D0C"
       ],
-      "pattern": "^hst_[0-9A-HJKMNP-TV-Z]{26}$"
+      "pattern": "^hst_([0-9A-HJKMNP-TV-Z]{26}|local)$"
     },
     "McpServerFailed": {
       "type": "object",
