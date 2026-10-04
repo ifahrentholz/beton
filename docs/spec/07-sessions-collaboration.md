@@ -102,7 +102,7 @@ pub trait GitProvider: Send + Sync {
 ### SES-001 — Session-Lebenszyklus (create / archive / delete)
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Sessions werden per API/CLI/UI erzeugt (Harness oder Agent, Arbeitsverzeichnis, optional Projekt), archiviert, wiederhergestellt und gelöscht. Archivieren stoppt einen laufenden Runner und blendet die Session aus der Standardliste aus; Löschen entfernt Event-Log und Blobs und hinterlässt einen Tombstone (ID, Owner, Löschzeitpunkt) für Sync-Konsistenz.
-- **Details:** `POST /v1/sessions {target, cwd, project_id?, title?, harness_opts}`; `POST …/archive|unarchive`; `DELETE …` (nur Owner). Löschen räumt den Worktree gemäß SES-016 auf.
+- **Details:** `POST /v1/sessions {target, cwd, project_id?, title?, harness_opts}` bzw. mit Agent `{agent, target?, params?, …}` (`target` ist dann ein Harness-Override, AGT-004, AGT-010); `POST …/archive|unarchive`; `DELETE …` (nur Owner). Löschen räumt den Worktree gemäß SES-016 auf.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Given `beton run claude`, then existiert eine Session mit Status `starting`→`idle` und erstem Event `session.created` (seq 1), gefolgt von `session.started`.
   - [ ] AC2 — When eine laufende Session archiviert wird, then wird der Runner beendet, Status `stopped`, Flag `archived=true`, und sie fehlt in `GET /v1/sessions` ohne `?archived=true`.
