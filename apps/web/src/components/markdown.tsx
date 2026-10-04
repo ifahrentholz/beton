@@ -1,6 +1,7 @@
 import { memo, useEffect, useId, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { highlight, type Lines } from '@/lib/highlight'
 
 /**
  * Markdown im Chat-Stream (WEB-002). Kein Roh-HTML (react-markdown rendert nur Elemente),
@@ -73,43 +74,12 @@ const MarkdownBlock = memo(function MarkdownBlock({ text, streaming }: { text: s
   )
 })
 
-/** Zeilen aus Tokens `[Text, Farbe]`. Nur Farben werden übernommen, Text bleibt Text. */
-type Lines = [string, string][][]
-type Highlighter = (code: string, lang: string, dark: boolean) => Promise<Lines>
-let highlighter: Promise<Highlighter> | undefined
-
-/**
- * Shiki mit der JavaScript-Regex-Engine: Die CSP der Web-UI erlaubt kein WebAssembly
- * (`script-src 'self'` ohne `wasm-unsafe-eval`). Sprachen werden bei Bedarf geladen.
- */
-function loadHighlighter(): Promise<Highlighter> {
-  highlighter ??= (async () => {
-    const [{ createHighlighter }, { createJavaScriptRegexEngine }] = await Promise.all([
-      import('shiki'),
-      import('shiki/engine/javascript'),
-    ])
-    const h = await createHighlighter({
-      themes: ['github-light', 'github-dark'],
-      langs: [],
-      engine: createJavaScriptRegexEngine(),
-    })
-    return async (code: string, lang: string, dark: boolean): Promise<Lines> => {
-      if (!h.getLoadedLanguages().includes(lang)) await h.loadLanguage(lang as never)
-      const { tokens } = h.codeToTokens(code, { lang: lang as never, theme: dark ? 'github-dark' : 'github-light' })
-      return tokens.map((line) => line.map((t): [string, string] => [t.content, t.color ?? '']))
-    }
-  })()
-  return highlighter
-}
-
 function Highlighted({ code, lang }: { code: string; lang?: string | undefined }) {
   const [lines, setLines] = useState<Lines | undefined>()
   useEffect(() => {
     if (!lang) return
     let alive = true
-    const dark = document.documentElement.classList.contains('dark')
-    loadHighlighter()
-      .then((h) => h(code, lang, dark))
+    highlight(code, lang)
       .then((l) => alive && setLines(l))
       .catch(() => undefined)
     return () => {

@@ -37,6 +37,14 @@
       "$ref": "#/$defs/HarnessesConfig",
       "default": {}
     },
+    "providers": {
+      "description": "Provider des Direkt-API-Harness `direct:<name>` (HAR-011); nur in der\nUser-Konfiguration. Optional: Ohne Eintrag gibt es keinen Direkt-API-Harness\n(ADR-0034). Einträge werden beim Aufbau der Registry geprüft; ein ungültiger wird mit\nPfad und Grund gemeldet und übersprungen.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ProviderConfig"
+      },
+      "default": {}
+    },
     "server": {
       "$ref": "#/$defs/ServerSettings",
       "default": {
@@ -239,6 +247,102 @@
         "$ref": "#/$defs/HarnessCommandConfig"
       }
     },
+    "ModelConfig": {
+      "description": "Ein Modell unter `providers.<name>.models`.",
+      "type": "object",
+      "properties": {
+        "context_window": {
+          "description": "Kontextfenster in Tokens (für Kontextanzeige und Compaction).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "id": {
+          "type": "string"
+        },
+        "pricing": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pricing"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "Pricing": {
+      "description": "Preise eines Modells in USD je Million Tokens (Preis-Override, Owner USE-003).",
+      "type": "object",
+      "properties": {
+        "input_per_mtok": {
+          "type": "number",
+          "format": "double"
+        },
+        "output_per_mtok": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "input_per_mtok",
+        "output_per_mtok"
+      ]
+    },
+    "ProviderConfig": {
+      "description": "Ein Eintrag unter `providers.<name>` (Schema für `config.schema.json`).",
+      "type": "object",
+      "properties": {
+        "api_key": {
+          "description": "`none` für Endpunkte ohne Key (lokale Gateways); `secret://…` ab M2 (SEC-001).\nKlartext-Keys sind nicht erlaubt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "api_key_env": {
+          "description": "M1: Name der Umgebungsvariable des Daemons mit dem Key, z. B. `OPENROUTER_API_KEY`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_url": {
+          "description": "Basis-URL, z. B. `https://api.anthropic.com` oder `https://openrouter.ai/api/v1`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/WireKind"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelConfig"
+          }
+        },
+        "prompt_caching": {
+          "description": "Anthropic: `cache_control` für System-Prompt und Tools setzen (Default `true`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "base_url"
+      ]
+    },
     "ServerSettings": {
       "type": "object",
       "properties": {
@@ -316,6 +420,21 @@
         }
       },
       "additionalProperties": false
+    },
+    "WireKind": {
+      "description": "Wire-Familie eines Providers.",
+      "oneOf": [
+        {
+          "description": "Anthropic Messages-API (`POST {base_url}/v1/messages`).",
+          "type": "string",
+          "const": "anthropic"
+        },
+        {
+          "description": "OpenAI Chat Completions (`POST {base_url}/chat/completions`), auch OpenRouter,\nLiteLLM, vLLM, Ollama, LM Studio.",
+          "type": "string",
+          "const": "openai"
+        }
+      ]
     }
   }
 }

@@ -17,7 +17,8 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
-    chunkSizeWarningLimit: 2000,
+    // Monaco (WEB-009) ist ein großer, nur bei Bedarf geladener Chunk.
+    chunkSizeWarningLimit: 4500,
   },
   server: {
     proxy: {

@@ -17,6 +17,7 @@ beton-harness.workspace = true
 beton-harness-claude.workspace = true
 beton-harness-codex.workspace = true
 beton-harness-acp.workspace = true
+beton-harness-direct.workspace = true
 beton-mcp.workspace = true
 beton-proto.workspace = true
 getrandom.workspace = true
@@ -31,6 +32,7 @@ tracing.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+beton-harness-direct = { workspace = true, features = ["mock"] }
 beton-host.workspace = true
 futures-util.workspace = true
 beton-server.workspace = true

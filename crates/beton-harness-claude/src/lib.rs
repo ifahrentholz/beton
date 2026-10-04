@@ -116,8 +116,8 @@ pub fn capabilities() -> Capabilities {
         steering: false,
         subagents: Subagents::Native,
         usage_reporting: UsageReporting::TokensAndCost,
-        // Compaction-Durchreichung folgt mit HAR-022.
-        compaction: CompactionSupport::None,
+        // `/compact` als Nachricht; Ergebnis über `compact_boundary` und `result` (HAR-022).
+        compaction: CompactionSupport::Native,
         instructions_delivery: InstructionsDelivery::AppendSystemPrompt,
         mcp_injection: true,
         images: true,
@@ -125,6 +125,7 @@ pub fn capabilities() -> Capabilities {
         transcript_import: true,
         // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
         models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
+        models_stale: false,
         efforts: Vec::new(),
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
@@ -754,9 +755,40 @@ impl HarnessSession for ClaudeSession {
             .await
     }
 
+    /// HAR-022: `/compact` als Nutzernachricht; die CLI meldet `compact_boundary` und ein
+    /// `result`, das die Mapping-Schicht als `compaction.completed` statt als Turn-Ende liest.
     async fn compact(&mut self) -> Result<(), HarnessError> {
         capabilities().check(Action::Compact)?;
-        Ok(())
+        let before = {
+            let mut st = self.state.lock().await;
+            if st.turn.is_some() || st.compacting {
+                return Err(HarnessError::Busy(
+                    "Compaction erst nach dem laufenden Turn".into(),
+                ));
+            }
+            st.compacting = true;
+            st.compact_before = st.last_context;
+            st.last_context.unwrap_or(0)
+        };
+        let _ = self
+            .tx
+            .send(NormalizedEvent::new(
+                EventPayload::CompactionStarted(beton_core::event::Compaction {
+                    before_tokens: before,
+                    after_tokens: None,
+                }),
+                None,
+            ))
+            .await;
+        let sent = write_json(
+            &self.stdin,
+            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "/compact"}]}}),
+        )
+        .await;
+        if sent.is_err() {
+            self.state.lock().await.compacting = false;
+        }
+        sent
     }
 
     fn events(&mut self) -> Option<mpsc::Receiver<NormalizedEvent>> {

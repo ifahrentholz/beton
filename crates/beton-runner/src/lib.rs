@@ -85,6 +85,9 @@ pub struct RunnerBoot {
     pub agent_ref: Option<String>,
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub snapshots: Option<PathBuf>,
+    /// API-Keys für `api_key_env` (HAR-011): kommen als zweite stdin-Zeile vom Daemon, nie
+    /// über Env oder argv; `Debug` zeigt nur die Namen.
+    pub credentials: beton_harness_direct::secret::KeyMap,
     /// Fork-Plan (HAR-018, HAR-019).
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
@@ -104,7 +107,8 @@ pub enum RunnerError {
 }
 
 impl RunnerBoot {
-    /// Liest Env und das Token aus stdin (erste Zeile).
+    /// Liest Env, das Token (erste stdin-Zeile) und optional die API-Keys (zweite Zeile,
+    /// JSON `{"VARIABLE": "wert"}`, HAR-011).
     pub fn from_env_and_stdin() -> Result<Self, RunnerError> {
         let var = |k: &str| std::env::var(k).map_err(|_| RunnerError::Boot(format!("{k} fehlt")));
         let parse = |k: &str| -> Result<String, RunnerError> { var(k) };
@@ -112,6 +116,10 @@ impl RunnerBoot {
         std::io::stdin()
             .read_line(&mut token)
             .map_err(|e| RunnerError::Boot(format!("Token von stdin: {e}")))?;
+        let mut keys = String::new();
+        // Ohne zweite Zeile (stdin geschlossen) gibt es keine Keys.
+        let _ = std::io::stdin().read_line(&mut keys);
+        let credentials = beton_harness_direct::secret::KeyMap::from_json_line(&keys);
         Ok(Self {
             socket: PathBuf::from(var(env::SOCKET)?),
             token: token.trim().to_owned(),
@@ -144,6 +152,7 @@ impl RunnerBoot {
             snapshots: std::env::var_os(env::SNAPSHOTS)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
+            credentials,
             fork: std::env::var_os(env::FORK_PLAN)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
@@ -151,9 +160,17 @@ impl RunnerBoot {
         })
     }
 
-    /// Harness-Registry dieses Runners (siehe [`builtin_registry`]).
+    /// Harness-Registry dieses Runners; `direct:*` nutzt die übergebenen Keys.
     pub fn registry(&self) -> Registry {
-        builtin_registry(&self.harnesses, self.dev)
+        builtin_registry_with_options(
+            &self.harnesses,
+            self.dev,
+            &beton_harness_direct::DirectOptions {
+                keys: Arc::new(self.credentials.clone()),
+                discover_models: false,
+            },
+        )
+        .0
     }
 }
 
@@ -165,19 +182,41 @@ pub fn builtin_registry(layers: &HarnessLayers, dev: bool) -> Registry {
 }
 
 /// Wie [`builtin_registry`]; liefert zusätzlich die übersprungenen ACP-Einträge mit Datei
-/// und Zeile (HAR-008 AC3).
+/// und Zeile (HAR-008 AC3). Ungültige Provider (`direct:*`) meldet es als Warnung.
 pub fn builtin_registry_with_problems(
     layers: &HarnessLayers,
     dev: bool,
 ) -> (Registry, Vec<beton_harness_acp::ConfigProblem>) {
+    let (registry, acp, direct) =
+        builtin_registry_with_options(layers, dev, &beton_harness_direct::DirectOptions::default());
+    for p in direct {
+        tracing::warn!("Konfiguration: Provider übersprungen: {p}");
+    }
+    (registry, acp)
+}
+
+/// Registry mit allen eingebauten Adaptern. `direct:*` gibt es nur für Provider aus der
+/// User-Konfiguration (`providers:`, HAR-011; ohne Eintrag kein Direkt-API-Harness,
+/// ADR-0034). Liefert die übersprungenen ACP-Agents (Datei und Zeile, HAR-008 AC3) und
+/// Provider (Pfad und Grund, HAR-011 AC4).
+pub fn builtin_registry_with_options(
+    layers: &HarnessLayers,
+    dev: bool,
+    direct: &beton_harness_direct::DirectOptions,
+) -> (
+    Registry,
+    Vec<beton_harness_acp::ConfigProblem>,
+    Vec<beton_harness_direct::config::ConfigProblem>,
+) {
     let mut registry = Registry::new(RegistryOptions { dev });
     registry.register(Arc::new(claude_adapter(layers)));
     registry.register(Arc::new(beton_harness_codex::CodexAdapter {
         auth: layers.user.auth("codex").source(),
         ..beton_harness_codex::CodexAdapter::default()
     }));
-    let problems = beton_harness_acp::register(&mut registry, layers);
-    (registry, problems)
+    let acp = beton_harness_acp::register(&mut registry, layers);
+    let providers = beton_harness_direct::register(&mut registry, &layers.providers, direct);
+    (registry, acp, providers)
 }
 
 fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter {
@@ -204,9 +243,19 @@ pub async fn main_from_env() -> std::process::ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (registry, problems) = builtin_registry_with_problems(&boot.harnesses, boot.dev);
+    let (registry, problems, providers) = builtin_registry_with_options(
+        &boot.harnesses,
+        boot.dev,
+        &beton_harness_direct::DirectOptions {
+            keys: Arc::new(boot.credentials.clone()),
+            discover_models: false,
+        },
+    );
     for p in problems {
         tracing::warn!("Konfiguration: ACP-Agent übersprungen: {p}");
+    }
+    for p in providers {
+        tracing::warn!("Konfiguration: Provider übersprungen: {p}");
     }
     match run(boot, registry).await {
         Ok(Exit::Stopped | Exit::ParentGone) => ExitCode::SUCCESS,
@@ -522,6 +571,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 resume: forked.resume.or_else(|| boot.resume.clone()),
                 fork_session: forked.fork_session,
                 mcp: setup.injection.clone(),
+                max_turns: setup.max_turns,
                 ..SessionSpec::default()
             },
             ctx,
@@ -622,6 +672,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut unacked = Unacked::default();
     let mut tracker = StatusTracker::default();
     let mut turn_running = false;
+    // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
+    let mut held_context: Option<NormalizedEvent> = None;
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
@@ -717,6 +769,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             _ => None,
                         };
                         let done = matches!(ev.payload, EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_));
+                        if turn_running && matches!(ev.payload, EventPayload::ContextUsage(_)) {
+                            held_context = Some(ev);
+                            continue;
+                        }
                         if let Some(t) = &files {
                             if let EventPayload::TurnStarted(ts) = &ev.payload {
                                 let tree = match pending_before.take() {
@@ -742,8 +798,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 }
                             }
                         }
+                        if done && let Some(context) = held_context.take() {
+                            batch.push(to_event(&boot, &actor, context));
+                        }
                         batch.push(to_event(&boot, &actor, ev));
-                        if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; }
+                        if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; held_context = None; }
                         if done { status(&mut lifecycle, RunnerState::Idle, None, &mut batch); turn_running = false; }
                         if let Some(st) = next_status {
                             tracker.set(&boot, st, &mut batch);
@@ -1126,6 +1185,20 @@ async fn run_one_shot(
     }
 }
 
+/// Entscheidung aus `approval.resolve`. `updated_args: null` (so serialisiert die REST-API
+/// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“.
+fn gate_decision(args: &Value) -> GateDecision {
+    if args["decision"] == "allow" {
+        GateDecision::Allow {
+            updated_args: args.get("updated_args").filter(|a| !a.is_null()).cloned(),
+        }
+    } else {
+        GateDecision::Deny {
+            reason: args["reason"].as_str().map(str::to_owned),
+        }
+    }
+}
+
 /// Kommandos vom Server an den Harness (`cmd.deliver`).
 async fn deliver(
     session: &mut dyn HarnessSession,
@@ -1196,6 +1269,16 @@ async fn deliver(
             .await
             .map(|()| Value::Null)
             .map_err(|e| problem(e.code(), e.to_string())),
+        // SES-011: Compaction nur ohne laufenden Turn; ohne Capability `capability_unsupported`.
+        "session.compact" if turn_running => Err(problem(
+            "turn_active",
+            "Compaction erst nach dem laufenden Turn".into(),
+        )),
+        "session.compact" => session
+            .compact()
+            .await
+            .map(|()| Value::Null)
+            .map_err(|e| problem(e.code(), e.to_string())),
         "session.set" => {
             let model = args["model"].as_str().map(str::to_owned);
             match model {
@@ -1209,15 +1292,7 @@ async fn deliver(
         }
         "approval.resolve" => {
             let call_id = args["call_id"].as_str().unwrap_or_default();
-            let decision = if args["decision"] == "allow" {
-                GateDecision::Allow {
-                    updated_args: args.get("updated_args").cloned(),
-                }
-            } else {
-                GateDecision::Deny {
-                    reason: args["reason"].as_str().map(str::to_owned),
-                }
-            };
+            let decision = gate_decision(&args);
             if gate.resolve(call_id, decision) {
                 Ok(Value::Null)
             } else {
@@ -1315,6 +1390,26 @@ mod tests {
         u.ack(5);
         assert_eq!(u.bytes, 0);
         assert_eq!(u.acked(), 5);
+    }
+
+    #[test]
+    fn web_018_null_updated_args_mean_unchanged() {
+        assert_eq!(
+            gate_decision(&json!({"decision": "allow", "updated_args": null})),
+            GateDecision::Allow { updated_args: None }
+        );
+        assert_eq!(
+            gate_decision(&json!({"decision": "allow", "updated_args": {"a": 1}})),
+            GateDecision::Allow {
+                updated_args: Some(json!({"a": 1}))
+            }
+        );
+        assert_eq!(
+            gate_decision(&json!({"decision": "deny", "reason": "nein"})),
+            GateDecision::Deny {
+                reason: Some("nein".into())
+            }
+        );
     }
 
     #[tokio::test]

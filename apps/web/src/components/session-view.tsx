@@ -1,23 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
 import type { Capabilities, HarnessInfo } from '@beton/sdk'
-import { Menu, WifiOff } from 'lucide-react'
+import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
 import { queueOf } from '@/lib/queue'
+import { cn } from '@/lib/utils'
 import { openApprovals, timeline, type Item } from '@/lib/timeline'
+import { changedPaths, lineLink, rangeLabel, withAttachments, type WorkspaceSearch } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
+import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } from '@/store/workspace'
 import { Composer } from './composer'
 import { continueTargets, ForkBanner, forkOrigin } from './fork'
 import { QueueList } from './queue'
 import { HarnessBadge, listStatus, StatusMark } from './harness'
 import { useLayout } from './layout-state'
+import { ConflictHost } from './workspace/editor'
+import { WorkspaceRail } from './workspace/rail'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
 
 /** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
@@ -75,8 +80,55 @@ function StreamItem({ item, sessionId, harness }: { item: Item; sessionId: strin
   }
 }
 
+/**
+ * Geöffnete Dateien folgen `fs.changed`: neu laden oder – bei ungespeicherten Änderungen –
+ * Konflikt melden (WEB-009 AC1).
+ */
+function useOpenFileSync(sessionId: string): void {
+  const events = useEvents((s) => s.logs[sessionId]?.events)
+  const processed = useRef(0)
+  useEffect(() => {
+    const last = events?.at(-1)?.seq ?? 0
+    if (last <= processed.current) return
+    const paths = changedPaths(events, processed.current)
+    processed.current = last
+    const open = useWorkspace.getState().ws(sessionId).files
+    for (const p of paths) if (open[p]) void refresh(sessionId, p)
+  }, [sessionId, events])
+}
+
+/** Referenzen für den Agent über dem Eingabefeld (WEB-009). */
+function AttachmentChips({ sessionId }: { sessionId: string }) {
+  const attachments = useSessionWorkspace(sessionId).attachments
+  if (attachments.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 px-4 pt-2" data-testid="attachments">
+      {attachments.map((a) => (
+        <span key={a.id} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card py-0.5 pr-1 pl-2 text-[12px]">
+          <Paperclip className="size-3 text-muted-foreground" />
+          <span className="font-mono">{a.path}</span>
+          <span className="text-muted-foreground">{rangeLabel(a.from, a.to)}</span>
+          <button onClick={() => detach(sessionId, a.id)} aria-label="Referenz entfernen" className="rounded-sm text-muted-foreground hover:text-foreground">
+            <X className="size-3" />
+          </button>
+        </span>
+      ))}
+      <span className="text-[11px] text-muted-foreground">Ausschnitt wird mitgeschickt</span>
+    </div>
+  )
+}
+
+const desktop = () => window.matchMedia('(min-width: 1024px)').matches
+
 export function SessionView({ sessionId }: { sessionId: string }) {
   useSessionStream(sessionId)
+  useOpenFileSync(sessionId)
+  const search = useSearch({ strict: false }) as WorkspaceSearch
+  const navigate = useNavigate()
+  const railOpen = useWorkspace((s) => s.railOpen)
+  const railSheet = useWorkspace((s) => s.railSheet)
+  const worktree = useSessions((s) => s.byId[sessionId]?.worktree)
+  const readSeq = useSessions((s) => s.byId[sessionId]?.read_seq)
   const log = useEvents((s) => s.logs[sessionId])
   const meta = useMeta(sessionId)
   const items = useMemo(
@@ -91,7 +143,6 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const costMicro = useSessions((s) => s.byId[sessionId]?.cost_micro ?? 0)
   const lastSeq = log?.events.at(-1)?.seq ?? 0
   const origin = useMemo(() => forkOrigin(log?.events), [log?.events])
-  const navigate = useNavigate()
   const features = useFeatures()
   const catalog = useQuery({
     queryKey: ['harnesses'],
@@ -158,7 +209,22 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     if (atBottom.current && items.length > 0) virtualizer.scrollToIndex(items.length - 1, { align: 'end' })
   }, [items, virtualizer])
 
+  // Ein geteilter Link auf eine Diff-Zeile öffnet die Rail auch auf kleinen Bildschirmen.
+  useEffect(() => {
+    if (!search.tab) return
+    if (desktop()) {
+      if (!useWorkspace.getState().railOpen) useWorkspace.getState().setRailOpen(true)
+    } else useWorkspace.getState().setRailSheet(true)
+  }, [search.tab])
+
+  const toggleRail = () => {
+    const st = useWorkspace.getState()
+    if (desktop()) st.setRailOpen(!st.railOpen)
+    else st.setRailSheet(!st.railSheet)
+  }
+
   return (
+    <div className="flex min-h-0 min-w-0 flex-1">
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="@container flex h-12 shrink-0 items-center gap-3 border-b border-border px-3 sm:px-4">
         <button onClick={toggleList} className="flex size-8 items-center justify-center rounded-md hover:bg-accent lg:hidden" aria-label="Sessions anzeigen">
@@ -170,6 +236,15 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </h2>
         {meta.harness && <HarnessBadge harness={meta.harness} model={meta.model} className="hidden shrink-0 sm:inline-flex" />}
         {costMicro > 0 && <span className="hidden text-[11px] text-muted-foreground tabular-nums md:inline">{cost(costMicro)}</span>}
+        <button
+          onClick={toggleRail}
+          aria-label="Workspace"
+          aria-pressed={railOpen}
+          title="Workspace ein- oder ausblenden"
+          className={cn('flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-accent', (railOpen || railSheet) && 'text-foreground')}
+        >
+          <PanelRight className="size-4" />
+        </button>
       </header>
       {origin && <ForkBanner origin={origin} />}
       {log?.reconnecting && (
@@ -208,6 +283,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           {sendError}
         </div>
       )}
+      <AttachmentChips sessionId={sessionId} />
       <Composer
         sessionId={sessionId}
         harness={meta.harness || 'claude'}
@@ -229,13 +305,31 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         onSend={(text) => {
           setSendError(undefined)
           // Der Server entscheidet: sofort starten oder einreihen (SES-004).
+          const attachments = useWorkspace.getState().ws(sessionId).attachments
+          clearAttachments(sessionId)
           client
             .session(sessionId)
-            .send(text)
+            .send(withAttachments(text, attachments))
             .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Senden fehlgeschlagen'))
         }}
         onInterrupt={() => void client.session(sessionId).interrupt().catch(() => undefined)}
       />
+    </div>
+      <WorkspaceRail
+        sessionId={sessionId}
+        events={log?.events}
+        capabilities={meta.capabilities}
+        worktree={worktree}
+        readSeq={readSeq}
+        search={search}
+        onAnchor={({ scope, turn, file, line }) =>
+          void navigate({ to: '/s/$sessionId', params: { sessionId }, search: { tab: 'changes', scope, turn, file, line }, replace: true })
+        }
+        copyLink={async (p) => {
+          await navigator.clipboard?.writeText(lineLink(window.location.origin, sessionId, { scope: p.scope, turn: p.turn, file: p.file, anchor: p.line }))
+        }}
+      />
+      <ConflictHost sessionId={sessionId} harness={meta.harness} />
     </div>
   )
 }

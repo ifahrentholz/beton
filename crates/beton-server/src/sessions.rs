@@ -74,6 +74,9 @@ pub struct SessionsConfig {
     /// `harnesses:` aus der User-Konfiguration; die Projekt-Konfiguration liest der Daemon
     /// beim Start aus dem Arbeitsverzeichnis der Session (HAR-003).
     pub harnesses_user: beton_harness::registry::HarnessesConfig,
+    /// `providers:` aus der User-Konfiguration (Direkt-API-Harness, HAR-011); leer = kein
+    /// `direct:*`-Harness.
+    pub providers: std::collections::BTreeMap<String, Value>,
     /// Wurzel der Session-Worktrees, z. B. `~/.beton/worktrees` (SES-015).
     pub worktrees_root: PathBuf,
     /// Schatten-Repositories der Turn-Snapshots, z. B. `~/.beton/snapshots` (SES-018).
@@ -503,6 +506,8 @@ impl<'a> SessionManager<'a> {
             harness: session.harness.clone(),
             workspace,
             env_allowlist: Vec::new(),
+            // API-Keys für `direct:*` (HAR-011) gehen über stdin, nie in die Runner-Umgebung.
+            secret_env: beton_harness_direct::key_vars(&session.harness, &cfg.providers),
         };
         let provisioned = cfg
             .provider
@@ -531,6 +536,7 @@ impl<'a> SessionManager<'a> {
                         project_file: Some(
                             Path::new(&created.cwd).join(".beton").join("config.yaml"),
                         ),
+                        providers: cfg.providers.clone(),
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
@@ -751,6 +757,63 @@ impl<'a> SessionManager<'a> {
             .deliver(
                 session,
                 "turn.interrupt",
+                Value::Null,
+                self.state.runtime.tunnel.cmd_timeout,
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// Kann der Harness der Session kompaktieren (Capability `compaction`, HAR-022)? Maßgeblich
+    /// sind die Capabilities aus `session.started`, sonst die des Katalogs.
+    async fn can_compact(&self, session: SessionId, harness: &str) -> Result<bool, Problem> {
+        let started = self
+            .state
+            .store
+            .last_event_of_type(self.org(), session, "session.started")
+            .await?;
+        if let Some(EventPayload::SessionStarted(s)) = started.as_ref().and_then(Event::payload) {
+            return Ok(s.capabilities["compaction"]
+                .as_str()
+                .is_some_and(|c| c != "none"));
+        }
+        let Ok(id) = harness.parse::<beton_harness::HarnessId>() else {
+            return Ok(false);
+        };
+        Ok(self.state.runtime.harnesses.get(&id).is_some_and(|a| {
+            a.capabilities(
+                beton_harness::Mode::Native,
+                &beton_harness::ProbeReport::default(),
+            )
+            .check(beton_harness::Action::Compact)
+            .is_ok()
+        }))
+    }
+
+    /// Compaction anstoßen (SES-011): ohne Capability `compaction` 409
+    /// `capability_unsupported` (HAR-022 AC2), ohne laufenden Runner oder während eines Turns
+    /// 409 `conflict`. Die Events folgen asynchron vom Harness.
+    pub async fn compact(&self, session: SessionId) -> Result<(), Problem> {
+        let record = self.state.store.session(self.org(), session).await?;
+        if !self.can_compact(session, &record.harness).await? {
+            return Err(Problem::new(ProblemCode::CapabilityUnsupported)
+                .detail("Dieser Harness kann nicht kompaktieren (compaction: none)"));
+        }
+        if !self.state.runtime.runners.connected(session) {
+            return Err(
+                Problem::new(ProblemCode::Conflict).detail("Session läuft nicht; erst fortsetzen")
+            );
+        }
+        if self.state.queue().lock(session).await?.busy() {
+            return Err(Problem::new(ProblemCode::Conflict)
+                .detail("Ein Turn läuft; Compaction erst danach"));
+        }
+        self.state
+            .runtime
+            .runners
+            .deliver(
+                session,
+                "session.compact",
                 Value::Null,
                 self.state.runtime.tunnel.cmd_timeout,
             )

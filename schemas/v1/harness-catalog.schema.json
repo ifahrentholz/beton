@@ -99,6 +99,10 @@
             "type": "string"
           }
         },
+        "models_stale": {
+          "description": "`models` ist die zuletzt erfolgreich abgerufene Liste, weil die Modell-Discovery des\nAnbieters gerade fehlschlägt (HAR-011 AC3); der Picker kennzeichnet sie als veraltet.",
+          "type": "boolean"
+        },
         "resume": {
           "$ref": "#/$defs/ResumeSupport"
         },

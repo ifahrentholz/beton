@@ -1676,6 +1676,87 @@
         }
       }
     },
+    "/v1/sessions/{id}/compact": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Kontext kompaktieren (SES-011, HAR-022): Der Harness kompaktiert (Claude: `/compact`,\nDirekt-API: eigene Compaction); das Ergebnis folgt als `compaction.started`,\n`compaction.completed` und `context.usage`.",
+        "operationId": "compact_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Compaction angestoßen",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Harness ohne Capability `compaction` (`capability_unsupported`), Session gestoppt oder Turn läuft (`conflict`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/events": {
       "get": {
         "tags": [
@@ -3011,6 +3092,87 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/workspace": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Überblick über den Workspace der Session (SES-018): Clients wählen damit die Sicht der\nÄnderungen, ohne eine erwartbar fehlschlagende Abfrage zu stellen.",
+        "operationId": "workspace_info",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Überblick",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session oder Workspace unbekannt",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5492,6 +5654,19 @@
               "null"
             ],
             "description": "Text der Datei (nur UTF-8 und höchstens 5 MiB)."
+          }
+        }
+      },
+      "WorkspaceInfo": {
+        "type": "object",
+        "description": "Eigenschaften des Workspace, die Clients vor weiteren Abfragen brauchen.",
+        "required": [
+          "git_repo"
+        ],
+        "properties": {
+          "git_repo": {
+            "type": "boolean",
+            "description": "Der Workspace liegt in einem Git-Repository: Die Sichten `uncommitted` und `branch`\nstehen zur Verfügung (sonst `409 not_a_git_repo`, nur `turn`)."
           }
         }
       },

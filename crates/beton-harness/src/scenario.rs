@@ -245,6 +245,10 @@ pub struct Usage {
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Kontextfenster für `context.usage` (Fake-CLI `stream-json`:
+    /// `modelUsage.<modell>.contextWindow` im `result`, SES-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
