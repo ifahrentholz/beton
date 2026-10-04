@@ -64,7 +64,7 @@
    "Golden-Transcripts für mindestens: reiner Text-Turn, Turn mit Bash-Tool, Turn mit Datei-Edit, Turn mit Reasoning, Fehler-Result (`error_max_turns`) sind grün (HAR-025).",
    "`interrupt()` bricht einen laufenden Turn ab; das Log enthält `turn.interrupted` und die Session nimmt danach eine neue Eingabe an.",
    "Eine unbekannte stdout-Zeile führt nicht zum Abbruch, sondern zu einem `harness.unmapped`-Event und einer `tracing`-Warnung.",
-   "Instructions des Agents (AGT-005, ab M1, siehe 02) werden über `--append-system-prompt-file` geliefert; ein Test prüft den generierten Dateiinhalt."
+   "(ab M1) Instructions des Agents (AGT-005, siehe 02) werden über `--append-system-prompt-file` geliefert; ein Test prüft den generierten Dateiinhalt."
   ]
  },
  {
