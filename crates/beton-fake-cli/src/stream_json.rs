@@ -279,6 +279,10 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             return Err(Stop::Crash(u8::try_from(code.clamp(1, 255)).unwrap_or(1)));
         } else if let Some(hint) = &step.auth_expired {
             return Ok(TurnEnd::AuthFailed(format!("authentication_error: {hint}")));
+        } else if let Some(write) = &step.write_file {
+            // Wie ein Edit-Tool: Datei relativ zum Arbeitsverzeichnis (SES-017).
+            let workdir = std::env::current_dir().unwrap_or_default();
+            let _ = write.apply(&workdir);
         } else if step.hang {
             loop {
                 let msg = self.read()?;

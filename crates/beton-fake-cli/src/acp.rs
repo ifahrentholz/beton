@@ -285,6 +285,10 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 code: AUTH_REQUIRED,
                 message: format!("Authentication required: {hint}"),
             });
+        } else if let Some(write) = &step.write_file {
+            // Wie ein Edit-Tool: Datei relativ zum Arbeitsverzeichnis (SES-017).
+            let workdir = std::env::current_dir().unwrap_or_default();
+            let _ = write.apply(&workdir);
         } else if step.hang {
             loop {
                 let msg = self.io.read()?;

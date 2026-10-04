@@ -96,6 +96,9 @@ pub struct RunnerBoot {
     pub harnesses: beton_harness::registry::HarnessLayers,
     /// Agent der Session; bestimmt MCP-Server, System-Tools und Skills (HAR-009).
     pub agent_ref: Option<String>,
+    /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018); `None` =
+    /// keine Workspace-Beobachtung.
+    pub snapshots: Option<PathBuf>,
 }
 
 /// Laufender Runner.
@@ -225,6 +228,7 @@ macro_rules! runner_provider_contract {
                     resume: None,
                     harnesses: Default::default(),
                     agent_ref: None,
+                    snapshots: None,
                 }
             }
 

@@ -185,6 +185,12 @@ impl RunnerProvider for LocalProvider {
         if let Some(a) = &boot.agent_ref {
             vars.push((beton_runner::env::AGENT_REF.into(), a.clone()));
         }
+        if let Some(dir) = &boot.snapshots {
+            vars.push((
+                beton_runner::env::SNAPSHOTS.into(),
+                dir.display().to_string(),
+            ));
+        }
         if boot.harnesses != beton_harness::registry::HarnessLayers::default() {
             vars.push((
                 beton_runner::env::HARNESSES.into(),

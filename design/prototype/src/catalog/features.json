@@ -4039,7 +4039,7 @@
   "acs": [
    "`beton run claude` ohne laufenden Daemon startet ihn, erstellt eine Session und streamt die Antwort; die Session ist danach in der Web-UI sichtbar.",
    "`beton run -c` setzt die zuletzt genutzte Session im aktuellen Verzeichnis fort.",
-   "(ab M3) `--worktree` erzeugt einen Worktree gemäß SES-015 (siehe 07-sessions-collaboration.md) und startet die Session darin.",
+   "(ab M1) `--worktree` erzeugt einen Worktree gemäß SES-015 (siehe 07-sessions-collaboration.md) und startet die Session darin.",
    "`Ctrl+C` während eines Turns sendet Interrupt; zweimal `Ctrl+C` binnen 1 s detacht, ohne die Session zu stoppen."
   ]
  },

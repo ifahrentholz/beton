@@ -242,8 +242,31 @@ impl Client {
 
     /// `DELETE /v1/sessions/{id}`.
     pub async fn delete_session(&self, id: &str) -> Result<()> {
-        self.send_empty(self.http.delete(self.url(&format!("/v1/sessions/{id}"))))
-            .await
+        self.delete_session_with(id, None, None).await
+    }
+
+    /// `DELETE /v1/sessions/{id}` mit den Antworten auf die Rückfragen beim Entfernen des
+    /// Worktrees (SES-016): `uncommitted` (`commit` | `discard`) und `branch`
+    /// (`keep` | `delete`).
+    pub async fn delete_session_with(
+        &self,
+        id: &str,
+        uncommitted: Option<&str>,
+        branch: Option<&str>,
+    ) -> Result<()> {
+        let mut query = Vec::new();
+        if let Some(u) = uncommitted {
+            query.push(("uncommitted", u));
+        }
+        if let Some(b) = branch {
+            query.push(("branch", b));
+        }
+        self.send_empty(
+            self.http
+                .delete(self.url(&format!("/v1/sessions/{id}")))
+                .query(&query),
+        )
+        .await
     }
 
     /// `POST /v1/sessions/{id}/approvals/{approval_id}/resolve`.

@@ -119,6 +119,18 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         InputRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ResolveApprovalRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Workspace-API (SES-017, SES-018).
+        use beton_server::api_workspace::{
+            ChangesPage, FileDiff, SearchPage, TreePage, WorkspaceFile, WriteFileRequest,
+            WrittenFile,
+        };
+        TreePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        WorkspaceFile::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        WriteFileRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        WrittenFile::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SearchPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ChangesPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        FileDiff::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {

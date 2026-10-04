@@ -2,7 +2,8 @@
 //!
 //! Kernprojektionen werden in derselben Transaktion wie der Event-Append aktualisiert und
 //! lassen sich jederzeit aus dem Log neu aufbauen (`beton admin projections rebuild`):
-//! - Session-Liste: Titel, Status, Archiv-Flag, Kostensumme, letzte Aktivität (`sessions`)
+//! - Session-Liste: Titel, Status, Archiv-Flag, Kostensumme, letzte Aktivität, Worktree
+//!   (`sessions`)
 //! - offene Approvals (`approvals`)
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
 //!
@@ -89,6 +90,20 @@ pub(crate) async fn apply(
                 .bind(&session_s)
                 .execute(&mut *conn)
                 .await?;
+        }
+        EventPayload::GitWorktreeCreated(w) => {
+            sqlx::query(
+                "UPDATE sessions SET worktree_path = ?, worktree_branch = ?, worktree_base = ?, \
+                 worktree_base_sha = ? WHERE org_id = ? AND id = ?",
+            )
+            .bind(&w.path)
+            .bind(&w.branch)
+            .bind(&w.base)
+            .bind(&w.base_sha)
+            .bind(&org_s)
+            .bind(&session_s)
+            .execute(&mut *conn)
+            .await?;
         }
         EventPayload::ApprovalRequested(a) => {
             sqlx::query(
@@ -182,7 +197,8 @@ impl Store {
             let session: SessionId = parse(id)?;
             sqlx::query(
                 "UPDATE sessions SET title = '', status = ?, archived = 0, cost_micro = 0, \
-                 last_activity_at = created_at WHERE org_id = ? AND id = ?",
+                 last_activity_at = created_at, worktree_path = NULL, worktree_branch = NULL, \
+                 worktree_base = NULL, worktree_base_sha = NULL WHERE org_id = ? AND id = ?",
             )
             .bind(enum_to_str(&SessionStatus::default()))
             .bind(org.to_string())
@@ -280,7 +296,8 @@ impl Store {
     pub async fn projection_dump(&self, org: OrgId) -> Result<Vec<String>> {
         let mut out = Vec::new();
         for sql in [
-            "SELECT id, title, status, archived, cost_micro, last_activity_at FROM sessions \
+            "SELECT id, title, status, archived, cost_micro, last_activity_at, worktree_path, \
+             worktree_branch, worktree_base, worktree_base_sha FROM sessions \
              WHERE org_id = ? ORDER BY id",
             "SELECT * FROM approvals WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
