@@ -179,7 +179,7 @@ export function NewSessionScreen({ state }: { state: string }) {
   return (
     <div className="relative h-full">
       <AppLayout activeSession="new">
-        <SessionHeader title="Neue Session" harness="claude" status="idle" />
+        <SessionHeader title="Neue Session" harness="claude" status="idle" context={{ used: 0, window: 200_000 }} />
         <div className="concrete-grain flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
           <p className="type-wide text-xl font-[700]">Woran soll der Agent arbeiten?</p>
           <F id="SES-013" className="max-w-md text-sm text-muted-foreground">

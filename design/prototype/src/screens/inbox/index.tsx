@@ -9,24 +9,9 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { harnesses, sessions, type HarnessId } from '@/mock/data'
+import { harnesses, inboxDone, inboxFyi, inboxOpen, sessions, type HarnessId, type InboxItem, type InboxKind } from '@/mock/data'
 
 /* ───────────────────────── Inbox (UX-001, USE-004) ───────────────────────── */
-
-type InboxKind = 'approval' | 'question' | 'async_done' | 'async_failed' | 'mention' | 'notice'
-type Item = {
-  id: string
-  kind: InboxKind
-  title: ReactNode
-  session: string
-  project: string
-  harness: HarnessId
-  when: string
-  body?: ReactNode
-  paused?: boolean
-  later?: string
-  feature?: string
-}
 
 const KIND: Record<InboxKind, { label: string; icon: typeof InboxIcon }> = {
   approval: { label: 'Freigabe', icon: ShieldCheck },
@@ -37,44 +22,12 @@ const KIND: Record<InboxKind, { label: string; icon: typeof InboxIcon }> = {
   notice: { label: 'Hinweis', icon: Gauge },
 }
 
-const OPEN: Item[] = [
-  {
-    id: 'inb_1',
-    kind: 'approval',
-    title: <code className="font-mono text-[12.5px]">git push -u origin beton/rate-limiter-7f3k</code>,
-    session: 'Rate-Limiter für die Login-API',
-    project: 'shop-frontend',
-    harness: 'claude',
-    when: 'vor 2 Min.',
-    body: 'Pushes verlassen deinen Rechner. Regel git-push-fragen (Projekt shop-frontend) verlangt deine Freigabe.',
-  },
-  {
-    id: 'inb_2',
-    kind: 'question',
-    title: 'ESLint 10 bricht 3 Regeln – anpassen oder bei 9 bleiben?',
-    session: 'Nächtliches Dependency-Update',
-    project: 'infra',
-    harness: 'claude',
-    when: 'vor 41 Min.',
-    paused: true,
-    body: 'Das Update von eslint 9.31 auf 10.0 meldet 3 entfernte Regeln in .eslintrc. Ich kann sie durch die Nachfolger ersetzen oder das Update auslassen.',
-  },
-]
+/** Befehle (Freigaben) in Monospace, sonst Fließtext. */
+function titleOf(item: InboxItem): ReactNode {
+  return item.mono ? <code className="font-mono text-[12.5px]">{item.title}</code> : item.title
+}
 
-const FYI: Item[] = [
-  { id: 'inb_3', kind: 'notice', title: 'Claude Max: 92 % des 5-Stunden-Fensters genutzt', session: 'Kontingent', project: '—', harness: 'claude', when: 'vor 6 Min.', body: 'Setzt um 14:46 zurück. Neue Turns mit Claude Code können bis dahin abgelehnt werden.', feature: 'USE-004' },
-  { id: 'inb_4', kind: 'async_failed', title: 'Flaky Test in payment_spec – nach 3 Versuchen abgebrochen', session: 'Flaky Test in payment_spec', project: 'shop-frontend', harness: 'claude', when: 'gestern 23:10', later: 'ab M5' },
-  { id: 'inb_5', kind: 'mention', title: 'Mara: „@ingo schaust du dir den Fokus-Trap im Dialog an?“', session: 'Checkout-Formular barrierefrei machen', project: 'shop-frontend', harness: 'claude', when: 'vor 1 Std.', later: 'ab M4' },
-  { id: 'inb_6', kind: 'async_done', title: 'Docs-Linkcheck fertig – 2 tote Links, PR #482 geöffnet', session: 'Docs-Linkcheck (geplant)', project: 'beton', harness: 'codex', when: 'heute 06:00', later: 'ab M5' },
-]
-
-const DONE: (Item & { resolution: string })[] = [
-  { id: 'inb_7', kind: 'approval', title: <code className="font-mono text-[12.5px]">pnpm add -D vitest-axe</code>, session: 'Checkout-Formular barrierefrei machen', project: 'shop-frontend', harness: 'claude', when: 'vor 3 Std.', resolution: 'Erlaubt von dir, am Handy' },
-  { id: 'inb_8', kind: 'approval', title: <code className="font-mono text-[12.5px]">curl https://api.stripe.com/v1/charges</code>, session: 'Flaky Test in payment_spec', project: 'shop-frontend', harness: 'claude', when: 'gestern', resolution: 'Nach 30 Min. ohne Antwort abgelehnt (Timeout)' },
-  { id: 'inb_9', kind: 'question', title: 'Soll der Limiter pro IP oder pro Account zählen?', session: 'Rate-Limiter für die Login-API', project: 'shop-frontend', harness: 'codex', when: 'gestern', resolution: 'Beantwortet von dir: „Pro IP, zusätzlich pro Account bei /login“' },
-]
-
-function InboxRow({ item, answering, selected }: { item: Item; answering?: boolean; selected?: boolean }) {
+function InboxRow({ item, answering, selected }: { item: InboxItem; answering?: boolean; selected?: boolean }) {
   const waiting = item.kind === 'approval' || item.kind === 'question'
   const K = KIND[item.kind]
   const content = (
@@ -95,7 +48,7 @@ function InboxRow({ item, answering, selected }: { item: Item; answering?: boole
         {item.later && <span className="rounded-sm border border-border px-1 text-[10px]">{item.later}</span>}
         <span className="ml-auto shrink-0">{item.when}</span>
       </div>
-      <div className={cn('mt-1 text-[14px]', (waiting || item.kind !== 'notice') && 'font-medium')}>{item.title}</div>
+      <div className={cn('mt-1 text-[14px]', (waiting || item.kind !== 'notice') && 'font-medium')}>{titleOf(item)}</div>
       {item.body && <p className="mt-1 text-[13px] text-muted-foreground">{item.body}</p>}
       {item.paused && (
         <p className="mt-1 flex items-center gap-1.5 text-[12px]">
@@ -153,8 +106,8 @@ function InboxRow({ item, answering, selected }: { item: Item; answering?: boole
 
 function InboxList({ state }: { state: string }) {
   const filters = [
-    { id: 'open', label: 'Offen', n: state === 'empty' ? 0 : 2 },
-    { id: 'all', label: 'Alles Neue', n: state === 'empty' ? 0 : 6 },
+    { id: 'open', label: 'Offen', n: state === 'empty' ? 0 : inboxOpen.length },
+    { id: 'all', label: 'Alles Neue', n: state === 'empty' ? 0 : inboxOpen.length + inboxFyi.length },
     { id: 'approval', label: 'Freigaben' },
     { id: 'question', label: 'Fragen' },
     { id: 'agents', label: 'Hintergrund-Agents' },
@@ -163,7 +116,7 @@ function InboxList({ state }: { state: string }) {
   ]
   const active = state === 'done' ? 'done' : 'all'
   return (
-    <AppLayout nav="inbox" sessionList={false}>
+    <AppLayout nav="inbox" sessionList={false} inboxCount={state === 'empty' ? 0 : undefined}>
       <F id="UX-001" className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-border px-6 py-3">
           <h1 className="type-wide text-xl font-[700]">Inbox</h1>
@@ -194,13 +147,13 @@ function InboxList({ state }: { state: string }) {
             </div>
           ) : state === 'done' ? (
             <div className="mx-auto max-w-3xl divide-y divide-border px-6 py-4">
-              {DONE.map((d) => {
+              {inboxDone.map((d) => {
                 const K = KIND[d.kind]
                 return (
                   <div key={d.id} className="flex items-start gap-3 py-3">
                     <K.icon className="mt-0.5 size-4 text-muted-foreground" />
                     <div className="min-w-0 flex-1">
-                      <div className="text-[13px]">{d.title}</div>
+                      <div className="text-[13px]">{titleOf(d)}</div>
                       <div className="text-[12px] text-muted-foreground">
                         {d.session} · {d.when}
                       </div>
@@ -212,13 +165,13 @@ function InboxList({ state }: { state: string }) {
             </div>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-2 px-6 py-4">
-              <div className="text-[12px] font-medium text-muted-foreground">Du bist dran · 2</div>
-              {OPEN.map((it, i) => (
+              <div className="text-[12px] font-medium text-muted-foreground">Du bist dran · {inboxOpen.length}</div>
+              {inboxOpen.map((it, i) => (
                 <InboxRow key={it.id} item={it} answering={state === 'answering' && it.kind === 'question'} selected={i === 0 && state !== 'answering'} />
               ))}
-              <div className="mt-4 text-[12px] font-medium text-muted-foreground">Zur Info · 4</div>
+              <div className="mt-4 text-[12px] font-medium text-muted-foreground">Zur Info · {inboxFyi.length}</div>
               <div className="divide-y divide-border rounded-md border border-border">
-                {FYI.map((it) => (
+                {inboxFyi.map((it) => (
                   <InboxRow key={it.id} item={it} />
                 ))}
               </div>

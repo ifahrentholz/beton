@@ -4,7 +4,7 @@ import { HarnessBadge, StatusMark, VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { harnesses, projects, sessions } from '@/mock/data'
+import { harnesses, inboxWaitingCount, projects, sessions } from '@/mock/data'
 
 /* ───────────────────────── Mobile-Rahmen der PWA ───────────────────────── */
 
@@ -17,8 +17,11 @@ function MobileShell({
   action,
   noTabs,
   footer,
+  inboxCount = inboxWaitingCount,
 }: {
   footer?: ReactNode
+  /** Zähler am Inbox-Tab; Standard: offene Freigaben und Fragen aus den Beispieldaten. */
+  inboxCount?: number
   title: ReactNode
   back?: string
   tab?: 'sessions' | 'inbox' | 'more'
@@ -45,13 +48,13 @@ function MobileShell({
         <div className="flex h-14 shrink-0 items-start justify-around border-t border-border bg-sidebar pt-1.5">
           {[
             { id: 'sessions', label: 'Sessions', icon: MessagesSquare },
-            { id: 'inbox', label: 'Inbox', icon: Inbox, badge: 2 },
+            { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount },
             { id: 'more', label: 'Mehr', icon: MoreHorizontal },
           ].map((t) => (
             <button key={t.id} className={cn('relative flex w-20 flex-col items-center gap-0.5 text-[10px]', t.id === tab ? 'text-foreground' : 'text-muted-foreground')} aria-current={t.id === tab ? 'page' : undefined}>
               <t.icon className="size-5" />
               {t.label}
-              {t.badge && <span className="chamfer-sm absolute -top-0.5 right-5 min-w-4 bg-signal px-0.5 text-center text-[10px] leading-4 font-semibold text-signal-foreground">{t.badge}</span>}
+              {t.badge ? <span className="chamfer-sm absolute -top-0.5 right-5 min-w-4 bg-signal px-0.5 text-center text-[10px] leading-4 font-semibold text-signal-foreground">{t.badge}</span> : null}
             </button>
           ))}
         </div>
@@ -263,7 +266,7 @@ function MobileApproval({ state }: { state: string }) {
 
 function MobileInbox({ state }: { state: string }) {
   return (
-    <MobileShell title="Inbox" tab="inbox">
+    <MobileShell title="Inbox" tab="inbox" inboxCount={state === 'empty' ? 0 : undefined}>
       <F id={['UX-001', 'WEB-013']}>
         {state === 'empty' ? (
           <div className="flex flex-col items-center gap-2 px-6 pt-24 text-center">
@@ -273,7 +276,7 @@ function MobileInbox({ state }: { state: string }) {
           </div>
         ) : (
           <>
-            <div className="px-3 pt-3 pb-1 text-[12px] font-medium text-muted-foreground">Du bist dran · 2</div>
+            <div className="px-3 pt-3 pb-1 text-[12px] font-medium text-muted-foreground">Du bist dran · {inboxWaitingCount}</div>
             {[
               { k: 'Freigabe', t: 'git push -u origin beton/rate-limiter-7f3k', s: 'Rate-Limiter für die Login-API', w: '3 Min.', mono: true },
               { k: 'Frage', t: 'ESLint 10 bricht 3 Regeln – anpassen oder bei 9 bleiben?', s: 'Nächtliches Dependency-Update · pausiert', w: '41 Min.' },
