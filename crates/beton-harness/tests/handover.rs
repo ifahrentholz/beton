@@ -78,6 +78,7 @@ impl Log {
             mcp_server: None,
             args,
             source: ToolSource::Harness,
+            parent_call_id: None,
         }));
         self.push(EventPayload::ToolCallCompleted(ToolCallCompleted {
             call_id,

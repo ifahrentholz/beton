@@ -168,7 +168,9 @@ pub struct ForkPlan {
     pub at_seq: u64,
     pub reason: ForkReason,
     /// Native Referenz der Quelle, nur wenn die Quelle nach `at_seq` nichts mehr enthält: Dann
-    /// kann der Vendor-Mechanismus den Verlauf exakt übernehmen (z. B. `--fork-session`).
+    /// kann der Vendor-Mechanismus den Verlauf exakt übernehmen (z. B. `--fork-session`). Bei
+    /// einer importierten Session (`resume`) die Vendor-Session, solange ihre Datei existiert
+    /// (SES-008 AC2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -199,11 +201,11 @@ impl ForkPlan {
         if caps.fork_history != ForkHistory::Rebuild || self.from_harness != target_harness {
             return HistoryChoice::Preamble;
         }
-        match (&self.native_ref, self.kind) {
-            (Some(reference), PlanKind::Fork) => HistoryChoice::Native {
+        match &self.native_ref {
+            Some(reference) => HistoryChoice::Native {
                 reference: reference.clone(),
             },
-            _ => HistoryChoice::Rebuild,
+            None => HistoryChoice::Rebuild,
         }
     }
 

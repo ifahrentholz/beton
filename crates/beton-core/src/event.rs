@@ -643,6 +643,9 @@ payload!(ToolCallRequested {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] mcp_server: Option<String>,
     args: Value,
     source: ToolSource,
+    /// Tool-Call eines Vendor-Sub-Agents: der auslösende Tool-Call (z. B. Claude `Task`), unter
+    /// dem dieser verschachtelt ist (HAR-023).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] parent_call_id: Option<String>,
 });
 payload!(ToolCallStarted {
     call_id: String,
@@ -1386,7 +1389,7 @@ mod tests {
             let ts = Timestamp::from(time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).unwrap());
             for body in [
                 EventPayload::MessageDelta(TextDelta { message_id: "msg_1".into(), text: text.clone(), snapshot: false }),
-                EventPayload::ToolCallRequested(ToolCallRequested { call_id: "c".into(), tool: "bash".into(), mcp_server: None, args: args.clone(), source: ToolSource::Harness }),
+                EventPayload::ToolCallRequested(ToolCallRequested { call_id: "c".into(), tool: "bash".into(), mcp_server: None, args: args.clone(), source: ToolSource::Harness, parent_call_id: None }),
                 EventPayload::Notice(Notice { level: NoticeLevel::Warn, text: text.clone() }),
             ] {
                 let mut e = envelope(body);

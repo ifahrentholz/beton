@@ -517,6 +517,7 @@ impl Player {
                 mcp_server: None,
                 args: call.args.clone(),
                 source: ToolSource::Harness,
+                parent_call_id: None,
             }))
             .await;
             let allowed = if step.gate {
@@ -593,6 +594,7 @@ impl Player {
                 mcp_server: Some(call.server),
                 args: call.args,
                 source: ToolSource::Harness,
+                parent_call_id: None,
             }))
             .await;
             self.last_call = Some(call_id);

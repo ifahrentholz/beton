@@ -85,7 +85,15 @@ impl Env {
             inherit.insert(k.to_owned(), v);
         }
         let runners = dir.path().join("runners");
+        // Der Import (SES-008) sucht in denselben Vendor-Verzeichnissen wie der Runner.
+        let mut vendor_env = beton_harness::HostEnv::default();
+        for (k, v) in &inherit {
+            if beton_harness::VENDOR_DIR_VARS.contains(&k.as_str()) {
+                vendor_env.vars.insert(k.clone(), v.clone());
+            }
+        }
         let daemon = start_with(cfg, store.clone(), move |mut r| {
+            r.sessions.vendor_env = vendor_env;
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -822,6 +830,102 @@ async fn har_019_ac2_imported_claude_session_resumes_via_rebuild() {
     assert_eq!(reply[1], "Weiter");
     let events = env.events(&id).await;
     assert_eq!(one(&events, "session.resumed")["payload"]["mode"], "native");
+    env.daemon.shutdown().await;
+}
+
+/// Legt eine Claude-Session wie die CLI unter `claude-config/projects/<slug>/<id>.jsonl` ab
+/// (synthetische Fixture aus HAR-023, Arbeitsverzeichnis `work`) und importiert sie.
+async fn import_claude_fixture(env: &Env, force: bool) -> (String, PathBuf) {
+    const ID: &str = "3f1c2a9e-5b7d-4c8e-9a1f-2d3e4f5a6b7c";
+    // Wie die CLI: Projektverzeichnis und `cwd` aus dem aufgelösten Pfad (`/tmp` → `/private/tmp`).
+    let work = std::fs::canonicalize(env.work()).unwrap();
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../beton-harness-claude/tests/golden/import/claude-1.0.98-interrupt-mcp/session.jsonl",
+    ))
+    .unwrap()
+    .replace("/beton-golden/workdir", &work.display().to_string());
+    let slug: String = work
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let file = write(
+        &env.path("claude-config/projects")
+            .join(slug)
+            .join(format!("{ID}.jsonl")),
+        &fixture,
+    );
+    let (status, body) = env
+        .http(
+            "POST",
+            "/v1/imports",
+            Some(json!({"harness": "claude", "refs": [ID], "force": force})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["results"][0]["status"], "imported", "{body}");
+    (
+        body["results"][0]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        file,
+    )
+}
+
+#[tokio::test]
+async fn ses_008_ac2_imported_claude_session_resumes_natively_while_the_vendor_file_exists() {
+    let env = Env::start(persisted_claude).await;
+    let (id, file) = import_claude_fixture(&env, false).await;
+    let before = std::fs::read(&file).unwrap();
+    let reply = env.turn(&id, "Weiter").await;
+    // Die CLI lädt die Vendor-Datei selbst: Auch der Abbruch-Marker, den der Import nicht als
+    // Nachricht übernimmt, ist im Verlauf.
+    assert_eq!(
+        reply[0],
+        "Der Test payment_spec ist flaky. Schau bitte nach.\n[Request interrupted by user]\n\
+         Nimm stattdessen Issue 42 als Ausgangspunkt."
+    );
+    assert_eq!(reply[1], "Weiter");
+    let events = env.events(&id).await;
+    assert_eq!(one(&events, "session.resumed")["payload"]["mode"], "native");
+    assert!(of_type(&events, "session.forked").is_empty());
+    // `--fork-session`: Die Vendor-Datei bleibt unverändert.
+    assert_eq!(std::fs::read(&file).unwrap(), before);
+    env.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_008_ac2_without_the_vendor_file_the_session_continues_via_rebuild_or_handover() {
+    let env = Env::start(persisted_claude).await;
+    // Datei weg: Rebuild aus dem Event-Log (ohne den Abbruch-Marker).
+    let (id, file) = import_claude_fixture(&env, false).await;
+    std::fs::remove_file(&file).unwrap();
+    let reply = env.turn(&id, "Weiter").await;
+    assert_eq!(
+        reply[0],
+        "Der Test payment_spec ist flaky. Schau bitte nach.\n\
+         Nimm stattdessen Issue 42 als Ausgangspunkt."
+    );
+    assert_eq!(
+        one(&env.events(&id).await, "session.resumed")["payload"]["mode"],
+        "native"
+    );
+
+    // Datei weg und das Projektverzeichnis nicht beschreibbar: Handover per Präambel.
+    let (id, file) = import_claude_fixture(&env, true).await;
+    let dir = file.parent().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::write(&dir, "kein Verzeichnis").unwrap();
+    let reply = env.turn(&id, "Weiter").await;
+    assert!(
+        reply.last().unwrap().starts_with("[beton · Übergabe]"),
+        "{reply:?}"
+    );
+    assert_eq!(
+        one(&env.events(&id).await, "session.resumed")["payload"]["mode"],
+        "handover"
+    );
     env.daemon.shutdown().await;
 }
 

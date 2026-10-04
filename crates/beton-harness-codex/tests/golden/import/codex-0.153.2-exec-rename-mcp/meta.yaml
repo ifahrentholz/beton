@@ -1,0 +1,5 @@
+cli_version: 0.153.2
+session_id: 019a7c3e-1f2a-7b3c-9d4e-5f6a7b8c9d0e
+file: sessions/2026/10/03/rollout-2026-10-03T08-15-22-019a7c3e-1f2a-7b3c-9d4e-5f6a7b8c9d0e.jsonl
+scenario: exec_command, apply_patch mit Umbenennung und Löschung, update_plan, MCP-Tool, Kontext-Einschübe
+recorded_with: synthetisch nach Spec und App-Server-Typen (gegen die echte CLI zu prüfen)

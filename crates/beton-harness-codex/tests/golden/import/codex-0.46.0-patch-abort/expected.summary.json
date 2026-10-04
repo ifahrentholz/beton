@@ -1,0 +1,16 @@
+{
+  "cli_version": "0.46.0",
+  "cwd": "<workdir>",
+  "model": "gpt-5-codex",
+  "native_session_ref": "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+  "started_at": "2026-09-30T08:15:22.100Z",
+  "title": "Stabilisiere den flaky payment_spec.",
+  "updated_at": "2026-09-30T08:16:41.000Z",
+  "warnings": [
+    {
+      "count": 1,
+      "detail": "1 unbekannte(r) Eintrag/Einträge als Rohdaten übernommen",
+      "kind": "unmapped"
+    }
+  ]
+}

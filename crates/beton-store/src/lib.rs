@@ -11,6 +11,7 @@ mod blobs;
 mod error;
 mod events;
 mod idempotency;
+mod imports;
 mod listing;
 #[cfg(test)]
 mod listing_tests;
@@ -32,6 +33,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 pub use crate::blobs::{BlobStore, DEFAULT_MAX_BLOB_BYTES, GC_GRACE, GcReport};
 pub use crate::error::{Error, Result};
 pub use crate::idempotency::{IDEMPOTENCY_TTL, StoredResponse};
+pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
 pub use crate::projections::{ApprovalRecord, UsageRecord};
