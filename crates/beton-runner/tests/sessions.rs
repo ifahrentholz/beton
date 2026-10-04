@@ -933,14 +933,22 @@ async fn session_list_delta_contains_only_changed_sessions() {
         .http("GET", &format!("/v1/sessions?updated_after={since}"), None)
         .await;
     assert_eq!(status, 200, "{delta}");
-    let ids: Vec<&str> = delta["items"]
-        .as_array()
-        .unwrap()
+    // Nur geänderte Sessions: a (archiviert) ist dabei; jede gelieferte Session hat sich nach
+    // `since` geändert. b darf auftauchen, wenn nach dem Listenabruf noch ein spätes Event
+    // (z. B. Usage nach Turn-Ende) ihre Aktivität fortgeschrieben hat.
+    let items = delta["items"].as_array().unwrap();
+    let archived = items
         .iter()
-        .map(|s| s["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(ids, vec![a.as_str()], "{delta}");
-    assert_eq!(delta["items"][0]["archived"], true);
+        .find(|s| s["id"] == a.as_str())
+        .unwrap_or_else(|| panic!("archivierte Session fehlt: {delta}"));
+    assert_eq!(archived["archived"], true);
+    for s in items {
+        assert!(
+            s["last_activity_at"].as_str().unwrap() > since.as_str(),
+            "unverändert geliefert: {s}"
+        );
+    }
+    assert!(items.len() <= 2, "{delta}");
     let (status, _) = d
         .http("GET", "/v1/sessions?updated_after=gestern", None)
         .await;
