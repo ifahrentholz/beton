@@ -117,6 +117,16 @@ pub async fn start_with(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
     let store_for_tunnel = store.clone();
+    // Für System-Tools aus Runnern (`system.call`, AGT-007).
+    let system_state = crate::app::AppState {
+        store: store.clone(),
+        local,
+        logins: logins.clone(),
+        primary_host: primary_host.clone(),
+        openapi_json: Arc::default(),
+        runtime: runtime.clone(),
+        web_dir: None,
+    };
     let router = app::build(AppParts {
         store,
         local,
@@ -157,6 +167,7 @@ pub async fn start_with(
             local,
             runners: runtime.runners.clone(),
             config: runtime.tunnel,
+            system: Some(Arc::new(crate::sessions::ServerSystemCalls(system_state))),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

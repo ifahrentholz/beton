@@ -22,6 +22,7 @@ beton-harness-claude.workspace = true
 beton-harness-codex.workspace = true
 beton-harness-acp.workspace = true
 beton-host.workspace = true
+beton-mcp.workspace = true
 beton-runner.workspace = true
 beton-sdk.workspace = true
 beton-server.workspace = true

@@ -94,6 +94,8 @@ pub struct RunnerBoot {
     pub resume: Option<String>,
     /// `harnesses:` aus User- und Projekt-Konfiguration (HAR-003, HAR-015).
     pub harnesses: beton_harness::registry::HarnessLayers,
+    /// Agent der Session; bestimmt MCP-Server, System-Tools und Skills (HAR-009).
+    pub agent_ref: Option<String>,
 }
 
 /// Laufender Runner.
@@ -222,6 +224,7 @@ macro_rules! runner_provider_contract {
                     dev: true,
                     resume: None,
                     harnesses: Default::default(),
+                    agent_ref: None,
                 }
             }
 
