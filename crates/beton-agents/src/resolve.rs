@@ -307,6 +307,89 @@ impl SearchPath {
     }
 }
 
+/// Projektverzeichnis für `cwd` wie bei `.beton/config.yaml` (CLI-008): das nächste
+/// Verzeichnis aufwärts mit `.beton/config.yaml`, sonst die Git-Wurzel, sonst `cwd`.
+/// `beton_home` (`~/.beton`) zählt nicht als Projekt.
+pub fn project_root(cwd: &Path, beton_home: &Path) -> PathBuf {
+    let mut git_root = None;
+    for dir in cwd.ancestors() {
+        let candidate = dir.join(".beton");
+        if candidate != beton_home && candidate.join("config.yaml").is_file() {
+            return dir.to_path_buf();
+        }
+        if git_root.is_none() && dir.join(".git").exists() {
+            git_root = Some(dir.to_path_buf());
+        }
+    }
+    git_root.unwrap_or_else(|| cwd.to_path_buf())
+}
+
+impl SearchPath {
+    /// Suchpfad eines Starts in `cwd`: Projekt (siehe [`project_root`]), User, Built-ins.
+    pub fn for_cwd(cwd: &Path, beton_home: &Path, builtins: Builtins) -> Self {
+        Self {
+            project: Some(project_root(cwd, beton_home).join(".beton").join("agents")),
+            user: Some(beton_home.join("agents")),
+            builtins,
+        }
+    }
+}
+
+/// Löst den `ref` eines Sub-Agents relativ zum Verzeichnis des verweisenden Agents auf:
+/// relative Pfade im selben Baum, absolute Pfade im Dateisystem, Namen und `builtin:<name>`
+/// unter den Built-ins. In einem Snapshot gelten nur die darin festgehaltenen Verweise.
+pub fn resolve_subagent(
+    owner: &AgentDir,
+    reference: &str,
+    builtins: &Builtins,
+) -> Result<AgentDir, String> {
+    if let AgentDir::Snapshot {
+        files,
+        prefix,
+        refs,
+    } = owner
+        && let Some(target) = refs.get(&format!("{prefix}|{reference}"))
+    {
+        return Ok(AgentDir::Snapshot {
+            files: files.clone(),
+            prefix: target.clone(),
+            refs: refs.clone(),
+        });
+    }
+    let found = match AgentRef::parse(reference)? {
+        AgentRef::Path(p) if p.is_relative() => {
+            let rel = p.to_string_lossy().replace('\\', "/");
+            owner
+                .join(&rel)
+                .ok_or_else(|| format!("{reference} liegt außerhalb des Agents"))?
+        }
+        _ if matches!(owner, AgentDir::Snapshot { .. }) => {
+            return Err(format!("{reference} fehlt im Agent-Snapshot"));
+        }
+        other => {
+            let search = SearchPath {
+                project: None,
+                user: None,
+                builtins: builtins.clone(),
+            };
+            let base = match owner {
+                AgentDir::Fs(d) => d.clone(),
+                _ => PathBuf::from("."),
+            };
+            search
+                .resolve(&other, &base)
+                .map_err(|e| e.to_string())?
+                .dir
+        }
+    };
+    if !found.has_agent_yaml() {
+        return Err(format!(
+            "{reference}: kein Agent-Verzeichnis mit agent.yaml"
+        ));
+    }
+    Ok(found)
+}
+
 /// `~/x` → `$HOME/x`.
 fn expand_home(path: &Path) -> PathBuf {
     if let Ok(rest) = path.strip_prefix("~")

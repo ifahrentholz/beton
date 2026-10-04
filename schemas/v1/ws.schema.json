@@ -4745,6 +4745,13 @@
         "by": {
           "$ref": "#/$defs/PrincipalId"
         },
+        "reason": {
+          "description": "Warum, wenn nicht auf Wunsch eines Menschen: `timed_out` (`executor.timeout`, AGT-004).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "turn_id": {
           "$ref": "#/$defs/TurnId"
         }

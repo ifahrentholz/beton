@@ -178,6 +178,7 @@ impl SystemServer {
                         "properties": {
                             "agent": {"type": "string", "enum": names},
                             "prompt": {"type": "string", "description": "Auftrag an den Sub-Agent."},
+                            "params": {"type": "object", "description": "Parameter des Sub-Agents (AGT-010), z. B. {\"branch\": \"main\"}."},
                             "async": {"type": "boolean", "description": "Nur `false` (Default); asynchrone Childs folgen mit ASY-002."}
                         },
                         "required": ["agent", "prompt"]

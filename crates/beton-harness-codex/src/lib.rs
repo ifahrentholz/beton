@@ -135,6 +135,8 @@ pub fn capabilities() -> Capabilities {
         efforts: vec!["low".into(), "medium".into(), "high".into()],
         // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
         context_window: Some(272_000),
+        // Codex liest `AGENTS.md` selbst, `CLAUDE.md` nicht (AGT-005).
+        native_project_files: vec!["AGENTS.md".into()],
     }
 }
 
@@ -503,7 +505,14 @@ async fn handshake(
             params["threadId"] = json!(thread);
             "thread/resume"
         }
-        None => "thread/start",
+        None => {
+            // Agent-Instructions als Developer-Instructions des Threads (AGT-005); ein
+            // fortgesetzter Thread hat sie schon in seinem Verlauf.
+            if let Some(text) = &spec.instructions {
+                params["developerInstructions"] = json!(text);
+            }
+            "thread/start"
+        }
     };
     let result = match rpc.request_timeout(method, params, timeout).await {
         Ok(v) => v,

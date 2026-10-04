@@ -83,6 +83,16 @@ pub fn system_prompt(workdir: &str) -> String {
     )
 }
 
+/// System-Prompt mit den Instructions des Agents (`instructions_delivery: system_prompt`,
+/// AGT-005): einmal am Ende, bei jedem Request derselbe Text.
+pub fn system_prompt_with(workdir: &str, instructions: Option<&str>) -> String {
+    let base = system_prompt(workdir);
+    match instructions {
+        Some(i) if !i.trim().is_empty() => format!("{base}\n\n{i}"),
+        _ => base,
+    }
+}
+
 const SUMMARY_SYSTEM: &str = "Du fasst den bisherigen Verlauf einer Coding-Session für dich selbst zusammen, damit die Arbeit ohne den vollständigen Verlauf weitergehen kann. Nenne Ziel, getroffene Entscheidungen, geänderte Dateien, wichtige Ergebnisse von Tools und offene Schritte. Keine Einleitung.";
 const SUMMARY_REQUEST: &str = "Fasse den bisherigen Verlauf zusammen.";
 const SUMMARY_PREFIX: &str = "[Zusammenfassung des bisherigen Verlaufs (Compaction)]";
@@ -888,6 +898,7 @@ async fn run_turn(
                     EventPayload::TurnInterrupted(TurnInterrupted {
                         turn_id: turn,
                         by: PrincipalId::User(UserId::LOCAL),
+                        reason: None,
                     }),
                     Some(turn),
                 )

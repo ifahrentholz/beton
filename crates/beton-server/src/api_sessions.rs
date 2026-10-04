@@ -41,8 +41,23 @@ async fn summary_of(state: &AppState, id: SessionId) -> Result<SessionSummary, P
 
 #[derive(Debug, Deserialize, ToSchema, TS)]
 pub struct CreateSessionRequest {
-    /// Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`.
-    pub target: String,
+    /// Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`. Mit `agent` optional: dann
+    /// ein Override von `executor.harness`, vermerkt in `agent.resolved.overrides` (AGT-004).
+    #[serde(default)]
+    #[ts(optional)]
+    pub target: Option<String>,
+    /// Agent-Ref (AGT-003): Name (`pr-fixer`), Pfad (`./agents/x`) oder `builtin:<name>`. Der
+    /// Agent wird beim Start aufgelöst und als Snapshot festgehalten (`agent.resolved`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub agent: Option<String>,
+    /// Parameterwerte des Agents (AGT-010); Texte werden in den deklarierten Typ umgewandelt.
+    /// Ungültige Werte: 422 `invalid_param`; fehlende Pflichtwerte: 422 `params_required` mit
+    /// `errors[].pointer = /params/<name>`.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub params: Option<serde_json::Map<String, Value>>,
     /// Arbeitsverzeichnis (Projekt oder Worktree).
     pub cwd: String,
     #[ts(optional)]
@@ -84,8 +99,9 @@ pub struct WorktreeRequest {
 #[utoipa::path(post, path = "/v1/sessions", tag = "sessions",
     request_body = CreateSessionRequest,
     responses((status = 201, description = "Session angelegt", body = SessionSummary),
+              (status = 404, description = "Agent nicht gefunden (`agent_not_found`)", body = Problem, content_type = "application/problem+json"),
               (status = 409, description = "Worktree gewünscht, aber kein Git-Repository", body = Problem, content_type = "application/problem+json"),
-              (status = 422, description = "Base nicht auflösbar; nennt die verfügbaren Branches", body = Problem, content_type = "application/problem+json")))]
+              (status = 422, description = "Base nicht auflösbar (`base_not_found`), Agent ungültig (`agent_invalid`), Parameter ungültig (`invalid_param`) oder Pflichtparameter fehlen (`params_required`), Harness passt nicht zum Agent (`harness_incompatible`)", body = Problem, content_type = "application/problem+json")))]
 pub async fn create_session(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
@@ -97,7 +113,16 @@ pub async fn create_session(
         .create(
             user,
             CreateSession {
-                target: req.target,
+                target: match (req.target, &req.agent) {
+                    (Some(t), _) => t,
+                    (None, Some(_)) => String::new(),
+                    (None, None) => {
+                        return Err(Problem::new(ProblemCode::ValidationFailed)
+                            .detail("`target` (Harness) oder `agent` fehlt"));
+                    }
+                },
+                agent: req.agent,
+                params: req.params.unwrap_or_default().into_iter().collect(),
                 cwd: req.cwd,
                 title: req.title,
                 model: req.model,

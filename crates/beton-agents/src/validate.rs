@@ -236,7 +236,7 @@ impl Run<'_, '_> {
             self.check_executor(e, here, &key(base, "executor"));
         }
         if let Some(i) = b.instructions {
-            self.check_instructions(i, here, &key(base, "instructions"));
+            self.check_instructions(i, b.params, here, &key(base, "instructions"));
         }
         self.check_params(b.params, here, &key(base, "params"));
         if let Some(t) = b.tools {
@@ -351,7 +351,52 @@ impl Run<'_, '_> {
         }
     }
 
-    fn check_instructions(&mut self, i: &Instructions, here: &Here<'_>, p: &[Seg]) {
+    fn check_instructions(
+        &mut self,
+        i: &Instructions,
+        params: &BTreeMap<String, Param>,
+        here: &Here<'_>,
+        p: &[Seg],
+    ) {
+        // Template-Ausdrücke nur in `append` (AGT-001 Details, AGT-010).
+        if let Some(text) = &i.text
+            && crate::template::has_expressions(text)
+        {
+            self.error(
+                here,
+                &key(p, "text"),
+                code::INVALID_VALUE,
+                "Template-Ausdrücke ({{ … }}) gibt es nur in instructions.append, prompt und \
+                 Schedule-Feldern"
+                    .into(),
+            );
+        }
+        if let Some(append) = &i.append {
+            for expr in crate::template::expressions(append) {
+                match expr {
+                    crate::template::Expr::Param(name) if !params.contains_key(&name) => {
+                        self.error(
+                            here,
+                            &key(p, "append"),
+                            code::INVALID_PARAM,
+                            format!(
+                                "{{{{ params.{name} }}}}: Parameter „{name}“ ist nicht deklariert"
+                            ),
+                        );
+                    }
+                    crate::template::Expr::Unknown(e) => self.error(
+                        here,
+                        &key(p, "append"),
+                        code::INVALID_VALUE,
+                        format!(
+                            "{{{{ {e} }}}}: unbekannter Ausdruck (erlaubt: params.<name>, now, \
+                             trigger.payload.<pfad>)"
+                        ),
+                    ),
+                    _ => {}
+                }
+            }
+        }
         if i.file.is_some() && i.text.is_some() {
             self.error(
                 here,
@@ -418,9 +463,14 @@ impl Run<'_, '_> {
                 ),
             }
             if let Some(default) = &param.default
-                && let Some(problem) = default_problem(param, default)
+                && let Some(problem) = crate::params::value_problem(param, default)
             {
-                self.error(here, &key(&pp, "default"), code::INVALID_PARAM, problem);
+                self.error(
+                    here,
+                    &key(&pp, "default"),
+                    code::INVALID_PARAM,
+                    format!("Default: {problem}"),
+                );
             }
         }
     }
@@ -510,7 +560,7 @@ impl Run<'_, '_> {
                 let found = if path.is_absolute() {
                     match here.dir {
                         AgentDir::Fs(_) => Some(AgentDir::Fs(path.clone())),
-                        AgentDir::Builtin { .. } => None,
+                        AgentDir::Builtin { .. } | AgentDir::Snapshot { .. } => None,
                     }
                 } else {
                     here.dir.join(&path.to_string_lossy())
@@ -611,30 +661,6 @@ impl Run<'_, '_> {
             }
         }
     }
-}
-
-fn default_problem(param: &Param, default: &Value) -> Option<String> {
-    let type_ok = match param.kind {
-        ParamType::String => default.is_string(),
-        ParamType::Integer => default.is_i64() || default.is_u64(),
-        ParamType::Number => default.is_number(),
-        ParamType::Boolean => default.is_boolean(),
-        ParamType::Enum => default
-            .as_str()
-            .is_some_and(|s| param.values.iter().any(|v| v == s)),
-    };
-    if !type_ok {
-        let kind = serde_json::to_value(param.kind).unwrap_or(Value::Null);
-        let kind = kind.as_str().unwrap_or_default();
-        return Some(format!("Default {default} passt nicht zu type: {kind}"));
-    }
-    let n = default.as_f64()?;
-    if param.minimum.is_some_and(|min| n < min) || param.maximum.is_some_and(|max| n > max) {
-        return Some(format!(
-            "Default {default} liegt außerhalb von minimum/maximum"
-        ));
-    }
-    None
 }
 
 impl Validator<'_> {

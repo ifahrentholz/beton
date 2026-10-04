@@ -3,9 +3,21 @@ import type { WorktreeRequest } from "./WorktreeRequest";
 
 export type CreateSessionRequest = { 
 /**
- * Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`.
+ * Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`. Mit `agent` optional: dann
+ * ein Override von `executor.harness`, vermerkt in `agent.resolved.overrides` (AGT-004).
  */
-target: string, 
+target?: string, 
+/**
+ * Agent-Ref (AGT-003): Name (`pr-fixer`), Pfad (`./agents/x`) oder `builtin:<name>`. Der
+ * Agent wird beim Start aufgelöst und als Snapshot festgehalten (`agent.resolved`).
+ */
+agent?: string, 
+/**
+ * Parameterwerte des Agents (AGT-010); Texte werden in den deklarierten Typ umgewandelt.
+ * Ungültige Werte: 422 `invalid_param`; fehlende Pflichtwerte: 422 `params_required` mit
+ * `errors[].pointer = /params/<name>`.
+ */
+params?: Record<string, unknown>, 
 /**
  * Arbeitsverzeichnis (Projekt oder Worktree).
  */

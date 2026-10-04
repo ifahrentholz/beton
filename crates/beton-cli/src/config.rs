@@ -211,18 +211,8 @@ impl Paths {
 /// Nächstes `.beton/config.yaml` ab `cwd` aufwärts; das Datenverzeichnis selbst zählt nicht.
 /// Ohne Treffer: `<Git-Wurzel oder cwd>/.beton/config.yaml`.
 fn project_file(cwd: &Path, beton_home: &Path) -> PathBuf {
-    let mut git_root = None;
-    for dir in cwd.ancestors() {
-        let candidate = dir.join(".beton");
-        if candidate != beton_home && candidate.join("config.yaml").is_file() {
-            return candidate.join("config.yaml");
-        }
-        if git_root.is_none() && dir.join(".git").exists() {
-            git_root = Some(dir.to_path_buf());
-        }
-    }
-    git_root
-        .unwrap_or_else(|| cwd.to_path_buf())
+    // Dasselbe Projekt, in dem der Server Agents sucht (AGT-003, AGT-004).
+    beton_agents::resolve::project_root(cwd, beton_home)
         .join(".beton")
         .join("config.yaml")
 }

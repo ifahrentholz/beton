@@ -119,6 +119,8 @@ impl Runtime {
                 snapshots_root: std::env::temp_dir().join("beton-snapshots"),
                 forks_root: std::env::temp_dir().join("beton-forks"),
                 fresh_root: std::env::temp_dir().join("beton-workspaces"),
+                agent_snapshots_root: std::env::temp_dir().join("beton-agent-snapshots"),
+                beton_home: std::env::temp_dir().join("beton-home"),
                 vendor_env: beton_harness::HostEnv::from_process(),
                 import_lock: Arc::default(),
                 skill_paths: crate::session_skills::SkillPaths::from_process(),
@@ -150,7 +152,12 @@ impl Runtime {
         r.sessions.snapshots_root = config.data_dir.join("snapshots");
         r.sessions.forks_root = config.data_dir.join("forks");
         r.sessions.fresh_root = config.data_dir.join("workspaces");
-        r.sessions.skill_paths.beton_home = config.data_dir.clone();
+        r.sessions.agent_snapshots_root = config.data_dir.join("agent-snapshots");
+        r.sessions.beton_home.clone_from(&config.data_dir);
+        r.sessions
+            .skill_paths
+            .beton_home
+            .clone_from(&config.data_dir);
         r
     }
 }

@@ -31,6 +31,7 @@ fn record(path: Option<&std::path::Path>, stdin_bytes: usize) {
         return;
     };
     let line = json!({
+        "source": "one_shot",
         "argv": std::env::args().skip(1).collect::<Vec<_>>(),
         "api_key_vars": api_key_vars(),
         "stdin_bytes": stdin_bytes,

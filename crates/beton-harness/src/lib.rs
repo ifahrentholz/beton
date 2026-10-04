@@ -23,6 +23,7 @@ pub use crate::adapter::{
     HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment, McpInjection,
     McpLaunch, Mode, NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport,
     RebuildRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
+    prefix_instructions,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,

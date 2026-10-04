@@ -56,6 +56,8 @@ pub mod env {
     pub const HARNESSES: &str = "BETON_RUNNER_HARNESSES";
     /// Agent der Session (`agent_ref`); bestimmt Tools, System-Tools und Skills (HAR-009).
     pub const AGENT_REF: &str = "BETON_AGENT_REF";
+    /// Agent-Snapshot der Session als JSON-Datei (AGT-004); hat Vorrang vor `AGENT_REF`.
+    pub const AGENT_SNAPSHOT: &str = "BETON_AGENT_SNAPSHOT";
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub const SNAPSHOTS: &str = "BETON_SNAPSHOTS";
     /// Fork-Plan als JSON-Datei (HAR-018, HAR-019).
@@ -83,6 +85,8 @@ pub struct RunnerBoot {
     pub harnesses: HarnessLayers,
     /// Agent-Ref der Session (AGT-003), z. B. ein Pfad oder `builtin:<name>`.
     pub agent_ref: Option<String>,
+    /// Agent-Snapshot aus `agent.resolved` (AGT-004); der Runner liest den Agent nur daraus.
+    pub agent_snapshot: Option<PathBuf>,
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub snapshots: Option<PathBuf>,
     /// API-Keys für `api_key_env` (HAR-011): kommen als zweite stdin-Zeile vom Daemon, nie
@@ -149,6 +153,9 @@ impl RunnerBoot {
                 Err(_) => HarnessLayers::default(),
             },
             agent_ref: std::env::var(env::AGENT_REF).ok().filter(|r| !r.is_empty()),
+            agent_snapshot: std::env::var_os(env::AGENT_SNAPSHOT)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
             snapshots: std::env::var_os(env::SNAPSHOTS)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
@@ -258,7 +265,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         tracing::warn!("Konfiguration: Provider übersprungen: {p}");
     }
     match run(boot, registry).await {
-        Ok(Exit::Stopped | Exit::ParentGone) => ExitCode::SUCCESS,
+        Ok(Exit::Stopped | Exit::ParentGone | Exit::TimedOut) => ExitCode::SUCCESS,
         Ok(Exit::HarnessExited { code }) => {
             ExitCode::from(u8::try_from(code.unwrap_or(1)).unwrap_or(1))
         }
@@ -371,6 +378,8 @@ pub enum Exit {
     HarnessExited { code: Option<i32> },
     /// Elternprozess (Daemon) ist weg.
     ParentGone,
+    /// `executor.timeout` des Agents abgelaufen (AGT-004 AC3).
+    TimedOut,
 }
 
 #[cfg(unix)]
@@ -458,7 +467,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let actor = Actor::Agent {
         id: None,
         harness: boot.harness.to_string(),
-        agent_ref: None,
+        agent_ref: boot.agent_ref.clone(),
     };
     let mut lifecycle = Lifecycle::new(boot.runner_id);
     let mut pending_status: Vec<Event> = Vec::new();
@@ -505,6 +514,26 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
+    // Agent aus dem Snapshot (AGT-004); ohne lesbaren Snapshot startet die Session nicht.
+    let snapshot = match &boot.agent_snapshot {
+        Some(path) => match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| beton_agents::AgentSnapshot::from_bytes(&b).map_err(|e| e.to_string()))
+        {
+            Ok(s) => Some(s),
+            Err(e) => {
+                let e = beton_harness::HarnessError::StartRefused(format!("Agent-Snapshot: {e}"));
+                report_start_failure(&boot, &e).await;
+                return Err(e.into());
+            }
+        },
+        None => None,
+    };
+    let source = match (&snapshot, &boot.agent_ref) {
+        (Some(s), _) => mcp::AgentSource::Snapshot(s),
+        (None, Some(r)) => mcp::AgentSource::Ref(r),
+        (None, None) => mcp::AgentSource::None,
+    };
     let setup = match caps.as_ref() {
         Some(caps) => {
             mcp::prepare(
@@ -512,7 +541,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 &boot.harness,
                 caps,
                 &boot.workdir,
-                boot.agent_ref.as_deref(),
+                source,
                 &boot.harnesses,
                 &mcp::Paths::from_process(run_dir),
             )
@@ -572,6 +601,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 fork_session: forked.fork_session,
                 mcp: setup.injection.clone(),
                 max_turns: setup.max_turns,
+                instructions: setup.instructions.clone(),
                 ..SessionSpec::default()
             },
             ctx,
@@ -679,6 +709,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
+    // `executor.timeout` (AGT-004 AC3): Wanduhr ab dem ersten Turn dieses Runs. Danach wird der
+    // laufende Turn unterbrochen und der Run endet mit `timed_out`.
+    let run_timeout = setup.timeout;
+    let mut deadline: Option<tokio::time::Instant> = None;
+    let mut timed_out = false;
+    // Reagiert der Harness nicht auf den Interrupt, endet der Run nach dieser Frist trotzdem.
+    let mut force_end: Option<tokio::time::Instant> = None;
 
     loop {
         // (Wieder-)Verbinden.
@@ -751,7 +788,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     }
                     let mut batch = Vec::with_capacity(incoming.len() + 4);
                     let mut exited = None;
-                    for ev in incoming {
+                    let mut run_over = false;
+                    for mut ev in incoming {
+                        if timed_out && let EventPayload::TurnInterrupted(t) = &mut ev.payload {
+                            t.reason = Some(TIMED_OUT.into());
+                        }
+                        if deadline.is_none()
+                            && let (Some(limit), EventPayload::TurnStarted(_)) = (run_timeout, &ev.payload)
+                        {
+                            deadline = Some(tokio::time::Instant::now() + limit);
+                        }
                         // `mcp.server_failed` je Server nur einmal (Hub und Harness melden beide).
                         if let EventPayload::McpServerFailed(f) = &ev.payload
                             && !reported_failures.insert(f.name.clone())
@@ -807,6 +853,17 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if let Some(st) = next_status {
                             tracker.set(&boot, st, &mut batch);
                         }
+                        if done && timed_out {
+                            run_over = true;
+                            break;
+                        }
+                    }
+                    if run_over {
+                        end_timed_out(&boot, &mut lifecycle, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        let _ = session.shutdown(Shutdown::Graceful { timeout: Duration::from_secs(5) }).await;
+                        return Ok(Exit::TimedOut);
                     }
                     if let Some(x) = &exited {
                         // RUN-003 AC3 / HAR-001 AC1: Absturz → Runner failed, Session failed.
@@ -916,6 +973,36 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         break None;
                     }
                 }
+                () = sleep_until_opt(deadline), if !timed_out => {
+                    timed_out = true;
+                    let limit = run_timeout.unwrap_or_default();
+                    let mut batch = vec![system_event(&boot, EventPayload::Notice(beton_core::event::Notice {
+                        level: beton_core::event::NoticeLevel::Warn,
+                        text: format!("Zeitlimit des Agents erreicht (executor.timeout, {} s); der Run endet mit timed_out.", limit.as_secs_f64()),
+                    }))];
+                    if turn_running {
+                        if let Err(e) = session.interrupt().await {
+                            tracing::warn!("Interrupt nach Zeitlimit: {e}");
+                        }
+                        force_end = Some(tokio::time::Instant::now() + TIMEOUT_GRACE);
+                        if !push(&mut ws, &boot, &mut unacked, batch).await { break None; }
+                    } else {
+                        end_timed_out(&boot, &mut lifecycle, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        let _ = session.shutdown(Shutdown::Graceful { timeout: Duration::from_secs(5) }).await;
+                        return Ok(Exit::TimedOut);
+                    }
+                }
+                () = sleep_until_opt(force_end) => {
+                    // Der Harness hat den Turn nicht beendet: Run trotzdem beenden (fail closed).
+                    let mut batch = Vec::new();
+                    end_timed_out(&boot, &mut lifecycle, &mut batch);
+                    let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                    drain_acks(&mut ws, &mut unacked).await;
+                    let _ = session.shutdown(Shutdown::Kill).await;
+                    return Ok(Exit::TimedOut);
+                }
                 _ = parent_check.tick() => {
                     if !parent_alive(boot.parent_pid) {
                         return finish(session, Exit::ParentGone).await;
@@ -940,6 +1027,36 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             tracing::warn!("Tunnel getrennt, verbinde neu");
         }
         tokio::time::sleep(backoff.next_delay()).await;
+    }
+}
+
+/// Grund in `turn.interrupted` und `session.status`, wenn `executor.timeout` abläuft.
+pub const TIMED_OUT: &str = "timed_out";
+/// Frist für das Turn-Ende nach dem Interrupt wegen Zeitlimit.
+const TIMEOUT_GRACE: Duration = Duration::from_secs(10);
+
+/// Wartet bis `at`; ohne Zeitpunkt nie.
+async fn sleep_until_opt(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Events am Ende eines Runs mit Zeitüberschreitung: Session `stopped` mit Grund `timed_out`,
+/// Runner beendet.
+fn end_timed_out(boot: &RunnerBoot, lifecycle: &mut Lifecycle, out: &mut Vec<Event>) {
+    out.push(system_event(
+        boot,
+        EventPayload::SessionStatus(SessionStatusChanged {
+            status: SessionStatus::Stopped,
+            reason: Some(TIMED_OUT.into()),
+        }),
+    ));
+    for to in [RunnerState::Draining, RunnerState::Terminated] {
+        if let Ok(s) = lifecycle.go(to, Some(TIMED_OUT.into())) {
+            out.push(system_event(boot, EventPayload::RunnerStatus(s)));
+        }
     }
 }
 

@@ -372,6 +372,7 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         out.push(EventPayload::TurnInterrupted(TurnInterrupted {
             turn_id,
             by: PrincipalId::User(UserId::LOCAL),
+            reason: None,
         }));
     } else if v["is_error"] == true
         || v["subtype"]

@@ -439,7 +439,9 @@ async fn claude_title(env: Vec<(&str, &str)>) -> (Vec<Value>, Vec<Value>) {
     let calls: Vec<Value> = std::fs::read_to_string(&record)
         .unwrap_or_default()
         .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        // Dieselbe Datei protokolliert auch den Kontext der Session (AGT-005).
+        .filter(|v| v["source"] == "one_shot")
         .collect();
     d.daemon.shutdown().await;
     (events, calls)

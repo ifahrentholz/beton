@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+base64.workspace = true
 beton-harness.workspace = true
 hex.workspace = true
 schemars.workspace = true
