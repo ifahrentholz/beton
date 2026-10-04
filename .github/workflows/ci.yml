@@ -239,6 +239,50 @@ jobs:
             apps/web/test-results
           retention-days: 7
 
+  offline-e2e:
+    name: offline-e2e (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [isolated, sinkhole]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Daemon und Fake-CLI bauen (vor dem Namespace)
+        run: cargo build -p beton-cli -p beton-fake-cli
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - name: Web-UI bauen und Chromium installieren
+        working-directory: apps/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm exec playwright install --with-deps chromium
+          sudo apt-get install -y tcpdump
+      - name: M0-Demo im Netz-Namespace nur mit Loopback
+        # covers: QA-018 AC1
+        # covers: QA-018 AC2
+        run: scripts/offline-e2e.sh ${{ matrix.mode }}
+        env:
+          CI: "1"
+          BETON_BIN: ${{ github.workspace }}/target/debug/beton
+      - name: Mitschnitt und Playwright-Ergebnisse
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: offline-e2e-${{ matrix.mode }}
+          path: target/offline-e2e
+          retention-days: 7
+
   sdk-ts:
     name: sdk-ts
     runs-on: ubuntu-latest

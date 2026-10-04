@@ -145,3 +145,23 @@ test('PROTO-009 AC3: nach Netzabbruch keine doppelten oder fehlenden Nachrichten
   const numbers = texts.map((t) => Number(/Nachricht (\d+)/.exec(t)?.[1]))
   expect(numbers).toEqual(Array.from({ length: 20 }, (_, i) => i + 1))
 })
+
+test('QA-018 AC4: ohne Netz keine Fehlermeldung und keine Anfrage der UI nach außen', async ({ daemon, page }) => {
+  const external: string[] = []
+  page.on('request', (r) => {
+    const u = new URL(r.url())
+    if (/^(https?|wss?):$/.test(u.protocol) && !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) external.push(r.url())
+  })
+  const errors: string[] = []
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text())
+  })
+  const id = await daemon.session(`turns:\n  - expect_input: "hallo"\n    emit:\n      - { message: "Antwort ohne Netz" }\n`, 'Offline')
+  await daemon.login(page, `/s/${id}`)
+  await page.getByLabel('Nachricht').fill('hallo')
+  await page.getByLabel('Nachricht').press('Enter')
+  await expect(page.getByTestId('agent-message')).toContainText('Antwort ohne Netz')
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  expect(external).toEqual([])
+  expect(errors).toEqual([])
+})
