@@ -1,0 +1,41 @@
+# Built-in-Agent duetto (AGT-012): Debatte zweier Stimmen auf verschiedenen Harnesses.
+# yaml-language-server: $schema=../../schemas/v1/agent.schema.json
+spec_version: 1
+name: duetto
+description: >-
+  Stellt jede Frage parallel zwei Stimmen auf verschiedenen Harnesses (Claude Code und Codex)
+  und zeigt die Antworten nebeneinander. Mit /debate kritisieren sich die Stimmen gegenseitig;
+  danach fasst duetto Konsens und Dissens zusammen.
+version: 1.0.0
+
+executor:
+  harness: claude
+  permission_mode: plan
+
+instructions:
+  file: prompts/system.md
+  append: "Standardzahl der Kritikrunden für /debate ohne Angabe: {{ params.rounds }}."
+  project_files: auto
+
+params:
+  rounds:
+    type: integer
+    description: Kritikrunden je Stimme für /debate ohne Angabe (höchstens 5).
+    default: 2
+    minimum: 1
+    maximum: 5
+
+agents:
+  voce-claude: { ref: ./agents/voce-claude }
+  voce-codex:  { ref: ./agents/voce-codex }
+
+spawn:
+  agents: [voce-claude, voce-codex]
+  max_depth: 1
+  max_concurrent: 2
+  worktree: none
+
+tools:
+  system: [session_spawn, session_send, session_wait, session_status, session_list, session_cancel]
+
+skills: [debate]

@@ -3,7 +3,11 @@
 //!
 //! Der Client startet jeden übergebenen Server (bei beton immer ein Relay `beton mcp …`),
 //! führt `initialize` und `tools/list` aus und ruft Tools für den Szenario-Schritt `mcp_call`
-//! auf.
+//! auf. Argumente können frühere Ergebnisse dieses Prozesses verwenden: `"${mcp.<n>.<pfad>}"`
+//! steht für den Wert unter `<pfad>` (Punkte trennen Felder bzw. Indizes) im
+//! `structuredContent` des n-ten erfolgreichen `mcp_call` (ab 0), z. B. die `session_id` eines
+//! gestarteten Sub-Agents (AGT-009). Steht der Ausdruck allein, wird der Wert eingesetzt, sonst
+//! als Text.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -85,6 +89,8 @@ impl Conn {
 #[derive(Default)]
 pub struct Clients {
     conns: Vec<Conn>,
+    /// `structuredContent` der erfolgreichen Aufrufe in Reihenfolge.
+    results: Vec<Value>,
     /// Server, deren Start scheiterte, mit Grund.
     pub failed: Vec<(String, String)>,
 }
@@ -136,10 +142,69 @@ impl Clients {
             .iter_mut()
             .find(|c| c.name == server)
             .ok_or_else(|| format!("MCP-Server {server} nicht verbunden"))?;
-        conn.rpc(
+        let result = conn.rpc(
             "tools/call",
             json!({"name": tool, "arguments": args.clone()}),
-        )
+        )?;
+        if result["isError"] != true {
+            self.results.push(result["structuredContent"].clone());
+        }
+        Ok(result)
+    }
+
+    /// Setzt `${mcp.<n>.<pfad>}` in Argumenten ein (siehe Modul-Doku).
+    pub fn resolve(&self, args: &Value) -> Value {
+        match args {
+            Value::String(s) => self.resolve_text(s),
+            Value::Array(a) => Value::Array(a.iter().map(|v| self.resolve(v)).collect()),
+            Value::Object(m) => Value::Object(
+                m.iter()
+                    .map(|(k, v)| (k.clone(), self.resolve(v)))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    fn lookup(&self, expr: &str) -> Value {
+        let mut parts = expr.split('.');
+        let Some(n) = parts.next().and_then(|n| n.parse::<usize>().ok()) else {
+            return Value::Null;
+        };
+        let mut v = self.results.get(n).cloned().unwrap_or(Value::Null);
+        for p in parts {
+            v = match p.parse::<usize>() {
+                Ok(i) if v.is_array() => v[i].clone(),
+                _ => v[p].clone(),
+            };
+        }
+        v
+    }
+
+    fn resolve_text(&self, s: &str) -> Value {
+        if let Some(expr) = s.strip_prefix("${mcp.").and_then(|r| r.strip_suffix('}'))
+            && !expr.contains('}')
+        {
+            return self.lookup(expr);
+        }
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(start) = rest.find("${mcp.") {
+            out.push_str(&rest[..start]);
+            let tail = &rest[start + 6..];
+            let Some(end) = tail.find('}') else {
+                out.push_str(&rest[start..]);
+                rest = "";
+                break;
+            };
+            match self.lookup(&tail[..end]) {
+                Value::String(t) => out.push_str(&t),
+                other => out.push_str(&other.to_string()),
+            }
+            rest = &tail[end + 1..];
+        }
+        out.push_str(rest);
+        Value::String(out)
     }
 }
 

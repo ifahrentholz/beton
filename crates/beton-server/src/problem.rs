@@ -68,6 +68,9 @@ problem_codes! {
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
     NotAGitRepo = "not_a_git_repo", 409, "Kein Git-Repository";
+    /// Ein Sub-Agent wurde nicht gestartet (AGT-009); `detail` beginnt mit dem Grund
+    /// `max_depth`, `max_concurrent` oder `not_allowed`.
+    SpawnDenied = "spawn_denied", 409, "Sub-Agent nicht gestartet";
     /// `yolo` ohne Tool-Sandbox Stufe 2 und Egress-Proxy (HAR-027 AC1).
     SandboxRequired = "sandbox_required", 409, "Sandbox erforderlich";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";

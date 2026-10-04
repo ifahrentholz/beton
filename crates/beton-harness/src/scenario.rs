@@ -16,6 +16,9 @@
 //! Einmal-Aufrufe (SES-010, Session-Titel); ohne Angabe antwortet der Fake mit `Fake-Titel`.
 //!
 //! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
+//! `select: by_input` wählt zu jeder Eingabe den ersten noch nicht gespielten Turn mit genau
+//! dieser `expect_input` (sonst den ersten ohne `expect_input`); so bedient eine Datei mehrere
+//! Sessions desselben Harness, z. B. Parent und Sub-Agents (AGT-009).
 //! `echo_input: true` gibt die Eingabe des Turns zurück (mit einer Zeile je Anhang), `echo_history: true` die
 //! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019), `echo_settings: true`
 //! Modell, Effort und Permission-Mode, mit denen der Turn läuft (HAR-017, HAR-027).
@@ -41,6 +44,9 @@ pub struct Scenario {
     /// Fehlerinjektion der Fake-CLI auf Protokollebene (QA-002 AC3).
     #[serde(default, skip_serializing_if = "Faults::is_empty")]
     pub faults: Faults,
+    /// Wie der Turn zu einer Eingabe gewählt wird (Default: der Reihe nach).
+    #[serde(default, skip_serializing_if = "TurnSelect::is_sequential")]
+    pub select: TurnSelect,
     /// Antwort auf Einmal-Aufrufe (SES-010).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub one_shot: Option<OneShotBehavior>,
@@ -48,6 +54,57 @@ pub struct Scenario {
     pub turns: Vec<Turn>,
 }
 
+/// Auswahl des Turns zu einer Eingabe.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnSelect {
+    /// Turn n antwortet auf die n-te Eingabe.
+    #[default]
+    Sequential,
+    /// Erster noch nicht gespielter Turn mit passender `expect_input`, sonst der erste ohne.
+    ByInput,
+}
+
+impl TurnSelect {
+    pub fn is_sequential(&self) -> bool {
+        *self == Self::Sequential
+    }
+}
+
+/// Merkt sich, welche Turns eines Szenarios schon gespielt sind.
+#[derive(Debug, Clone, Default)]
+pub struct TurnCursor {
+    next: usize,
+    used: Vec<bool>,
+}
+
+impl TurnCursor {
+    /// Der Turn für `input` (siehe [`TurnSelect`]); `None`, wenn keiner mehr passt.
+    pub fn pick<'a>(&mut self, scenario: &'a Scenario, input: &str) -> Option<&'a Turn> {
+        match scenario.select {
+            TurnSelect::Sequential => {
+                let turn = scenario.turns.get(self.next);
+                self.next += 1;
+                turn
+            }
+            TurnSelect::ByInput => {
+                self.used.resize(scenario.turns.len(), false);
+                let free = |t: &(usize, &Turn), want: Option<&str>| {
+                    !self.used[t.0] && t.1.expect_input.as_deref() == want
+                };
+                let found = scenario
+                    .turns
+                    .iter()
+                    .enumerate()
+                    .find(|t| free(t, Some(input)))
+                    .or_else(|| scenario.turns.iter().enumerate().find(|t| free(t, None)));
+                let (i, turn) = found?;
+                self.used[i] = true;
+                Some(turn)
+            }
+        }
+    }
+}
 /// Verhalten bei Einmal-Aufrufen (`claude -p`, `codex exec`; SES-010).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -465,5 +522,30 @@ turns:
                 format!("turns: [{{ emit: [{{ write_file: {{ path: '{bad}', content: x }} }}] }}]");
             assert!(Scenario::from_yaml(&yaml).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn by_input_selection_serves_several_sessions_from_one_file() {
+        let s = Scenario::from_yaml(
+            "select: by_input\nturns:\n  - expect_input: b\n    emit: [{ message: B1 }]\n  - expect_input: a\n    emit: [{ message: A }]\n  - expect_input: b\n    emit: [{ message: B2 }]\n  - emit: [{ message: sonst }]\n",
+        )
+        .unwrap();
+        let text = |t: Option<&Turn>| t.and_then(|t| t.emit[0].message.clone());
+        let mut c = TurnCursor::default();
+        assert_eq!(text(c.pick(&s, "b")).as_deref(), Some("B1"));
+        assert_eq!(text(c.pick(&s, "b")).as_deref(), Some("B2"));
+        assert_eq!(text(c.pick(&s, "x")).as_deref(), Some("sonst"));
+        assert_eq!(text(c.pick(&s, "b")), None);
+        // Eine zweite Session (eigener Cursor) beginnt von vorn.
+        let mut d = TurnCursor::default();
+        assert_eq!(text(d.pick(&s, "a")).as_deref(), Some("A"));
+        // Ohne `select` der Reihe nach.
+        let seq = Scenario::from_yaml(
+            "turns: [{ emit: [{ message: eins }] }, { emit: [{ message: zwei }] }]",
+        )
+        .unwrap();
+        let mut e = TurnCursor::default();
+        assert_eq!(text(e.pick(&seq, "egal")).as_deref(), Some("eins"));
+        assert_eq!(text(e.pick(&seq, "egal")).as_deref(), Some("zwei"));
     }
 }

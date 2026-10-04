@@ -3302,6 +3302,77 @@
         }
       }
     },
+    "/v1/sessions/{id}/subagents": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Sub-Agent-Baum einer Session (AGT-009, WEB-012): die Session und alle Nachfahren mit\nHarness, Status und kumulierten Kosten.",
+        "operationId": "get_subagents",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session-Baum",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubagentTree"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/unarchive": {
       "post": {
         "tags": [
@@ -5379,6 +5450,7 @@
           "stale_epoch",
           "seq_ahead",
           "not_a_git_repo",
+          "spawn_denied",
           "sandbox_required",
           "worktree_dirty",
           "worktree_unpushed",
@@ -5907,6 +5979,133 @@
           "base_sha": {
             "type": "string",
             "description": "Commit der Base beim Anlegen."
+          }
+        }
+      },
+      "SubagentNode": {
+        "type": "object",
+        "description": "Eine Session im Sub-Agent-Baum.",
+        "required": [
+          "id",
+          "depth",
+          "title",
+          "harness",
+          "status",
+          "cost_micro",
+          "subtree_cost_micro",
+          "tokens",
+          "subtree_tokens",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Parent im Baum; fehlt an der Wurzel ohne Parent."
+          },
+          "depth": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Abstand zur angefragten Session (0 = sie selbst).",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name des Agents laut `agent.resolved`."
+          },
+          "harness": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Status der Session (`SessionStatus`)."
+          },
+          "task": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stand des aktuellen Auftrags vom Parent: `running`, `completed`, `failed`,\n`interrupted`, `cancelled`."
+          },
+          "cost_micro": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Eigene Kosten in Mikro-Einheiten (bei Subscription 0)."
+          },
+          "subtree_cost_micro": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Kosten samt aller Nachfahren."
+          },
+          "tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Eigene Tokens (Eingabe inkl. Cache plus Ausgabe).",
+            "minimum": 0
+          },
+          "subtree_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens samt aller Nachfahren.",
+            "minimum": 0
+          },
+          "auth_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`vendor_cli` (Subscription), `api_key` … laut letztem `cost.delta`."
+          },
+          "worktree": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionWorktree"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        }
+      },
+      "SubagentTree": {
+        "type": "object",
+        "description": "Session-Baum unter einer Session (WEB-012).",
+        "required": [
+          "root",
+          "nodes"
+        ],
+        "properties": {
+          "root": {
+            "type": "string",
+            "description": "Die angefragte Session."
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubagentNode"
+            },
+            "description": "Wurzel zuerst, dann nach Tiefe und Anlage."
           }
         }
       },

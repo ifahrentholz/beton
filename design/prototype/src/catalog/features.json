@@ -597,10 +597,10 @@
   "anchor": "agt-009--sub-agents-über-harness-grenzen",
   "summary": "Ein Agent kann über `session_spawn` Child-Sessions für in `agents`/`spawn.agents` deklarierte Sub-Agents starten, die auf beliebigen Harnesses laufen (Claude implementiert, Codex reviewt). Childs sind eigenständige Sessions mit `parent_session_id`, eigenem Event-Log, eigener Policy-Auswertung (Agent-Ebene des Childs) und optional eigenem Worktree.",
   "acs": [
-   "(ab M3) Ein Claude-Parent startet einen Codex-Child mit `worktree: new`; beide arbeiten in unterschiedlichen Verzeichnissen, der Child-Branch basiert auf dem Parent-HEAD.",
+   "Ein Claude-Parent startet einen Codex-Child mit `worktree: new`; beide arbeiten in unterschiedlichen Verzeichnissen, der Child-Branch basiert auf dem Parent-HEAD.",
    "`max_depth: 2` verhindert, dass ein Enkel einen weiteren Urenkel startet (`spawn_denied: max_depth`).",
    "`max_concurrent: 3`: der vierte gleichzeitige Spawn wird mit `spawn_denied: max_concurrent` abgelehnt.",
-   "`agent.completed` erscheint im Parent-Log mit Status und Kosten; die Summe der Child-Kosten ist in `run.cost_usd` des Parents enthalten.",
+   "`agent.completed` erscheint im Parent-Log mit Status und Kosten; die Summe der Child-Kosten ist in den Kosten des Parent-Teilbaums enthalten (`subtree_cost_micro` im Session-Baum, ab M5 `run.cost_usd`).",
    "Wird der Parent abgebrochen, werden laufende Childs mit `cancel_reason: parent_cancelled` beendet."
   ]
  },
@@ -711,7 +711,7 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "asy-002--spawnasync-true--ergebnis-zustellung",
-  "summary": "`session_spawn(async: true)` kehrt sofort mit `session_id` zurück. Bei Abschluss erhält der Parent `agent.completed` und einen Inbox-Eintrag der Agent-Inbox (`inbox_read`). Mit `async.on_result: wake` (Default) startet ein idle Parent automatisch einen neuen Turn mit einer Systemnachricht (\"Sub-Agent X abgeschlossen: …\"); ist der Parent beschäftigt, wird die Nachricht nach dem aktuellen Turn zugestellt. `inbox_only` stellt nur in die Agent-Inbox.",
+  "summary": "`session_spawn(async: true)` kehrt sofort mit `session_id` zurück (seit M1, AGT-009; bis M5 holt der Parent das Ergebnis mit `session_wait`). Bei Abschluss erhält der Parent `agent.completed` und einen Inbox-Eintrag der Agent-Inbox (`inbox_read`). Mit `async.on_result: wake` (Default) startet ein idle Parent automatisch einen neuen Turn mit einer Systemnachricht (\"Sub-Agent X abgeschlossen: …\"); ist der Parent beschäftigt, wird die Nachricht nach dem aktuellen Turn zugestellt. `inbox_only` stellt nur in die Agent-Inbox.",
   "acs": [
    "Ein idle Parent mit `on_result: wake` beginnt innerhalb von 2 s nach Child-Abschluss einen neuen Turn, dessen Eingabe die Child-Zusammenfassung enthält.",
    "Mit `inbox_only` startet kein neuer Turn; `inbox_read` liefert das Ergebnis genau einmal (danach als gelesen markiert).",

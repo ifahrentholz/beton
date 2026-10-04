@@ -26,9 +26,13 @@ afterEach(() => cleanup())
 describe('Workspace-Rail', () => {
   it('WEB-008 AC2: nicht verfügbare Tabs (Meilenstein, Capability, Rolle) sind ausgeblendet', () => {
     expect(visibleTabs({ role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes'])
-    // Agents (WEB-012) folgt mit WP-27; auch mit Sub-Agent-Capability bleibt der Tab bis dahin aus.
-    const caps = { subagents: 'native' } as unknown as Capabilities
-    expect(visibleTabs({ capabilities: caps, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes'])
+    // Agents (WEB-012) nur bei Harnesses mit System-Tools (MCP) oder eigenen Sub-Agents.
+    const native = { subagents: 'native', mcp_injection: false } as unknown as Capabilities
+    expect(visibleTabs({ capabilities: native, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'agents'])
+    const mcp = { subagents: 'none', mcp_injection: true } as unknown as Capabilities
+    expect(visibleTabs({ capabilities: mcp, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'agents'])
+    const plain = { subagents: 'none', mcp_injection: false } as unknown as Capabilities
+    expect(visibleTabs({ capabilities: plain, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes'])
     expect(visibleTabs({ role: 'viewer' }).map((t) => t.id)).not.toContain('terminal')
     render(<RailTabs tabs={visibleTabs({})} active="changes" badges={{}} onSelect={() => undefined} />)
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Dateien', 'Änderungen'])

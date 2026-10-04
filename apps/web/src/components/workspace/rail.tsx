@@ -4,6 +4,7 @@ import { X } from 'lucide-react'
 import { badgeCount, lastFsSeq, RAIL_MIN, TAB_WIDTH, visibleTabs, workspaceVersion, type RailTab, type WorkspaceSearch } from '@/lib/workspace'
 import { cn } from '@/lib/utils'
 import { initSeen, markSeen, setTab, useSessionWorkspace, useWorkspace } from '@/store/workspace'
+import { AgentsPanel } from './agents'
 import { ChangesPanel } from './changes'
 import { FilesPanel } from './files'
 
@@ -77,7 +78,7 @@ function useSettled(value: number, ms = 150): number {
 const KEEP = 48 + 256 + 420
 
 /**
- * Rechte Workspace-Rail einer Session (WEB-008): Tabs Dateien und Änderungen, Change-Badge
+ * Rechte Workspace-Rail einer Session (WEB-008): Tabs Dateien, Änderungen und Agents (WEB-012), Change-Badge
  * bei `fs.changed` (AC1), nicht verfügbare Tabs ausgeblendet (AC2). Breite per Ziehen am
  * linken Rand, Tabs mit Alt+1 … wechselbar. Unter 1024 px als Vollbild.
  */
@@ -176,6 +177,7 @@ export function WorkspaceRail({
       <RailTabs tabs={tabs} active={tab} badges={badges} onSelect={(t) => setTab(sessionId, t)} onClose={() => useWorkspace.getState().setRailSheet(false)} />
       <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
         {tab === 'files' && <FilesPanel sessionId={sessionId} version={version} worktree={worktree} />}
+        {tab === 'agents' && <AgentsPanel sessionId={sessionId} events={events} />}
         {tab === 'changes' && (
           <ChangesPanel
             sessionId={sessionId}

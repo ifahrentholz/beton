@@ -1,5 +1,5 @@
-// Build-Check (WEB-001 AC4, WEB-015, WEB-009): keine absoluten http(s)-Asset-URLs im Bundle,
-// Initial-JS (gzip) höchstens 450 KB und Monaco nur in nachgeladenen Chunks.
+// Build-Check (WEB-001 AC4, WEB-015, WEB-009, WEB-012): keine absoluten http(s)-Asset-URLs im
+// Bundle, Initial-JS (gzip) höchstens 450 KB, Monaco und xyflow nur in nachgeladenen Chunks.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -41,6 +41,12 @@ for (const rel of new Set(initial)) {
   if (MONACO.test(readFileSync(join(dist, rel), 'utf8'))) problems.push(`${rel}: Monaco im initialen Bundle`)
 }
 if (!files(dist).some((f) => f.endsWith('.js') && MONACO.test(readFileSync(f, 'utf8')))) problems.push('Monaco-Chunk fehlt im Build')
+// xyflow (Sub-Agent-Graph, WEB-012) kommt erst mit dem Agents-Tab.
+const XYFLOW = /react-flow__|xyflow/
+for (const rel of new Set(initial)) {
+  if (XYFLOW.test(readFileSync(join(dist, rel), 'utf8'))) problems.push(`${rel}: xyflow im initialen Bundle`)
+}
+if (!files(dist).some((f) => f.endsWith('.js') && XYFLOW.test(readFileSync(f, 'utf8')))) problems.push('xyflow-Chunk fehlt im Build')
 if (problems.length) {
   console.error(problems.join('\n'))
   process.exit(1)

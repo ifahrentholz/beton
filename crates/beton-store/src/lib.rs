@@ -44,7 +44,7 @@ pub use crate::migrate::SCHEMA_VERSION;
 pub use crate::projections::{ApprovalRecord, UsageRecord};
 pub use crate::sessions::{
     AuditEntry, DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree,
-    Tombstone,
+    Tombstone, TreeEntry,
 };
 
 /// Hook, der `raw` vor der Persistenz redigiert (PROTO-001 AC3).

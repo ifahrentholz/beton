@@ -325,7 +325,18 @@ async fn har_026_ac1_identical_input_gives_an_identical_event_log() {
         assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         let id = v["session_id"].as_str().unwrap().to_owned();
-        logs.push(normalized(&events(&client, &id).await, &id));
+        // Der automatische Titel (SES-010) kommt nach dem Turn-Ende; erst danach vergleichen.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let log = loop {
+            let ev = events(&client, &id).await;
+            if ev.iter().any(|e| e["type"] == "session.title_changed")
+                || std::time::Instant::now() > deadline
+            {
+                break ev;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        logs.push(normalized(&log, &id));
     }
     assert!(logs[0].contains("approval.requested"), "{}", logs[0]);
     assert_eq!(logs[0], logs[1]);

@@ -57,6 +57,27 @@ describe('REST-Client', () => {
     expect(seen).toEqual(['POST /v1/sessions/ses_1/fork {"at_seq":122,"harness":"codex","workspace":"shared"}'])
   })
 
+  it('AGT-009: liest den Sub-Agent-Baum einer Session', async () => {
+    const seen: string[] = []
+    const url = await serve((req) => {
+      seen.push(`${req.method} ${req.url}`)
+      return [
+        200,
+        {
+          root: 'ses_1',
+          nodes: [
+            { id: 'ses_1', depth: 0, title: 'maestra', harness: 'claude', status: 'running', cost_micro: 0, subtree_cost_micro: 0, tokens: 10, subtree_tokens: 30, created_at: 't' },
+            { id: 'ses_2', parent_id: 'ses_1', depth: 1, title: 'impl-codex', harness: 'codex', status: 'idle', task: 'completed', cost_micro: 0, subtree_cost_micro: 0, tokens: 20, subtree_tokens: 20, created_at: 't' },
+          ],
+        },
+      ]
+    })
+    const tree = await new BetonClient({ baseUrl: url }).session('ses_1').subagents()
+    expect(tree.nodes.map((n) => n.harness)).toEqual(['claude', 'codex'])
+    expect(tree.nodes[1]!.parent_id).toBe('ses_1')
+    expect(seen).toEqual(['GET /v1/sessions/ses_1/subagents'])
+  })
+
   it('HAR-017, HAR-027: Modell, Effort und Permission-Mode per PATCH; yolo ohne Sandbox als Problem', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

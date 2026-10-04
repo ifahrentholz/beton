@@ -78,6 +78,10 @@ pub struct AgentSnapshot {
     /// Tiefe im Session-Baum (0 = gestartet von Mensch oder API, 1 = Child).
     #[serde(default)]
     pub depth: u32,
+    /// Von den Vorfahren geerbte Grenze für die Tiefe im Session-Baum (AGT-009); fehlt beim
+    /// Wurzel-Agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth_limit: Option<u32>,
 }
 
 /// Fehler beim Erfassen oder Lesen eines Snapshots.
@@ -225,6 +229,7 @@ impl AgentSnapshot {
             params: ParamValues::new(),
             overrides: Overrides::default(),
             depth: 0,
+            depth_limit: None,
         };
         snapshot.hash = snapshot.content_hash()?;
         Ok(snapshot)
@@ -285,28 +290,35 @@ impl AgentSnapshot {
     pub fn agent(&self) -> Result<(AgentSpec, AgentDir), SnapshotError> {
         let tree = self.tree()?;
         let dir = self.dir_at(&tree, &self.entry);
-        let spec = load_spec(&dir).map_err(SnapshotError::Agent)?;
-        match &self.inline {
-            None => Ok((spec, dir)),
-            Some(name) => {
-                let sub = spec.agents.get(name).ok_or_else(|| {
-                    SnapshotError::Agent(format!("Sub-Agent „{name}“ fehlt im Snapshot"))
-                })?;
-                let spec = AgentSpec::from_inline(name, sub).map_err(SnapshotError::Agent)?;
-                Ok((spec, dir))
-            }
+        let mut spec = load_spec(&dir).map_err(SnapshotError::Agent)?;
+        // Inline-Sub-Agents, auch verschachtelt (`a/b`): relative Dateien gelten weiter ab dem
+        // Verzeichnis des Agents unter `entry` (AGT-009).
+        for name in self.inline.iter().flat_map(|p| p.split('/')) {
+            let sub = spec.agents.get(name).ok_or_else(|| {
+                SnapshotError::Agent(format!("Sub-Agent „{name}“ fehlt im Snapshot"))
+            })?;
+            spec = AgentSpec::from_inline(name, sub).map_err(SnapshotError::Agent)?;
         }
+        Ok((spec, dir))
+    }
+
+    /// Größte erlaubte Tiefe für Nachfahren dieser Session (AGT-009): eigene Tiefe plus
+    /// `spawn.max_depth` (Default [`crate::spec::DEFAULT_MAX_DEPTH`]), höchstens die geerbte
+    /// Grenze. Ein Child mit größerer Tiefe wird nicht gestartet (`spawn_denied: max_depth`).
+    pub fn spawn_depth_limit(&self, spec: &AgentSpec) -> u32 {
+        let own = self.depth.saturating_add(
+            spec.spawn
+                .as_ref()
+                .and_then(|s| s.max_depth)
+                .unwrap_or(crate::spec::DEFAULT_MAX_DEPTH),
+        );
+        self.depth_limit.map_or(own, |l| l.min(own))
     }
 
     /// Snapshot für einen Sub-Agent aus `agents` (Child-Session von `session_spawn`); die
     /// Parameter des Childs löst der Aufrufer danach auf.
     pub fn subagent(&self, name: &str) -> Result<Self, SnapshotError> {
         let (spec, dir) = self.agent()?;
-        if self.inline.is_some() {
-            return Err(SnapshotError::Agent(
-                "Sub-Agents von Inline-Sub-Agents gibt es noch nicht (AGT-009)".into(),
-            ));
-        }
         let sub = spec
             .agents
             .get(name)
@@ -325,6 +337,7 @@ impl AgentSnapshot {
             params: ParamValues::new(),
             overrides: Overrides::default(),
             depth: self.depth + 1,
+            depth_limit: Some(self.spawn_depth_limit(&spec)),
         };
         match &sub.reference {
             Some(reference) => {
@@ -340,7 +353,12 @@ impl AgentSnapshot {
                 child.name = spec.name.to_string();
                 child.version = spec.version.unwrap_or_default();
             }
-            None => child.inline = Some(name.to_owned()),
+            None => {
+                child.inline = Some(match &self.inline {
+                    Some(path) => format!("{path}/{name}"),
+                    None => name.to_owned(),
+                });
+            }
         }
         child.hash = child.content_hash()?;
         Ok(child)
@@ -472,5 +490,45 @@ mod tests {
             Some("Nur den Diff.")
         );
         assert!(back.subagent("fehlt").is_err());
+    }
+
+    #[test]
+    fn agt_009_nested_inline_subagents_and_depth_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            &tmp.path().join("agent.yaml"),
+            "spec_version: 1\nname: lead\nexecutor: { harness: claude }\nagents:\n  kind:\n    executor: { harness: codex }\n    agents:\n      enkel:\n        executor: { harness: claude }\n        agents:\n          urenkel: { executor: { harness: codex } }\n        spawn: { agents: [urenkel] }\n    spawn: { agents: [enkel], max_depth: 5 }\nspawn: { agents: [kind], max_depth: 2 }\n",
+        );
+        let located = Located {
+            name: "lead".into(),
+            source: Source::Project,
+            dir: AgentDir::Fs(tmp.path().to_path_buf()),
+            shadows: None,
+        };
+        let root = AgentSnapshot::capture(&located, "lead", &Builtins::default()).unwrap();
+        let (spec, _) = root.agent().unwrap();
+        assert_eq!(root.spawn_depth_limit(&spec), 2);
+        let child = root.subagent("kind").unwrap();
+        let (cspec, _) = child.agent().unwrap();
+        assert_eq!(cspec.executor.harness.as_str(), "codex");
+        // Die eigene Grenze (1 + 5) verschärft die geerbte nicht.
+        assert_eq!(child.spawn_depth_limit(&cspec), 2);
+        let grandchild = child.subagent("enkel").unwrap();
+        assert_eq!(grandchild.inline.as_deref(), Some("kind/enkel"));
+        assert_eq!(grandchild.depth, 2);
+        let (gspec, _) = grandchild.agent().unwrap();
+        assert_eq!(gspec.executor.harness.as_str(), "claude");
+        // Ein Urenkel hätte Tiefe 3 > 2.
+        assert_eq!(grandchild.spawn_depth_limit(&gspec), 2);
+        assert!(grandchild.depth + 1 > grandchild.spawn_depth_limit(&gspec));
+        // Ohne `max_depth`: nur direkte Childs.
+        let mut solo = root.clone();
+        solo.depth_limit = None;
+        let (mut s2, _) = solo.agent().unwrap();
+        s2.spawn.as_mut().unwrap().max_depth = None;
+        assert_eq!(solo.spawn_depth_limit(&s2), 1);
+        // Der Snapshot übersteht die Serialisierung.
+        let back = AgentSnapshot::from_bytes(&grandchild.to_bytes()).unwrap();
+        assert_eq!(back.depth_limit, Some(2));
     }
 }

@@ -1,0 +1,8 @@
+# Implementer von maestra auf Claude Code (AGT-011).
+# yaml-language-server: $schema=../../../../schemas/v1/agent.schema.json
+spec_version: 1
+name: impl-claude
+description: Implementiert eine Teilaufgabe in einem eigenen Worktree und committet auf dessen Branch (Claude Code).
+version: 1.0.0
+executor: { harness: claude, permission_mode: accept_edits }
+instructions: { file: prompts/system.md, project_files: auto }

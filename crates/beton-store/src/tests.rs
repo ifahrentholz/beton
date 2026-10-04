@@ -1380,3 +1380,69 @@ async fn data_002_concurrent_writers_do_not_fail_with_busy() {
         task.await.unwrap().unwrap();
     }
 }
+
+#[tokio::test]
+async fn agt_009_session_tree_lists_descendants_with_tokens() {
+    let t = store().await;
+    let root = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let child = t
+        .store
+        .create_session(
+            org(&t),
+            NewSession {
+                parent_id: Some(root.id),
+                ..new_session(&t)
+            },
+        )
+        .await
+        .unwrap();
+    let grandchild = t
+        .store
+        .create_session(
+            org(&t),
+            NewSession {
+                parent_id: Some(child.id),
+                ..new_session(&t)
+            },
+        )
+        .await
+        .unwrap();
+    let other = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    append_one(
+        &t.store,
+        &child,
+        ev(
+            child.id,
+            EventPayload::CostDelta(CostDelta {
+                harness: "codex".into(),
+                model: "gpt-5".into(),
+                input_tokens: 100,
+                cache_read_tokens: 20,
+                output_tokens: 7,
+                cost_micro: Some(42),
+                ..CostDelta::default()
+            }),
+        ),
+    )
+    .await;
+    let tree = t.store.session_tree(org(&t), root.id).await.unwrap();
+    let ids: Vec<_> = tree.iter().map(|e| (e.session.id, e.depth)).collect();
+    assert_eq!(ids, [(root.id, 0), (child.id, 1), (grandchild.id, 2)]);
+    assert!(!ids.iter().any(|(id, _)| *id == other.id));
+    assert_eq!((tree[1].input_tokens, tree[1].output_tokens), (120, 7));
+    assert_eq!(tree[1].session.cost_micro, 42);
+    assert_eq!(tree[1].session.parent_id, Some(root.id));
+    // Teilbaum ab dem Kind.
+    assert_eq!(
+        t.store.session_tree(org(&t), child.id).await.unwrap().len(),
+        2
+    );
+}

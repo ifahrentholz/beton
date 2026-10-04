@@ -422,6 +422,11 @@ pub struct SubAgent {
     pub sandbox: Option<Sandbox>,
 }
 
+/// Default für `spawn.max_depth`: nur direkte Childs (AGT-009, *Annahme*).
+pub const DEFAULT_MAX_DEPTH: u32 = 1;
+/// Default für `spawn.max_concurrent` (AGT-009, *Annahme*).
+pub const DEFAULT_MAX_CONCURRENT: u32 = 3;
+
 /// Grenzen für Child-Sessions (AGT-009).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -429,11 +434,16 @@ pub struct Spawn {
     /// Nur diese Sub-Agents (Schlüssel aus `agents`) dürfen gestartet werden.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// Größte Tiefe des Session-Baums unter diesem Agent (Default 1: nur direkte Childs).
+    #[schemars(range(min = 1))]
     pub max_depth: Option<u32>,
+    /// Höchstzahl gleichzeitig laufender Childs (Default 3).
+    #[schemars(range(min = 1))]
     pub max_concurrent: Option<u32>,
-    /// Default für Kinder: `new`, `inherit` oder `none`.
+    /// Workspace der Kinder: `new` (eigener Worktree vom HEAD des Parents), `inherit`
+    /// (Workspace des Parents, Default) oder `none` (Workspace des Parents, nur lesend ab M2).
     pub worktree: Option<WorktreeMode>,
-    /// Maximaler Anteil am Run-Budget je Kind (0–1).
+    /// Maximaler Anteil am Run-Budget je Kind (0–1); ausgewertet ab M5 (ASY-010).
     #[schemars(range(min = 0.0, max = 1.0))]
     pub budget_share: Option<f64>,
 }

@@ -33,6 +33,7 @@ pub mod session_skills;
 pub mod sessions;
 pub mod settings;
 pub mod sse;
+pub mod subagents;
 pub mod titles;
 pub mod tunnel;
 pub mod web;

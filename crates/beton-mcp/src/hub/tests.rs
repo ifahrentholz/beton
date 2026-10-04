@@ -22,6 +22,13 @@ impl SystemBackend for Echo {
     async fn session_spawn(&self, _t: &SpawnTarget, _a: &Value) -> Result<Value, ToolFailure> {
         Err(ToolFailure::new("not_supported", "Test"))
     }
+    async fn session_tool(
+        &self,
+        _tool: beton_agents::spec::SystemTool,
+        _a: &Value,
+    ) -> Result<Value, ToolFailure> {
+        Err(ToolFailure::new("not_supported", "Test"))
+    }
 }
 
 fn private_dir() -> tempfile::TempDir {

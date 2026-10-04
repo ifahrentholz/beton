@@ -133,6 +133,7 @@ fn spawn_targets(agent: &LoadedAgent, notices: &mut Vec<String>) -> Vec<SpawnTar
             description,
             harness: executor.harness.to_string(),
             model: executor.model.clone(),
+            unavailable: None,
         });
     }
     out
@@ -354,6 +355,11 @@ mod tests {
             [
                 SystemTool::PolicyQuery,
                 SystemTool::SessionSpawn,
+                SystemTool::SessionSend,
+                SystemTool::SessionWait,
+                SystemTool::SessionStatus,
+                SystemTool::SessionList,
+                SystemTool::SessionCancel,
                 SystemTool::SkillLoad,
                 SystemTool::SkillReadFile
             ]
