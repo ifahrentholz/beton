@@ -1,0 +1,7 @@
+harness: codex
+cli_version: 0.153.2
+recorded_at: 2026-10-04T08:36:16.636Z
+scenario: Turn mit Reasoning-Zusammenfassung
+platform: beton-fake-cli
+exit_code: 0
+recorded_with: beton-fake-cli --protocol app-server

@@ -1,0 +1,3 @@
+inputs:
+- send: 'Antworte nur mit: ok'
+gate: []

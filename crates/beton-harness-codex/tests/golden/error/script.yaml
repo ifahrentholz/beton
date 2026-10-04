@@ -1,0 +1,4 @@
+model: beton-gibt-es-nicht
+inputs:
+- send: 'Antworte nur mit: ok'
+gate: []

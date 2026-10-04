@@ -1,0 +1,4 @@
+model: gpt-5.6-luna
+inputs:
+- send: 'Antworte nur mit dem Wort: Beton'
+gate: []

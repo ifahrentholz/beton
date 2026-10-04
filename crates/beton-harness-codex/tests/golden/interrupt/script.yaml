@@ -1,0 +1,5 @@
+model: gpt-5.6-luna
+inputs:
+- send: Zähle von 1 bis 200, eine Zahl pro Zeile.
+  interrupt_after_events: 6
+gate: []

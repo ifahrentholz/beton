@@ -55,6 +55,11 @@ pub struct Meta {
     /// Exit-Code des aufgezeichneten Prozesses.
     #[serde(default)]
     pub exit_code: i32,
+    /// Womit aufgenommen wurde, wenn nicht mit der echten Vendor-CLI (z. B. `beton-fake-cli`
+    /// nach dem exportierten Protokoll-Schema). Fehlt das Feld, stammt die Aufnahme von der
+    /// echten CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_with: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

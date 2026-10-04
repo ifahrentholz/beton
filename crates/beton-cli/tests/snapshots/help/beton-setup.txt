@@ -1,6 +1,10 @@
 Erstkonfiguration: Harness-CLIs, Logins und lokale Modell-Server erkennen
 
 Usage: beton setup [OPTIONS]
+       beton setup <COMMAND>
+
+Commands:
+  acp  ACP-Agents registrieren (HAR-008)
 
 Options:
       --non-interactive

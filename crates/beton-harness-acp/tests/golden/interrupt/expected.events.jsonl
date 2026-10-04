@@ -1,0 +1,13 @@
+{"has_raw":false,"payload":{"harness_session_ref":"sess_faked7f1cfd10fe2","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"1 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"2 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"3 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"4 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"5 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"6 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"7 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"8 "},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"9"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"1 2 3 4 5 6 7 8 9","type":"text"}],"message_id":"msg_1_1","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}
+{"has_raw":false,"payload":{"by":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.interrupted"}

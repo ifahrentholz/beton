@@ -1,0 +1,3 @@
+{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"beton","version":"0.0.0"},"protocolVersion":1}}
+{"id":2,"jsonrpc":"2.0","method":"session/new","params":{"cwd":"<workdir>","mcpServers":[]}}
+{"id":3,"jsonrpc":"2.0","method":"session/prompt","params":{"prompt":[{"text":"Antworte nur mit dem Wort: Beton","type":"text"}],"sessionId":"sess_fake819b5a2aa6ce"}}

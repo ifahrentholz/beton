@@ -34,6 +34,62 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "AcpAgentConfig": {
+      "description": "Ein ACP-Agent unter `harnesses.acp.agents.<slug>` (HAR-008).",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "Argumente, mit denen der Agent ACP über stdio spricht, z. B. `[\"--experimental-acp\"]`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "command": {
+          "description": "Programm (Name in `PATH` oder Pfad).",
+          "type": "string"
+        },
+        "env_passthrough": {
+          "description": "Variablen, die trotz Bereinigung an den Agent gehen (z. B. `GEMINI_API_KEY`). Ohne\nAngabe erreicht keine `*_API_KEY`-Variable den Agent (ADR-0034).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mcp_bridge": {
+          "description": "System-Tools per MCP an den Agent geben (HAR-009); wirkt mit der MCP-Bridge.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "models": {
+          "description": "Modelle für den Modell-Picker (optional).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
+    },
+    "AcpSection": {
+      "description": "Abschnitt `harnesses.acp` (HAR-008).",
+      "type": "object",
+      "properties": {
+        "agents": {
+          "description": "ACP-Agents nach Slug (`[a-z0-9-]`), erreichbar als Harness `acp:<slug>`. Die Einträge\nwerden erst beim Aufbau der Registry geprüft: Ein ungültiger Eintrag wird mit Datei und\nZeile gemeldet und übersprungen, ohne andere Harnesses zu beeinträchtigen.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/AcpAgentConfig"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "AuthSettings": {
       "type": "object",
       "properties": {
@@ -115,6 +171,10 @@
       "description": "Abschnitt `harnesses:` der Konfiguration.",
       "type": "object",
       "properties": {
+        "acp": {
+          "description": "Registrierte ACP-Agents (HAR-008).",
+          "$ref": "#/$defs/AcpSection"
+        },
         "default": {
           "description": "Standard-Harness für neue Sessions.",
           "type": [

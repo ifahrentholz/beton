@@ -32,7 +32,9 @@ fn isolated(home: &Path, empty_path: &Path, claude: bool) -> Command {
 fn har_016_ac2_setup_check_json_reports_each_harness() {
     let home = tempfile::tempdir().unwrap();
     let empty = tempfile::tempdir().unwrap();
+    // Ab M1 ist auch Codex nutzbar; die Fake-CLI spielt `codex login status` (HAR-016).
     let out = run(isolated(home.path(), empty.path(), true)
+        .env("BETON_CODEX_PATH", fake_cli())
         .env("ANTHROPIC_API_KEY", "sk-geheim-1234")
         .args(["setup", "--check", "--json"]));
     assert!(out.status.success(), "{}", stderr(&out));
@@ -48,11 +50,12 @@ fn har_016_ac2_setup_check_json_reports_each_harness() {
     );
     assert!(claude.api_key_env_found);
     let codex = report.harnesses.iter().find(|h| h.id == "codex").unwrap();
-    assert!(!codex.installed);
+    assert!(codex.installed && codex.supported);
     assert_eq!(
-        codex.install_command.as_deref(),
-        Some("npm install -g @openai/codex")
+        serde_json::to_value(codex.auth_status).unwrap(),
+        "logged_in"
     );
+    assert_eq!(codex.install_command, None);
     // Weder Kontodaten der CLI noch der Key-Wert erscheinen.
     assert!(!text.contains("fake-user@example.invalid"), "{text}");
     assert!(!text.contains("sk-geheim"), "{text}");
@@ -70,6 +73,7 @@ fn har_016_logged_out_cli_is_reported_with_login_hint() {
     let home = tempfile::tempdir().unwrap();
     let empty = tempfile::tempdir().unwrap();
     let out = run(isolated(home.path(), empty.path(), true)
+        .env("BETON_CODEX_PATH", fake_cli())
         .env("BETON_FAKE_AUTH", "logged_out")
         .args(["setup", "--non-interactive"]));
     assert!(out.status.success(), "{}", stderr(&out));
@@ -77,6 +81,23 @@ fn har_016_logged_out_cli_is_reported_with_login_hint() {
     assert!(text.contains("Claude Code: installiert"), "{text}");
     assert!(text.contains("nicht angemeldet"), "{text}");
     assert!(text.contains("auth login"), "{text}");
+    assert!(text.contains("codex login"), "{text}");
+}
+
+#[test]
+fn har_016_missing_codex_is_supported_and_fails_check() {
+    let home = tempfile::tempdir().unwrap();
+    let empty = tempfile::tempdir().unwrap();
+    let out = run(isolated(home.path(), empty.path(), true).args(["setup", "--check", "--json"]));
+    let report: SetupReport = serde_json::from_str(&stdout(&out)).unwrap();
+    let codex = report.harnesses.iter().find(|h| h.id == "codex").unwrap();
+    assert!(!codex.installed);
+    assert_eq!(
+        codex.install_command.as_deref(),
+        Some("npm install -g @openai/codex")
+    );
+    // Ab M1 ist Codex nutzbar: Fehlt die CLI, endet `--check` mit Exit-Code ≠ 0.
+    assert_ne!(out.status.code(), Some(0));
 }
 
 #[test]

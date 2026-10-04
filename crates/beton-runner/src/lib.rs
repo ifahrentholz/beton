@@ -132,9 +132,23 @@ impl RunnerBoot {
 /// (HAR-026 AC3). Die Auth-Herkunft gilt nur aus der User-Konfiguration (HAR-015), damit ein
 /// Repository nicht auf API-Billing umschalten kann.
 pub fn builtin_registry(layers: &HarnessLayers, dev: bool) -> Registry {
+    builtin_registry_with_problems(layers, dev).0
+}
+
+/// Wie [`builtin_registry`]; liefert zusätzlich die übersprungenen ACP-Einträge mit Datei
+/// und Zeile (HAR-008 AC3).
+pub fn builtin_registry_with_problems(
+    layers: &HarnessLayers,
+    dev: bool,
+) -> (Registry, Vec<beton_harness_acp::ConfigProblem>) {
     let mut registry = Registry::new(RegistryOptions { dev });
     registry.register(Arc::new(claude_adapter(layers)));
-    registry
+    registry.register(Arc::new(beton_harness_codex::CodexAdapter {
+        auth: layers.user.auth("codex").source(),
+        ..beton_harness_codex::CodexAdapter::default()
+    }));
+    let problems = beton_harness_acp::register(&mut registry, layers);
+    (registry, problems)
 }
 
 fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter {
@@ -161,7 +175,10 @@ pub async fn main_from_env() -> std::process::ExitCode {
             return ExitCode::from(2);
         }
     };
-    let registry = boot.registry();
+    let (registry, problems) = builtin_registry_with_problems(&boot.harnesses, boot.dev);
+    for p in problems {
+        tracing::warn!("Konfiguration: ACP-Agent übersprungen: {p}");
+    }
     match run(boot, registry).await {
         Ok(Exit::Stopped | Exit::ParentGone) => ExitCode::SUCCESS,
         Ok(Exit::HarnessExited { code }) => {
@@ -816,6 +833,7 @@ mod tests {
     fn layer(auth: Option<HarnessAuth>, isolated: Option<bool>) -> HarnessesConfig {
         HarnessesConfig {
             default: None,
+            acp: Default::default(),
             entries: [(
                 "claude".to_owned(),
                 HarnessCommandConfig {
@@ -835,12 +853,14 @@ mod tests {
         let user = claude_adapter(&HarnessLayers {
             user: layer(Some(HarnessAuth::ApiKey), None),
             project: HarnessesConfig::default(),
+            ..HarnessLayers::default()
         });
         assert_eq!(user.auth, AuthSource::ApiKey);
         // Ein Repository kann nicht auf API-Billing umschalten.
         let project = claude_adapter(&HarnessLayers {
             user: HarnessesConfig::default(),
             project: layer(Some(HarnessAuth::ApiKey), None),
+            ..HarnessLayers::default()
         });
         assert_eq!(project.auth, AuthSource::VendorCli);
     }
@@ -850,11 +870,13 @@ mod tests {
         let a = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: HarnessesConfig::default(),
+            ..HarnessLayers::default()
         });
         assert!(a.isolated);
         let b = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: layer(None, Some(false)),
+            ..HarnessLayers::default()
         });
         assert!(!b.isolated);
     }

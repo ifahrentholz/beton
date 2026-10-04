@@ -1,0 +1,10 @@
+{"has_raw":false,"payload":{"harness_session_ref":"<id:1>","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"rs_fake00000001","text":"17 mal 23 ist 391."},"turn_id":"<id:2>","type":"reasoning.delta"}
+{"has_raw":true,"payload":{"message_id":"rs_fake00000001","redacted":false,"summary":"17 mal 23 ist 391."},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","text":"39"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","text":"1"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"391","type":"text"}],"message_id":"<id:3>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":930,"window_tokens":272000},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":0,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":900,"model":"gpt-fake-codex","output_tokens":30,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":0,"input_tokens":900,"output_tokens":30}},"turn_id":"<id:2>","type":"turn.completed"}

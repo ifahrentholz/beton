@@ -1,0 +1,9 @@
+{"has_raw":false,"payload":{"harness_session_ref":"sess_fake819b5a2aa6ce","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"rsn_1_1","text":"Kurz überlegen."},"turn_id":"<id:1>","type":"reasoning.delta"}
+{"has_raw":true,"payload":{"message_id":"rsn_1_1","redacted":false,"summary":"Kurz überlegen."},"turn_id":"<id:1>","type":"reasoning.completed"}
+{"has_raw":false,"payload":{"message_id":"msg_1_2","text":"Be"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_2","text":"to"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_2","text":"n"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"Beton","type":"text"}],"message_id":"msg_1_2","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:1>","usage_summary":{}},"turn_id":"<id:1>","type":"turn.completed"}

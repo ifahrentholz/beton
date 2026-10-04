@@ -116,6 +116,8 @@ pub fn default_registry(dev: bool) -> beton_harness::registry::Registry {
     let mut r =
         beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions { dev });
     r.register(Arc::new(beton_harness_claude::ClaudeAdapter::default()));
+    r.register(Arc::new(beton_harness_codex::CodexAdapter::default()));
+    beton_harness_acp::register(&mut r, &beton_harness::registry::HarnessLayers::default());
     r
 }
 

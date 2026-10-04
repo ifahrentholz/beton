@@ -12,7 +12,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
-use beton_harness::registry::HarnessesConfig;
+use beton_harness::registry::{HarnessLayers, HarnessesConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -237,6 +237,55 @@ impl Layers {
     /// `harnesses:` nur aus User-Datei und Env (für den Daemon).
     pub fn user_harnesses(&self) -> Result<HarnessesConfig, ConfigError> {
         Ok(self.daemon_settings()?.harnesses)
+    }
+
+    /// `harnesses:` getrennt nach User-Ebene (mit Env) und Projektdatei, mit den Dateien,
+    /// damit Konfigurationsfehler Datei und Zeile nennen (HAR-003, HAR-008).
+    pub fn harness_layers(&self) -> Result<HarnessLayers, ConfigError> {
+        let project_dir = self.paths.project.parent().and_then(Path::parent);
+        let project = match project_dir {
+            Some(dir) => {
+                HarnessesConfig::load_project(dir).map_err(|message| ConfigError::Parse {
+                    path: self.paths.project.display().to_string(),
+                    message,
+                })?
+            }
+            None => HarnessesConfig::default(),
+        };
+        Ok(HarnessLayers {
+            user: self.user_harnesses()?,
+            project,
+            user_file: Some(self.paths.user.clone()),
+            project_file: Some(self.paths.project.clone()),
+        })
+    }
+
+    /// Trägt einen ACP-Agent unter `harnesses.acp.agents.<slug>` in die User-Konfiguration
+    /// ein (HAR-008 AC1). Ungültige Einträge werden abgelehnt, ohne die Datei zu ändern.
+    pub fn add_acp_agent(
+        &mut self,
+        slug: &str,
+        command: &str,
+        args: &[String],
+    ) -> Result<(), ConfigError> {
+        let key = format!("harnesses.acp.agents.{slug}");
+        let mut entry = Map::new();
+        entry.insert("command".into(), Value::String(command.to_owned()));
+        if !args.is_empty() {
+            entry.insert(
+                "args".into(),
+                Value::Array(args.iter().cloned().map(Value::String).collect()),
+            );
+        }
+        let entry = Value::Object(entry);
+        beton_harness_acp::config::parse_entry(slug, &entry).map_err(|message| {
+            ConfigError::Invalid {
+                origin: self.paths.user.display().to_string(),
+                key: key.clone(),
+                message,
+            }
+        })?;
+        self.set(Scope::User, &key, &entry.to_string())
     }
 
     /// Jede Ebene für sich und alle zusammen.

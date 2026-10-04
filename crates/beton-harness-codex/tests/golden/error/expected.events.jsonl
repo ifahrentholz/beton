@@ -1,0 +1,4 @@
+{"has_raw":false,"payload":{"harness_session_ref":"<id:1>","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":0,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":0,"model":"beton-gibt-es-nicht","output_tokens":0,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"problem":{"codex_error_info":"other","title":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'beton-gibt-es-nicht' model is not supported when using Codex with a ChatGPT account.\"}}","type":"urn:beton:problem:harness_error"},"turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.failed"}

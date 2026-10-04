@@ -237,6 +237,7 @@ pub async fn record(s: &Scenario, root: &Path, version: &str) -> Result<(), Stri
         scenario: s.description.into(),
         platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         exit_code: 0,
+        recorded_with: None,
     };
     let dir = root.join(s.name);
     let _ = std::fs::remove_dir_all(&dir);

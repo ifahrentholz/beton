@@ -1,0 +1,40 @@
+ACP-Agent in `~/.beton/config.yaml` eintragen; danach ist er als `acp:<SLUG>` nutzbar
+
+Usage: beton setup acp add [OPTIONS] --command <C> <SLUG>
+
+Arguments:
+  <SLUG>
+          Kurzname des Agents (`[a-z0-9-]`), z. B. `mein-agent`
+
+Options:
+      --command <C>
+          Programm (Name in `PATH` oder Pfad)
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --arg <A>
+          Argument, mit dem der Agent ACP über stdio spricht (mehrfach möglich)
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

@@ -21,6 +21,8 @@ beton-host = { path = "crates/beton-host", version = "0.0.0" }
 beton-runner = { path = "crates/beton-runner", version = "0.0.0" }
 beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
 beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
+beton-harness-codex = { path = "crates/beton-harness-codex", version = "0.0.0" }
+beton-harness-acp = { path = "crates/beton-harness-acp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 

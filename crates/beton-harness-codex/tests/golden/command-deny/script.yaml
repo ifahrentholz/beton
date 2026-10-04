@@ -1,0 +1,6 @@
+model: gpt-5.6-luna
+inputs:
+- send: 'Führe genau `git push origin main` in der Shell aus. Wenn das abgelehnt wird, antworte nur mit: abgelehnt.'
+gate:
+- deny
+- deny

@@ -1,0 +1,6 @@
+harness: codex
+cli_version: 0.153.2
+recorded_at: 2026-10-04T08:40:28.073Z
+scenario: Turn mit Shell-Kommando, Freigabe erteilt
+platform: macos-aarch64
+exit_code: 0

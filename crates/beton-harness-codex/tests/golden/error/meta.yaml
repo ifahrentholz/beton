@@ -1,0 +1,6 @@
+harness: codex
+cli_version: 0.153.2
+recorded_at: 2026-10-04T08:40:42.222Z
+scenario: Fehler-Turn (unbekanntes Modell)
+platform: macos-aarch64
+exit_code: 0

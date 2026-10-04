@@ -1,0 +1,25 @@
+[package]
+name = "beton-harness-acp"
+description = "Generischer ACP-Harness (Agent Client Protocol) mit Agent-Registrierung und Presets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+beton-harness.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

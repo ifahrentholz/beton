@@ -58,8 +58,50 @@ pub struct HarnessesConfig {
     /// Standard-Harness für neue Sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
+    /// Registrierte ACP-Agents (HAR-008).
+    #[serde(default, skip_serializing_if = "AcpSection::is_empty")]
+    pub acp: AcpSection,
     #[serde(flatten)]
     pub entries: BTreeMap<String, HarnessCommandConfig>,
+}
+
+/// Abschnitt `harnesses.acp` (HAR-008).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcpSection {
+    /// ACP-Agents nach Slug (`[a-z0-9-]`), erreichbar als Harness `acp:<slug>`. Die Einträge
+    /// werden erst beim Aufbau der Registry geprüft: Ein ungültiger Eintrag wird mit Datei und
+    /// Zeile gemeldet und übersprungen, ohne andere Harnesses zu beeinträchtigen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(with = "BTreeMap<String, AcpAgentConfig>")]
+    pub agents: BTreeMap<String, serde_json::Value>,
+}
+
+impl AcpSection {
+    pub fn is_empty(&self) -> bool {
+        self.agents.is_empty()
+    }
+}
+
+/// Ein ACP-Agent unter `harnesses.acp.agents.<slug>` (HAR-008).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcpAgentConfig {
+    /// Programm (Name in `PATH` oder Pfad).
+    pub command: String,
+    /// Argumente, mit denen der Agent ACP über stdio spricht, z. B. `["--experimental-acp"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Variablen, die trotz Bereinigung an den Agent gehen (z. B. `GEMINI_API_KEY`). Ohne
+    /// Angabe erreicht keine `*_API_KEY`-Variable den Agent (ADR-0034).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
+    /// System-Tools per MCP an den Agent geben (HAR-009); wirkt mit der MCP-Bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_bridge: Option<bool>,
+    /// Modelle für den Modell-Picker (optional).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
 }
 
 impl HarnessesConfig {
@@ -102,6 +144,12 @@ pub struct HarnessLayers {
     pub user: HarnessesConfig,
     #[serde(default)]
     pub project: HarnessesConfig,
+    /// Datei der User-Ebene, damit Konfigurationsfehler Datei und Zeile nennen (HAR-008).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_file: Option<PathBuf>,
+    /// Datei der Projektebene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_file: Option<PathBuf>,
 }
 
 /// Woher ein Binary-Pfad stammt (Präzedenz von oben nach unten, HAR-003).

@@ -1,0 +1,20 @@
+{"has_raw":false,"payload":{"harness_session_ref":"<id:1>","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"rs_086c8f27bd28b431016ac210f8954487d29a7c8f9b1199b44e","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
+{"has_raw":true,"payload":{"args":{"command":"/bin/zsh -lc 'mkdir beton-ordner'","cwd":"<workdir>"},"call_id":"exec-<id:3>","source":"harness","tool":"commandExecution"},"turn_id":"<id:2>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"approval_id":"<id:4>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"/bin/zsh -lc 'mkdir beton-ordner'","cwd":"<workdir>","reason":null},"call_id":"exec-<id:3>","tool":"commandExecution"}},"turn_id":"<id:2>","type":"approval.requested"}
+{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:4>","decision":"allow","via":"user"},"turn_id":"<id:2>","type":"approval.resolved"}
+{"has_raw":false,"payload":{"call_id":"exec-<id:3>"},"turn_id":"<id:2>","type":"tool.call.started"}
+{"has_raw":true,"payload":{"call_id":"exec-<id:3>","duration_ms":0,"result":{"exit_code":0,"output":null},"status":"ok"},"turn_id":"<id:2>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":15197,"window_tokens":258400},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"message_id":"<id:5>","text":"er"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:5>","text":"led"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:5>","text":"igt"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"erledigt","type":"text"}],"message_id":"<id:5>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":15227,"window_tokens":258400},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":22016,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":8290,"model":"gpt-5.6-luna","output_tokens":118,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":6417,"input_tokens":30306,"output_tokens":118}},"turn_id":"<id:2>","type":"turn.completed"}

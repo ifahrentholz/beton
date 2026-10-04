@@ -1,0 +1,13 @@
+{"has_raw":false,"payload":{"harness_session_ref":"sess_fakef0106acf6e10","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"Ich lege"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":" den Ord"},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"msg_1_1","text":"ner an."},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"Ich lege den Ordner an.","type":"text"}],"message_id":"msg_1_1","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}
+{"has_raw":false,"payload":{"args":{"command":"mkdir beton-ordner"},"call_id":"<id:2>","source":"acp","tool":"mkdir beton-ordner"},"turn_id":"<id:1>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"approval_id":"<id:3>","expires_at":"<ts>","kind":"tool","on_timeout":"deny","options":["allow","deny"],"subject":{"args":{"command":"mkdir beton-ordner"},"call_id":"<id:2>","tool":"mkdir beton-ordner"}},"turn_id":"<id:1>","type":"approval.requested"}
+{"has_raw":false,"payload":{"actor":{"id":"usr_local","kind":"user"},"approval_id":"<id:3>","comment":"nicht erlaubt","decision":"deny","via":"user"},"turn_id":"<id:1>","type":"approval.resolved"}
+{"has_raw":true,"payload":{"call_id":"<id:2>","duration_ms":0,"result":[{"content":{"text":"Permission denied","type":"text"},"type":"content"}],"status":"denied"},"turn_id":"<id:1>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"message_id":"msg_1_2","text":"abgelehnt."},"turn_id":"<id:1>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"abgelehnt.","type":"text"}],"message_id":"msg_1_2","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:1>","usage_summary":{}},"turn_id":"<id:1>","type":"turn.completed"}

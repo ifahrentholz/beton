@@ -1,0 +1,3 @@
+{"ms":2,"after_stdin":1,"out":"{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"agentCapabilities\":{\"loadSession\":true,\"mcpCapabilities\":{\"http\":false,\"sse\":false},\"promptCapabilities\":{\"audio\":false,\"embeddedContext\":false,\"image\":false}},\"agentInfo\":{\"name\":\"beton-fake-acp\",\"version\":\"0.1.0\"},\"authMethods\":[],\"protocolVersion\":1}}"}
+{"ms":2,"after_stdin":2,"out":"{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{\"sessionId\":\"sess_fakee8fefe07d3de\"}}"}
+{"ms":2,"after_stdin":3,"out":"{\"error\":{\"code\":-32603,\"message\":\"Interner Fehler des Agents\"},\"id\":3,\"jsonrpc\":\"2.0\"}"}
