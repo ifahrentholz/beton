@@ -34,12 +34,17 @@ trap cleanup EXIT
 
 if [[ $mode == sinkhole ]]; then
   ip link add sink0 type dummy
+  # Keine IPv6-Autokonfiguration: sonst sendet der Kernel selbst Router-Solicitations.
+  ip link set sink0 addrgenmode none 2>/dev/null || true
+  sysctl -qw net.ipv6.conf.sink0.router_solicitations=0 net.ipv6.conf.sink0.accept_ra=0 2>/dev/null || true
   ip addr add 192.0.2.1/24 dev sink0
   ip -6 addr add 2001:db8::1/64 dev sink0 nodad 2>/dev/null || true
   ip link set sink0 up
   ip route add default via 192.0.2.254 dev sink0
   ip -6 route add default via 2001:db8::fe dev sink0 2>/dev/null || true
-  tcpdump -i sink0 -n -U -w "$out/sink0.pcap" 2>"$out/tcpdump.log" &
+  # ICMPv6 (Neighbor Discovery, MLD) erzeugt der Kernel für das Interface selbst;
+  # Verbindungsversuche sind TCP und UDP (inkl. DNS an externe Server).
+  tcpdump -i sink0 -n -U -w "$out/sink0.pcap" 'not icmp6' 2>"$out/tcpdump.log" &
   pids+=($!)
   python3 "$repo/scripts/dns-sinkhole.py" "$out/dns.log" &
   pids+=($!)
