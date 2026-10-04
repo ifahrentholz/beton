@@ -45,6 +45,13 @@ Options:
       --title <T>
           Titel der neuen Session
 
+      --worktree [<BRANCH>]
+          Session in einem eigenen `git worktree` mit eigenem Branch starten (Default-Branch
+          `beton/<titel>-<id4>`; ein vorhandener Branch wird ausgecheckt)
+
+      --base <BRANCH>
+          Base des Worktrees (Default: `origin/HEAD`, sonst der aktuelle Branch)
+
       --detach
           Session anlegen, ID ausgeben und nicht anhängen
 

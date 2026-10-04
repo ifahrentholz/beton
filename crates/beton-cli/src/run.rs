@@ -105,7 +105,26 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
             if let Some(m) = &args.model {
                 body["model"] = Value::String(m.clone());
             }
+            // SES-015: eigener Worktree, optional mit Branch-Name und Base.
+            if let Some(branch) = &args.worktree {
+                let mut wt = json!({});
+                if !branch.is_empty() {
+                    wt["branch"] = Value::String(branch.clone());
+                }
+                if let Some(base) = &args.base {
+                    wt["base"] = Value::String(base.clone());
+                }
+                body["worktree"] = wt;
+            }
             let created = client.create_session(&body).await?;
+            if let Some(wt) = created.get("worktree").filter(|w| w.is_object()) {
+                ctx.note(format!(
+                    "Worktree {} (Branch {}, Base {})",
+                    wt["path"].as_str().unwrap_or_default(),
+                    wt["branch"].as_str().unwrap_or_default(),
+                    wt["base"].as_str().unwrap_or_default()
+                ));
+            }
             let id = created["id"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("Antwort ohne Session-ID"))?

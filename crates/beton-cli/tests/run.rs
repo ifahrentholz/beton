@@ -640,3 +640,111 @@ async fn web_018_ac3_without_tty_on_ask_wait_leaves_the_decision_to_the_web() {
         stderr(&out)
     );
 }
+
+// --------------------------------------------------------------------------- SES-015 / SES-016
+
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+        ])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+/// Repository mit `main` im Arbeitsverzeichnis des Daemons.
+fn repo(serve: &Serve) -> std::path::PathBuf {
+    let repo = serve.work.path().join("projekt");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "--quiet", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "hallo\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "start"]);
+    repo.canonicalize().unwrap()
+}
+
+#[tokio::test]
+async fn cli_002_ac3_run_with_worktree_starts_the_session_in_a_new_worktree() {
+    let serve = Serve::start();
+    let repo = repo(&serve);
+    let scenario = serve.scenario("turns: []");
+    let out = run(beton(serve.home())
+        .current_dir(&repo)
+        .args(["run", "fake", "--detach", "--json", "--title", "Neue Suche"])
+        .args(["--worktree", "--base", "main", "--scenario"])
+        .arg(&scenario));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let id = v["session_id"].as_str().unwrap();
+    let session = serve.client().session(id).await.unwrap();
+    let wt = &session["worktree"];
+    let branch = wt["branch"].as_str().unwrap();
+    assert!(branch.starts_with("beton/neue-suche-"), "{branch}");
+    assert_eq!(wt["base"], "main");
+    let path = Path::new(wt["path"].as_str().unwrap());
+    assert!(path.starts_with(serve.home().canonicalize().unwrap().join("worktrees")));
+    assert!(path.join("README.md").is_file());
+    assert!(git(&repo, &["worktree", "list"]).contains(&path.display().to_string()));
+    assert!(stderr(&out).contains("Worktree "), "{}", stderr(&out));
+
+    // Mit Branch-Name; unbekannte Base: Fehler mit verfügbaren Branches, keine Session.
+    let out = run(beton(serve.home())
+        .current_dir(&repo)
+        .args([
+            "run",
+            "fake",
+            "--detach",
+            "--worktree=feature/x",
+            "--base",
+            "gibt-es-nicht",
+        ])
+        .arg("--scenario")
+        .arg(&scenario));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("main"), "{}", stderr(&out));
+    assert_eq!(serve.client().all_sessions(true).await.unwrap().len(), 1);
+    // `--base` ohne `--worktree` ist ein Usage-Fehler.
+    let out = run(beton(serve.home()).args(["run", "fake", "--base", "main"]));
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[tokio::test]
+async fn ses_016_ac1_session_delete_asks_before_losing_uncommitted_work() {
+    let serve = Serve::start();
+    let repo = repo(&serve);
+    let scenario = serve.scenario("turns: []");
+    let created = serve
+        .client()
+        .create_session(&json!({
+            "target": "fake", "cwd": repo, "harness_opts": {"scenario": scenario},
+            "worktree": {}
+        }))
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let path = std::path::PathBuf::from(created["worktree"]["path"].as_str().unwrap());
+    std::fs::write(path.join("wip.txt"), "x\n").unwrap();
+    let out = run(beton(serve.home()).args(["session", "delete", &id]));
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("--uncommitted commit|discard"), "{err}");
+    assert!(path.join("wip.txt").is_file());
+    let out = run(beton(serve.home()).args(["session", "delete", &id, "--uncommitted", "discard"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!path.exists());
+    assert!(serve.client().all_sessions(true).await.unwrap().is_empty());
+}
