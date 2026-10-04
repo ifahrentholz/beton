@@ -53,6 +53,10 @@ pub struct ForkSession {
     /// Ziel-Harness; ohne Angabe der Harness der Quelle.
     pub harness: Option<String>,
     pub model: Option<String>,
+    /// Reasoning-Effort des Forks (HAR-017, #110).
+    pub effort: Option<String>,
+    /// Permission-Mode des Forks (HAR-027, #110).
+    pub permission_mode: Option<String>,
     /// Ohne Angabe `new_worktree`, wenn die Quelle in einem Git-Repository arbeitet, sonst
     /// `shared`.
     pub workspace: Option<ForkWorkspace>,
@@ -159,8 +163,15 @@ impl SessionManager<'_> {
         }
         // Workspace (SES-006, SES-015).
         let source_root = self.workspace_root(&record).await?;
-        self.check_target(&target, created.agent_ref.as_deref(), &source_root)
+        let target_caps = self
+            .check_target(&target, created.agent_ref.as_deref(), &source_root)
             .await?;
+        // Effort und Permission-Mode gegen den Ziel-Harness (HAR-017, HAR-027, #110).
+        crate::settings::validate_start(
+            Some(&target_caps),
+            req.effort.as_deref(),
+            req.permission_mode.as_deref(),
+        )?;
         let in_repo = {
             let root = source_root.clone();
             tokio::task::spawn_blocking(move || beton_git::worktree::main_checkout(&root).is_ok())
@@ -239,6 +250,8 @@ impl SessionManager<'_> {
                     harness: target.to_string(),
                     cwd,
                     model: req.model.clone(),
+                    effort: req.effort.clone(),
+                    permission_mode: req.permission_mode.clone(),
                     agent_ref: created.agent_ref.clone(),
                     project_id: record.project_id,
                     parent_id: None,
@@ -333,41 +346,14 @@ impl SessionManager<'_> {
     }
 
     /// Prüft den Ziel-Harness (SES-007): bekannt, Verlauf übernehmbar und passend zum Agent.
+    /// Liefert seine Capabilities laut Katalog.
     async fn check_target(
         &self,
         target: &beton_harness::HarnessId,
         agent_ref: Option<&str>,
         workdir: &std::path::Path,
-    ) -> Result<(), Problem> {
-        let probe = beton_harness::ProbeReport::default();
-        let mode = beton_harness::Mode::Native;
-        let caps = if target.as_str() == beton_harness::HarnessId::FAKE {
-            Some(beton_harness::fake::default_capabilities())
-        } else if let Some(a) = self.state().runtime.harnesses.get(target) {
-            Some(a.capabilities(mode, &probe))
-        } else {
-            // ACP-Agents (HAR-008) und Direkt-API-Provider (HAR-011) aus der Konfiguration.
-            let layers = beton_harness::registry::HarnessLayers {
-                user: self.cfg().harnesses_user.clone(),
-                project: beton_harness::registry::HarnessesConfig::load_project(workdir)
-                    .unwrap_or_default(),
-                user_file: None,
-                project_file: None,
-                // Direkt-API-Provider nur aus der User-Konfiguration (HAR-011).
-                providers: self.cfg().providers.clone(),
-            };
-            let mut r =
-                beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions {
-                    dev: false,
-                });
-            beton_harness_acp::register(&mut r, &layers);
-            beton_harness_direct::register(
-                &mut r,
-                &layers.providers,
-                &beton_harness_direct::DirectOptions::default(),
-            );
-            r.get(target).map(|a| a.capabilities(mode, &probe))
-        };
+    ) -> Result<beton_harness::Capabilities, Problem> {
+        let caps = self.catalog_caps(target, workdir);
         let Some(caps) = caps else {
             return Err(incompatible(format!(
                 "Harness `{target}` ist auf diesem Host nicht verfügbar."
@@ -391,7 +377,7 @@ impl SessionManager<'_> {
                 )));
             }
         }
-        Ok(())
+        Ok(caps)
     }
 
     /// Übernimmt Inhalts-Events in die neue Session (neue IDs und `seq`, sonst unverändert).

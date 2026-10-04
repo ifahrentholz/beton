@@ -382,6 +382,8 @@ async fn import_one(
                 harness: harness.to_string(),
                 cwd,
                 model: t.model.clone(),
+                effort: None,
+                permission_mode: None,
                 agent_ref: None,
                 project_id: None,
                 parent_id: None,

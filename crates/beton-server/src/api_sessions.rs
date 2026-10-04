@@ -49,6 +49,16 @@ pub struct CreateSessionRequest {
     pub title: Option<String>,
     #[ts(optional)]
     pub model: Option<String>,
+    /// Reasoning-Effort (`low`, `medium`, `high`, `xhigh`); eine Stufe, die der Harness nicht
+    /// kennt, wird auf die nächstniedrigere gemappt (HAR-017).
+    #[serde(default)]
+    #[ts(optional)]
+    pub effort: Option<String>,
+    /// Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`; HAR-027). `yolo` braucht
+    /// Tool-Sandbox und Egress-Proxy, sonst `409 sandbox_required`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub permission_mode: Option<String>,
     /// Harness-spezifische Optionen, z. B. `{"scenario": "…"}` beim Fake-Harness.
     #[serde(default)]
     #[schema(value_type = Object)]
@@ -84,7 +94,7 @@ pub struct WorktreeRequest {
 #[utoipa::path(post, path = "/v1/sessions", tag = "sessions",
     request_body = CreateSessionRequest,
     responses((status = 201, description = "Session angelegt", body = SessionSummary),
-              (status = 409, description = "Worktree gewünscht, aber kein Git-Repository", body = Problem, content_type = "application/problem+json"),
+              (status = 409, description = "Worktree gewünscht, aber kein Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported`, wenn der Harness Effort bzw. Permission-Mode nicht kennt", body = Problem, content_type = "application/problem+json"),
               (status = 422, description = "Base nicht auflösbar; nennt die verfügbaren Branches", body = Problem, content_type = "application/problem+json")))]
 pub async fn create_session(
     State(state): State<AppState>,
@@ -101,6 +111,8 @@ pub async fn create_session(
                 cwd: req.cwd,
                 title: req.title,
                 model: req.model,
+                effort: req.effort,
+                permission_mode: req.permission_mode,
                 harness_opts: req.harness_opts,
                 worktree: req.worktree.map(|w| crate::sessions::WorktreeSpec {
                     branch: w.branch,
@@ -133,6 +145,14 @@ pub struct ForkRequest {
     #[serde(default)]
     #[ts(optional)]
     pub model: Option<String>,
+    /// Reasoning-Effort des Forks (HAR-017), gegen den Ziel-Harness geprüft.
+    #[serde(default)]
+    #[ts(optional)]
+    pub effort: Option<String>,
+    /// Permission-Mode des Forks (HAR-027); `yolo` ohne Sandbox: `409 sandbox_required`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub permission_mode: Option<String>,
     /// `new_worktree` (Default, falls die Quelle in einem Git-Repository arbeitet), `shared`
     /// oder `fresh`. Dateien werden nie auf den Stand von `at_seq` zurückgesetzt.
     #[serde(default)]
@@ -166,7 +186,7 @@ pub struct ForkResponse {
     params(("id" = String, Path)),
     request_body = ForkRequest,
     responses((status = 201, description = "Fork angelegt; Runner startet", body = ForkResponse),
-              (status = 409, description = "`new_worktree` ohne Git-Repository", body = Problem, content_type = "application/problem+json"),
+              (status = 409, description = "`new_worktree` ohne Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported` bei Effort bzw. Permission-Mode, die der Ziel-Harness nicht kennt", body = Problem, content_type = "application/problem+json"),
               (status = 422, description = "`harness_incompatible`: Ziel-Harness passt nicht", body = Problem, content_type = "application/problem+json")))]
 pub async fn fork_session(
     State(state): State<AppState>,
@@ -184,6 +204,8 @@ pub async fn fork_session(
                 at_seq: req.at_seq,
                 harness: req.harness,
                 model: req.model,
+                effort: req.effort,
+                permission_mode: req.permission_mode,
                 workspace: req.workspace,
                 title: req.title,
                 harness_opts: req.harness_opts,
@@ -225,13 +247,21 @@ pub struct SessionSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub effort: Option<String>,
+    /// `plan`, `default`, `accept_edits` oder `yolo` (HAR-027).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub permission_mode: Option<String>,
 }
 
-/// Einstellungen ändern (z. B. Modell); ohne Capability `capability_unsupported` (HAR-002 AC3).
+/// Einstellungen ändern: Titel, Modell, Effort, Permission-Mode (HAR-017, HAR-027). Ohne
+/// Capability `capability_unsupported` (HAR-002 AC3), `yolo` ohne Sandbox
+/// `sandbox_required`. Während eines Turns gilt ein Wechsel ab dem nächsten Turn; er erscheint
+/// als `session.settings_changed` mit `effective_from_turn`.
 #[utoipa::path(patch, path = "/v1/sessions/{id}", tag = "sessions",
     params(("id" = String, Path)),
     request_body = SessionSettings,
-    responses((status = 200, description = "Geändert", body = SessionSummary)))]
+    responses((status = 200, description = "Geändert bzw. für das Turn-Ende vorgemerkt", body = SessionSummary),
+              (status = 409, description = "`capability_unsupported`, `sandbox_required` oder Session läuft nicht", body = Problem, content_type = "application/problem+json")))]
 pub async fn patch_session(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
@@ -245,7 +275,7 @@ pub async fn patch_session(
             .rename(id, &title, principal(auth).1)
             .await?;
     }
-    if req.model.is_some() || req.effort.is_some() {
+    if req.model.is_some() || req.effort.is_some() || req.permission_mode.is_some() {
         let args = serde_json::to_value(&req).map_err(|e| Problem::internal(&e))?;
         state.sessions().set(id, args).await?;
     }
@@ -959,11 +989,17 @@ impl Command for SessionSet {
         session: Option<SessionId>,
         args: Value,
     ) -> Result<Value, Problem> {
-        ctx.state
+        // Antwort des Runners: `{mechanism, effective_from_turn}` bzw. `{deferred: true}`.
+        let result = ctx
+            .state
             .sessions()
             .set(need_session(session)?, args)
             .await?;
-        Ok(serde_json::json!({}))
+        Ok(if result.is_object() {
+            result
+        } else {
+            serde_json::json!({})
+        })
     }
 }
 

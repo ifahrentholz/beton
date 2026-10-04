@@ -186,6 +186,7 @@ impl RunnerRegistry {
 fn runner_code(problem: &Value) -> ProblemCode {
     match problem["code"].as_str().unwrap_or_default() {
         "capability_unsupported" => ProblemCode::CapabilityUnsupported,
+        "sandbox_required" => ProblemCode::SandboxRequired,
         "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
         "not_found" => ProblemCode::NotFound,
         "no_active_turn" => ProblemCode::NoActiveTurn,

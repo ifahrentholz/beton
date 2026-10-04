@@ -66,6 +66,8 @@ problem_codes! {
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
     NotAGitRepo = "not_a_git_repo", 409, "Kein Git-Repository";
+    /// `yolo` ohne Tool-Sandbox Stufe 2 und Egress-Proxy (HAR-027 AC1).
+    SandboxRequired = "sandbox_required", 409, "Sandbox erforderlich";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
     WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
     Tombstoned = "tombstoned", 410, "Gelöscht";

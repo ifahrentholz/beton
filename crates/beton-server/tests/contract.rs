@@ -238,6 +238,8 @@ async fn create_sessions(t: &TestApp, n: usize) {
                     harness: "fake".into(),
                     cwd: "/".into(),
                     model: None,
+                    effort: None,
+                    permission_mode: None,
                     agent_ref: None,
                     project_id: None,
                     parent_id: None,

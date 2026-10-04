@@ -103,6 +103,13 @@
           "description": "`models` ist die zuletzt erfolgreich abgerufene Liste, weil die Modell-Discovery des\nAnbieters gerade fehlschlägt (HAR-011 AC3); der Picker kennzeichnet sie als veraltet.",
           "type": "boolean"
         },
+        "permission_modes": {
+          "description": "Permission-Modes, die der Harness abbilden kann (HAR-027); andere lehnt beton mit\n`capability_unsupported` ab. `yolo` braucht zusätzlich Sandbox und Egress-Proxy.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PermissionMode"
+          }
+        },
         "resume": {
           "$ref": "#/$defs/ResumeSupport"
         },
@@ -228,6 +235,31 @@
       "enum": [
         "native",
         "tui"
+      ]
+    },
+    "PermissionMode": {
+      "description": "Permission-Mode einer Session (HAR-027); auch Feld `executor.permission_mode` im Agent.",
+      "oneOf": [
+        {
+          "description": "Nur lesen und planen.",
+          "type": "string",
+          "const": "plan"
+        },
+        {
+          "description": "Vendor-Default; Freigaben laut Policy.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Datei-Edits im Worktree ohne Rückfrage.",
+          "type": "string",
+          "const": "accept_edits"
+        },
+        {
+          "description": "Keine Vendor-Rückfragen; nur mit Tool-Sandbox Stufe 2 und Egress-Proxy startbar.",
+          "type": "string",
+          "const": "yolo"
+        }
       ]
     },
     "ProbeReport": {

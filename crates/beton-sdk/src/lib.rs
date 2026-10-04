@@ -46,8 +46,9 @@ pub enum Error {
     /// Server nicht erreichbar (CLI-Exit-Code 7).
     #[error("Server unter {url} nicht erreichbar: {reason}")]
     Unreachable { url: String, reason: String },
-    /// Fehlerantwort als RFC-9457-Problem.
-    #[error("{title} ({status}){}", detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default())]
+    /// Fehlerantwort als RFC-9457-Problem; die Meldung nennt auch den maschinenlesbaren Code,
+    /// z. B. `Sandbox erforderlich (409 sandbox_required): …`.
+    #[error("{title} ({status}{}){}", if code.is_empty() { String::new() } else { format!(" {code}") }, detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default())]
     Problem {
         status: u16,
         code: String,

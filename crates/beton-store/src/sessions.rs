@@ -31,6 +31,10 @@ pub struct NewSession {
     pub harness: String,
     pub cwd: String,
     pub model: Option<String>,
+    /// Reasoning-Effort beim Start (HAR-017).
+    pub effort: Option<String>,
+    /// Permission-Mode beim Start (HAR-027).
+    pub permission_mode: Option<String>,
     pub agent_ref: Option<String>,
     pub project_id: Option<ProjectId>,
     pub parent_id: Option<SessionId>,
@@ -289,6 +293,8 @@ impl Store {
                 harness: new.harness.clone(),
                 agent_ref: new.agent_ref.clone(),
                 model: new.model.clone(),
+                effort: new.effort.clone(),
+                permission_mode: new.permission_mode.clone(),
                 cwd: new.cwd.clone(),
                 project_id: new.project_id,
                 parent_session_id: new.parent_id,

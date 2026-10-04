@@ -16,6 +16,14 @@ at_seq?: number,
  */
 harness?: string, model?: string, 
 /**
+ * Reasoning-Effort des Forks (HAR-017), gegen den Ziel-Harness geprüft.
+ */
+effort?: string, 
+/**
+ * Permission-Mode des Forks (HAR-027); `yolo` ohne Sandbox: `409 sandbox_required`.
+ */
+permission_mode?: string, 
+/**
  * `new_worktree` (Default, falls die Quelle in einem Git-Repository arbeitet), `shared`
  * oder `fresh`. Dateien werden nie auf den Stand von `at_seq` zurückgesetzt.
  */
