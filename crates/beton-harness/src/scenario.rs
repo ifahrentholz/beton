@@ -13,6 +13,8 @@
 //! ```
 //!
 //! `await_steer: "<Text>"` wartet im laufenden Turn auf eine Steer-Eingabe (SES-004).
+//! `echo_input: true` gibt die Eingabe des Turns zurück, `echo_history: true` die
+//! Nutzer-Nachrichten des nativen Verlaufs (Fork, HAR-018/HAR-019).
 
 use std::path::Path;
 
@@ -144,6 +146,15 @@ pub struct Step {
     /// Diffs, SES-017/SES-018). Der Pfad ist relativ; `..` und absolute Pfade sind ungültig.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write_file: Option<WriteFileStep>,
+    /// Die Eingabe dieses Turns unverändert als Nachricht des Agents zurückgeben, z. B. um
+    /// zu prüfen, was beim Harness ankommt (Präambel beim Fork, HAR-018 AC1).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub echo_input: bool,
+    /// Die Nutzer-Nachrichten, die der Harness aus seinem nativen Verlauf kennt, als Nachricht
+    /// des Agents ausgeben (eine Zeile je Nachricht, HAR-019). Nur die Fake-CLI im Protokoll
+    /// `stream-json` mit `--persist` hat einen Verlauf; sonst ist die Nachricht leer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub echo_history: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +237,28 @@ pub enum ScenarioError {
     Invalid(String),
 }
 
+/// Ersetzt `echo_input` und `echo_history` (auch in `on_gate`-Zweigen) durch `message`-Schritte
+/// mit der Eingabe bzw. den bekannten Nutzer-Nachrichten (eine Zeile je Nachricht).
+pub fn resolve_echo(steps: &[Step], input: &str, history: &[String]) -> Vec<Step> {
+    steps
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            if s.echo_input {
+                s.echo_input = false;
+                s.message = Some(input.to_owned());
+            } else if s.echo_history {
+                s.echo_history = false;
+                s.message = Some(history.join("\n"));
+            } else if let Some(g) = &mut s.on_gate {
+                g.allow = resolve_echo(&g.allow, input, history);
+                g.deny = resolve_echo(&g.deny, input, history);
+            }
+            s
+        })
+        .collect()
+}
+
 impl Step {
     /// Namen der gesetzten Aktionen (für die Validierung).
     fn actions(&self) -> Vec<&'static str> {
@@ -250,6 +283,8 @@ impl Step {
         add(self.hang, "hang");
         add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
+        add(self.echo_input, "echo_input");
+        add(self.echo_history, "echo_history");
         out
     }
 

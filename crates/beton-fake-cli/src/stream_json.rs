@@ -5,7 +5,9 @@
 use std::io::{BufRead, Write};
 use std::time::Duration;
 
-use beton_harness::scenario::{Scenario, Step, Usage};
+use std::path::{Path, PathBuf};
+
+use beton_harness::scenario::{Scenario, Step, Usage, resolve_echo};
 use serde_json::{Value, json};
 
 use crate::io::{Lines, Stop, fnv};
@@ -20,8 +22,53 @@ enum TurnEnd {
     AuthFailed(String),
 }
 
+/// Fortsetzen, Abzweigen und Ablage der Sessions wie bei der echten CLI.
+#[derive(Debug, Default)]
+pub struct Resume {
+    /// `--resume <id>`.
+    pub session: Option<String>,
+    /// `--fork-session`.
+    pub fork: bool,
+    /// Projektverzeichnis der Session-Dateien (`--persist`).
+    pub persist: Option<PathBuf>,
+}
+
+/// Projektverzeichnis wie bei Claude Code: `<config>/projects/<cwd>`, jedes Zeichen außer
+/// ASCII-Buchstaben und -Ziffern wird zu `-` (wie `beton_harness_claude::project_dir`).
+pub fn project_dir(config: &Path, cwd: &Path) -> PathBuf {
+    let slug: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    config.join("projects").join(slug)
+}
+
+/// Nutzer-Texte einer Session-Datei (ohne reine Tool-Results).
+fn user_texts(lines: &[Value]) -> Vec<String> {
+    lines
+        .iter()
+        .filter(|l| l["type"] == "user")
+        .map(|l| match &l["message"]["content"] {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter(|p| p["type"] == "text")
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        })
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
 pub struct Sim<R, W> {
     io: Lines<R, W>,
+    /// Nutzer-Nachrichten des nativen Verlaufs (für `echo_history`).
+    history: Vec<String>,
+    /// Datei der laufenden Session, wenn Sessions abgelegt werden.
+    file: Option<PathBuf>,
     partial: bool,
     session_id: String,
     model: String,
@@ -35,19 +82,45 @@ impl<R: BufRead, W: Write> Sim<R, W> {
     pub fn new(
         scenario: &Scenario,
         partial: bool,
-        resume: Option<String>,
+        resume: Resume,
         mcp_configs: Vec<ServerConfig>,
         input: R,
         out: W,
     ) -> Self {
         let seed = fnv(&format!("{scenario:?}"));
+        let uuid = |n: u64| format!("00000000-0000-4000-8000-{:012x}", n & 0xffff_ffff_ffff);
+        // Wie die echte CLI: `--resume <id>` setzt die Session fort, mit `--fork-session` unter
+        // neuer ID.
+        let session_id = match &resume.session {
+            Some(id) if resume.fork => uuid(fnv(&format!("fork:{id}"))),
+            Some(id) => id.clone(),
+            None => uuid(seed),
+        };
+        let mut lines: Vec<Value> = Vec::new();
+        if let (Some(dir), Some(id)) = (&resume.persist, &resume.session) {
+            let text = std::fs::read_to_string(dir.join(format!("{id}.jsonl"))).unwrap_or_default();
+            lines = text
+                .lines()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+        }
+        let file = resume
+            .persist
+            .as_ref()
+            .map(|dir| dir.join(format!("{session_id}.jsonl")));
+        if let Some(f) = &file
+            && resume.fork
+        {
+            let copied: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            let _ = std::fs::create_dir_all(f.parent().unwrap_or(Path::new(".")));
+            let _ = std::fs::write(f, copied);
+        }
         Self {
             io: Lines::new(input, out, scenario.faults),
+            history: user_texts(&lines),
+            file,
             partial,
-            // Wie die echte CLI: `--resume <id>` setzt die Session fort.
-            session_id: resume.unwrap_or_else(|| {
-                format!("00000000-0000-4000-8000-{:012x}", seed & 0xffff_ffff_ffff)
-            }),
+            session_id,
             model: "claude-fake".into(),
             ids: 0,
             initialized: false,
@@ -123,18 +196,47 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         self.result(TurnEnd::Failed(why), "", &Usage::default())?;
                         continue;
                     }
-                    self.turn(&turn.emit)?;
+                    let steps = resolve_echo(&turn.emit, &text, &self.history);
+                    self.record("user", json!(text));
+                    self.history.push(text);
+                    let last = self.turn(&steps)?;
+                    if !last.is_empty() {
+                        self.record("assistant", json!([{"type": "text", "text": last}]));
+                    }
                 }
                 _ => {} // Andere Nachrichten ignoriert die echte CLI ebenfalls.
             }
         }
     }
 
-    fn turn(&mut self, steps: &[Step]) -> Result<(), Stop> {
+    /// Liefert den letzten Text des Agents.
+    fn turn(&mut self, steps: &[Step]) -> Result<String, Stop> {
         let mut state = TurnState::default();
         let end = self.steps(steps, &mut state)?;
         let usage = state.usage.clone();
-        self.result(end, &state.last_text, &usage)
+        self.result(end, &state.last_text, &usage)?;
+        Ok(state.last_text)
+    }
+
+    /// Hängt einen Eintrag an die Session-Datei (nur mit `--persist`).
+    fn record(&self, kind: &str, content: Value) {
+        let Some(file) = &self.file else { return };
+        let line = json!({
+            "type": kind,
+            "sessionId": self.session_id,
+            "message": {"role": kind, "content": content},
+        });
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file)
+        {
+            let _ = writeln!(f, "{line}");
+        }
     }
 
     fn steps(&mut self, steps: &[Step], state: &mut TurnState) -> Result<TurnEnd, Stop> {
