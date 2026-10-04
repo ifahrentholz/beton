@@ -6,6 +6,7 @@
 //! - `schemas/v1/harness-catalog.schema.json` (Harness-Katalog mit Capabilities, HAR-002 AC4)
 //! - `schemas/v1/config.schema.json` (`config.yaml`, CLI-008)
 //! - `schemas/v1/agent.schema.json` (`agent.yaml`, Agent-Format v1, AGT-002)
+//! - `schemas/v1/mcp.schema.json` (`mcp.yaml` der User- und Projektebene, AGT-006)
 //! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
 //! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
@@ -81,6 +82,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         (
             "schemas/v1/setup-check.schema.json",
             schemars::schema_for!(beton_cli::setup::SetupReport),
+        ),
+        (
+            "schemas/v1/mcp.schema.json",
+            schemars::schema_for!(beton_mcp::config::McpFile),
         ),
     ] {
         let mut json = serde_json::to_string_pretty(&schema)?;

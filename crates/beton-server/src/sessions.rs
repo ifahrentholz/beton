@@ -25,6 +25,8 @@ use crate::problem::{Problem, ProblemCode};
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Höchstdauer eines synchronen `session_spawn` (wie `session_wait`, AGT-007).
+const SPAWN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Gestartete Runner dieses Knotens.
 #[derive(Default)]
@@ -67,6 +69,30 @@ impl std::fmt::Debug for SessionsConfig {
         f.debug_struct("SessionsConfig")
             .field("dev", &self.dev)
             .finish_non_exhaustive()
+    }
+}
+
+/// System-Tools, die der Runner über den Tunnel an den Server gibt (`system.call`, AGT-007).
+pub struct ServerSystemCalls(pub AppState);
+
+#[async_trait::async_trait]
+impl crate::tunnel::SystemCalls for ServerSystemCalls {
+    async fn call(&self, session: SessionId, tool: &str, args: Value) -> Result<Value, Value> {
+        let problem = |p: Problem| {
+            let v = serde_json::to_value(&p).unwrap_or(Value::Null);
+            json!({"code": v["code"], "detail": v["detail"]})
+        };
+        match tool {
+            "session.spawn" => self
+                .0
+                .sessions()
+                .spawn_child(session, &args)
+                .await
+                .map_err(problem),
+            other => Err(
+                json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
+            ),
+        }
     }
 }
 
@@ -429,6 +455,7 @@ impl<'a> SessionManager<'a> {
                     model: created.model.clone(),
                     dev: cfg.dev,
                     resume,
+                    agent_ref: created.agent_ref.clone(),
                     harnesses: beton_harness::registry::HarnessLayers {
                         user: cfg.harnesses_user.clone(),
                         project,
@@ -477,6 +504,17 @@ impl<'a> SessionManager<'a> {
         text: String,
         by: PrincipalId,
     ) -> Result<Value, Problem> {
+        self.input_as(session, text, by, user_actor(by)).await
+    }
+
+    /// Wie [`Self::input`], mit eigenem Akteur der Nachricht (z. B. der Parent-Agent).
+    async fn input_as(
+        &self,
+        session: SessionId,
+        text: String,
+        by: PrincipalId,
+        actor: Actor,
+    ) -> Result<Value, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
         if record.archived {
             return Err(Problem::new(ProblemCode::Conflict)
@@ -509,7 +547,7 @@ impl<'a> SessionManager<'a> {
         // vor der Zustellung, damit sie vor der Antwort steht.
         self.append(
             session,
-            user_actor(by),
+            actor,
             EventPayload::MessageCompleted(beton_core::event::MessageCompleted {
                 message_id: format!("msg_user_{}", RunnerId::new()),
                 role: beton_core::event::MessageRole::User,
@@ -603,6 +641,137 @@ impl<'a> SessionManager<'a> {
             )
             .await
             .map(|_| ())
+    }
+
+    /// `session_spawn` (AGT-007): Child-Session für einen erlaubten Sub-Agent starten, den
+    /// Auftrag zustellen, auf das Turn-Ende warten und die Abschlussnachricht liefern.
+    ///
+    /// Arbeitsverzeichnis, Owner und Projekt kommen aus der Parent-Session, nicht aus den
+    /// Argumenten; welcher Agent mit welchem Harness laufen darf, hat der Runner anhand von
+    /// `spawn.agents` entschieden. Grenzen wie `max_depth`, `max_concurrent` und eigene
+    /// Worktrees folgen mit AGT-009.
+    pub async fn spawn_child(&self, parent: SessionId, args: &Value) -> Result<Value, Problem> {
+        let invalid = |d: &str| Problem::new(ProblemCode::ValidationFailed).detail(d.to_owned());
+        let record = self.state.store.session(self.org(), parent).await?;
+        let created = self.created(parent).await?;
+        let harness: beton_harness::HarnessId = args["harness"]
+            .as_str()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|e| invalid(&format!("{e}")))?;
+        if harness.as_str() == beton_harness::HarnessId::FAKE && !self.cfg().dev {
+            return Err(invalid(
+                "Der Fake-Harness gibt es nur im Entwicklermodus (--dev).",
+            ));
+        }
+        let prompt = args["prompt"]
+            .as_str()
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| invalid("`prompt` fehlt"))?
+            .to_owned();
+        let agent = args["agent"].as_str().unwrap_or("sub-agent").to_owned();
+        let child = self
+            .state
+            .store
+            .create_session(
+                self.org(),
+                NewSession {
+                    id: SessionId::new(),
+                    owner: record.owner,
+                    kind: SessionKind::Subagent,
+                    harness: harness.to_string(),
+                    cwd: created.cwd.clone(),
+                    model: args["model"].as_str().map(str::to_owned),
+                    agent_ref: None,
+                    project_id: record.project_id,
+                    parent_id: Some(parent),
+                    trigger: SessionTrigger::Spawn,
+                    home_node: self.state.local.node,
+                    harness_opts: Value::Null,
+                },
+            )
+            .await?;
+        let parent_actor = Actor::Agent {
+            id: None,
+            harness: record.harness.clone(),
+            agent_ref: created.agent_ref.clone(),
+        };
+        self.append(
+            child.id,
+            parent_actor.clone(),
+            EventPayload::SessionTitleChanged(SessionTitleChanged {
+                title: agent,
+                source: TitleSource::Generated,
+            }),
+        )
+        .await?;
+        self.launch(&child, None).await?;
+        self.wait_connected(child.id).await?;
+        let from = self
+            .state
+            .store
+            .session(self.org(), child.id)
+            .await?
+            .head_seq;
+        self.input_as(
+            child.id,
+            prompt,
+            PrincipalId::User(record.owner),
+            parent_actor,
+        )
+        .await?;
+        let (status, result) = self.wait_turn_end(child.id, from).await?;
+        Ok(json!({"session_id": child.id, "status": status, "result": result}))
+    }
+
+    /// Wartet auf das Ende des nächsten Turns ab `after`; liefert Status und letzte
+    /// Assistant-Nachricht.
+    async fn wait_turn_end(
+        &self,
+        session: SessionId,
+        after: u64,
+    ) -> Result<(&'static str, String), Problem> {
+        let deadline = Instant::now() + SPAWN_TIMEOUT;
+        let mut seq = after;
+        let mut last = String::new();
+        loop {
+            let page = self
+                .state
+                .store
+                .events(self.org(), session, seq, 500)
+                .await?;
+            for e in &page {
+                seq = e.seq;
+                match e.payload() {
+                    Some(EventPayload::MessageCompleted(m))
+                        if m.role == beton_core::event::MessageRole::Assistant =>
+                    {
+                        last = m
+                            .content
+                            .iter()
+                            .filter_map(|c| c["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("");
+                    }
+                    Some(EventPayload::TurnCompleted(_)) => return Ok(("completed", last)),
+                    Some(EventPayload::TurnFailed(_)) => return Ok(("failed", last)),
+                    Some(EventPayload::TurnInterrupted(_)) => return Ok(("interrupted", last)),
+                    Some(EventPayload::SessionStatus(st))
+                        if st.status == beton_core::event::SessionStatus::Failed =>
+                    {
+                        return Ok(("failed", last));
+                    }
+                    _ => {}
+                }
+            }
+            if page.is_empty() {
+                if Instant::now() > deadline {
+                    return Err(Problem::new(ProblemCode::Unavailable)
+                        .detail("Child-Session hat nicht rechtzeitig geantwortet"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
     }
 
     /// Archivieren: Runner beenden, Session ausblenden (SES-001 AC2).

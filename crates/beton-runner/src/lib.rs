@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+pub mod mcp;
 pub mod state;
 pub mod workspace;
 
@@ -52,6 +53,8 @@ pub mod env {
     pub const RESUME: &str = "BETON_RESUME";
     /// `harnesses:` aus User- und Projekt-Konfiguration als JSON (HAR-003, HAR-015).
     pub const HARNESSES: &str = "BETON_RUNNER_HARNESSES";
+    /// Agent der Session (`agent_ref`); bestimmt Tools, System-Tools und Skills (HAR-009).
+    pub const AGENT_REF: &str = "BETON_AGENT_REF";
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub const SNAPSHOTS: &str = "BETON_SNAPSHOTS";
 }
@@ -73,6 +76,8 @@ pub struct RunnerBoot {
     pub dev: bool,
     pub resume: Option<String>,
     pub harnesses: HarnessLayers,
+    /// Agent-Ref der Session (AGT-003), z. B. ein Pfad oder `builtin:<name>`.
+    pub agent_ref: Option<String>,
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub snapshots: Option<PathBuf>,
 }
@@ -126,6 +131,7 @@ impl RunnerBoot {
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::HARNESSES)))?,
                 Err(_) => HarnessLayers::default(),
             },
+            agent_ref: std::env::var(env::AGENT_REF).ok().filter(|r| !r.is_empty()),
             snapshots: std::env::var_os(env::SNAPSHOTS)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
@@ -424,13 +430,43 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         Some(adapter) => adapter.probe(&ctx.env).await,
         None => beton_harness::ProbeReport::default(),
     };
-    let capabilities = registry
+    let caps = registry
         .get(&boot.harness)
-        .map(|a| {
-            serde_json::to_value(a.capabilities(beton_harness::Mode::Native, &probe))
-                .unwrap_or(Value::Null)
-        })
+        .map(|a| a.capabilities(beton_harness::Mode::Native, &probe));
+    let capabilities = caps
+        .as_ref()
+        .and_then(|c| serde_json::to_value(c).ok())
         .unwrap_or(Value::Null);
+    // MCP-Server, System-Tools und Skills der Session (HAR-009, AGT-006 bis AGT-008).
+    let run_dir = boot
+        .socket
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    let setup = match caps.as_ref() {
+        Some(caps) => {
+            mcp::prepare(
+                boot.session_id,
+                &boot.harness,
+                caps,
+                &boot.workdir,
+                boot.agent_ref.as_deref(),
+                &boot.harnesses,
+                &mcp::Paths::from_process(run_dir),
+            )
+            .await
+        }
+        None => Ok(mcp::McpSetup::default()),
+    };
+    let mut setup = match setup {
+        Ok(s) => s,
+        Err(e) => {
+            // Fail closed: ohne ladbaren Agent startet die Session nicht.
+            let e = beton_harness::HarnessError::StartRefused(format!("Agent: {e}"));
+            report_start_failure(&boot, &e).await;
+            return Err(e.into());
+        }
+    };
     let session = registry
         .start(
             &boot.harness,
@@ -439,6 +475,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 model: boot.model.clone(),
                 scenario: boot.scenario.clone(),
                 resume: boot.resume.clone(),
+                mcp: setup.injection.clone(),
                 ..SessionSpec::default()
             },
             ctx,
@@ -489,6 +526,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut harness_rx = session
         .events()
         .ok_or(RunnerError::Boot("Event-Strom fehlt".into()))?;
+    // Hinweise und nicht injizierbare MCP-Server direkt nach dem Start.
+    let mut reported_failures: std::collections::HashSet<String> = Default::default();
+    for payload in std::mem::take(&mut setup.initial) {
+        if let EventPayload::McpServerFailed(f) = &payload {
+            reported_failures.insert(f.name.clone());
+        }
+        pending_status.push(system_event(&boot, payload));
+    }
+    let mut hub_events = setup.events.take();
+    let mut system_calls = setup.calls.take();
+    let mut pending_calls: HashMap<String, oneshot::Sender<Result<Value, Value>>> = HashMap::new();
+    let mut next_call: u64 = 0;
 
     // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018).
     let (files, files_notice) = open_tracker(&boot).await;
@@ -593,6 +642,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     let mut batch = Vec::with_capacity(incoming.len() + 4);
                     let mut exited = None;
                     for ev in incoming {
+                        // `mcp.server_failed` je Server nur einmal (Hub und Harness melden beide).
+                        if let EventPayload::McpServerFailed(f) = &ev.payload
+                            && !reported_failures.insert(f.name.clone())
+                        {
+                            continue;
+                        }
                         if let EventPayload::HarnessExited(x) = &ev.payload {
                             exited = Some(x.clone());
                         }
@@ -653,6 +708,25 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         return Ok(Exit::HarnessExited { code: x.code });
                     }
                 }
+                ev = recv_opt(&mut hub_events) => {
+                    let Some(payload) = ev else { hub_events = None; continue };
+                    if let EventPayload::McpServerFailed(f) = &payload
+                        && !reported_failures.insert(f.name.clone())
+                    {
+                        continue;
+                    }
+                    if !push(&mut ws, &boot, &mut unacked, vec![system_event(&boot, payload)]).await {
+                        break None;
+                    }
+                }
+                call = recv_opt(&mut system_calls) => {
+                    let Some(call) = call else { system_calls = None; continue };
+                    next_call += 1;
+                    let call_id = format!("sys_{next_call}");
+                    let up = TunnelUp::SystemCall { call_id: call_id.clone(), tool: call.tool, args: call.args };
+                    pending_calls.insert(call_id, call.reply);
+                    if !send(&mut ws, &up).await { break None; }
+                }
                 msg = ws.next() => {
                     let Some(Ok(msg)) = msg else { break None };
                     let Message::Text(text) = msg else { continue };
@@ -691,6 +765,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             tracing::warn!(?problem, "Tunnel-Problem");
                         }
+                        TunnelDown::SystemResult { call_id, result, problem } => {
+                            if let Some(reply) = pending_calls.remove(&call_id) {
+                                let _ = reply.send(match (result, problem) {
+                                    (Some(r), None) => Ok(r),
+                                    (_, p) => Err(p.unwrap_or_else(|| json!({"code": "internal"}))),
+                                });
+                            }
+                        }
                         TunnelDown::Welcome { .. } => {}
                     }
                 }
@@ -706,6 +788,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 }
             }
         };
+        // Offene System-Tool-Aufrufe scheitern mit der Verbindung (fail closed).
+        for (_, reply) in pending_calls.drain() {
+            let _ = reply.send(Err(
+                json!({"code": "unavailable", "detail": "Verbindung zum Server getrennt"}),
+            ));
+        }
         if let Some(exit) = outcome {
             return finish(session, exit).await;
         }
@@ -718,6 +806,25 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         tokio::time::sleep(backoff.next_delay()).await;
     }
+}
+
+/// Wartet auf den nächsten Wert; ohne Kanal nie.
+async fn recv_opt<T>(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+fn system_event(boot: &RunnerBoot, payload: EventPayload) -> Event {
+    Event::new(
+        boot.session_id,
+        0,
+        Actor::System {
+            component: beton_core::event::SystemComponent::Runner,
+        },
+        payload,
+    )
 }
 
 /// Öffnet das Schatten-Repository der Session; ohne Konfiguration oder ohne `git` keine

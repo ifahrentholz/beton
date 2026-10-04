@@ -23,6 +23,7 @@ beton-harness = { path = "crates/beton-harness", version = "0.0.0" }
 beton-harness-claude = { path = "crates/beton-harness-claude", version = "0.0.0" }
 beton-harness-codex = { path = "crates/beton-harness-codex", version = "0.0.0" }
 beton-harness-acp = { path = "crates/beton-harness-acp", version = "0.0.0" }
+beton-mcp = { path = "crates/beton-mcp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 beton-git = { path = "crates/beton-git", version = "0.0.0" }

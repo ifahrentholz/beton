@@ -182,6 +182,9 @@ impl RunnerProvider for LocalProvider {
         if let Some(m) = &boot.model {
             vars.push((beton_runner::env::MODEL.into(), m.clone()));
         }
+        if let Some(a) = &boot.agent_ref {
+            vars.push((beton_runner::env::AGENT_REF.into(), a.clone()));
+        }
         if let Some(dir) = &boot.snapshots {
             vars.push((
                 beton_runner::env::SNAPSHOTS.into(),

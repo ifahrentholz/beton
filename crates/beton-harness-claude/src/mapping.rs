@@ -59,6 +59,17 @@ pub fn unmapped(v: &Value) -> EventPayload {
     EventPayload::HarnessUnmapped(HarnessUnmapped { raw: v.clone() })
 }
 
+/// `mcp__<server>__<tool>` → (`tool`, `Some(server)`); andere Namen unverändert (HAR-009).
+pub fn split_mcp_name(name: &str) -> (String, Option<String>) {
+    name.strip_prefix("mcp__")
+        .and_then(|rest| rest.split_once("__"))
+        .filter(|(server, tool)| !server.is_empty() && !tool.is_empty())
+        .map_or_else(
+            || (name.to_owned(), None),
+            |(server, tool)| (tool.to_owned(), Some(server.to_owned())),
+        )
+}
+
 fn map_system(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     match v["subtype"].as_str() {
         Some("init") => {
@@ -138,13 +149,22 @@ fn map_assistant(v: &Value) -> Vec<EventPayload> {
                     redacted: true,
                 }));
             }
-            Some("tool_use") => out.push(EventPayload::ToolCallRequested(ToolCallRequested {
-                call_id: block["id"].as_str().unwrap_or_default().to_owned(),
-                tool: block["name"].as_str().unwrap_or_default().to_owned(),
-                mcp_server: None,
-                args: block["input"].clone(),
-                source: ToolSource::Harness,
-            })),
+            Some("tool_use") => {
+                let name = block["name"].as_str().unwrap_or_default();
+                let (tool, mcp_server) = split_mcp_name(name);
+                out.push(EventPayload::ToolCallRequested(ToolCallRequested {
+                    call_id: block["id"].as_str().unwrap_or_default().to_owned(),
+                    // System-Tools des Servers `beton` (AGT-007) als `source: beton_mcp`.
+                    source: if mcp_server.as_deref() == Some("beton") {
+                        ToolSource::BetonMcp
+                    } else {
+                        ToolSource::Harness
+                    },
+                    tool,
+                    mcp_server,
+                    args: block["input"].clone(),
+                }));
+            }
             _ => out.push(unmapped(block)),
         }
     }

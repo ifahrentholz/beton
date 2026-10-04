@@ -121,6 +121,8 @@ pub async fn run(cli: Cli) -> CliResult {
             .ok();
             runner_exit(beton_runner::main_from_env().await)
         }
+        // stdout gehört dem MCP-Protokoll: kein Log, keine weiteren Ausgaben.
+        Command::Mcp(args) => runner_exit(beton_mcp::relay::main(&args.args).await),
     }
 }
 
@@ -131,6 +133,7 @@ fn cli_logs(command: &Command) -> bool {
         command,
         Command::Serve(_)
             | Command::Runner
+            | Command::Mcp(_)
             | Command::Doctor
             | Command::Config(_)
             | Command::Agent(_)

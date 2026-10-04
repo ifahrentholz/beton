@@ -139,9 +139,37 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
         args.extend(["--resume".into(), resume.clone()]);
     }
     if isolated {
+        // `--safe-mode` schaltet auch per `--mcp-config` und `--plugin-dir` übergebene Server
+        // und Skills ab (gegen 2.1.285 verifiziert); daher keine Injektion (HAR-009).
         args.extend(["--safe-mode".into(), "--strict-mcp-config".into()]);
+    } else {
+        if let Some(config) = mcp_config(spec) {
+            args.extend(["--mcp-config".into(), config]);
+        }
+        if let Some(dir) = &spec.mcp.skills_dir {
+            args.extend(["--plugin-dir".into(), dir.display().to_string()]);
+        }
     }
     args
+}
+
+/// `--mcp-config` als JSON-Text (HAR-009): nur Relay-Kommandos, keine Env-Werte oder Tokens.
+pub fn mcp_config(spec: &SessionSpec) -> Option<String> {
+    if spec.mcp.servers.is_empty() {
+        return None;
+    }
+    let servers: serde_json::Map<String, Value> = spec
+        .mcp
+        .servers
+        .iter()
+        .map(|s| {
+            (
+                s.name.clone(),
+                json!({"type": "stdio", "command": s.command, "args": s.args}),
+            )
+        })
+        .collect();
+    Some(json!({"mcpServers": servers}).to_string())
 }
 
 #[async_trait]
@@ -155,7 +183,11 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn capabilities(&self, _mode: Mode, _probe: &ProbeReport) -> Capabilities {
-        capabilities()
+        Capabilities {
+            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009).
+            mcp_injection: !self.isolated,
+            ..capabilities()
+        }
     }
 
     async fn probe(&self, env: &HostEnv) -> ProbeReport {
@@ -483,6 +515,7 @@ pub fn tool_kind(tool: &str) -> &'static str {
         "Edit" | "MultiEdit" | "NotebookEdit" => "file_edit",
         "Glob" | "Grep" => "search",
         "WebFetch" | "WebSearch" => "web_fetch",
+        t if t.starts_with("mcp__beton__") => "system",
         t if t.starts_with("mcp__") => "mcp",
         _ => "other",
     }
@@ -632,5 +665,119 @@ mod auth_tests {
         );
         assert_eq!(parse_auth_status(b"Logged in as x"), AuthStatus::Unknown);
         assert_eq!(parse_auth_status(b""), AuthStatus::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod mcp_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::{McpInjection, McpLaunch};
+
+    fn spec() -> SessionSpec {
+        SessionSpec {
+            mcp: McpInjection {
+                servers: vec![
+                    McpLaunch {
+                        name: "beton".into(),
+                        command: "/bin/beton".into(),
+                        args: vec![
+                            "mcp".into(),
+                            "serve".into(),
+                            "--token-file".into(),
+                            "/run/t".into(),
+                        ],
+                    },
+                    McpLaunch {
+                        name: "gh".into(),
+                        command: "/bin/beton".into(),
+                        args: vec!["mcp".into(), "proxy".into(), "--server".into(), "gh".into()],
+                    },
+                ],
+                skills_dir: Some("/run/skills".into()),
+            },
+            ..SessionSpec::default()
+        }
+    }
+
+    fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    }
+
+    #[test]
+    fn har_009_claude_gets_relays_via_mcp_config_and_skills_via_plugin_dir() {
+        let args = command_args(&spec(), false);
+        let config: Value =
+            serde_json::from_str(arg_after(&args, "--mcp-config").unwrap()).unwrap();
+        assert_eq!(config["mcpServers"]["beton"]["type"], "stdio");
+        assert_eq!(config["mcpServers"]["beton"]["command"], "/bin/beton");
+        assert_eq!(config["mcpServers"]["gh"]["args"][3], "gh");
+        // Nur Relay-Kommandos, keine Env-Blöcke.
+        assert!(config["mcpServers"]["gh"].get("env").is_none());
+        assert_eq!(arg_after(&args, "--plugin-dir"), Some("/run/skills"));
+        // Ohne Injektion keine Flags.
+        let plain = command_args(&SessionSpec::default(), false);
+        assert!(
+            !plain
+                .iter()
+                .any(|a| a == "--mcp-config" || a == "--plugin-dir")
+        );
+    }
+
+    #[test]
+    fn har_009_isolated_mode_has_no_mcp_injection() {
+        let args = command_args(&spec(), true);
+        assert!(args.iter().any(|a| a == "--safe-mode"));
+        assert!(
+            !args
+                .iter()
+                .any(|a| a == "--mcp-config" || a == "--plugin-dir")
+        );
+        let isolated = ClaudeAdapter {
+            isolated: true,
+            ..ClaudeAdapter::default()
+        };
+        assert!(
+            !isolated
+                .capabilities(Mode::Native, &ProbeReport::default())
+                .mcp_injection
+        );
+        assert!(
+            ClaudeAdapter::default()
+                .capabilities(Mode::Native, &ProbeReport::default())
+                .mcp_injection
+        );
+    }
+
+    #[test]
+    fn agt_007_system_tools_are_classified_as_system() {
+        assert_eq!(tool_kind("mcp__beton__policy_query"), "system");
+        assert_eq!(tool_kind("mcp__gh__get"), "mcp");
+        assert_eq!(
+            mapping::split_mcp_name("mcp__beton__session_spawn"),
+            ("session_spawn".to_owned(), Some("beton".to_owned()))
+        );
+        assert_eq!(mapping::split_mcp_name("Bash"), ("Bash".to_owned(), None));
+        assert_eq!(
+            mapping::split_mcp_name("mcp__x"),
+            ("mcp__x".to_owned(), None)
+        );
+        let mut st = mapping::MapState::default();
+        let out = mapping::map_line(
+            &json!({"type": "assistant", "message": {"id": "m", "content": [
+                {"type": "tool_use", "id": "t1", "name": "mcp__beton__policy_query", "input": {"action": "x"}}
+            ]}}),
+            &mut st,
+        );
+        let EventPayload::ToolCallRequested(r) = &out[0] else {
+            panic!("{out:?}")
+        };
+        assert_eq!(r.tool, "policy_query");
+        assert_eq!(r.mcp_server.as_deref(), Some("beton"));
+        assert_eq!(r.source, beton_core::event::ToolSource::BetonMcp);
     }
 }

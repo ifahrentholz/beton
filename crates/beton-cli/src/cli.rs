@@ -97,6 +97,17 @@ pub enum Command {
     /// Runner-Prozess einer Session (startet der Daemon, RUN-002).
     #[command(name = "__runner", hide = true)]
     Runner,
+    /// MCP-Relay für Harnesses: `mcp serve` (System-Tools) bzw. `mcp proxy --server <name>`;
+    /// der Runner trägt es in die MCP-Konfiguration des Harness ein (HAR-009).
+    #[command(name = "mcp", hide = true)]
+    Mcp(McpArgs),
+}
+
+/// Argumente des MCP-Relays (`serve|proxy …`, siehe `beton_mcp::relay`).
+#[derive(Debug, Args)]
+pub struct McpArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Args)]
