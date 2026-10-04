@@ -1,0 +1,10 @@
+{"has_raw":false,"payload":{"harness_session_ref":"<id:1>","mcp_servers":[],"tools":[]},"type":"harness.ready"}
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","text":"Bet"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"message_id":"<id:3>","text":"on"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"Beton","type":"text"}],"message_id":"<id:3>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"source":"harness","used_tokens":15075,"window_tokens":258400},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":11008,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":4061,"model":"gpt-5.6-luna","output_tokens":6,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":3084,"input_tokens":15069,"output_tokens":6}},"turn_id":"<id:2>","type":"turn.completed"}

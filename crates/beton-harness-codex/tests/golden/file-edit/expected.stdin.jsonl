@@ -1,0 +1,5 @@
+{"id":1,"jsonrpc":"2.0","method":"initialize","params":{"clientInfo":{"name":"beton","title":"beton","version":"0.0.0"}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"id":2,"jsonrpc":"2.0","method":"thread/start","params":{"approvalPolicy":"untrusted","cwd":"<workdir>","sandbox":"workspace-write"}}
+{"id":3,"jsonrpc":"2.0","method":"turn/start","params":{"input":[{"text":"Ersetze in notiz.txt das Wort alt durch neu.","type":"text"}],"threadId":"<id:1>"}}
+{"id":0,"jsonrpc":"2.0","result":{"decision":"accept"}}

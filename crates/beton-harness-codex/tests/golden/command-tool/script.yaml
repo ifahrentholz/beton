@@ -1,0 +1,6 @@
+model: gpt-5.6-luna
+inputs:
+- send: 'Führe genau `mkdir beton-ordner` in der Shell aus und antworte danach nur mit: erledigt.'
+gate:
+- allow
+- allow

@@ -1,0 +1,7 @@
+harness: codex
+cli_version: 0.153.2
+recorded_at: 2026-10-04T08:36:16.630Z
+scenario: Turn mit Datei-Änderung (fileChange)
+platform: beton-fake-cli
+exit_code: 0
+recorded_with: beton-fake-cli --protocol app-server

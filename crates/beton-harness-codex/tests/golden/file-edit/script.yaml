@@ -1,0 +1,4 @@
+inputs:
+- send: Ersetze in notiz.txt das Wort alt durch neu.
+gate:
+- allow

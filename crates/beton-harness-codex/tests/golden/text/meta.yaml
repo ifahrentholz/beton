@@ -1,0 +1,6 @@
+harness: codex
+cli_version: 0.153.2
+recorded_at: 2026-10-04T08:40:21.332Z
+scenario: Reiner Text-Turn
+platform: macos-aarch64
+exit_code: 0
