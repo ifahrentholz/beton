@@ -215,6 +215,9 @@ pub enum SearchMode {
     #[default]
     Name,
     Content,
+    /// Dateinamen unscharf aus dem Dateiindex, nach Treffergüte sortiert (`@` im Composer,
+    /// WEB-006); ohne Cursor.
+    Fuzzy,
 }
 
 /// Ein Suchtreffer; bei Inhaltssuche mit Zeile (1-basiert), Spalte (1-basiert, Zeichen) und
@@ -389,7 +392,7 @@ impl Workspace {
             }
             let rel = relative(&self.root, entry.path());
             match mode {
-                SearchMode::Name => {
+                SearchMode::Name | SearchMode::Fuzzy => {
                     if pattern.is_match(&rel) && after_key(&rel, 0) {
                         hits.push(Hit {
                             path: rel,

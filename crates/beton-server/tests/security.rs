@@ -350,3 +350,114 @@ async fn auth_004_ac3_codes_need_token_and_loopback_peer() {
     assert_eq!(res.status, 403);
     res.assert_problem("loopback_only");
 }
+
+// ---------------------------------------------------------------------------
+// SSE-Stream (PROTO-012): dieselben Host-, Auth- und Origin-Regeln wie der WebSocket.
+// Eine unbekannte Session liefert 404 – das zeigt, dass die Sicherheitsschicht den Request
+// durchgelassen hat, ohne dass ein offener Strom den Test blockiert.
+// ---------------------------------------------------------------------------
+
+const SSE_PATH: &str = "/v1/sessions/ses_01JB8Y2D0M3K4J5H6G7F8E9D0C/events/stream";
+
+fn sse(origin: Option<&str>, fetch_site: Option<&str>) -> axum::http::request::Builder {
+    let mut b = Request::get(SSE_PATH)
+        .header(header::HOST, HOST)
+        .header(header::ACCEPT, "text/event-stream");
+    if let Some(o) = origin {
+        b = b.header(header::ORIGIN, o);
+    }
+    if let Some(s) = fetch_site {
+        b = b.header("sec-fetch-site", s);
+    }
+    b
+}
+
+#[tokio::test]
+async fn proto_012_sse_needs_credentials_and_allowed_host() {
+    let t = app().await;
+    let res = t.send(sse(None, None).body(Body::empty()).unwrap()).await;
+    assert_eq!(res.status, 401);
+    res.assert_problem("unauthorized");
+
+    let res = t
+        .send(
+            Request::get(SSE_PATH)
+                .header(header::HOST, "evil.test")
+                .header(header::AUTHORIZATION, format!("Bearer {}", t.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status, 403);
+    res.assert_problem("host_not_allowed");
+
+    // Bearer ohne Origin (curl, Skripte) kommt durch.
+    let res = t
+        .send(
+            sse(None, None)
+                .header(header::AUTHORIZATION, format!("Bearer {}", t.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(res.status, 404, "{}", String::from_utf8_lossy(&res.body));
+}
+
+#[tokio::test]
+async fn proto_012_sse_rejects_foreign_origin_like_the_websocket() {
+    let t = app().await;
+    let cookie = t.browser_cookie().await;
+    for req in [
+        sse(Some("https://evil.test"), Some("cross-site")).header(header::COOKIE, cookie.clone()),
+        sse(Some("https://evil.test"), None)
+            .header(header::AUTHORIZATION, format!("Bearer {}", t.token)),
+        sse(Some("null"), Some("cross-site")).header(header::COOKIE, cookie.clone()),
+    ] {
+        let res = t.send(req.body(Body::empty()).unwrap()).await;
+        assert_eq!(res.status, 403);
+        res.assert_problem("origin_not_allowed");
+    }
+    // Erlaubte Origin (Desktop-App, gleiche Origin) mit Cookie: durchgelassen.
+    for origin in [ORIGIN, "tauri://localhost"] {
+        let res = t
+            .send(
+                sse(Some(origin), Some("cross-site"))
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, 404, "{origin}");
+    }
+}
+
+#[tokio::test]
+async fn proto_012_sse_cookie_without_origin_only_same_origin() {
+    let t = app().await;
+    let cookie = t.browser_cookie().await;
+    // EventSource derselben Origin schickt keinen Origin-Header, aber Sec-Fetch-Site.
+    for site in ["same-origin", "none"] {
+        let res = t
+            .send(
+                sse(None, Some(site))
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, 404, "{site}");
+    }
+    // Fremde Seiten bzw. Clients ohne Fetch-Metadaten: fail closed.
+    for site in [Some("cross-site"), Some("same-site"), None] {
+        let res = t
+            .send(
+                sse(None, site)
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, 403, "{site:?}");
+        res.assert_problem("origin_not_allowed");
+    }
+}

@@ -6,6 +6,10 @@ import type { SessionWorktree } from "./SessionWorktree";
  */
 export type SessionSummary = { id: `ses_${string}`, title: string, 
 /**
+ * Herkunft des Titels: `user`, `generated` oder `harness` (SES-010); fehlt ohne Titel.
+ */
+title_source?: string, 
+/**
  * Siehe `SessionStatus` im Event-Schema.
  */
 status: string, kind: string, harness: string, archived: boolean, head_seq: number, 

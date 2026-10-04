@@ -2,6 +2,7 @@
 
 use beton_core::event::{
     Actor, Event, EventPayload, SessionCreated, SessionKind, SessionStatus, SessionTrigger,
+    TitleSource,
 };
 use beton_core::id::{EventId, NodeId, OrgId, PrincipalId, ProjectId, SessionId, UserId};
 use beton_core::time::Timestamp;
@@ -56,6 +57,8 @@ pub struct SessionRecord {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub title: String,
+    /// Herkunft des Titels (SES-010); `None` ohne Titel.
+    pub title_source: Option<TitleSource>,
     pub status: SessionStatus,
     pub archived: bool,
     pub cost_micro: i64,
@@ -137,8 +140,8 @@ pub(crate) fn to_u64(v: i64) -> Result<u64> {
 }
 
 const SESSION_COLUMNS: &str = "id, org_id, owner_id, project_id, parent_id, kind, harness, \
-    home_node_id, epoch, head_seq, created_at, updated_at, title, status, archived, cost_micro, \
-    last_activity_at, worktree_path, worktree_branch, worktree_base, worktree_base_sha";
+    home_node_id, epoch, head_seq, created_at, updated_at, title, title_source, status, archived, \
+    cost_micro, last_activity_at, worktree_path, worktree_branch, worktree_base, worktree_base_sha";
 
 pub(crate) fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
     Ok(SessionRecord {
@@ -155,6 +158,10 @@ pub(crate) fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
         created_at: parse(row.try_get("created_at")?)?,
         updated_at: parse(row.try_get("updated_at")?)?,
         title: row.try_get("title")?,
+        title_source: match row.try_get::<String, _>("title_source")?.as_str() {
+            "" => None,
+            other => Some(enum_from_str(other)?),
+        },
         status: enum_from_str(row.try_get("status")?)?,
         archived: row.try_get("archived")?,
         cost_micro: row.try_get("cost_micro")?,

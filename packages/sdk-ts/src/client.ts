@@ -14,6 +14,9 @@ import type { SessionSummary } from './gen/SessionSummary.js'
 import type { InputMode } from './gen/InputMode.js'
 import type { QueueView } from './gen/QueueView.js'
 import type { Event } from './gen/Event.js'
+import type { Attachment } from './gen/Attachment.js'
+import type { SearchPage } from './gen/SearchPage.js'
+import type { SessionSkills } from './gen/SessionSkills.js'
 import { defaultWebSocketFactory, eventStream, type StreamOptions, type WebSocketFactory } from './stream.js'
 
 export interface ClientOptions {
@@ -99,6 +102,27 @@ export class BetonClient {
       body: body === undefined ? null : JSON.stringify(body),
       credentials: 'include',
     })
+    return (await this.parse(res)) as T
+  }
+
+  /** Rohdaten senden (z. B. Anhänge, WEB-006); Antwort als JSON. */
+  async requestRaw<T>(method: string, path: string, body: Blob | ArrayBuffer | Uint8Array, contentType: string): Promise<T> {
+    const headers: Record<string, string> = { accept: 'application/json', 'content-type': contentType }
+    if (this.token) headers.authorization = `Bearer ${this.token}`
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, { method, headers, body: body as BodyInit, credentials: 'include' })
+    return (await this.parse(res)) as T
+  }
+
+  /** Binärinhalt per `GET` (z. B. Blobs einer Session). */
+  async fetchBlob(path: string): Promise<Blob> {
+    const headers: Record<string, string> = {}
+    if (this.token) headers.authorization = `Bearer ${this.token}`
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, { method: 'GET', headers, credentials: 'include' })
+    if (!res.ok) await this.parse(res)
+    return res.blob()
+  }
+
+  private async parse(res: Response): Promise<unknown> {
     const text = await res.text()
     if (!res.ok) {
       let problem: Problem = { status: res.status }
@@ -109,7 +133,7 @@ export class BetonClient {
       }
       throw new BetonError(res.status, problem)
     }
-    return (text ? JSON.parse(text) : undefined) as T
+    return text ? JSON.parse(text) : undefined
   }
 
   /** Transport für WebSocket-Ströme. */
@@ -142,9 +166,48 @@ export class Session {
     return this.client.request('GET', `/v1/sessions/${enc(this.id)}/events?after_seq=${afterSeq}&limit=${limit}`)
   }
 
-  /** Eingabe: sofort oder eingereiht; mit `steer` in den laufenden Turn (SES-004). */
-  send(text: string, mode?: InputMode): Promise<InputAccepted> {
-    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/input`, mode ? { text, mode } : { text })
+  /**
+   * Eingabe: sofort oder eingereiht; mit `steer` in den laufenden Turn (SES-004). Anhänge
+   * vorher mit {@link uploadAttachment} hochladen (WEB-006).
+   */
+  send(text: string, mode?: InputMode, attachments?: Attachment[]): Promise<InputAccepted> {
+    const body: { text: string; mode?: InputMode; attachments?: Attachment[] } = { text }
+    if (mode) body.mode = mode
+    if (attachments && attachments.length > 0) body.attachments = attachments
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/input`, body)
+  }
+
+  /** Anhang in den Blob-Store der Session laden (WEB-006); Ergebnis für {@link send}. */
+  uploadAttachment(data: Blob | ArrayBuffer | Uint8Array, name: string, mime: string): Promise<Attachment> {
+    return this.client.requestRaw('POST', `/v1/sessions/${enc(this.id)}/attachments?name=${enc(name)}`, data, mime)
+  }
+
+  /** Inhalt eines Blobs der Session, z. B. die Vorschau eines Anhangs. */
+  blobData(ref: string): Promise<Blob> {
+    return this.client.fetchBlob(`/v1/sessions/${enc(this.id)}/blobs/${enc(ref)}`)
+  }
+
+  /** Unscharfe Dateisuche im Workspace für `@` (WEB-006). */
+  searchFiles(q: string, limit = 20): Promise<SearchPage> {
+    return this.client.request('GET', `/v1/sessions/${enc(this.id)}/workspace/search?mode=fuzzy&limit=${limit}&q=${enc(q)}`)
+  }
+
+  /** Aufrufbare Skills des aktiven Agents für das Slash-Menü (WEB-006). */
+  skills(): Promise<SessionSkills> {
+    return this.client.request('GET', `/v1/sessions/${enc(this.id)}/skills`)
+  }
+
+  /** Titel setzen (UX-009); danach erzeugt beton keinen Titel mehr. */
+  rename(title: string): Promise<SessionSummary> {
+    return this.update({ title })
+  }
+
+  /**
+   * URL des read-only SSE-Stroms (PROTO-012, API-003) für Werkzeuge ohne WebSocket, z. B.
+   * `curl -N -H "Authorization: Bearer …" <url>`.
+   */
+  eventStreamUrl(fromSeq = 0, transient = false): string {
+    return `${this.client.baseUrl}/v1/sessions/${enc(this.id)}/events/stream?from_seq=${fromSeq}${transient ? '&transient=true' : ''}`
   }
 
   /** Serverseitige Queue (SES-004). */

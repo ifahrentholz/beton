@@ -1,4 +1,6 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { AttachmentLimitsView } from "./AttachmentLimitsView";
+
 /**
  * Server-Informationen.
  */
@@ -10,4 +12,8 @@ mode: string, org_id: `org_${string}`,
 /**
  * Aktive Feature-Flags (UX-007); Funktionen hinter anderen Flags blendet die UI aus.
  */
-features: Array<string>, };
+features: Array<string>, 
+/**
+ * Grenzen für Anhänge (WEB-006).
+ */
+attachments: AttachmentLimitsView, };

@@ -144,6 +144,11 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         ImportCandidatePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ImportRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ImportResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Composer: Anhänge und Skills für das Slash-Menü (WEB-006).
+        use beton_server::session_skills::SessionSkills;
+        SessionSkills::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        beton_core::event::Attachment::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
     }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {

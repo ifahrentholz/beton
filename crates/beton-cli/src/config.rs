@@ -30,6 +30,10 @@ pub struct Settings {
     pub events: EventsSettings,
     /// Harnesses: Binary, Argumente, Auth-Herkunft (HAR-003, HAR-015).
     pub harnesses: HarnessesConfig,
+    /// Automatische Session-Titel (SES-010).
+    pub titles: TitlesSettings,
+    /// Anhänge im Composer (WEB-006).
+    pub attachments: AttachmentSettings,
     /// Eingeschaltete Feature-Flags, z. B. `[fake_harness]` (UX-007); zusätzlich
     /// `BETON_FEATURES=a,b`. Unbekannte Namen erzeugen nur eine Warnung.
     pub features: Vec<String>,
@@ -74,6 +78,53 @@ pub struct EventsSettings {
 impl Default for EventsSettings {
     fn default() -> Self {
         Self { store_raw: true }
+    }
+}
+
+/// Wie Session-Titel entstehen (SES-010).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TitleGeneratorSetting {
+    /// Einmal-Aufruf über den Harness der Session (Subscription der CLI), sonst Heuristik.
+    #[default]
+    Auto,
+    /// Direkt-API-Harness mit `titles.provider`; nur ausdrücklich (ADR-0034).
+    Direct,
+    /// Wie `auto`, ohne Heuristik.
+    Harness,
+    /// Nur Heuristik (erste Zeile der ersten Nachricht), kein Modellaufruf.
+    Off,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct TitlesSettings {
+    /// `auto` (Default), `harness`, `direct` oder `off`. „Titel automatisch erzeugen“ aus
+    /// entspricht `off`.
+    pub generator: TitleGeneratorSetting,
+    /// Zusätzliche Anweisung an das Modell (höchstens 2 000 Zeichen).
+    #[schemars(length(max = 2000))]
+    pub instructions: Option<String>,
+    /// Kleinmodell des Direkt-API-Harness, nur mit `generator: direct`.
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct AttachmentSettings {
+    /// Höchstgröße je Datei in Bytes (Default 20 MiB).
+    pub max_file_bytes: u64,
+    /// Höchstzahl der Dateien je Nachricht (Default 10).
+    pub max_files: u32,
+}
+
+impl Default for AttachmentSettings {
+    fn default() -> Self {
+        let d = beton_server::attachments::AttachmentLimits::default();
+        Self {
+            max_file_bytes: d.max_file_bytes,
+            max_files: d.max_files,
+        }
     }
 }
 

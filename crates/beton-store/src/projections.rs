@@ -76,12 +76,18 @@ pub(crate) async fn apply(
                 .await?;
         }
         EventPayload::SessionTitleChanged(t) => {
-            sqlx::query("UPDATE sessions SET title = ? WHERE org_id = ? AND id = ?")
-                .bind(&t.title)
-                .bind(&org_s)
-                .bind(&session_s)
-                .execute(&mut *conn)
-                .await?;
+            // Ein Titel des Users bleibt: generierte Titel ersetzen ihn nie (SES-010, UX-009).
+            sqlx::query(
+                "UPDATE sessions SET title = ?, title_source = ? WHERE org_id = ? AND id = ? \
+                 AND NOT (? = 'generated' AND title_source = 'user')",
+            )
+            .bind(&t.title)
+            .bind(enum_to_str(&t.source))
+            .bind(&org_s)
+            .bind(&session_s)
+            .bind(enum_to_str(&t.source))
+            .execute(&mut *conn)
+            .await?;
         }
         EventPayload::SessionArchived(_) | EventPayload::SessionUnarchived(_) => {
             let archived = matches!(payload, EventPayload::SessionArchived(_));
@@ -197,7 +203,7 @@ impl Store {
         for id in &ids {
             let session: SessionId = parse(id)?;
             sqlx::query(
-                "UPDATE sessions SET title = '', status = ?, archived = 0, cost_micro = 0, \
+                "UPDATE sessions SET title = '', title_source = '', status = ?, archived = 0, cost_micro = 0, \
                  last_activity_at = created_at, worktree_path = NULL, worktree_branch = NULL, \
                  worktree_base = NULL, worktree_base_sha = NULL WHERE org_id = ? AND id = ?",
             )

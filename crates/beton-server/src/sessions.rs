@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use beton_core::event::{
-    Actor, Empty, Event, EventPayload, SessionKind, SessionTitleChanged, SessionTrigger,
-    TitleSource,
+    Actor, Attachment, Empty, Event, EventPayload, SessionKind, SessionTitleChanged,
+    SessionTrigger, TitleSource,
 };
 use beton_core::id::{InputId, OrgId, PrincipalId, RunnerId, SessionId, UserId};
 use beton_host::{RunnerBoot, RunnerHandle, RunnerProvider, RunnerSpec, TerminateMode};
@@ -87,6 +87,8 @@ pub struct SessionsConfig {
     pub vendor_env: beton_harness::HostEnv,
     /// Importe laufen nacheinander, damit der Dedup-Schlüssel nicht doppelt vergeben wird.
     pub import_lock: Arc<Mutex<()>>,
+    /// Skill-Verzeichnisse des Users für das Slash-Menü (WEB-006, AGT-008).
+    pub skill_paths: crate::session_skills::SkillPaths,
 }
 
 impl SessionsConfig {
@@ -437,7 +439,7 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Startoptionen aus `session.created`.
-    pub(crate) async fn created(
+    pub async fn created(
         &self,
         session: SessionId,
     ) -> Result<beton_core::event::SessionCreated, Problem> {
@@ -595,13 +597,18 @@ impl<'a> SessionManager<'a> {
     /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
     /// Capabilities aus dem letzten `session.started` (HAR-002).
     async fn can_steer(&self, session: SessionId) -> Result<bool, Problem> {
+        self.capability(session, "steering").await
+    }
+
+    /// Boolesche Capability laut letztem `session.started` (HAR-002).
+    async fn capability(&self, session: SessionId, name: &str) -> Result<bool, Problem> {
         let started = self
             .state
             .store
             .last_event_of_type(self.org(), session, "session.started")
             .await?;
         Ok(match started.as_ref().and_then(Event::payload) {
-            Some(EventPayload::SessionStarted(s)) => s.capabilities["steering"] == true,
+            Some(EventPayload::SessionStarted(s)) => s.capabilities[name] == true,
             _ => false,
         })
     }
@@ -616,7 +623,21 @@ impl<'a> SessionManager<'a> {
         by: PrincipalId,
         mode: InputMode,
     ) -> Result<Value, Problem> {
-        self.input_as(session, text, by, mode, user_actor(by)).await
+        self.input_as(session, text, Vec::new(), by, mode, user_actor(by))
+            .await
+    }
+
+    /// Eingabe mit Anhängen (WEB-006).
+    pub async fn input_with(
+        &self,
+        session: SessionId,
+        text: String,
+        attachments: Vec<Attachment>,
+        by: PrincipalId,
+        mode: InputMode,
+    ) -> Result<Value, Problem> {
+        self.input_as(session, text, attachments, by, mode, user_actor(by))
+            .await
     }
 
     /// Wie [`Self::input`], mit eigenem Akteur der Nachricht (z. B. der Parent-Agent).
@@ -624,11 +645,12 @@ impl<'a> SessionManager<'a> {
         &self,
         session: SessionId,
         text: String,
+        attachments: Vec<Attachment>,
         by: PrincipalId,
         mode: InputMode,
         actor: Actor,
     ) -> Result<Value, Problem> {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(Problem::new(ProblemCode::ValidationFailed).detail("text ist leer"));
         }
         let record = self.state.store.session(self.org(), session).await?;
@@ -636,7 +658,16 @@ impl<'a> SessionManager<'a> {
             return Err(Problem::new(ProblemCode::Conflict)
                 .detail("Archivierte Session; erst wiederherstellen"));
         }
+        if !attachments.is_empty() {
+            let images = self.capability(session, "images").await?;
+            crate::attachments::validate(self.state, session, &attachments, images).await?;
+        }
         let mut q = self.state.queue().lock(session).await?;
+        if mode == InputMode::Steer && q.busy() && !attachments.is_empty() {
+            return Err(Problem::new(ProblemCode::ValidationFailed).detail(
+                "Anhänge gehen nur mit einer neuen Nachricht, nicht in den laufenden Turn",
+            ));
+        }
         if mode == InputMode::Steer && q.busy() {
             // SES-004 AC4: ohne Capability `steering` lehnt die API ab.
             if !self.can_steer(session).await? {
@@ -652,7 +683,7 @@ impl<'a> SessionManager<'a> {
             }
         }
         if q.busy() || !q.is_empty() {
-            let input_id = q.push(text, by).await?;
+            let input_id = q.push(text, attachments, by).await?;
             if !q.busy() {
                 self.ensure_runner(session).await?;
                 q.drain().await?;
@@ -660,7 +691,7 @@ impl<'a> SessionManager<'a> {
             return Ok(Accepted::Queued { input_id }.to_json());
         }
         self.ensure_runner(session).await?;
-        Ok(q.start_turn(InputId::new(), text, by, actor)
+        Ok(q.start_turn(InputId::new(), text, attachments, by, actor)
             .await?
             .to_json())
     }
@@ -854,6 +885,7 @@ impl<'a> SessionManager<'a> {
         self.input_as(
             child.id,
             prompt,
+            Vec::new(),
             PrincipalId::User(record.owner),
             InputMode::Queue,
             parent_actor,

@@ -4,6 +4,14 @@
   "description": "Die effektive Konfiguration.",
   "type": "object",
   "properties": {
+    "attachments": {
+      "description": "Anhänge im Composer (WEB-006).",
+      "$ref": "#/$defs/AttachmentSettings",
+      "default": {
+        "max_file_bytes": 20971520,
+        "max_files": 10
+      }
+    },
     "auth": {
       "$ref": "#/$defs/AuthSettings",
       "default": {
@@ -37,6 +45,15 @@
           "127.0.0.1:7420",
           "[::1]:7420"
         ]
+      }
+    },
+    "titles": {
+      "description": "Automatische Session-Titel (SES-010).",
+      "$ref": "#/$defs/TitlesSettings",
+      "default": {
+        "generator": "auto",
+        "instructions": null,
+        "provider": null
       }
     }
   },
@@ -94,6 +111,26 @@
           "additionalProperties": {
             "$ref": "#/$defs/AcpAgentConfig"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "AttachmentSettings": {
+      "type": "object",
+      "properties": {
+        "max_file_bytes": {
+          "description": "Höchstgröße je Datei in Bytes (Default 20 MiB).",
+          "type": "integer",
+          "format": "uint64",
+          "default": 20971520,
+          "minimum": 0
+        },
+        "max_files": {
+          "description": "Höchstzahl der Dateien je Nachricht (Default 10).",
+          "type": "integer",
+          "format": "uint32",
+          "default": 10,
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -223,6 +260,59 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TitleGeneratorSetting": {
+      "description": "Wie Session-Titel entstehen (SES-010).",
+      "oneOf": [
+        {
+          "description": "Einmal-Aufruf über den Harness der Session (Subscription der CLI), sonst Heuristik.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Direkt-API-Harness mit `titles.provider`; nur ausdrücklich (ADR-0034).",
+          "type": "string",
+          "const": "direct"
+        },
+        {
+          "description": "Wie `auto`, ohne Heuristik.",
+          "type": "string",
+          "const": "harness"
+        },
+        {
+          "description": "Nur Heuristik (erste Zeile der ersten Nachricht), kein Modellaufruf.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
+    "TitlesSettings": {
+      "type": "object",
+      "properties": {
+        "generator": {
+          "description": "`auto` (Default), `harness`, `direct` oder `off`. „Titel automatisch erzeugen“ aus\nentspricht `off`.",
+          "$ref": "#/$defs/TitleGeneratorSetting",
+          "default": "auto"
+        },
+        "instructions": {
+          "description": "Zusätzliche Anweisung an das Modell (höchstens 2 000 Zeichen).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "maxLength": 2000
+        },
+        "provider": {
+          "description": "Kleinmodell des Direkt-API-Harness, nur mit `generator: direct`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
