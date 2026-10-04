@@ -9,13 +9,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    AuthSource, Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired,
-    HarnessExited, HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted,
-    SessionSettingsChanged, SettingsMechanism, TextDelta, ToolCallCompleted, ToolCallRequested,
-    ToolCallStarted, ToolSource, ToolStatus, TurnCompleted, TurnFailed, TurnInterrupted,
-    TurnStarted,
+    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
+    Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired, HarnessExited,
+    HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, ResolvedVia,
+    SessionSettingsChanged, SettingsMechanism, TextDelta, TimeoutAction, ToolCallCompleted,
+    ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus, TurnCompleted, TurnFailed,
+    TurnInterrupted, TurnStarted,
 };
-use beton_core::id::{PrincipalId, TurnId, UserId};
+use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
+use beton_core::time::Timestamp;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
@@ -61,6 +63,8 @@ pub fn default_capabilities() -> Capabilities {
         mcp_injection: false,
         images: false,
         transcript_import: false,
+        models: vec!["fake-small".into(), "fake-large".into()],
+        efforts: vec!["low".into(), "medium".into(), "high".into()],
     }
 }
 
@@ -111,8 +115,8 @@ impl HarnessAdapter for FakeAdapter {
         })?;
         let scenario =
             Scenario::load(&path).map_err(|e| HarnessError::StartRefused(e.to_string()))?;
-        FakeSession::start(scenario, spec.model, ctx.gate)
-            .map(|s| Box::new(s) as Box<dyn HarnessSession>)
+        let session = FakeSession::start_with_ref(scenario, spec.model, ctx.gate, spec.resume)?;
+        Ok(Box::new(session) as Box<dyn HarnessSession>)
     }
 }
 
@@ -128,6 +132,7 @@ pub struct FakeSession {
     running: Option<JoinHandle<()>>,
     interrupt: Arc<Notify>,
     crashed: Arc<Mutex<bool>>,
+    session_ref: String,
 }
 
 impl std::fmt::Debug for FakeSession {
@@ -154,6 +159,17 @@ impl FakeSession {
         model: Option<String>,
         gate: Arc<dyn Gate>,
     ) -> Result<Self, HarnessError> {
+        Self::start_with_ref(scenario, model, gate, None)
+    }
+
+    /// Wie [`Self::start`]; mit `resume` meldet sich der Fake unter dieser Referenz (SES-003).
+    pub fn start_with_ref(
+        scenario: Scenario,
+        model: Option<String>,
+        gate: Arc<dyn Gate>,
+        resume: Option<String>,
+    ) -> Result<Self, HarnessError> {
+        let session_ref = resume.unwrap_or_else(|| FAKE_SESSION_REF.into());
         if let Some(StartBehavior {
             refuse: Some(reason),
         }) = &scenario.start
@@ -164,7 +180,7 @@ impl FakeSession {
         let (tx, rx) = mpsc::channel(4096);
         tx.try_send(NormalizedEvent::new(
             EventPayload::HarnessReady(HarnessReady {
-                harness_session_ref: Some(FAKE_SESSION_REF.into()),
+                harness_session_ref: Some(session_ref.clone()),
                 tools: vec!["Bash".into(), "Read".into(), "Edit".into()],
                 mcp_servers: Vec::new(),
             }),
@@ -182,6 +198,7 @@ impl FakeSession {
             running: None,
             interrupt: Arc::new(Notify::new()),
             crashed: Arc::new(Mutex::new(false)),
+            session_ref,
         })
     }
 
@@ -323,7 +340,7 @@ impl HarnessSession for FakeSession {
     }
 
     fn native_session_ref(&self) -> Option<String> {
-        Some(FAKE_SESSION_REF.into())
+        Some(self.session_ref.clone())
     }
 
     async fn shutdown(mut self: Box<Self>, _how: Shutdown) -> Result<ExitInfo, HarnessError> {
@@ -441,7 +458,12 @@ impl Player {
         if let Some(text) = step.message_delta {
             let chunk = step.chunk.unwrap_or(usize::MAX);
             let chars: Vec<char> = text.chars().collect();
-            for piece in chars.chunks(chunk.min(chars.len().max(1))) {
+            for (i, piece) in chars.chunks(chunk.min(chars.len().max(1))).enumerate() {
+                if i > 0
+                    && let Some(ms) = step.chunk_delay_ms
+                {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
                 let piece: String = piece.iter().collect();
                 self.text.push_str(&piece);
                 self.send(EventPayload::MessageDelta(TextDelta {
@@ -473,6 +495,19 @@ impl Player {
             }))
             .await;
             let allowed = if step.gate {
+                // Wie die echten Adapter: Anfrage und Entscheidung als Events (HAR-005).
+                let approval_id = ApprovalId::from_ulid(ulid::Ulid(
+                    (self.turn_index as u128 + 1) * 1000 + self.calls as u128,
+                ));
+                self.send(EventPayload::ApprovalRequested(ApprovalRequested {
+                    approval_id,
+                    kind: ApprovalKind::Tool,
+                    subject: json!({"tool": call.name, "args": call.args, "call_id": call_id}),
+                    options: vec!["allow".into(), "deny".into()],
+                    expires_at: Timestamp::default(),
+                    on_timeout: TimeoutAction::Deny,
+                }))
+                .await;
                 let decision = self
                     .gate
                     .decide(GateRequest {
@@ -483,7 +518,30 @@ impl Player {
                         args: call.args,
                     })
                     .await;
-                matches!(decision, GateDecision::Allow { .. })
+                let allowed = matches!(decision, GateDecision::Allow { .. });
+                let comment = match &decision {
+                    GateDecision::Deny { reason } => reason.clone(),
+                    GateDecision::Allow { .. } => None,
+                };
+                self.send(EventPayload::ApprovalResolved(ApprovalResolved {
+                    approval_id,
+                    decision: if allowed {
+                        ApprovalDecision::Allow
+                    } else {
+                        ApprovalDecision::Deny
+                    },
+                    answer: None,
+                    actor: Actor::User {
+                        id: local_user(),
+                        device_id: None,
+                    },
+                    via: ResolvedVia::User,
+                    remember: None,
+                    comment,
+                    on_timeout_applied: None,
+                }))
+                .await;
+                allowed
             } else {
                 true
             };
@@ -645,13 +703,15 @@ turns:
                 "message.delta",
                 "message.completed",
                 "tool.call.requested",
+                "approval.requested",
+                "approval.resolved",
                 "tool.call.started",
                 "tool.call.completed",
                 "cost.delta",
                 "turn.completed",
             ]
         );
-        let EventPayload::CostDelta(cost) = &a[10].payload else {
+        let EventPayload::CostDelta(cost) = &a[12].payload else {
             panic!()
         };
         assert_eq!(cost.cost_micro, Some(10_000));
@@ -828,5 +888,26 @@ turns:
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].id.as_str(), "fake");
         assert!(!catalog[0].incompatible);
+    }
+
+    #[tokio::test]
+    async fn har_026_chunk_delay_paces_the_stream() {
+        let start = std::time::Instant::now();
+        let events = run(
+            "turns:\n  - emit: [{ message_delta: \"abcde\", chunk: 1, chunk_delay_ms: 25 }]\n",
+            Arc::new(AllowAll),
+            &["x"],
+        )
+        .await;
+        let deltas = events
+            .iter()
+            .filter(|e| matches!(e.payload, EventPayload::MessageDelta(_)))
+            .count();
+        assert_eq!(deltas, 5);
+        assert!(
+            start.elapsed() >= Duration::from_millis(100),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

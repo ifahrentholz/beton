@@ -34,6 +34,8 @@ pub struct LaunchSpec {
     pub env: Vec<(String, String)>,
     /// Aus der geerbten Umgebung entfernen (z. B. API-Keys bei Subscription, HAR-015).
     pub env_remove: Vec<String>,
+    /// Nichts erben; nur `env` gilt (deny-by-default, RUN-002 AC4).
+    pub clear_env: bool,
     pub cwd: Option<PathBuf>,
 }
 
@@ -75,6 +77,10 @@ pub trait ProcessHandle: Send {
     fn id(&self) -> Option<u32>;
     /// Wartet auf das Ende des Prozesses (z. B. um einen Crash zu erkennen).
     async fn wait(&mut self) -> io::Result<ExitInfo>;
+    /// Schon beendet? Blockiert nicht.
+    async fn try_wait(&mut self) -> io::Result<Option<ExitInfo>> {
+        Ok(None)
+    }
     /// Beendet nach dem protokolleigenen Ende: warten, SIGTERM, SIGKILL – immer für den
     /// gesamten Prozessbaum.
     async fn terminate(&mut self, timeouts: ShutdownTimeouts) -> io::Result<ExitInfo>;
@@ -96,6 +102,9 @@ pub struct RealLauncher;
 impl ProcessLauncher for RealLauncher {
     async fn launch(&self, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>> {
         let mut cmd = tokio::process::Command::new(&spec.program);
+        if spec.clear_env {
+            cmd.env_clear();
+        }
         for key in &spec.env_remove {
             cmd.env_remove(key);
         }
@@ -218,6 +227,16 @@ impl ProcessHandle for RealProcess {
         }
         let status = self.child.wait().await?;
         Ok(self.finish(status).await)
+    }
+
+    async fn try_wait(&mut self) -> io::Result<Option<ExitInfo>> {
+        if let Some(exit) = &self.exit {
+            return Ok(Some(exit.clone()));
+        }
+        match self.child.try_wait()? {
+            Some(status) => Ok(Some(self.finish(status).await)),
+            None => Ok(None),
+        }
     }
 
     async fn terminate(&mut self, timeouts: ShutdownTimeouts) -> io::Result<ExitInfo> {

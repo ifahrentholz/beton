@@ -67,7 +67,7 @@ beton
 ├── attach <SESSION> [--read-only]
 ├── open     [SESSION]                                 # Web-UI per Einmal-Link öffnen (AUTH-004)
 ├── session  list|show|rename|archive|unarchive|delete|fork|share|unshare|interrupt|take [--force]
-├── serve    [--bind ADDR] [--port N] [--config FILE] [--database-url URL] [--foreground]
+├── serve    [--bind ADDR] [--port N] [--config FILE] [--database-url URL] [--foreground] [--dev]
 ├── host     [--server URL] [--label k=v]… [--background] | pair|enable|disable|status|stop
 ├── hosts    list
 ├── runners  list [--host H]|logs <ID>|stop <ID>
@@ -101,7 +101,7 @@ beton
 ├── tui      [SESSION]
 ├── completion <bash|zsh|fish|powershell>
 └── version
-(versteckt/intern: `mcp serve|proxy` (HAR-009), `hook` (HAR-005, HAR-013), `dev record-golden` (HAR-025), `__exec`/`__sandbox-exec` (SBX-002, SBX-008))
+(versteckt/intern: `mcp serve|proxy` (HAR-009), `hook` (HAR-005, HAR-013), `dev record-golden` (HAR-025), `__runner` (Runner-Prozess, RUN-002), `__exec`/`__sandbox-exec` (SBX-002, SBX-008))
 Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · --no-color · --config FILE
 ```
 
@@ -215,7 +215,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-001 — App-Shell, Routing & Layout
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** React-19-SPA (Vite, TanStack Router/Query, Zustand, Tailwind, shadcn/ui), ausgeliefert von `beton serve` und gebündelt im Desktop. Drei-Spalten-Layout (Session-Liste · Chat · Workspace-Rail) mit responsiven Breakpoints gemäß Design; M0 liefert Liste + Chat + Composer.
-- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`. Alle Assets (Schriften, Icons, Monaco- und Shiki-Dateien, Mermaid, Web-Worker) sind gebündelt und werden vom eigenen Origin ausgeliefert; kein CDN, keine externen Origins (ADR-0033). „Offline“ (kein Netz außer Loopback) ist ein normaler Zustand ohne Fehlerdialog.
+- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`. Alle Assets (Schriften, Icons, Monaco- und Shiki-Dateien, Mermaid, Web-Worker) sind gebündelt und werden vom eigenen Origin ausgeliefert; kein CDN, keine externen Origins (ADR-0033). „Offline“ (kein Netz außer Loopback) ist ein normaler Zustand ohne Fehlerdialog. `beton serve` liefert den Build aus `BETON_WEB_DIR` bzw. neben dem Binary (`share/beton/web`, `web/`); Client-Routen bekommen `index.html`, Assets sind `immutable`, HTML trägt eine CSP nur für den eigenen Origin (ohne `unsafe-eval`/`wasm-unsafe-eval`; Shiki nutzt deshalb die JavaScript-Regex-Engine). Ohne Anmeldung bekommt eine Browser-Navigation (401) eine Hinweisseite auf `beton open` statt JSON. M0: Navigationsspalte, Session-Liste (unter 1024 px als Drawer) und Session-Ansicht; die Workspace-Rail folgt mit WEB-008.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run claude` öffnet (oder druckt) eine URL, unter der die Session live im Browser sichtbar ist.
   - [ ] AC2 — Deep-Link `/s/<id>` lädt direkt die Session (Reload-fest).
@@ -236,6 +236,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-003 — Session-Liste
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Linke Spalte mit Sessions gruppiert nach Pinned, Projekten, „Mit mir geteilt“ (M4) und Archiv; Status-Indikatoren (läuft, wartet auf Approval, Fehler, ungelesen), Suche/Filter, Kontextmenü (umbenennen, archivieren, löschen, forken, in Projekt verschieben).
+- **Details:** M0: Liste nach jüngster Aktivität, Suche, Archiv; Live-Aktualisierung über `GET /v1/sessions?updated_after=<ts>` alle 500 ms (Deltas statt Neuladen). Gruppen (Pinned, Projekte, geteilt) und Kontextmenü folgen mit ihren Features.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Statuswechsel einer Session (z.B. `waiting_approval`) aktualisiert den Indikator ohne Reload innerhalb von 1 s.
   - [ ] AC2 — Die Liste bleibt bei 5 000 Sessions flüssig scrollbar (virtualisiert, ≥ 55 fps).
@@ -244,6 +245,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-004 — Composer mit Pickern
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Mehrzeiliger Composer mit Pickern für Harness/Agent, Modell, Effort und Permission-Mode (Werte aus den Harness-Capabilities). In M0 nur Claude Code; Harness-Wechsel ab M1, ausschließlich als Fork („Weiter mit <Harness>“, SES-007 in 07-sessions-collaboration.md). Senden mit `⏎`, Zeilenumbruch `⇧⏎`; während eines Turns zeigt der Senden-Button „Einreihen“ bzw. „Steer“.
+- **Details:** M0: Modell-Picker aus `capabilities.models` (bei neuer Session wirksam), Effort-Picker nur bei `effort_switch` ≠ `none` und vorhandenen `capabilities.efforts`. Eingaben während eines Turns reiht der Client ein und sendet sie nach dem Turn-Ende. Permission-Mode-Picker und „Steer“ folgen, sobald Server und Runner sie durchreichen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Picker zeigen nur Optionen, die der aktuelle Harness unterstützt (Capability-gesteuert, Test mit Fake-Harness-Capabilities).
   - [ ] AC2 — (ab M1) Modellwechsel mid-session erzeugt ein Event und wirkt ab dem nächsten Turn.
@@ -340,7 +342,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-015 — Performance-Budgets
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Verbindliche Budgets, in CI gemessen (Playwright + Fake-Harness): Streaming ohne Ruckeln, schnelle Session-Wechsel, begrenzter Speicher. Umsetzung über Event-Batching pro Animation-Frame, inkrementelles Markdown-Rendering und Virtualisierung (`@tanstack/react-virtual`).
-- **Details:**
+- **Details:** In der PR-CI läuft das Streaming-Budget 20 s statt 10 min (`BETON_PERF_STREAM_SECONDS`, gleiche Rate); Messwerte stehen als Annotation im Playwright-Bericht. Markdown wird inkrementell gerendert: fertige Absätze/Codeblöcke bleiben gemerkt, nur der letzte Block wird neu geparst.
 
   | Metrik | Budget |
   | --- | --- |
@@ -392,6 +394,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-002 — `beton run`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Startet eine Session mit Harness oder Agent (`TARGET` = Harness-ID, Agent-Referenz wie `builtin:<name>` oder Pfad zu Agent-Verzeichnis) und attacht interaktiv im Terminal (Zeilenmodus mit Streaming) oder mit `--mode tui` die Vendor-TUI im PTY (HAR-012, ab M3, siehe 01-harnesses.md). Startet bei Bedarf den lokalen Daemon. Druckt die Web-URL der Session auf stderr. Skript-Modus (`-p`) siehe API-006.
+- **Details:** Ohne `TARGET` gilt `harnesses.default`, sonst `claude`. Läuft für `BETON_HOME` kein Daemon, startet `run` ihn abgelöst (`beton serve` im Hintergrund, Ausgaben in `~/.beton/logs/serve.out`); `serve --foreground` bleibt im Vordergrund. `-c` wählt unter den nicht archivierten Sessions die mit der jüngsten Aktivität, deren `session.created.cwd` dem aktuellen Verzeichnis entspricht; gestoppte Sessions werden dabei fortgesetzt (SES-003). Interaktiv: Zeilen von stdin sind Eingaben (während eines Turns gepuffert), Freigaben fragt das Terminal mit `[y/N]` (Enter = Nein); ohne Terminal gilt `--on-ask`. Endet stdin, wartet `run` den laufenden Turn ab und koppelt ab. `--detach` legt die Session an und gibt nur ihre ID aus. In M0 umgesetzt sind `TARGET`, `-p`, `--model`, `--cwd`, `-c`, `--resume`, `--title`, `--detach`, `--output-format`, `--on-ask`, `--timeout`, `--scenario`; die übrigen Flags folgen mit ihren Features.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run claude` ohne laufenden Daemon startet ihn, erstellt eine Session und streamt die Antwort; die Session ist danach in der Web-UI sichtbar.
   - [ ] AC2 — `beton run -c` setzt die zuletzt genutzte Session im aktuellen Verzeichnis fort.
@@ -402,6 +405,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-003 — `resume`, `attach` & `session`-Verwaltung
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `attach` verbindet sich mit einer laufenden Session (Replay + Live, `--read-only` ohne Eingaberecht), `resume` startet eine gestoppte Session neu. `session …` bietet Liste, Details, Umbenennen, Archivieren, Löschen, Fork, Freigabe (M4) und Interrupt. Session-Referenzen akzeptieren ID, ID-Präfix (eindeutig) oder `last`.
+- **Details:** `last` ist die nicht archivierte Session mit der jüngsten Aktivität; ein Präfix darf `ses_` weglassen. `attach` zeigt den Verlauf ab `seq` 0 und danach live; `--read-only` sendet weder Eingaben noch Freigaben. `session rename` setzt den Titel über `PATCH /v1/sessions/{id}` (`title`, ohne laufenden Runner); `session show` ergänzt `cwd` und die Web-URL.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton attach <präfix>` mit mehrdeutigem Präfix listet die Kandidaten und endet mit Exit-Code 2.
   - [ ] AC2 — (ab M1) `beton session fork <id>@120 --harness codex` erzeugt einen Fork laut SES-006/SES-007 (siehe 07-sessions-collaboration.md).
@@ -410,6 +414,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-004 — `serve` & `host`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `beton serve` startet den Server (lokal: localhost-Bindung auf Port 7420, Token-Datei 0600, siehe AUTH-001; zentral: Postgres, OIDC per Config). `beton host` startet den Host-Daemon, der sich per ausgehendem WebSocket am Server anmeldet; `host enable|disable` installiert ihn als User-Service (launchd/systemd --user).
+- **Details:** `serve` liest Default, User-Konfiguration und Env (nicht die Projektebene, CLI-008), hält einen exklusiven Lock auf `~/.beton/daemon.lock` (ein Daemon je Datenverzeichnis) und schreibt `~/.beton/run/daemon.json` (`pid`, `http`, `version`), über die CLI und SDK den Daemon finden. `--bind` ersetzt die Adressen aus `server.listen`, `--port` den Port (`0` = frei wählbar). Runner startet der Daemon als `beton __runner` aus demselben Binary (RUN-002). `--dev` (und Debug-Builds) schaltet den Fake-Harness frei (HAR-026). Der Blob-GC (DATA-006) läuft 10 min nach dem Start, danach täglich. `--foreground`, `--database-url` und `host` folgen mit dem Hintergrundbetrieb bzw. dem zentralen Server und RUN-006 (ab M4).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton serve` ohne Config bindet ausschließlich an Loopback; `--bind 0.0.0.0` ohne konfigurierte Auth wird verweigert.
   - [ ] AC2 — (ab M4, RUN-006) `beton host enable` erzeugt einen User-Service, der nach Reboot automatisch verbindet; `disable` entfernt ihn.
@@ -419,6 +424,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-005 — `setup`, `doctor` & `diagnose`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `setup` führt interaktiv durch die Erstkonfiguration (erkennt `claude`/`codex`-CLIs und deren Login, **bietet** Installation fehlender CLIs an, nie still). `doctor` prüft Umgebung und gibt Handlungsempfehlungen; `diagnose` (M3) erzeugt ein secret-freies Support-Bundle. Inhalte der Prüfungen, `--json`-Schema und Exit-Codes: Owner OBS-005, `diagnose`: OBS-006 (siehe 11-platform-features.md); Setup-Logik: Owner HAR-016 (siehe 01-harnesses.md). CLI-005 regelt nur die CLI-Oberfläche.
+- **Details:** `setup` fragt nur auf einem Terminal nach (`[y/N]`, Enter = Nein); ohne Terminal, mit `--non-interactive` oder `--check` installiert und meldet es nie etwas an. Exit-Code 1, wenn die CLI eines in diesem Release nutzbaren Harness fehlt (M0: `claude`; `codex` wird erkannt und angeboten, der Harness folgt in M1). `setup --check --json` folgt `schemas/v1/setup-check.schema.json`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `setup --non-interactive` installiert nie etwas und meldet fehlende CLIs mit Exit-Code ≠ 0.
   - [ ] AC2 — `doctor --json` liefert pro Check `{id, status: ok|warn|fail, message, hint}` (OBS-005).
@@ -443,6 +449,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-008 — `config`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Lesen/Schreiben von Konfiguration auf User- (`~/.beton/config.yaml`) und Projekt-Ebene (`.beton/config.yaml`); `list` zeigt die effektive Konfiguration mit Herkunft je Key. Validierung gegen das veröffentlichte JSON-Schema.
+- **Details:** Vorrang `default` < `user` < `project` < `env`. Projektdatei ist das nächste `.beton/config.yaml` ab dem aktuellen Verzeichnis aufwärts (sonst unter der Git-Wurzel); das Datenverzeichnis `~/.beton` zählt nicht als Projekt. Env-Ebene: `BETON_CFG_<SCHLÜSSEL>` mit `__` als Trenner, Werte als YAML (z. B. `BETON_CFG_EVENTS__STORE_RAW=false`). Die Projektebene (also das Repository) darf nur `harnesses.*` setzen und dort keine Auth-Herkunft (HAR-015); daemonweite Schlüssel wie `server.*` und `events.*` gehören dem Benutzer. `set`/`unset` schreiben ohne Flag in die User-Datei; Werte werden als YAML gelesen (`false`, `7420`, `[a, b]`). Geprüft wird jede Ebene gegen `schemas/v1/config.schema.json` (generiert aus den Rust-Typen); beim Schreiben bleiben Kommentare der Datei derzeit nicht erhalten. `config edit` öffnet `$VISUAL`/`$EDITOR` und verwirft ungültige Änderungen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton config list` zeigt pro Key die Quelle (`default|user|project|env`).
   - [ ] AC2 — Ein ungültiger Wert wird mit Schema-Fehlermeldung abgelehnt, die Datei bleibt unverändert.
@@ -588,7 +595,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### API-004 — TypeScript-SDK
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `@ifahrentholz/beton-sdk` (`packages/sdk-ts`) mit generierten Typen (aus Rust via `ts-rs`/`specta`) und REST-Client (aus OpenAPI), plus handgeschriebenem WS-Client mit automatischem Resume ab `seq`. Die Web-UI nutzt ausschließlich dieses SDK.
-- **Details:** API-Form: `const c = new BetonClient({baseUrl, token}); const s = await c.sessions.create({target: "claude", cwd}); for await (const ev of s.events({fromSeq: 0})) {…}; await s.send("…"); await s.interrupt(); await s.fork({atSeq: 120, harness: "codex"});`
+- **Details:** Typen (Events, WebSocket-Nachrichten, REST-Modelle) sind aus den Rust-Typen generiert (`ts-rs`, `src/gen`); der REST-Client ist eine dünne, handgeschriebene Schicht über diesen Typen, `openapi/v1.json` bleibt der Vertrag (oasdiff in CI). Im Browser authentisiert das Session-Cookie, in Node das lokale Token (WebSocket-Header über die `webSocketFactory`; Node 20 ohne globales `WebSocket` übergibt das Paket `ws`). `fork()` folgt mit SES-006 (M1). API-Form: `const c = new BetonClient({baseUrl, token}); const s = await c.sessions.create({target: "claude", cwd}); for await (const ev of s.events({fromSeq: 0})) {…}; await s.send("…"); await s.interrupt(); await s.fork({atSeq: 120, harness: "codex"});`
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Typen werden in CI neu generiert; Abweichungen zum eingecheckten Stand lassen den Build fehlschlagen.
   - [ ] AC2 — Ein WS-Abbruch während des Streamings wird transparent mit Resume überbrückt (Test mit simuliertem Disconnect, keine Lücken/Duplikate).
@@ -597,7 +604,8 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### API-005 — Rust-SDK
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe.
+- **Beschreibung:** Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe (auch für Proben lokaler Modell-Server, `beton_sdk::probe`).
+- **Details:** `Client::local(data_dir)` findet den Daemon über `run/daemon.json`; `Client::subscribe(session, from_seq)` liefert einen Event-Strom mit automatischem Reconnect (gleiche Parameter wie das TS-SDK), der `overflow`, `seq_ahead` und Close `4503` selbst behandelt.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton-cli` und `beton-tui` haben keine direkten HTTP-Aufrufe außerhalb von `beton-sdk` (Lint/`cargo deny`-Regel oder Architekturtest).
   - [ ] AC2 — Beispiel `examples/stream.rs` erstellt eine Session gegen den Fake-Harness und gibt Deltas aus (läuft in CI).

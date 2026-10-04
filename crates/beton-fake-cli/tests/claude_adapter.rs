@@ -362,3 +362,39 @@ async fn har_015_ac3_expired_login_asks_for_vendor_login() {
     assert_eq!(auth.hint, "claude auth login");
     assert_eq!(events.last().unwrap().type_name(), "turn.failed");
 }
+
+#[tokio::test]
+async fn qa_002_stream_deltas_share_the_id_of_the_completed_message() {
+    // Wie die echte CLI: `message_start` vor den Deltas; sonst ließe die Web-UI einen
+    // verwaisten Stream-Eintrag neben der fertigen Nachricht stehen.
+    let (mut s, mut rx) = start(
+        &push_ask(),
+        "",
+        Arc::new(AllowAll),
+        ClaudeAdapter::default(),
+    )
+    .await;
+    s.send("Bitte pushen".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let delta_ids: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            EventPayload::MessageDelta(d) => Some(d.message_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let completed = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::MessageCompleted(m) => Some(m.message_id.as_str()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(!delta_ids.is_empty());
+    assert!(
+        delta_ids
+            .iter()
+            .all(|id| *id == completed && !id.is_empty()),
+        "{delta_ids:?} vs {completed}"
+    );
+}

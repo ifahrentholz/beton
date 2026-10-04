@@ -30,6 +30,7 @@ fn new_session(t: &TestStore) -> NewSession {
         parent_id: None,
         trigger: SessionTrigger::User,
         home_node: t.local.node,
+        harness_opts: serde_json::Value::Null,
     }
 }
 
@@ -892,11 +893,11 @@ async fn data_005_ac1_rebuild_reproduces_projections() {
     let t = store().await;
     let a = session_with_history(&t, "Erste").await;
     session_with_history(&t, "Zweite").await;
-    let before = t.store.projection_dump(org(&t)).await;
+    let before = t.store.projection_dump(org(&t)).await.unwrap();
     assert!(before.len() > 4);
 
     assert_eq!(t.store.rebuild_projections(org(&t), None).await.unwrap(), 2);
-    assert_eq!(t.store.projection_dump(org(&t)).await, before);
+    assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
 
     // Auch nach Beschädigung stellt der Rebuild den Stand wieder her.
     sqlx::query("UPDATE sessions SET title = 'kaputt', cost_micro = 99 WHERE org_id = ?")
@@ -916,9 +917,9 @@ async fn data_005_ac1_rebuild_reproduces_projections() {
             .unwrap(),
         1
     );
-    assert_ne!(t.store.projection_dump(org(&t)).await, before);
+    assert_ne!(t.store.projection_dump(org(&t)).await.unwrap(), before);
     t.store.rebuild_projections(org(&t), None).await.unwrap();
-    assert_eq!(t.store.projection_dump(org(&t)).await, before);
+    assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
 }
 
 // ---------------------------------------------------------------------------
@@ -1246,4 +1247,86 @@ async fn data_008_ac3_only_owner_or_org_admin_may_delete_and_it_is_audited() {
     assert_eq!(audit[0].actor, PrincipalId::User(stranger));
     assert_eq!(audit[0].target_id, s.id.to_string());
     assert_eq!(audit[0].details["authority"], "org_admin");
+}
+
+#[tokio::test]
+async fn data_005_same_approval_id_in_two_sessions_does_not_collide() {
+    // Der Fake-Harness vergibt Approval-IDs deterministisch aus dem Szenario (HAR-026 AC1);
+    // zwei Sessions mit demselben Szenario haben also dieselbe ID.
+    let t = store().await;
+    let approval = ApprovalId::new();
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        t.store
+            .append(
+                org(&t),
+                s.id,
+                1,
+                1,
+                vec![ev(
+                    s.id,
+                    EventPayload::ApprovalRequested(ApprovalRequested {
+                        approval_id: approval,
+                        kind: ApprovalKind::Tool,
+                        ..ApprovalRequested::default()
+                    }),
+                )],
+            )
+            .await
+            .unwrap();
+        sessions.push(s);
+    }
+    assert_eq!(t.store.open_approvals(org(&t)).await.unwrap().len(), 2);
+    // Die Entscheidung in Session 1 lässt Session 2 offen.
+    t.store
+        .append(
+            org(&t),
+            sessions[0].id,
+            2,
+            1,
+            vec![ev(
+                sessions[0].id,
+                EventPayload::ApprovalResolved(ApprovalResolved {
+                    approval_id: approval,
+                    ..ApprovalResolved::default()
+                }),
+            )],
+        )
+        .await
+        .unwrap();
+    let open = t.store.open_approvals(org(&t)).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].session_id, sessions[1].id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_002_concurrent_writers_do_not_fail_with_busy() {
+    // Lesen-dann-Schreiben in DEFERRED-Transaktionen scheitert im WAL-Modus sofort mit
+    // SQLITE_BUSY, wenn ein anderer Schreiber dazwischen committet.
+    let t = store().await;
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let store = t.store.clone();
+        let new = new_session(&t);
+        let org = org(&t);
+        tasks.push(tokio::spawn(async move {
+            for _ in 0..25 {
+                let mut new = new.clone();
+                new.id = SessionId::new();
+                let s = store.create_session(org, new).await?;
+                store
+                    .append(org, s.id, 1, 1, vec![notice(s.id, "n")])
+                    .await?;
+            }
+            Ok::<_, crate::Error>(())
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
 }

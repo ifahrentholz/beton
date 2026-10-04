@@ -55,7 +55,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 
 | Gruppe | Typ | D/T | Payload |
 | --- | --- | :-: | --- |
-| Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook` |
+| Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook, harness_opts?` |
 | | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?` |
 | | `session.status` | D | `status: starting\|idle\|running\|waiting_approval\|paused\|stopped\|failed, reason?` |
 | | `session.resumed` | D | `mode: native\|handover` |
@@ -160,7 +160,7 @@ Die erste Protokollversion ist `1.0`; die Beispiele oben zeigen eine spätere Mi
 
 ### Tunnel-Protokoll (Host/Runner/Knoten → Server)
 
-Endpunkt `GET /v1/tunnel`, Subprotokoll `beton.tunnel.v1`, `Authorization: Bearer` (Host: Device-Token; Runner: Runner-Token; Knoten: Device-Token mit Scope `nodes:sync`); lokal über Unix-Socket `~/.beton/run/tunnel.sock` mit identischem Framing. `hello {kind: host|runner|node, node_id, version, protocol, labels, capabilities, harnesses, sandbox_probe}` → `welcome {server_time, policy_bundle_version}`.
+Endpunkt `GET /v1/tunnel` (lokal ausschließlich auf dem Tunnel-Socket, nicht auf dem TCP-Port und nicht in der öffentlichen OpenAPI), Subprotokoll `beton.tunnel.v1`, `Authorization: Bearer` (Host: Device-Token; Runner: Runner-Token; Knoten: Device-Token mit Scope `nodes:sync`); lokal über Unix-Socket `~/.beton/run/tunnel.sock` mit identischem Framing. `hello {kind: host|runner|node, node_id, version, protocol, labels, capabilities, harnesses, sandbox_probe}` → `welcome {server_time, policy_bundle_version}`.
 
 | Richtung | Nachricht | Zweck |
 | --- | --- | --- |
@@ -275,7 +275,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 ### PROTO-005 — Attach & Resume ab seq
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `attach {session_id, from_seq, transient?, tail?}` liefert alle dauerhaften Events mit `seq > from_seq` in Reihenfolge, dann `live {head_seq}`, dann Live-Events — lückenlos und ohne Duplikate über Replay und Live hinweg. `tail: N` liefert nur die letzten N Events plus `has_more` für schnelle UIs. Mehrere Sessions pro Verbindung sind möglich.
-- **Details:** Während des Replays eintreffende Live-Events werden serverseitig gepuffert und nach dem Replay in Reihenfolge gesendet. `from_seq > head_seq` → `nack seq_ahead` (Client verwirft lokalen Zustand und attached neu ab 0, z. B. nach Divergenz-Fork).
+- **Details:** Während des Replays eintreffende Live-Events werden serverseitig gepuffert und nach dem Replay in Reihenfolge gesendet. `from_seq > head_seq` → `nack seq_ahead` (Client verwirft lokalen Zustand und attached neu ab 0, z. B. nach Divergenz-Fork). Eingaben des Nutzers stehen als `message.completed` mit `role: user` und `author` im Log, vor dem zugehörigen Turn.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Bei laufender Produktion von 100 Events/s liefert ein Attach ab `from_seq=0` eine lückenlose, duplikatfreie Folge bis zum Live-Betrieb (Test prüft `seq` streng +1).
   - [ ] AC2 — `from_seq=head_seq+5` liefert `nack` mit Code `seq_ahead`.
@@ -312,7 +312,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### PROTO-009 — Heartbeats & Reconnect
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort (mit Jitter) reconnecten.
+- **Beschreibung:** Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort reconnecten, gleichverteilt über 2 s (so bleiben es bei 100 Clients höchstens 20 je 100 ms). Nach `4401`, `4403` oder `4404` verbinden Clients nicht neu.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Client ohne Pong wird nach spätestens 60 s getrennt; serverseitige Ressourcen der Verbindung sind danach freigegeben.
   - [ ] AC2 — Nach Server-Neustart sind 100 Clients binnen 35 s wieder verbunden, ohne dass mehr als 20 gleichzeitig im selben 100-ms-Fenster reconnecten.
@@ -368,7 +368,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### PROTO-015 — Tunnel-Protokoll Host/Runner → Server
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
+- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); scheitert das Speichern eines Pushs, antwortet der Server mit `problem` statt ihn still zu verwerfen. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.
   - [ ] AC2 — Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.
@@ -389,7 +389,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### DATA-002 — Event-Log-Speicherung (Append-only)
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen.
+- **Beschreibung:** Events liegen in `events(org_id, session_id, seq, id, ts, actor_kind, actor_id, actor, type, payload, payload_ref, turn_id, causation_id, epoch, redacted, PRIMARY KEY (session_id, seq))` (`actor` ist das vollständige Actor-Objekt; genau eines von `payload`/`payload_ref` ist gesetzt); `raw` separat in `event_raw` mit eigener Retention. Anhängen geschieht in einer Transaktion mit optimistischer Prüfung `UPDATE sessions SET head_seq = head_seq + 1 WHERE id = ? AND head_seq = ? AND epoch = ?` — so bleibt `seq` lückenlos und nur ein Schreiber erfolgreich. Updates/Deletes einzelner Events sind außer Redaktion (DATA-012) und Session-Löschung nicht vorgesehen. Schreibtransaktionen beginnen mit `BEGIN IMMEDIATE` (SQLite), damit gleichzeitige Schreiber nicht mit `SQLITE_BUSY` scheitern.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Zwei konkurrierende Appends mit gleicher erwarteter `head_seq` → genau einer gelingt, der andere erhält `seq_conflict`.
   - [ ] AC2 — Nach Kill des Prozesses während Appends (Crash-Test, 1 000 Iterationen) ist das Log lückenlos und `head_seq` = max(`seq`).
