@@ -47,7 +47,7 @@ function Thread({
   compact?: boolean
 }) {
   return (
-    <div className={cn('rounded-md border bg-card', selected ? 'border-foreground' : 'border-border', status === 'resolved' && 'opacity-60')}>
+    <div className={cn('rounded-md border bg-card', selected ? 'border-foreground' : 'border-border', status === 'resolved' && 'dimmed')}>
       <div className="flex items-center gap-2 border-b border-border px-2.5 py-1.5 text-[11px] text-muted-foreground">
         {selectable && (
           <span role="checkbox" aria-checked={selected} className={cn('flex size-3.5 items-center justify-center rounded-[3px] border text-[10px]', selected ? 'border-foreground bg-foreground text-background' : 'border-muted-foreground')}>
