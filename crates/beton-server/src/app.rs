@@ -294,6 +294,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::resolve_approval))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(routes!(crate::api_sessions::list_tombstones))
+        .routes(routes!(crate::api_workspace::info))
         .routes(routes!(crate::api_workspace::tree))
         .routes(crate::api_workspace::file_routes())
         .routes(routes!(crate::api_workspace::search))

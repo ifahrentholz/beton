@@ -100,6 +100,35 @@ fn etag(sha: &str) -> HeaderValue {
 }
 
 // ---------------------------------------------------------------------------
+// Überblick
+// ---------------------------------------------------------------------------
+
+/// Eigenschaften des Workspace, die Clients vor weiteren Abfragen brauchen.
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct WorkspaceInfo {
+    /// Der Workspace liegt in einem Git-Repository: Die Sichten `uncommitted` und `branch`
+    /// stehen zur Verfügung (sonst `409 not_a_git_repo`, nur `turn`).
+    pub git_repo: bool,
+}
+
+/// Überblick über den Workspace der Session (SES-018): Clients wählen damit die Sicht der
+/// Änderungen, ohne eine erwartbar fehlschlagende Abfrage zu stellen.
+#[utoipa::path(get, path = "/v1/sessions/{id}/workspace", tag = "workspace",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "Überblick", body = WorkspaceInfo),
+              (status = 404, description = "Session oder Workspace unbekannt", body = Problem, content_type = "application/problem+json")))]
+pub async fn info(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path(id): Path<String>,
+) -> ApiResult<axum::Json<WorkspaceInfo>> {
+    let (_, ws) = open(&state, auth, &id).await?;
+    let root = ws.root().to_path_buf();
+    let git_repo = blocking(move || Ok(beton_git::changes::is_repo(&root))).await?;
+    Ok(axum::Json(WorkspaceInfo { git_repo }))
+}
+
+// ---------------------------------------------------------------------------
 // Dateibaum
 // ---------------------------------------------------------------------------
 
