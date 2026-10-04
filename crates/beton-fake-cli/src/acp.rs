@@ -171,7 +171,10 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                         code: -32602,
                         message: format!("erwartet `{expected}`, erhalten `{text}`"),
                     },
-                    _ => self.steps(&turn.emit, &mut TurnState::default())?,
+                    _ => self.steps(
+                        &beton_harness::scenario::resolve_echo(&turn.emit, &text, &[]),
+                        &mut TurnState::default(),
+                    )?,
                 }
             }
         };

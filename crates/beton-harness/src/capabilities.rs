@@ -88,7 +88,15 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<String>>", optional)]
     pub efforts: Vec<String>,
+    /// Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des
+    /// Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_window: Option<u64>,
 }
+
+/// Kontextfenster, wenn ein Harness keines meldet (HAR-018).
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 
 impl Capabilities {
     /// Nichts unterstützt; Basis für Adapter, die nur einzelne Fähigkeiten setzen.
@@ -115,7 +123,13 @@ impl Capabilities {
             transcript_import: false,
             models: Vec::new(),
             efforts: Vec::new(),
+            context_window: None,
         }
+    }
+
+    /// Kontextfenster in Tokens; ohne Angabe [`DEFAULT_CONTEXT_WINDOW`] (HAR-018).
+    pub fn context_window(&self) -> u64 {
+        self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
     }
 
     /// Prüft, ob eine Aktion möglich ist (HAR-002 AC3).

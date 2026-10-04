@@ -117,6 +117,90 @@ pub async fn create_session(
         .into_response())
 }
 
+/// Fork-Anfrage (SES-006, SES-007).
+#[derive(Debug, Default, Deserialize, Serialize, ToSchema, TS)]
+pub struct ForkRequest {
+    /// Fork-Punkt; ohne Angabe das Ende der Session. Liegt er mitten in einem Turn, beginnt der
+    /// Fork am letzten vollständigen Turn-Ende davor (`effective_seq`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub at_seq: Option<u64>,
+    /// Ziel-Harness, z. B. `codex`; ohne Angabe der Harness der Quelle. Ein anderer Harness
+    /// bekommt den Verlauf als Übergabe-Präambel (HAR-018).
+    #[serde(default)]
+    #[ts(optional)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// `new_worktree` (Default, falls die Quelle in einem Git-Repository arbeitet), `shared`
+    /// oder `fresh`. Dateien werden nie auf den Stand von `at_seq` zurückgesetzt.
+    #[serde(default)]
+    #[ts(optional)]
+    pub workspace: Option<crate::fork::ForkWorkspace>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub title: Option<String>,
+    /// Harness-spezifische Startoptionen (wie bei `POST /v1/sessions`); ohne Angabe die der
+    /// Quelle, falls der Harness gleich bleibt.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub harness_opts: Value,
+}
+
+/// Ergebnis eines Forks.
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct ForkResponse {
+    /// Die neue Session.
+    pub session: SessionSummary,
+    /// Tatsächlicher Fork-Punkt in der Quelle (letztes vollständiges Turn-Ende).
+    pub effective_seq: u64,
+    /// Gewählter Workspace-Modus.
+    pub workspace: crate::fork::ForkWorkspace,
+}
+
+/// Neue Session ab einem Event abzweigen (SES-006), optional auf einem anderen Harness
+/// (SES-007). Die Quelle bleibt unverändert und erhält nur `session.fork_created`.
+#[utoipa::path(post, path = "/v1/sessions/{id}/fork", tag = "sessions",
+    params(("id" = String, Path)),
+    request_body = ForkRequest,
+    responses((status = 201, description = "Fork angelegt; Runner startet", body = ForkResponse),
+              (status = 409, description = "`new_worktree` ohne Git-Repository", body = Problem, content_type = "application/problem+json"),
+              (status = 422, description = "`harness_incompatible`: Ziel-Harness passt nicht", body = Problem, content_type = "application/problem+json")))]
+pub async fn fork_session(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<ForkRequest>,
+) -> ApiResult<Response> {
+    let (user, _) = principal(auth);
+    let forked = state
+        .sessions()
+        .fork(
+            session_id(&id)?,
+            user,
+            crate::fork::ForkSession {
+                at_seq: req.at_seq,
+                harness: req.harness,
+                model: req.model,
+                workspace: req.workspace,
+                title: req.title,
+                harness_opts: req.harness_opts,
+            },
+        )
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(ForkResponse {
+            session: summary_of(&state, forked.session.id).await?,
+            effective_seq: forked.effective_seq,
+            workspace: forked.workspace,
+        }),
+    )
+        .into_response())
+}
+
 /// Eine Session.
 #[utoipa::path(get, path = "/v1/sessions/{id}", tag = "sessions",
     params(("id" = String, Path)),

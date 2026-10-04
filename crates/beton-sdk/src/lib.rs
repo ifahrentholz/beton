@@ -181,6 +181,17 @@ impl Client {
             .await
     }
 
+    /// `POST /v1/sessions/{id}/fork`: neue Session ab einem Event abzweigen (SES-006, SES-007).
+    /// Antwort: `{session, effective_seq, workspace}`.
+    pub async fn fork_session(&self, id: &str, request: &Value) -> Result<Value> {
+        self.send(
+            self.http
+                .post(self.url(&format!("/v1/sessions/{id}/fork")))
+                .json(request),
+        )
+        .await
+    }
+
     /// `POST /v1/auth/local/codes`: Einmal-Code für den Browser (AUTH-004).
     pub async fn create_login_code(&self) -> Result<LoginCode> {
         self.send(self.http.post(self.url("/v1/auth/local/codes")))

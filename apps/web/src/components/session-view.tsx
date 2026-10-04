@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { Capabilities } from '@beton/sdk'
+import { useQuery } from '@tanstack/react-query'
+import type { Capabilities, HarnessInfo } from '@beton/sdk'
 import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
 import { payloadOf } from '@/lib/events'
+import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
 import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
@@ -15,6 +17,7 @@ import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
 import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } from '@/store/workspace'
 import { Composer } from './composer'
+import { continueTargets, ForkBanner, forkOrigin } from './fork'
 import { QueueList } from './queue'
 import { HarnessBadge, listStatus, StatusMark } from './harness'
 import { useLayout } from './layout-state'
@@ -139,6 +142,25 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const toggleList = useLayout((s) => s.toggleList)
   const costMicro = useSessions((s) => s.byId[sessionId]?.cost_micro ?? 0)
   const lastSeq = log?.events.at(-1)?.seq ?? 0
+  const origin = useMemo(() => forkOrigin(log?.events), [log?.events])
+  const features = useFeatures()
+  const catalog = useQuery({
+    queryKey: ['harnesses'],
+    queryFn: () => client.request<{ items: HarnessInfo[] }>('GET', '/v1/harnesses'),
+  })
+  const targets = continueTargets(catalog.data?.items ?? [], meta.harness, (h) => harnessVisible(h, features))
+  // „Weiter mit …“: Fork ab dem letzten `seq`, die neue Session öffnet direkt (SES-007 AC5).
+  const continueWith = (harness: string) => {
+    setSendError(undefined)
+    client
+      .session(sessionId)
+      .fork({ harness })
+      .then((f) => {
+        useSessions.getState().upsert([f.summary])
+        void navigate({ to: '/s/$sessionId', params: { sessionId: f.session.id } })
+      })
+      .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Fork fehlgeschlagen'))
+  }
 
   // Gelesen bis zur angezeigten `seq`, auf allen Geräten (SES-012 AC2). Während des Replays
   // wartet die Meldung, bis keine neuen Events mehr nachkommen.
@@ -224,6 +246,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <PanelRight className="size-4" />
         </button>
       </header>
+      {origin && <ForkBanner origin={origin} />}
       {log?.reconnecting && (
         <div className="flex items-center gap-2 border-b border-border bg-sunken px-4 py-1 text-[12px] text-muted-foreground" role="status">
           <WifiOff className="size-3.5" /> Verbindung zum Daemon unterbrochen – verbinde neu …
@@ -267,6 +290,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         model={meta.model}
         capabilities={meta.capabilities}
         running={running}
+        continueWith={targets}
+        onContinue={meta.harness ? continueWith : undefined}
         queue={
           <QueueList
             sessionId={sessionId}

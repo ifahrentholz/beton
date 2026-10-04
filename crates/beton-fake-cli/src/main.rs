@@ -46,6 +46,11 @@ struct Args {
     version: bool,
     partial: bool,
     resume: Option<String>,
+    /// `--fork-session` von Claude Code: mit `--resume` als neue Session abzweigen.
+    fork_session: bool,
+    /// Sessions wie die echte CLI unter `$CLAUDE_CONFIG_DIR/projects/<slug>/<id>.jsonl`
+    /// lesen und schreiben (nur `stream-json`, für Fork- und Rebuild-Tests, HAR-019).
+    persist: bool,
     faults: Faults,
     /// `--mcp-config` von Claude Code (JSON-Text oder Datei).
     mcp_config: Option<String>,
@@ -67,6 +72,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--version" | "-v" | "-V" => out.version = true,
             "--include-partial-messages" => out.partial = true,
             "--resume" => out.resume = args.next(),
+            "--fork-session" => out.fork_session = true,
+            "--persist" => out.persist = true,
             "--mcp-config" => out.mcp_config = args.next(),
             "--tools" => {
                 out.tools = args
@@ -197,11 +204,26 @@ fn main() -> ExitCode {
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
+    let persist = if args.persist {
+        // Nie das echte Konfigurationsverzeichnis: ohne CLAUDE_CONFIG_DIR kein Verlauf.
+        let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") else {
+            eprintln!("beton-fake-cli: --persist braucht CLAUDE_CONFIG_DIR");
+            return ExitCode::from(2);
+        };
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Some(stream_json::project_dir(std::path::Path::new(&dir), &cwd))
+    } else {
+        None
+    };
     let result = match protocol.as_str() {
         "stream-json" => stream_json::Sim::new(
             &scenario,
             args.partial,
-            args.resume.clone(),
+            stream_json::Resume {
+                session: args.resume.clone(),
+                fork: args.fork_session,
+                persist,
+            },
             args.mcp_config
                 .as_deref()
                 .map(mcp::from_claude_config)

@@ -45,6 +45,9 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     /// Binary finden, Version prüfen, Login-Status über die Vendor-CLI erfragen (nie Token-Dateien lesen).
     async fn probe(&self, env: &HostEnv) -> ProbeReport;
     async fn start(&self, spec: SessionSpec, ctx: AdapterContext) -> Result<Box<dyn HarnessSession>>;
+    /// Native Session aus dem Event-Log rekonstruieren (HAR-019, `fork_history: rebuild`);
+    /// liefert die Referenz für `SessionSpec.resume`. Default: `capability_unsupported`.
+    async fn rebuild_history(&self, req: &RebuildRequest, env: &HostEnv) -> Result<NativeSessionRef>;
     fn transcript_importer(&self) -> Option<&dyn TranscriptImporter> { None }
 }
 
@@ -67,9 +70,11 @@ pub struct AdapterContext {
     pub sandbox: Arc<dyn SandboxLauncher>,    // Stufe-1-Wrapper für den Harness-Prozess (SBX)
     pub egress: EgressConfig,                 // Proxy-Adresse, CA-Bundle, Platzhalter-Env (PRX)
     pub workdir: PathBuf,                     // Worktree der Session
-    pub handover: Option<HandoverContext>,    // bei Fork/Harness-Wechsel (HAR-018)
     pub clock: Arc<dyn Clock>,                // deterministisch in Tests
 }
+// Fork/Harness-Wechsel (HAR-018, HAR-019): Der Runner wählt den Modus aus dem Fork-Plan des
+// Servers; `SessionSpec.resume` + `SessionSpec.fork_session` tragen die native History,
+// die Präambel geht als Präfix der ersten Eingabe an den Harness (kein Feld im Kontext).
 ```
 
 ### Capabilities (Beispiel, ausgeliefert über den Harness-Katalog)
@@ -95,6 +100,7 @@ instructions_delivery: append_system_prompt   # append_system_prompt | system_pr
 mcp_injection: true
 images: true
 transcript_import: true
+context_window: 200000              # Tokens des Standardmodells; Budget der Präambel (HAR-018), ohne Angabe 128000
 ```
 
 ### Normalisierung
@@ -366,7 +372,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 ### HAR-018 — Handover-Kontext für Harness-Wechsel & Fork
 - **Meilenstein:** M1 · **Priorität:** Must
 - **Beschreibung:** Für Fork ab Event X auf einen anderen Harness (UX und Session-Semantik: SES-006, SES-007 in 07-sessions-collaboration.md; ein Harness-Wechsel geschieht **ausschließlich per Fork**, eine Session bleibt immer auf ihrem Harness) erzeugt `beton-harness` aus dem Event-Log einen harness-neutralen Handover-Kontext und liefert ihn dem Ziel-Adapter je Capability `fork_history` aus: `rebuild` (gleicher Harness, HAR-019) oder `preamble`.
-- **Details:** `HandoverContext { transcript, changed_files, worktree, branch, plan, open_todos, agent_ref, source_harness, up_to_seq }`. Präambel-Rendering (deterministisch, ohne LLM): Markdown-Dokument `.beton/handover/<session>.md` im Worktree plus erste Nachricht mit Kurzfassung und Verweis. Budget: max. 40 % des Ziel-Kontextfensters (`context_window` aus Katalog), Kürzungsregeln in Reihenfolge: (1) Tool-Results > 2 KiB auf Kopf/Ende kürzen, (2) Reasoning entfernen, (3) ältere Turns auf User-Nachricht + Tool-Call-Einzeiler reduzieren, (4) älteste Turns auslassen mit Marker `[… N Turns ausgelassen …]`. Die letzten 3 Turns bleiben immer vollständig.
+- **Details:** `HandoverContext { transcript, changed_files, worktree, branch, plan, open_todos, agent_ref, source_harness, up_to_seq }` (`beton_harness::handover`). `changed_files` stammen aus `fs.changed` und Edit-Tool-Calls, `plan`/`open_todos` aus dem letzten `TodoWrite` (Claude) bzw. `update_plan` (Codex). Präambel-Rendering (deterministisch, ohne LLM, ohne Zeitstempel und Event-IDs): Markdown-Dokument `.beton/handover/<session>.md` im Workspace des Forks plus erste Nachricht mit Kurzfassung (Ziel, zuletzt geänderte Dateien, Branch, offene Aufgaben, letzter Stand) und Verweis; die Kurzfassung steht vor der ersten Eingabe des Nutzers (getrennt durch `---`), das Log enthält die Eingabe unverändert. Budget: max. 40 % des Ziel-Kontextfensters (`context_window` aus den Capabilities im Katalog, ohne Angabe 128 000; Tokens geschätzt als Bytes / 4), Kürzungsregeln in Reihenfolge: (1) Tool-Results > 2 KiB auf Kopf/Ende kürzen, (2) Reasoning entfernen, (3) ältere Turns auf User-Nachricht + Tool-Call-Einzeiler reduzieren, (4) älteste Turns auslassen mit Marker `[… N Turns ausgelassen …]`. Regeln 1 und 2 gelten für alle älteren Turns auf einmal, 3 und 4 vom ältesten Turn an, bis das Budget passt. Die letzten 3 Turns bleiben immer vollständig. Den Modus wählt der Runner aus dem Fork-Plan des Servers und schreibt `session.forked` mit dem tatsächlichen `history_mode` als erstes eigenes Event; startet der erste Turn erst nach einem Runner-Neustart, rendert er die Präambel erneut (deterministisch).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Fork einer Claude-Session auf Codex ab `seq` N: Codex erhält die Präambel, kennt Ziel und letzte Änderungen (Test mit Fake-Harness, der die erhaltene erste Nachricht spiegelt).
   - [ ] AC2 — Das Präambel-Rendering ist deterministisch: gleicher Log-Ausschnitt → byte-identisches Markdown (Golden-Test).
@@ -377,7 +383,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 ### HAR-019 — Native History-Rebuild (gleicher Harness)
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Bei Fork oder Resume auf denselben Harness wird die volle native History verwendet statt einer Präambel. Für Claude nutzt der Adapter bevorzugt den Vendor-Mechanismus (`--resume <id> --fork-session`); ist die native Session nicht mehr vorhanden (anderer Rechner, Import), wird eine Vendor-Session-Datei aus dem Event-Log rekonstruiert.
-- **Details:** Rekonstruktion nutzt die gespeicherten `raw`-Payloads (verlustfrei, wenn vorhanden), sonst eine Synthese aus normalisierten Events. Ziel: Claude-Projektverzeichnis bzw. Codex-Session-Verzeichnis des Users *(Annahme: Schreiben von Session-Dateien ist zulässig, da keine Credentials betroffen)*. Fork ab `seq` X kürzt die History exakt auf X. Bei Fehlschlag automatischer Fallback auf `preamble` mit Hinweis-Event.
+- **Details:** Liegt der Fork-Punkt am Ende der Quelle (nach X keine Inhalts-Events), nutzt der Adapter den Vendor-Fork der nativen Referenz (`history_mode: native`, Claude `--resume <id> --fork-session`); sonst rekonstruiert er die Session (`history_mode: rebuild`). Rekonstruktion nutzt die gespeicherten `raw`-Payloads (verlustfrei, wenn vorhanden: die stream-json-Zeilen `assistant`/`user` enthalten `message` im Format der Session-Datei), sonst eine Synthese aus normalisierten Events. Ziel: Claude-Projektverzeichnis `$CLAUDE_CONFIG_DIR/projects/<slug>/<id>.jsonl` (ohne Variable `~/.claude`; `<slug>` = Arbeitsverzeichnis, jedes Zeichen außer `[A-Za-z0-9]` wird `-`) *(Annahme: Schreiben von Session-Dateien ist zulässig, da keine Credentials betroffen. Format vendor-intern; gegen claude 2.1.285 ohne Modellaufruf geprüft (API-Endpunkt unerreichbar): `--resume <id>` lädt die rekonstruierte Datei, `--fork-session` übernimmt ihre Einträge in eine neue Session; die Prüfung mit Modellaufruf steht aus, #107)*. beton liest aus dem Verzeichnis nie. Runner erben dafür `CLAUDE_CONFIG_DIR` und `CODEX_HOME` (RUN-002). Codex meldet bis zum nativen Fork über `thread/fork` (#108) `fork_history: preamble`. Fork ab `seq` X kürzt die History exakt auf X. Bei Fehlschlag (z. B. unbekanntes `raw`-Schema, Verzeichnis nicht beschreibbar) automatischer Fallback auf `preamble` mit `fallback_reason` und Hinweis-Event (`notice`, `warn`). Eine importierte Session ohne native Referenz von beton (HAR-023, `session.imported`) setzt der Runner beim Fortsetzen per Rebuild fort (`session.resumed {mode: native}`, beim Fallback `handover`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Fork einer Claude-Session ab Turn 3 von 5: Die neue Session kennt Turn 1–3, nicht Turn 4–5 (Fake-Harness bzw. Golden-Test mit echter CLI im manuellen Testlauf).
   - [ ] AC2 — Eine importierte Claude-Session (HAR-023) kann per Rebuild fortgesetzt werden.

@@ -42,6 +42,21 @@ Options:
       --config <FILE>
           User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
 
+      --fork <ID[@SEQ]>
+          Neue Session ab einem Event dieser Session abzweigen: `ID@SEQ`, ohne `@SEQ` ab dem Ende
+          (SES-006). Mitten in einem Turn beginnt der Fork am vorherigen Turn-Ende
+
+      --harness <HARNESS>
+          Harness des Forks (wie TARGET); ein anderer Harness bekommt eine Übergabe (SES-007)
+
+      --workspace <MODE>
+          Dateien des Forks: neuer Worktree (Default im Git-Repository), gemeinsam oder leer
+
+          Possible values:
+          - new-worktree: Neuer `git worktree` vom Stand der Quelle inkl. WIP-Snapshot
+          - shared:       Dieselben Dateien wie die Quelle
+          - fresh:        Leeres Verzeichnis, nur der Verlauf
+
       --title <T>
           Titel der neuen Session
 

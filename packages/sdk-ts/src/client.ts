@@ -1,6 +1,9 @@
 import { BetonError, type Problem } from './errors.js'
 import type { CreateSessionRequest } from './gen/CreateSessionRequest.js'
 import type { EventPage } from './gen/EventPage.js'
+import type { ForkRequest } from './gen/ForkRequest.js'
+import type { ForkResponse } from './gen/ForkResponse.js'
+import type { ForkWorkspace } from './gen/ForkWorkspace.js'
 import type { Info } from './gen/Info.js'
 import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
@@ -280,10 +283,29 @@ export class Session {
     return `/v1/sessions/${enc(this.id)}`
   }
 
-  /** Fork ab `atSeq` (SES-006). Folgt mit M1. */
-  fork(_options: { atSeq: number; harness?: string }): Promise<Session> {
-    return Promise.reject(new Error('Fork folgt mit M1 (SES-006)'))
+  /**
+   * Neue Session ab einem Event abzweigen (SES-006), optional auf einem anderen Harness
+   * (SES-007). Ohne `at_seq` ab dem Ende; mitten in einem Turn beginnt der Fork am
+   * vorherigen Turn-Ende (`effectiveSeq`).
+   */
+  async fork(options: ForkRequest = {}): Promise<Forked> {
+    const res: ForkResponse = await this.client.request('POST', `/v1/sessions/${enc(this.id)}/fork`, options)
+    return {
+      session: new Session(this.client, res.session.id),
+      summary: res.session,
+      effectiveSeq: res.effective_seq,
+      workspace: res.workspace,
+    }
   }
+}
+
+/** Ergebnis von `Session.fork()`. */
+export interface Forked {
+  session: Session
+  summary: SessionSummary
+  /** Tatsächlicher Fork-Punkt in der Quelle. */
+  effectiveSeq: number
+  workspace: ForkWorkspace
 }
 
 function enc(s: string): string {
