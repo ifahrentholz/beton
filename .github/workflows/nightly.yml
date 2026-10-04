@@ -1,0 +1,61 @@
+# Nächtliche Läufe: E2E-Determinismus (QA-007 AC2) und das volle Streaming-Budget (WEB-015).
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  e2e-repeat:
+    name: E2E 20-fach (alle Engines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Daemon bauen
+        working-directory: .
+        run: cargo build -p beton-cli -p beton-fake-cli
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium firefox webkit
+      - name: 20 Läufe ohne Flake
+        # covers: QA-007 AC2
+        run: pnpm e2e --repeat-each 20 --grep-invert "WEB-015"
+        env:
+          CI: "1"
+          BETON_BIN: ${{ github.workspace }}/target/debug/beton
+      - name: Volles Streaming-Budget (10 min)
+        run: pnpm e2e --project chromium --grep "WEB-015"
+        env:
+          CI: "1"
+          BETON_BIN: ${{ github.workspace }}/target/debug/beton
+          BETON_PERF_STREAM_SECONDS: "600"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nightly-playwright
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          retention-days: 14

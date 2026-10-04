@@ -1,5 +1,5 @@
 //! Golden-Transcripts des Claude-Adapters (HAR-025, HAR-004 AC2, HAR-005 AC1).
-//! Aufgenommen mit `cargo run -p beton-harness-claude --example record_golden`;
+//! Aufgenommen mit `beton dev record-golden --harness claude [--scenario <name>]`;
 //! Erwartungen neu schreiben mit `BETON_BLESS=1`.
 
 #![allow(clippy::unwrap_used)]

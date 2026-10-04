@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SetupReport",
+  "description": "Ergebnis von `beton setup --check --json` (Schema: `schemas/v1/setup-check.schema.json`).",
+  "type": "object",
+  "properties": {
+    "harnesses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HarnessSetup"
+      }
+    },
+    "local_servers": {
+      "description": "Erreichbare lokale Modell-Server (Vorschläge für `providers.*`).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LocalServer"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "harnesses",
+    "local_servers"
+  ],
+  "$defs": {
+    "AuthStatus": {
+      "description": "Login-Status laut Vendor-CLI (nie aus Token-Dateien gelesen, ADR-0005).",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "logged_in",
+        "logged_out",
+        "not_applicable"
+      ]
+    },
+    "BinarySource": {
+      "description": "Woher ein Binary-Pfad stammt (Präzedenz von oben nach unten, HAR-003).",
+      "type": "string",
+      "enum": [
+        "env",
+        "project_config",
+        "user_config",
+        "path"
+      ]
+    },
+    "HarnessSetup": {
+      "type": "object",
+      "properties": {
+        "api_key_env_found": {
+          "description": "Ob der API-Key des Vendors in der Umgebung gesetzt ist; der Wert erscheint nie.",
+          "type": "boolean"
+        },
+        "auth_status": {
+          "$ref": "#/$defs/AuthStatus"
+        },
+        "id": {
+          "type": "string"
+        },
+        "install_command": {
+          "description": "Installationsbefehl, falls nicht installiert.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "Woher der Pfad stammt (Env, Projekt-, User-Konfiguration, `PATH`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BinarySource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supported": {
+          "description": "In diesem Release als Harness nutzbar.",
+          "type": "boolean"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "supported",
+        "installed",
+        "auth_status",
+        "api_key_env_found"
+      ]
+    },
+    "LocalServer": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "suggestion": {
+          "description": "Konfigurationsschlüssel des Vorschlags, z. B. `providers.ollama`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "url",
+        "suggestion"
+      ]
+    }
+  }
+}

@@ -104,6 +104,18 @@ fn apply_ddl(schema: &mut Schema, sql: &str) {
                     .indexes
                     .insert((*name).to_owned(), index);
             }
+            ["DROP", "TABLE", name] => {
+                schema.tables.remove(*name);
+            }
+            ["ALTER", "TABLE", from, "RENAME", "TO", to] => {
+                let table = schema
+                    .tables
+                    .remove(*from)
+                    .unwrap_or_else(|| panic!("Umbenennen unbekannter Tabelle {from}"));
+                schema.tables.insert((*to).to_owned(), table);
+            }
+            // Datenübernahme ändert das Schema nicht.
+            ["INSERT", "INTO", ..] => {}
             _ => panic!("Nicht unterstützte Anweisung – Leser erweitern:\n{stmt}"),
         }
     }

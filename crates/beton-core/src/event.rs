@@ -497,6 +497,10 @@ payload!(SessionCreated {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] project_id: Option<ProjectId>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] parent_session_id: Option<SessionId>,
     trigger: SessionTrigger,
+    /// Harness-spezifische Startoptionen aus `POST /v1/sessions` (z. B. Fake-Szenario).
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[ts(optional, as = "Option<Value>")]
+    harness_opts: Value,
 });
 payload!(SessionStarted {
     runner_id: RunnerId,

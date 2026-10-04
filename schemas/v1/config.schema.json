@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "beton-Konfiguration (config.yaml)",
+  "description": "Die effektive Konfiguration.",
+  "type": "object",
+  "properties": {
+    "auth": {
+      "$ref": "#/$defs/AuthSettings",
+      "default": {
+        "ws_allowed_origins": []
+      }
+    },
+    "events": {
+      "$ref": "#/$defs/EventsSettings",
+      "default": {
+        "store_raw": true
+      }
+    },
+    "harnesses": {
+      "description": "Harnesses: Binary, Argumente, Auth-Herkunft (HAR-003, HAR-015).",
+      "$ref": "#/$defs/HarnessesConfig",
+      "default": {}
+    },
+    "server": {
+      "$ref": "#/$defs/ServerSettings",
+      "default": {
+        "allowed_hosts": [],
+        "listen": [
+          "127.0.0.1:7420",
+          "[::1]:7420"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AuthSettings": {
+      "type": "object",
+      "properties": {
+        "ws_allowed_origins": {
+          "description": "Zusätzlich erlaubte Origins für WebSocket und Cookie-Requests (AUTH-003).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "EventsSettings": {
+      "type": "object",
+      "properties": {
+        "store_raw": {
+          "description": "Original-Payloads der Harnesses speichern (PROTO-001 AC3).",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "HarnessAuth": {
+      "description": "Auth-Herkunft in der Konfiguration (HAR-015): `subscription` = Login der offiziellen CLI.",
+      "type": "string",
+      "enum": [
+        "subscription",
+        "api_key"
+      ]
+    },
+    "HarnessCommandConfig": {
+      "description": "Ein Eintrag unter `harnesses.<id>` in `.beton/config.yaml` bzw. `~/.beton/config.yaml`.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "Auth-Herkunft (HAR-015); ohne Angabe `subscription`. Nur in der User-Konfiguration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "description": "Programm (Name in `PATH` oder Pfad), HAR-003.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env_passthrough": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extra_args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "isolated": {
+          "description": "Benutzer-Anpassungen der Vendor-CLI (Hooks, Skills, Plugins, MCP) abschalten (HAR-004).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HarnessesConfig": {
+      "description": "Abschnitt `harnesses:` der Konfiguration.",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Standard-Harness für neue Sessions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/HarnessCommandConfig"
+      }
+    },
+    "ServerSettings": {
+      "type": "object",
+      "properties": {
+        "allowed_hosts": {
+          "description": "Zusätzlich erlaubte `Host`-Header (AUTH-002).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "listen": {
+          "description": "TCP-Adressen; im lokalen Modus nur Loopback (AUTH-001).",
+          "type": "array",
+          "default": [
+            "127.0.0.1:7420",
+            "[::1]:7420"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

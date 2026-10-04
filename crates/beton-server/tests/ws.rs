@@ -142,6 +142,7 @@ async fn fixture(customize: impl FnOnce(Runtime) -> Runtime) -> Fixture {
                 parent_id: None,
                 trigger: SessionTrigger::User,
                 home_node: local.node,
+                harness_opts: serde_json::Value::Null,
             },
         )
         .await
@@ -464,6 +465,7 @@ fn proto_006_ac3_every_command_has_a_rest_twin() {
     // Die eingebauten Kommandos (ab WP-09) prüft derselbe Test über die Standard-Registry.
     assert!(
         Runtime::new(tokio::sync::watch::channel(false).1)
+            .with_default_commands()
             .commands
             .missing_rest_twins(&doc)
             .is_empty()
@@ -581,8 +583,10 @@ async fn proto_008_ac2_slow_client_does_not_delay_fast_client() {
     assert_eq!(recv(&mut fast).await.unwrap()["t"], "live");
     let mut latencies = Vec::new();
     for i in 0..100 {
-        let sent = Instant::now();
+        // Gemessen wird die Zustellung ab dem Commit; die Schreiblatenz des Stores
+        // (fsync auf CI-Runnern) hängt nicht vom langsamen Client ab.
         f.produce(1, &format!("{i} {}", "y".repeat(4000))).await;
+        let sent = Instant::now();
         loop {
             let m = recv(&mut fast).await.unwrap();
             if m["t"] == "events" {

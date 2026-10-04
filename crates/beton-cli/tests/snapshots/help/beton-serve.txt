@@ -1,0 +1,42 @@
+Lokalen Server starten (nur Loopback)
+
+Usage: beton serve [OPTIONS]
+
+Options:
+      --bind <ADDR>
+          Adresse, an die der Server bindet (nur Loopback, z. B. 127.0.0.1)
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+      --port <N>
+          Port (Default 7420; 0 = beliebiger freier Port)
+
+      --dev
+          Entwicklermodus: Fake-Harness verfügbar (HAR-026)
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+      --foreground
+          Im Vordergrund laufen statt im Hintergrund
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version
