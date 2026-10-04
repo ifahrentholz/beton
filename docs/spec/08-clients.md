@@ -317,6 +317,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-012 — Sub-Agent-Graph (xyflow)
 - **Meilenstein:** M1 · **Priorität:** Should
 - **Beschreibung:** Graph der Session-Hierarchie (Parent → Sub-Agents, inkl. Harness, Status, Kosten) mit xyflow; Klick öffnet die Sub-Session. Aktualisiert sich live.
+- **Details:** Tab „Agents“ der Workspace-Rail (WEB-008), sichtbar bei Harnesses mit MCP-Injektion (System-Tools) oder nativen Sub-Agents. Daten aus `GET /v1/sessions/{id}/subagents` (AGT-009): je Session Agent, Harness, Modell, Status, Auftrag, eigene und kumulierte Kosten bzw. Tokens, Worktree. Neu geladen wird bei `agent.spawned`, `agent.completed` und `agent.message` im Stream der Session und alle 1 s, solange der Tab offen ist. Bei Subscription zeigt der Knoten Tokens und „Subscription“ statt eines Betrags (HAR-021). xyflow (`@xyflow/react`, MIT) kommt aus dem eigenen Bundle und wird erst mit dem Tab geladen (WEB-015, CSP `'self'`). Die Ansicht „Partitur“ des Screens folgt mit #139.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein neu gespawnter Sub-Agent erscheint ≤ 1 s nach seinem Start-Event als Knoten.
   - [ ] AC2 — Knoten zeigen Harness-Icon, Status und kumulierte Kosten.
@@ -567,7 +568,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
   | Ressource | Endpunkte (Auszug) | Kapitel |
   | --- | --- | --- |
   | System | `GET /v1/info`, `/healthz`, `/metrics` | OBS |
-  | Sessions | `GET|POST /v1/sessions`, `GET|PATCH|DELETE /v1/sessions/{id}`, `POST …/archive|unarchive|interrupt|fork|compact|resume`, `GET …/events?after_seq=`, `POST …/input`, `GET|POST|PATCH|DELETE …/queue`, `GET …/export`, `GET …/events/stream` (SSE, PROTO-012) | 07 |
+  | Sessions | `GET|POST /v1/sessions`, `GET|PATCH|DELETE /v1/sessions/{id}`, `POST …/archive|unarchive|interrupt|fork|compact|resume`, `GET …/events?after_seq=`, `POST …/input`, `GET|POST|PATCH|DELETE …/queue`, `GET …/subagents` (AGT-009), `GET …/export`, `GET …/events/stream` (SSE, PROTO-012) | 07 |
   | Workspace | `GET …/workspace/tree|search|changes|diff`, `GET|PUT …/workspace/files/{path}`, `GET|POST|DELETE …/terminals` | 07 |
   | Approvals | `GET …/approvals`, `POST …/approvals/{aid}/resolve` | 03 |
   | Collaboration | `…/shares`, `…/comments` (+ `/address`), `…/side-chats`, `GET /v1/inbox` | 07 |

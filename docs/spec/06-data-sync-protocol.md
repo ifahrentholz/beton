@@ -121,7 +121,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `egress.blocked` | D | `method, host, path, reason, rule_hint?, source: tools\|harness\|browser, tool_call_id?` |
 | | `egress.summary` | D | `window_s, hosts: [{host, requests, bytes}]` |
 | Agents & Async | `agent.spawned` | D | `child_session_id, agent_ref, harness, async` |
-| | `agent.completed` | D | `child_session_id, status, summary?, cost_micro?` |
+| | `agent.completed` | D | `child_session_id, status, summary?, cost_micro?, cancel_reason?` |
 | | `agent.resolved` | D | `name, version, source, hash, blob_ref, overrides?, params?` (AGT-004) |
 | | `agent.message` | D | `from_session, to_session, text` |
 | | `timer.set` / `timer.fired` / `timer.cancelled` | D | `timer_id, fire_at?, note?, late_by_s?` |
