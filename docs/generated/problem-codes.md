@@ -22,6 +22,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `method_not_allowed` | 405 | Methode nicht erlaubt |
 | `conflict` | 409 | Konflikt |
 | `capability_unsupported` | 409 | Vom Harness nicht unterstützt |
+| `no_active_turn` | 409 | Kein laufender Turn |
 | `seq_conflict` | 409 | Sequenzkonflikt |
 | `stale_epoch` | 409 | Veraltete Epoch |
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |

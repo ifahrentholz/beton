@@ -51,6 +51,17 @@ impl AppState {
             hub: self.runtime.hub.clone(),
         }
     }
+
+    /// Zugriff auf die Queues der Sessions (SES-004).
+    pub fn queue(&self) -> crate::queue::QueueCtx {
+        crate::queue::QueueCtx {
+            events: self.events(),
+            org: self.local.org,
+            runners: self.runtime.runners.clone(),
+            cmd_timeout: self.runtime.tunnel.cmd_timeout,
+            queues: self.runtime.queues.clone(),
+        }
+    }
 }
 
 /// Laufzeit-Bausteine für Live-Verbindungen (WebSocket).
@@ -71,6 +82,8 @@ pub struct Runtime {
     pub shutdown: watch::Receiver<bool>,
     /// Aktive Feature-Flags (UX-007); `beton serve` löst sie aus Config und Env auf.
     pub features: Arc<beton_core::feature::FeatureSet>,
+    /// Serverseitige Queues (SES-004).
+    pub queues: Arc<crate::queue::Queues>,
 }
 
 impl Runtime {
@@ -96,6 +109,7 @@ impl Runtime {
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
             features: Arc::default(),
+            queues: Arc::default(),
         }
     }
 
@@ -261,6 +275,16 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::interrupt_session))
         .routes(routes!(crate::api_sessions::resume_session))
         .routes(routes!(crate::api_sessions::submit_input))
+        .routes(routes!(crate::api_sessions::get_queue))
+        .routes(routes!(
+            crate::api_sessions::edit_queue_item,
+            crate::api_sessions::delete_queue_item
+        ))
+        .routes(routes!(crate::api_sessions::move_queue_item))
+        .routes(routes!(crate::api_sessions::steer_queue_item))
+        .routes(routes!(crate::api_sessions::resume_queue))
+        .routes(routes!(crate::api_sessions::put_read_state))
+        .routes(routes!(crate::api_sessions::put_pin))
         .routes(routes!(crate::api_sessions::list_events))
         .routes(routes!(crate::api_sessions::list_approvals))
         .routes(routes!(crate::api_sessions::resolve_approval))

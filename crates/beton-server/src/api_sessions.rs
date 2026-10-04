@@ -1,5 +1,5 @@
 //! REST-Endpunkte und WS-Kommandos des Session-Lebenszyklus (SES-001, SES-002, SES-003,
-//! SES-005, DATA-006, DATA-008). Jedes WS-Kommando hat hier seinen REST-Zwilling
+//! SES-004, SES-005, SES-012, DATA-006, DATA-008). Jedes WS-Kommando hat hier seinen REST-Zwilling
 //! (PROTO-006 AC3).
 
 use std::sync::Arc;
@@ -23,7 +23,7 @@ use crate::commands::{Command, CommandCtx, CommandRegistry};
 use crate::extract::{ApiJson, ApiQuery, PageQuery, encode_cursor};
 use crate::problem::{ApiResult, Problem, ProblemCode};
 use crate::security::Authenticated;
-use crate::sessions::CreateSession;
+use crate::sessions::{CreateSession, InputMode};
 
 /// M0: Lokal handelt immer `usr_local` (Bearer und Cookie gehören demselben Menschen).
 fn principal(_auth: Authenticated) -> (UserId, PrincipalId) {
@@ -35,8 +35,8 @@ fn session_id(raw: &str) -> Result<SessionId, Problem> {
         .map_err(|_| Problem::new(ProblemCode::NotFound).detail(format!("Session {raw}")))
 }
 
-fn summary(s: beton_store::SessionRecord) -> SessionSummary {
-    crate::api::summary(s)
+async fn summary_of(state: &AppState, id: SessionId) -> Result<SessionSummary, Problem> {
+    crate::api::session_summary(state, id).await
 }
 
 #[derive(Debug, Deserialize, ToSchema, TS)]
@@ -79,7 +79,11 @@ pub async fn create_session(
             },
         )
         .await?;
-    Ok((StatusCode::CREATED, axum::Json(summary(record))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        axum::Json(summary_of(&state, record.id).await?),
+    )
+        .into_response())
 }
 
 /// Eine Session.
@@ -91,11 +95,7 @@ pub async fn get_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<axum::Json<SessionSummary>> {
-    let record = state
-        .store
-        .session(state.local.org, session_id(&id)?)
-        .await?;
-    Ok(axum::Json(summary(record)))
+    Ok(axum::Json(summary_of(&state, session_id(&id)?).await?))
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
@@ -134,9 +134,7 @@ pub async fn patch_session(
         let args = serde_json::to_value(&req).map_err(|e| Problem::internal(&e))?;
         state.sessions().set(id, args).await?;
     }
-    Ok(axum::Json(summary(
-        state.store.session(state.local.org, id).await?,
-    )))
+    Ok(axum::Json(summary_of(&state, id).await?))
 }
 
 /// Session löschen (nur Owner, SES-001 AC3).
@@ -166,9 +164,7 @@ pub async fn archive_session(
 ) -> ApiResult<axum::Json<SessionSummary>> {
     let id = session_id(&id)?;
     state.sessions().archive(id, principal(auth).1).await?;
-    Ok(axum::Json(summary(
-        state.store.session(state.local.org, id).await?,
-    )))
+    Ok(axum::Json(summary_of(&state, id).await?))
 }
 
 /// Archivierte Session wiederherstellen.
@@ -182,9 +178,7 @@ pub async fn unarchive_session(
 ) -> ApiResult<axum::Json<SessionSummary>> {
     let id = session_id(&id)?;
     state.sessions().unarchive(id, principal(auth).1).await?;
-    Ok(axum::Json(summary(
-        state.store.session(state.local.org, id).await?,
-    )))
+    Ok(axum::Json(summary_of(&state, id).await?))
 }
 
 /// Laufenden Turn abbrechen; idempotent (SES-005).
@@ -208,25 +202,37 @@ pub async fn resume_session(
     Path(id): Path<String>,
 ) -> ApiResult<axum::Json<SessionSummary>> {
     let record = state.sessions().resume(session_id(&id)?).await?;
-    Ok(axum::Json(summary(record)))
+    Ok(axum::Json(summary_of(&state, record.id).await?))
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct InputRequest {
     pub text: String,
+    /// `queue` (Default): sofort bzw. nach dem laufenden Turn; `steer`: in den laufenden
+    /// Turn, falls der Harness `steering` kann (sonst `409 capability_unsupported`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub mode: Option<InputMode>,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct InputAccepted {
     pub input_id: String,
-    pub turn_id: String,
+    /// Nur bei `status: started`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub turn_id: Option<String>,
+    /// `started`, `queued` oder `steered`.
+    pub status: String,
 }
 
-/// Eingabe senden; startet eine gestoppte Session automatisch (SES-003 AC3).
+/// Eingabe senden (SES-004): ohne laufenden Turn sofort, sonst in die Queue bzw. als Steer;
+/// startet eine gestoppte Session automatisch (SES-003 AC3).
 #[utoipa::path(post, path = "/v1/sessions/{id}/input", tag = "sessions",
     params(("id" = String, Path)),
     request_body = InputRequest,
-    responses((status = 202, description = "Turn gestartet", body = InputAccepted)))]
+    responses((status = 202, description = "Gestartet, eingereiht oder eingespeist", body = InputAccepted),
+              (status = 409, description = "Steer ohne Capability `steering`", body = Problem, content_type = "application/problem+json")))]
 pub async fn submit_input(
     State(state): State<AppState>,
     Extension(auth): Extension<Authenticated>,
@@ -235,9 +241,212 @@ pub async fn submit_input(
 ) -> ApiResult<Response> {
     let result = state
         .sessions()
-        .input(session_id(&id)?, req.text, principal(auth).1)
+        .input(
+            session_id(&id)?,
+            req.text,
+            principal(auth).1,
+            req.mode.unwrap_or_default(),
+        )
         .await?;
     Ok((StatusCode::ACCEPTED, axum::Json(result)).into_response())
+}
+
+/// Stand der Queue einer Session (SES-004); immer vollständig, `next_cursor` bleibt leer.
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct QueueView {
+    /// Einträge in Ausführungsreihenfolge (`{id, author, text, attachments, created_at}`).
+    #[schema(value_type = Vec<Object>)]
+    pub items: Vec<beton_core::event::QueueItem>,
+    /// Nach einem Interrupt pausiert, bis jemand fortsetzt oder neuen Input sendet.
+    pub paused: bool,
+    pub next_cursor: Option<String>,
+}
+
+async fn queue_view(state: &AppState, id: SessionId) -> Result<QueueView, Problem> {
+    state.store.session(state.local.org, id).await?;
+    let q = state.queue().lock(id).await?.snapshot();
+    Ok(QueueView {
+        items: q.items,
+        paused: q.paused,
+        next_cursor: None,
+    })
+}
+
+/// Die Queue einer Session (SES-004).
+#[utoipa::path(get, path = "/v1/sessions/{id}/queue", tag = "queue",
+    params(("id" = String, Path), PageQuery),
+    responses((status = 200, description = "Queue", body = QueueView)))]
+pub async fn get_queue(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiQuery(_page): ApiQuery<PageQuery>,
+) -> ApiResult<axum::Json<QueueView>> {
+    Ok(axum::Json(queue_view(&state, session_id(&id)?).await?))
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
+pub struct QueueEditRequest {
+    pub text: String,
+}
+
+/// Queue-Eintrag bearbeiten (`queue.edit`).
+#[utoipa::path(patch, path = "/v1/sessions/{id}/queue/{item_id}", tag = "queue",
+    params(("id" = String, Path), ("item_id" = String, Path)),
+    request_body = QueueEditRequest,
+    responses((status = 204, description = "Geändert; neuer Stand als `queue.updated`")))]
+pub async fn edit_queue_item(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path((id, item)): Path<(String, String)>,
+    ApiJson(req): ApiJson<QueueEditRequest>,
+) -> ApiResult<StatusCode> {
+    let id = session_id(&id)?;
+    queue_op(&state, id, QueueOp::Edit(item, req.text), principal(auth).1).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Queue-Eintrag löschen (`queue.delete`).
+#[utoipa::path(delete, path = "/v1/sessions/{id}/queue/{item_id}", tag = "queue",
+    params(("id" = String, Path), ("item_id" = String, Path)),
+    responses((status = 204, description = "Geändert; neuer Stand als `queue.updated`")))]
+pub async fn delete_queue_item(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path((id, item)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let id = session_id(&id)?;
+    queue_op(&state, id, QueueOp::Delete(item), principal(auth).1).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
+pub struct QueueMoveRequest {
+    /// Neue Position, 0 = als Nächstes; größere Werte setzen ans Ende.
+    pub position: u32,
+}
+
+/// Queue-Eintrag verschieben (`queue.reorder`, Drag & Drop in WEB-005).
+#[utoipa::path(post, path = "/v1/sessions/{id}/queue/{item_id}/move", tag = "queue",
+    params(("id" = String, Path), ("item_id" = String, Path)),
+    request_body = QueueMoveRequest,
+    responses((status = 204, description = "Geändert; neuer Stand als `queue.updated`")))]
+pub async fn move_queue_item(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path((id, item)): Path<(String, String)>,
+    ApiJson(req): ApiJson<QueueMoveRequest>,
+) -> ApiResult<StatusCode> {
+    let id = session_id(&id)?;
+    queue_op(
+        &state,
+        id,
+        QueueOp::Move(item, req.position as usize),
+        principal(auth).1,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Queue-Eintrag in den laufenden Turn einspeisen (`queue.steer`, „Als Steer senden“).
+#[utoipa::path(post, path = "/v1/sessions/{id}/queue/{item_id}/steer", tag = "queue",
+    params(("id" = String, Path), ("item_id" = String, Path)),
+    responses((status = 202, description = "Eingespeist (oder als Nächstes gestartet)", body = InputAccepted),
+              (status = 409, description = "Harness ohne `steering`", body = Problem, content_type = "application/problem+json")))]
+pub async fn steer_queue_item(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path((id, item)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let result = state
+        .sessions()
+        .steer_item(session_id(&id)?, &item, principal(auth).1)
+        .await?;
+    Ok((StatusCode::ACCEPTED, axum::Json(result)).into_response())
+}
+
+/// Pausierte Queue fortsetzen (`queue.resume`, SES-005 AC2).
+#[utoipa::path(post, path = "/v1/sessions/{id}/queue/resume", tag = "queue",
+    params(("id" = String, Path)),
+    responses((status = 204, description = "Geändert; neuer Stand als `queue.updated`")))]
+pub async fn resume_queue(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let id = session_id(&id)?;
+    state.sessions().resume_queue(id, principal(auth).1).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+enum QueueOp {
+    Edit(String, String),
+    Delete(String),
+    Move(String, usize),
+}
+
+async fn queue_op(
+    state: &AppState,
+    id: SessionId,
+    op: QueueOp,
+    by: PrincipalId,
+) -> Result<(), Problem> {
+    state.store.session(state.local.org, id).await?;
+    let mut q = state.queue().lock(id).await?;
+    match op {
+        QueueOp::Edit(item, text) => q.edit(&item, text, by).await,
+        QueueOp::Delete(item) => q.delete(&item, by).await,
+        QueueOp::Move(item, to) => q.reorder(&item, to, by).await,
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
+pub struct ReadStateRequest {
+    /// Bis hierhin hat der Client die Session angezeigt.
+    pub seq: u64,
+}
+
+/// Gelesen-Stand setzen; gilt auf allen Geräten des Users und sinkt nie (SES-012).
+#[utoipa::path(put, path = "/v1/sessions/{id}/read-state", tag = "sessions",
+    params(("id" = String, Path)),
+    request_body = ReadStateRequest,
+    responses((status = 200, description = "Session mit neuem Gelesen-Stand", body = SessionSummary)))]
+pub async fn put_read_state(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<ReadStateRequest>,
+) -> ApiResult<axum::Json<SessionSummary>> {
+    let view = state
+        .store
+        .mark_read(state.local.org, state.local.user, session_id(&id)?, req.seq)
+        .await?;
+    Ok(axum::Json(crate::api::summary(view)))
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
+pub struct PinRequest {
+    pub pinned: bool,
+}
+
+/// Anpinnen bzw. lösen (je User); angepinnte Sessions stehen in der Liste oben (SES-012).
+#[utoipa::path(put, path = "/v1/sessions/{id}/pin", tag = "sessions",
+    params(("id" = String, Path)),
+    request_body = PinRequest,
+    responses((status = 200, description = "Session mit neuem Pin-Stand", body = SessionSummary)))]
+pub async fn put_pin(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<PinRequest>,
+) -> ApiResult<axum::Json<SessionSummary>> {
+    let view = state
+        .store
+        .set_pinned(
+            state.local.org,
+            state.local.user,
+            session_id(&id)?,
+            req.pinned,
+        )
+        .await?;
+    Ok(axum::Json(crate::api::summary(view)))
 }
 
 #[derive(Debug, Default, Deserialize, IntoParams)]
@@ -492,12 +701,19 @@ impl Command for InputSubmit {
         let text = args["text"]
             .as_str()
             .ok_or_else(|| Problem::new(ProblemCode::ValidationFailed).detail("text fehlt"))?;
+        let mode = match args.get("mode") {
+            None | Some(Value::Null) => InputMode::Queue,
+            Some(m) => serde_json::from_value(m.clone()).map_err(|_| {
+                Problem::new(ProblemCode::ValidationFailed).detail("mode: queue oder steer")
+            })?,
+        };
         ctx.state
             .sessions()
             .input(
                 need_session(session)?,
                 text.to_owned(),
                 PrincipalId::User(UserId::LOCAL),
+                mode,
             )
             .await
     }
@@ -579,8 +795,84 @@ impl Command for ApprovalResolve {
     }
 }
 
+fn item_arg(args: &Value) -> Result<String, Problem> {
+    args["item_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Problem::new(ProblemCode::ValidationFailed).detail("item_id fehlt"))
+}
+
+/// Queue-Kommandos (SES-004); REST-Zwillinge unter `/v1/sessions/{id}/queue`.
+struct QueueCommand {
+    name: &'static str,
+    twin: (&'static str, &'static str),
+}
+
+#[async_trait]
+impl Command for QueueCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn rest_twin(&self) -> (&'static str, &'static str) {
+        self.twin
+    }
+    async fn run(
+        &self,
+        ctx: &CommandCtx,
+        session: Option<SessionId>,
+        args: Value,
+    ) -> Result<Value, Problem> {
+        let id = need_session(session)?;
+        let by = PrincipalId::User(UserId::LOCAL);
+        let state = &ctx.state;
+        match self.name {
+            "queue.edit" => {
+                let text = args["text"].as_str().unwrap_or_default().to_owned();
+                queue_op(state, id, QueueOp::Edit(item_arg(&args)?, text), by).await?;
+            }
+            "queue.delete" => queue_op(state, id, QueueOp::Delete(item_arg(&args)?), by).await?,
+            "queue.reorder" => {
+                let to = args["position"].as_u64().ok_or_else(|| {
+                    Problem::new(ProblemCode::ValidationFailed).detail("position fehlt")
+                })?;
+                queue_op(
+                    state,
+                    id,
+                    QueueOp::Move(item_arg(&args)?, usize::try_from(to).unwrap_or(usize::MAX)),
+                    by,
+                )
+                .await?;
+            }
+            "queue.steer" => return state.sessions().steer_item(id, &item_arg(&args)?, by).await,
+            "queue.resume" => state.sessions().resume_queue(id, by).await?,
+            other => {
+                return Err(Problem::new(ProblemCode::UnknownCommand).detail(other.to_owned()));
+            }
+        }
+        serde_json::to_value(queue_view(state, id).await?).map_err(|e| Problem::internal(&e))
+    }
+}
+
 /// Die Kommandos dieses Moduls.
 pub fn register_commands(reg: &mut CommandRegistry) {
+    for (name, twin) in [
+        ("queue.edit", ("patch", "/v1/sessions/{id}/queue/{item_id}")),
+        (
+            "queue.delete",
+            ("delete", "/v1/sessions/{id}/queue/{item_id}"),
+        ),
+        (
+            "queue.reorder",
+            ("post", "/v1/sessions/{id}/queue/{item_id}/move"),
+        ),
+        (
+            "queue.steer",
+            ("post", "/v1/sessions/{id}/queue/{item_id}/steer"),
+        ),
+        ("queue.resume", ("post", "/v1/sessions/{id}/queue/resume")),
+    ] {
+        reg.register(Arc::new(QueueCommand { name, twin }));
+    }
     reg.register(Arc::new(InputSubmit));
     reg.register(Arc::new(TurnInterrupt));
     reg.register(Arc::new(ApprovalResolve));

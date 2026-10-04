@@ -129,7 +129,7 @@ const SESSION_COLUMNS: &str = "id, org_id, owner_id, project_id, parent_id, kind
     home_node_id, epoch, head_seq, created_at, updated_at, title, status, archived, cost_micro, \
     last_activity_at";
 
-fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
+pub(crate) fn session_from_row(row: &SqliteRow) -> Result<SessionRecord> {
     Ok(SessionRecord {
         id: parse(row.try_get("id")?)?,
         org_id: parse(row.try_get("org_id")?)?,
@@ -587,7 +587,9 @@ async fn delete_tree(
     for row in rows {
         let id: String = row.try_get("id")?;
         let owner: String = row.try_get("owner_id")?;
+        crate::listing::purge_docs(conn, org, &id).await?;
         for sql in [
+            "DELETE FROM session_user_state WHERE org_id = ? AND session_id = ?",
             "DELETE FROM event_raw WHERE org_id = ? AND session_id = ?",
             "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",

@@ -236,7 +236,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-003 — Session-Liste
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Linke Spalte mit Sessions gruppiert nach Pinned, Projekten, „Mit mir geteilt“ (M4) und Archiv; Status-Indikatoren (läuft, wartet auf Approval, Fehler, ungelesen), Suche/Filter, Kontextmenü (umbenennen, archivieren, löschen, forken, in Projekt verschieben).
-- **Details:** M0: Liste nach jüngster Aktivität, Suche, Archiv; Live-Aktualisierung über `GET /v1/sessions?updated_after=<ts>` alle 500 ms (Deltas statt Neuladen). Gruppen (Pinned, Projekte, geteilt) und Kontextmenü folgen mit ihren Features.
+- **Details:** M0: Liste nach jüngster Aktivität, Suche, Archiv; Live-Aktualisierung über `GET /v1/sessions?updated_after=<ts>` alle 500 ms (Deltas statt Neuladen). Gruppen (Pinned, Projekte, geteilt) und Kontextmenü folgen mit ihren Features. M1: Gruppe „Angepinnt“ oben, ungelesene Sessions fett, Suche über Titel und Nachrichten per `q` (SES-012).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Statuswechsel einer Session (z.B. `waiting_approval`) aktualisiert den Indikator ohne Reload innerhalb von 1 s.
   - [ ] AC2 — Die Liste bleibt bei 5 000 Sessions flüssig scrollbar (virtualisiert, ≥ 55 fps).
@@ -254,7 +254,8 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### WEB-005 — Queue- & Steer-UI
 - **Meilenstein:** M1 · **Priorität:** Must
-- **Beschreibung:** Über dem Composer zeigt eine einklappbare Liste die serverseitige Queue mit Autor, Bearbeiten, Löschen, Drag-&-Drop-Reihenfolge und „Als Steer senden“. Interrupt-Button (`Esc` doppelt *(Annahme)*) im Composer.
+- **Beschreibung:** Über dem Composer zeigt eine einklappbare Liste die serverseitige Queue mit Autor, Bearbeiten, Löschen, Drag-&-Drop-Reihenfolge und „Als Steer senden“. Interrupt-Button (`Esc` doppelt, wie in den Shortcut-Defaults von UX-004) im Composer.
+- **Details:** Prototyp-Screen `session-stream` (Zeilen „Eingereiht n“ mit „Jetzt lenken“, „Bearbeiten“, „Entfernen“); den Autor zeigt die Zeile, sobald mehrere Personen eingereiht haben (`collab-codrive`). `Esc` zweimal binnen 600 ms unterbricht den laufenden Turn. Einklappen der Liste und eine Fortsetzen-Aktion für die pausierte Queue folgen, sobald der Prototyp sie zeigt.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Drag-&-Drop-Reorder wird an alle Clients propagiert.
   - [ ] AC2 — „Als Steer senden“ ist deaktiviert (mit Tooltip), wenn der Harness kein Steering unterstützt.

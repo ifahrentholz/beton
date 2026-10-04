@@ -585,13 +585,17 @@ payload!(RunnerStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] reason: Option<String>,
 });
 
+// Ein eingereihter Input (SES-004). `text` ist vollständig, damit jeder Client mit `drive`
+// ihn bearbeiten kann.
 payload!(QueueItem {
     id: String,
     author: PrincipalId,
-    text_preview: String,
+    text: String,
     attachments: Vec<String>,
     created_at: Timestamp,
 });
+// Vollständiger Queue-Stand nach jeder Änderung (SES-004); `paused` nach einem Interrupt
+// (SES-005 AC2).
 payload!(QueueUpdated { items: Vec<QueueItem>, paused: bool });
 payload!(TurnStarted {
     turn_id: TurnId,

@@ -110,6 +110,15 @@ pub struct SessionSummary {
     pub cost_micro: i64,
     pub created_at: String,
     pub last_activity_at: String,
+    /// Vom angemeldeten User angepinnt (SES-012); steht in der Liste oben.
+    pub pinned: bool,
+    /// Gelesen-Stand des Users über alle Geräte (SES-012).
+    pub read_seq: u64,
+    /// Es gibt Events nach `read_seq`.
+    pub unread: bool,
+    /// Letzte Änderung aus Sicht des Users (Aktivität, Gelesen-Stand, Pin); Grundlage von
+    /// `updated_after`.
+    pub changed_at: String,
 }
 
 /// Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).
@@ -119,18 +128,46 @@ pub struct SessionPage {
     pub next_cursor: Option<String>,
 }
 
+/// Segment der Session-Liste (SES-012).
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListFilter {
+    /// Eigene, nicht archivierte.
+    Own,
+    /// Mit mir geteilte (Freigaben ab M4; lokal leer).
+    Shared,
+    /// Archivierte.
+    Archived,
+    /// Alle, auch archivierte.
+    All,
+}
+
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct SessionListQuery {
-    /// Anzahl der Einträge, 1 bis 200 (Default 50).
+    /// Anzahl der Einträge, 1 bis 200 (Default 50); angepinnte Sessions kommen auf der ersten
+    /// Seite zusätzlich dazu.
     #[param(minimum = 1, maximum = 200)]
     pub limit: Option<String>,
     /// Opaker Cursor aus `next_cursor` der vorigen Seite.
     pub cursor: Option<String>,
-    /// Archivierte Sessions einschließen.
+    /// Archivierte Sessions einschließen (wie `filter=all`).
     pub include_archived: Option<bool>,
-    /// Nur Sessions mit Aktivität nach diesem Zeitpunkt (RFC 3339), älteste zuerst, auch
-    /// archivierte; für Listen-Deltas ohne Neuladen. Ohne `next_cursor`.
+    /// `own`, `shared`, `archived` oder `all`; ohne Angabe alle nicht archivierten.
+    #[param(value_type = Option<String>)]
+    pub filter: Option<ListFilter>,
+    /// Volltext über Titel und Nachrichten: alle Wörter als Wortanfang im selben Titel bzw.
+    /// in derselben Nachricht, ohne Groß-/Kleinschreibung (SES-012).
+    pub q: Option<String>,
+    /// Nur Sessions dieses Harness, z. B. `codex`.
+    pub harness: Option<String>,
+    /// Nur Sessions mit diesem Status, z. B. `running`.
+    pub status: Option<String>,
+    /// Nur Sessions dieses Projekts.
+    pub project_id: Option<String>,
+    /// Nur Sessions, die sich nach diesem Zeitpunkt (RFC 3339) für den User geändert haben
+    /// (Aktivität, Gelesen-Stand, Pin), älteste zuerst, auch archivierte; für Listen-Deltas
+    /// ohne Neuladen. Ohne `next_cursor`, ohne weitere Filter.
     pub updated_after: Option<String>,
 }
 
@@ -141,10 +178,44 @@ impl SessionListQuery {
             cursor: self.cursor.clone(),
         }
     }
+
+    fn filter(&self) -> Result<beton_store::SessionFilter, Problem> {
+        use beton_store::SessionScope;
+        let invalid =
+            |what: &str| Problem::new(ProblemCode::ValidationFailed).detail(what.to_owned());
+        let scope = match (self.filter, self.include_archived.unwrap_or(false)) {
+            (Some(ListFilter::Own), _) => SessionScope::Own,
+            (Some(ListFilter::Shared), _) => SessionScope::Shared,
+            (Some(ListFilter::Archived), _) => SessionScope::Archived,
+            (Some(ListFilter::All), _) | (None, true) => SessionScope::All,
+            (None, false) => SessionScope::Active,
+        };
+        Ok(beton_store::SessionFilter {
+            scope,
+            harness: self.harness.clone().filter(|h| !h.is_empty()),
+            status: self
+                .status
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(|s| serde_json::from_value(serde_json::Value::String(s.to_owned())))
+                .transpose()
+                .map_err(|_| invalid("status ist unbekannt"))?,
+            project: self
+                .project_id
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| invalid("project_id ist ungültig"))?,
+            query: self.q.clone().filter(|q| !q.trim().is_empty()),
+        })
+    }
 }
 
-/// Listen-Darstellung einer Session.
-pub fn summary(s: beton_store::SessionRecord) -> SessionSummary {
+/// Listen-Darstellung einer Session aus Sicht des Users.
+pub fn summary(v: beton_store::SessionView) -> SessionSummary {
+    let unread = v.unread();
+    let s = v.session;
     SessionSummary {
         id: s.id,
         title: s.title,
@@ -156,7 +227,21 @@ pub fn summary(s: beton_store::SessionRecord) -> SessionSummary {
         cost_micro: s.cost_micro,
         created_at: s.created_at.to_string(),
         last_activity_at: s.last_activity_at.to_string(),
+        pinned: v.pinned,
+        read_seq: v.read_seq,
+        unread,
+        changed_at: v.changed_at.to_string(),
     }
+}
+
+/// Eine Session aus Sicht des lokalen Users (M0/M1: `usr_local`).
+pub async fn session_summary(state: &AppState, id: SessionId) -> Result<SessionSummary, Problem> {
+    Ok(summary(
+        state
+            .store
+            .session_view(state.local.org, state.local.user, id)
+            .await?,
+    ))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -171,7 +256,7 @@ fn enum_str<T: Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
-/// Session-Liste, neueste zuerst, mit Cursor-Pagination.
+/// Session-Liste: angepinnte zuerst, dann neueste; Filter, Volltextsuche, Cursor (SES-012).
 #[utoipa::path(get, path = "/v1/sessions", tag = "sessions",
     params(SessionListQuery),
     responses((status = 200, description = "Eine Seite der Session-Liste", body = SessionPage)))]
@@ -181,6 +266,7 @@ pub async fn list_sessions(
 ) -> ApiResult<axum::Json<SessionPage>> {
     let page = q.page();
     let limit = page.limit()?;
+    let user = state.local.user;
     if let Some(since) = &q.updated_after {
         let since: beton_core::time::Timestamp = since.parse().map_err(|_| {
             Problem::new(ProblemCode::ValidationFailed)
@@ -188,7 +274,7 @@ pub async fn list_sessions(
         })?;
         let items = state
             .store
-            .sessions_updated_after(state.local.org, since, limit)
+            .sessions_changed_after(state.local.org, user, since, limit)
             .await?;
         return Ok(axum::Json(SessionPage {
             items: items.into_iter().map(summary).collect(),
@@ -198,12 +284,7 @@ pub async fn list_sessions(
     let before = page.cursor::<SessionCursor>()?.map(|c| c.before);
     let (sessions, next) = state
         .store
-        .sessions_page(
-            state.local.org,
-            q.include_archived.unwrap_or(false),
-            limit,
-            before,
-        )
+        .session_list(state.local.org, user, &q.filter()?, limit, before)
         .await?;
     Ok(axum::Json(SessionPage {
         items: sessions.into_iter().map(summary).collect(),

@@ -1008,3 +1008,451 @@ async fn ses_002_user_input_is_part_of_the_event_log() {
     assert!(user < turn, "Eingabe steht vor dem Turn");
     d.daemon.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// SES-004 Queue & Steer, SES-005 AC2, SES-012 Liste je User
+// ---------------------------------------------------------------------------
+
+type Ws =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+impl Daemonized {
+    async fn attached(&self, id: &str) -> Ws {
+        let mut ws = self.ws().await;
+        ws.send(Message::Text(
+            json!({"t": "attach", "id": "a", "session_id": id, "from_seq": 0})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+        ws
+    }
+
+    async fn input(&self, id: &str, body: Value) -> (u16, Value) {
+        self.http("POST", &format!("/v1/sessions/{id}/input"), Some(body))
+            .await
+    }
+
+    async fn queue(&self, id: &str) -> Value {
+        let (status, q) = self
+            .http("GET", &format!("/v1/sessions/{id}/queue"), None)
+            .await;
+        assert_eq!(status, 200, "{q}");
+        q
+    }
+}
+
+fn queue_texts(q: &Value) -> Vec<String> {
+    q["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["text"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Liest bis zu einem `queue.updated`, auf das `pred` passt; liefert die Payload.
+async fn next_queue(ws: &mut Ws, within: Duration, pred: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + within;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let Ok(Some(Ok(Message::Text(t)))) = tokio::time::timeout(left, ws.next()).await else {
+            panic!("kein passendes queue.updated binnen {within:?}");
+        };
+        let m: Value = serde_json::from_str(&t).unwrap();
+        for e in m["events"].as_array().into_iter().flatten() {
+            if e["type"] == "queue.updated" && pred(&e["payload"]) {
+                return e["payload"].clone();
+            }
+        }
+    }
+}
+
+fn user_texts(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter(|e| e["type"] == "message.completed" && e["payload"]["role"] == "user")
+        .map(|e| {
+            e["payload"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn ses_004_ac1_inputs_during_turn_queue_in_order_and_run_as_own_turns() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(
+                dir.path(),
+                "turns:\n  - emit: [{ message_delta: \"Ich arbeite noch eine Weile daran.\", chunk: 1, chunk_delay_ms: 40 }]\n  - expect_input: zwei\n    emit: [{ message: \"zwei erledigt\" }]\n  - expect_input: drei\n    emit: [{ message: \"drei erledigt\" }]\n",
+            ),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    let mut a = d.attached(&id).await;
+    let mut b = d.attached(&id).await;
+    let (status, first) = d.input(&id, json!({"text": "eins"})).await;
+    assert_eq!(
+        (status, first["status"].as_str()),
+        (202, Some("started")),
+        "{first}"
+    );
+    for text in ["zwei", "drei"] {
+        let (status, r) = d.input(&id, json!({"text": text})).await;
+        assert_eq!((status, r["status"].as_str()), (202, Some("queued")), "{r}");
+    }
+    // Beide Clients sehen die Queue in Eingangsreihenfolge.
+    for ws in [&mut a, &mut b] {
+        let q = next_queue(ws, Duration::from_secs(5), |q| {
+            q["items"].as_array().unwrap().len() == 2
+        })
+        .await;
+        assert_eq!(queue_texts(&q), ["zwei", "drei"]);
+        assert_eq!(q["items"][0]["author"], "usr_local");
+    }
+    // Nach turn.completed laufen sie nacheinander als eigene Turns.
+    let events = d
+        .wait_for(&id, |e| {
+            e["type"] == "message.completed"
+                && e["payload"]["content"][0]["text"] == "drei erledigt"
+        })
+        .await;
+    assert_eq!(user_texts(&events), ["eins", "zwei", "drei"]);
+    let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "turn.started").count(), 3);
+    assert!(!kinds.contains(&"turn.failed"), "{kinds:?}");
+    // Jeder Turn beginnt erst nach dem Ende des vorigen.
+    let order: Vec<&str> = kinds
+        .iter()
+        .copied()
+        .filter(|k| matches!(*k, "turn.started" | "turn.completed"))
+        .collect();
+    assert_eq!(
+        order[..5],
+        [
+            "turn.started",
+            "turn.completed",
+            "turn.started",
+            "turn.completed",
+            "turn.started"
+        ]
+    );
+    d.wait_for(&id, |e| e["type"] == "turn.completed").await;
+    assert!(d.queue(&id).await["items"].as_array().unwrap().is_empty());
+    d.daemon.shutdown().await;
+}
+
+async fn send_cmd(ws: &mut Ws, id: &str, name: &str, args: Value) {
+    ws.send(Message::Text(
+        json!({"t": "cmd", "id": name, "session_id": id, "name": name, "args": args})
+            .to_string()
+            .into(),
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn ses_004_ac2_reorder_and_delete_reach_other_client_within_500ms() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns:\n  - emit: [{ hang: true }]\n"),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.input(&id, json!({"text": "los"})).await;
+    d.wait_status(&id, "running").await;
+    for text in ["a", "b", "c"] {
+        d.input(&id, json!({"text": text})).await;
+    }
+    let mut client_a = d.attached(&id).await;
+    let mut client_b = d.attached(&id).await;
+    let q = next_queue(&mut client_b, Duration::from_secs(5), |q| {
+        q["items"].as_array().unwrap().len() == 3
+    })
+    .await;
+    let c = q["items"][2]["id"].as_str().unwrap().to_owned();
+    let b_item = q["items"][1]["id"].as_str().unwrap().to_owned();
+
+    // Reorder durch A (WS-Kommando, Drag & Drop): `c` nach vorn.
+    let start = Instant::now();
+    send_cmd(
+        &mut client_a,
+        &id,
+        "queue.reorder",
+        json!({"item_id": c, "position": 0}),
+    )
+    .await;
+    let q = next_queue(&mut client_b, Duration::from_millis(500), |q| {
+        q["items"][0]["text"] == "c"
+    })
+    .await;
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(queue_texts(&q), ["c", "a", "b"]);
+
+    // Delete durch A über REST.
+    let start = Instant::now();
+    let (status, _) = d
+        .http("DELETE", &format!("/v1/sessions/{id}/queue/{b_item}"), None)
+        .await;
+    assert_eq!(status, 204);
+    let q = next_queue(&mut client_b, Duration::from_millis(500), |q| {
+        q["items"].as_array().unwrap().len() == 2
+    })
+    .await;
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(queue_texts(&q), ["c", "a"]);
+
+    // Bearbeiten ist für alle sichtbar; unbekannte Einträge sind 404.
+    let (status, _) = d
+        .http(
+            "PATCH",
+            &format!("/v1/sessions/{id}/queue/{c}"),
+            Some(json!({"text": "c2"})),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(queue_texts(&d.queue(&id).await), ["c2", "a"]);
+    let (status, p) = d
+        .http("DELETE", &format!("/v1/sessions/{id}/queue/{b_item}"), None)
+        .await;
+    assert_eq!((status, p["code"].as_str()), (404, Some("not_found")));
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_005_ac2_queue_stays_paused_after_interrupt_until_resumed() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(
+                dir.path(),
+                "turns:\n  - emit: [{ hang: true }]\n  - expect_input: danach\n    emit: [{ message: ok }]\n",
+            ),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.input(&id, json!({"text": "los"})).await;
+    d.wait_status(&id, "running").await;
+    d.input(&id, json!({"text": "danach"})).await;
+    d.http("POST", &format!("/v1/sessions/{id}/interrupt"), None)
+        .await;
+    d.wait_for(&id, is("turn.interrupted")).await;
+    d.wait_status(&id, "idle").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let q = d.queue(&id).await;
+    assert_eq!(q["paused"], true, "{q}");
+    assert_eq!(queue_texts(&q), ["danach"]);
+    let started = |events: &[Value]| {
+        events
+            .iter()
+            .filter(|e| e["type"] == "turn.started")
+            .count()
+    };
+    assert_eq!(started(&d.events(&id).await), 1, "kein automatischer Turn");
+    // Explizit fortsetzen: Der Eintrag läuft als eigener Turn.
+    let (status, _) = d
+        .http("POST", &format!("/v1/sessions/{id}/queue/resume"), None)
+        .await;
+    assert_eq!(status, 204);
+    let events = d
+        .wait_for(&id, |e| {
+            e["type"] == "message.completed" && e["payload"]["content"][0]["text"] == "ok"
+        })
+        .await;
+    assert_eq!(started(&events), 2);
+    assert_eq!(d.queue(&id).await["paused"], false);
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_004_ac3_steer_reaches_running_turn_without_interrupt() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(
+                dir.path(),
+                "turns:\n  - emit:\n      - { message: \"Fange an.\" }\n      - { await_steer: \"auch X\" }\n      - { message: \"X mache ich mit.\" }\n",
+            ),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.input(&id, json!({"text": "los"})).await;
+    d.wait_for(&id, |e| {
+        e["type"] == "message.completed" && e["payload"]["content"][0]["text"] == "Fange an."
+    })
+    .await;
+    let (status, r) = d
+        .input(&id, json!({"text": "auch X", "mode": "steer"}))
+        .await;
+    assert_eq!(
+        (status, r["status"].as_str()),
+        (202, Some("steered")),
+        "{r}"
+    );
+    let events = d.wait_for(&id, is("turn.completed")).await;
+    let kinds: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "turn.started").count(), 1);
+    assert!(!kinds.contains(&"turn.interrupted"));
+    assert!(!kinds.contains(&"turn.failed"), "{kinds:?}");
+    assert_eq!(user_texts(&events), ["los", "auch X"]);
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_004_ac4_steer_without_capability_is_409_capability_unsupported() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(
+                dir.path(),
+                "capabilities: { steering: false }\nturns:\n  - emit: [{ hang: true }]\n",
+            ),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    d.input(&id, json!({"text": "los"})).await;
+    d.wait_status(&id, "running").await;
+    let (status, p) = d
+        .input(&id, json!({"text": "rein damit", "mode": "steer"}))
+        .await;
+    assert_eq!(status, 409, "{p}");
+    assert_eq!(p["code"], "capability_unsupported");
+    // Auch „Als Steer senden“ für einen eingereihten Eintrag.
+    d.input(&id, json!({"text": "später"})).await;
+    let item = d.queue(&id).await["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, p) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/queue/{item}/steer"),
+            None,
+        )
+        .await;
+    assert_eq!(
+        (status, p["code"].as_str()),
+        (409, Some("capability_unsupported"))
+    );
+    assert_eq!(
+        queue_texts(&d.queue(&id).await),
+        ["später"],
+        "Eintrag bleibt: {:?}",
+        d.events(&id)
+            .await
+            .iter()
+            .map(|e| (e["type"].clone(), e["payload"].clone()))
+            .collect::<Vec<_>>()
+    );
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_012_ac2_read_on_device_a_is_read_on_device_b_within_2s() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns:\n  - emit: [{ message: fertig }]\n"),
+        )
+        .await;
+    d.input(&id, json!({"text": "los"})).await;
+    d.wait_for(&id, is("turn.completed")).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Gerät B kennt die Liste und fragt danach nur Deltas ab (wie die Web-UI).
+    let (_, list) = d.http("GET", "/v1/sessions", None).await;
+    let row = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(row["unread"], true);
+    let since = row["changed_at"].as_str().unwrap().to_owned();
+    // Gerät A zeigt die Session bis zum Kopf an.
+    let head = row["head_seq"].as_u64().unwrap();
+    let start = Instant::now();
+    let (status, s) = d
+        .http(
+            "PUT",
+            &format!("/v1/sessions/{id}/read-state"),
+            Some(json!({"seq": head})),
+        )
+        .await;
+    assert_eq!(status, 200, "{s}");
+    assert_eq!(s["unread"], false);
+    loop {
+        let (_, delta) = d
+            .http(
+                "GET",
+                &format!("/v1/sessions?updated_after={}", since.replace('+', "%2B")),
+                None,
+            )
+            .await;
+        if delta["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["id"] == id && s["unread"] == false)
+        {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(2), "{delta}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn ses_012_ac3_pinned_session_is_on_top_of_the_list() {
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let mut ids = Vec::new();
+    for _ in 0..3 {
+        ids.push(
+            d.create(dir.path(), &scenario(dir.path(), "turns: []"))
+                .await,
+        );
+    }
+    let (status, s) = d
+        .http(
+            "PUT",
+            &format!("/v1/sessions/{}/pin", ids[0]),
+            Some(json!({"pinned": true})),
+        )
+        .await;
+    assert_eq!((status, s["pinned"].as_bool()), (200, Some(true)), "{s}");
+    let (_, list) = d.http("GET", "/v1/sessions?limit=2", None).await;
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(items[0]["id"], ids[0].as_str(), "älteste, aber angepinnt");
+    assert_eq!(items[0]["pinned"], true);
+    assert!(items[1..].iter().all(|s| s["pinned"] == false));
+    d.daemon.shutdown().await;
+}

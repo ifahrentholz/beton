@@ -550,13 +550,13 @@
         "tags": [
           "sessions"
         ],
-        "summary": "Session-Liste, neueste zuerst, mit Cursor-Pagination.",
+        "summary": "Session-Liste: angepinnte zuerst, dann neueste; Filter, Volltextsuche, Cursor (SES-012).",
         "operationId": "list_sessions",
         "parameters": [
           {
             "name": "limit",
             "in": "query",
-            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50); angepinnte Sessions kommen auf der ersten\nSeite zusätzlich dazu.",
             "required": false,
             "schema": {
               "type": "string",
@@ -576,16 +576,61 @@
           {
             "name": "include_archived",
             "in": "query",
-            "description": "Archivierte Sessions einschließen.",
+            "description": "Archivierte Sessions einschließen (wie `filter=all`).",
             "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
+            "name": "filter",
+            "in": "query",
+            "description": "`own`, `shared`, `archived` oder `all`; ohne Angabe alle nicht archivierten.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Volltext über Titel und Nachrichten: alle Wörter als Wortanfang im selben Titel bzw.\nin derselben Nachricht, ohne Groß-/Kleinschreibung (SES-012).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "harness",
+            "in": "query",
+            "description": "Nur Sessions dieses Harness, z. B. `codex`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Nur Sessions mit diesem Status, z. B. `running`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_id",
+            "in": "query",
+            "description": "Nur Sessions dieses Projekts.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "updated_after",
             "in": "query",
-            "description": "Nur Sessions mit Aktivität nach diesem Zeitpunkt (RFC 3339), älteste zuerst, auch\narchivierte; für Listen-Deltas ohne Neuladen. Ohne `next_cursor`.",
+            "description": "Nur Sessions, die sich nach diesem Zeitpunkt (RFC 3339) für den User geändert haben\n(Aktivität, Gelesen-Stand, Pin), älteste zuerst, auch archivierte; für Listen-Deltas\nohne Neuladen. Ohne `next_cursor`, ohne weitere Filter.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1368,7 +1413,7 @@
         "tags": [
           "sessions"
         ],
-        "summary": "Eingabe senden; startet eine gestoppte Session automatisch (SES-003 AC3).",
+        "summary": "Eingabe senden (SES-004): ohne laufenden Turn sofort, sonst in die Queue bzw. als Steer;\nstartet eine gestoppte Session automatisch (SES-003 AC3).",
         "operationId": "submit_input",
         "parameters": [
           {
@@ -1392,11 +1437,92 @@
         },
         "responses": {
           "202": {
-            "description": "Turn gestartet",
+            "description": "Gestartet, eingereiht oder eingespeist",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InputAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Steer ohne Capability `steering`",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/interrupt": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Laufenden Turn abbrechen; idempotent (SES-005).",
+        "operationId": "interrupt_session",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unterbrochen bzw. nichts zu tun",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
                 }
               }
             }
@@ -1444,13 +1570,185 @@
         }
       }
     },
-    "/v1/sessions/{id}/interrupt": {
-      "post": {
+    "/v1/sessions/{id}/pin": {
+      "put": {
         "tags": [
           "sessions"
         ],
-        "summary": "Laufenden Turn abbrechen; idempotent (SES-005).",
-        "operationId": "interrupt_session",
+        "summary": "Anpinnen bzw. lösen (je User); angepinnte Sessions stehen in der Liste oben (SES-012).",
+        "operationId": "put_pin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session mit neuem Pin-Stand",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/queue": {
+      "get": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Die Queue einer Session (SES-004).",
+        "operationId": "get_queue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/queue/resume": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Pausierte Queue fortsetzen (`queue.resume`, SES-005 AC2).",
+        "operationId": "resume_queue",
         "parameters": [
           {
             "name": "id",
@@ -1462,12 +1760,409 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "Unterbrochen bzw. nichts zu tun",
+          "204": {
+            "description": "Geändert; neuer Stand als `queue.updated`"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/queue/{item_id}": {
+      "delete": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Queue-Eintrag löschen (`queue.delete`).",
+        "operationId": "delete_queue_item",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Geändert; neuer Stand als `queue.updated`"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Queue-Eintrag bearbeiten (`queue.edit`).",
+        "operationId": "edit_queue_item",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Geändert; neuer Stand als `queue.updated`"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/queue/{item_id}/move": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Queue-Eintrag verschieben (`queue.reorder`, Drag & Drop in WEB-005).",
+        "operationId": "move_queue_item",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueMoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Geändert; neuer Stand als `queue.updated`"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/queue/{item_id}/steer": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "summary": "Queue-Eintrag in den laufenden Turn einspeisen (`queue.steer`, „Als Steer senden“).",
+        "operationId": "steer_queue_item",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Eingespeist (oder als Nächstes gestartet)",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/InputAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Harness ohne `steering`",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/read-state": {
+      "put": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Gelesen-Stand setzen; gilt auf allen Geräten des Users und sinkt nie (SES-012).",
+        "operationId": "put_read_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session mit neuem Gelesen-Stand",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSummary"
                 }
               }
             }
@@ -2034,16 +2729,32 @@
         "type": "object",
         "required": [
           "input_id",
-          "turn_id"
+          "status"
         ],
         "properties": {
           "input_id": {
             "type": "string"
           },
           "turn_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Nur bei `status: started`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`started`, `queued` oder `steered`."
           }
         }
+      },
+      "InputMode": {
+        "type": "string",
+        "description": "Wie eine Eingabe zugestellt wird (SES-004).",
+        "enum": [
+          "queue",
+          "steer"
+        ]
       },
       "InputRequest": {
         "type": "object",
@@ -2053,6 +2764,17 @@
         "properties": {
           "text": {
             "type": "string"
+          },
+          "mode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InputMode",
+                "description": "`queue` (Default): sofort bzw. nach dem laufenden Turn; `steer`: in den laufenden\nTurn, falls der Harness `steering` kann (sonst `409 capability_unsupported`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -2107,6 +2829,17 @@
           "auth": {
             "type": "string",
             "description": "`bearer` oder `cookie`."
+          }
+        }
+      },
+      "PinRequest": {
+        "type": "object",
+        "required": [
+          "pinned"
+        ],
+        "properties": {
+          "pinned": {
+            "type": "boolean"
           }
         }
       },
@@ -2182,6 +2915,7 @@
           "method_not_allowed",
           "conflict",
           "capability_unsupported",
+          "no_active_turn",
           "seq_conflict",
           "stale_epoch",
           "seq_ahead",
@@ -2209,6 +2943,72 @@
           },
           "capabilities": {
             "$ref": "#/components/schemas/RunnerCapabilities"
+          }
+        }
+      },
+      "QueueEditRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "QueueMoveRequest": {
+        "type": "object",
+        "required": [
+          "position"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Neue Position, 0 = als Nächstes; größere Werte setzen ans Ende.",
+            "minimum": 0
+          }
+        }
+      },
+      "QueueView": {
+        "type": "object",
+        "description": "Stand der Queue einer Session (SES-004); immer vollständig, `next_cursor` bleibt leer.",
+        "required": [
+          "items",
+          "paused"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Einträge in Ausführungsreihenfolge (`{id, author, text, attachments, created_at}`)."
+          },
+          "paused": {
+            "type": "boolean",
+            "description": "Nach einem Interrupt pausiert, bis jemand fortsetzt oder neuen Input sendet."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ReadStateRequest": {
+        "type": "object",
+        "required": [
+          "seq"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bis hierhin hat der Client die Session angezeigt.",
+            "minimum": 0
           }
         }
       },
@@ -2360,7 +3160,11 @@
           "head_seq",
           "cost_micro",
           "created_at",
-          "last_activity_at"
+          "last_activity_at",
+          "pinned",
+          "read_seq",
+          "unread",
+          "changed_at"
         ],
         "properties": {
           "id": {
@@ -2398,6 +3202,24 @@
           },
           "last_activity_at": {
             "type": "string"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "Vom angemeldeten User angepinnt (SES-012); steht in der Liste oben."
+          },
+          "read_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Gelesen-Stand des Users über alle Geräte (SES-012).",
+            "minimum": 0
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "Es gibt Events nach `read_seq`."
+          },
+          "changed_at": {
+            "type": "string",
+            "description": "Letzte Änderung aus Sicht des Users (Aktivität, Gelesen-Stand, Pin); Grundlage von\n`updated_after`."
           }
         }
       },

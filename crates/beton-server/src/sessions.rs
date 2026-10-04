@@ -13,14 +13,37 @@ use beton_core::event::{
     Actor, Empty, Event, EventPayload, SessionKind, SessionTitleChanged, SessionTrigger,
     TitleSource,
 };
-use beton_core::id::{OrgId, PrincipalId, RunnerId, SessionId, UserId};
+use beton_core::id::{InputId, OrgId, PrincipalId, RunnerId, SessionId, UserId};
 use beton_host::{RunnerBoot, RunnerHandle, RunnerProvider, RunnerSpec, TerminateMode};
 use beton_store::{DeleteAuthority, NewSession, SessionRecord};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::app::AppState;
 use crate::problem::{Problem, ProblemCode};
+use crate::queue::Accepted;
+
+/// Wie eine Eingabe zugestellt wird (SES-004).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Deserialize,
+    serde::Serialize,
+    utoipa::ToSchema,
+    ts_rs::TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMode {
+    /// Sofort, wenn kein Turn läuft; sonst in die Queue.
+    #[default]
+    Queue,
+    /// In den laufenden Turn (Capability `steering`); ohne Turn wie `queue`.
+    Steer,
+}
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -292,66 +315,134 @@ impl<'a> SessionManager<'a> {
         Ok(self.state.store.session(self.org(), session).await?)
     }
 
-    /// Eingabe zustellen; eine gestoppte Session wird dafür fortgesetzt (SES-003 AC3).
+    /// Startet bzw. verbindet den Runner, falls nötig (SES-003 AC3).
+    async fn ensure_runner(&self, session: SessionId) -> Result<(), Problem> {
+        if self.state.runtime.runners.connected(session) {
+            return Ok(());
+        }
+        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
+        let handle = self
+            .cfg()
+            .launched
+            .handles
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        let starting = match &handle {
+            Some(h) => matches!(
+                self.cfg().provider.status(h).await,
+                Ok(beton_host::RunnerStatus::Running)
+            ),
+            None => false,
+        };
+        if !starting {
+            self.cfg().launched.handles.lock().await.remove(&session);
+            self.resume(session).await?;
+        }
+        self.wait_connected(session).await
+    }
+
+    /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
+    /// Capabilities aus dem letzten `session.started` (HAR-002).
+    async fn can_steer(&self, session: SessionId) -> Result<bool, Problem> {
+        let started = self
+            .state
+            .store
+            .last_event_of_type(self.org(), session, "session.started")
+            .await?;
+        Ok(match started.as_ref().and_then(Event::payload) {
+            Some(EventPayload::SessionStarted(s)) => s.capabilities["steering"] == true,
+            _ => false,
+        })
+    }
+
+    /// Eingabe zustellen (SES-004): ohne laufenden Turn sofort als neuer Turn, sonst in die
+    /// Queue bzw. mit `steer` in den laufenden Turn. Eine gestoppte Session wird dafür
+    /// fortgesetzt (SES-003 AC3).
     pub async fn input(
         &self,
         session: SessionId,
         text: String,
         by: PrincipalId,
+        mode: InputMode,
     ) -> Result<Value, Problem> {
+        if text.trim().is_empty() {
+            return Err(Problem::new(ProblemCode::ValidationFailed).detail("text ist leer"));
+        }
         let record = self.state.store.session(self.org(), session).await?;
         if record.archived {
             return Err(Problem::new(ProblemCode::Conflict)
                 .detail("Archivierte Session; erst wiederherstellen"));
         }
-        if !self.state.runtime.runners.connected(session) {
-            // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
-            let handle = self
-                .cfg()
-                .launched
-                .handles
-                .lock()
-                .await
-                .get(&session)
-                .cloned();
-            let starting = match &handle {
-                Some(h) => matches!(
-                    self.cfg().provider.status(h).await,
-                    Ok(beton_host::RunnerStatus::Running)
-                ),
-                None => false,
-            };
-            if !starting {
-                self.cfg().launched.handles.lock().await.remove(&session);
-                self.resume(session).await?;
+        let mut q = self.state.queue().lock(session).await?;
+        if mode == InputMode::Steer && q.busy() {
+            // SES-004 AC4: ohne Capability `steering` lehnt die API ab.
+            if !self.can_steer(session).await? {
+                return Err(Problem::new(ProblemCode::CapabilityUnsupported).detail(
+                    "Dieser Harness nimmt keine Eingaben in den laufenden Turn (steering)",
+                ));
             }
-            self.wait_connected(session).await?;
+            if q.steer(&text, by).await? {
+                return Ok(Accepted::Steered {
+                    input_id: InputId::new(),
+                }
+                .to_json());
+            }
         }
-        // Die Eingabe gehört zum Verlauf (Chat, Replay, Export): als Nachricht des Nutzers
-        // vor der Zustellung, damit sie vor der Antwort steht.
-        self.append(
-            session,
-            user_actor(by),
-            EventPayload::MessageCompleted(beton_core::event::MessageCompleted {
-                message_id: format!("msg_user_{}", RunnerId::new()),
-                role: beton_core::event::MessageRole::User,
-                content: vec![json!({"type": "text", "text": text})],
-                author: Some(by),
-            }),
-        )
-        .await?;
-        let result = self
-            .state
-            .runtime
-            .runners
-            .deliver(
-                session,
-                "input.submit",
-                json!({"text": text}),
-                self.state.runtime.tunnel.cmd_timeout,
-            )
-            .await?;
-        Ok(json!({"input_id": result["turn_id"], "turn_id": result["turn_id"]}))
+        if q.busy() || !q.is_empty() {
+            let input_id = q.push(text, by).await?;
+            if !q.busy() {
+                self.ensure_runner(session).await?;
+                q.drain().await?;
+            }
+            return Ok(Accepted::Queued { input_id }.to_json());
+        }
+        self.ensure_runner(session).await?;
+        Ok(q.start_turn(InputId::new(), text, by).await?.to_json())
+    }
+
+    /// Einen eingereihten Input in den laufenden Turn einspeisen („Als Steer senden“).
+    pub async fn steer_item(
+        &self,
+        session: SessionId,
+        item: &str,
+        by: PrincipalId,
+    ) -> Result<Value, Problem> {
+        if !self.can_steer(session).await? {
+            return Err(Problem::new(ProblemCode::CapabilityUnsupported)
+                .detail("Dieser Harness nimmt keine Eingaben in den laufenden Turn (steering)"));
+        }
+        let mut q = self.state.queue().lock(session).await?;
+        if !q.busy() {
+            return Err(Problem::new(ProblemCode::NoActiveTurn)
+                .detail("Kein laufender Turn; der Eintrag läuft als Nächstes"));
+        }
+        let taken = q.take(item, by).await?;
+        match q.steer(&taken.text, by).await {
+            Ok(true) => Ok(Accepted::Steered {
+                input_id: taken.id.parse().unwrap_or_else(|_| InputId::new()),
+            }
+            .to_json()),
+            // Turn inzwischen vorbei bzw. Fehler: Der Eintrag kommt wieder nach vorn.
+            other => {
+                let input_id = taken.id.parse().unwrap_or_else(|_| InputId::new());
+                q.put_front(taken, by).await?;
+                other?;
+                q.drain().await?;
+                Ok(Accepted::Queued { input_id }.to_json())
+            }
+        }
+    }
+
+    /// Pausierte Queue fortsetzen (`queue.resume`, SES-005 AC2).
+    pub async fn resume_queue(&self, session: SessionId, by: PrincipalId) -> Result<(), Problem> {
+        self.state.store.session(self.org(), session).await?;
+        let mut q = self.state.queue().lock(session).await?;
+        if !q.busy() && !q.is_empty() {
+            self.ensure_runner(session).await?;
+        }
+        q.resume(by).await
     }
 
     /// Bricht den laufenden Turn ab; ohne Turn bzw. Runner ein No-op (SES-005 AC3).
@@ -511,6 +602,7 @@ impl<'a> SessionManager<'a> {
             .store
             .delete_session(self.org(), session, by, DeleteAuthority::Owner)
             .await?;
+        self.state.runtime.queues.forget(session);
         Ok(())
     }
 }

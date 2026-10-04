@@ -442,6 +442,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    // Weicht die Session vom Adapter ab (Fake-Szenario), gelten ihre Capabilities.
+    let capabilities = session
+        .capabilities()
+        .and_then(|c| serde_json::to_value(c).ok())
+        .unwrap_or(capabilities);
     // SES-001: nach `session.created` folgt `session.started`.
     pending_status.insert(
         0,
@@ -778,6 +783,18 @@ async fn deliver(
                 .send(UserInput { text })
                 .await
                 .map(|turn| json!({"turn_id": turn}))
+                .map_err(|e| problem(e.code(), e.to_string()))
+        }
+        // SES-004: Eingabe in den laufenden Turn; ohne Turn entscheidet der Server neu.
+        "input.steer" if !turn_running => {
+            Err(problem("no_active_turn", "kein laufender Turn".into()))
+        }
+        "input.steer" => {
+            let text = args["text"].as_str().unwrap_or_default().to_owned();
+            session
+                .steer(UserInput { text })
+                .await
+                .map(|()| Value::Null)
                 .map_err(|e| problem(e.code(), e.to_string()))
         }
         // SES-005 AC3: ohne laufenden Turn ist Interrupt ein No-op.

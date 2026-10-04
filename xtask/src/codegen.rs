@@ -100,9 +100,15 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     {
         use beton_server::api::{Info, LoginCode, SessionPage, SessionSummary};
         use beton_server::api_sessions::{
-            ApprovalPage, CreateSessionRequest, EventPage, InputAccepted, InputRequest,
+            ApprovalPage, CreateSessionRequest, EventPage, InputAccepted, InputRequest, PinRequest,
+            QueueEditRequest, QueueMoveRequest, QueueView, ReadStateRequest,
             ResolveApprovalRequest, SessionSettings,
         };
+        QueueView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        QueueEditRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        QueueMoveRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ReadStateRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        PinRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         Info::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         LoginCode::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         SessionPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;

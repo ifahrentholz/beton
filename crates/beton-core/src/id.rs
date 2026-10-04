@@ -156,6 +156,8 @@ ids! {
     EventId => "evt",
     /// Turn (eine Eingabe und die Arbeit des Agents daran).
     TurnId => "trn",
+    /// Eingabe eines Users, auch eingereiht (SES-004).
+    InputId => "inp",
     /// Mensch; lokal genau `usr_local` (DATA-001).
     UserId => "usr" + local,
     ServiceAccountId => "sa",

@@ -5,6 +5,7 @@
 //! - Session-Liste: Titel, Status, Archiv-Flag, Kostensumme, letzte Aktivität (`sessions`)
 //! - offene Approvals (`approvals`)
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
+//! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
 //!
 //! Kommentare und Inbox (COL-005, COL-009) kommen mit ihren Features dazu.
 
@@ -158,7 +159,7 @@ pub(crate) async fn apply(
         }
         _ => {}
     }
-    Ok(())
+    crate::listing::index_event(conn, org, session, seq, payload).await
 }
 
 impl Store {
@@ -189,6 +190,7 @@ impl Store {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+            crate::listing::purge_docs(&mut tx, org, id).await?;
             for sql in [
                 "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
                 "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
@@ -284,6 +286,8 @@ impl Store {
              WHERE org_id = ? ORDER BY id",
             "SELECT * FROM approvals WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
+            "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \
+             ORDER BY session_id, doc",
         ] {
             for row in sqlx::query(sql)
                 .bind(org.to_string())

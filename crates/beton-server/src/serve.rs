@@ -157,6 +157,7 @@ pub async fn start_with(
             local,
             runners: runtime.runners.clone(),
             config: runtime.tunnel,
+            queues: runtime.queues.clone(),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

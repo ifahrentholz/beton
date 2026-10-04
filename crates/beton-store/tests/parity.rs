@@ -85,6 +85,10 @@ fn apply_ddl(schema: &mut Schema, sql: &str) {
         .filter(|s| !s.is_empty())
     {
         let words: Vec<&str> = stmt.split_whitespace().collect();
+        // Volltext-Indizes sind dialektspezifisch (SES-012): SQLite FTS5, Postgres GIN.
+        if words.starts_with(&["CREATE", "VIRTUAL", "TABLE"]) || stmt.contains(" USING GIN ") {
+            continue;
+        }
         match words.as_slice() {
             ["CREATE", "TABLE", name, ..] => {
                 let body = between_parens(stmt);

@@ -3417,14 +3417,14 @@
         "id": {
           "type": "string"
         },
-        "text_preview": {
+        "text": {
           "type": "string"
         }
       },
       "required": [
         "id",
         "author",
-        "text_preview",
+        "text",
         "attachments",
         "created_at"
       ]

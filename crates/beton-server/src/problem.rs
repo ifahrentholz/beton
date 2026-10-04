@@ -59,6 +59,8 @@ problem_codes! {
     Conflict = "conflict", 409, "Konflikt";
     /// Der Harness der Session kann das nicht (HAR-002 AC3, SES-004 AC4).
     CapabilityUnsupported = "capability_unsupported", 409, "Vom Harness nicht unterstützt";
+    /// Steer ohne laufenden Turn (SES-004).
+    NoActiveTurn = "no_active_turn", 409, "Kein laufender Turn";
     SeqConflict = "seq_conflict", 409, "Sequenzkonflikt";
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";
