@@ -810,3 +810,96 @@ async fn proto_001_ac4_large_payload_reaches_clients_via_blob_api() {
     );
     d.daemon.shutdown().await;
 }
+
+#[tokio::test]
+async fn har_004_claude_adapter_runs_a_turn_through_the_runner() {
+    let dir = tmp();
+    let fake = std::path::PathBuf::from(runner_bin()).with_file_name("beton-fake-cli");
+    if !fake.is_file() {
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-q", "-p", "beton-fake-cli"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let sc = scenario(
+        dir.path(),
+        "turns:\n  - expect_input: \"sag hallo\"\n    emit:\n      - { message_delta: \"Hallo!\", chunk: 3 }\n",
+    );
+    let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    inherit.insert(
+        "BETON_CLAUDE_PATH".into(),
+        format!(
+            "{} --protocol stream-json --scenario {}",
+            fake.display(),
+            sc.display()
+        ),
+    );
+    let runners = dir.path().join("runners");
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(
+            LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
+        );
+        r
+    })
+    .await;
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "claude", "cwd": dir.path()})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    d.wait_status(&id, "idle").await;
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "sag hallo"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let events = d.wait_for(&id, is("turn.completed")).await;
+    let text = events
+        .iter()
+        .find(|e| e["type"] == "message.completed")
+        .unwrap();
+    assert_eq!(text["payload"]["content"][0]["text"], "Hallo!");
+    d.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn proto_015_second_runner_in_the_same_daemon_loses_no_events() {
+    // Ein neuer Runner zählt `rseq` wieder ab 1; der Server darf seine Events nicht als
+    // Duplikate des Vorgängers verwerfen.
+    let dir = tmp();
+    let d = daemon(dir.path(), |r| r).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    let (status, body) = d
+        .http("POST", &format!("/v1/sessions/{id}/archive"), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    d.wait_status(&id, "stopped").await;
+    d.http("POST", &format!("/v1/sessions/{id}/unarchive"), None)
+        .await;
+    let (status, body) = d
+        .http("POST", &format!("/v1/sessions/{id}/resume"), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    d.wait_status(&id, "idle").await;
+    let events = d.events(&id).await;
+    let count = |t: &str| events.iter().filter(|e| e["type"] == t).count();
+    assert_eq!(count("session.started"), 2, "{events:#?}");
+    assert_eq!(count("session.resumed"), 1);
+    let seqs: Vec<u64> = events.iter().map(|e| e["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
+    d.daemon.shutdown().await;
+}

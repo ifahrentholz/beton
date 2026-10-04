@@ -96,9 +96,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl RunnerRegistry {
     /// Neues Runner-Token für genau eine Session.
+    /// Token für einen neuen Runner-Prozess. Der zählt `rseq` wieder ab 1; der gespeicherte
+    /// Stand des Vorgängers darf seine Events nicht als Duplikate verwerfen (PROTO-015).
     pub fn mint_token(&self, session: SessionId) -> Result<String, crate::local_auth::AuthError> {
         let token = format!("bt_run_{}", crate::local_auth::random_hex(32)?);
         lock(&self.tokens).insert(hash(&token), session);
+        lock(&self.persisted).remove(&session);
         Ok(token)
     }
 
@@ -250,7 +253,7 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     }
     // hello
     let hello = tokio::time::timeout(Duration::from_secs(10), stream.next()).await;
-    let ok = matches!(&hello, Ok(Some(Ok(Message::Text(t)))) if matches!(serde_json::from_str::<TunnelUp>(t), Ok(TunnelUp::Hello { .. })));
+    let ok = matches!(&hello, Ok(Some(Ok(Message::Text(t)))) if matches!(TunnelUp::from_json(t), Ok(TunnelUp::Hello { .. })));
     if !ok {
         let _ = sink
             .send(close_msg(close::PROTOCOL, "hello erwartet"))
@@ -277,7 +280,7 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     };
     let Ok(TunnelUp::SessionBind {
         session_id, epoch, ..
-    }) = serde_json::from_str::<TunnelUp>(&text)
+    }) = TunnelUp::from_json(&text)
     else {
         let _ = sink
             .send(close_msg(close::PROTOCOL, "session.bind erwartet"))
@@ -358,7 +361,7 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
                 let Some(Ok(msg)) = msg else { break };
                 match msg {
                     Message::Text(text) => {
-                        let Ok(up) = serde_json::from_str::<TunnelUp>(&text) else { continue };
+                        let Ok(up) = TunnelUp::from_json(&text) else { continue };
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
                             if sink.send(Message::Text(serde_json::to_string(&reply).unwrap_or_default().into())).await.is_err() || stale {
@@ -482,14 +485,26 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                     _ => {}
                 }
             }
-            let seq_range = if fresh.is_empty() {
-                None
-            } else {
-                let written = append(state, session, fresh.into_iter().map(|e| e.event).collect())
-                    .await
-                    .ok()?;
-                Some((written.first()?.seq, written.last()?.seq))
-            };
+            let seq_range =
+                if fresh.is_empty() {
+                    None
+                } else {
+                    let written =
+                        match append(state, session, fresh.into_iter().map(|e| e.event).collect())
+                            .await
+                        {
+                            Ok(w) => w,
+                            Err(problem) => {
+                                // Nicht still verwerfen: ohne Ack behält der Runner die Events,
+                                // und das Problem wird sichtbar.
+                                tracing::warn!(%session, "Events nicht gespeichert");
+                                return Some(TunnelDown::Problem {
+                                    problem: serde_json::to_value(problem).ok()?,
+                                });
+                            }
+                        };
+                    Some((written.first()?.seq, written.last()?.seq))
+                };
             lock(&runners.persisted).insert(session, upto);
             if let Some(conn) = lock(&runners.conns).get_mut(&session) {
                 conn.last_activity = Instant::now();
