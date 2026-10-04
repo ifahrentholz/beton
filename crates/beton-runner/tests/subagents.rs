@@ -572,7 +572,7 @@ async fn agt_009_ac3_fourth_concurrent_spawn_is_denied() {
         "codex.yaml",
         json!([turn(
             Some("w"),
-            vec![json!({"message": "erledigt", "delay_ms": 3000})]
+            vec![json!({"message": "erledigt", "delay_ms": 6000})]
         )]),
     );
     let env = Env::start(Options {
@@ -792,7 +792,7 @@ fn maestra_turns() -> (Value, Value) {
             Some("Teilaufgabe 1: Limiter"),
             vec![
                 json!({"write_file": {"path": "limiter.rs", "content": "// Limiter\n"}}),
-                json!({"message": "BRANCH: limiter", "delay_ms": 4000}),
+                json!({"message": "BRANCH: limiter", "delay_ms": 6000}),
             ]
         ),
         // Review ohne feste Eingabe (der Branch-Name ist dynamisch).
@@ -1135,7 +1135,7 @@ async fn agt_012_ac1_ac2_ac4_duetto_debates_two_rounds_and_synthesizes() {
                 Some("Frage: Tabs oder Spaces?"),
                 vec![
                     msg(&format!("{name}: Spaces")),
-                    json!({"delay_ms": 600, "message": format!("{name}: Spaces, weil …")})
+                    json!({"delay_ms": 4000, "message": format!("{name}: Spaces, weil …")})
                 ]
             ),
             turn(

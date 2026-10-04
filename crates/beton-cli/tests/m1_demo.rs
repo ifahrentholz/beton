@@ -148,7 +148,7 @@ fn scenarios(dir: &Path) -> (PathBuf, PathBuf) {
                 Some("Teilaufgabe 1: Limiter"),
                 vec![
                     json!({"write_file": {"path": "src/limiter.rs", "content": "pub struct Limiter;\n"}}),
-                    json!({"message": "BRANCH: limiter", "delay_ms": 1500}),
+                    json!({"message": "BRANCH: limiter", "delay_ms": 6000}),
                 ],
             ),
             turn(Some("Review Teilaufgabe 2"), vec![json!({"message": "VERDICT: approve\nBLOCKING:\n- keine"})]),
