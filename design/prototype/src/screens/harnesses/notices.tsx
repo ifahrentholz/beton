@@ -4,7 +4,7 @@ import { Composer, SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, TerminalOutput, ToolCall, TurnFooter, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import type { HarnessId, SessionStatus } from '@/mock/data'
-import { Btn, Code } from './kit'
+import { Btn, Code } from '@/app/kit/harnesses'
 
 function Earlier() {
   return (

@@ -1,7 +1,7 @@
 import { Download } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, CodeView, PageHead, Scroll, Shell, Tag, Verdict, type VerdictKind } from './kit'
+import { Btn, CodeView, PageHead, Scroll, Shell, Tag, Verdict, type VerdictKind } from '@/app/kit/policies'
 
 type Row = { seq: number; t: string; phase: string; subject: string; v: VerdictKind; rules: string; enf: string; us: number; dry?: boolean }
 

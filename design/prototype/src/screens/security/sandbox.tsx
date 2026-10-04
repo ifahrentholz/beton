@@ -4,7 +4,7 @@ import { HarnessBadge } from '@/app/harness'
 import { TerminalOutput } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, KV, Mark, PageHead, Premise, Scroll, Section, SettingsLayout, Tag } from '../policies/kit'
+import { Btn, C, Callout, KV, Mark, PageHead, Premise, Scroll, Section, SettingsLayout, Tag } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Sandbox-Einstellungen */
 

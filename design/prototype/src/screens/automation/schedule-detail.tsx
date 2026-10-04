@@ -3,7 +3,7 @@ import { ChevronLeft, Pause, Play } from 'lucide-react'
 import { HarnessBadge } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Code, FakeInput, Mark, Note, Pill, SectionTitle, Segmented } from '@/screens/harnesses/kit'
+import { Btn, Code, FakeInput, Mark, Note, Pill, SectionTitle, Segmented } from '@/app/kit/harnesses'
 import { AutomationShell, RunStatusMark, type RunStatus } from './parts'
 
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {

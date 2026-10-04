@@ -2,8 +2,8 @@ import { FolderOpen, GitBranch, Package, Search } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Blank, Comment, Cursor, ExitCode, L, Prompt, S, Term, TermBlock } from '../cli/term'
-import { Btn, C, KV, Mark, Premise, Section, SettingsShell, type MarkKind } from '../hosts/settings-shell'
+import { Blank, Comment, Cursor, ExitCode, L, Prompt, S, Term, TermBlock } from '@/app/kit/term'
+import { Btn, C, KV, Mark, Premise, Section, SettingsShell, type MarkKind } from '@/app/kit/hosts'
 
 /* ───────────────────────── Beispieldaten ───────────────────────── */
 

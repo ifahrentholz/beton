@@ -6,7 +6,7 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '../settings/shell'
+import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '@/app/kit/settings'
 
 /* ───────────────────────── Bausteine ───────────────────────── */
 

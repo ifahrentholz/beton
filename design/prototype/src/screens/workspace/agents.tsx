@@ -6,8 +6,7 @@ import { SystemNote } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { HarnessId, SessionStatus } from '@/mock/data'
-import { ShortStream } from './bits'
-import { Segmented, SessionShell, Tag } from './parts'
+import { Segmented, SessionShell, ShortStream, Tag } from '@/app/kit/workspace'
 
 type Node = { id: string; title: string; agent: string; harness: HarnessId; model: string; status: SessionStatus; cost: string; isNew?: boolean }
 

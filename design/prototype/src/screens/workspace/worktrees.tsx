@@ -4,7 +4,7 @@ import { StatusMark } from '@/app/harness'
 import { Composer, SessionHeader } from '@/app/session-chrome'
 import { F } from '@/proto/feature-marker'
 import { worktrees } from './mock'
-import { Btn, Callout, DialogPanel, LocalNote, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, PageHeader, Tag } from './parts'
+import { Btn, Callout, DialogPanel, LocalNote, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, PageHeader, Tag } from '@/app/kit/workspace'
 
 function DeleteDirty() {
   return (

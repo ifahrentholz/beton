@@ -2,9 +2,8 @@ import type { ReactNode } from 'react'
 import { Bot, CalendarClock, Gauge, Inbox, MessagesSquare, Plus, Search, Settings, ShieldCheck } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { projects, sessions } from '@/mock/data'
+import { harnesses, projects, sessions } from '@/mock/data'
 import { StatusMark, VoiceDot, voiceVar } from './harness'
-import { harnesses } from '@/mock/data'
 
 export type NavItem = 'sessions' | 'inbox' | 'agents' | 'automations' | 'usage' | 'policies' | 'settings'
 

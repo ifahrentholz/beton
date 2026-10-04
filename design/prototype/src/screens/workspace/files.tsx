@@ -2,9 +2,9 @@ import { ChevronDown, ChevronRight, Eye, File, Folder, Lock, MessageSquarePlus, 
 import { Composer, WorkspaceRail } from '@/app/session-chrome'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { ShortStream } from './bits'
+import { Btn, Callout, DialogPanel, FakeInput, Overlay, Segmented, SessionShell, ShortStream } from '@/app/kit/workspace'
 import { rateLimitSource, readmeSource, repo, tree } from './mock'
-import { Btn, Callout, CodeLines, DialogPanel, FakeInput, Overlay, Segmented, SessionShell } from './parts'
+import { CodeLines } from './parts'
 
 function FileTree({ state }: { state: string }) {
   return (

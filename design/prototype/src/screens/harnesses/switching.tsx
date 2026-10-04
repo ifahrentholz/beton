@@ -6,7 +6,7 @@ import { AgentMessage, SystemNote, ToolCall, TurnFooter, UserMessage } from '@/a
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { HarnessId } from '@/mock/data'
-import { Code } from './kit'
+import { Code } from '@/app/kit/harnesses'
 
 function Popover({ children, className }: { children: ReactNode; className?: string }) {
   return (

@@ -7,7 +7,7 @@ import { AgentMessage, ApprovalCard } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { HarnessId, SessionStatus } from '@/mock/data'
-import { Btn, Code, Meter, Note, Pill, SectionTitle } from '@/screens/harnesses/kit'
+import { Btn, Code, Meter, Note, Pill, SectionTitle } from '@/app/kit/harnesses'
 
 /** Schneidet Ereignisse am Playhead ab: Laufende Turns enden bei `now`, Zukünftiges fehlt. */
 function upTo(events: ScoreEvent[], now?: number): ScoreEvent[] {

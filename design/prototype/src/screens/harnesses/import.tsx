@@ -4,7 +4,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { Voice } from '@/mock/data'
-import { Btn, Code, Mark, PageHeader, Pill, Row, SectionTitle } from './kit'
+import { Btn, Code, Mark, PageHeader, Pill, Row, SectionTitle } from '@/app/kit/harnesses'
 import { HarnessSettings } from './shell'
 
 type Found = { id: string; title: string; cwd: string; updated: string; model: string; size: string; imported?: boolean }

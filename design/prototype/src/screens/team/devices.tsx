@@ -3,7 +3,8 @@ import { Laptop, Monitor, Server, Smartphone, SquareTerminal } from 'lucide-reac
 import { TerminalOutput } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { BrowserChrome, Btn, C, Callout, FakeQr, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, SettingsLayout, Tag } from '../policies/kit'
+import { BrowserChrome, FakeQr } from './parts'
+import { Btn, C, Callout, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, SettingsLayout, Tag } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Pairing per Code */
 

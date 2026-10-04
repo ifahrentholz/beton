@@ -3,8 +3,10 @@ import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
- * Einstellungs-Seite mit Kopfzeile für die Gruppen hosts, plugins, install und cli:
- * Navigation und Sektionsliste aus `@/app/settings-shell`, Kopf und Inhalt rechts.
+ * Bausteine der Gruppen hosts, plugins, install und cli.
+ *
+ * `SettingsShell`: Einstellungs-Seite mit Kopfzeile; Navigation und Sektionsliste aus
+ * `@/app/settings-shell`, Kopf und Inhalt rechts.
  */
 export function SettingsShell({
   active,
@@ -57,22 +59,6 @@ export function Mark({ kind, label, className }: { kind: MarkKind; label?: React
       )}
       {label !== undefined && <span className={cn('text-[12px]', kind === 'fail' && 'text-deny')}>{label}</span>}
     </span>
-  )
-}
-
-/** Label-Chip; automatische `beton.`-Labels gestrichelt und gedämpft. */
-export function LabelChip({ children }: { children: string }) {
-  const auto = children.startsWith('beton.')
-  return (
-    <code
-      className={cn(
-        'inline-block rounded-sm border px-1 font-mono text-[11px] leading-[18px] whitespace-nowrap',
-        auto ? 'border-dashed border-border text-muted-foreground' : 'border-border bg-card',
-      )}
-      title={auto ? 'Automatisch ermittelt' : 'Aus host.yaml'}
-    >
-      {children}
-    </code>
   )
 }
 

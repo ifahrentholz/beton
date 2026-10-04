@@ -3,7 +3,7 @@ import { SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Shell, Tag } from '../policies/kit'
+import { Btn, C, Callout, InlineDialog, KV, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout, Shell, Tag } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Tokens & Service-Accounts */
 

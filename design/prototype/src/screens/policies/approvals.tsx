@@ -4,7 +4,7 @@ import { SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Shell, Tag } from './kit'
+import { Shell, Tag } from '@/app/kit/policies'
 import { scopeLabel, type Scope } from './data'
 
 type Reason = { rule: string; scope: Scope; set: string; text: string; severity?: 'low' | 'medium' | 'high' }

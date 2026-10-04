@@ -4,7 +4,8 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { Voice } from '@/mock/data'
-import { Btn, Code, CodeBlock, Mark, Note, PageHeader, Pill, SectionTitle, Segmented, drawerClass } from './kit'
+import { Btn, Code, CodeBlock, Mark, Note, PageHeader, Pill, SectionTitle, Segmented } from '@/app/kit/harnesses'
+import { drawerClass } from './kit'
 import { HarnessSettings } from './shell'
 
 /** Zellwert der Matrix: Glyphe + Text (nie nur Farbe). */

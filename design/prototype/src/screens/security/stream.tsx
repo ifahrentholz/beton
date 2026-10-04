@@ -3,7 +3,7 @@ import { ShieldAlert } from 'lucide-react'
 import { SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, SystemNote, TerminalOutput, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
-import { Btn, C, Callout, CodeView, InlineDialog, PrimaryButton, Shell } from '../policies/kit'
+import { Btn, C, Callout, CodeView, InlineDialog, PrimaryButton, Shell } from '@/app/kit/policies'
 
 /** Verstoß direkt unter der verursachenden Tool-Karte (SBX-014). */
 function Violation({ kind, children, actions }: { kind: string; children: ReactNode; actions?: ReactNode }) {

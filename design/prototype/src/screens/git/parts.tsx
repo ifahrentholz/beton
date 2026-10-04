@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Ban, Check, Circle, Minus, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { Tag } from '../workspace/parts'
+import { Tag } from '@/app/kit/workspace'
 
 export type CheckStatus = 'queued' | 'running' | 'success' | 'failure' | 'cancelled' | 'skipped'
 
@@ -62,4 +62,15 @@ const originLabel: Record<Origin, string> = {
 
 export function OriginTag({ origin }: { origin: Origin }) {
   return <span className="text-[11px] text-muted-foreground">{originLabel[origin]}</span>
+}
+
+/** Kopf eines Rail-Panels oder einer Seite. */
+export function PanelHeader({ title, meta, actions, className }: { title: ReactNode; meta?: ReactNode; actions?: ReactNode; className?: string }) {
+  return (
+    <div className={cn('flex min-h-10 items-center gap-2 border-b border-border px-3', className)}>
+      <span className="text-[13px] font-semibold">{title}</span>
+      {meta && <span className="truncate text-[12px] text-muted-foreground">{meta}</span>}
+      {actions && <span className="ml-auto flex shrink-0 items-center gap-1">{actions}</span>}
+    </div>
+  )
 }

@@ -3,7 +3,8 @@ import { VoiceDot } from '@/app/harness'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Code, CodeBlock, FakeInput, FieldLabel, Mark, Note, PageHeader, Pill, SectionTitle, Segmented, drawerClass } from './kit'
+import { Btn, Code, CodeBlock, FakeInput, FieldLabel, Mark, Note, PageHeader, Pill, SectionTitle, Segmented } from '@/app/kit/harnesses'
+import { drawerClass } from './kit'
 import { HarnessSettings } from './shell'
 
 type AcpAgent = { slug: string; name: string; command: string; source: string; preset?: boolean; active: boolean; note: string; invalid?: boolean }

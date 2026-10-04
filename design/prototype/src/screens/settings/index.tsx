@@ -5,7 +5,7 @@ import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from './shell'
+import { Btn, NetNote, Overlay, PageHeader, ProblemBox, Row, SectionTitle, Segmented, SettingsShell } from '@/app/kit/settings'
 
 /* ───────────────────────── Darstellung (UX-005, WEB-016, WEB-017) ───────────────────────── */
 

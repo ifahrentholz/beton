@@ -2,7 +2,7 @@ import { KeyRound, Plus, ShieldCheck } from 'lucide-react'
 import { SettingsFrame } from '@/app/settings-shell'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, NetNote, Overlay, PageHeader, Segmented, Tag } from '../workspace/parts'
+import { Btn, Callout, DialogPanel, FakeInput, Field, LocalNote, NetNote, Overlay, PageHeader, Segmented, Tag } from '@/app/kit/workspace'
 
 type Host = {
   host: string

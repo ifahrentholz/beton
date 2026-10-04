@@ -6,8 +6,7 @@ import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { harnesses, type HarnessId } from '@/mock/data'
-import { ShortStream } from './bits'
-import { Btn, Callout, DialogPanel, FakeInput, FakeSelect, Field, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, SessionShell } from './parts'
+import { Btn, Callout, DialogPanel, FakeInput, FakeSelect, Field, Menu, MenuItem, MenuLabel, MenuSeparator, Overlay, SessionShell, ShortStream } from '@/app/kit/workspace'
 
 function Choice({ selected, title, hint, disabled }: { selected?: boolean; title: ReactNode; hint?: ReactNode; disabled?: boolean }) {
   return (

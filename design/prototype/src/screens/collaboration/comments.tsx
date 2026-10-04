@@ -5,7 +5,7 @@ import { AgentMessage, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { rateLimiterDiff } from '@/mock/data'
-import { Avatar, Btn, Callout, FakeInput, Segmented, SessionShell, Tag } from '../workspace/parts'
+import { Avatar, Btn, Callout, FakeInput, Segmented, SessionShell, Tag } from '@/app/kit/workspace'
 
 type C = { who: string; when: string; text: ReactNode }
 

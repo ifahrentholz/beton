@@ -2,7 +2,8 @@ import type { ReactNode } from 'react'
 import { Fingerprint, KeyRound, RotateCw } from 'lucide-react'
 import { TerminalOutput } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
-import { BrowserChrome, Btn, C, Callout, KV, Mark, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout } from '../policies/kit'
+import { BrowserChrome } from './parts'
+import { Btn, C, Callout, KV, Mark, PageHead, Premise, PrimaryButton, Scroll, Section, SettingsLayout } from '@/app/kit/policies'
 
 /* ------------------------------------------------------------------ Lokaler Zugang */
 

@@ -4,7 +4,7 @@ import { AgentMessage, ApprovalCard, SystemNote, ToolCall } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { HarnessId } from '@/mock/data'
-import { Btn, Code, Mark, Meter, Note, Row, SectionTitle, type MarkKind } from '@/screens/harnesses/kit'
+import { Btn, Code, Mark, Meter, Note, Row, SectionTitle, type MarkKind } from '@/app/kit/harnesses'
 import { AutomationShell, RunStatusMark, TriggerLabel, type RunStatus, type TriggerKind } from './parts'
 
 type Step = { label: string; time: string; kind: MarkKind; detail?: string }

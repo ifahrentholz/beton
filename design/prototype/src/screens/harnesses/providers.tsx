@@ -3,7 +3,8 @@ import { Plus } from 'lucide-react'
 import { VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Code, CodeBlock, FakeInput, FieldLabel, Mark, Note, PageHeader, Pill, SectionTitle, drawerClass } from './kit'
+import { Btn, Code, CodeBlock, FakeInput, FieldLabel, Mark, Note, PageHeader, Pill, SectionTitle } from '@/app/kit/harnesses'
+import { drawerClass } from './kit'
 import { HarnessSettings } from './shell'
 
 function ProviderRow({

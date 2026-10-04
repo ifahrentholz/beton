@@ -3,8 +3,8 @@ import type { ReactNode } from 'react'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { cn } from '@/lib/utils'
-import { Ask, Comment, Cursor, ExitCode, L, Prompt, S, Term, TermBlock } from '../cli/term'
-import { Btn, C, KV, Mark, Premise, Section, SettingsShell } from '../hosts/settings-shell'
+import { Ask, Comment, Cursor, ExitCode, L, Prompt, S, Term, TermBlock } from '@/app/kit/term'
+import { Btn, C, KV, Mark, Premise, Section, SettingsShell } from '@/app/kit/hosts'
 
 /* ───────────────────────── Installationswege ───────────────────────── */
 

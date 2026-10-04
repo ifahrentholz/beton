@@ -4,7 +4,7 @@ import { AppLayout } from '@/app/app-layout'
 import { HarnessBadge } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Code, CodeBlock, Mark, Note, Pill, Row, SectionTitle, type CodeLine } from '@/screens/harnesses/kit'
+import { Btn, Code, CodeBlock, Mark, Note, Pill, Row, SectionTitle, type CodeLine } from '@/app/kit/harnesses'
 import { prFixerYaml } from './data'
 
 const TABS = [

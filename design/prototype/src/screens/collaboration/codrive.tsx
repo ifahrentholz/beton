@@ -2,7 +2,7 @@ import { Globe as Browser, Monitor, Smartphone } from 'lucide-react'
 import { Composer } from '@/app/session-chrome'
 import { AgentMessage, ApprovalCard, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
-import { Avatar, Menu, MenuLabel, SessionShell } from '../workspace/parts'
+import { Avatar, Menu, MenuLabel, SessionShell } from '@/app/kit/workspace'
 
 function PresenceStack({ open }: { open?: boolean }) {
   return (

@@ -1,6 +1,6 @@
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Premise, Section, SettingsShell } from '../hosts/settings-shell'
+import { Btn, C, Premise, Section, SettingsShell } from '@/app/kit/hosts'
 
 /** API-Referenz des laufenden Servers (lokal oder zentral) und SDK-Beispiele. */
 

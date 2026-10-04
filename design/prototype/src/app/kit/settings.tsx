@@ -3,8 +3,10 @@ import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
- * Inhaltsrahmen der Einstellungs- und Diagnose-Seiten (Paket D-6), auch von `screens/diagnostics` genutzt.
- * Navigation und Sektionsliste kommen aus `@/app/settings-shell`.
+ * Bausteine der Einstellungs- und Diagnose-Seiten (Paket D-6, Gruppen settings und diagnostics).
+ *
+ * `SettingsShell`: Inhaltsrahmen mit Innenabstand; Navigation und Sektionsliste kommen aus
+ * `@/app/settings-shell`.
  */
 export function SettingsShell({
   section,

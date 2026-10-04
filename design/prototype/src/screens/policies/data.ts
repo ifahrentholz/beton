@@ -1,6 +1,6 @@
 // Beispieldaten für die Policy-Screens (D-5). Realistisch, aber erfunden.
 
-import type { VerdictKind } from './kit'
+import type { VerdictKind } from '@/app/kit/policies'
 
 export type Scope = 'org' | 'team' | 'user' | 'project' | 'agent'
 

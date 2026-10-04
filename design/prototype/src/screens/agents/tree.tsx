@@ -6,7 +6,7 @@ import { AgentMessage, SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import type { HarnessId, SessionStatus } from '@/mock/data'
-import { Btn, Pill } from '@/screens/harnesses/kit'
+import { Btn, Pill } from '@/app/kit/harnesses'
 
 type Node = { name: string; harness: HarnessId; model: string; status: SessionStatus; statusText: string; branch?: string; note: string; async?: boolean; children?: Node[] }
 

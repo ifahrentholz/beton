@@ -1,7 +1,7 @@
 import { WifiOff } from 'lucide-react'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, Callout, KV, PageHead, Premise, Scroll, Section, Shell, Tag } from './kit'
+import { Btn, Callout, KV, PageHead, Premise, Scroll, Section, Shell, Tag } from '@/app/kit/policies'
 
 function Meter({ used, limit, marks = [], unit = 'USD' }: { used: number; limit: number; marks?: number[]; unit?: string }) {
   const pct = Math.min(100, (used / limit) * 100)

@@ -4,7 +4,7 @@ import { SystemNote, ToolCall, UserMessage } from '@/app/stream'
 import { VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
-import { Btn, C, Callout, PageHead, Scroll, Shell } from './kit'
+import { Btn, C, Callout, PageHead, Scroll, Shell } from '@/app/kit/policies'
 
 type Level = 'full' | 'approval' | 'observe' | 'mixed'
 

@@ -3,7 +3,7 @@ import { VoiceDot } from '@/app/harness'
 import { F } from '@/proto/feature-marker'
 import { cn } from '@/lib/utils'
 import { harnesses, type HarnessId } from '@/mock/data'
-import { Btn, Code, Note, Segmented } from '@/screens/harnesses/kit'
+import { Btn, Code, Note, Segmented } from '@/app/kit/harnesses'
 import { AutomationShell, RunStatusMark, TriggerLabel, type RunStatus, type TriggerKind } from './parts'
 
 type Run = {
