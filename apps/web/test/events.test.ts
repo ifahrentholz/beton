@@ -46,4 +46,14 @@ describe('Event-Store', () => {
     unsub()
     expect(notifications).toBe(0)
   })
+
+  it('Turn-Ende räumt verwaiste Stream-Einträge ab', () => {
+    const base = { events: [], streaming: {}, reasoning: {}, toolOutput: {}, live: false, reconnecting: false }
+    let log = applyEvents(base, [transient('message.delta', { message_id: '', text: 'ohne ID' })])
+    log = applyEvents(log, [
+      ev('message.completed', { message_id: 'msg_1', role: 'assistant', content: [{ type: 'text', text: 'ohne ID' }] }),
+      ev('turn.completed', { turn_id: 'trn_1', stop_reason: 'end_turn', usage_summary: {} }),
+    ])
+    expect(log.streaming).toEqual({})
+  })
 })
