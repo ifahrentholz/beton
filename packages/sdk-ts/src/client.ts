@@ -9,6 +9,7 @@ import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
 import type { ResolveApprovalRequest } from './gen/ResolveApprovalRequest.js'
 import type { SessionPage } from './gen/SessionPage.js'
+import type { SubagentTree } from './gen/SubagentTree.js'
 import type { SessionSettings } from './gen/SessionSettings.js'
 import type { SessionSummary } from './gen/SessionSummary.js'
 import type { InputMode } from './gen/InputMode.js'
@@ -281,6 +282,14 @@ export class Session {
 
   private base(): string {
     return `/v1/sessions/${enc(this.id)}`
+  }
+
+  /**
+   * Sub-Agent-Baum (AGT-009, WEB-012): diese Session und alle Nachfahren mit Harness, Status
+   * sowie eigenen und kumulierten Kosten und Tokens; Wurzel zuerst.
+   */
+  subagents(): Promise<SubagentTree> {
+    return this.client.request('GET', `${this.base()}/subagents`)
   }
 
   /**

@@ -28,8 +28,13 @@ const TABS: TabDef[] = [
   // Terminals und Browser folgen mit M3 (WEB-010, BRW-009).
   { id: 'terminal', label: 'Terminal', ready: false, needs: (c) => c.role !== 'viewer' },
   { id: 'browser', label: 'Browser', ready: false },
-  // Sub-Agent-Graph (WEB-012) folgt mit WP-27; nur bei Harnesses mit Sub-Agents.
-  { id: 'agents', label: 'Agents', ready: false, needs: (c) => (c.capabilities?.subagents ?? 'none') !== 'none' },
+  // Sub-Agent-Graph (WEB-012): bei Harnesses, die System-Tools (MCP) oder eigene Sub-Agents haben.
+  {
+    id: 'agents',
+    label: 'Agents',
+    ready: true,
+    needs: (c) => c.capabilities?.mcp_injection === true || (c.capabilities?.subagents ?? 'none') !== 'none',
+  },
   // PR/MR, Side-Chats und Kommentare folgen mit M4.
   { id: 'pr', label: 'PR', ready: false },
   { id: 'side', label: 'Side-Chats', ready: false },
@@ -44,8 +49,8 @@ export function visibleTabs(ctx: RailContext): { id: RailTab; label: string }[] 
   return TABS.filter((t) => t.ready && (t.needs?.(ctx) ?? true)).map(({ id, label }) => ({ id, label }))
 }
 
-/** Standardbreite je Tab laut Prototyp (Dateien 780 px, Änderungen 640 px). */
-export const TAB_WIDTH: Partial<Record<RailTab, number>> = { files: 780, changes: 640 }
+/** Standardbreite je Tab laut Prototyp (Dateien 780 px, Änderungen 640 px, Agents 600 px). */
+export const TAB_WIDTH: Partial<Record<RailTab, number>> = { files: 780, changes: 640, agents: 600 }
 export const RAIL_MIN = 320
 
 // --- fs.changed (WEB-008 AC1) --------------------------------------------------------------
@@ -156,7 +161,7 @@ export function validateWorkspaceSearch(raw: Record<string, unknown>): Workspace
   const tab = str(raw.tab)
   const scope = str(raw.scope)
   return {
-    tab: tab === 'files' || tab === 'changes' ? tab : undefined,
+    tab: tab === 'files' || tab === 'changes' || tab === 'agents' ? tab : undefined,
     scope: scope === 'uncommitted' || scope === 'branch' || scope === 'turn' ? scope : undefined,
     turn: str(raw.turn),
     file: str(raw.file),

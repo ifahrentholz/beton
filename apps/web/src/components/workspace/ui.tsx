@@ -171,3 +171,22 @@ export function DialogPanel({
 export function Overlay({ children }: { children: ReactNode }) {
   return <div className="fixed inset-0 z-50 flex items-start justify-center bg-foreground/25 px-4 pt-16 sm:px-6">{children}</div>
 }
+
+/** Kleine Markierung, z. B. „neu“ (Prototyp `kit/workspace.tsx`). */
+export function Tag({ children, tone = 'neutral', className }: { children: ReactNode; tone?: 'neutral' | 'ok' | 'deny' | 'muted' | 'signal'; className?: string }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex shrink-0 items-center gap-1 rounded-sm border px-1.5 py-px text-[11px] leading-4 whitespace-nowrap',
+        tone === 'neutral' && 'border-border text-foreground',
+        tone === 'muted' && 'border-border text-muted-foreground',
+        tone === 'ok' && 'border-ok/40 bg-ok-soft text-ok',
+        tone === 'deny' && 'border-deny/40 bg-deny-soft text-deny',
+        tone === 'signal' && 'chamfer-sm border-signal bg-signal-soft text-foreground',
+        className,
+      )}
+    >
+      {children}
+    </span>
+  )
+}
