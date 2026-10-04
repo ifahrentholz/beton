@@ -12,6 +12,7 @@ pub mod fake;
 pub mod golden;
 pub mod handover;
 mod id;
+pub mod import;
 pub mod jsonrpc;
 pub mod process;
 pub mod registry;

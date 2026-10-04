@@ -366,6 +366,11 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         let _ = (request, env);
         Err(crate::capabilities::CapabilityUnsupported(crate::capabilities::Action::Fork).into())
     }
+    /// Import vorhandener Chats der Vendor-CLI (HAR-023, HAR-024, Capability
+    /// `transcript_import`); ohne Unterstützung `None`.
+    fn transcript_importer(&self) -> Option<Arc<dyn crate::import::TranscriptImporter>> {
+        None
+    }
 }
 
 /// Eine laufende Harness-Session. Genau eine pro beton-Session.

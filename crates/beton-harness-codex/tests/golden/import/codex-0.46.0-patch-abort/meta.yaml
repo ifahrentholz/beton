@@ -1,0 +1,5 @@
+cli_version: 0.46.0
+session_id: 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b
+file: sessions/2026/09/30/rollout-2026-09-30T08-15-22-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b.jsonl
+scenario: shell, apply_patch als Custom-Tool, Abbruch durch den Nutzer, unbekanntes event_msg
+recorded_with: synthetisch nach Spec und App-Server-Typen (gegen die echte CLI zu prüfen)

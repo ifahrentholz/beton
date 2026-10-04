@@ -11,6 +11,7 @@
 //! oder erneuert keine OpenAI-Tokens (ADR-0005) und entfernt bei `auth: subscription`
 //! API-Key-Variablen aus der Umgebung.
 
+pub mod import;
 pub mod mapping;
 pub mod record;
 
@@ -127,7 +128,8 @@ pub fn capabilities() -> Capabilities {
         // MCP-Server über `thread/start.config` (HAR-009).
         mcp_injection: true,
         images: false,
-        transcript_import: false,
+        // Import vorhandener Chats aus `$CODEX_HOME/sessions` (HAR-024).
+        transcript_import: true,
         models: Vec::new(),
         efforts: vec!["low".into(), "medium".into(), "high".into()],
         // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
@@ -202,6 +204,10 @@ impl HarnessAdapter for CodexAdapter {
             }
             Err(_) => AuthStatus::Unknown,
         }
+    }
+
+    fn transcript_importer(&self) -> Option<Arc<dyn beton_harness::import::TranscriptImporter>> {
+        Some(Arc::new(import::CodexImporter::default()))
     }
 
     async fn start(

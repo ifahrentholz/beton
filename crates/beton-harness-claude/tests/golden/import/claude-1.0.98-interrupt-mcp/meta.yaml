@@ -1,0 +1,4 @@
+cli_version: 1.0.98
+session_id: 3f1c2a9e-5b7d-4c8e-9a1f-2d3e4f5a6b7c
+scenario: summary-Titel, Mehrblock-Nachricht, Tool-Fehler, Abbruch durch den Nutzer, MCP-Tool
+recorded_with: synthetisch nach Spec, rebuild.rs und Golden-Transcripts (gegen die echte CLI zu prüfen)

@@ -173,6 +173,7 @@ pub fn requested(item: &Value, st: &mut MapState) -> Option<EventPayload> {
         },
         mcp_server,
         args,
+        parent_call_id: None,
     }))
 }
 
