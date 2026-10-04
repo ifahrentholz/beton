@@ -179,6 +179,12 @@ impl RunnerProvider for LocalProvider {
         if let Some(m) = &boot.model {
             vars.push((beton_runner::env::MODEL.into(), m.clone()));
         }
+        if boot.harnesses != beton_harness::registry::HarnessLayers::default() {
+            vars.push((
+                beton_runner::env::HARNESSES.into(),
+                serde_json::to_string(&boot.harnesses).unwrap_or_default(),
+            ));
+        }
         let (program, args) = self
             .command
             .split_first()

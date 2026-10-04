@@ -114,6 +114,7 @@ impl Fixture {
                     model: None,
                     dev: true,
                     resume: None,
+                    harnesses: Default::default(),
                 },
             )
             .await
@@ -433,6 +434,7 @@ async fn runner_token_only_opens_its_own_session() {
                 model: None,
                 dev: true,
                 resume: None,
+                harnesses: Default::default(),
             },
         )
         .await

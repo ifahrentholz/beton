@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use beton_core::event::{Actor, Event, EventPayload, SessionStatus, SessionStatusChanged};
 use beton_core::id::{RunnerId, SessionId};
 use beton_harness::process::RealLauncher;
-use beton_harness::registry::Registry;
+use beton_harness::registry::{HarnessLayers, Registry, RegistryOptions};
 use beton_harness::{
     AdapterContext, Gate, GateDecision, GateRequest, HarnessId, HarnessSession, HostEnv,
     NormalizedEvent, SessionSpec, Shutdown, UserInput,
@@ -47,6 +47,8 @@ pub mod env {
     pub const DEV: &str = "BETON_DEV";
     /// Native Session-Referenz zum Fortsetzen (SES-003).
     pub const RESUME: &str = "BETON_RESUME";
+    /// `harnesses:` aus User- und Projekt-Konfiguration als JSON (HAR-003, HAR-015).
+    pub const HARNESSES: &str = "BETON_RUNNER_HARNESSES";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -65,6 +67,7 @@ pub struct RunnerBoot {
     pub parent_pid: Option<u32>,
     pub dev: bool,
     pub resume: Option<String>,
+    pub harnesses: HarnessLayers,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,7 +114,63 @@ impl RunnerBoot {
                 .and_then(|p| p.parse().ok()),
             dev: std::env::var(env::DEV).is_ok_and(|v| v == "1"),
             resume: std::env::var(env::RESUME).ok().filter(|r| !r.is_empty()),
+            harnesses: match std::env::var(env::HARNESSES) {
+                Ok(json) => serde_json::from_str(&json)
+                    .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::HARNESSES)))?,
+                Err(_) => HarnessLayers::default(),
+            },
         })
+    }
+
+    /// Harness-Registry dieses Runners (siehe [`builtin_registry`]).
+    pub fn registry(&self) -> Registry {
+        builtin_registry(&self.harnesses, self.dev)
+    }
+}
+
+/// Eingebaute Adapter mit den Optionen aus der Konfiguration; der Fake nur mit `dev`
+/// (HAR-026 AC3). Die Auth-Herkunft gilt nur aus der User-Konfiguration (HAR-015), damit ein
+/// Repository nicht auf API-Billing umschalten kann.
+pub fn builtin_registry(layers: &HarnessLayers, dev: bool) -> Registry {
+    let mut registry = Registry::new(RegistryOptions { dev });
+    registry.register(Arc::new(claude_adapter(layers)));
+    registry
+}
+
+fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter {
+    let user = layers.user.entries.get("claude");
+    let project = layers.project.entries.get("claude");
+    beton_harness_claude::ClaudeAdapter {
+        auth: layers.user.auth("claude").source(),
+        isolated: project
+            .and_then(|e| e.isolated)
+            .or_else(|| user.and_then(|e| e.isolated))
+            .unwrap_or(false),
+        ..beton_harness_claude::ClaudeAdapter::default()
+    }
+}
+
+/// Einstieg des Runner-Prozesses: Startdaten aus Env und stdin lesen, Session ausführen.
+/// Exit-Code: 0 nach `runner.stop` oder Ende des Daemons, sonst der des Harness bzw. 1/2.
+pub async fn main_from_env() -> std::process::ExitCode {
+    use std::process::ExitCode;
+    let boot = match RunnerBoot::from_env_and_stdin() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("beton runner: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let registry = boot.registry();
+    match run(boot, registry).await {
+        Ok(Exit::Stopped | Exit::ParentGone) => ExitCode::SUCCESS,
+        Ok(Exit::HarnessExited { code }) => {
+            ExitCode::from(u8::try_from(code.unwrap_or(1)).unwrap_or(1))
+        }
+        Err(e) => {
+            eprintln!("beton runner: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -293,6 +352,8 @@ fn parent_alive(pid: Option<u32>) -> bool {
 pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerError> {
     let gate = Arc::new(RunnerGate::default());
     let mut env = HostEnv::from_process();
+    env.user = boot.harnesses.user.clone();
+    env.project = boot.harnesses.project.clone();
     env.vars.remove("BETON_RUNNER_TOKEN");
     let ctx = AdapterContext {
         gate: gate.clone(),
@@ -749,6 +810,55 @@ async fn deliver(
 
 #[cfg(test)]
 mod tests {
+    use beton_core::event::AuthSource;
+    use beton_harness::registry::{HarnessAuth, HarnessCommandConfig, HarnessesConfig};
+
+    fn layer(auth: Option<HarnessAuth>, isolated: Option<bool>) -> HarnessesConfig {
+        HarnessesConfig {
+            default: None,
+            entries: [(
+                "claude".to_owned(),
+                HarnessCommandConfig {
+                    auth,
+                    isolated,
+                    ..HarnessCommandConfig::default()
+                },
+            )]
+            .into(),
+        }
+    }
+
+    #[test]
+    fn har_015_auth_source_comes_from_user_config_only() {
+        let default = claude_adapter(&HarnessLayers::default());
+        assert_eq!(default.auth, AuthSource::VendorCli, "Default: Subscription");
+        let user = claude_adapter(&HarnessLayers {
+            user: layer(Some(HarnessAuth::ApiKey), None),
+            project: HarnessesConfig::default(),
+        });
+        assert_eq!(user.auth, AuthSource::ApiKey);
+        // Ein Repository kann nicht auf API-Billing umschalten.
+        let project = claude_adapter(&HarnessLayers {
+            user: HarnessesConfig::default(),
+            project: layer(Some(HarnessAuth::ApiKey), None),
+        });
+        assert_eq!(project.auth, AuthSource::VendorCli);
+    }
+
+    #[test]
+    fn har_004_isolated_from_project_overrides_user() {
+        let a = claude_adapter(&HarnessLayers {
+            user: layer(None, Some(true)),
+            project: HarnessesConfig::default(),
+        });
+        assert!(a.isolated);
+        let b = claude_adapter(&HarnessLayers {
+            user: layer(None, Some(true)),
+            project: layer(None, Some(false)),
+        });
+        assert!(!b.isolated);
+    }
+
     use super::*;
 
     fn notice() -> Event {

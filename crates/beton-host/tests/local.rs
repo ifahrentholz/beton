@@ -53,6 +53,7 @@ fn boot() -> RunnerBoot {
         model: None,
         dev: true,
         resume: None,
+        harnesses: Default::default(),
     }
 }
 

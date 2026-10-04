@@ -591,7 +591,10 @@ pub async fn list_harnesses(
     let items = state
         .runtime
         .harnesses
-        .catalog(&beton_harness::HostEnv::from_process())
+        .catalog(&beton_harness::HostEnv {
+            user: state.runtime.sessions.harnesses_user.clone(),
+            ..beton_harness::HostEnv::from_process()
+        })
         .await
         .into_iter()
         .take(limit)

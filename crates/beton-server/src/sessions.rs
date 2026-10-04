@@ -5,7 +5,7 @@
 //! spricht mit ihnen über den Tunnel (`RunnerRegistry`).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,6 +45,9 @@ pub struct SessionsConfig {
     /// Entwicklermodus: Fake-Harness erlaubt (HAR-026 AC3).
     pub dev: bool,
     pub launched: Arc<Launched>,
+    /// `harnesses:` aus der User-Konfiguration; die Projekt-Konfiguration liest der Daemon
+    /// beim Start aus dem Arbeitsverzeichnis der Session (HAR-003).
+    pub harnesses_user: beton_harness::registry::HarnessesConfig,
 }
 
 impl std::fmt::Debug for SessionsConfig {
@@ -202,6 +205,9 @@ impl<'a> SessionManager<'a> {
             Problem::new(ProblemCode::Unavailable).detail("Kein Tunnel-Socket konfiguriert")
         })?;
         let created = self.created(session.id).await?;
+        let project =
+            beton_harness::registry::HarnessesConfig::load_project(Path::new(&created.cwd))
+                .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
         let token = self
             .state
             .runtime
@@ -234,6 +240,10 @@ impl<'a> SessionManager<'a> {
                     model: created.model.clone(),
                     dev: cfg.dev,
                     resume,
+                    harnesses: beton_harness::registry::HarnessLayers {
+                        user: cfg.harnesses_user.clone(),
+                        project,
+                    },
                 },
             )
             .await
