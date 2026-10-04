@@ -103,6 +103,8 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Session(cmd) => session(&ctx, cmd).await,
         Command::Serve(args) => crate::serve::serve(&ctx, args).await,
         Command::Setup(args) => setup(&ctx, args).await,
+        Command::Import(args) => crate::transfer::import(&ctx, args).await,
+        Command::Export(args) => crate::transfer::export(&ctx, args).await,
         Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Agent(cmd) => crate::agent::run(&ctx, cmd),

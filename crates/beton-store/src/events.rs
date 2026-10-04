@@ -111,7 +111,7 @@ impl Store {
 
     /// Schickt `raw` durch den Redaction-Hook. Ändert er nichts, bleiben die Original-Bytes
     /// erhalten (HAR-001 AC3); sonst wird der redigierte Wert kompakt serialisiert.
-    fn redact_raw(&self, raw: &beton_core::event::RawJson) -> Result<String> {
+    pub(crate) fn redact_raw(&self, raw: &beton_core::event::RawJson) -> Result<String> {
         let original: Value = raw
             .to_value()
             .map_err(|e| Error::InvalidEvent(format!("raw ist kein JSON: {e}")))?;
@@ -405,7 +405,7 @@ async fn append_rejection(
     }
 }
 
-async fn reference_blob(
+pub(crate) async fn reference_blob(
     conn: &mut SqliteConnection,
     org: OrgId,
     session: SessionId,
@@ -458,7 +458,7 @@ fn payload_json(payload: &EventPayload) -> Result<String> {
     Ok(inner.to_string())
 }
 
-fn payload_from_json(event_type: EventType, json: &str) -> Result<EventPayload> {
+pub(crate) fn payload_from_json(event_type: EventType, json: &str) -> Result<EventPayload> {
     let payload: Value = serde_json::from_str(json)?;
     Ok(serde_json::from_value(serde_json::json!({
         "type": event_type.as_str(),
@@ -466,7 +466,7 @@ fn payload_from_json(event_type: EventType, json: &str) -> Result<EventPayload> 
     }))?)
 }
 
-fn event_from_row(session: SessionId, row: &SqliteRow) -> Result<Event> {
+pub(crate) fn event_from_row(session: SessionId, row: &SqliteRow) -> Result<Event> {
     let event_type = event_type(row.try_get("type")?)?;
     let body = match row.try_get::<Option<String>, _>("payload")? {
         Some(json) => EventBody::Inline(payload_from_json(event_type, &json)?),

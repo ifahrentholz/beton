@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ExportHeader",
+  "description": "Zeile 1 einer Exportdatei.",
+  "type": "object",
+  "properties": {
+    "beton_version": {
+      "description": "Version von beton, die exportiert hat (nur zur Anzeige).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exported_at": {
+      "$ref": "#/$defs/Timestamp"
+    },
+    "format_version": {
+      "description": "Formatversion; eine Implementierung lehnt höhere Versionen ab\n(`unsupported_format_version`).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "session": {
+      "$ref": "#/$defs/ExportSession"
+    },
+    "type": {
+      "description": "Immer `beton.export`.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "format_version",
+    "exported_at",
+    "session"
+  ],
+  "$defs": {
+    "BlobRef": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "ExportSession": {
+      "description": "Metadaten der exportierten Session.",
+      "type": "object",
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "blobs": {
+          "description": "Blobs im Archiv unter `blobs/<sha256>` (nur `.tar.zst`).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BlobRef"
+          }
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "events": {
+          "description": "Anzahl der folgenden Event-Zeilen (`seq` 1 bis `events`).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "harness": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "imported_from": {
+          "description": "Die Session wurde ihrerseits aus einer Exportdatei importiert.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedFrom"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raw": {
+          "description": "Die Event-Zeilen enthalten `raw` (`--with-raw`).",
+          "type": "boolean",
+          "default": false
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "harness",
+        "status",
+        "archived",
+        "created_at",
+        "events"
+      ]
+    },
+    "ImportedFrom": {
+      "description": "Herkunft einer importierten Session.",
+      "type": "object",
+      "properties": {
+        "export_sha256": {
+          "description": "SHA-256 (Hex) der importierten `session.jsonl`; Schlüssel der Idempotenz.",
+          "type": "string"
+        },
+        "exported_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "session_id": {
+          "description": "Session-ID in der exportierenden Instanz.",
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "exported_at",
+        "export_sha256"
+      ]
+    },
+    "SessionId": {
+      "type": "string",
+      "examples": [
+        "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C"
+      ],
+      "pattern": "^ses_[0-9A-HJKMNP-TV-Z]{26}$"
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": [
+        "starting",
+        "idle",
+        "running",
+        "waiting_approval",
+        "paused",
+        "stopped",
+        "failed"
+      ]
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
