@@ -187,7 +187,7 @@ export function Composer({
     warmed.current = sessionId
     void client
       .session(sessionId)
-      .searchFiles('', 1)
+      .workspace.search('', 'fuzzy', { limit: 1 })
       .catch(() => undefined)
   }, [sessionId])
   const mentionQuery = mention?.query
@@ -198,7 +198,7 @@ export function Composer({
       const started = performance.now()
       client
         .session(sessionId)
-        .searchFiles(mentionQuery, MENTION_LIMIT)
+        .workspace.search(mentionQuery, 'fuzzy', { limit: MENTION_LIMIT })
         .then((page) => {
           if (!cancelled) setHits({ query: mentionQuery, paths: page.items.map((h) => h.path), total: page.total, ms: performance.now() - started })
         })

@@ -248,6 +248,11 @@ export class Session {
     return this.client.request('PUT', `/v1/sessions/${enc(this.id)}/pin`, { pinned })
   }
 
+  /** Kontext kompaktieren (SES-011); Ergebnis als `compaction.*`-Events. */
+  compact(): Promise<unknown> {
+    return this.client.request('POST', `/v1/sessions/${enc(this.id)}/compact`)
+  }
+
   interrupt(): Promise<void> {
     return this.client.request('POST', `/v1/sessions/${enc(this.id)}/interrupt`)
   }

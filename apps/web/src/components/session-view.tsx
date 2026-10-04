@@ -12,15 +12,17 @@ import { cost } from '@/lib/format'
 import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 import { openApprovals, timeline, type Item } from '@/lib/timeline'
+import { titleFrom, windowTitle } from '@/lib/title'
 import { changedPaths, lineLink, rangeLabel, withAttachments, type WorkspaceSearch } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
 import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } from '@/store/workspace'
-import { Composer } from './composer'
+import { Composer, type BetonCommand } from './composer'
 import { continueTargets, ForkBanner, forkOrigin } from './fork'
 import { QueueList } from './queue'
 import { HarnessBadge, listStatus, StatusMark } from './harness'
 import { useLayout } from './layout-state'
+import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
@@ -36,7 +38,6 @@ function useMeta(sessionId: string) {
     let harness = summary?.harness ?? ''
     let model: string | null | undefined
     let capabilities: Capabilities | undefined
-    let title = summary?.title ?? ''
     let status = summary?.status ?? 'starting'
     for (const e of events ?? []) {
       const created = payloadOf(e, 'session.created')
@@ -46,21 +47,21 @@ function useMeta(sessionId: string) {
       }
       const started = payloadOf(e, 'session.started')
       if (started) capabilities = started.capabilities as unknown as Capabilities
-      const t = payloadOf(e, 'session.title_changed')
-      if (t) title = t.title
       const st = payloadOf(e, 'session.status')
       if (st) status = st.status
       const settings = payloadOf(e, 'session.settings_changed')
       if (settings?.model) model = settings.model
     }
-    return { harness, model, capabilities, title, status }
+    // Titel des Users gewinnt gegen später erzeugte (UX-009 AC2).
+    const { title, source } = titleFrom(summary, events)
+    return { harness, model, capabilities, title, titleSource: source, status }
   }, [events, summary])
 }
 
 function StreamItem({ item, sessionId, harness }: { item: Item; sessionId: string; harness: string }) {
   switch (item.kind) {
     case 'user':
-      return <UserMessage text={item.text} />
+      return <UserMessage text={item.text} sessionId={sessionId} attachments={item.attachments} />
     case 'assistant':
       return <AgentMessage harness={harness} text={item.text} streaming={item.streaming} />
     case 'reasoning':
@@ -162,6 +163,42 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Fork fehlgeschlagen'))
   }
 
+  // Titel im Browser-Tab bzw. Fenster (UX-009 AC1).
+  useEffect(() => {
+    document.title = windowTitle(meta.title)
+  }, [meta.title])
+  const rename = (title: string) =>
+    client
+      .session(sessionId)
+      .rename(title)
+      .then((s) => useSessions.getState().upsert([s]))
+  // beton-eigene Slash-Befehle, die es schon gibt (WEB-006): `/compact` (SES-011) und `/fork`
+  // (SES-006).
+  const compaction = meta.capabilities?.compaction
+  const commands: BetonCommand[] = []
+  if (compaction && compaction !== 'none' && !running) {
+    commands.push({
+      name: 'compact',
+      title: 'Kontext komprimieren',
+      description: 'Verlauf vom Harness zusammenfassen lassen und Kontext freigeben',
+      run: () => {
+        setSendError(undefined)
+        client
+          .session(sessionId)
+          .compact()
+          .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Komprimieren fehlgeschlagen'))
+      },
+    })
+  }
+  if (meta.harness) {
+    commands.push({
+      name: 'fork',
+      title: 'Forken',
+      description: 'Ab hier eine neue Session abzweigen, auch auf einem anderen Harness',
+      run: () => continueWith(meta.harness),
+    })
+  }
+
   // Gelesen bis zur angezeigten `seq`, auf allen Geräten (SES-012 AC2). Während des Replays
   // wartet die Meldung, bis keine neuen Events mehr nachkommen.
   useEffect(() => {
@@ -231,9 +268,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           <Menu className="size-4" />
         </button>
         <StatusMark status={waiting ? 'waiting' : listStatus(meta.status)} />
-        <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold" title={meta.title}>
-          {meta.title || 'Neue Session'}
-        </h2>
+        <SessionTitle title={meta.title} source={meta.titleSource} onRename={rename} />
         {meta.harness && <HarnessBadge harness={meta.harness} model={meta.model} className="hidden shrink-0 sm:inline-flex" />}
         {costMicro > 0 && <span className="hidden text-[11px] text-muted-foreground tabular-nums md:inline">{cost(costMicro)}</span>}
         <button
@@ -292,6 +327,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         running={running}
         continueWith={targets}
         onContinue={meta.harness ? continueWith : undefined}
+        commands={commands}
         queue={
           <QueueList
             sessionId={sessionId}
@@ -302,14 +338,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             onError={setSendError}
           />
         }
-        onSend={(text) => {
+        onSend={(text, files) => {
           setSendError(undefined)
           // Der Server entscheidet: sofort starten oder einreihen (SES-004).
           const attachments = useWorkspace.getState().ws(sessionId).attachments
           clearAttachments(sessionId)
           client
             .session(sessionId)
-            .send(withAttachments(text, attachments))
+            .send(withAttachments(text, attachments), undefined, files)
             .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Senden fehlgeschlagen'))
         }}
         onInterrupt={() => void client.session(sessionId).interrupt().catch(() => undefined)}
