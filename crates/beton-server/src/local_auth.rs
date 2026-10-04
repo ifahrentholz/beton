@@ -72,10 +72,52 @@ fn sha256(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
 
-/// Das lokale Token.
+/// Das lokale Token. Die Datei ist die Quelle der Wahrheit: Ändert sie sich (z. B. durch
+/// `beton auth rotate-local` in einem anderen Prozess), liest `verify` sie neu ein. Fehlt sie,
+/// ist sie unlesbar oder sind ihre Rechte zu weit, wird jedes Token abgelehnt (fail closed).
 pub struct LocalToken {
     path: PathBuf,
-    hash: Mutex<[u8; 32]>,
+    state: Mutex<TokenState>,
+}
+
+struct TokenState {
+    /// `None` = derzeit kein gültiges Token.
+    hash: Option<[u8; 32]>,
+    stamp: Option<FileStamp>,
+}
+
+/// Merkmale der Datei, an denen eine Änderung erkannt wird.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime_ns: i64,
+}
+
+fn stamp_of(path: &Path) -> Option<FileStamp> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    Some(FileStamp {
+        modified: m.modified().ok(),
+        len: m.len(),
+        #[cfg(unix)]
+        ino: m.ino(),
+        #[cfg(unix)]
+        ctime_ns: m.ctime().saturating_mul(1_000_000_000) + m.ctime_nsec(),
+    })
+}
+
+/// Liest das Token mit Rechteprüfung von Datei und Verzeichnis.
+fn load_checked(path: &Path) -> Result<String, AuthError> {
+    if let Some(dir) = path.parent() {
+        check_private(dir, 0o700)?;
+    }
+    check_private(path, 0o600)?;
+    read_token(path)
 }
 
 impl std::fmt::Debug for LocalToken {
@@ -102,10 +144,13 @@ impl LocalToken {
         if !path.exists() {
             write_private(&path, &random_hex(32)?)?;
         }
-        check_private(&path, 0o600)?;
-        let token = read_token(&path)?;
+        let stamp = stamp_of(&path);
+        let token = load_checked(&path)?;
         Ok(Self {
-            hash: Mutex::new(sha256(&token)),
+            state: Mutex::new(TokenState {
+                hash: Some(sha256(&token)),
+                stamp,
+            }),
             path,
         })
     }
@@ -117,19 +162,36 @@ impl LocalToken {
         let _ = std::fs::remove_file(&tmp);
         write_private(&tmp, &token)?;
         std::fs::rename(&tmp, &self.path).map_err(io_err(&self.path))?;
-        if let Ok(mut h) = self.hash.lock() {
-            *h = sha256(&token);
+        if let Ok(mut st) = self.state.lock() {
+            st.hash = Some(sha256(&token));
+            st.stamp = stamp_of(&self.path);
         }
         Ok(())
     }
 
-    /// Vergleich in konstanter Zeit.
+    /// Vergleich in konstanter Zeit gegen den aktuellen Inhalt der Token-Datei.
     pub fn verify(&self, candidate: &str) -> bool {
         let candidate = sha256(candidate.trim());
-        self.hash
-            .lock()
-            .map(|h| bool::from(h.ct_eq(&candidate)))
-            .unwrap_or(false)
+        let Ok(mut st) = self.state.lock() else {
+            return false;
+        };
+        let stamp = stamp_of(&self.path);
+        if stamp != st.stamp {
+            st.hash = match &stamp {
+                Some(_) => match load_checked(&self.path) {
+                    Ok(token) => Some(sha256(&token)),
+                    Err(e) => {
+                        tracing::warn!("lokales Token abgelehnt: {e}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            st.stamp = stamp;
+        }
+        st.hash
+            .as_ref()
+            .is_some_and(|h| bool::from(h.ct_eq(&candidate)))
     }
 
     pub fn path(&self) -> &Path {
@@ -410,6 +472,49 @@ mod tests {
             LocalToken::load_or_create(dir.path()).is_ok(),
             "Rechte nach Rotation"
         );
+    }
+
+    #[test]
+    fn auth_001_rotation_by_another_process_takes_effect_in_the_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = LocalToken::load_or_create(dir.path()).unwrap();
+        let old = std::fs::read_to_string(daemon.path()).unwrap();
+        assert!(daemon.verify(&old));
+        // `beton auth rotate-local` läuft als eigener Prozess.
+        LocalToken::load_or_create(dir.path())
+            .unwrap()
+            .rotate()
+            .unwrap();
+        let new = std::fs::read_to_string(daemon.path()).unwrap();
+        assert!(!daemon.verify(&old), "altes Token ist sofort ungültig");
+        assert!(daemon.verify(&new));
+    }
+
+    #[test]
+    fn auth_001_missing_or_broken_token_file_rejects_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = LocalToken::load_or_create(dir.path()).unwrap();
+        let token = std::fs::read_to_string(daemon.path()).unwrap();
+        std::fs::remove_file(daemon.path()).unwrap();
+        assert!(!daemon.verify(&token), "fail closed ohne Datei");
+        write_private(daemon.path(), "kaputt").unwrap();
+        assert!(!daemon.verify(&token));
+        assert!(!daemon.verify("kaputt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn auth_001_token_file_with_loose_permissions_rejects_everything() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = LocalToken::load_or_create(dir.path()).unwrap();
+        let token = std::fs::read_to_string(daemon.path()).unwrap();
+        // Neues Token mit zu weiten Rechten unterschieben.
+        let other = random_hex(32).unwrap();
+        std::fs::write(daemon.path(), &other).unwrap();
+        std::fs::set_permissions(daemon.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!daemon.verify(&other));
+        assert!(!daemon.verify(&token));
     }
 
     #[test]

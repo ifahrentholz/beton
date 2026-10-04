@@ -27,6 +27,8 @@ const DEFAULT_VERSION: &str = "2.1.0";
 
 #[derive(Debug, Default)]
 struct Args {
+    /// `auth status`: Login-Status wie die echte CLI (HAR-016).
+    auth_status: bool,
     protocol: Option<String>,
     scenario: Option<PathBuf>,
     version: bool,
@@ -41,6 +43,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         v.and_then(|v| v.parse().ok())
             .ok_or_else(|| format!("{flag} braucht eine Zahl"))
     };
+    let mut positional = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--protocol" => out.protocol = args.next(),
@@ -50,9 +53,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--crash-after" => out.faults.crash_after = Some(number(args.next(), &arg)?),
             "--hang-after" => out.faults.hang_after = Some(number(args.next(), &arg)?),
             "--malformed-line" => out.faults.malformed_line = Some(number(args.next(), &arg)?),
+            a if !a.starts_with('-') => positional.push(arg),
             _ => {} // Flags der echten CLI (-p, --output-format, --model …) ignorieren.
         }
     }
+    out.auth_status = positional.first().map(String::as_str) == Some("auth")
+        && positional.get(1).map(String::as_str) == Some("status");
     if out.scenario.is_none() {
         out.scenario = std::env::var_os("BETON_FAKE_SCENARIO").map(PathBuf::from);
     }
@@ -77,6 +83,19 @@ fn main() -> ExitCode {
         },
         None => None,
     };
+    if args.auth_status {
+        // Wie `claude auth status --json`, samt Kontodaten, die beton verwerfen muss.
+        let logged_in = std::env::var("BETON_FAKE_AUTH").as_deref() != Ok("logged_out");
+        println!(
+            "{}",
+            serde_json::json!({
+                "loggedIn": logged_in,
+                "email": "fake-user@example.invalid",
+                "orgName": "Fake Org",
+            })
+        );
+        return ExitCode::SUCCESS;
+    }
     if args.version {
         let version = scenario
             .as_ref()
@@ -299,6 +318,11 @@ impl<R: BufRead, W: Write> Sim<R, W> {
 
     fn assistant(&mut self, content: Value) -> Result<(), Stop> {
         let id = self.next_id("msg");
+        self.assistant_with_id(id, content)
+    }
+
+    /// Wie die echte CLI: dieselbe ID wie im vorangehenden `message_start`.
+    fn assistant_with_id(&mut self, id: String, content: Value) -> Result<(), Stop> {
         self.emit(json!({
             "type": "assistant",
             "message": {
@@ -312,10 +336,24 @@ impl<R: BufRead, W: Write> Sim<R, W> {
 
     fn step(&mut self, step: &Step, state: &mut TurnState) -> Result<TurnEnd, Stop> {
         if let Some(text) = &step.message_delta {
+            let id = self.next_id("msg");
             if self.partial {
+                self.emit(json!({
+                    "type": "stream_event",
+                    "event": {"type": "message_start",
+                              "message": {"id": id, "type": "message", "role": "assistant",
+                                          "model": self.model, "content": []}},
+                    "parent_tool_use_id": null,
+                    "session_id": self.session_id,
+                }))?;
                 let chunk = step.chunk.unwrap_or(usize::MAX);
                 let chars: Vec<char> = text.chars().collect();
-                for piece in chars.chunks(chunk.min(chars.len().max(1))) {
+                for (i, piece) in chars.chunks(chunk.min(chars.len().max(1))).enumerate() {
+                    if i > 0
+                        && let Some(ms) = step.chunk_delay_ms
+                    {
+                        std::thread::sleep(Duration::from_millis(ms));
+                    }
                     let piece: String = piece.iter().collect();
                     self.emit(json!({
                         "type": "stream_event",
@@ -327,7 +365,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 }
             }
             state.last_text.clone_from(text);
-            self.assistant(json!({"type": "text", "text": text}))?;
+            self.assistant_with_id(id, json!({"type": "text", "text": text}))?;
         } else if let Some(text) = &step.message {
             state.last_text.clone_from(text);
             self.assistant(json!({"type": "text", "text": text}))?;

@@ -50,6 +50,7 @@ impl std::fmt::Debug for Daemon {
 impl Daemon {
     /// Beendet alle Listener und wartet auf laufende Requests.
     pub async fn shutdown(self) {
+        crate::sessions::shutdown_all(&self.runtime.sessions, &self.runtime.runners).await;
         let _ = self.stop.send(true);
         for t in self.tasks {
             let _ = t.await;
@@ -112,7 +113,10 @@ pub async fn start_with(
         .unwrap_or_else(|| "localhost".into());
 
     let (stop, stop_rx) = watch::channel(false);
-    let runtime = customize(crate::app::Runtime::new(stop_rx.clone()));
+    let runtime = customize(
+        crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
+    );
+    let store_for_tunnel = store.clone();
     let router = app::build(AppParts {
         store,
         local,
@@ -122,6 +126,7 @@ pub async fn start_with(
         origins: config.origin_allowlist(&ports),
         primary_host,
         runtime: runtime.clone(),
+        web_dir: config.web_dir.clone(),
     });
 
     let mut tasks = Vec::new();
@@ -142,9 +147,35 @@ pub async fn start_with(
             }
         }));
     }
+    #[cfg(unix)]
+    if let Some(path) = &config.tunnel_socket {
+        let tstate = crate::tunnel::TunnelState {
+            events: crate::hub::EventService {
+                store: store_for_tunnel.clone(),
+                hub: runtime.hub.clone(),
+            },
+            local,
+            runners: runtime.runners.clone(),
+            config: runtime.tunnel,
+        };
+        tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
+            tstate.clone(),
+            runtime.hub.clone(),
+            stop_rx.clone(),
+        )));
+        let tunnel = Router::new()
+            .route(
+                crate::tunnel::TUNNEL_PATH,
+                axum::routing::get(crate::tunnel::tunnel_upgrade),
+            )
+            .with_state(tstate);
+        tasks.push(serve_unix(path, tunnel, stop_rx.clone())?);
+    }
     let socket = match &config.socket {
         Some(path) => {
-            tasks.push(serve_socket(path, router, stop_rx)?);
+            #[cfg(unix)]
+            let router = router.layer(axum::Extension(crate::security::ViaSocket));
+            tasks.push(serve_unix(path, router, stop_rx)?);
             Some(path.clone())
         }
         None => None,
@@ -161,14 +192,12 @@ pub async fn start_with(
 }
 
 #[cfg(unix)]
-fn serve_socket(
+fn serve_unix(
     path: &std::path::Path,
-    router: Router,
+    app: Router,
     mut stop: watch::Receiver<bool>,
 ) -> Result<JoinHandle<()>, StartError> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-
-    use crate::security::ViaSocket;
 
     let bind_err = |source| StartError::Bind {
         addr: path.display().to_string(),
@@ -188,7 +217,6 @@ fn serve_socket(
     }
     let listener = tokio::net::UnixListener::bind(path).map_err(bind_err)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(bind_err)?;
-    let app = router.layer(axum::Extension(ViaSocket));
     Ok(tokio::spawn(async move {
         let shutdown = async move {
             let _ = stop.wait_for(|s| *s).await;
@@ -203,7 +231,7 @@ fn serve_socket(
 }
 
 #[cfg(not(unix))]
-fn serve_socket(
+fn serve_unix(
     _path: &std::path::Path,
     _router: Router,
     _stop: watch::Receiver<bool>,

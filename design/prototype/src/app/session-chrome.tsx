@@ -40,13 +40,16 @@ export function SessionHeader({
         <F id={['USE-008', 'HAR-021']} badge="bottom-left" className="hidden @2xl:block">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground" title={`Kontext: ${usage.context.used.toLocaleString('de-DE')} von ${usage.context.window.toLocaleString('de-DE')} Tokens`}>
             <span className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
-              <span className="block h-full bg-foreground/70" style={{ width: `${ctxPct}%` }} />
+              <span className={cn('block h-full', ctxPct >= 95 ? 'bg-deny' : ctxPct >= 70 ? 'bg-warn' : 'bg-foreground/70')} style={{ width: `${ctxPct}%` }} />
             </span>
-            {ctxPct} % Kontext
+            <span className={cn(ctxPct >= 95 ? 'text-deny' : ctxPct >= 70 && 'text-warn')}>{ctxPct} % Kontext</span>
           </span>
         </F>
         <F id="USE-004" badge="bottom-left" className="hidden @4xl:block">
-          <span className="text-[11px] text-muted-foreground" title={`Subscription-Fenster setzt in ${usage.subscription.resetsIn} zurück`}>
+          <span
+            className={cn('text-[11px]', usage.subscription.windowUsedPct >= 90 ? 'font-semibold text-warn' : 'text-muted-foreground')}
+            title={`Subscription-Fenster setzt in ${usage.subscription.resetsIn} zurück`}
+          >
             {usage.subscription.label}: {usage.subscription.windowUsedPct} % genutzt
           </span>
         </F>

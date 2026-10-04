@@ -10,8 +10,10 @@ use axum::Extension;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use beton_core::id::{OrgId, SessionId, UserId};
+use beton_core::id::{HostId, OrgId, SessionId, UserId};
+use beton_host::RunnerCapabilities;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::app::AppState;
@@ -36,7 +38,7 @@ pub async fn healthz() -> axum::Json<Health> {
 }
 
 /// Server-Informationen.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct Info {
     pub version: String,
     pub schema_version: i64,
@@ -90,7 +92,7 @@ pub async fn me(
 }
 
 /// Eine Session in der Liste.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct SessionSummary {
     #[schema(value_type = String, example = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C")]
     pub id: SessionId,
@@ -108,7 +110,7 @@ pub struct SessionSummary {
 }
 
 /// Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct SessionPage {
     pub items: Vec<SessionSummary>,
     pub next_cursor: Option<String>,
@@ -124,6 +126,9 @@ pub struct SessionListQuery {
     pub cursor: Option<String>,
     /// Archivierte Sessions einschließen.
     pub include_archived: Option<bool>,
+    /// Nur Sessions mit Aktivität nach diesem Zeitpunkt (RFC 3339), älteste zuerst, auch
+    /// archivierte; für Listen-Deltas ohne Neuladen. Ohne `next_cursor`.
+    pub updated_after: Option<String>,
 }
 
 impl SessionListQuery {
@@ -132,6 +137,22 @@ impl SessionListQuery {
             limit: self.limit.clone(),
             cursor: self.cursor.clone(),
         }
+    }
+}
+
+/// Listen-Darstellung einer Session.
+pub fn summary(s: beton_store::SessionRecord) -> SessionSummary {
+    SessionSummary {
+        id: s.id,
+        title: s.title,
+        status: enum_str(&s.status),
+        kind: enum_str(&s.kind),
+        harness: s.harness,
+        archived: s.archived,
+        head_seq: s.head_seq,
+        cost_micro: s.cost_micro,
+        created_at: s.created_at.to_string(),
+        last_activity_at: s.last_activity_at.to_string(),
     }
 }
 
@@ -157,6 +178,20 @@ pub async fn list_sessions(
 ) -> ApiResult<axum::Json<SessionPage>> {
     let page = q.page();
     let limit = page.limit()?;
+    if let Some(since) = &q.updated_after {
+        let since: beton_core::time::Timestamp = since.parse().map_err(|_| {
+            Problem::new(ProblemCode::ValidationFailed)
+                .detail("updated_after ist kein RFC-3339-Zeitpunkt")
+        })?;
+        let items = state
+            .store
+            .sessions_updated_after(state.local.org, since, limit)
+            .await?;
+        return Ok(axum::Json(SessionPage {
+            items: items.into_iter().map(summary).collect(),
+            next_cursor: None,
+        }));
+    }
     let before = page.cursor::<SessionCursor>()?.map(|c| c.before);
     let (sessions, next) = state
         .store
@@ -168,27 +203,13 @@ pub async fn list_sessions(
         )
         .await?;
     Ok(axum::Json(SessionPage {
-        items: sessions
-            .into_iter()
-            .map(|s| SessionSummary {
-                id: s.id,
-                title: s.title,
-                status: enum_str(&s.status),
-                kind: enum_str(&s.kind),
-                harness: s.harness,
-                archived: s.archived,
-                head_seq: s.head_seq,
-                cost_micro: s.cost_micro,
-                created_at: s.created_at.to_string(),
-                last_activity_at: s.last_activity_at.to_string(),
-            })
-            .collect(),
+        items: sessions.into_iter().map(summary).collect(),
         next_cursor: next.map(|before| encode_cursor(&SessionCursor { before })),
     }))
 }
 
 /// Ein Einmal-Code für die Browser-Anmeldung.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct LoginCode {
     pub code: String,
     /// Fertige URL zum Öffnen im Browser.
@@ -286,4 +307,51 @@ pub async fn openapi_json(State(state): State<AppState>) -> Response {
         state.openapi_json.as_ref().clone(),
     )
         .into_response()
+}
+
+/// Ein Provider eines Hosts mit seinen Capabilities (RUN-001).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ProviderInfo {
+    pub id: String,
+    pub capabilities: RunnerCapabilities,
+}
+
+/// Ein Host (lokal genau `hst_local`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct HostInfo {
+    #[schema(value_type = String, example = "hst_local")]
+    pub id: HostId,
+    pub name: String,
+    pub providers: Vec<ProviderInfo>,
+}
+
+impl HostInfo {
+    /// Der lokale Daemon mit dem Provider `local`.
+    pub fn local() -> Self {
+        Self {
+            id: HostId::LOCAL,
+            name: "lokal".into(),
+            providers: vec![ProviderInfo {
+                id: "local".into(),
+                capabilities: beton_host::local::capabilities(),
+            }],
+        }
+    }
+}
+
+/// Ein Host mit den unverändert gemeldeten Provider-Capabilities (RUN-001 AC3).
+#[utoipa::path(get, path = "/v1/hosts/{id}", tag = "hosts",
+    params(("id" = String, Path, description = "Host-ID, lokal `hst_local`")),
+    responses((status = 200, description = "Host mit Providern", body = HostInfo),
+              (status = 404, description = "Host unbekannt", body = Problem, content_type = "application/problem+json")))]
+pub async fn get_host(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> ApiResult<axum::Json<HostInfo>> {
+    let host = state.runtime.host.clone();
+    if host.id.to_string() == id {
+        Ok(axum::Json(host))
+    } else {
+        Err(Problem::new(ProblemCode::NotFound).detail(format!("Host {id}")))
+    }
 }

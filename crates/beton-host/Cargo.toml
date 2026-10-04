@@ -9,7 +9,20 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+async-trait.workspace = true
+beton-core.workspace = true
+beton-harness.workspace = true
+beton-runner.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

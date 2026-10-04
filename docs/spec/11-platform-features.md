@@ -429,10 +429,11 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - M2: Sandbox-Fähigkeiten (macOS `sandbox-exec`; Linux Landlock-ABI, seccomp, User-Namespaces, optional bubblewrap; Windows Beta), Egress-Proxy-CA, Keychain-Zugriff, Policy-Ladefehler.
   - M3: Chromium/Chrome for Testing, Whisper-Modelle + Backend, Desktop-Updater-Kanal.
   - M4/M5: Server-Erreichbarkeit, TLS, Uhrzeitabweichung, Host-Pairing, Docker/Podman, Kubernetes-Kontext, Plugins (PLG-011, siehe 10-runners-extensibility.md), Telemetrie-Status. OBS-005 ist Owner der Prüfungen, des `--json`-Schemas und der Exit-Codes; CLI-005 ist die CLI-Front.
+- **Details:** M0-Prüfungen mit stabilen IDs: `version`, `daemon` (`warn`, wenn keiner läuft), `config`, `home.permissions`, `database` (`PRAGMA quick_check` schreibgeschützt, ohne Migration), je Harness `harness.<id>` (`details`: `path`, `version`, `version_range`, `compatible`, `source`, `auth_status`) und `auth.<id>` (`warn` nur bei `logged_out`). Fehlende CLI → `warn` mit Installationsbefehl, inkompatible Version → `fail`. `--json` liefert `{version, status, checks: [{id, status, message, hint, details?}]}` gemäß `schemas/v1/doctor.schema.json`.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Fehlt `claude` im PATH, meldet `doctor` `warn` mit Installationshinweis und Exit-Code 1.
   - [ ] AC2 — `--json` folgt einem veröffentlichten Schema (Snapshot-Test) und enthält pro Check `id`, `status`, `message`, `hint`.
-  - [ ] AC3 — Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.
+  - [ ] AC3 — (ab M2) Auf Linux ohne Landlock meldet `doctor` `fail` für `sandbox.linux` mit Verweis auf Kernel-Anforderung.
   - [ ] AC4 — `doctor` ändert nichts am System (läuft unter einer Read-only-Testumgebung erfolgreich durch) und läuft ohne Netzwerk (nur Loopback) ohne Verbindungsversuch nach außen durch.
 - **Abhängigkeiten:** —
 - **Referenz:** ADR-0025

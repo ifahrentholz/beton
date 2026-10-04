@@ -55,6 +55,13 @@
         "effort_switch": {
           "$ref": "#/$defs/SwitchSupport"
         },
+        "efforts": {
+          "description": "Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "fork_history": {
           "$ref": "#/$defs/ForkHistory"
         },
@@ -75,6 +82,13 @@
         },
         "model_switch": {
           "$ref": "#/$defs/SwitchSupport"
+        },
+        "models": {
+          "description": "Wählbare Modelle (Aliase der CLI), z. B. für den Composer-Picker (WEB-004).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "resume": {
           "$ref": "#/$defs/ResumeSupport"

@@ -227,19 +227,20 @@ function StackedBars({ mode }: { mode: 'tokens' | 'cost' }) {
 /** Kontingent-Balken eines Rate-Limit-Fensters (USE-004). */
 function QuotaBar({ label, pct, reset, warn }: { label: string; pct: number; reset: string; warn?: boolean }) {
   const high = pct >= 90
+  const full = pct >= 100
   return (
     <div className="grid grid-cols-[120px_1fr_auto] items-center gap-3 py-1">
       <span className="text-[12px] text-muted-foreground">{label}</span>
       <span className="relative h-2 overflow-hidden rounded-full bg-muted" role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
-        <span className={cn('absolute inset-y-0 left-0', high ? 'bg-deny' : 'bg-foreground/70')} style={{ width: `${pct}%` }} />
+        <span className={cn('absolute inset-y-0 left-0', full ? 'bg-deny' : high ? 'bg-warn' : 'bg-foreground/70')} style={{ width: `${pct}%` }} />
         {[25, 50, 75].map((m) => (
           <span key={m} className="absolute inset-y-0 w-px bg-background/70" style={{ left: `${m}%` }} />
         ))}
       </span>
       <span className="text-[12px] whitespace-nowrap tabular-nums">
-        <strong className={cn('font-semibold', high && 'text-deny')}>{pct} %</strong>
+        <strong className={cn('font-semibold', full ? 'text-deny' : high && 'text-warn')}>{pct} %</strong>
         <span className="text-muted-foreground"> genutzt · {reset}</span>
-        {high && warn && <span className="ml-2 text-deny">fast aufgebraucht</span>}
+        {high && warn && <span className={cn('ml-2', full ? 'text-deny' : 'text-warn')}>{full ? 'aufgebraucht' : 'fast aufgebraucht'}</span>}
       </span>
     </div>
   )
@@ -319,7 +320,7 @@ function UsageOverview({ state }: { state: string }) {
               <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – nicht in Euro</span>
             </div>
             <div className="mt-2 divide-y divide-border rounded-md border border-border">
-              <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-deny-soft/50')}>
+              <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-warn-soft/60')}>
                 <div>
                   <HarnessBadge id="claude" />
                   <div className="mt-0.5 text-[11px] text-muted-foreground">Claude Max · angemeldet über claude-CLI</div>
@@ -649,16 +650,16 @@ function ContextRing({ used, window }: { used: number; window: number | null }) 
             cy="12"
             r={r}
             fill="none"
-            stroke={level === 'high' || level === 'full' ? 'var(--deny)' : level === 'warn' ? 'var(--foreground)' : 'var(--muted-foreground)'}
+            stroke={level === 'full' ? 'var(--deny)' : level === 'warn' || level === 'high' ? 'var(--warn)' : 'var(--muted-foreground)'}
             strokeWidth={level === 'ok' ? 3 : 4}
             strokeDasharray={`${(c * pct) / 100} ${c}`}
           />
         </svg>
       )}
-      <span className={cn('text-[12px] tabular-nums', (level === 'high' || level === 'full') && 'font-semibold text-deny', level === 'warn' && 'font-semibold')}>
+      <span className={cn('text-[12px] tabular-nums', level === 'full' && 'font-semibold text-deny', (level === 'warn' || level === 'high') && 'font-semibold text-warn')}>
         {pct !== null ? `${pct} % Kontext` : `${Math.round(used / 1000)} k Tokens`}
       </span>
-      {label && <span className={cn('text-[11px]', level === 'warn' ? 'text-foreground' : 'text-deny')}>· {label}</span>}
+      {label && <span className={cn('text-[11px]', level === 'full' ? 'text-deny' : 'text-warn')}>· {label}</span>}
     </span>
   )
 }

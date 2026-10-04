@@ -4,5 +4,6 @@
 
 pub mod event;
 pub mod id;
+pub mod network;
 pub mod registry;
 pub mod time;
