@@ -479,9 +479,9 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-002--json-schema-veröffentlichung--validierung",
-  "summary": "Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/agent.v1.json` im Repo versioniert und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema und semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).",
+  "summary": "Das JSON-Schema wird aus den Rust-Typen generiert (`schemars`), als `schemas/v1/agent.schema.json` im Repo versioniert (`cargo xtask codegen`, wie alle Schemas unter `schemas/v1/`) und mit jedem Release veröffentlicht. `beton agent validate <pfad>` prüft Schema und semantische Regeln (Harness existiert, Effort zum Modell passend, referenzierte Dateien/Skills/Sub-Agents vorhanden, keine Zyklen in `agents`).",
   "acs": [
-   "Snapshot-Test: generiertes Schema == eingechecktes `schemas/agent.v1.json`; Abweichung lässt CI fehlschlagen.",
+   "Snapshot-Test: generiertes Schema == eingechecktes `schemas/v1/agent.schema.json`; Abweichung lässt CI fehlschlagen.",
    "`beton agent validate` liefert Exit-Code 0/1 und mit `--json` eine Liste von `{ path, line, column, code, message }`.",
    "Ein Sub-Agent-Zyklus (A → B → A) wird als Fehler `agent_cycle` erkannt.",
    "`reasoning_effort: xhigh` auf einem Harness/Modell ohne diese Stufe erzeugt eine Warnung mit dem effektiven Wert (Mapping wie HAR-017)."
@@ -890,7 +890,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-001--policy-dokumentformat-ladeorte--hot-reload",
-  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/policy.v1.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.",
+  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.",
   "acs": [
    "Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.",
    "Wird eine Projekt-Policy-Datei während einer laufenden Session geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart.",

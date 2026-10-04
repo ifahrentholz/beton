@@ -15,7 +15,7 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 - `crates/beton-*`: Rust-Workspace; das Binary `beton` kommt aus `crates/beton-cli`.
 - `apps/web`: React-Frontend; `apps/desktop`: Tauri-2-Hülle.
 - `packages/sdk-ts`: TypeScript-SDK (Typen werden **generiert**).
-- `agents/`: mitgelieferte Agents (YAML). `deploy/`: Compose und Helm.
+- `agents/`: mitgelieferte Built-in-Agents (YAML), werden ins Binary eingebettet (AGT-003). `deploy/`: Compose und Helm.
 
 ## 3. Befehle
 
@@ -33,7 +33,7 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Golden-Transcripts | `cargo nextest run -p <adapter-crate>` (offline); Erwartungen neu schreiben: `BETON_BLESS=1 cargo nextest run …`; Secret-Scan: `cargo xtask golden-scan` (Pre-Commit-Hook: `git config core.hooksPath .githooks`) |
 | Roadmap neu erzeugen | `python3 scripts/gen_roadmap.py` (CI prüft, dass `docs/spec/roadmap.md` aktuell ist) |
 | Feature-Katalog des Design-Prototyps neu erzeugen | `python3 scripts/gen_feature_catalog.py` (nach jeder Spec-Änderung; CI prüft `design/prototype/src/catalog/features.json`) |
-| Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schema nach `schemas/v1/`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
+| Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schemas nach `schemas/v1/`, z. B. `agent.schema.json`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
 | TypeScript-SDK | `pnpm test` · `pnpm typecheck` · `pnpm build` in `packages/sdk-ts` |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` · `pnpm build` in `apps/web`; lokal gegen den Daemon: `pnpm build` und `BETON_WEB_DIR=apps/web/dist beton serve` |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen `beton serve --dev` und Fake-Harness; vorher `cargo build -p beton-cli`, `pnpm build`, `pnpm exec playwright install chromium`) |
