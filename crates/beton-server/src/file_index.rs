@@ -57,7 +57,7 @@ impl Default for FileIndexCache {
     fn default() -> Self {
         Self {
             entries: Mutex::default(),
-            ttl: Duration::from_secs(10),
+            ttl: Duration::from_secs(3),
         }
     }
 }
