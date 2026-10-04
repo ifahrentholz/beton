@@ -19,28 +19,45 @@ Options:
           Maschinenlesbare Ausgabe (JSON) auf stdout
 
       --model <M>
-          Modell (sofern der Harness es unterstützt)
+          Modell (sofern der Harness es unterstützt); mit `-c`/`--resume` ein Wechsel ab dem
+          nächsten Turn
 
-      --cwd <DIR>
-          Arbeitsverzeichnis der Session (Default: aktuelles Verzeichnis)
+      --effort <LEVEL>
+          Reasoning-Effort; eine Stufe, die der Harness nicht kennt, wird auf die nächstniedrigere
+          gemappt (HAR-017)
+          
+          [possible values: low, medium, high, xhigh]
 
   -q, --quiet
           Keine Fortschritts- und Hinweismeldungen auf stderr
 
-  -c, --continue
-          Zuletzt genutzte Session in diesem Verzeichnis fortsetzen
+      --permission-mode <MODE>
+          Wie viel der Agent ohne Rückfrage darf (HAR-027). `yolo` startet nur mit Tool-Sandbox und
+          Egress-Proxy
+
+          Possible values:
+          - plan:         Nur lesen und planen
+          - default:      Standard des Harness; Freigaben laut Policy
+          - accept_edits: Datei-Edits im Worktree ohne Rückfrage
+          - yolo:         Keine Rückfragen des Agents; nur mit Sandbox und Egress-Proxy
 
   -v, --verbose...
           Mehr Diagnose auf stderr (mehrfach: noch mehr)
 
+      --cwd <DIR>
+          Arbeitsverzeichnis der Session (Default: aktuelles Verzeichnis)
+
       --no-color
           Keine Farben (auch über `NO_COLOR`)
 
-      --resume <ID>
-          Diese Session fortsetzen (ID, Präfix oder `last`)
+  -c, --continue
+          Zuletzt genutzte Session in diesem Verzeichnis fortsetzen
 
       --config <FILE>
           User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+      --resume <ID>
+          Diese Session fortsetzen (ID, Präfix oder `last`)
 
       --fork <ID[@SEQ]>
           Neue Session ab einem Event dieser Session abzweigen: `ID@SEQ`, ohne `@SEQ` ab dem Ende

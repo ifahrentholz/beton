@@ -79,6 +79,12 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
     let (id, from_seq) = match continued {
         Some(id) => {
             let session = ensure_live(&client, &id).await?;
+            // Einstellungen einer fortgesetzten Session per PATCH (HAR-017, HAR-027); beim
+            // Fork gehen sie in den Fork-Request.
+            let settings = settings_body(&args);
+            if args.fork.is_none() && settings.as_object().is_some_and(|o| !o.is_empty()) {
+                client.patch_session(&id, &settings).await?;
+            }
             let head = session["head_seq"].as_u64().unwrap_or(0);
             // Im Skript-Modus nur Neues; interaktiv mit Verlauf.
             (id, if prompt.is_some() { head } else { 0 })
@@ -104,9 +110,7 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
             if let Some(t) = &args.title {
                 body["title"] = Value::String(t.clone());
             }
-            if let Some(m) = &args.model {
-                body["model"] = Value::String(m.clone());
-            }
+            merge(&mut body, settings_body(&args));
             // SES-015: eigener Worktree, optional mit Branch-Name und Base.
             if let Some(branch) = &args.worktree {
                 let mut wt = json!({});
@@ -168,6 +172,27 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
     .await
 }
 
+/// `--model`, `--effort` und `--permission-mode` als Felder für Anlegen, Fork bzw. PATCH.
+fn settings_body(args: &RunArgs) -> Value {
+    let mut body = json!({});
+    if let Some(m) = &args.model {
+        body["model"] = Value::String(m.clone());
+    }
+    if let Some(e) = args.effort {
+        body["effort"] = Value::String(e.as_str().into());
+    }
+    if let Some(p) = args.permission_mode {
+        body["permission_mode"] = Value::String(p.as_str().into());
+    }
+    body
+}
+
+fn merge(body: &mut Value, extra: Value) {
+    if let (Some(b), Value::Object(e)) = (body.as_object_mut(), extra) {
+        b.extend(e);
+    }
+}
+
 /// `--fork ID[@SEQ]` (SES-006, SES-007): Fork über die API anlegen; liefert die neue ID.
 async fn fork(ctx: &Ctx, client: &Client, args: &RunArgs, reference: &str) -> CliResult<String> {
     let (source, at_seq) = match reference.rsplit_once('@') {
@@ -196,9 +221,7 @@ async fn fork(ctx: &Ctx, client: &Client, args: &RunArgs, reference: &str) -> Cl
     if let Some(h) = &harness {
         body["harness"] = Value::String(h.clone());
     }
-    if let Some(m) = &args.model {
-        body["model"] = Value::String(m.clone());
-    }
+    merge(&mut body, settings_body(args));
     if let Some(t) = &args.title {
         body["title"] = Value::String(t.clone());
     }

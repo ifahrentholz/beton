@@ -845,3 +845,80 @@ async fn ses_006_ac4_run_fork_creates_the_same_fork_as_the_api() {
     assert_eq!(content_of(&a_events), content_of(&c_events));
     assert!(!content_of(&c_events).is_empty());
 }
+
+// ------------------------------------------------------------- HAR-017, HAR-027 (CLI-002)
+
+const ECHO_SETTINGS: &str =
+    "turns:\n  - emit: [{ echo_settings: true }]\n  - emit: [{ echo_settings: true }]\n";
+
+#[tokio::test]
+async fn har_027_ac1_run_claude_yolo_without_sandbox_fails_with_sandbox_required() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(HELLO);
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .env("BETON_CLAUDE_PATH", fake_claude(&scenario))
+        .args([
+            "run",
+            "claude",
+            "--permission-mode",
+            "yolo",
+            "-p",
+            "sag hallo",
+        ]));
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("sandbox_required"),
+        "{}",
+        stderr(&out)
+    );
+    // Kein unsandboxed Start: Es gibt keine Session.
+    let sessions = serve.client().all_sessions(true).await.unwrap();
+    assert!(sessions.is_empty(), "{sessions:?}");
+}
+
+#[tokio::test]
+async fn cli_002_run_passes_effort_and_permission_mode_to_the_harness() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(ECHO_SETTINGS);
+    let out = run(beton(serve.home())
+        .current_dir(serve.work.path())
+        .args([
+            "run",
+            "fake",
+            "--effort",
+            "xhigh",
+            "--permission-mode",
+            "accept_edits",
+            "--output-format",
+            "json",
+            "-p",
+            "eins",
+            "--scenario",
+        ])
+        .arg(&scenario));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let first: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // Fake: Stufen low, medium, high – `xhigh` wird gemappt (HAR-017 AC3).
+    assert_eq!(
+        first["result"],
+        "model=fake-model effort=high mode=accept_edits"
+    );
+    // Fortsetzen mit neuen Einstellungen: Wechsel per PATCH, wirksam im nächsten Turn.
+    let out = run(beton(serve.home()).current_dir(serve.work.path()).args([
+        "run",
+        "-c",
+        "--model",
+        "fake-large",
+        "--permission-mode",
+        "plan",
+        "--output-format",
+        "json",
+        "-p",
+        "zwei",
+    ]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let second: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(second["session_id"], first["session_id"]);
+    assert_eq!(second["result"], "model=fake-large effort=high mode=plan");
+}
