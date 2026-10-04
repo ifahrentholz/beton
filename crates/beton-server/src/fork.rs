@@ -254,6 +254,9 @@ impl SessionManager<'_> {
                 if let Some(wt) = worktree {
                     crate::sessions::discard_worktree(wt).await;
                 }
+                if workspace == ForkWorkspace::Fresh {
+                    let _ = std::fs::remove_dir_all(self.cfg().fresh_dir(id));
+                }
                 return Err(e.into());
             }
         };
