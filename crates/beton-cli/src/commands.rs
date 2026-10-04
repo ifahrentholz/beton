@@ -124,11 +124,13 @@ pub async fn run(cli: Cli) -> CliResult {
 }
 
 /// Kommandos, die mit dem Daemon sprechen und nach `cli.log` loggen (OBS-001).
+/// `doctor` schreibt nichts ins Datenverzeichnis (OBS-005 AC4).
 fn cli_logs(command: &Command) -> bool {
     !matches!(
         command,
         Command::Serve(_)
             | Command::Runner
+            | Command::Doctor
             | Command::Config(_)
             | Command::Completion(_)
             | Command::Version
