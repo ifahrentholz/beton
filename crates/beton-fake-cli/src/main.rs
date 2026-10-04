@@ -27,6 +27,8 @@ const DEFAULT_VERSION: &str = "2.1.0";
 
 #[derive(Debug, Default)]
 struct Args {
+    /// `auth status`: Login-Status wie die echte CLI (HAR-016).
+    auth_status: bool,
     protocol: Option<String>,
     scenario: Option<PathBuf>,
     version: bool,
@@ -41,6 +43,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         v.and_then(|v| v.parse().ok())
             .ok_or_else(|| format!("{flag} braucht eine Zahl"))
     };
+    let mut positional = Vec::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--protocol" => out.protocol = args.next(),
@@ -50,9 +53,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--crash-after" => out.faults.crash_after = Some(number(args.next(), &arg)?),
             "--hang-after" => out.faults.hang_after = Some(number(args.next(), &arg)?),
             "--malformed-line" => out.faults.malformed_line = Some(number(args.next(), &arg)?),
+            a if !a.starts_with('-') => positional.push(arg),
             _ => {} // Flags der echten CLI (-p, --output-format, --model …) ignorieren.
         }
     }
+    out.auth_status = positional.first().map(String::as_str) == Some("auth")
+        && positional.get(1).map(String::as_str) == Some("status");
     if out.scenario.is_none() {
         out.scenario = std::env::var_os("BETON_FAKE_SCENARIO").map(PathBuf::from);
     }
@@ -77,6 +83,19 @@ fn main() -> ExitCode {
         },
         None => None,
     };
+    if args.auth_status {
+        // Wie `claude auth status --json`, samt Kontodaten, die beton verwerfen muss.
+        let logged_in = std::env::var("BETON_FAKE_AUTH").as_deref() != Ok("logged_out");
+        println!(
+            "{}",
+            serde_json::json!({
+                "loggedIn": logged_in,
+                "email": "fake-user@example.invalid",
+                "orgName": "Fake Org",
+            })
+        );
+        return ExitCode::SUCCESS;
+    }
     if args.version {
         let version = scenario
             .as_ref()
