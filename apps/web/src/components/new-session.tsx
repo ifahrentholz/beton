@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import type { HarnessInfo } from '@beton/sdk'
+import type { HarnessInfo, PermissionMode } from '@beton/sdk'
 import { X } from 'lucide-react'
 import { client } from '@/lib/client'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { harnessName } from './harness'
+import { EFFORT_LABEL, MODE_TEXT, YOLO_AVAILABLE } from './settings-picker'
 
 const LAST_CWD = 'beton.lastCwd'
 
-/** Dialog „Neue Session“: Harness, Modell (aus den Capabilities) und Arbeitsverzeichnis. */
+/**
+ * Dialog „Neue Session“: Harness, Modell, Effort und Permission-Mode (aus den Capabilities,
+ * WEB-004) sowie Arbeitsverzeichnis. YOLO bietet er ohne Sandbox nicht an (HAR-027 AC1).
+ */
 export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
   const catalog = useQuery({
@@ -22,6 +26,8 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   )
   const [harness, setHarness] = useState('')
   const [model, setModel] = useState('')
+  const [effort, setEffort] = useState('')
+  const [mode, setMode] = useState<PermissionMode | ''>('')
   const [cwd, setCwd] = useState(() => localStorage.getItem(LAST_CWD) ?? '')
   const [scenario, setScenario] = useState('')
   const [error, setError] = useState<string | undefined>()
@@ -30,7 +36,15 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
     if (!harness && usable[0]) setHarness(usable[0].id)
   }, [harness, usable])
   const info = usable.find((h) => h.id === harness)
-  const models = info?.capabilities[0]?.models ?? []
+  const caps = info?.capabilities[0]
+  const models = caps?.models ?? []
+  const efforts = caps?.efforts ?? []
+  const modes = (caps?.permission_modes ?? []).filter((m) => m !== 'yolo' || YOLO_AVAILABLE)
+  useEffect(() => {
+    // Ein anderer Harness kennt evtl. andere Stufen und Modi.
+    setEffort('')
+    setMode('')
+  }, [harness])
   const create = async () => {
     setBusy(true)
     setError(undefined)
@@ -39,6 +53,8 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
         target: harness,
         cwd: cwd.trim(),
         ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        ...(mode ? { permission_mode: mode } : {}),
         ...(harness === 'fake' && scenario.trim() ? { harness_opts: { scenario: scenario.trim() } } : {}),
       })
       localStorage.setItem(LAST_CWD, cwd.trim())
@@ -84,6 +100,34 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
                     {m}
                   </option>
                 ))}
+              </select>
+            </label>
+          )}
+          {efforts.length > 0 && (
+            <label className="block">
+              Effort
+              <select value={effort} onChange={(e) => setEffort(e.target.value)} className="mt-1 block w-full rounded-md border border-input bg-card px-2 py-1.5">
+                <option value="">Standard der CLI</option>
+                {efforts.map((e) => (
+                  <option key={e} value={e}>
+                    {EFFORT_LABEL[e] ?? e}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {modes.length > 1 && (
+            <label className="block">
+              Permission-Mode
+              <select value={mode} onChange={(e) => setMode(e.target.value as PermissionMode | '')} className="mt-1 block w-full rounded-md border border-input bg-card px-2 py-1.5">
+                <option value="">{MODE_TEXT.default.title}</option>
+                {modes
+                  .filter((m) => m !== 'default')
+                  .map((m) => (
+                    <option key={m} value={m}>
+                      {MODE_TEXT[m].title}
+                    </option>
+                  ))}
               </select>
             </label>
           )}

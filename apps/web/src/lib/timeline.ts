@@ -1,4 +1,6 @@
 import type { Event } from '@beton/sdk'
+import { harnessName } from '@/components/harness'
+import { effortLabel } from '@/components/settings-picker'
 import type { SessionLog } from '@/store/events'
 import { isInline, isOffloaded, textOf } from './events'
 
@@ -67,6 +69,35 @@ function policyRule(matched: unknown[]): { rule: string; reason: string } {
   }
 }
 
+const EFFORT_RANK = ['low', 'medium', 'high', 'xhigh']
+
+/**
+ * Hinweise zu `session.settings_changed` (HAR-017, Screen `harness-switching`): Modellwechsel
+ * live bzw. per Neustart und ein gemappter Effort. Andere Wechsel zeigt der Picker.
+ */
+export function settingsNotes(
+  change: { model?: string; effort?: string; requested_effort?: string; mechanism?: string },
+  ctx: { harness: string; previousModel?: string | null; turn: number },
+): string[] {
+  const notes: string[] = []
+  if (change.model) {
+    if (change.mechanism === 'restart') {
+      notes.push(`Modell gewechselt auf ${change.model} · ${harnessName(ctx.harness)} wurde neu gestartet und hat die Session fortgesetzt`)
+    } else {
+      const what = ctx.previousModel && ctx.previousModel !== change.model ? `: ${ctx.previousModel} → ${change.model}` : ` auf ${change.model}`
+      notes.push(`Modell gewechselt${what} · sofort wirksam, ab Turn ${ctx.turn} · Verlauf bleibt erhalten`)
+    }
+  }
+  if (change.effort && change.requested_effort && change.requested_effort !== change.effort) {
+    const who = change.model ?? ctx.previousModel ?? harnessName(ctx.harness)
+    const higher = EFFORT_RANK.indexOf(change.requested_effort) > EFFORT_RANK.indexOf(change.effort)
+    notes.push(
+      `Effort: „${effortLabel(change.requested_effort)}“ angefragt, „${effortLabel(change.effort)}“ aktiv – ${who} unterstützt keine ${higher ? 'höhere' : 'niedrigere'} Stufe`,
+    )
+  }
+  return notes
+}
+
 /**
  * Leitet die Elemente des Chat-Streams aus dem Log ab (WEB-002, WEB-018). Rein und ohne
  * Seiteneffekte; laufende Deltas erscheinen am Ende.
@@ -75,6 +106,14 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
   const items: Item[] = []
   const tools = new Map<string, Extract<Item, { kind: 'tool' }>>()
   const approvals = new Map<string, Extract<Item, { kind: 'approval' }>>()
+  // Nummer jedes Turns (für „ab Turn n“) sowie Harness und Modell für die Hinweise.
+  const turnNumber = new Map<string, number>()
+  for (const e of log.events as Event[]) {
+    if (isInline(e) && e.type === 'turn.started') turnNumber.set(e.payload.turn_id, turnNumber.size + 1)
+  }
+  let turns = 0
+  let harness = ''
+  let model: string | null | undefined
 
   for (const e of log.events as Event[]) {
     const key = `e${e.seq}`
@@ -84,6 +123,21 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
     }
     if (!isInline(e)) continue
     switch (e.type) {
+      case 'session.created':
+        harness = e.payload.harness
+        model = e.payload.model
+        break
+      case 'turn.started':
+        turns += 1
+        break
+      case 'session.settings_changed': {
+        const turn = (e.payload.effective_from_turn && turnNumber.get(e.payload.effective_from_turn)) || turns + 1
+        settingsNotes(e.payload, { harness, previousModel: model, turn }).forEach((text, i) =>
+          items.push({ kind: 'note', key: `${key}-${i}`, text, tone: 'neutral' }),
+        )
+        if (e.payload.model) model = e.payload.model
+        break
+      }
       case 'message.completed': {
         const text = textOf(e.payload.content)
         if (e.payload.role === 'user') items.push({ kind: 'user', key, text })

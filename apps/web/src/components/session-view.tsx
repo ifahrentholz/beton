@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
-import type { Capabilities, HarnessInfo } from '@beton/sdk'
+import type { Capabilities, HarnessInfo, PermissionMode } from '@beton/sdk'
 import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
@@ -35,6 +35,8 @@ function useMeta(sessionId: string) {
   return useMemo(() => {
     let harness = summary?.harness ?? ''
     let model: string | null | undefined
+    let effort: string | null | undefined
+    let permissionMode: PermissionMode | null | undefined
     let capabilities: Capabilities | undefined
     let title = summary?.title ?? ''
     let status = summary?.status ?? 'starting'
@@ -43,6 +45,8 @@ function useMeta(sessionId: string) {
       if (created) {
         harness = created.harness
         model = created.model
+        effort = created.effort
+        permissionMode = created.permission_mode as PermissionMode | undefined
       }
       const started = payloadOf(e, 'session.started')
       if (started) capabilities = started.capabilities as unknown as Capabilities
@@ -50,10 +54,13 @@ function useMeta(sessionId: string) {
       if (t) title = t.title
       const st = payloadOf(e, 'session.status')
       if (st) status = st.status
+      // Wirksame Einstellungen: der letzte Stand aus `session.settings_changed` (HAR-017, HAR-027).
       const settings = payloadOf(e, 'session.settings_changed')
       if (settings?.model) model = settings.model
+      if (settings?.effort) effort = settings.effort
+      if (settings?.permission_mode) permissionMode = settings.permission_mode as PermissionMode
     }
-    return { harness, model, capabilities, title, status }
+    return { harness, model, effort, permissionMode, capabilities, title, status }
   }, [events, summary])
 }
 
@@ -288,6 +295,8 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         sessionId={sessionId}
         harness={meta.harness || 'claude'}
         model={meta.model}
+        effort={meta.effort}
+        permissionMode={meta.permissionMode}
         capabilities={meta.capabilities}
         running={running}
         continueWith={targets}
@@ -313,6 +322,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Senden fehlgeschlagen'))
         }}
         onInterrupt={() => void client.session(sessionId).interrupt().catch(() => undefined)}
+        onSettings={(patch) => {
+          setSendError(undefined)
+          // Der Wechsel erscheint als `session.settings_changed` im Log (HAR-017, HAR-027).
+          client
+            .session(sessionId)
+            .update(patch)
+            .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Wechsel fehlgeschlagen'))
+        }}
       />
     </div>
       <WorkspaceRail
