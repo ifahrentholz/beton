@@ -34,24 +34,33 @@ export async function highlight(code: string, lang: string): Promise<Lines> {
   return tokens.map((line) => line.map((t): [string, string] => [t.content, t.color ?? '']))
 }
 
+/** Zeitbudget je Abschnitt (ms): kurz genug, dass Scrollen dazwischen flüssig bleibt. */
+const SLICE_MS = 4
+
 /**
  * Viele Zeilen in Abschnitten hervorheben, ohne den Haupt-Thread lange zu blockieren
- * (Diffs mit tausenden Zeilen, WEB-011 AC1). Der Grammatik-Zustand wird von Abschnitt zu
- * Abschnitt weitergereicht, mehrzeilige Kommentare und Strings bleiben korrekt.
+ * (Diffs mit tausenden Zeilen, WEB-011 AC1). Die Abschnittsgröße passt sich an, sodass jeder
+ * Abschnitt etwa {@link SLICE_MS} dauert. Der Grammatik-Zustand wird weitergereicht,
+ * mehrzeilige Kommentare und Strings bleiben korrekt.
  */
-export async function highlightChunked(lines: readonly string[], lang: string, onChunk: (from: number, chunk: Lines) => void, signal?: AbortSignal, chunkSize = 300): Promise<void> {
+export async function highlightChunked(lines: readonly string[], lang: string, onChunk: (from: number, chunk: Lines) => void, signal?: AbortSignal): Promise<void> {
   const h = await ready(lang)
   const theme = isDark() ? 'github-dark' : 'github-light'
   let state: GrammarState | undefined
-  for (let from = 0; from < lines.length; from += chunkSize) {
+  let size = 20
+  for (let from = 0; from < lines.length; ) {
     if (signal?.aborted) return
-    const code = lines.slice(from, from + chunkSize).join('\n')
+    const t0 = performance.now()
+    const code = lines.slice(from, from + size).join('\n')
     const res = h.codeToTokens(code, { lang: lang as never, theme, tokenizeMaxLineLength: 2000, ...(state ? { grammarState: state } : {}) })
     state = res.grammarState
     onChunk(
       from,
       res.tokens.map((line) => line.map((t): [string, string] => [t.content, t.color ?? ''])),
     )
+    from += size
+    const took = Math.max(performance.now() - t0, 0.25)
+    size = Math.max(5, Math.min(400, Math.round((size * SLICE_MS) / took)))
     // Dem Browser zwischendurch Zeit für Scrollen und Rendern lassen.
     await new Promise((r) => setTimeout(r, 0))
   }

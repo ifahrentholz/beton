@@ -157,6 +157,11 @@ test('WEB-011 AC1: Ein Diff mit 5 000 geänderten Zeilen bleibt flüssig scrollb
   await expect(rail(page).locator('[data-line="N1"]')).toBeVisible()
   // Virtualisiert: nur ein kleiner Ausschnitt der 5 000 Zeilen steht im DOM.
   expect(await rail(page).locator('[data-line]').count()).toBeLessThan(200)
+  // Lokal CI-Bedingungen nachstellen: BETON_CPU_THROTTLE=6 bremst die CPU im Browser.
+  if (process.env.BETON_CPU_THROTTLE) {
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.BETON_CPU_THROTTLE) })
+  }
   const f = await frames(page, 4000, '[data-testid="diff-list"]')
   test.info().annotations.push({ type: 'Messwerte', description: JSON.stringify({ fpsMedian: Math.round(f.median), slowFramesPct: Math.round(f.slowShare * 1000) / 10, frames: f.count }) })
   console.log('WEB-011 Messwerte', test.info().annotations.at(-1)?.description)

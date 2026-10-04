@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ChangedFile, ChangeScope, FileDiff } from '@beton/sdk'
 import { Check, Link2, Paperclip } from 'lucide-react'
@@ -69,12 +69,25 @@ function useDiffs(sessionId: string, scope: ChangeScope, turn: string | undefine
 /** Hervorhebung je Datei (alte und neue Seite), abschnittsweise im Hintergrund. */
 function useHighlight(rowsByFile: Map<string, DiffRow[]>): (rows: DiffRow[] | undefined) => { old: Lines; new: Lines } | undefined {
   const tokens = useRef(new WeakMap<DiffRow[], { old: Lines; new: Lines }>())
-  const [, bump] = useState(0)
+  const [, setTick] = useState(0)
+  // Höchstens ein Neuzeichnen pro Frame, egal wie viele Abschnitte fertig werden.
+  const frame = useRef(0)
+  const bump = useCallback(() => {
+    if (frame.current) return
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0
+      setTick((n) => n + 1)
+    })
+  }, [])
   const abort = useRef(new AbortController())
   useEffect(() => {
     const ctrl = new AbortController()
     abort.current = ctrl
-    return () => ctrl.abort()
+    return () => {
+      ctrl.abort()
+      cancelAnimationFrame(frame.current)
+      frame.current = 0
+    }
   }, [])
   useEffect(() => {
     for (const [path, rows] of rowsByFile) {
@@ -91,13 +104,13 @@ function useHighlight(rowsByFile: Map<string, DiffRow[]>): (rows: DiffRow[] | un
           lang,
           (from, chunk) => {
             for (let i = 0; i < chunk.length; i++) entry[side][from + i] = chunk[i]!
-            bump((n) => n + 1)
+            bump()
           },
           abort.current.signal,
         ).catch(() => undefined)
       void run('new', lines((r) => r.type !== 'delete')).then(() => run('old', lines((r) => r.type !== 'add')))
     }
-  }, [rowsByFile])
+  }, [rowsByFile, bump])
   return (rows) => (rows ? tokens.current.get(rows) : undefined)
 }
 
@@ -116,6 +129,63 @@ const Code = memo(function Code({ text, tokens }: { text: string; tokens: [strin
         </span>
       ))}
     </>
+  )
+})
+
+/**
+ * Eine Diff-Zeile. Gemerkt: Beim Scrollen zeichnet React nur neu hinzukommende Zeilen
+ * (feste Höhen, gleiche Position je Index), nicht alle sichtbaren (WEB-011 AC1).
+ */
+const LineRow = memo(function LineRow({
+  file,
+  row,
+  last,
+  start,
+  size,
+  tokens,
+  onAnchor,
+  toolbar,
+}: {
+  file: string
+  row: Extract<DiffRow, { kind: 'line' }>
+  last: boolean
+  start: number
+  size: number
+  tokens: [string, string][] | undefined
+  onAnchor: (file: string, line: string) => void
+  toolbar?: ReactNode
+}) {
+  const num = row.type === 'delete' ? row.old : row.new
+  const side = row.type === 'delete' ? 'alt' : 'neu'
+  return (
+    <div
+      style={{ transform: `translateY(${start}px)`, height: size }}
+      data-line={row.anchor}
+      data-anchored={toolbar ? 'true' : undefined}
+      className={cn(
+        'absolute top-0 left-0 flex w-full border-x border-border bg-card font-mono text-[12px] leading-5',
+        row.type === 'add' && 'bg-ok-soft',
+        row.type === 'delete' && 'bg-deny-soft',
+        toolbar && 'ring-1 ring-foreground/50 ring-inset',
+        last && 'rounded-b-md border-b',
+      )}
+    >
+      <button
+        onClick={() => onAnchor(file, row.anchor)}
+        className="w-10 shrink-0 pr-2 text-right text-muted-foreground select-none hover:text-foreground hover:underline"
+        aria-label={`Link auf Zeile ${num} (${side})`}
+        title="Link auf diese Zeile"
+      >
+        {num}
+      </button>
+      <span className="w-4 shrink-0 text-muted-foreground select-none" aria-hidden>
+        {row.type === 'add' ? '+' : row.type === 'delete' ? '−' : ''}
+      </span>
+      <span className="whitespace-pre">
+        <Code text={row.text} tokens={tokens} />
+      </span>
+      {toolbar}
+    </div>
   )
 })
 
@@ -198,7 +268,7 @@ export function DiffList({
       const r = rows[i]!
       return r.kind === 'header' ? H.header : r.kind === 'spacer' ? H.spacer : r.kind === 'pending' || r.kind === 'note' ? H.note : r.row.kind === 'hunk' ? H.hunk : H.line
     },
-    overscan: 30,
+    overscan: 12,
   })
 
   // Datei-Navigation: zum Kopf der gewählten Datei springen.
@@ -235,6 +305,9 @@ export function DiffList({
 
   const [copied, setCopied] = useState<string | undefined>()
   const active = anchor ? parseAnchor(anchor.line) : undefined
+  const onAnchorRef = useRef(onAnchor)
+  onAnchorRef.current = onAnchor
+  const anchorCb = useCallback((file: string, line: string) => onAnchorRef.current(file, line), [])
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto px-3 pt-3" data-testid="diff-list">
@@ -272,63 +345,46 @@ export function DiffList({
           const t = tokensOf(rowsByFile.get(r.file.path))
           const lineTokens = dr.type === 'delete' ? t?.old[r.oldIdx] : t?.new[r.newIdx]
           return (
-            <div
+            <LineRow
               key={v.key}
-              style={style}
-              data-line={dr.anchor}
-              data-anchored={isAnchored ? 'true' : undefined}
-              className={cn(
-                box,
-                'flex leading-5',
-                dr.type === 'add' && 'bg-ok-soft',
-                dr.type === 'delete' && 'bg-deny-soft',
-                isAnchored && 'ring-1 ring-foreground/50 ring-inset',
-                r.last && 'rounded-b-md border-b',
-              )}
-            >
-              <button
-                onClick={() => onAnchor(r.file.path, dr.anchor)}
-                className="w-10 shrink-0 pr-2 text-right text-muted-foreground select-none hover:text-foreground hover:underline"
-                aria-label={`Link auf Zeile ${num} (${side})`}
-                title="Link auf diese Zeile"
-              >
-                {num}
-              </button>
-              <span className="w-4 shrink-0 text-muted-foreground select-none" aria-hidden>
-                {dr.type === 'add' ? '+' : dr.type === 'delete' ? '−' : ''}
-              </span>
-              <span className="whitespace-pre">
-                <Code text={dr.text} tokens={lineTokens} />
-              </span>
-              {isAnchored && active && (
-                <span className="sticky right-2 ml-auto flex items-center gap-0.5 self-center rounded-md border border-border bg-popover p-0.5 font-sans shadow-sm">
-                  <span className="px-1.5 font-mono text-[10px] text-muted-foreground">
-                    Z. {num} {side}
+              file={r.file.path}
+              row={dr}
+              last={r.last}
+              start={v.start}
+              size={v.size}
+              tokens={lineTokens}
+              onAnchor={anchorCb}
+              toolbar={
+                isAnchored && active ? (
+                  <span className="sticky right-2 ml-auto flex items-center gap-0.5 self-center rounded-md border border-border bg-popover p-0.5 font-sans shadow-sm">
+                    <span className="px-1.5 font-mono text-[10px] text-muted-foreground">
+                      Z. {num} {side}
+                    </span>
+                    <Btn
+                      size="sm"
+                      variant="ghost"
+                      title="Link auf diese Zeile kopieren"
+                      aria-label="Link auf diese Zeile kopieren"
+                      onClick={() =>
+                        void copyLink(r.file.path, dr.anchor).then(() => {
+                          setCopied(dr.anchor)
+                          setTimeout(() => setCopied(undefined), 1500)
+                        })
+                      }
+                    >
+                      {copied === dr.anchor ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
+                    </Btn>
+                    <Btn
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => attach(sessionId, { path: r.file.path, from: num ?? 0, to: num ?? 0, note: `${side}, ${SCOPE_NOTE[scope]}`, snippet: dr.text })}
+                    >
+                      <Paperclip className="size-3.5" /> An Agent anhängen
+                    </Btn>
                   </span>
-                  <Btn
-                    size="sm"
-                    variant="ghost"
-                    title="Link auf diese Zeile kopieren"
-                    aria-label="Link auf diese Zeile kopieren"
-                    onClick={() =>
-                      void copyLink(r.file.path, dr.anchor).then(() => {
-                        setCopied(dr.anchor)
-                        setTimeout(() => setCopied(undefined), 1500)
-                      })
-                    }
-                  >
-                    {copied === dr.anchor ? <Check className="size-3.5" /> : <Link2 className="size-3.5" />}
-                  </Btn>
-                  <Btn
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => attach(sessionId, { path: r.file.path, from: num ?? 0, to: num ?? 0, note: `${side}, ${SCOPE_NOTE[scope]}`, snippet: dr.text })}
-                  >
-                    <Paperclip className="size-3.5" /> An Agent anhängen
-                  </Btn>
-                </span>
-              )}
-            </div>
+                ) : undefined
+              }
+            />
           )
         })}
       </div>
