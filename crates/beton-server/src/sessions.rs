@@ -81,12 +81,31 @@ pub struct SessionsConfig {
     pub worktrees_root: PathBuf,
     /// Schatten-Repositories der Turn-Snapshots, z. B. `~/.beton/snapshots` (SES-018).
     pub snapshots_root: PathBuf,
+    /// Fork-Pläne für den Runner-Start, z. B. `~/.beton/forks` (HAR-018, HAR-019).
+    pub forks_root: PathBuf,
+    /// Leere Workspaces von Forks mit `workspace: fresh`, z. B. `~/.beton/workspaces` (SES-006).
+    pub fresh_root: PathBuf,
+    /// Umgebung, in der der Import die Verzeichnisse der Vendor-CLIs findet (`HOME`,
+    /// `CLAUDE_CONFIG_DIR`, `CODEX_HOME`; SES-008). Enthält nur Pfade.
+    pub vendor_env: beton_harness::HostEnv,
+    /// Importe laufen nacheinander, damit der Dedup-Schlüssel nicht doppelt vergeben wird.
+    pub import_lock: Arc<Mutex<()>>,
 }
 
 impl SessionsConfig {
     /// Schatten-Repository einer Session.
     pub fn snapshots_dir(&self, session: SessionId) -> PathBuf {
         self.snapshots_root.join(format!("{session}.git"))
+    }
+
+    /// Fork-Plan einer Session.
+    pub fn fork_plan(&self, session: SessionId) -> PathBuf {
+        self.forks_root.join(format!("{session}.json"))
+    }
+
+    /// Leerer Workspace eines Forks mit `workspace: fresh`.
+    pub fn fresh_dir(&self, session: SessionId) -> PathBuf {
+        self.fresh_root.join(session.to_string())
     }
 }
 
@@ -153,7 +172,7 @@ pub struct DeleteOptions {
 
 /// Fehler von `beton-git` als Problem; Git-Meldungen können Pfade enthalten und gehen nur ins
 /// Log (PROTO-011).
-fn git_problem(e: &beton_git::GitError) -> Problem {
+pub(crate) fn git_problem(e: &beton_git::GitError) -> Problem {
     match e {
         beton_git::GitError::NotInstalled => {
             Problem::new(ProblemCode::Unavailable).detail("git ist nicht installiert")
@@ -224,11 +243,15 @@ impl<'a> SessionManager<'a> {
         Self { state }
     }
 
-    fn org(&self) -> OrgId {
+    pub(crate) fn org(&self) -> OrgId {
         self.state.local.org
     }
 
-    fn cfg(&self) -> &SessionsConfig {
+    pub(crate) fn state(&self) -> &AppState {
+        self.state
+    }
+
+    pub(crate) fn cfg(&self) -> &SessionsConfig {
         &self.state.runtime.sessions
     }
 
@@ -313,7 +336,7 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Legt den Worktree einer neuen Session an (SES-015).
-    async fn create_worktree(
+    pub(crate) async fn create_worktree(
         &self,
         id: SessionId,
         req: &CreateSession,
@@ -349,7 +372,7 @@ impl<'a> SessionManager<'a> {
     /// `git.worktree_created` (SES-015 AC4) und bei nicht erreichbarem Remote ein Hinweis
     /// (SES-015 AC5). Der Grund des Fetch-Fehlers bleibt draußen: er kann die Remote-URL samt
     /// Zugangsdaten enthalten.
-    async fn log_worktree(
+    pub(crate) async fn log_worktree(
         &self,
         session: SessionId,
         wt: &beton_git::worktree::Created,
@@ -429,7 +452,10 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Letzte native Session-Referenz des Harness (für Resume, SES-003).
-    async fn last_native_ref(&self, session: SessionId) -> Result<Option<String>, Problem> {
+    pub(crate) async fn last_native_ref(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<String>, Problem> {
         let mut after = 0;
         let mut found = None;
         loop {
@@ -452,7 +478,11 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Startet einen Runner für die Session.
-    async fn launch(&self, session: &SessionRecord, resume: Option<String>) -> Result<(), Problem> {
+    pub(crate) async fn launch(
+        &self,
+        session: &SessionRecord,
+        resume: Option<String>,
+    ) -> Result<(), Problem> {
         let cfg = self.cfg();
         let socket = cfg.tunnel_socket.clone().ok_or_else(|| {
             Problem::new(ProblemCode::Unavailable).detail("Kein Tunnel-Socket konfiguriert")
@@ -461,6 +491,7 @@ impl<'a> SessionManager<'a> {
         let workspace = self.workspace_root(session).await?;
         let project = beton_harness::registry::HarnessesConfig::load_project(&workspace)
             .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e))?;
+        let fork = self.fork_boot(session, resume.as_deref()).await?;
         let token = self
             .state
             .runtime
@@ -506,6 +537,7 @@ impl<'a> SessionManager<'a> {
                         providers: cfg.providers.clone(),
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
+                    fork,
                 },
             )
             .await
@@ -1058,6 +1090,13 @@ impl<'a> SessionManager<'a> {
             .delete_session(self.org(), session, by, DeleteAuthority::Owner)
             .await?;
         self.state.runtime.queues.forget(session);
+        let _ = std::fs::remove_file(self.cfg().fork_plan(session));
+        let fresh = self.cfg().fresh_dir(session);
+        if fresh.is_dir()
+            && let Err(e) = std::fs::remove_dir_all(&fresh)
+        {
+            tracing::warn!(session_id = %session, "Fork-Workspace nicht gelöscht: {e}");
+        }
         let snapshots = self.cfg().snapshots_dir(session);
         if snapshots.is_dir()
             && let Err(e) = std::fs::remove_dir_all(&snapshots)
@@ -1069,7 +1108,7 @@ impl<'a> SessionManager<'a> {
 }
 
 /// Entfernt einen frisch angelegten Worktree wieder (Session konnte nicht angelegt werden).
-async fn discard_worktree(wt: beton_git::worktree::Created) {
+pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
     let _ = tokio::task::spawn_blocking(move || {
         beton_git::worktree::remove(
             &beton_git::worktree::WorktreeRef {

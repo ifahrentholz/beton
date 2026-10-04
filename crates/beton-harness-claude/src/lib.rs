@@ -5,7 +5,9 @@
 //! selbst: beton liest, speichert oder injiziert keine Anthropic-Tokens (ADR-0005) und
 //! entfernt bei `auth: subscription` API-Key-Variablen aus der Umgebung.
 
+pub mod import;
 pub mod mapping;
+pub mod rebuild;
 pub mod record;
 
 use std::sync::Arc;
@@ -105,11 +107,14 @@ pub fn capabilities() -> Capabilities {
         instructions_delivery: InstructionsDelivery::AppendSystemPrompt,
         mcp_injection: true,
         images: true,
-        transcript_import: false,
+        // Import vorhandener Chats aus `~/.claude/projects` (HAR-023).
+        transcript_import: true,
         // Aliase der CLI (`--model`); die genaue Liste hängt am Konto.
         models: vec!["sonnet".into(), "opus".into(), "haiku".into()],
         models_stale: false,
         efforts: Vec::new(),
+        // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
+        context_window: Some(200_000),
     }
 }
 
@@ -138,6 +143,10 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
     }
     if let Some(resume) = &spec.resume {
         args.extend(["--resume".into(), resume.clone()]);
+        if spec.fork_session {
+            // Native History übernehmen, die Quelle aber nicht fortschreiben (HAR-019).
+            args.push("--fork-session".into());
+        }
     }
     if isolated {
         // `--safe-mode` schaltet auch per `--mcp-config` und `--plugin-dir` übergebene Server
@@ -230,6 +239,22 @@ impl HarnessAdapter for ClaudeAdapter {
             Ok(out) => parse_auth_status(&out.stdout),
             Err(_) => AuthStatus::Unknown,
         }
+    }
+
+    async fn rebuild_history(
+        &self,
+        request: &beton_harness::RebuildRequest,
+        env: &HostEnv,
+    ) -> Result<String, HarnessError> {
+        let request = request.clone();
+        let env = env.clone();
+        tokio::task::spawn_blocking(move || rebuild::rebuild(&request, &env))
+            .await
+            .map_err(|e| HarnessError::Protocol(e.to_string()))?
+    }
+
+    fn transcript_importer(&self) -> Option<Arc<dyn beton_harness::import::TranscriptImporter>> {
+        Some(Arc::new(import::ClaudeImporter::default()))
     }
 
     async fn start(

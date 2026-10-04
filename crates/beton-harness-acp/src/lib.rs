@@ -233,6 +233,7 @@ impl HarnessAdapter for AcpAdapter {
             models: self.config().models.clone(),
             models_stale: false,
             efforts: Vec::new(),
+            context_window: None,
         }
     }
 

@@ -108,6 +108,10 @@ impl Runtime {
                 providers: Default::default(),
                 worktrees_root: std::env::temp_dir().join("beton-worktrees"),
                 snapshots_root: std::env::temp_dir().join("beton-snapshots"),
+                forks_root: std::env::temp_dir().join("beton-forks"),
+                fresh_root: std::env::temp_dir().join("beton-workspaces"),
+                vendor_env: beton_harness::HostEnv::from_process(),
+                import_lock: Arc::default(),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -129,6 +133,8 @@ impl Runtime {
         r.sessions.tunnel_socket.clone_from(&config.tunnel_socket);
         r.sessions.worktrees_root = config.data_dir.join("worktrees");
         r.sessions.snapshots_root = config.data_dir.join("snapshots");
+        r.sessions.forks_root = config.data_dir.join("forks");
+        r.sessions.fresh_root = config.data_dir.join("workspaces");
         r
     }
 }
@@ -280,6 +286,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::interrupt_session))
         .routes(routes!(crate::api_sessions::compact_session))
         .routes(routes!(crate::api_sessions::resume_session))
+        .routes(routes!(crate::api_sessions::fork_session))
         .routes(routes!(crate::api_sessions::submit_input))
         .routes(routes!(crate::api_sessions::get_queue))
         .routes(routes!(
@@ -296,6 +303,8 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::resolve_approval))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(routes!(crate::api_sessions::list_tombstones))
+        .routes(routes!(crate::imports::list_candidates))
+        .routes(routes!(crate::imports::import_sessions))
         .routes(routes!(crate::api_workspace::tree))
         .routes(crate::api_workspace::file_routes())
         .routes(routes!(crate::api_workspace::search))

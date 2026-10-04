@@ -10,7 +10,9 @@ mod capabilities;
 pub mod contract;
 pub mod fake;
 pub mod golden;
+pub mod handover;
 mod id;
+pub mod import;
 pub mod jsonrpc;
 pub mod process;
 pub mod registry;
@@ -19,12 +21,12 @@ pub mod scenario;
 pub use crate::adapter::{
     AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateRequest,
     HarnessAdapter, HarnessError, HarnessSession, HostEnv, McpInjection, McpLaunch, Mode,
-    NormalizedEvent, PermissionMode, ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport,
-    UserInput,
+    NormalizedEvent, PermissionMode, ProbeReport, RebuildRequest, SessionSpec, Shutdown,
+    SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,
-    EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ResumeSupport, Subagents, SwitchSupport,
-    ToolCallGate, UsageReporting, map_effort,
+    DEFAULT_CONTEXT_WINDOW, EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ResumeSupport,
+    Subagents, SwitchSupport, ToolCallGate, UsageReporting, map_effort,
 };
 pub use crate::id::{HarnessId, InvalidHarnessId};

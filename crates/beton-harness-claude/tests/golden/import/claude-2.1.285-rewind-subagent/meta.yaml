@@ -1,0 +1,4 @@
+cli_version: 2.1.285
+session_id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+scenario: Rewind (verworfener Zweig), Task-Sub-Agent, Edit, Snapshot und unbekannter Eintrag
+recorded_with: synthetisch nach Spec, rebuild.rs und Golden-Transcripts (gegen die echte CLI zu prüfen)

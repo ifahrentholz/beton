@@ -192,6 +192,7 @@ fn map_assistant(v: &Value) -> Vec<EventPayload> {
                     tool,
                     mcp_server,
                     args: block["input"].clone(),
+                    parent_call_id: None,
                 }));
             }
             _ => out.push(unmapped(block)),

@@ -66,6 +66,7 @@ pub fn default_capabilities() -> Capabilities {
         models: vec!["fake-small".into(), "fake-large".into()],
         models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
+        context_window: Some(crate::capabilities::DEFAULT_CONTEXT_WINDOW),
     }
 }
 
@@ -269,6 +270,7 @@ impl HarnessSession for FakeSession {
             last_decision: None,
             steer: steer_rx,
             workdir: self.workdir.clone(),
+            input: input.text,
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -392,6 +394,8 @@ struct Player {
     last_decision: Option<bool>,
     steer: mpsc::UnboundedReceiver<String>,
     workdir: std::path::PathBuf,
+    /// Eingabe dieses Turns (für `echo_input`).
+    input: String,
 }
 
 enum Outcome {
@@ -514,6 +518,7 @@ impl Player {
                 mcp_server: None,
                 args: call.args.clone(),
                 source: ToolSource::Harness,
+                parent_call_id: None,
             }))
             .await;
             let allowed = if step.gate {
@@ -590,6 +595,7 @@ impl Player {
                 mcp_server: Some(call.server),
                 args: call.args,
                 source: ToolSource::Harness,
+                parent_call_id: None,
             }))
             .await;
             self.last_call = Some(call_id);
@@ -668,6 +674,13 @@ impl Player {
                 .await;
                 return Outcome::Stop;
             }
+        } else if step.echo_input {
+            self.text = self.input.clone();
+            self.flush_message().await;
+        } else if step.echo_history {
+            // Der Fake-Harness hat keinen nativen Verlauf (Capability `fork_history: preamble`).
+            self.text = String::from("(kein Verlauf)");
+            self.flush_message().await;
         } else if let Some(write) = step.write_file {
             let workdir = self.workdir.clone();
             let _ = tokio::task::spawn_blocking(move || write.apply(&workdir)).await;

@@ -70,6 +70,8 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
         )
     } else if let Some(r) = &args.resume {
         Some(sessionref::resolve(&client, r).await?)
+    } else if let Some(f) = &args.fork {
+        Some(fork(ctx, &client, &args, f).await?)
     } else {
         None
     };
@@ -164,6 +166,73 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
         },
     )
     .await
+}
+
+/// `--fork ID[@SEQ]` (SES-006, SES-007): Fork über die API anlegen; liefert die neue ID.
+async fn fork(ctx: &Ctx, client: &Client, args: &RunArgs, reference: &str) -> CliResult<String> {
+    let (source, at_seq) = match reference.rsplit_once('@') {
+        Some((id, seq)) => (
+            id,
+            Some(seq.parse::<u64>().map_err(|_| {
+                CliError::usage(format!("`{seq}` ist keine Ereignis-Nummer (ID@SEQ)"))
+            })?),
+        ),
+        None => (reference, None),
+    };
+    let source = sessionref::resolve(client, source).await?;
+    let harness = match (&args.harness, &args.target) {
+        (Some(h), Some(t)) if h != t => {
+            return Err(CliError::usage(format!(
+                "--harness {h} widerspricht TARGET {t}"
+            )));
+        }
+        (Some(h), _) | (None, Some(h)) => Some(h.clone()),
+        (None, None) => None,
+    };
+    let mut body = json!({});
+    if let Some(seq) = at_seq {
+        body["at_seq"] = json!(seq);
+    }
+    if let Some(h) = &harness {
+        body["harness"] = Value::String(h.clone());
+    }
+    if let Some(m) = &args.model {
+        body["model"] = Value::String(m.clone());
+    }
+    if let Some(t) = &args.title {
+        body["title"] = Value::String(t.clone());
+    }
+    if let Some(w) = args.workspace {
+        body["workspace"] = Value::String(w.as_str().into());
+    }
+    if let Some(scenario) = &args.scenario {
+        let path = scenario
+            .canonicalize()
+            .with_context(|| format!("Szenario {}", scenario.display()))?;
+        body["harness_opts"] = json!({ "scenario": path.display().to_string() });
+    }
+    let forked = client.fork_session(&source, &body).await?;
+    let effective = forked["effective_seq"].as_u64().unwrap_or_default();
+    if let Some(at) = at_seq.filter(|at| *at != effective) {
+        ctx.note(format!(
+            "Ereignis {at} liegt mitten in einem Turn, der Fork beginnt am Ende des \
+             vorherigen Turns ({effective})"
+        ));
+    }
+    let session = &forked["session"];
+    let id = session["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Antwort ohne Session-ID"))?
+        .to_owned();
+    let mut line = format!(
+        "Fork {id} von {source}@{effective} · {}",
+        beton_harness::handover::harness_label(session["harness"].as_str().unwrap_or_default())
+    );
+    if let Some(branch) = session["worktree"]["branch"].as_str() {
+        line.push_str(&format!(" · Worktree {branch}"));
+    }
+    ctx.note(line);
+    Ok(id)
 }
 
 pub async fn resume(ctx: &Ctx, args: ResumeArgs) -> CliResult {

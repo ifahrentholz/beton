@@ -511,6 +511,8 @@ async fn run_tools(
                     mcp_server,
                     args: input.clone(),
                     source,
+                    // Der Direkt-API-Harness hat keine Vendor-Sub-Agents.
+                    parent_call_id: None,
                 }),
                 Some(turn),
             )

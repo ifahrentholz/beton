@@ -43,6 +43,20 @@ describe('REST-Client', () => {
     ])
   })
 
+  it('SES-006 AC1: forkt eine Session über die API', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      return [201, { session: { id: 'ses_2', harness: 'codex' }, effective_seq: 120, workspace: 'shared' }]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    const forked = await client.session('ses_1').fork({ at_seq: 122, harness: 'codex', workspace: 'shared' })
+    expect(forked.session.id).toBe('ses_2')
+    expect(forked.effectiveSeq).toBe(120)
+    expect(forked.summary.harness).toBe('codex')
+    expect(seen).toEqual(['POST /v1/sessions/ses_1/fork {"at_seq":122,"harness":"codex","workspace":"shared"}'])
+  })
+
   it('meldet Fehler als RFC-9457-Problem', async () => {
     const url = await serve(() => [404, { status: 404, code: 'not_found', title: 'Nicht gefunden' }])
     const client = new BetonClient({ baseUrl: url })

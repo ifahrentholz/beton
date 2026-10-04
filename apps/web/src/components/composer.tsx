@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { Capabilities } from '@beton/sdk'
+import type { Capabilities, HarnessInfo } from '@beton/sdk'
 import { ArrowUp, Square } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { HarnessMenu } from './fork'
 import { HarnessBadge } from './harness'
 
 const DRAFT_PREFIX = 'beton.draft.'
@@ -80,6 +81,8 @@ export function Composer({
   onSend,
   onInterrupt,
   onModel,
+  continueWith,
+  onContinue,
 }: {
   sessionId: string
   harness: string
@@ -91,6 +94,10 @@ export function Composer({
   onSend: (text: string) => void
   onInterrupt: () => void
   onModel?: ((model: string) => void) | undefined
+  /** Harnesses für „Weiter mit …“ im Harness-Picker (SES-007 AC5). */
+  continueWith?: HarnessInfo[] | undefined
+  /** Fork ab dem letzten `seq` auf einen anderen Harness. */
+  onContinue?: ((harness: string) => void) | undefined
 }) {
   const [text, setText] = useState(() => loadDraft(sessionId))
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -130,9 +137,13 @@ export function Composer({
           className="block min-h-[52px] w-full resize-none bg-transparent px-3 pt-2.5 text-[14px] outline-none placeholder:text-muted-foreground"
         />
         <div className="flex flex-wrap items-center gap-0.5 px-1.5 pb-1.5">
-          <span className="px-1.5">
-            <HarnessBadge harness={harness} />
-          </span>
+          {onContinue ? (
+            <HarnessMenu harness={harness} targets={continueWith ?? []} onContinue={onContinue} />
+          ) : (
+            <span className="px-1.5">
+              <HarnessBadge harness={harness} />
+            </span>
+          )}
           {models.length > 0 && (
             <Picker
               label="Modell"

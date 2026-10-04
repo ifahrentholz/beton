@@ -505,6 +505,35 @@ fn identity(git: Git) -> Git {
     }
 }
 
+/// Stand eines Arbeitsverzeichnisses als Commit (WIP-Snapshot, SES-006): `HEAD`, bei
+/// uncommitteten oder neuen Dateien ein zusätzlicher Commit darauf. Index, Branch und Dateien
+/// bleiben unverändert (eigener temporärer Index); ignorierte Dateien fehlen.
+pub fn wip_snapshot(dir: &Path) -> Result<String, GitError> {
+    let git = Git::new(dir);
+    let head = git.text(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
+    if dirty_files(dir)?.is_empty() {
+        return Ok(head);
+    }
+    let git_dir = PathBuf::from(git.text(&["rev-parse", "--absolute-git-dir"])?);
+    let index = git_dir.join(format!("beton-wip-{}.index", std::process::id()));
+    let ig = identity(Git::new(dir)).with_index(&index);
+    let result = (|| {
+        ig.ok(&["read-tree", "HEAD"])?;
+        ig.ok(&["add", "-A"])?;
+        let tree = ig.text(&["write-tree"])?;
+        ig.text(&[
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "WIP-Snapshot für einen Fork (beton)",
+        ])
+    })();
+    let _ = std::fs::remove_file(&index);
+    result
+}
+
 /// `git worktree prune` im Repository.
 pub fn prune(repo: &Path) -> Result<(), GitError> {
     Git::new(repo).ok(&["worktree", "prune"]).map(|_| ())

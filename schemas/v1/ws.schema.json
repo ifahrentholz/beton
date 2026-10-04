@@ -4612,6 +4612,13 @@
             "null"
           ]
         },
+        "parent_call_id": {
+          "description": "Tool-Call eines Vendor-Sub-Agents: der auslösende Tool-Call (z. B. Claude `Task`), unter\ndem dieser verschachtelt ist (HAR-023).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "$ref": "#/$defs/ToolSource"
         },

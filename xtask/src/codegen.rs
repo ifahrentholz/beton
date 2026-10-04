@@ -105,10 +105,12 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     {
         use beton_server::api::{Info, LoginCode, SessionPage, SessionSummary};
         use beton_server::api_sessions::{
-            ApprovalPage, CreateSessionRequest, EventPage, InputAccepted, InputRequest, PinRequest,
-            QueueEditRequest, QueueMoveRequest, QueueView, ReadStateRequest,
-            ResolveApprovalRequest, SessionSettings,
+            ApprovalPage, CreateSessionRequest, EventPage, ForkRequest, ForkResponse,
+            InputAccepted, InputRequest, PinRequest, QueueEditRequest, QueueMoveRequest, QueueView,
+            ReadStateRequest, ResolveApprovalRequest, SessionSettings,
         };
+        ForkRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ForkResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         QueueView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         QueueEditRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         QueueMoveRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
@@ -137,6 +139,11 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         SearchPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ChangesPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         FileDiff::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Import fremder Chats (SES-008).
+        use beton_server::imports::{ImportCandidatePage, ImportRequest, ImportResponse};
+        ImportCandidatePage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ImportRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ImportResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {

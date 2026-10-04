@@ -83,16 +83,23 @@ pub struct HostEnv {
 
 impl HostEnv {
     /// Liest Umgebung und `PATH` des aktuellen Prozesses; Konfiguration bleibt leer.
+    /// Übernommen werden `BETON_*` und die Variablen, mit denen Vendor-CLIs ihr
+    /// Konfigurationsverzeichnis finden ([`VENDOR_DIR_VARS`]).
     pub fn from_process() -> Self {
         Self {
             vars: std::env::vars()
-                .filter(|(k, _)| k.starts_with("BETON_"))
+                .filter(|(k, _)| k.starts_with("BETON_") || VENDOR_DIR_VARS.contains(&k.as_str()))
                 .collect(),
             path: std::env::var_os("PATH"),
             ..Self::default()
         }
     }
 }
+
+/// Variablen, über die Vendor-CLIs ihr Konfigurationsverzeichnis finden; Adapter brauchen sie,
+/// um z. B. eine Session-Datei für den History-Rebuild abzulegen (HAR-019). Sie enthalten nur
+/// Pfade, keine Zugangsdaten.
+pub const VENDOR_DIR_VARS: [&str; 3] = ["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
 
 /// Was eine neue Harness-Session braucht.
 #[derive(Debug, Clone, Default)]
@@ -102,6 +109,9 @@ pub struct SessionSpec {
     pub mode: Option<Mode>,
     /// Native Session-Referenz zum Fortsetzen (z. B. Claude-Session-UUID).
     pub resume: Option<String>,
+    /// Mit `resume`: die native Session nicht fortschreiben, sondern als neue Session
+    /// abzweigen (Fork mit nativer History, HAR-019; Claude `--fork-session`).
+    pub fork_session: bool,
     /// Nur Fake-Harness: Szenario-Datei (HAR-026).
     pub scenario: Option<PathBuf>,
     /// MCP-Server und Skills, die der Harness bekommt (HAR-009, AGT-008).
@@ -141,6 +151,17 @@ impl McpInjection {
     pub fn names(&self) -> Vec<String> {
         self.servers.iter().map(|s| s.name.clone()).collect()
     }
+}
+
+/// Eingabe für [`HarnessAdapter::rebuild_history`]: der Verlauf bis zum Fork-Punkt (HAR-019).
+#[derive(Debug, Clone, Default)]
+pub struct RebuildRequest {
+    /// Arbeitsverzeichnis der neuen Session (bestimmt z. B. das Claude-Projektverzeichnis).
+    pub workdir: PathBuf,
+    /// Inhalts-Events bis einschließlich `at_seq`, in Log-Reihenfolge.
+    pub history: Vec<crate::handover::HistoryEvent>,
+    /// Modell der neuen Session, falls bekannt.
+    pub model: Option<String>,
 }
 
 /// Eingabe eines Nutzers für einen Turn.
@@ -340,6 +361,23 @@ pub trait HarnessAdapter: Send + Sync + 'static {
         spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError>;
+    /// Rekonstruiert eine native Vendor-Session aus dem Event-Log (HAR-019, Capability
+    /// `fork_history: rebuild`) und liefert ihre Referenz für [`SessionSpec::resume`].
+    /// Ohne Unterstützung `capability_unsupported`; der Aufrufer fällt dann auf die Präambel
+    /// zurück (HAR-018).
+    async fn rebuild_history(
+        &self,
+        request: &RebuildRequest,
+        env: &HostEnv,
+    ) -> Result<String, HarnessError> {
+        let _ = (request, env);
+        Err(crate::capabilities::CapabilityUnsupported(crate::capabilities::Action::Fork).into())
+    }
+    /// Import vorhandener Chats der Vendor-CLI (HAR-023, HAR-024, Capability
+    /// `transcript_import`); ohne Unterstützung `None`.
+    fn transcript_importer(&self) -> Option<Arc<dyn crate::import::TranscriptImporter>> {
+        None
+    }
 }
 
 /// Eine laufende Harness-Session. Genau eine pro beton-Session.

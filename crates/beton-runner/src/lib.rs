@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+pub mod fork;
 pub mod mcp;
 pub mod state;
 pub mod workspace;
@@ -57,6 +58,10 @@ pub mod env {
     pub const AGENT_REF: &str = "BETON_AGENT_REF";
     /// Schatten-Repository für Turn-Snapshots und `fs.changed` (SES-017, SES-018).
     pub const SNAPSHOTS: &str = "BETON_SNAPSHOTS";
+    /// Fork-Plan als JSON-Datei (HAR-018, HAR-019).
+    pub const FORK_PLAN: &str = "BETON_FORK_PLAN";
+    /// `1`: Das Ergebnis des Fork-Plans steht schon im Log.
+    pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -83,6 +88,10 @@ pub struct RunnerBoot {
     /// API-Keys für `api_key_env` (HAR-011): kommen als zweite stdin-Zeile vom Daemon, nie
     /// über Env oder argv; `Debug` zeigt nur die Namen.
     pub credentials: beton_harness_direct::secret::KeyMap,
+    /// Fork-Plan (HAR-018, HAR-019).
+    pub fork: Option<PathBuf>,
+    /// Das Ergebnis des Fork-Plans steht schon im Log.
+    pub fork_logged: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -144,6 +153,10 @@ impl RunnerBoot {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             credentials,
+            fork: std::env::var_os(env::FORK_PLAN)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            fork_logged: std::env::var(env::FORK_LOGGED).is_ok_and(|v| v == "1"),
         })
     }
 
@@ -516,6 +529,33 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
+    let forked = match &boot.fork {
+        Some(path) => match fork::load(path) {
+            Ok(plan) => Some(
+                fork::prepare(
+                    &plan,
+                    boot.fork_logged,
+                    boot.session_id,
+                    &boot.harness,
+                    registry.get(&boot.harness).map(|a| a.as_ref()),
+                    caps.as_ref(),
+                    &ctx.env,
+                    &boot.workdir,
+                    boot.model.clone(),
+                )
+                .await,
+            ),
+            Err(e) => {
+                let e = beton_harness::HarnessError::StartRefused(e);
+                report_start_failure(&boot, &e).await;
+                return Err(e.into());
+            }
+        },
+        None => None,
+    };
+    let forked = forked.unwrap_or_default();
+    let mut handover = forked.handover;
     let session = registry
         .start(
             &boot.harness,
@@ -523,7 +563,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 workdir: boot.workdir.clone(),
                 model: boot.model.clone(),
                 scenario: boot.scenario.clone(),
-                resume: boot.resume.clone(),
+                resume: forked.resume.or_else(|| boot.resume.clone()),
+                fork_session: forked.fork_session,
                 mcp: setup.injection.clone(),
                 max_turns: setup.max_turns,
                 ..SessionSpec::default()
@@ -563,6 +604,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             }),
         ),
     );
+    for (i, payload) in forked.first.into_iter().enumerate() {
+        pending_status.insert(i, system_event(&boot, payload));
+    }
+    for payload in forked.notices {
+        pending_status.push(system_event(&boot, payload));
+    }
     if boot.resume.is_some() {
         pending_status.insert(
             1,
@@ -806,7 +853,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             {
                                 pending_before = workspace::poll(t).await.map(|(_, tree)| tree);
                             }
-                            let reply = deliver(&mut *session, &gate, &name, args, turn_running).await;
+                            let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover).await;
                             let msg = match reply {
                                 Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
                                 Err(problem) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(problem) },
@@ -1095,15 +1142,21 @@ async fn deliver(
     name: &str,
     args: Value,
     turn_running: bool,
+    handover: &mut Option<String>,
 ) -> Result<Value, Value> {
     let problem = |code: &str, detail: String| json!({"code": code, "detail": detail});
     match name {
         "input.submit" => {
-            let text = args["text"].as_str().unwrap_or_default().to_owned();
-            session
-                .send(UserInput { text })
-                .await
-                .map(|turn| json!({"turn_id": turn}))
+            let mut text = args["text"].as_str().unwrap_or_default().to_owned();
+            // Der erste Turn nach einem Fork per Präambel bekommt die Kurzfassung (HAR-018).
+            if let Some(brief) = handover.as_deref() {
+                text = beton_harness::handover::Preamble::first_message(brief, &text);
+            }
+            let sent = session.send(UserInput { text }).await;
+            if sent.is_ok() {
+                *handover = None;
+            }
+            sent.map(|turn| json!({"turn_id": turn}))
                 .map_err(|e| problem(e.code(), e.to_string()))
         }
         // SES-004: Eingabe in den laufenden Turn; ohne Turn entscheidet der Server neu.

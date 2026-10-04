@@ -616,6 +616,7 @@ async fn delete_tree(
         crate::listing::purge_docs(conn, org, &id).await?;
         for sql in [
             "DELETE FROM session_user_state WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM session_imports WHERE org_id = ? AND session_id = ?",
             "DELETE FROM event_raw WHERE org_id = ? AND session_id = ?",
             "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",

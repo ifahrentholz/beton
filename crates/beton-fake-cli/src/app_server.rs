@@ -234,7 +234,10 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                         message: format!("erwartet `{expected}`, erhalten `{text}`"),
                         info: "badRequest",
                     },
-                    _ => self.steps(&t.emit, &mut state)?,
+                    _ => self.steps(
+                        &beton_harness::scenario::resolve_echo(&t.emit, &text, &[]),
+                        &mut state,
+                    )?,
                 }
             }
         };

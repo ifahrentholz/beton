@@ -32,4 +32,9 @@ models_stale?: boolean,
 /**
  * Wählbare Effort-Stufen; leer, wenn der Harness keine kennt.
  */
-efforts?: Array<string>, };
+efforts?: Array<string>, 
+/**
+ * Kontextfenster des Standardmodells in Tokens; bestimmt das Budget des
+ * Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].
+ */
+context_window?: number, };

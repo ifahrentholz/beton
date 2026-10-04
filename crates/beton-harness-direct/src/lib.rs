@@ -281,6 +281,14 @@ impl HarnessAdapter for DirectAdapter {
             models,
             models_stale,
             efforts: Vec::new(),
+            // Kleinstes konfiguriertes Fenster: das Handover-Budget (HAR-018) passt dann auf
+            // jedes Modell des Providers; ohne Angabe gilt der Default.
+            context_window: self
+                .provider
+                .models
+                .iter()
+                .filter_map(|m| m.context_window)
+                .min(),
         }
     }
 
