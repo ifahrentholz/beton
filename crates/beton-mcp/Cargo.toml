@@ -1,0 +1,33 @@
+[package]
+name = "beton-mcp"
+description = "MCP-Injektion: Relay-Hub im Runner, eingebauter MCP-Server `beton` mit System-Tools, MCP-Proxy und Skills (HAR-009, AGT-006, AGT-007, AGT-008)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+beton-agents.workspace = true
+beton-core.workspace = true
+beton-harness.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "fs", "io-std"] }
+tracing.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
