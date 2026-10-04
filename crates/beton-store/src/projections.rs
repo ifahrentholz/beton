@@ -110,11 +110,12 @@ pub(crate) async fn apply(
         EventPayload::ApprovalResolved(r) => {
             sqlx::query(
                 "UPDATE approvals SET status = 'resolved', decision = ?, resolved_seq = ? \
-                 WHERE org_id = ? AND id = ?",
+                 WHERE org_id = ? AND session_id = ? AND id = ?",
             )
             .bind(enum_to_str(&r.decision))
             .bind(to_i64(seq)?)
             .bind(&org_s)
+            .bind(&session_s)
             .bind(r.approval_id.to_string())
             .execute(&mut *conn)
             .await?;
@@ -281,7 +282,7 @@ impl Store {
         for sql in [
             "SELECT id, title, status, archived, cost_micro, last_activity_at FROM sessions \
              WHERE org_id = ? ORDER BY id",
-            "SELECT * FROM approvals WHERE org_id = ? ORDER BY id",
+            "SELECT * FROM approvals WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
         ] {
             for row in sqlx::query(sql)

@@ -2,14 +2,14 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 2. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 3. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
     approvals {
         TEXT id PK
         TEXT org_id
-        TEXT session_id FK
+        TEXT session_id PK,FK
         INTEGER requested_seq
         TEXT kind
         TEXT subject

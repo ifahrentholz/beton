@@ -1248,3 +1248,58 @@ async fn data_008_ac3_only_owner_or_org_admin_may_delete_and_it_is_audited() {
     assert_eq!(audit[0].target_id, s.id.to_string());
     assert_eq!(audit[0].details["authority"], "org_admin");
 }
+
+#[tokio::test]
+async fn data_005_same_approval_id_in_two_sessions_does_not_collide() {
+    // Der Fake-Harness vergibt Approval-IDs deterministisch aus dem Szenario (HAR-026 AC1);
+    // zwei Sessions mit demselben Szenario haben also dieselbe ID.
+    let t = store().await;
+    let approval = ApprovalId::new();
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        t.store
+            .append(
+                org(&t),
+                s.id,
+                1,
+                1,
+                vec![ev(
+                    s.id,
+                    EventPayload::ApprovalRequested(ApprovalRequested {
+                        approval_id: approval,
+                        kind: ApprovalKind::Tool,
+                        ..ApprovalRequested::default()
+                    }),
+                )],
+            )
+            .await
+            .unwrap();
+        sessions.push(s);
+    }
+    assert_eq!(t.store.open_approvals(org(&t)).await.unwrap().len(), 2);
+    // Die Entscheidung in Session 1 lässt Session 2 offen.
+    t.store
+        .append(
+            org(&t),
+            sessions[0].id,
+            2,
+            1,
+            vec![ev(
+                sessions[0].id,
+                EventPayload::ApprovalResolved(ApprovalResolved {
+                    approval_id: approval,
+                    ..ApprovalResolved::default()
+                }),
+            )],
+        )
+        .await
+        .unwrap();
+    let open = t.store.open_approvals(org(&t)).await.unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].session_id, sessions[1].id);
+}
