@@ -1,15 +1,10 @@
-Sessions verwalten
+Gestoppte Session fortsetzen und anhängen
 
-Usage: beton session [OPTIONS] <COMMAND>
+Usage: beton resume [OPTIONS] <SESSION>
 
-Commands:
-  list       Sessions auflisten
-  show       Details einer Session
-  rename     Session umbenennen
-  archive    Session archivieren (Runner stoppt)
-  unarchive  Archivierte Session wiederherstellen
-  delete     Session endgültig löschen
-  interrupt  Laufenden Turn abbrechen
+Arguments:
+  <SESSION>
+          Session (ID, eindeutiges Präfix oder `last`)
 
 Options:
       --server <URL>

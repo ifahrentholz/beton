@@ -23,6 +23,9 @@ Options:
   -q, --quiet
           Keine Fortschritts- und Hinweismeldungen auf stderr
 
+      --foreground
+          Im Vordergrund laufen statt im Hintergrund
+
   -v, --verbose...
           Mehr Diagnose auf stderr (mehrfach: noch mehr)
 

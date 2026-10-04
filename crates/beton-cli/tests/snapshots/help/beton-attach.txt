@@ -1,17 +1,15 @@
-Sessions verwalten
+An eine laufende Session anhängen (Verlauf, dann live)
 
-Usage: beton session [OPTIONS] <COMMAND>
+Usage: beton attach [OPTIONS] <SESSION>
 
-Commands:
-  list       Sessions auflisten
-  show       Details einer Session
-  rename     Session umbenennen
-  archive    Session archivieren (Runner stoppt)
-  unarchive  Archivierte Session wiederherstellen
-  delete     Session endgültig löschen
-  interrupt  Laufenden Turn abbrechen
+Arguments:
+  <SESSION>
+          Session (ID, eindeutiges Präfix oder `last`)
 
 Options:
+      --read-only
+          Nur zuschauen: keine Eingaben, keine Freigaben
+
       --server <URL>
           Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
           

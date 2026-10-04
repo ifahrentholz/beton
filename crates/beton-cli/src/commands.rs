@@ -85,8 +85,12 @@ pub fn print_json(value: &Value) -> CliResult {
 pub async fn run(cli: Cli) -> CliResult {
     let ctx = Ctx::from_env(cli.global);
     match cli.command {
+        Command::Run(args) => crate::run::run(&ctx, args).await,
+        Command::Resume(args) => crate::run::resume(&ctx, args).await,
+        Command::Attach(args) => crate::run::attach(&ctx, args).await,
         Command::Open(args) => open(&ctx, args).await,
         Command::Session(SessionCommand::List(args)) => session_list(&ctx, args.archived).await,
+        Command::Session(cmd) => session(&ctx, cmd).await,
         Command::Serve(args) => crate::serve::serve(&ctx, args).await,
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
@@ -96,13 +100,24 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Completion(args) => completion(&args),
         Command::Version => version(&ctx),
         Command::Dev(DevCommand::RecordGolden(args)) => record_golden(&ctx, args).await,
-        Command::Runner => match beton_runner::main_from_env().await {
-            code if code == std::process::ExitCode::SUCCESS => Ok(()),
-            _ => Err(CliError::new(
-                Exit::General,
-                anyhow::anyhow!("Runner beendet mit Fehler"),
-            )),
-        },
+        Command::Runner => {
+            let _log = crate::logging::init(crate::logging::LogConfig {
+                stderr_human: false,
+                ..crate::logging::LogConfig::for_component(crate::logging::Component::Runner)
+            })
+            .ok();
+            runner_exit(beton_runner::main_from_env().await)
+        }
+    }
+}
+
+fn runner_exit(code: std::process::ExitCode) -> CliResult {
+    match code {
+        code if code == std::process::ExitCode::SUCCESS => Ok(()),
+        _ => Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!("Runner beendet mit Fehler"),
+        )),
     }
 }
 
@@ -177,6 +192,73 @@ async fn session_list(ctx: &Ctx, include_archived: bool) -> CliResult {
         line(&mut out, [&r[0], &r[1], &r[2], &r[3]]).context("stdout")?;
     }
     Ok(())
+}
+
+async fn session(ctx: &Ctx, cmd: SessionCommand) -> CliResult {
+    let client = ctx.client()?;
+    let reference = match &cmd {
+        SessionCommand::List(_) => return Ok(()),
+        SessionCommand::Show(a)
+        | SessionCommand::Archive(a)
+        | SessionCommand::Unarchive(a)
+        | SessionCommand::Delete(a)
+        | SessionCommand::Interrupt(a) => a.session.clone(),
+        SessionCommand::Rename(a) => a.session.clone(),
+    };
+    let id = crate::sessionref::resolve(&client, &reference).await?;
+    let result = match cmd {
+        SessionCommand::List(_) => return Ok(()),
+        SessionCommand::Show(_) => {
+            let mut session = client.session(&id).await?;
+            if let Some(cwd) = crate::sessionref::cwd_of(&client, &id).await? {
+                session["cwd"] = Value::String(cwd);
+            }
+            session["url"] = Value::String(client.session_url(&id));
+            if ctx.global.json {
+                return print_json(&session);
+            }
+            let mut out = std::io::stdout().lock();
+            for key in [
+                "id",
+                "title",
+                "status",
+                "harness",
+                "cwd",
+                "head_seq",
+                "archived",
+                "created_at",
+                "last_activity_at",
+                "url",
+            ] {
+                let v = &session[key];
+                if !v.is_null() {
+                    writeln!(out, "{key:<17} {}", render(v)).context("stdout")?;
+                }
+            }
+            return Ok(());
+        }
+        SessionCommand::Rename(a) => {
+            client
+                .patch_session(&id, &json!({ "title": a.title }))
+                .await?
+        }
+        SessionCommand::Archive(_) => client.set_archived(&id, true).await?,
+        SessionCommand::Unarchive(_) => client.set_archived(&id, false).await?,
+        SessionCommand::Delete(_) => {
+            client.delete_session(&id).await?;
+            json!({ "id": id, "deleted": true })
+        }
+        SessionCommand::Interrupt(_) => {
+            client.interrupt(&id).await?;
+            json!({ "id": id, "interrupted": true })
+        }
+    };
+    if ctx.global.json {
+        print_json(&result)
+    } else {
+        ctx.note(format!("{id}: erledigt"));
+        Ok(())
+    }
 }
 
 /// URL für `beton open`: Einmal-Link, optional mit Weiterleitung zur Session.

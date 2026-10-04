@@ -4,6 +4,9 @@ beobachten und steuern.
 Usage: beton [OPTIONS] <COMMAND>
 
 Commands:
+  run         Session starten und im Terminal begleiten (mit `-p` nicht-interaktiv)
+  resume      Gestoppte Session fortsetzen und anhängen
+  attach      An eine laufende Session anhängen (Verlauf, dann live)
   open        Web-UI im Browser öffnen (Anmeldung per Einmal-Link)
   session     Sessions verwalten
   serve       Lokalen Server starten (nur Loopback)

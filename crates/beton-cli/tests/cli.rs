@@ -4,174 +4,14 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+mod common;
+
+use std::process::{Command, Stdio};
 
 use beton_core::id::OrgId;
-use beton_sdk::{Client, DaemonInfo};
-use serde_json::{Value, json};
-
-fn beton(home: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_beton"));
-    c.env("BETON_HOME", home)
-        .env("NO_COLOR", "1")
-        .env_remove("BETON_SERVER")
-        .env_remove("BETON_TOKEN")
-        .env_remove("BETON_LOG")
-        .stdin(Stdio::null());
-    for (k, _) in std::env::vars() {
-        if k.starts_with("BETON_CFG_") {
-            c.env_remove(k);
-        }
-    }
-    c
-}
-
-fn run(cmd: &mut Command) -> Output {
-    cmd.output().expect("beton starten")
-}
-
-fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-
-struct Serve {
-    child: Option<Child>,
-    home: tempfile::TempDir,
-    work: tempfile::TempDir,
-    info: DaemonInfo,
-}
-
-impl Serve {
-    fn start() -> Self {
-        Self::start_with(&[])
-    }
-
-    fn start_with(env: &[(&str, &str)]) -> Self {
-        let home = tempfile::tempdir().unwrap();
-        let work = tempfile::tempdir().unwrap();
-        let log = std::fs::File::create(work.path().join("serve.log")).unwrap();
-        let mut cmd = beton(home.path());
-        cmd.args(["serve", "--port", "0", "--dev"])
-            .current_dir(work.path())
-            .stdout(Stdio::null())
-            .stderr(log);
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-        let mut child = cmd.spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let info = loop {
-            if let Some(info) = DaemonInfo::read(home.path()) {
-                break info;
-            }
-            if let Some(status) = child.try_wait().unwrap() {
-                panic!(
-                    "serve endete mit {status}: {}",
-                    std::fs::read_to_string(work.path().join("serve.log")).unwrap_or_default()
-                );
-            }
-            assert!(Instant::now() < deadline, "daemon.json erscheint nicht");
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        Self {
-            child: Some(child),
-            home,
-            work,
-            info,
-        }
-    }
-
-    fn home(&self) -> &Path {
-        self.home.path()
-    }
-
-    fn client(&self) -> Client {
-        Client::local(self.home()).unwrap()
-    }
-
-    fn scenario(&self, yaml: &str) -> PathBuf {
-        let p = self.work.path().join(format!("{}.yaml", ulid_like()));
-        std::fs::write(&p, yaml).unwrap();
-        p
-    }
-
-    async fn create_idle_session(&self) -> String {
-        let scenario = self.scenario("turns: []");
-        let created = self
-            .client()
-            .create_session(&json!({
-                "target": "fake",
-                "cwd": self.work.path(),
-                "harness_opts": {"scenario": scenario},
-            }))
-            .await
-            .unwrap();
-        let id = created["id"].as_str().unwrap().to_owned();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            let sessions = self.client().all_sessions(false).await.unwrap();
-            if sessions
-                .iter()
-                .any(|s| s["id"] == id.as_str() && s["status"] == "idle")
-            {
-                return id;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Session wird nicht idle: {sessions:?}"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    /// Sendet SIGTERM und wartet auf das Ende.
-    #[cfg(unix)]
-    fn terminate(&mut self) -> std::process::ExitStatus {
-        let mut child = self.child.take().unwrap();
-        let status = Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "serve endet nicht nach SIGTERM");
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
-
-    fn log(&self) -> String {
-        std::fs::read_to_string(self.work.path().join("serve.log")).unwrap_or_default()
-    }
-}
-
-impl Drop for Serve {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-fn ulid_like() -> String {
-    beton_core::id::RunnerId::new().to_string()
-}
-
-async fn open_store(home: &Path) -> beton_store::Store {
-    beton_store::Store::open(home, beton_store::StoreOptions::default())
-        .await
-        .unwrap()
-}
+use beton_sdk::DaemonInfo;
+use common::{Serve, beton, open_store, run, stderr, stdout};
+use serde_json::Value;
 
 // --------------------------------------------------------------------------- CLI-001
 
@@ -299,7 +139,7 @@ async fn cli_004_ac3_sigterm_shuts_down_cleanly() {
 #[tokio::test]
 async fn cli_004_second_serve_for_the_same_home_is_refused() {
     let serve = Serve::start();
-    let out = run(beton(serve.home()).args(["serve", "--port", "0", "--dev"]));
+    let out = run(beton(serve.home()).args(["serve", "--foreground", "--port", "0", "--dev"]));
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("läuft bereits"), "{}", stderr(&out));
     // Der laufende Daemon bleibt erreichbar.

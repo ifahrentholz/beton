@@ -17,7 +17,10 @@ fn main() -> ExitCode {
             return Exit::General.into();
         }
     };
-    match runtime.block_on(beton_cli::commands::run(cli)) {
+    let result = runtime.block_on(beton_cli::commands::run(cli));
+    // Nicht auf blockierende Leser (stdin) warten.
+    runtime.shutdown_background();
+    match result {
         Ok(()) => Exit::Ok.into(),
         Err(e) => {
             eprintln!("beton: {e}");

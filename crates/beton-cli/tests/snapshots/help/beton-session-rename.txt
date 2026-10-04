@@ -1,15 +1,13 @@
-Sessions verwalten
+Session umbenennen
 
-Usage: beton session [OPTIONS] <COMMAND>
+Usage: beton session rename [OPTIONS] <SESSION> <TITLE>
 
-Commands:
-  list       Sessions auflisten
-  show       Details einer Session
-  rename     Session umbenennen
-  archive    Session archivieren (Runner stoppt)
-  unarchive  Archivierte Session wiederherstellen
-  delete     Session endgültig löschen
-  interrupt  Laufenden Turn abbrechen
+Arguments:
+  <SESSION>
+          Session (ID, eindeutiges Präfix oder `last`)
+
+  <TITLE>
+          Neuer Titel
 
 Options:
       --server <URL>

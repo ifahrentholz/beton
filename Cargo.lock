@@ -322,12 +322,16 @@ dependencies = [
 name = "beton-sdk"
 version = "0.0.0"
 dependencies = [
+ "beton-core",
+ "beton-proto",
+ "futures-util",
  "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
