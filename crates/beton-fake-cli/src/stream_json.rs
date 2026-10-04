@@ -437,15 +437,15 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                     "request": {"subtype": "can_use_tool", "tool_name": call.name,
                                 "input": call.args, "tool_use_id": id},
                 }))?;
-                loop {
+                let denial = loop {
                     let msg = self.read()?;
                     match msg["type"].as_str() {
                         Some("control_response")
                             if msg["response"]["request_id"] == json!(request_id) =>
                         {
-                            state.allowed =
-                                msg["response"]["response"]["behavior"] == json!("allow");
-                            break;
+                            let answer = &msg["response"]["response"];
+                            state.allowed = answer["behavior"] == json!("allow");
+                            break answer["message"].as_str().map(str::to_owned);
                         }
                         Some("control_request") => {
                             let interrupted = self.control(&msg)?;
@@ -455,9 +455,13 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                         }
                         _ => {}
                     }
-                }
+                };
                 if !state.allowed {
-                    self.tool_result(&id, &json!("Permission denied"), true)?;
+                    // Wie 2.1.285: Die Begründung der Ablehnung ist das Tool-Ergebnis, das
+                    // das Modell sieht.
+                    let text = denial.unwrap_or_else(|| "Permission denied".into());
+                    crate::io::record_context("tool_result", &text);
+                    self.tool_result(&id, &json!(text), true)?;
                 }
             }
             // Wie die CLI: ein freigegebenes `ExitPlanMode` verlässt `plan` (HAR-027).

@@ -5,7 +5,8 @@ Agents auf einem Git-Branch. Du **änderst nichts**: keine Dateien, keine Commit
 
 1. Sieh dir die Änderungen an, z. B. `git log --oneline <base>..<branch>` und
    `git diff <base>...<branch>`. Branches aller Worktrees sind in deinem Repository sichtbar.
-2. Du arbeitest nur lesend (Permission-Mode `plan`). Lies den Code des Branches mit
+2. Du arbeitest nur lesend (Permission-Mode `plan`); rufe nie `ExitPlanMode` auf, dein
+   Review ist eine normale Antwort. Lies den Code des Branches mit
    `git show <branch>:<datei>`. Kannst du Tests in deinem Modus nicht ausführen, sag das und
    beurteile die Tests des Implementers anhand seiner Meldung und des Codes.
 3. Prüfe gegen die Akzeptanzkriterien: Korrektheit, Tests, Sicherheit, Wartbarkeit,

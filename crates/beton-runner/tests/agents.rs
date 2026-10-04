@@ -676,3 +676,75 @@ async fn agt_010_session_spawn_passes_params_and_instructions_to_the_child() {
     );
     env.daemon.shutdown().await;
 }
+
+// --------------------------------------------------------------------------- AGT-011
+/// Szenario: `ExitPlanMode` anfragen, nach der Ablehnung antworten; danach Einstellungen.
+const EXIT_PLAN: &str = "turns:\n  - emit:\n      - { tool_call: { name: ExitPlanMode, kind: other, args: { plan: \"P\" } }, gate: true }\n      - { on_gate: { allow: [{ tool_result: ok }], deny: [{ message: \"Ich delegiere per session_spawn.\" }] } }\n  - emit: [{ echo_settings: true }]\n";
+
+#[tokio::test]
+async fn agt_011_plan_mode_of_the_agent_is_binding_exit_plan_mode_is_denied() {
+    // #148: Ein Orchestrator mit `permission_mode: plan` darf den Plan-Modus nicht per
+    // `ExitPlanMode` verlassen; die Ablehnung kommt ohne Rückfrage, mit Begründung.
+    let tmp = tempfile::tempdir().unwrap();
+    let record = tmp.path().join("kontext.jsonl");
+    let scenario = sc(tmp.path(), "plan.yaml", EXIT_PLAN);
+    let (key, mut value) = claude_path(&scenario);
+    value.push_str(&format!(" --record {}", record.display()));
+    let env = Env::start(&[(key, value)], |dir| {
+        write(
+            &dir.join("work/.beton/agents/dirigent/agent.yaml"),
+            "spec_version: 1\nname: dirigent\nexecutor: { harness: claude, permission_mode: plan }\ninstructions: { text: \"Delegiere.\", project_files: none }\n",
+        );
+    })
+    .await;
+    let (status, s) = env.create_agent(json!({"agent": "dirigent"})).await;
+    assert_eq!(status, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let events = env.turn(&id, "plane").await;
+    let resolved = of_type(&events, "approval.resolved");
+    assert_eq!(
+        resolved.len(),
+        1,
+        "{}",
+        serde_json::to_string_pretty(&events).unwrap()
+    );
+    assert_eq!(resolved[0]["payload"]["decision"], "deny");
+    assert_eq!(resolved[0]["payload"]["via"], "policy");
+    let reason = resolved[0]["payload"]["comment"].as_str().unwrap();
+    assert!(reason.contains("session_spawn"), "{reason}");
+    assert!(
+        of_type(&events, "session.settings_changed")
+            .iter()
+            .all(|e| e["payload"]["permission_mode"].is_null()),
+        "kein Wechsel aus plan"
+    );
+    assert!(answers(&events).contains("Ich delegiere per session_spawn."));
+    let context = std::fs::read_to_string(&record).unwrap();
+    assert!(
+        context
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .any(|v| v["source"] == "tool_result" && v["text"] == reason),
+        "Begründung nicht beim Modell: {context}"
+    );
+    // Der zweite Turn läuft weiter in `plan`.
+    env.input(&id, "los").await;
+    let start = Instant::now();
+    let events = loop {
+        let events = env.events(&id).await;
+        if of_type(&events, "turn.completed").len() >= 2 {
+            break events;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "zweiter Turn fehlt"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        answers(&events).contains("mode=plan"),
+        "{}",
+        answers(&events)
+    );
+    env.daemon.shutdown().await;
+}
