@@ -206,21 +206,16 @@ fn map_tool_results(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         .collect()
 }
 
-fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
-    let turn_id = st.turn.take().unwrap_or_default();
-    let mut out = Vec::new();
+/// `cost.delta` aus einem `result` der CLI (Turn oder Einmal-Aufruf, SES-010).
+pub fn result_cost(v: &Value, auth: AuthSource) -> CostDelta {
     let usage = &v["usage"];
     let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
-    let model = v["modelUsage"]
-        .as_object()
-        .and_then(|m| m.keys().next().cloned())
-        .unwrap_or_default();
-    let auth = st.auth_source.unwrap_or(AuthSource::VendorCli);
+    let model = result_model(v).unwrap_or_default();
     let subscription = auth == AuthSource::VendorCli;
     // Bei Subscription meldet die CLI nur ein API-Äquivalent; das ist keine Ausgabe (HAR-021 AC2).
-    out.push(EventPayload::CostDelta(CostDelta {
+    CostDelta {
         harness: "claude".into(),
-        model: model.clone(),
+        model,
         input_tokens: tok("input_tokens"),
         output_tokens: tok("output_tokens"),
         cache_read_tokens: tok("cache_read_input_tokens"),
@@ -240,7 +235,24 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         },
         auth_source: auth,
         purpose: None,
-    }));
+    }
+}
+
+/// Modell laut `modelUsage` eines `result`.
+pub fn result_model(v: &Value) -> Option<String> {
+    v["modelUsage"]
+        .as_object()
+        .and_then(|m| m.keys().next().cloned())
+}
+
+fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
+    let turn_id = st.turn.take().unwrap_or_default();
+    let mut out = Vec::new();
+    let usage = &v["usage"];
+    let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
+    let model = result_model(v).unwrap_or_default();
+    let auth = st.auth_source.unwrap_or(AuthSource::VendorCli);
+    out.push(EventPayload::CostDelta(result_cost(v, auth)));
     if let Some(window) = v["modelUsage"][&model]["contextWindow"].as_u64() {
         out.push(EventPayload::ContextUsage(ContextUsage {
             used_tokens: tok("input_tokens")

@@ -6,7 +6,14 @@
 //! beton-fake-cli --protocol acp         --scenario <datei.yaml> [Agent-Flags …]
 //! beton-fake-cli [--protocol …] --version
 //! beton-fake-cli --protocol mcp-server --tools a,b   # Test-MCP-Server (HAR-009)
+//! beton-fake-cli --protocol stream-json -p --output-format json …   # Einmal-Modus (SES-010)
+//! beton-fake-cli --protocol app-server exec --json … -               # Einmal-Modus (SES-010)
 //! ```
+//!
+//! Einmal-Aufrufe lesen den Inhalt von stdin und antworten laut `one_shot` im Szenario. Mit
+//! `--record <datei>` (bzw. `BETON_FAKE_RECORD=<datei>`) hängt die Fake-CLI je Aufruf eine
+//! JSON-Zeile mit argv und den Namen gesetzter API-Key-Variablen an (nie deren Werte), damit
+//! Tests Aufruf und bereinigte Umgebung prüfen können.
 //!
 //! Spielt Szenarien im Format des Fake-Harness (HAR-026, `beton_harness::scenario`) über das
 //! Wire-Protokoll einer Vendor-CLI ab:
@@ -24,6 +31,7 @@ mod acp;
 mod app_server;
 mod io;
 mod mcp;
+mod one_shot;
 mod stream_json;
 
 use std::path::PathBuf;
@@ -56,6 +64,14 @@ struct Args {
     mcp_config: Option<String>,
     /// Tools des Test-MCP-Servers (`--protocol mcp-server`).
     tools: Vec<String>,
+    /// `-p`/`--print` von Claude Code.
+    print: bool,
+    /// `--output-format` von Claude Code (`json` = Einmal-Modus).
+    output_format: Option<String>,
+    /// `--json` von `codex exec`.
+    json: bool,
+    /// Einmal-Aufrufe hier protokollieren (Tests).
+    record: Option<PathBuf>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -75,6 +91,23 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--fork-session" => out.fork_session = true,
             "--persist" => out.persist = true,
             "--mcp-config" => out.mcp_config = args.next(),
+            "-p" | "--print" => out.print = true,
+            "--record" => out.record = args.next().map(PathBuf::from),
+            "--json" => out.json = true,
+            "--output-format" => out.output_format = args.next(),
+            // Flags der echten CLIs mit Wert: der Wert ist kein Unterkommando.
+            "--model"
+            | "-m"
+            | "--system-prompt"
+            | "--sandbox"
+            | "-s"
+            | "--input-format"
+            | "--permission-prompt-tool"
+            | "--plugin-dir"
+            | "-C"
+            | "--cd" => {
+                let _ = args.next();
+            }
             "--tools" => {
                 out.tools = args
                     .next()
@@ -192,6 +225,27 @@ fn main() -> ExitCode {
         eprintln!("beton-fake-cli: --protocol stream-json|app-server|acp fehlt");
         return ExitCode::from(2);
     };
+    // Einmal-Modus (SES-010): `claude -p --output-format json` bzw. `codex exec --json`.
+    let one_shot = match protocol.as_str() {
+        "stream-json" if args.print && args.output_format.as_deref() == Some("json") => {
+            Some(one_shot::Flavor::Claude)
+        }
+        "app-server" if args.command().first() == Some(&"exec") && args.json => {
+            Some(one_shot::Flavor::Codex)
+        }
+        _ => None,
+    };
+    if let Some(flavor) = one_shot {
+        let behavior = scenario
+            .as_ref()
+            .and_then(|s| s.one_shot.clone())
+            .unwrap_or_default();
+        let record = args
+            .record
+            .clone()
+            .or_else(|| std::env::var_os("BETON_FAKE_RECORD").map(PathBuf::from));
+        return one_shot::run(flavor, &behavior, record.as_deref());
+    }
     let Some(mut scenario) = scenario else {
         eprintln!("beton-fake-cli: --scenario <datei> fehlt");
         return ExitCode::from(2);

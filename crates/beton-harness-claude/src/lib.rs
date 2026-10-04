@@ -26,9 +26,9 @@ use beton_harness::registry::{VersionProbe, resolve_binary};
 use beton_harness::{
     Action, AdapterContext, ApprovalMechanism, AuthStatus, Capabilities, CompactionSupport,
     ExitInfo, ForkHistory, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError,
-    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
-    PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents, SwitchOutcome,
-    SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
+    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent, OneShotReply,
+    OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents,
+    SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -81,6 +81,20 @@ impl Default for ClaudeAdapter {
             auth: AuthSource::VendorCli,
             isolated: false,
             gate_timeout: GATE_TIMEOUT,
+        }
+    }
+}
+
+impl ClaudeAdapter {
+    /// Variablen, die bei `auth: subscription` nicht in den CLI-Prozess dürfen (HAR-015).
+    pub fn env_remove(&self) -> Vec<String> {
+        if self.auth == AuthSource::VendorCli {
+            SUBSCRIPTION_ENV_REMOVE
+                .iter()
+                .map(|s| (*s).to_owned())
+                .collect()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -160,6 +174,76 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
         }
     }
     args
+}
+
+/// Kleinstes Modell für Einmal-Aufrufe wie Session-Titel (SES-010); ein Alias der CLI.
+pub const ONE_SHOT_MODEL: &str = "haiku";
+
+/// Kommandozeile des Einmal-Modus (SES-010, Flags gegen 2.1.285 verifiziert): Antwort als ein
+/// JSON-Objekt, keine Tools, keine gespeicherte Session. Der Inhalt kommt über stdin, nicht
+/// über argv; die Anweisung ersetzt den System-Prompt der CLI (spart Tokens des Kontingents).
+pub fn one_shot_args(req: &OneShotRequest, isolated: bool) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-p",
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--tools",
+        "",
+        "--model",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    args.push(
+        req.model
+            .clone()
+            .unwrap_or_else(|| ONE_SHOT_MODEL.to_owned()),
+    );
+    if !req.instructions.is_empty() {
+        args.extend(["--system-prompt".into(), req.instructions.clone()]);
+    }
+    if isolated {
+        args.push("--safe-mode".into());
+    }
+    args
+}
+
+/// Wertet die Antwort von `claude -p --output-format json` aus (SES-010).
+pub fn parse_one_shot(stdout: &[u8], auth: AuthSource) -> Result<OneShotReply, HarnessError> {
+    let v: Value = serde_json::from_slice(stdout)
+        .map_err(|e| HarnessError::Protocol(format!("Antwort von claude -p ist kein JSON: {e}")))?;
+    if v["type"] != "result" || v["is_error"] == true || v["subtype"] != "success" {
+        let why = v["subtype"].as_str().unwrap_or("unbekannt");
+        return Err(HarnessError::Protocol(format!(
+            "claude -p ohne Ergebnis ({why})"
+        )));
+    }
+    let text = v["result"].as_str().unwrap_or_default().to_owned();
+    let model = mapping::result_model(&v).unwrap_or_default();
+    Ok(OneShotReply {
+        text,
+        model,
+        cost: Some(mapping::result_cost(&v, auth)),
+    })
+}
+
+/// Inhaltsblöcke einer Eingabe für stream-json: Text, Bilder als `image`, PDF als `document`
+/// (WEB-006; Format der Messages-API, das stream-json übernimmt).
+pub fn user_content(input: &UserInput) -> Vec<Value> {
+    let mut content = Vec::with_capacity(input.attachments.len() + 1);
+    for a in &input.attachments {
+        let source = json!({"type": "base64", "media_type": a.mime, "data": a.data_base64});
+        if a.mime == "application/pdf" {
+            content.push(json!({"type": "document", "source": source, "title": a.name}));
+        } else {
+            content.push(json!({"type": "image", "source": source}));
+        }
+    }
+    if !input.text.is_empty() || content.is_empty() {
+        content.push(json!({"type": "text", "text": input.text}));
+    }
+    content
 }
 
 /// `--mcp-config` als JSON-Text (HAR-009): nur Relay-Kommandos, keine Env-Werte oder Tokens.
@@ -256,6 +340,46 @@ impl HarnessAdapter for ClaudeAdapter {
         Some(Arc::new(import::ClaudeImporter::default()))
     }
 
+    /// `claude -p` mit der Anmeldung der CLI (SES-010, ADR-0034): bei `auth: subscription`
+    /// ohne API-Key-Variablen in der Umgebung (HAR-015).
+    async fn one_shot(
+        &self,
+        request: &OneShotRequest,
+        ctx: &AdapterContext,
+    ) -> Result<OneShotReply, HarnessError> {
+        let (program, mut args) = match resolve_binary(&harness_id(), "claude", &ctx.env) {
+            Some(bin) => (bin.program, bin.args),
+            None => ("claude".into(), Vec::new()),
+        };
+        args.extend(one_shot_args(request, self.isolated));
+        let launch = LaunchSpec {
+            program,
+            args,
+            env: Vec::new(),
+            env_remove: self.env_remove(),
+            clear_env: false,
+            cwd: Some(request.workdir.clone()),
+        };
+        let out = beton_harness::process::run_once(
+            ctx.launcher.as_ref(),
+            launch,
+            request.prompt.as_bytes(),
+            request.timeout,
+        )
+        .await
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::TimedOut => HarnessError::Timeout(e.to_string()),
+            _ => HarnessError::Io(e),
+        })?;
+        if out.exit.code != Some(0) && out.stdout.is_empty() {
+            return Err(HarnessError::Protocol(format!(
+                "claude -p endete mit {:?}",
+                out.exit.code
+            )));
+        }
+        parse_one_shot(&out.stdout, self.auth)
+    }
+
     async fn start(
         &self,
         spec: SessionSpec,
@@ -272,14 +396,7 @@ impl HarnessAdapter for ClaudeAdapter {
             program,
             args,
             env: Vec::new(),
-            env_remove: if self.auth == AuthSource::VendorCli {
-                SUBSCRIPTION_ENV_REMOVE
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect()
-            } else {
-                Vec::new()
-            },
+            env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),
         };
@@ -586,7 +703,7 @@ impl HarnessSession for ClaudeSession {
             .await;
         write_json(
             &self.stdin,
-            &json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": input.text}]}}),
+            &json!({"type": "user", "message": {"role": "user", "content": user_content(&input)}}),
         )
         .await?;
         Ok(turn)
@@ -804,5 +921,41 @@ mod mcp_tests {
         assert_eq!(r.tool, "policy_query");
         assert_eq!(r.mcp_server.as_deref(), Some("beton"));
         assert_eq!(r.source, beton_core::event::ToolSource::BetonMcp);
+    }
+}
+
+#[cfg(test)]
+mod attachment_tests {
+    use super::*;
+
+    #[test]
+    fn web_006_attachments_become_image_and_document_blocks() {
+        let input = UserInput {
+            text: "Was steht hier?".into(),
+            attachments: vec![
+                beton_harness::InputAttachment {
+                    name: "shot.png".into(),
+                    mime: "image/png".into(),
+                    data_base64: "iVBORw0K".into(),
+                },
+                beton_harness::InputAttachment {
+                    name: "bericht.pdf".into(),
+                    mime: "application/pdf".into(),
+                    data_base64: "JVBERi0x".into(),
+                },
+            ],
+        };
+        let c = user_content(&input);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0]["type"], "image");
+        assert_eq!(c[0]["source"]["media_type"], "image/png");
+        assert_eq!(c[0]["source"]["data"], "iVBORw0K");
+        assert_eq!(c[1]["type"], "document");
+        assert_eq!(c[1]["title"], "bericht.pdf");
+        assert_eq!(c[2], json!({"type": "text", "text": "Was steht hier?"}));
+        assert_eq!(
+            user_content(&UserInput::from("nur Text")),
+            vec![json!({"type": "text", "text": "nur Text"})]
+        );
     }
 }
