@@ -37,6 +37,7 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | TypeScript-SDK | `pnpm test` · `pnpm typecheck` · `pnpm build` in `packages/sdk-ts` |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` · `pnpm build` in `apps/web`; lokal gegen den Daemon: `pnpm build` und `BETON_WEB_DIR=apps/web/dist beton serve` |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen `beton serve --dev` und Fake-Harness; vorher `cargo build -p beton-cli`, `pnpm build`, `pnpm exec playwright install chromium`) |
+| Offline-E2E (Linux, sudo) | `scripts/offline-e2e.sh isolated` bzw. `sinkhole`: M0-Demo im Netz-Namespace nur mit Loopback, der Sinkhole-Lauf meldet jede DNS-Anfrage und jedes Paket nach außen (QA-018) |
 
 `cargo-nextest` und `cargo-deny` sind optionale lokale Werkzeuge (`cargo install cargo-nextest cargo-deny`); die CI installiert sie selbst.
 
