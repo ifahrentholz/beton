@@ -427,7 +427,8 @@ impl SessionManager<'_> {
 
     /// Fork-Plan für den Runner-Start: solange `session.forked` fehlt, und danach bei
     /// `preamble`, bis der erste Turn begonnen hat. Eine importierte Session ohne native
-    /// Referenz wird per Rebuild fortgesetzt (HAR-019 AC2).
+    /// Referenz von beton wird über die Vendor-Datei nativ fortgesetzt, falls sie noch existiert,
+    /// sonst per Rebuild (HAR-019 AC2, SES-008 AC2).
     pub(crate) async fn fork_boot(
         &self,
         session: &SessionRecord,
@@ -437,7 +438,7 @@ impl SessionManager<'_> {
         let events = self.all_events(session.id).await?;
         let mut forked: Option<Option<HistoryMode>> = None;
         let mut turn_after = false;
-        let mut imported = false;
+        let mut imported: Option<String> = None;
         for e in &events {
             match e.payload() {
                 Some(EventPayload::SessionForked(f)) => {
@@ -445,7 +446,9 @@ impl SessionManager<'_> {
                     turn_after = false;
                 }
                 Some(EventPayload::TurnStarted(_)) => turn_after = true,
-                Some(EventPayload::SessionImported(_)) => imported = true,
+                Some(EventPayload::SessionImported(i)) => {
+                    imported = Some(i.vendor_session_id.clone());
+                }
                 _ => {}
             }
         }
@@ -454,12 +457,22 @@ impl SessionManager<'_> {
                 && !turn_after
                 && plan.is_file())
             .then_some(ForkBoot { plan, logged: true })),
-            None if plan.is_file() && !imported => Ok(Some(ForkBoot {
+            None if plan.is_file() && imported.is_none() => Ok(Some(ForkBoot {
                 plan,
                 logged: false,
             })),
-            None if imported && resume.is_none() => {
+            None if imported.is_some() && resume.is_none() => {
                 let created = self.created(session.id).await?;
+                // Solange die Vendor-Datei existiert, setzt die CLI sie nativ fort (als neue
+                // Session, die Datei bleibt unverändert); sonst Rebuild bzw. Handover (SES-008
+                // AC2).
+                let native_ref = match &imported {
+                    Some(vendor) => {
+                        self.imported_native_ref(&session.harness, &created.cwd, vendor)
+                            .await
+                    }
+                    None => None,
+                };
                 let head = session.head_seq;
                 let history = self.history(&events, head).await?;
                 if history.is_empty() {
@@ -472,7 +485,7 @@ impl SessionManager<'_> {
                     source_title: Some(session.title.clone()).filter(|t| !t.is_empty()),
                     at_seq: head,
                     reason: ForkReason::User,
-                    native_ref: None,
+                    native_ref,
                     worktree: session.worktree.as_ref().map(|w| w.path.clone()),
                     branch: session.worktree.as_ref().map(|w| w.branch.clone()),
                     agent_ref: created.agent_ref,

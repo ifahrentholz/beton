@@ -115,7 +115,9 @@ impl TranscriptImporter for ClaudeImporter {
         let Some(config) = config_dir(env) else {
             return false;
         };
-        let path = project_dir(&config, cwd).join(format!("{vendor_session_id}.jsonl"));
+        // Die CLI bildet das Projektverzeichnis aus ihrem (aufgelösten) Arbeitsverzeichnis.
+        let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let path = project_dir(&config, &cwd).join(format!("{vendor_session_id}.jsonl"));
         // Nur Existenz, kein Symlink; gelesen wird nichts.
         std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
     }

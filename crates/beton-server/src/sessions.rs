@@ -82,6 +82,11 @@ pub struct SessionsConfig {
     pub forks_root: PathBuf,
     /// Leere Workspaces von Forks mit `workspace: fresh`, z. B. `~/.beton/workspaces` (SES-006).
     pub fresh_root: PathBuf,
+    /// Umgebung, in der der Import die Verzeichnisse der Vendor-CLIs findet (`HOME`,
+    /// `CLAUDE_CONFIG_DIR`, `CODEX_HOME`; SES-008). Enthält nur Pfade.
+    pub vendor_env: beton_harness::HostEnv,
+    /// Importe laufen nacheinander, damit der Dedup-Schlüssel nicht doppelt vergeben wird.
+    pub import_lock: Arc<Mutex<()>>,
 }
 
 impl SessionsConfig {

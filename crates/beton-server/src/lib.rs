@@ -19,6 +19,7 @@ pub mod extract;
 pub mod fork;
 pub mod hub;
 pub mod idempotency;
+pub mod imports;
 pub mod local_auth;
 pub mod problem;
 pub mod queue;
