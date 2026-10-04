@@ -84,6 +84,16 @@ pub fn print_json(value: &Value) -> CliResult {
 /// Führt ein Kommando aus.
 pub async fn run(cli: Cli) -> CliResult {
     let ctx = Ctx::from_env(cli.global);
+    // `serve` und `__runner` initialisieren ihr Logging selbst (daemon.log, runner.log);
+    // reine Hilfskommandos legen kein Log-Verzeichnis an.
+    let _log = cli_logs(&cli.command).then(|| {
+        crate::logging::init(crate::logging::LogConfig {
+            dir: ctx.home.join("logs"),
+            stderr_human: ctx.global.verbose > 0,
+            ..crate::logging::LogConfig::for_component(crate::logging::Component::Cli)
+        })
+        .ok()
+    });
     match cli.command {
         Command::Run(args) => crate::run::run(&ctx, args).await,
         Command::Resume(args) => crate::run::resume(&ctx, args).await,
@@ -111,6 +121,21 @@ pub async fn run(cli: Cli) -> CliResult {
             runner_exit(beton_runner::main_from_env().await)
         }
     }
+}
+
+/// Kommandos, die mit dem Daemon sprechen und nach `cli.log` loggen (OBS-001).
+/// `doctor` schreibt nichts ins Datenverzeichnis (OBS-005 AC4).
+fn cli_logs(command: &Command) -> bool {
+    !matches!(
+        command,
+        Command::Serve(_)
+            | Command::Runner
+            | Command::Doctor
+            | Command::Config(_)
+            | Command::Completion(_)
+            | Command::Version
+            | Command::Auth(_)
+    )
 }
 
 fn runner_exit(code: std::process::ExitCode) -> CliResult {
