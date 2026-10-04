@@ -447,7 +447,8 @@ async fn one_call(
             complete(&shared, turn, &call_id, ToolStatus::Denied, &text, 0).await;
             return result(text, true);
         }
-        GateDecision::Allow { updated_args } => updated_args,
+        // `null` heißt „unverändert“ (so kommt es aus der Freigabe-API).
+        GateDecision::Allow { updated_args } => updated_args.filter(|a| !a.is_null()),
     };
     shared
         .emit(

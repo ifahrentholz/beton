@@ -153,6 +153,11 @@ pub struct HarnessLayers {
     /// Datei der Projektebene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_file: Option<PathBuf>,
+    /// `providers:` des Direkt-API-Harness (HAR-011), nur aus der User-Konfiguration: Ein
+    /// Repository kann keine Endpunkte setzen, an die ein Key des Daemons ginge. Geprüft
+    /// wird beim Aufbau der Registry (`beton-harness-direct`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub providers: BTreeMap<String, serde_json::Value>,
 }
 
 /// Woher ein Binary-Pfad stammt (Präzedenz von oben nach unten, HAR-003).

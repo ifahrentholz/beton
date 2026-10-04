@@ -50,7 +50,8 @@ pub struct LocalProvider {
     state_dir: PathBuf,
     /// Umgebung, aus der die Allowlist schöpft (Default: die des Daemons).
     inherit: BTreeMap<String, String>,
-    provisioned: Mutex<HashMap<RunnerId, (Provisioned, Vec<String>)>>,
+    /// Je Runner: Ergebnis, Env-Allowlist und Secret-Variablen.
+    provisioned: Mutex<HashMap<RunnerId, (Provisioned, Vec<String>, Vec<String>)>>,
     running: Mutex<HashMap<RunnerId, Box<dyn ProcessHandle>>>,
 }
 
@@ -123,7 +124,7 @@ impl RunnerProvider for LocalProvider {
 
     async fn provision(&self, spec: &RunnerSpec) -> Result<Provisioned, RunnerError> {
         let mut map = self.provisioned.lock().await;
-        if let Some((p, _)) = map.get(&spec.runner_id) {
+        if let Some((p, _, _)) = map.get(&spec.runner_id) {
             return Ok(p.clone());
         }
         if !spec.workspace.is_dir() {
@@ -137,7 +138,14 @@ impl RunnerProvider for LocalProvider {
             runner_id: spec.runner_id,
             workdir: spec.workspace.clone(),
         };
-        map.insert(spec.runner_id, (p.clone(), spec.env_allowlist.clone()));
+        map.insert(
+            spec.runner_id,
+            (
+                p.clone(),
+                spec.env_allowlist.clone(),
+                spec.secret_env.clone(),
+            ),
+        );
         Ok(p)
     }
 
@@ -146,13 +154,19 @@ impl RunnerProvider for LocalProvider {
         env: &Provisioned,
         boot: &RunnerBoot,
     ) -> Result<RunnerHandle, RunnerError> {
-        let allow = self
+        let (allow, secret_vars) = self
             .provisioned
             .lock()
             .await
             .get(&env.runner_id)
-            .map(|(_, allow)| allow.clone())
+            .map(|(_, allow, secrets)| (allow.clone(), secrets.clone()))
             .unwrap_or_default();
+        // API-Keys (HAR-011) nur über stdin; fehlt eine Variable, fehlt der Eintrag, und der
+        // Harness verweigert den Start mit Hinweis auf die Variable.
+        let secrets: std::collections::BTreeMap<&String, &String> = secret_vars
+            .iter()
+            .filter_map(|k| self.inherit.get(k).map(|v| (k, v)))
+            .collect();
         let mut vars = self.env_for(&allow);
         let pairs = [
             (
@@ -217,6 +231,10 @@ impl RunnerProvider for LocalProvider {
             stdin
                 .write_all(format!("{}\n", boot.token).as_bytes())
                 .await?;
+            if !secrets.is_empty() {
+                let line = serde_json::to_string(&secrets).unwrap_or_default();
+                stdin.write_all(format!("{line}\n").as_bytes()).await?;
+            }
             stdin.flush().await?;
             drop(stdin);
             // stdout leeren, damit der Runner nie an einer vollen Pipe hängt.
@@ -241,7 +259,7 @@ impl RunnerProvider for LocalProvider {
             .lock()
             .await
             .get(&h.runner_id)
-            .map(|(p, _)| p.workdir.clone())
+            .map(|(p, _, _)| p.workdir.clone())
             .ok_or_else(|| RunnerError::NotFound(h.runner_id.to_string()))?;
         let out = tokio::process::Command::new(&req.program)
             .args(&req.args)

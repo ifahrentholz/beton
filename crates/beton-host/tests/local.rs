@@ -39,6 +39,7 @@ fn spec(dir: &std::path::Path) -> RunnerSpec {
         harness: "fake".into(),
         workspace: dir.to_path_buf(),
         env_allowlist: Vec::new(),
+        secret_env: Vec::new(),
     }
 }
 
@@ -120,6 +121,51 @@ async fn run_002_ac4_env_outside_allowlist_is_not_visible() {
     assert!(env.contains("PATH="));
     assert!(!env.contains("AWS_SECRET_ACCESS_KEY"), "{env}");
     assert!(!env.contains("ANTHROPIC_API_KEY"));
+}
+
+/// HAR-011 AC5: Der API-Key einer Session kommt als zweite stdin-Zeile, nie als
+/// Env-Variable des Runners (die alle Kindprozesse erben würden).
+#[tokio::test]
+async fn har_011_ac5_api_key_goes_via_stdin_not_env() {
+    let (state, work) = (ws(), ws());
+    let out = work.path().join("aus.txt");
+    let mut inherit = BTreeMap::new();
+    inherit.insert("PATH".to_owned(), std::env::var("PATH").unwrap());
+    inherit.insert(
+        "OPENROUTER_API_KEY".to_owned(),
+        "bt-fake-key-MARKER-host".to_owned(),
+    );
+    let p = beton_host::LocalProvider::new(
+        vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "read t; read k; echo \"$k\" > '{0}'; env >> '{0}'",
+                out.display()
+            ),
+        ],
+        state.path().to_path_buf(),
+    )
+    .with_inherited_env(inherit);
+    let mut s = spec(work.path());
+    s.harness = "direct:openrouter".into();
+    s.secret_env = vec!["OPENROUTER_API_KEY".into(), "NICHT_GESETZT".into()];
+    let prov = p.provision(&s).await.unwrap();
+    let h = p.start(&prov, &boot()).await.unwrap();
+    wait_exit(&p, &h).await;
+    let text = std::fs::read_to_string(&out).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some(r#"{"OPENROUTER_API_KEY":"bt-fake-key-MARKER-host"}"#),
+        "Key nur über stdin; fehlende Variablen fehlen"
+    );
+    let env: Vec<&str> = lines.collect();
+    assert!(
+        !env.iter()
+            .any(|l| l.contains("MARKER") || l.starts_with("OPENROUTER_API_KEY")),
+        "{env:?}"
+    );
 }
 
 #[tokio::test]

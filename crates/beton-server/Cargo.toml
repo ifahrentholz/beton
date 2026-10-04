@@ -20,6 +20,7 @@ beton-harness.workspace = true
 beton-harness-claude.workspace = true
 beton-harness-codex.workspace = true
 beton-harness-acp.workspace = true
+beton-harness-direct.workspace = true
 beton-host.workspace = true
 beton-store.workspace = true
 getrandom.workspace = true

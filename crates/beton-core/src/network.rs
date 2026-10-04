@@ -42,6 +42,13 @@ pub const NETWORK_FUNCTIONS: &[NetFunction] = &[
         model_provider: true,
     },
     NetFunction {
+        name: "harness.direct",
+        purpose: "Der Direkt-API-Harness `direct:<provider>` sendet Model-Requests und `GET /models` an die Endpunkte, die der Nutzer unter `providers` in der User-Konfiguration einträgt (HAR-010, HAR-011). Ohne Eintrag gibt es keinen Direkt-API-Harness und keine Verbindung; er ist nur eine zusätzliche Option (ADR-0034).",
+        default: NetDefault::Off,
+        offline_alternative: "Subscription-Harnesses über die Vendor-CLIs, ein lokales Gateway auf Loopback (z. B. Ollama unter `http://127.0.0.1:11434/v1`) bzw. der Fake-Harness.",
+        model_provider: true,
+    },
+    NetFunction {
         name: "server.bind",
         purpose: "`beton serve --bind <adresse>` macht Server und Web-UI außerhalb von Loopback erreichbar.",
         default: NetDefault::UserAction,
@@ -118,6 +125,12 @@ mod tests {
             }
             assert!(!f.offline_alternative.trim().is_empty(), "{}", f.name);
         }
+        // Der Direkt-API-Harness ist Modell-Anbieter, aber trotzdem standardmäßig aus.
+        let direct = NETWORK_FUNCTIONS
+            .iter()
+            .find(|f| f.name == "harness.direct")
+            .map(|f| f.default);
+        assert_eq!(direct, Some(NetDefault::Off));
         let mut names: Vec<_> = NETWORK_FUNCTIONS.iter().map(|f| f.name).collect();
         names.sort_unstable();
         names.dedup();

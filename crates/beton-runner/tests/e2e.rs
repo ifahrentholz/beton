@@ -99,6 +99,7 @@ impl Fixture {
             harness: "fake".into(),
             workspace: self.dir.path().to_path_buf(),
             env_allowlist: Vec::new(),
+            secret_env: Vec::new(),
         };
         let p = self.provider.provision(&spec).await.unwrap();
         self.provider
@@ -420,6 +421,7 @@ async fn runner_token_only_opens_its_own_session() {
         harness: "fake".into(),
         workspace: f.dir.path().to_path_buf(),
         env_allowlist: Vec::new(),
+        secret_env: Vec::new(),
     };
     let p = f.provider.provision(&spec).await.unwrap();
     let h = f
