@@ -1,5 +1,5 @@
-// Build-Check (WEB-001 AC4, WEB-015): keine absoluten http(s)-Asset-URLs im Bundle und
-// Initial-JS (gzip) höchstens 450 KB.
+// Build-Check (WEB-001 AC4, WEB-015, WEB-009): keine absoluten http(s)-Asset-URLs im Bundle,
+// Initial-JS (gzip) höchstens 450 KB und Monaco nur in nachgeladenen Chunks.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -35,6 +35,12 @@ let gz = 0
 for (const rel of new Set(initial)) gz += gzipSync(readFileSync(join(dist, rel))).length
 console.log(`Initial-JS (gzip): ${(gz / 1024).toFixed(1)} KB von ${INITIAL_JS_BUDGET / 1024} KB`)
 if (gz > INITIAL_JS_BUDGET) problems.push(`Initial-JS ${(gz / 1024).toFixed(1)} KB über Budget`)
+// Monaco ist nicht im initialen Bundle (WEB-009): Kennung des Editors nur in nachgeladenen Chunks.
+const MONACO = /MonacoEnvironment|monaco-editor/
+for (const rel of new Set(initial)) {
+  if (MONACO.test(readFileSync(join(dist, rel), 'utf8'))) problems.push(`${rel}: Monaco im initialen Bundle`)
+}
+if (!files(dist).some((f) => f.endsWith('.js') && MONACO.test(readFileSync(f, 'utf8')))) problems.push('Monaco-Chunk fehlt im Build')
 if (problems.length) {
   console.error(problems.join('\n'))
   process.exit(1)
