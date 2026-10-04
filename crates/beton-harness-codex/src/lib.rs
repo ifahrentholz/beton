@@ -752,6 +752,13 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
     if decision == ApprovalDecision::Deny {
         d.state.lock().await.denied.insert(call_id.clone());
     }
+    // Die Antwort kennt nur `decline` ohne Text (Schema 0.153.2); die Begründung geht vorher
+    // als `turn/steer` in den laufenden Turn, damit das Modell sie mit der Ablehnung sieht.
+    if answer == "decline"
+        && let Some(reason) = comment.as_deref()
+    {
+        steer_reason(d, params, reason).await;
+    }
     let _ = d.rpc.respond(id, json!({"decision": answer})).await;
     send(
         &d.tx,
@@ -783,6 +790,59 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
         if let Some(e) = started {
             send(&d.tx, e, None, turn).await;
         }
+    }
+}
+
+/// Text, mit dem das Modell von einer abgelehnten Freigabe erfährt (HAR-006, #149).
+pub fn denial_text(params: &Value, reason: &str) -> String {
+    let what = match params["command"].as_str() {
+        Some(command) => format!("Der Befehl `{command}` wurde"),
+        None => "Die Datei-Änderung wurde".to_owned(),
+    };
+    format!("[beton] {what} nicht freigegeben. Begründung: {reason}")
+}
+
+/// Gibt die Begründung einer Ablehnung per `turn/steer` an das Modell (HAR-006, #149). Die
+/// Anfrage ist geschrieben, bevor die Ablehnung rausgeht; gegen codex-cli 0.153.2 (lokaler
+/// Mock statt Modell-API) geprüft: Codex nimmt den Steer während der offenen Rückfrage an
+/// und schickt ihn nach der Ablehnung im selben Turn an das Modell. Fehlschläge stören den
+/// Turn nicht; die Begründung steht ohnehin in `approval.resolved`.
+async fn steer_reason(d: &Dispatcher, params: &Value, reason: &str) {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return;
+    }
+    let (turn, thread) = {
+        let st = d.state.lock().await;
+        (
+            params["turnId"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| st.codex_turn.clone()),
+            params["threadId"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| st.thread_id.clone()),
+        )
+    };
+    let (Some(turn), Some(thread)) = (turn, thread) else {
+        tracing::warn!("codex: Begründung ohne Turn-ID nicht weitergegeben");
+        return;
+    };
+    let request = json!({
+        "threadId": thread,
+        "expectedTurnId": turn,
+        "input": [{"type": "text", "text": denial_text(params, reason)}],
+    });
+    match d.rpc.request_detached("turn/steer", request).await {
+        Ok(reply) => {
+            tokio::spawn(async move {
+                if let Err(e) = reply.wait_timeout(Duration::from_secs(10)).await {
+                    tracing::warn!("codex: Begründung nicht angekommen: {e}");
+                }
+            });
+        }
+        Err(e) => tracing::warn!("codex: Begründung nicht gesendet: {e}"),
     }
 }
 
