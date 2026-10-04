@@ -157,6 +157,7 @@ impl<R: BufRead, W: Write> Agent<R, W> {
         if self.session_id.is_none() || params["sessionId"].as_str() != self.session_id.as_deref() {
             return self.respond_error(id, -32602, "unknown session");
         }
+        crate::io::record_context("user", &prompt_text(params));
         let index = self.next_turn;
         self.next_turn += 1;
         let end = match self.turns.get(index).cloned() {

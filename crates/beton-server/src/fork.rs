@@ -8,8 +8,6 @@
 //!
 //! Ein Harness-Wechsel geschieht ausschließlich per Fork: Die Quelle bleibt auf ihrem Harness.
 
-use std::path::PathBuf;
-
 use beton_core::event::{
     Actor, Event, EventPayload, ForkReason, HistoryMode, SessionForkCreated, SessionKind,
     SessionTitleChanged, SessionTrigger, TitleSource,
@@ -159,7 +157,7 @@ impl SessionManager<'_> {
         }
         // Workspace (SES-006, SES-015).
         let source_root = self.workspace_root(&record).await?;
-        self.check_target(&target, created.agent_ref.as_deref(), &source_root)
+        self.check_target(&target, source, created.agent_ref.as_deref(), &source_root)
             .await?;
         let in_repo = {
             let root = source_root.clone();
@@ -276,6 +274,8 @@ impl SessionManager<'_> {
         if let Some(wt) = &worktree {
             self.log_worktree(session.id, wt).await?;
         }
+        // Der Fork nutzt den Agent-Snapshot der Quelle, nicht die aktuellen Dateien (AGT-004 AC2).
+        self.copy_agent(source, session.id).await?;
 
         // Verlauf übernehmen: Inhalts-Events bis zum Fork-Punkt, neu nummeriert (SES-006 AC1).
         let history = self.history(&events, effective).await?;
@@ -332,43 +332,53 @@ impl SessionManager<'_> {
         })
     }
 
-    /// Prüft den Ziel-Harness (SES-007): bekannt, Verlauf übernehmbar und passend zum Agent.
+    /// Capabilities eines Harness auf diesem Host: eingebaute Adapter, der Fake (Entwicklermodus),
+    /// ACP-Agents (HAR-008) und Direkt-API-Provider (HAR-011) aus der Konfiguration.
+    pub(crate) fn harness_capabilities(
+        &self,
+        target: &beton_harness::HarnessId,
+        workdir: &std::path::Path,
+    ) -> Option<beton_harness::Capabilities> {
+        let probe = beton_harness::ProbeReport::default();
+        let mode = beton_harness::Mode::Native;
+        if target.as_str() == beton_harness::HarnessId::FAKE {
+            return Some(beton_harness::fake::default_capabilities());
+        }
+        if let Some(a) = self.state().runtime.harnesses.get(target) {
+            return Some(a.capabilities(mode, &probe));
+        }
+        let layers = beton_harness::registry::HarnessLayers {
+            user: self.cfg().harnesses_user.clone(),
+            project: beton_harness::registry::HarnessesConfig::load_project(workdir)
+                .unwrap_or_default(),
+            user_file: None,
+            project_file: None,
+            // Direkt-API-Provider nur aus der User-Konfiguration (HAR-011).
+            providers: self.cfg().providers.clone(),
+        };
+        let mut r =
+            beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions {
+                dev: false,
+            });
+        beton_harness_acp::register(&mut r, &layers);
+        beton_harness_direct::register(
+            &mut r,
+            &layers.providers,
+            &beton_harness_direct::DirectOptions::default(),
+        );
+        r.get(target).map(|a| a.capabilities(mode, &probe))
+    }
+
+    /// Prüft den Ziel-Harness (SES-007): bekannt, Verlauf übernehmbar und passend zum Agent
+    /// der Quelle (aus ihrem Snapshot, AGT-004).
     async fn check_target(
         &self,
         target: &beton_harness::HarnessId,
+        source: SessionId,
         agent_ref: Option<&str>,
         workdir: &std::path::Path,
     ) -> Result<(), Problem> {
-        let probe = beton_harness::ProbeReport::default();
-        let mode = beton_harness::Mode::Native;
-        let caps = if target.as_str() == beton_harness::HarnessId::FAKE {
-            Some(beton_harness::fake::default_capabilities())
-        } else if let Some(a) = self.state().runtime.harnesses.get(target) {
-            Some(a.capabilities(mode, &probe))
-        } else {
-            // ACP-Agents (HAR-008) und Direkt-API-Provider (HAR-011) aus der Konfiguration.
-            let layers = beton_harness::registry::HarnessLayers {
-                user: self.cfg().harnesses_user.clone(),
-                project: beton_harness::registry::HarnessesConfig::load_project(workdir)
-                    .unwrap_or_default(),
-                user_file: None,
-                project_file: None,
-                // Direkt-API-Provider nur aus der User-Konfiguration (HAR-011).
-                providers: self.cfg().providers.clone(),
-            };
-            let mut r =
-                beton_harness::registry::Registry::new(beton_harness::registry::RegistryOptions {
-                    dev: false,
-                });
-            beton_harness_acp::register(&mut r, &layers);
-            beton_harness_direct::register(
-                &mut r,
-                &layers.providers,
-                &beton_harness_direct::DirectOptions::default(),
-            );
-            r.get(target).map(|a| a.capabilities(mode, &probe))
-        };
-        let Some(caps) = caps else {
+        let Some(caps) = self.harness_capabilities(target, workdir) else {
             return Err(incompatible(format!(
                 "Harness `{target}` ist auf diesem Host nicht verfügbar."
             )));
@@ -379,9 +389,12 @@ impl SessionManager<'_> {
                 handover::harness_label(target.as_str())
             )));
         }
+        if let Some(snapshot) = self.load_snapshot(source).await? {
+            let (spec, _) = snapshot.agent().map_err(|e| Problem::internal(&e))?;
+            return self.check_agent_harness(&spec, target, workdir);
+        }
         if let Some(agent) = agent_ref {
-            // Agents mit MCP-Servern, System-Tools, Skills oder Sub-Agents brauchen
-            // `mcp_injection` (HAR-009, AGT-006 bis AGT-008).
+            // Ohne Snapshot (ältere Sessions): Agent von der Platte.
             let needs_injection = agent_needs_injection(self, agent, workdir).await;
             if needs_injection && !caps.mcp_injection {
                 return Err(incompatible(format!(
@@ -517,24 +530,11 @@ async fn agent_needs_injection(
     workdir: &std::path::Path,
 ) -> bool {
     let workdir = workdir.to_path_buf();
-    let home = m
-        .cfg()
-        .worktrees_root
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = m.cfg().beton_home.clone();
     let agent = agent.to_owned();
     tokio::task::spawn_blocking(move || {
         beton_mcp::plan::load_agent(&agent, &workdir, &home, beton_agents::Builtins::embedded())
-            .map(|a| {
-                let s = &a.spec;
-                s.tools
-                    .as_ref()
-                    .is_some_and(|t| !t.mcp.is_empty() || !t.system.is_empty())
-                    || s.skills.is_some()
-                    || !s.agents.is_empty()
-                    || s.spawn.is_some()
-            })
+            .map(|a| crate::agents::needs_injection(&a.spec))
             .unwrap_or(false)
     })
     .await

@@ -920,3 +920,69 @@ async fn har_010_parallel_tool_calls_run_at_most_four_at_a_time() {
             .collect::<Vec<_>>()
     );
 }
+
+// ---------------------------------------------------------------------------- AGT-005 AC1
+
+#[tokio::test]
+async fn agt_005_ac1_direct_api_gets_the_instructions_once_in_the_system_prompt() {
+    for wire in [WireKind::Anthropic, WireKind::Openai] {
+        let server = MockServer::start().await.unwrap();
+        let path = mock::messages_path(wire);
+        for (i, text) in ["eins", "zwei"].iter().enumerate() {
+            server.push(
+                path,
+                mock::reply(
+                    wire,
+                    &format!("msg_mock00000000000{i}"),
+                    &[
+                        Say::Text((*text).into(), 1),
+                        Say::Usage {
+                            input: 10,
+                            output: 1,
+                        },
+                    ],
+                ),
+            );
+        }
+        let work = tempfile::tempdir().unwrap();
+        let a = adapter(provider(
+            "mock",
+            wire,
+            &server.base_url(mock::base_suffix(wire)),
+            KeyRef::None,
+            None,
+        ));
+        let mut s = a
+            .start(
+                SessionSpec {
+                    instructions: Some("REGEL-42: nur im Worktree arbeiten".into()),
+                    ..spec(work.path())
+                },
+                ctx(Arc::new(Recorder::default())),
+            )
+            .await
+            .unwrap();
+        let mut rx = s.events().unwrap();
+        for input in ["erste Frage", "zweite Frage"] {
+            s.send(UserInput::from(input)).await.unwrap();
+            until_end(&mut rx).await;
+        }
+        let requests = server.requests_to(path);
+        assert_eq!(requests.len(), 2, "{wire:?}");
+        for r in &requests {
+            // Jeder Request trägt die Instructions genau einmal, und zwar im System-Prompt.
+            assert_eq!(
+                r.body.to_string().matches("REGEL-42").count(),
+                1,
+                "{wire:?}: {}",
+                r.body
+            );
+            let system = match wire {
+                WireKind::Anthropic => r.body["system"].to_string(),
+                WireKind::Openai => r.body["messages"][0].to_string(),
+            };
+            assert!(system.contains("REGEL-42"), "{wire:?}: {system}");
+        }
+        s.shutdown(Shutdown::Kill).await.unwrap();
+    }
+}

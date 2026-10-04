@@ -613,7 +613,9 @@ payload!(TurnFailed {
 });
 payload!(TurnInterrupted {
     turn_id: TurnId,
-    by: PrincipalId
+    by: PrincipalId,
+    /// Warum, wenn nicht auf Wunsch eines Menschen: `timed_out` (`executor.timeout`, AGT-004).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] reason: Option<String>,
 });
 
 payload!(

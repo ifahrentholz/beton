@@ -115,15 +115,43 @@ pub fn capabilities() -> Capabilities {
         efforts: Vec::new(),
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
+        // Claude Code liest `CLAUDE.md` selbst, `AGENTS.md` nicht (AGT-005).
+        native_project_files: vec!["CLAUDE.md".into()],
     }
+}
+
+/// Name der Instructions-Datei im privaten Verzeichnis der Session.
+pub const INSTRUCTIONS_FILE: &str = "instructions.md";
+
+/// Schreibt die Instructions des Agents (AGT-005) in ein privates Verzeichnis (0700, Datei
+/// 0600), das so lange lebt wie die Session; Claude liest sie über
+/// `--append-system-prompt-file` (HAR-004 AC5).
+pub fn write_instructions(text: &str) -> std::io::Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let dir = tempfile::Builder::new().prefix("beton-claude-").tempdir()?;
+    let path = dir.path().join(INSTRUCTIONS_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
+    Ok((dir, path))
 }
 
 fn harness_id() -> HarnessId {
     HarnessId::CLAUDE.parse().unwrap_or_else(|_| unreachable!())
 }
 
-/// Kommandozeile für eine Session (HAR-004, gegen 2.1.285 verifiziert).
-pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
+/// Kommandozeile für eine Session (HAR-004, gegen 2.1.285 verifiziert). `instructions` ist
+/// die Datei mit den Agent-Instructions (AGT-005).
+pub fn command_args(
+    spec: &SessionSpec,
+    isolated: bool,
+    instructions: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -147,6 +175,13 @@ pub fn command_args(spec: &SessionSpec, isolated: bool) -> Vec<String> {
             // Native History übernehmen, die Quelle aber nicht fortschreiben (HAR-019).
             args.push("--fork-session".into());
         }
+    }
+    if let Some(file) = instructions {
+        // Hängt an den System-Prompt von Claude Code an (HAR-004 AC5, AGT-005).
+        args.extend([
+            "--append-system-prompt-file".into(),
+            file.display().to_string(),
+        ]);
     }
     if isolated {
         // `--safe-mode` schaltet auch per `--mcp-config` und `--plugin-dir` übergebene Server
@@ -193,10 +228,17 @@ impl HarnessAdapter for ClaudeAdapter {
     }
 
     fn capabilities(&self, _mode: Mode, _probe: &ProbeReport) -> Capabilities {
+        let caps = capabilities();
         Capabilities {
-            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009).
+            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009), und Claude liest
+            // auch `CLAUDE.md` nicht (laut `claude --help` 2.1.285).
             mcp_injection: !self.isolated,
-            ..capabilities()
+            native_project_files: if self.isolated {
+                Vec::new()
+            } else {
+                caps.native_project_files.clone()
+            },
+            ..caps
         }
     }
 
@@ -268,7 +310,17 @@ impl HarnessAdapter for ClaudeAdapter {
             Some(bin) => (bin.program, bin.args),
             None => ("claude".into(), Vec::new()),
         };
-        args.extend(command_args(&spec, self.isolated));
+        let instructions = match spec.instructions.as_deref() {
+            Some(text) => Some(write_instructions(text).map_err(|e| {
+                HarnessError::StartRefused(format!("Instructions-Datei nicht geschrieben: {e}"))
+            })?),
+            None => None,
+        };
+        args.extend(command_args(
+            &spec,
+            self.isolated,
+            instructions.as_ref().map(|(_, p)| p.as_path()),
+        ));
         let launch = LaunchSpec {
             program,
             args,
@@ -321,6 +373,7 @@ impl HarnessAdapter for ClaudeAdapter {
             process,
             closing,
             requests: 0,
+            _instructions: instructions.map(|(dir, _)| dir),
         }))
     }
 }
@@ -556,6 +609,8 @@ pub struct ClaudeSession {
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<std::sync::atomic::AtomicBool>,
     requests: u64,
+    /// Privates Verzeichnis der Instructions-Datei; wird mit der Session entfernt.
+    _instructions: Option<tempfile::TempDir>,
 }
 
 impl ClaudeSession {
@@ -767,7 +822,7 @@ mod mcp_tests {
 
     #[test]
     fn har_009_claude_gets_relays_via_mcp_config_and_skills_via_plugin_dir() {
-        let args = command_args(&spec(), false);
+        let args = command_args(&spec(), false, None);
         let config: Value =
             serde_json::from_str(arg_after(&args, "--mcp-config").unwrap()).unwrap();
         assert_eq!(config["mcpServers"]["beton"]["type"], "stdio");
@@ -777,7 +832,7 @@ mod mcp_tests {
         assert!(config["mcpServers"]["gh"].get("env").is_none());
         assert_eq!(arg_after(&args, "--plugin-dir"), Some("/run/skills"));
         // Ohne Injektion keine Flags.
-        let plain = command_args(&SessionSpec::default(), false);
+        let plain = command_args(&SessionSpec::default(), false, None);
         assert!(
             !plain
                 .iter()
@@ -786,8 +841,39 @@ mod mcp_tests {
     }
 
     #[test]
+    fn har_004_ac5_instructions_go_via_append_system_prompt_file() {
+        let (dir, path) = write_instructions("Du behebst CI-Fehler.\n\nBranch: develop").unwrap();
+        // Der Test prüft den generierten Dateiinhalt (HAR-004 AC5).
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "Du behebst CI-Fehler.\n\nBranch: develop"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let args = command_args(&SessionSpec::default(), false, Some(&path));
+        assert_eq!(
+            arg_after(&args, "--append-system-prompt-file"),
+            Some(path.to_str().unwrap())
+        );
+        // Auch isoliert (`--safe-mode`) kommen die Instructions an.
+        let isolated = command_args(&SessionSpec::default(), true, Some(&path));
+        assert!(isolated.iter().any(|a| a == "--append-system-prompt-file"));
+        assert!(
+            !command_args(&SessionSpec::default(), false, None)
+                .iter()
+                .any(|a| a == "--append-system-prompt-file")
+        );
+        drop(dir);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn har_009_isolated_mode_has_no_mcp_injection() {
-        let args = command_args(&spec(), true);
+        let args = command_args(&spec(), true, None);
         assert!(args.iter().any(|a| a == "--safe-mode"));
         assert!(
             !args

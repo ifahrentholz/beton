@@ -62,6 +62,7 @@ impl SystemBackend for RunnerBackend {
                 "harness": target.harness,
                 "model": target.model,
                 "prompt": args["prompt"],
+                "params": args.get("params").cloned().unwrap_or(Value::Null),
             }),
             reply,
         };
@@ -106,6 +107,21 @@ pub struct McpSetup {
     pub dirs: Vec<DirGuard>,
     /// `executor.max_turns` des Agents (HAR-010), für Harnesses mit eigenem Loop.
     pub max_turns: Option<u32>,
+    /// Instructions des Agents samt Projektdateien (AGT-005).
+    pub instructions: Option<String>,
+    /// `executor.timeout`: Wanduhr pro Run (AGT-004 AC3).
+    pub timeout: Option<std::time::Duration>,
+}
+
+/// Woher der Agent einer Session kommt.
+#[derive(Debug, Clone, Copy)]
+pub enum AgentSource<'a> {
+    /// Session ohne Agent.
+    None,
+    /// Snapshot aus `agent.resolved` (AGT-004); maßgeblich, sobald vorhanden.
+    Snapshot(&'a beton_agents::AgentSnapshot),
+    /// Nur der Agent-Ref (Sessions ohne Snapshot): über den Suchpfad von der Platte.
+    Ref(&'a str),
 }
 
 /// Wo die Dateien des Nutzers liegen.
@@ -177,33 +193,89 @@ fn failed(name: &str, error: impl Into<String>) -> EventPayload {
     })
 }
 
-/// Bereitet die MCP-Injektion einer Session vor.
+/// Lädt den Agent einer Session. Ein Child (`depth` ≥ 1) bekommt bis AGT-009 keine eigenen
+/// Sub-Agents.
+fn load(
+    source: AgentSource<'_>,
+    workdir: &Path,
+    paths: &Paths,
+) -> Result<Option<(LoadedAgent, beton_agents::params::ParamValues)>, String> {
+    match source {
+        AgentSource::None => Ok(None),
+        AgentSource::Ref(r) => Ok(Some((
+            plan::load_agent(
+                r,
+                workdir,
+                &paths.beton_home,
+                beton_agents::Builtins::embedded(),
+            )?,
+            beton_agents::params::ParamValues::new(),
+        ))),
+        AgentSource::Snapshot(snapshot) => {
+            let (mut spec, dir) = snapshot.agent().map_err(|e| e.to_string())?;
+            if snapshot.depth > 0 {
+                spec.spawn = None;
+            }
+            Ok(Some((LoadedAgent { spec, dir }, snapshot.params.clone())))
+        }
+    }
+}
+
+/// Instructions des Agents für diesen Harness (AGT-005); Fehler verhindern den Start.
+pub fn compose_instructions(
+    agent: &LoadedAgent,
+    params: &beton_agents::params::ParamValues,
+    caps: &Capabilities,
+    workdir: &Path,
+) -> Result<beton_agents::instructions::Composed, String> {
+    beton_agents::instructions::compose(beton_agents::instructions::ComposeInput {
+        spec: &agent.spec,
+        dir: &agent.dir,
+        params,
+        now: &beton_core::time::Timestamp::now().to_string(),
+        workdir,
+        harness_reads: &caps.native_project_files,
+    })
+}
+
+/// Bereitet die MCP-Injektion einer Session vor, dazu Instructions und Grenzen des Agents.
 pub async fn prepare(
     session_id: beton_core::id::SessionId,
     harness: &HarnessId,
     caps: &Capabilities,
     workdir: &Path,
-    agent_ref: Option<&str>,
+    source: AgentSource<'_>,
     layers: &HarnessLayers,
     paths: &Paths,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
-    let agent: Option<LoadedAgent> = match agent_ref {
-        Some(r) => Some(plan::load_agent(
-            r,
-            workdir,
-            &paths.beton_home,
-            beton_agents::Builtins::embedded(),
-        )?),
-        None => None,
-    };
+    let loaded = load(source, workdir, paths)?;
+    if let Some((a, params)) = &loaded {
+        let composed = compose_instructions(a, params, caps, workdir)?;
+        setup.instructions = composed.text;
+        setup
+            .initial
+            .extend(composed.notices.into_iter().map(|text| {
+                EventPayload::Notice(Notice {
+                    level: NoticeLevel::Warn,
+                    text,
+                })
+            }));
+        setup.timeout = a
+            .spec
+            .executor
+            .timeout
+            .as_ref()
+            .and_then(beton_agents::spec::DurationText::to_duration);
+    }
+    let agent: Option<LoadedAgent> = loaded.map(|(a, _)| a);
     setup.max_turns = agent.as_ref().and_then(|a| a.spec.executor.max_turns);
     let suffix = random_suffix();
     let agent_skills = match &agent {
         Some(a) => {
             let scratch = paths.run_dir.join(format!("mcp-{suffix}.agent-skills"));
             let dir = plan::agent_skills_dir(a, &scratch).map_err(|e| e.to_string())?;
-            if matches!(a.dir, beton_agents::AgentDir::Builtin { .. }) && dir.is_some() {
+            if a.dir.in_memory() && dir.is_some() {
                 setup.dirs.push(DirGuard(scratch));
             }
             dir
