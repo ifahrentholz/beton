@@ -571,3 +571,72 @@ async fn api_005_ac2_stream_example_prints_the_deltas() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "Hallo aus dem Fake-Harness\n");
 }
+
+// --------------------------------------------------------------------------- WEB-018
+
+#[tokio::test]
+async fn web_018_ac3_without_tty_on_ask_wait_leaves_the_decision_to_the_web() {
+    let serve = Serve::start();
+    let client = serve.client();
+    let scenario = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fake/push-ask.yaml");
+    // Ohne TTY und ohne --on-ask gilt `wait`: nichts wird ohne Zustimmung ausgeführt.
+    let child = beton(serve.home())
+        .current_dir(serve.work.path())
+        .args([
+            "run",
+            "fake",
+            "-p",
+            "Bitte pushen",
+            "--output-format",
+            "json",
+            "--scenario",
+        ])
+        .arg(&scenario)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_until("Freigabe offen", || {
+        let client = client.clone();
+        async move {
+            let sessions = client.all_sessions(false).await.unwrap();
+            sessions
+                .first()
+                .is_some_and(|s| s["status"] == "waiting_approval")
+        }
+    })
+    .await;
+    let id = client.all_sessions(false).await.unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Noch kein Tool-Ergebnis: der Lauf wartet.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !events(&client, &id)
+            .await
+            .iter()
+            .any(|e| e["type"] == "tool.call.completed"),
+        "Tool lief ohne Zustimmung"
+    );
+    // Entscheidung wie über die Web-Karte.
+    let approval_id = events(&client, &id)
+        .await
+        .iter()
+        .find(|e| e["type"] == "approval.requested")
+        .and_then(|e| e["payload"]["approval_id"].as_str().map(str::to_owned))
+        .unwrap();
+    client
+        .resolve_approval(&id, &approval_id, true, None)
+        .await
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["status"], "completed");
+    assert!(
+        stderr(&out).contains("Wartet auf Freigabe"),
+        "{}",
+        stderr(&out)
+    );
+}

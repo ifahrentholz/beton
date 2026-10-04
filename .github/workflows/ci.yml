@@ -1,6 +1,4 @@
 # CI-Gates (QA-010). Jeder Job ist ein Required Check auf `main` (siehe AGENTS.md §6).
-# Frontend-Gates (tsc, ESLint, Vitest) kommen mit apps/web (WP-14), Schema-Snapshots
-# mit WP-02, Golden-Tests mit WP-07.
 name: CI
 
 on:
@@ -192,6 +190,49 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"
+
+  web:
+    name: web (Vitest, Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Daemon bauen (für die E2E-Tests)
+        working-directory: .
+        run: cargo build -p beton-cli
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+      - name: Bundle bauen und prüfen
+        # covers: WEB-001 AC4 (keine absoluten http(s)-Asset-URLs im Bundle)
+        run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: E2E und Performance-Budgets
+        # covers: WEB-015 AC1
+        run: pnpm e2e
+        env:
+          CI: "1"
+          BETON_BIN: ${{ github.workspace }}/target/debug/beton
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          retention-days: 7
 
   sdk-ts:
     name: sdk-ts

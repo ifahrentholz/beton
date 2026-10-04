@@ -215,7 +215,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-001 — App-Shell, Routing & Layout
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** React-19-SPA (Vite, TanStack Router/Query, Zustand, Tailwind, shadcn/ui), ausgeliefert von `beton serve` und gebündelt im Desktop. Drei-Spalten-Layout (Session-Liste · Chat · Workspace-Rail) mit responsiven Breakpoints gemäß Design; M0 liefert Liste + Chat + Composer.
-- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`. Alle Assets (Schriften, Icons, Monaco- und Shiki-Dateien, Mermaid, Web-Worker) sind gebündelt und werden vom eigenen Origin ausgeliefert; kein CDN, keine externen Origins (ADR-0033). „Offline“ (kein Netz außer Loopback) ist ein normaler Zustand ohne Fehlerdialog.
+- **Details:** Server-State ausschließlich über TanStack Query + WS-Event-Store; UI-State in Zustand. Routen: `/s/:sessionId`, `/projects/:id`, `/inbox`, `/usage`, `/settings/*`. Alle Assets (Schriften, Icons, Monaco- und Shiki-Dateien, Mermaid, Web-Worker) sind gebündelt und werden vom eigenen Origin ausgeliefert; kein CDN, keine externen Origins (ADR-0033). „Offline“ (kein Netz außer Loopback) ist ein normaler Zustand ohne Fehlerdialog. `beton serve` liefert den Build aus `BETON_WEB_DIR` bzw. neben dem Binary (`share/beton/web`, `web/`); Client-Routen bekommen `index.html`, Assets sind `immutable`, HTML trägt eine CSP nur für den eigenen Origin (ohne `unsafe-eval`/`wasm-unsafe-eval`; Shiki nutzt deshalb die JavaScript-Regex-Engine). Ohne Anmeldung bekommt eine Browser-Navigation (401) eine Hinweisseite auf `beton open` statt JSON. M0: Navigationsspalte, Session-Liste (unter 1024 px als Drawer) und Session-Ansicht; die Workspace-Rail folgt mit WEB-008.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton run claude` öffnet (oder druckt) eine URL, unter der die Session live im Browser sichtbar ist.
   - [ ] AC2 — Deep-Link `/s/<id>` lädt direkt die Session (Reload-fest).
@@ -236,6 +236,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-003 — Session-Liste
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Linke Spalte mit Sessions gruppiert nach Pinned, Projekten, „Mit mir geteilt“ (M4) und Archiv; Status-Indikatoren (läuft, wartet auf Approval, Fehler, ungelesen), Suche/Filter, Kontextmenü (umbenennen, archivieren, löschen, forken, in Projekt verschieben).
+- **Details:** M0: Liste nach jüngster Aktivität, Suche, Archiv; Live-Aktualisierung über `GET /v1/sessions?updated_after=<ts>` alle 500 ms (Deltas statt Neuladen). Gruppen (Pinned, Projekte, geteilt) und Kontextmenü folgen mit ihren Features.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Statuswechsel einer Session (z.B. `waiting_approval`) aktualisiert den Indikator ohne Reload innerhalb von 1 s.
   - [ ] AC2 — Die Liste bleibt bei 5 000 Sessions flüssig scrollbar (virtualisiert, ≥ 55 fps).
@@ -244,6 +245,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-004 — Composer mit Pickern
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Mehrzeiliger Composer mit Pickern für Harness/Agent, Modell, Effort und Permission-Mode (Werte aus den Harness-Capabilities). In M0 nur Claude Code; Harness-Wechsel ab M1, ausschließlich als Fork („Weiter mit <Harness>“, SES-007 in 07-sessions-collaboration.md). Senden mit `⏎`, Zeilenumbruch `⇧⏎`; während eines Turns zeigt der Senden-Button „Einreihen“ bzw. „Steer“.
+- **Details:** M0: Modell-Picker aus `capabilities.models` (bei neuer Session wirksam), Effort-Picker nur bei `effort_switch` ≠ `none` und vorhandenen `capabilities.efforts`. Eingaben während eines Turns reiht der Client ein und sendet sie nach dem Turn-Ende. Permission-Mode-Picker und „Steer“ folgen, sobald Server und Runner sie durchreichen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Picker zeigen nur Optionen, die der aktuelle Harness unterstützt (Capability-gesteuert, Test mit Fake-Harness-Capabilities).
   - [ ] AC2 — (ab M1) Modellwechsel mid-session erzeugt ein Event und wirkt ab dem nächsten Turn.
@@ -340,7 +342,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-015 — Performance-Budgets
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Verbindliche Budgets, in CI gemessen (Playwright + Fake-Harness): Streaming ohne Ruckeln, schnelle Session-Wechsel, begrenzter Speicher. Umsetzung über Event-Batching pro Animation-Frame, inkrementelles Markdown-Rendering und Virtualisierung (`@tanstack/react-virtual`).
-- **Details:**
+- **Details:** In der PR-CI läuft das Streaming-Budget 20 s statt 10 min (`BETON_PERF_STREAM_SECONDS`, gleiche Rate); Messwerte stehen als Annotation im Playwright-Bericht. Markdown wird inkrementell gerendert: fertige Absätze/Codeblöcke bleiben gemerkt, nur der letzte Block wird neu geparst.
 
   | Metrik | Budget |
   | --- | --- |
