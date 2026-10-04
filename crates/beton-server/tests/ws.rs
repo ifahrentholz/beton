@@ -60,6 +60,12 @@ impl Fixture {
     }
 
     async fn connect(&self) -> Ws {
+        self.connect_with(None).await
+    }
+
+    /// Verbindet optional mit kleinem Empfangspuffer: Unter Linux wächst das TCP-Fenster
+    /// auf Loopback sonst auf mehrere MB, und ein „blockierter“ Client staut nichts im Server.
+    async fn connect_with(&self, recv_buffer: Option<u32>) -> Ws {
         let port = self.daemon.addrs[0].port();
         let mut req = format!("ws://127.0.0.1:{port}/v1/ws")
             .into_client_request()
@@ -70,13 +76,24 @@ impl Fixture {
         );
         req.headers_mut()
             .insert("sec-websocket-protocol", "beton.v1".parse().unwrap());
-        let (ws, res) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        if let Some(size) = recv_buffer {
+            socket.set_recv_buffer_size(size).unwrap();
+        }
+        let stream = socket.connect(self.daemon.addrs[0]).await.unwrap();
+        let (ws, res) = tokio_tungstenite::client_async(req, MaybeTlsStream::Plain(stream))
+            .await
+            .unwrap();
         assert_eq!(res.headers()["sec-websocket-protocol"], "beton.v1");
         ws
     }
 
     async fn hello(&self) -> Ws {
-        let mut ws = self.connect().await;
+        self.hello_with(None).await
+    }
+
+    async fn hello_with(&self, recv_buffer: Option<u32>) -> Ws {
+        let mut ws = self.connect_with(recv_buffer).await;
         send(
             &mut ws,
             json!({"t": "hello", "protocol": "1.0", "client": {"kind": "test", "version": "0"}}),
@@ -501,7 +518,7 @@ async fn proto_008_ac1_blocked_client_gets_overflow_and_recovers() {
         r
     })
     .await;
-    let mut ws = f.hello().await;
+    let mut ws = f.hello_with(Some(16 * 1024)).await;
     send(
         &mut ws,
         json!({"t": "attach", "id": "r1", "session_id": f.session.id, "from_seq": 0}),
