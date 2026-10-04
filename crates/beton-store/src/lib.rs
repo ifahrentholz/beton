@@ -143,9 +143,15 @@ pub(crate) fn connect_options(db_path: &Path) -> SqliteConnectOptions {
 /// (OBS-005). Liefert die gemeldeten Probleme; leer heißt in Ordnung.
 pub async fn quick_check(db_path: &Path) -> Result<Vec<String>> {
     use sqlx::{ConnectOptions as _, Row as _};
+    // Ohne `-wal` läuft kein Schreiber: `immutable` liest dann, ohne `-shm`/`-wal` anzulegen.
+    // Mit `-wal` (Daemon aktiv) liest es schreibgeschützt über die vorhandenen Dateien.
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let idle = !Path::new(&wal).exists();
     let mut conn = SqliteConnectOptions::new()
         .filename(db_path)
         .read_only(true)
+        .immutable(idle)
         .create_if_missing(false)
         .connect()
         .await?;
@@ -195,5 +201,32 @@ pub(crate) mod testutil {
 
     pub(crate) fn org(t: &TestStore) -> OrgId {
         t.local.org
+    }
+}
+
+#[cfg(test)]
+mod quick_check_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn obs_005_quick_check_creates_no_side_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), StoreOptions::default())
+            .await
+            .unwrap();
+        store.ensure_local().await.unwrap();
+        store.close().await;
+        let db = dir.path().join("beton.db");
+        let names = || {
+            let mut v: Vec<String> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let before = names();
+        assert!(quick_check(&db).await.unwrap().is_empty());
+        assert_eq!(names(), before);
     }
 }
