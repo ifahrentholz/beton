@@ -219,12 +219,31 @@ pub enum Exit {
     ParentGone,
 }
 
-type Ws = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
+#[cfg(unix)]
+type Stream = tokio::net::UnixStream;
+/// Windows (Beta): Der Tunnel über Named Pipes folgt; bis dahin bricht `connect` ab.
+#[cfg(not(unix))]
+type Stream = tokio::net::TcpStream;
+
+type Ws = tokio_tungstenite::WebSocketStream<Stream>;
+
+#[cfg(unix)]
+async fn open_socket(boot: &RunnerBoot) -> Result<Stream, RunnerError> {
+    tokio::net::UnixStream::connect(&boot.socket)
+        .await
+        .map_err(|e| RunnerError::Tunnel(format!("{}: {e}", boot.socket.display())))
+}
+
+#[cfg(not(unix))]
+async fn open_socket(boot: &RunnerBoot) -> Result<Stream, RunnerError> {
+    Err(RunnerError::Tunnel(format!(
+        "{}: Tunnel-Socket wird unter Windows noch nicht unterstützt",
+        boot.socket.display()
+    )))
+}
 
 async fn connect(boot: &RunnerBoot) -> Result<Ws, RunnerError> {
-    let stream = tokio::net::UnixStream::connect(&boot.socket)
-        .await
-        .map_err(|e| RunnerError::Tunnel(format!("{}: {e}", boot.socket.display())))?;
+    let stream = open_socket(boot).await?;
     let mut req = "ws://localhost/v1/tunnel"
         .into_client_request()
         .map_err(|e| RunnerError::Tunnel(e.to_string()))?;
