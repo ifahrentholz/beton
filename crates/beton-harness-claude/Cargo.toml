@@ -13,13 +13,13 @@ async-trait.workspace = true
 beton-core.workspace = true
 beton-harness.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 beton-core.workspace = true
-tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -6,6 +6,7 @@
 //! entfernt bei `auth: subscription` API-Key-Variablen aus der Umgebung.
 
 pub mod mapping;
+pub mod record;
 
 use std::sync::Arc;
 use std::time::Duration;

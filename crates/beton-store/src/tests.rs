@@ -893,11 +893,11 @@ async fn data_005_ac1_rebuild_reproduces_projections() {
     let t = store().await;
     let a = session_with_history(&t, "Erste").await;
     session_with_history(&t, "Zweite").await;
-    let before = t.store.projection_dump(org(&t)).await;
+    let before = t.store.projection_dump(org(&t)).await.unwrap();
     assert!(before.len() > 4);
 
     assert_eq!(t.store.rebuild_projections(org(&t), None).await.unwrap(), 2);
-    assert_eq!(t.store.projection_dump(org(&t)).await, before);
+    assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
 
     // Auch nach Beschädigung stellt der Rebuild den Stand wieder her.
     sqlx::query("UPDATE sessions SET title = 'kaputt', cost_micro = 99 WHERE org_id = ?")
@@ -917,9 +917,9 @@ async fn data_005_ac1_rebuild_reproduces_projections() {
             .unwrap(),
         1
     );
-    assert_ne!(t.store.projection_dump(org(&t)).await, before);
+    assert_ne!(t.store.projection_dump(org(&t)).await.unwrap(), before);
     t.store.rebuild_projections(org(&t), None).await.unwrap();
-    assert_eq!(t.store.projection_dump(org(&t)).await, before);
+    assert_eq!(t.store.projection_dump(org(&t)).await.unwrap(), before);
 }
 
 // ---------------------------------------------------------------------------
