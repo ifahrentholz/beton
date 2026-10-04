@@ -1,57 +1,11 @@
 import type { ReactNode } from 'react'
-import { AppLayout } from '@/app/app-layout'
+import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
- * Einstellungs-Gerüst für die Gruppen hosts, plugins und install:
- * App-Navigation (Einstellungen aktiv), Abschnittsliste links, Inhalt rechts.
+ * Einstellungs-Seite mit Kopfzeile für die Gruppen hosts, plugins, install und cli:
+ * Navigation und Sektionsliste aus `@/app/settings-shell`, Kopf und Inhalt rechts.
  */
-export type SettingsSection =
-  | 'general'
-  | 'harnesses'
-  | 'updates'
-  | 'hosts'
-  | 'runners'
-  | 'providers'
-  | 'image'
-  | 'login'
-  | 'dispatch'
-  | 'reaper'
-  | 'plugins'
-  | 'policies-wasm'
-  | 'api'
-
-const SECTIONS: { title: string; items: { id: SettingsSection; label: string }[] }[] = [
-  {
-    title: 'App',
-    items: [
-      { id: 'general', label: 'Allgemein' },
-      { id: 'harnesses', label: 'Harnesses & Anmeldung' },
-      { id: 'updates', label: 'Updates' },
-    ],
-  },
-  {
-    title: 'Ausführung',
-    items: [
-      { id: 'hosts', label: 'Hosts' },
-      { id: 'runners', label: 'Runner' },
-      { id: 'providers', label: 'Provider & Workspaces' },
-      { id: 'image', label: 'Runner-Image' },
-      { id: 'login', label: 'CLI-Login im Container' },
-      { id: 'dispatch', label: 'Labels & Dispatch' },
-      { id: 'reaper', label: 'Aufräumen' },
-    ],
-  },
-  {
-    title: 'Erweitern',
-    items: [
-      { id: 'plugins', label: 'Plugins' },
-      { id: 'policies-wasm', label: 'WASM-Regeln' },
-      { id: 'api', label: 'API & SDKs' },
-    ],
-  },
-]
-
 export function SettingsShell({
   active,
   title,
@@ -61,7 +15,7 @@ export function SettingsShell({
   connection = 'local',
   bodyClassName,
 }: {
-  active: SettingsSection
+  active: SettingsSectionId
   title: string
   description?: ReactNode
   actions?: ReactNode
@@ -70,39 +24,16 @@ export function SettingsShell({
   bodyClassName?: string
 }) {
   return (
-    <AppLayout nav="settings" connection={connection}>
-      <div className="relative flex min-h-0 flex-1">
-        <nav aria-label="Einstellungen" className="w-52 shrink-0 overflow-y-auto border-r border-border bg-sidebar py-3">
-          {SECTIONS.map((g) => (
-            <div key={g.title} className="mb-3">
-              <div className="px-4 pb-1 text-[11px] text-muted-foreground">{g.title}</div>
-              {g.items.map((i) => (
-                <div
-                  key={i.id}
-                  aria-current={i.id === active ? 'page' : undefined}
-                  className={cn(
-                    'cursor-default border-l-2 px-4 py-1 text-[13px]',
-                    i.id === active ? 'border-foreground bg-accent font-medium' : 'border-transparent text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {i.label}
-                </div>
-              ))}
-            </div>
-          ))}
-        </nav>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-start gap-4 border-b border-border px-6 py-4">
-            <div className="min-w-0 flex-1">
-              <h1 className="type-wide text-[17px] font-[650]">{title}</h1>
-              {description && <p className="mt-0.5 max-w-3xl text-[13px] text-muted-foreground">{description}</p>}
-            </div>
-            {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-          </header>
-          <div className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5', bodyClassName)}>{children}</div>
+    <SettingsFrame active={active} connection={connection}>
+      <header className="flex shrink-0 items-start gap-4 border-b border-border px-6 py-4">
+        <div className="min-w-0 flex-1">
+          <h1 className="type-wide text-[17px] font-[650]">{title}</h1>
+          {description && <p className="mt-0.5 max-w-3xl text-[13px] text-muted-foreground">{description}</p>}
         </div>
-      </div>
-    </AppLayout>
+        {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      </header>
+      <div className={cn('min-h-0 flex-1 overflow-y-auto px-6 py-5', bodyClassName)}>{children}</div>
+    </SettingsFrame>
   )
 }
 

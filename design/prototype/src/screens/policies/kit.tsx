@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Check, HardDrive, Lock, Minus, Server, X } from 'lucide-react'
 import { AppLayout, type NavItem } from '@/app/app-layout'
+import { SettingsFrame, type SettingsSectionId } from '@/app/settings-shell'
 import { cn } from '@/lib/utils'
 
 /**
@@ -204,97 +205,22 @@ export function InlineDialog({ title, children, footer, width = 'w-[520px]', wai
   )
 }
 
-export type SettingsSection =
-  | 'sandbox'
-  | 'stages'
-  | 'proxy'
-  | 'egress-log'
-  | 'credentials'
-  | 'secrets'
-  | 'git'
-  | 'audit'
-  | 'redaction'
-  | 'local'
-  | 'team-server'
-  | 'members'
-  | 'devices'
-  | 'tokens'
-  | 'hardening'
-  | 'sync'
-
-const SETTINGS: { group: string; items: { id: SettingsSection; label: string; team?: boolean }[] }[] = [
-  {
-    group: 'Sicherheit',
-    items: [
-      { id: 'sandbox', label: 'Sandbox' },
-      { id: 'stages', label: 'Stufen & Harnesses' },
-      { id: 'proxy', label: 'Netzwerk & Egress-Proxy' },
-      { id: 'egress-log', label: 'Egress-Log' },
-      { id: 'credentials', label: 'Credentials für Agents' },
-      { id: 'secrets', label: 'Secrets' },
-      { id: 'git', label: 'Git-Verbindungen' },
-      { id: 'audit', label: 'Audit-Log' },
-      { id: 'redaction', label: 'Redaction' },
-    ],
-  },
-  {
-    group: 'Zugang',
-    items: [
-      { id: 'local', label: 'Lokaler Zugang' },
-      { id: 'devices', label: 'Geräte & Hosts' },
-      { id: 'tokens', label: 'Tokens' },
-    ],
-  },
-  {
-    group: 'Team-Betrieb (optional)',
-    items: [
-      { id: 'team-server', label: 'Team-Server & Sync', team: true },
-      { id: 'members', label: 'Mitglieder & Rollen', team: true },
-      { id: 'hardening', label: 'Server-Härtung', team: true },
-    ],
-  },
-]
-
-/** Einstellungen mit Unternavigation links. */
+/** Einstellungen mit Unternavigation links; Navigation und Sektionsliste aus `@/app/settings-shell`. */
 export function SettingsLayout({
   active,
   children,
   connection = 'local',
   overlay,
 }: {
-  active: SettingsSection
+  active: SettingsSectionId
   children: ReactNode
   connection?: 'local' | 'server' | 'offline'
   overlay?: ReactNode
 }) {
   return (
-    <div className="relative h-full">
-      <AppLayout nav="settings" connection={connection}>
-        <div className="flex min-h-0 flex-1">
-          <nav aria-label="Einstellungen" className="w-52 shrink-0 overflow-y-auto border-r border-border bg-sidebar py-3">
-            {SETTINGS.map((g) => (
-              <div key={g.group} className="mb-3">
-                <div className="px-4 pb-1 text-[11px] text-muted-foreground">{g.group}</div>
-                {g.items.map((i) => (
-                  <div
-                    key={i.id}
-                    aria-current={i.id === active ? 'page' : undefined}
-                    className={cn(
-                      'cursor-default border-l-2 px-4 py-1 text-[13px]',
-                      i.id === active ? 'border-foreground bg-accent font-medium' : 'border-transparent text-foreground/80 hover:bg-accent/60',
-                    )}
-                  >
-                    {i.label}
-                  </div>
-                ))}
-              </div>
-            ))}
-          </nav>
-          <div className="flex min-w-0 flex-1 flex-col">{children}</div>
-        </div>
-      </AppLayout>
-      {overlay}
-    </div>
+    <SettingsFrame active={active} connection={connection} overlay={overlay}>
+      {children}
+    </SettingsFrame>
   )
 }
 

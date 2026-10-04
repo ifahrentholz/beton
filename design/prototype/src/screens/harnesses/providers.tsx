@@ -148,7 +148,7 @@ function AddPanel() {
 export function ProvidersScreen({ state }: { state: string }) {
   const missing = state === 'env-missing'
   return (
-    <HarnessSettings active="providers">
+    <HarnessSettings active="direct-api">
       <div className="relative flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 flex-col">
           <PageHeader

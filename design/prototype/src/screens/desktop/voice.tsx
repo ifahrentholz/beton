@@ -3,6 +3,7 @@ import { Check, Cpu, Download, FolderOpen, HardDrive, Lock, Mic, MicOff, Triangl
 import { AppLayout } from '@/app/app-layout'
 import { Composer, SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, UserMessage } from '@/app/stream'
+import { SettingsFrame } from '@/app/settings-shell'
 import { Progress } from '@/components/ui/progress'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
@@ -41,7 +42,7 @@ export function VoiceSettings({ state }: { state: string }) {
     { name: 'large-v3-turbo (q5_0)', size: '574 MB', note: 'kompakt, fast gleich gut' },
   ]
   return (
-    <AppLayout nav="settings" sessionList={false}>
+    <SettingsFrame active="voice">
       <SettingsHeader page="Spracheingabe" />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
         <div className="max-w-3xl">
@@ -203,7 +204,7 @@ export function VoiceSettings({ state }: { state: string }) {
           </F>
         </div>
       </div>
-    </AppLayout>
+    </SettingsFrame>
   )
 }
 
