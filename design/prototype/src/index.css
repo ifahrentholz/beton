@@ -12,6 +12,8 @@
  * - Beton: ruhige, materialhafte Grautöne (hell: Sichtbeton am Tag, dunkel: bei Nacht).
  * - Schalungsgelb (--signal) ist die einzige laute Farbe und bedeutet immer „du bist dran“:
  *   offene Freigaben, Fokus, die eine Primäraktion eines Screens.
+ * - Rost (--warn, wie Rost an Bewehrungsstahl) heißt „wird knapp“: Kontext ab 70 %, Kontingent
+ *   ab 90 %. Nie für „du bist dran“ (Gelb) oder für Fehler und Ablehnungen (--deny).
  * - Stimmen (--voice-*): jede Harness-Familie hat eine feste Farbe für Partitur, Badges, Avatare.
  * - Fase (.chamfer): 45°-Ecken für Elemente, die auf den Menschen warten.
  * Schriften werden mitgeliefert (kein CDN, ADR-0033).
@@ -50,6 +52,8 @@
   --color-ok-soft: var(--ok-soft);
   --color-deny: var(--deny);
   --color-deny-soft: var(--deny-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
   --color-voice-claude: var(--voice-claude);
   --color-voice-codex: var(--voice-codex);
   --color-voice-acp: var(--voice-acp);
@@ -106,6 +110,8 @@
   --ok-soft: #cfe3d4;
   --deny: #b8352b;
   --deny-soft: #f0d2ce;
+  --warn: #a14b0c;
+  --warn-soft: #f3d9c4;
   --destructive: #b8352b;
   --voice-claude: #6f55a0;
   --voice-codex: #26727a;
@@ -141,6 +147,8 @@
   --ok-soft: #233a2b;
   --deny: #e0675b;
   --deny-soft: #42231f;
+  --warn: #e8803c;
+  --warn-soft: #40281a;
   --destructive: #e0675b;
   --voice-claude: #a690d4;
   --voice-codex: #56b0b7;
