@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use beton_core::id::SessionId;
 use beton_sdk::Client;
-use beton_sdk::ws::ServerMsg;
+use beton_sdk::ws::Update;
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::mpsc;
@@ -141,8 +141,7 @@ pub async fn drive(
         _ => None,
     };
 
-    let mut conn = client.connect_ws().await?;
-    conn.attach(sid, opts.from_seq).await?;
+    let mut sub = client.subscribe(sid, opts.from_seq).await?;
     let mut st = State {
         id: id.to_owned(),
         status: client.session(id).await?["status"]
@@ -176,33 +175,35 @@ pub async fn drive(
             }
         };
         tokio::select! {
-            msg = conn.next() => {
-                let Some(msg) = msg else {
-                    renderer.finish();
-                    return Err(CliError::new(Exit::Unreachable, anyhow::anyhow!("Verbindung zum Daemon getrennt")));
-                };
-                match msg? {
-                    ServerMsg::Events { events, .. } => {
+            update = sub.next() => {
+                match update? {
+                    Update::Events(events) => {
                         for e in events {
                             let e = serde_json::to_value(&e).unwrap_or(Value::Null);
                             renderer.event(&e);
                             on_event(&mut st, &e, script);
                         }
                     }
-                    ServerMsg::Live { .. } => {
+                    Update::Live { .. } => {
+                        let first = !st.live;
                         st.live = true;
-                        if !script && !read_only && tty && st.status == "idle" {
+                        if first && !script && !read_only && tty && st.status == "idle" {
                             eprintln!("Eingabe senden mit Enter; Strg+C koppelt ab.");
                         }
                     }
-                    ServerMsg::Overflow { resume_from, .. } => {
-                        conn.attach(sid, resume_from).await?;
-                    }
-                    ServerMsg::Nack { problem, .. } => {
+                    Update::Reconnecting { attempt, delay } => {
                         renderer.finish();
-                        eprintln!("Fehler: {}", problem["detail"].as_str().or_else(|| problem["title"].as_str()).unwrap_or("unbekannt"));
+                        if !opts.quiet {
+                            eprintln!(
+                                "Verbindung zum Daemon verloren; Versuch {attempt} in {:.1} s …",
+                                delay.as_secs_f64()
+                            );
+                        }
                     }
-                    _ => {}
+                    Update::Reset => {
+                        renderer.finish();
+                        eprintln!("Der Daemon kennt weniger Events als zuvor; Verlauf wird neu geladen.");
+                    }
                 }
             }
             line = async { match lines.as_mut() { Some(l) => l.recv().await, None => std::future::pending().await } }, if lines.is_some() => {
@@ -304,7 +305,7 @@ pub async fn drive(
         }
     }
     renderer.finish();
-    conn.close().await;
+    drop(sub);
 
     let outcome = st.outcome.unwrap_or(Outcome::Detached);
     if let Mode::Script { format, .. } = &opts.mode {

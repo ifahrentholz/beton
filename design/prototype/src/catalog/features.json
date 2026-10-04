@@ -2465,7 +2465,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "proto-009--heartbeats--reconnect",
-  "summary": "Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort (mit Jitter) reconnecten.",
+  "summary": "Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort reconnecten, gleichverteilt über 2 s (so bleiben es bei 100 Clients höchstens 20 je 100 ms). Nach `4401`, `4403` oder `4404` verbinden Clients nicht neu.",
   "acs": [
    "Ein Client ohne Pong wird nach spätestens 60 s getrennt; serverseitige Ressourcen der Verbindung sind danach freigegeben.",
    "Nach Server-Neustart sind 100 Clients binnen 35 s wieder verbunden, ohne dass mehr als 20 gleichzeitig im selben 100-ms-Fenster reconnecten.",
@@ -4371,7 +4371,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "api-005--rust-sdk",
-  "summary": "Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe.",
+  "summary": "Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe (auch für Proben lokaler Modell-Server, `beton_sdk::probe`).",
   "acs": [
    "`beton-cli` und `beton-tui` haben keine direkten HTTP-Aufrufe außerhalb von `beton-sdk` (Lint/`cargo deny`-Regel oder Architekturtest).",
    "Beispiel `examples/stream.rs` erstellt eine Session gegen den Fake-Harness und gibt Deltas aus (läuft in CI)."

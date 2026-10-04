@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use beton_core::id::{HostId, OrgId, SessionId, UserId};
 use beton_host::RunnerCapabilities;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::app::AppState;
@@ -37,7 +38,7 @@ pub async fn healthz() -> axum::Json<Health> {
 }
 
 /// Server-Informationen.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct Info {
     pub version: String,
     pub schema_version: i64,
@@ -91,7 +92,7 @@ pub async fn me(
 }
 
 /// Eine Session in der Liste.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct SessionSummary {
     #[schema(value_type = String, example = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C")]
     pub id: SessionId,
@@ -109,7 +110,7 @@ pub struct SessionSummary {
 }
 
 /// Eine Seite der Session-Liste (Cursor-Pagination, PROTO-010).
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct SessionPage {
     pub items: Vec<SessionSummary>,
     pub next_cursor: Option<String>,
@@ -191,7 +192,7 @@ pub async fn list_sessions(
 }
 
 /// Ein Einmal-Code für die Browser-Anmeldung.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct LoginCode {
     pub code: String,
     /// Fertige URL zum Öffnen im Browser.

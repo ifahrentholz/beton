@@ -4,6 +4,7 @@
 //! mit den Arbeitspaketen; heute: Daemon-Erkennung, Info, Sessions (REST), Einmal-Codes und
 //! der WebSocket-Stream ([`ws`]).
 
+pub mod probe;
 pub mod ws;
 
 use std::path::{Path, PathBuf};
@@ -267,6 +268,15 @@ impl Client {
     /// WebSocket-Verbindung (`/v1/ws`, Subprotokoll `beton.v1`) mit Begrüßung.
     pub async fn connect_ws(&self) -> Result<ws::Connection> {
         ws::Connection::open(self).await
+    }
+
+    /// Event-Strom einer Session ab `from_seq` mit automatischem Reconnect.
+    pub async fn subscribe(
+        &self,
+        session: beton_core::id::SessionId,
+        from_seq: u64,
+    ) -> Result<ws::Subscription> {
+        ws::Subscription::open(self, session, from_seq).await
     }
 
     pub(crate) fn token(&self) -> &str {

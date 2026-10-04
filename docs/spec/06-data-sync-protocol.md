@@ -312,7 +312,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 € = 1 000 000`); `unit ∈ {cu
 
 ### PROTO-009 — Heartbeats & Reconnect
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort (mit Jitter) reconnecten.
+- **Beschreibung:** Der Server sendet alle 20 s einen WS-Ping und schließt nach 60 s ohne Pong mit `4408`. Clients bauen Verbindungen bei Abbruch automatisch mit exponentiellem Backoff (0,5 s → 30 s, ±20 % Jitter) neu auf und attachen ab der zuletzt gesehenen `seq`. Beim geordneten Herunterfahren sendet der Server `4503`, worauf Clients sofort reconnecten, gleichverteilt über 2 s (so bleiben es bei 100 Clients höchstens 20 je 100 ms). Nach `4401`, `4403` oder `4404` verbinden Clients nicht neu.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Client ohne Pong wird nach spätestens 60 s getrennt; serverseitige Ressourcen der Verbindung sind danach freigegeben.
   - [ ] AC2 — Nach Server-Neustart sind 100 Clients binnen 35 s wieder verbunden, ohne dass mehr als 20 gleichzeitig im selben 100-ms-Fenster reconnecten.

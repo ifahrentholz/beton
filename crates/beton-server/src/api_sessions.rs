@@ -14,6 +14,7 @@ use beton_core::id::{PrincipalId, SessionId, UserId};
 use beton_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::api::SessionSummary;
@@ -38,17 +39,20 @@ fn summary(s: beton_store::SessionRecord) -> SessionSummary {
     crate::api::summary(s)
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, TS)]
 pub struct CreateSessionRequest {
     /// Harness-ID, z. B. `claude` oder (nur mit `--dev`) `fake`.
     pub target: String,
     /// Arbeitsverzeichnis (Projekt oder Worktree).
     pub cwd: String,
+    #[ts(optional)]
     pub title: Option<String>,
+    #[ts(optional)]
     pub model: Option<String>,
     /// Harness-spezifische Optionen, z. B. `{"scenario": "…"}` beim Fake-Harness.
     #[serde(default)]
     #[schema(value_type = Object)]
+    #[ts(optional, type = "Record<string, unknown>")]
     pub harness_opts: Value,
 }
 
@@ -94,14 +98,17 @@ pub async fn get_session(
     Ok(axum::Json(summary(record)))
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct SessionSettings {
     /// Neuer Titel; braucht keinen laufenden Runner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub effort: Option<String>,
 }
 
@@ -204,12 +211,12 @@ pub async fn resume_session(
     Ok(axum::Json(summary(record)))
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct InputRequest {
     pub text: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct InputAccepted {
     pub input_id: String,
     pub turn_id: String,
@@ -239,7 +246,7 @@ pub struct EventsQuery {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct EventPage {
     /// Events im Envelope-Format (siehe `schemas/v1/events.schema.json`).
     #[schema(value_type = Vec<Object>)]
@@ -283,17 +290,18 @@ pub async fn list_events(
     Ok(axum::Json(EventPage { items, next_cursor }))
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct ApprovalView {
     pub id: String,
     pub kind: String,
     #[schema(value_type = Object)]
+    #[ts(type = "unknown")]
     pub subject: Value,
     pub options: Vec<String>,
     pub requested_seq: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct ApprovalPage {
     pub items: Vec<ApprovalView>,
     pub next_cursor: Option<String>,
@@ -335,20 +343,22 @@ pub async fn list_approvals(
     }))
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Allow,
     Deny,
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct ResolveApprovalRequest {
     pub decision: Decision,
     /// Geänderte Argumente bei `allow` (HAR-005 AC2).
     #[schema(value_type = Option<Object>)]
+    #[ts(optional, type = "unknown")]
     pub updated_args: Option<Value>,
     /// Begründung bei `deny`; das Modell sieht sie.
+    #[ts(optional)]
     pub reason: Option<String>,
 }
 

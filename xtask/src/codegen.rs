@@ -91,6 +91,25 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     HarnessInfo::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     ClientMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
     ServerMsg::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    // REST-Modelle (API-004): Anfragen und Antworten der Session-API.
+    {
+        use beton_server::api::{Info, LoginCode, SessionPage, SessionSummary};
+        use beton_server::api_sessions::{
+            ApprovalPage, CreateSessionRequest, EventPage, InputAccepted, InputRequest,
+            ResolveApprovalRequest, SessionSettings,
+        };
+        Info::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        LoginCode::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionSummary::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ApprovalPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        CreateSessionRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        EventPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        InputAccepted::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        InputRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ResolveApprovalRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+    }
     let mut names = Vec::new();
     for path in walk(tmp.path())? {
         let rel = path.strip_prefix(tmp.path())?.to_path_buf();

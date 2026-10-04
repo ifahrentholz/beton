@@ -593,7 +593,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### API-004 — TypeScript-SDK
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** `@ifahrentholz/beton-sdk` (`packages/sdk-ts`) mit generierten Typen (aus Rust via `ts-rs`/`specta`) und REST-Client (aus OpenAPI), plus handgeschriebenem WS-Client mit automatischem Resume ab `seq`. Die Web-UI nutzt ausschließlich dieses SDK.
-- **Details:** API-Form: `const c = new BetonClient({baseUrl, token}); const s = await c.sessions.create({target: "claude", cwd}); for await (const ev of s.events({fromSeq: 0})) {…}; await s.send("…"); await s.interrupt(); await s.fork({atSeq: 120, harness: "codex"});`
+- **Details:** Typen (Events, WebSocket-Nachrichten, REST-Modelle) sind aus den Rust-Typen generiert (`ts-rs`, `src/gen`); der REST-Client ist eine dünne, handgeschriebene Schicht über diesen Typen, `openapi/v1.json` bleibt der Vertrag (oasdiff in CI). Im Browser authentisiert das Session-Cookie, in Node das lokale Token (WebSocket-Header über die `webSocketFactory`; Node 20 ohne globales `WebSocket` übergibt das Paket `ws`). `fork()` folgt mit SES-006 (M1). API-Form: `const c = new BetonClient({baseUrl, token}); const s = await c.sessions.create({target: "claude", cwd}); for await (const ev of s.events({fromSeq: 0})) {…}; await s.send("…"); await s.interrupt(); await s.fork({atSeq: 120, harness: "codex"});`
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Typen werden in CI neu generiert; Abweichungen zum eingecheckten Stand lassen den Build fehlschlagen.
   - [ ] AC2 — Ein WS-Abbruch während des Streamings wird transparent mit Resume überbrückt (Test mit simuliertem Disconnect, keine Lücken/Duplikate).
@@ -602,7 +602,8 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### API-005 — Rust-SDK
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe.
+- **Beschreibung:** Crate `beton-sdk` (async, `tokio`, `reqwest`, `tokio-tungstenite`) mit denselben Fähigkeiten wie das TS-SDK; typisiert über `beton-proto`. CLI und TUI nutzen ausschließlich dieses SDK für Server-Zugriffe (auch für Proben lokaler Modell-Server, `beton_sdk::probe`).
+- **Details:** `Client::local(data_dir)` findet den Daemon über `run/daemon.json`; `Client::subscribe(session, from_seq)` liefert einen Event-Strom mit automatischem Reconnect (gleiche Parameter wie das TS-SDK), der `overflow`, `seq_ahead` und Close `4503` selbst behandelt.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton-cli` und `beton-tui` haben keine direkten HTTP-Aufrufe außerhalb von `beton-sdk` (Lint/`cargo deny`-Regel oder Architekturtest).
   - [ ] AC2 — Beispiel `examples/stream.rs` erstellt eine Session gegen den Fake-Harness und gibt Deltas aus (läuft in CI).

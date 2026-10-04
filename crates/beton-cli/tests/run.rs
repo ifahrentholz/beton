@@ -540,3 +540,31 @@ async fn cli_004_serve_without_foreground_runs_in_the_background() {
     let again = run(beton(home.path()).args(["serve", "--port", "0"]));
     assert_eq!(again.status.code(), Some(1), "{}", stderr(&again));
 }
+
+// --------------------------------------------------------------------------- API-005
+
+#[tokio::test]
+async fn api_005_ac2_stream_example_prints_the_deltas() {
+    let serve = Serve::start();
+    let example = {
+        let beton = std::path::PathBuf::from(env!("CARGO_BIN_EXE_beton"));
+        let path = beton
+            .parent()
+            .unwrap()
+            .join("examples")
+            .join(format!("stream{}", std::env::consts::EXE_SUFFIX));
+        if !path.is_file() {
+            let status = std::process::Command::new(env!("CARGO"))
+                .args(["build", "-q", "-p", "beton-sdk", "--example", "stream"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "Beispiel bauen");
+        }
+        path
+    };
+    let out = run(std::process::Command::new(example)
+        .env("BETON_HOME", serve.home())
+        .current_dir(serve.work.path()));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), "Hallo aus dem Fake-Harness\n");
+}
