@@ -82,6 +82,9 @@ pub struct Provisioned {
     pub workdir: PathBuf,
 }
 
+/// Übergabe des Stufenmodells an den Runner (SBX-002, #191).
+pub use beton_runner::stages::{CaText, SandboxBoot, active as stages_active};
+
 /// Startdaten für den Runner (RUN-002, AUTH-011).
 #[derive(Debug, Clone)]
 pub struct RunnerBoot {

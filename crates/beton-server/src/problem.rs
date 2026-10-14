@@ -115,6 +115,8 @@ problem_codes! {
     Unavailable = "unavailable", 503, "Vorübergehend nicht verfügbar";
     /// Kein Secret-Backend nutzbar (SEC-002), z. B. Keychain nicht erreichbar.
     SecretsUnavailable = "secrets_unavailable", 503, "Secret-Store nicht verfügbar";
+    /// Sandbox bzw. Egress-Proxy der Session nicht startbar (SBX-006, PRX-002, PROTO-011).
+    SandboxUnavailable = "sandbox_unavailable", 503, "Sandbox nicht verfügbar";
 }
 
 /// Ein Validierungsfehler mit JSON-Pointer auf das Feld.

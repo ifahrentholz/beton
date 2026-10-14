@@ -131,6 +131,9 @@ impl Runtime {
                 vendor_env: beton_harness::HostEnv::from_process(),
                 import_lock: Arc::default(),
                 skill_paths: crate::session_skills::SkillPaths::from_process(),
+                sandbox: beton_sandbox::SandboxSpec::default(),
+                proxy_extra_ca_files: Vec::new(),
+                proxy_ca: None,
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -401,14 +404,22 @@ pub fn build(parts: AppParts) -> Router {
 /// zusätzlichen Routen).
 pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Router {
     let openapi_json = Arc::new(doc.to_pretty_json().unwrap_or_default().into_bytes());
-    // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
-    // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
-    // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
-    let (secrets, _no_api_caps) = beton_secrets::Secrets::new(
+    // Die REST-API gibt nie Secret-Werte heraus. Die Proxy-Capability bekommt nur die Quelle
+    // der beton-CA für den Runner (PRX-002, #191); Direkt-API-Harness und Git-Provider-Client
+    // bekommen ihre mit ihren Arbeitspaketen (HAR-011, GIT-002).
+    let (secrets, caps) = beton_secrets::Secrets::new(
         parts.store.clone(),
         parts.local,
         parts.runtime.secret_backend.clone(),
     );
+    let mut parts = parts;
+    if parts.runtime.sessions.proxy_ca.is_none() {
+        parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+            store: beton_proxy::CaStore::new(secrets.clone(), parts.store.clone(), parts.local),
+            cap: caps.proxy,
+            host_id: parts.runtime.host.id.to_string(),
+        }));
+    }
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

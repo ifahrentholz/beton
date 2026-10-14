@@ -866,6 +866,7 @@ dependencies = [
  "beton-mcp",
  "beton-proto",
  "beton-proxy",
+ "beton-sandbox",
  "beton-secrets",
  "beton-store",
  "futures-util",
