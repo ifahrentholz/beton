@@ -107,7 +107,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Export(args) => crate::transfer::export(&ctx, args).await,
         Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
-        Command::Usage(cmd) => crate::usage::run(&ctx, cmd),
+        Command::Usage(args) => crate::usage::run(&ctx, args).await,
         Command::Agent(cmd) => crate::agent::run(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,

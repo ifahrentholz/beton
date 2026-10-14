@@ -175,3 +175,30 @@ fn har_005_recorded_hook_payloads_map_to_gate_requests() {
         "deny"
     );
 }
+
+/// USE-004 gegen die echte CLI (2.1.296, Subscription): alle Abo-Fenster aus dem
+/// `rate_limit_event`, Tokens je Modell ohne Geldbetrag.
+#[tokio::test]
+async fn use_004_ac1_ac2_subscription_usage_from_the_real_cli() {
+    case("subscription-usage").await;
+    let events =
+        std::fs::read_to_string(root().join("subscription-usage/expected.events.jsonl")).unwrap();
+    let lines: Vec<serde_json::Value> = events
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let windows: Vec<&str> = lines
+        .iter()
+        .filter(|e| e["type"] == "usage.subscription")
+        .map(|e| e["payload"]["window"].as_str().unwrap())
+        .collect();
+    assert_eq!(windows, ["5h", "7d"]);
+    let cost = lines.iter().find(|e| e["type"] == "cost.delta").unwrap();
+    assert_eq!(cost["payload"]["source"], "subscription");
+    assert_eq!(cost["payload"]["auth_source"], "vendor_cli");
+    assert!(cost["payload"].get("cost_micro").is_none(), "{cost}");
+    assert!(
+        !lines.iter().any(|e| e["type"] == "harness.unmapped"),
+        "{events}"
+    );
+}

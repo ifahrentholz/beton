@@ -163,6 +163,16 @@ pub fn scenarios() -> Vec<Scenario> {
             extra_args: "",
             hook: false,
         },
+        Scenario {
+            name: "subscription-usage",
+            description: "Kurzer Turn mit Subscription-Login: rate_limit_event mit allen Fenstern \
+                          und Tokens je Modell im result (USE-004)",
+            inputs: vec![send("Antworte nur mit: ok")],
+            gate: vec![],
+            files: &[],
+            extra_args: "--model haiku",
+            hook: false,
+        },
     ]
 }
 
@@ -217,7 +227,19 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
 fn clean(v: &mut Value) {
     match v {
         Value::Object(map) => {
-            for key in ["account", "email", "organization", "subscriptionType"] {
+            // Konto, dazu der Stand der kostenpflichtigen Zusatznutzung (`overage*`) im
+            // `rate_limit_event`: Abrechnungsdaten des Aufnehmenden (USE-004).
+            for key in [
+                "account",
+                "email",
+                "organization",
+                "subscriptionType",
+                "isUsingOverage",
+                "overageInUse",
+                "overageStatus",
+                "overageResetsAt",
+                "overageDisabledReason",
+            ] {
                 map.remove(key);
             }
             for key in [
@@ -398,4 +420,17 @@ fn which(cmd: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|d| d.join(cmd))
         .find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn use_004_recordings_drop_overage_billing_state() {
+        let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour","isUsingOverage":true,"overageInUse":true,"overageStatus":"allowed","overageResetsAt":1793491200,"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":1792014600}}}}"#;
+        let out = sanitize(line, &[]);
+        assert!(!out.contains("verage"), "{out}");
+        assert!(out.contains("unifiedWindows"), "{out}");
+    }
 }

@@ -36,6 +36,15 @@ pub struct GcReport {
 }
 
 impl BlobStore {
+    /// Blob-Store ohne Verzeichnisse anzulegen, für schreibgeschützte Leser
+    /// (`Store::open_read_only`); Schreiben scheitert dann.
+    pub(crate) fn unopened(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            max_bytes: 0,
+        }
+    }
+
     pub fn open(root: &Path, max_bytes: u64) -> Result<Self> {
         std::fs::create_dir_all(root.join("sha256"))?;
         std::fs::create_dir_all(root.join("tmp"))?;

@@ -95,18 +95,29 @@ pub fn scenarios() -> Vec<Scenario> {
             files: &[],
             model: Some("beton-gibt-es-nicht"),
         },
+        Scenario {
+            name: "subscription-usage",
+            description: "Kurzer Turn mit Subscription-Login: account/rateLimits/updated und \
+                          thread/tokenUsage/updated (USE-004)",
+            inputs: vec![send("Antworte nur mit: ok")],
+            gate: vec![],
+            files: &[],
+            model: None,
+        },
     ]
 }
 
 /// Notifications, die Rechner-, Konto- oder Konfigurationsdaten des Aufnehmenden tragen
-/// (Hostname, Installations-ID, Namen eigener MCP-Server) und in Aufnahmen nichts verloren
-/// haben.
-const DROPPED: [&str; 5] = [
+/// (Hostname, Installations-ID, Namen eigener MCP-Server, eigene Hooks aus
+/// `~/.codex/hooks.json`) und in Aufnahmen nichts verloren haben.
+const DROPPED: [&str; 7] = [
     "remoteControl/status/changed",
     "account/updated",
     "account/login/completed",
     "app/list/updated",
     "mcpServer/startupStatus/updated",
+    "hook/started",
+    "hook/completed",
 ];
 
 /// Entfernt Konto-, Benutzer-, Rechner- und Pfaddaten aus einer stdout-Zeile; `None` lässt
@@ -295,6 +306,14 @@ mod tests {
         assert!(
             !limits.contains("pro") && !limits.contains("balance"),
             "{limits}"
+        );
+        assert_eq!(
+            sanitize(
+                r#"{"method":"hook/started","params":{"run":{"sourcePath":"/Users/x/.codex/hooks.json"}}}"#,
+                &r
+            ),
+            None,
+            "eigene Hooks des Aufnehmenden"
         );
     }
 }

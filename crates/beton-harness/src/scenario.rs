@@ -208,6 +208,11 @@ pub struct Step {
     pub tool_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Abo-Fenster eines Subscription-Logins melden (USE-004): die Fake-CLI als
+    /// `rate_limit_event` (`stream-json`) bzw. `account/rateLimits/updated` (`app-server`), der
+    /// Fake-Harness direkt als `usage.subscription`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitStep>,
     /// Turn schlägt mit dieser Meldung fehl.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -295,6 +300,43 @@ pub struct OnGate {
     pub allow: Vec<Step>,
     #[serde(default)]
     pub deny: Vec<Step>,
+}
+
+/// Ein Abo-Fenster (USE-004), z. B. `{window: 5h, used_pct: 92}`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitStep {
+    /// Länge des Fensters: `5h`, `7d` oder `90m`.
+    pub window: String,
+    /// Genutzter Anteil in Prozent (0–100).
+    pub used_pct: f64,
+    /// Sekunden bis zum Zurücksetzen, gezählt ab der Ausgabe (Default 1 h).
+    #[serde(default = "an_hour")]
+    pub resets_in_s: u64,
+}
+
+fn an_hour() -> u64 {
+    3600
+}
+
+impl RateLimitStep {
+    /// Länge in Minuten (`5h` → 300); `None` bei unbekannter Schreibweise.
+    pub fn minutes(&self) -> Option<u64> {
+        let (n, unit) = self.window.split_at(self.window.len().checked_sub(1)?);
+        let n: u64 = n.parse().ok()?;
+        match unit {
+            "m" => Some(n),
+            "h" => Some(n * 60),
+            "d" => Some(n * 1440),
+            _ => None,
+        }
+    }
+
+    /// Zeitpunkt des Zurücksetzens in Unix-Sekunden.
+    pub fn resets_at(&self) -> i64 {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        now.saturating_add(i64::try_from(self.resets_in_s).unwrap_or(i64::MAX))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -392,6 +434,7 @@ impl Step {
         add(self.tool_result.is_some(), "tool_result");
         add(self.tool_error.is_some(), "tool_error");
         add(self.usage.is_some(), "usage");
+        add(self.rate_limit.is_some(), "rate_limit");
         add(self.error.is_some(), "error");
         add(self.crash.is_some(), "crash");
         add(self.auth_expired.is_some(), "auth_expired");
@@ -419,6 +462,13 @@ impl Step {
         if self.chunk == Some(0) {
             return Err(ScenarioError::Invalid(format!(
                 "{at}: `chunk` muss > 0 sein"
+            )));
+        }
+        if let Some(r) = &self.rate_limit
+            && (r.minutes().is_none() || !(0.0..=100.0).contains(&r.used_pct))
+        {
+            return Err(ScenarioError::Invalid(format!(
+                "{at}: rate_limit braucht `window` wie 5h, 7d oder 90m und `used_pct` von 0 bis 100"
             )));
         }
         if let Some(w) = &self.write_file {
