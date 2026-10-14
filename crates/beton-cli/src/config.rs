@@ -53,6 +53,17 @@ pub struct Settings {
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
+    /// Egress-Proxy (PRX-002); nur in der User-Konfiguration.
+    pub proxy: ProxySettings,
+}
+
+/// `proxy:` (PRX-002).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProxySettings {
+    /// Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut
+    /// oder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.
+    pub extra_ca_files: Vec<String>,
 }
 
 impl Settings {
