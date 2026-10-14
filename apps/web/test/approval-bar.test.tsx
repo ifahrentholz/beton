@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApprovalBar } from '@/components/approval-bar'
+import { ApprovalBar, KEY_DELAY_MS } from '@/components/approval-bar'
 import { approvalItem, type ApprovalItem } from '@/lib/timeline'
 import { editPreview, resolutionText, timeLeft } from '@/lib/approvals'
 
@@ -39,6 +39,9 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+/** Eine neue oberste Card ist erst nach kurzer Sichtzeit per Taste entscheidbar. */
+const armed = () => new Promise((r) => setTimeout(r, KEY_DELAY_MS + 50))
+
 const key = (k: string, opts: Partial<KeyboardEventInit> = {}) =>
   act(() => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: k, metaKey: true, bubbles: true, cancelable: true, ...opts }))
@@ -52,6 +55,7 @@ describe('Freigabe-Leiste (WEB-007)', () => {
     expect(screen.getByTestId('approval-top').dataset.approvalId).toBe('apr_a')
     expect(screen.getByText('Danach · 1 weitere')).toBeTruthy()
     expect(screen.getByText('1 von 2')).toBeTruthy()
+    await armed()
     key('Enter')
     await waitFor(() => expect(api.resolve).toHaveBeenCalledWith('apr_a', { decision: 'allow' }))
     // Das Event `approval.resolved` kommt an: die nächste rückt nach oben.
@@ -64,15 +68,18 @@ describe('Freigabe-Leiste (WEB-007)', () => {
   it('WEB-007 AC1: ⌘⇧⏎ erlaubt für die Session nur, wenn die Card es anbietet', async () => {
     const { rerender } = render(<ApprovalBar sessionId="ses_1" approvals={[card('apr_a', { options: ['approve', 'deny'] })]} />)
     expect(screen.queryByText('Für diese Session erlauben')).toBeNull()
+    await armed()
     key('Enter', { shiftKey: true })
     expect(api.resolve).not.toHaveBeenCalled()
     rerender(<ApprovalBar sessionId="ses_1" approvals={[card('apr_b')]} />)
+    await armed()
     key('Enter', { shiftKey: true })
     await waitFor(() => expect(api.resolve).toHaveBeenCalledWith('apr_b', { decision: 'allow', remember: 'session' }))
   })
 
   it('WEB-007: ⌘⌫ öffnet Ablehnen mit Grund, ein zweites ⌘⌫ lehnt ab', async () => {
     render(<ApprovalBar sessionId="ses_1" approvals={[card('apr_a')]} />)
+    await armed()
     key('Backspace')
     const reason = screen.getByLabelText('Grund für die Ablehnung, geht an den Agent')
     await waitFor(() => expect(document.activeElement).toBe(reason))
@@ -128,6 +135,7 @@ describe('Freigabe-Leiste (WEB-007)', () => {
     render(<ApprovalBar sessionId="ses_1" approvals={[q]} />)
     expect(screen.getByRole('alertdialog').textContent).toContain('Pro IP oder pro Account?')
     fireEvent.click(screen.getByRole('button', { name: 'Pro Account' }))
+    await armed()
     key('Enter')
     await waitFor(() => expect(api.resolve).toHaveBeenCalledWith('apr_q', { decision: 'answer', answer: 'Pro Account' }))
   })
@@ -146,6 +154,48 @@ describe('Freigabe-Leiste (WEB-007)', () => {
     const details = screen.getByTestId('approval-details')
     expect(details.textContent).toContain('alt')
     expect(details.textContent).toContain('neu')
+  })
+})
+
+describe('Freigabe-Leiste: Schutz vor versehentlichen Entscheidungen (Security-Review M1)', () => {
+  it('WEB-007: ⌘⏎ im Grund-Feld lehnt mit Grund ab statt zu erlauben', async () => {
+    render(<ApprovalBar sessionId="ses_1" approvals={[card('apr_a')]} />)
+    await armed()
+    key('Backspace')
+    const reason = screen.getByLabelText('Grund für die Ablehnung, geht an den Agent')
+    fireEvent.change(reason, { target: { value: 'Nein' } })
+    act(() => {
+      reason.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }))
+    })
+    await waitFor(() => expect(api.resolve).toHaveBeenCalledWith('apr_a', { decision: 'deny', reason: 'Nein' }))
+    expect(api.resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it('WEB-007: gehaltenes ⌘⏎ (Wiederholung) entscheidet nichts', async () => {
+    render(<ApprovalBar sessionId="ses_1" approvals={[card('apr_a')]} />)
+    await armed()
+    key('Enter', { repeat: true })
+    key('Enter', { shiftKey: true, repeat: true })
+    expect(api.resolve).not.toHaveBeenCalled()
+  })
+
+  it('WEB-007: eine neue oberste Card ist erst nach kurzer Sichtzeit per Taste entscheidbar', async () => {
+    const a = card('apr_a')
+    const b = card('apr_b')
+    const { rerender } = render(<ApprovalBar sessionId="ses_1" approvals={[a, b]} />)
+    // Sofort nach dem Erscheinen: nichts.
+    key('Enter')
+    expect(api.resolve).not.toHaveBeenCalled()
+    await armed()
+    key('Enter')
+    await waitFor(() => expect(api.resolve).toHaveBeenCalledTimes(1))
+    // Die nächste rückt nach: wieder erst nach der Sichtzeit.
+    rerender(<ApprovalBar sessionId="ses_1" approvals={[decided(a), b]} />)
+    key('Enter')
+    expect(api.resolve).toHaveBeenCalledTimes(1)
+    await armed()
+    key('Enter')
+    await waitFor(() => expect(api.resolve).toHaveBeenLastCalledWith('apr_b', { decision: 'allow' }))
   })
 })
 
