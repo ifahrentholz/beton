@@ -200,6 +200,32 @@ impl EgressProxy {
         self.shared.ca.cert_pem()
     }
 
+    /// CA-Bundle für die Sandbox (PRX-008): beton-CA plus System-Roots als PEM. Werkzeuge in
+    /// der Sandbox sehen sonst nur Leafs der beton-CA; die System-Roots braucht der Harness für
+    /// seine Passthrough-Verbindungen (PRX-005).
+    pub fn ca_bundle_pem(&self) -> String {
+        self.ca_pem()
+    }
+
+    /// Nur für Tests anderer Crates (Feature `test-net`, nie in Produktionsbuilds): Jeder Name
+    /// aus `hosts` löst auf eine öffentlich wirkende Adresse auf, die der Dialer auf den
+    /// lokalen Test-Upstream abbildet; alle anderen Namen sind NXDOMAIN, alle anderen Adressen
+    /// unerreichbar. Upstream-TLS vertraut nur `upstream_roots`. Die Private-IP-Sperre gilt
+    /// unverändert (ADR-0033: kein Test erreicht ein echtes Netz).
+    #[cfg(any(test, feature = "test-net"))]
+    pub fn with_test_hosts(
+        ca: BetonCa,
+        upstream_roots: Vec<CertificateDer<'static>>,
+        hosts: &[(&str, std::net::SocketAddr)],
+    ) -> Self {
+        let _ = hosts;
+        let mut roots = RootCertStore::empty();
+        for r in upstream_roots {
+            roots.add(r).unwrap_or_else(|e| panic!("Test-CA: {e}"));
+        }
+        Self::build(ca, &roots, Net::system()).unwrap_or_else(|e| panic!("Test-Proxy: {e}"))
+    }
+
     /// Startet eine Instanz auf `127.0.0.1:<zufälliger Port>` mit eigenem Token, eigenem
     /// Leaf-Schlüssel und eigenem Upstream-Pool.
     pub async fn start(&self, spec: InstanceSpec) -> Result<ProxyInstance, ProxyError> {

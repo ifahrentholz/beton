@@ -4,5 +4,6 @@ mod core_tests;
 mod h2_tests;
 mod passthrough_tests;
 mod private_ip_tests;
+mod sandbox_env_tests;
 mod support;
 mod tls_tests;

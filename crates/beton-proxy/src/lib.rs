@@ -28,7 +28,7 @@ pub mod rules;
 #[cfg(test)]
 mod tests;
 
-pub use ca::{BetonCa, CaError, CaInfo, CaStore, LeafIssuer};
+pub use ca::{BetonCa, CaError, CaHandover, CaInfo, CaStore, LeafIssuer};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
 pub use passthrough::{Passthrough, PassthroughError};

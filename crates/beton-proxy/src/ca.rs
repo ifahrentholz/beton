@@ -80,6 +80,22 @@ pub struct CaInfo {
     pub not_after: beton_core::time::Timestamp,
 }
 
+/// Übergabeform einer CA (JSON mit Zertifikat und PKCS#8-Schlüssel); `Debug` zeigt nichts,
+/// der Speicher wird beim Fallenlassen überschrieben.
+pub struct CaHandover(Zeroizing<String>);
+
+impl CaHandover {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CaHandover {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CaHandover(***)")
+    }
+}
+
 /// Die beton-CA mit privatem Schlüssel (nur im Speicher des Proxys).
 pub struct BetonCa {
     cn: String,
@@ -189,6 +205,19 @@ impl BetonCa {
         }
         pem.push_str("-----END CERTIFICATE-----\n");
         pem
+    }
+
+    /// Übergabe an den Runner der Session (Stufe 0, PRX-001): Zertifikat und Schlüssel in der
+    /// gespeicherten Form. Der Daemon lädt die CA über [`ProxyCap`] und reicht sie nur über
+    /// stdin weiter, nie über Env, argv oder eine Datei.
+    pub fn handover(&self) -> Result<CaHandover, CaError> {
+        Err(CaError::Generate("noch nicht umgesetzt".into()))
+    }
+
+    /// Gegenstück zu [`BetonCa::handover`] im Runner; kaputt → `proxy_ca_corrupt`, abgelaufen →
+    /// `proxy_ca_expired` (fail closed).
+    pub fn from_handover(_text: &str) -> Result<Self, CaError> {
+        Err(CaError::Corrupt)
     }
 
     pub fn info(&self) -> CaInfo {
