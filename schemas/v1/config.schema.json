@@ -266,6 +266,33 @@
       },
       "additionalProperties": false
     },
+    "HarnessSandboxConfig": {
+      "description": "`sandbox.harness` (Stufe 1, selten nötig).",
+      "type": "object",
+      "properties": {
+        "egress_extra": {
+          "description": "Zusätzliche Egress-Regeln der Stufe 1 (z. B. Remote-MCP-Server), mit MITM.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_passthrough": {
+          "description": "Zusätzliche Passthrough-Hosts der Stufe 1 (`host` oder `host:port`), ohne\nTLS-Terminierung (PRX-005).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "HarnessesConfig": {
       "description": "Abschnitt `harnesses:` der Konfiguration.",
       "type": "object",
@@ -381,6 +408,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "Preset": {
+      "description": "Eingebautes Preset (SBX-012): Startpunkt, den eigene Felder gemäß den Merge-Regeln\nüberschreiben bzw. ergänzen.",
+      "oneOf": [
+        {
+          "description": "Workspace rw, in Stufe 2 kein Netz (keine Egress-Regel); Stufe 1 erreicht nur ihre\nVendor-Hosts.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Wie `default`, zusätzlich lesend gängige Paket-Registries und Toolchain-Caches.",
+          "type": "string",
+          "const": "dev"
+        },
+        {
+          "description": "Workspace read-only, kein Netz (z. B. Side-Chats, Reviewer-Agents).",
+          "type": "string",
+          "const": "readonly"
+        }
+      ]
     },
     "PriceOverride": {
       "description": "Eigener Preis für Gateway- und Self-hosted-Modelle (`pricing.overrides[]`).",
@@ -587,8 +634,31 @@
             }
           ]
         },
+        "dev_ports": {
+          "description": "Loopback-Ports für Dev-Server in der Sandbox (PRX-008 AC3, #210): `bind` und `connect`\nnur auf diesen Ports. Linux: im eigenen Net-Namespace; macOS: Loopback des Hosts.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
         "egress_allow_private": {
           "description": "Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_passthrough": {
+          "description": "Passthrough in Stufe 2 (`host` oder `host:port`): nur ausdrücklich, ohne\nTLS-Terminierung und ohne Credential-Injection (PRX-005).",
           "type": [
             "array",
             "null"
@@ -617,6 +687,17 @@
             }
           ]
         },
+        "harness": {
+          "description": "Stufe-1-Overrides.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessSandboxConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "limits": {
           "description": "Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.",
           "anyOf": [
@@ -638,6 +719,17 @@
             "type": "string"
           }
         },
+        "preset": {
+          "description": "Eingebautes Preset `default`, `dev` oder `readonly` (SBX-012).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Preset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "read_paths": {
           "description": "Zusätzliche Lese-Wurzeln: absolut oder mit `~` (keine `$VAR`-Expansion).",
           "type": [
@@ -647,6 +739,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "require_tool_isolation": {
+          "description": "Startet ein Harness nur, wenn er Tools in Stufe 2 erzwingt (Default `true`, SBX-002\nAC4); `false` erlaubt `tool_isolation: inherited` als *degraded*.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "workspace": {
           "description": "`rw` (Default) oder `ro`.",
