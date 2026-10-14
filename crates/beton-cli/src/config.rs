@@ -50,6 +50,8 @@ pub struct Settings {
     pub features: Vec<String>,
     /// Eigene Preise (USE-003); nur in der User-Konfiguration.
     pub pricing: PricingSettings,
+    /// Usage-Anzeige und -Hinweise (USE-004).
+    pub usage: UsageSettings,
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
@@ -120,6 +122,23 @@ pub struct PricingSettings {
     /// Preis-Overrides mit Glob auf `provider`/`model`; der erste passende Eintrag gewinnt.
     /// Gilt vor vom Harness gemeldeten Kosten und vor dem Preis-Katalog.
     pub overrides: Vec<PriceOverride>,
+}
+
+/// Usage (USE-004): Hinweise zu Abo-Fenstern der Vendor-Logins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UsageSettings {
+    /// Inbox-Hinweis, sobald ein Abo-Fenster (z. B. 5h) zu mindestens 90 % genutzt ist; einmal
+    /// je Fenster und Periode. Default `true`.
+    pub rate_limit_notice: bool,
+}
+
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self {
+            rate_limit_notice: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

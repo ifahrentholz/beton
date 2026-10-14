@@ -9,6 +9,7 @@
 //!   Katalogversion; Grundlage für Usage-Ansichten und die Policy-Variablen `session.cost_usd`
 //!   und `user.daily_cost_usd`
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
+//! - Abo-Fenster der Vendor-Logins je Session (`usage_subscription_windows`, USE-004)
 //! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
 //!
 //! Die Inbox (UX-001) projiziert `crate::inbox`; Kommentare (COL-005, COL-009) kommen mit ihren Features dazu.
@@ -271,6 +272,9 @@ pub(crate) async fn apply(
             .execute(&mut *conn)
             .await?;
         }
+        EventPayload::UsageSubscription(u) => {
+            crate::usage::index_window(conn, org, session, seq, ts, u).await?;
+        }
         _ => {}
     }
     crate::inbox::index_event(conn, org, session, seq, ts, payload).await?;
@@ -326,6 +330,7 @@ impl Store {
             "DELETE FROM inbox_items WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM usage_subscription_windows WHERE org_id = ? AND session_id = ?",
         ] {
             sqlx::query(sql)
                 .bind(org.to_string())
@@ -495,6 +500,9 @@ impl Store {
             "SELECT * FROM inbox_items WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
             "SELECT * FROM usage_records WHERE org_id = ? ORDER BY session_id, seq",
+            "SELECT org_id, session_id, harness, vendor, window_name, CAST(used_pct AS TEXT), \
+             resets_at, seq, ts FROM usage_subscription_windows WHERE org_id = ? \
+             ORDER BY session_id, vendor, window_name",
             "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \
              ORDER BY session_id, doc",
         ] {

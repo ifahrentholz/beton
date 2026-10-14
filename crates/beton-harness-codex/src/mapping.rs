@@ -412,16 +412,6 @@ fn turn_completed(turn: &Value, st: &mut MapState) -> Vec<EventPayload> {
     out
 }
 
-/// Name eines Abo-Fensters aus seiner Länge, wie bei Claude: `300` → `5h`, `10080` → `7d`.
-pub fn window_name(minutes: u64) -> String {
-    match minutes {
-        0 => "0m".into(),
-        m if m % 1440 == 0 => format!("{}d", m / 1440),
-        m if m % 60 == 0 => format!("{}h", m / 60),
-        m => format!("{m}m"),
-    }
-}
-
 /// `account/rateLimits/updated` → je Fenster ein `usage.subscription` (USE-004). Gegen 0.161.0
 /// verifiziert: `rateLimits.primary`/`secondary` mit `usedPercent` (0–100),
 /// `windowDurationMins` und `resetsAt` (Unix-Sekunden); fehlende Fenster sind `null`.
@@ -432,9 +422,10 @@ fn rate_limits(limits: &Value) -> Vec<EventPayload> {
             let w = &limits[*window];
             let used = w["usedPercent"].as_f64()?;
             let resets = time::OffsetDateTime::from_unix_timestamp(w["resetsAt"].as_i64()?).ok()?;
-            let name = w["windowDurationMins"]
-                .as_u64()
-                .map_or_else(|| (*window).to_owned(), window_name);
+            let name = w["windowDurationMins"].as_u64().map_or_else(
+                || (*window).to_owned(),
+                beton_core::usage::window_from_minutes,
+            );
             Some(EventPayload::UsageSubscription(UsageSubscription {
                 vendor: "openai".into(),
                 window: name,

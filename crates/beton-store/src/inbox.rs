@@ -3,7 +3,8 @@
 //! Die Inbox entsteht allein aus dem Event-Log und lässt sich je Session neu aufbauen
 //! (UX-001 AC4): `approval.requested` wird zum offenen Eintrag (`approval` bzw. `question`),
 //! `approval.resolved` – egal von welchem Client – macht ihn `done`, `policy.notified` wird zum
-//! Hinweis (`notice`, Status `info`). Der Zähler der Inbox sind die offenen Einträge.
+//! Hinweis (`notice`, Status `info`), ebenso `usage.rate_limit_high` (Abo-Fenster fast
+//! aufgebraucht, USE-004 AC3). Der Zähler der Inbox sind die offenen Einträge.
 //!
 //! Der Zustand der Policy-Scopes `user` und `user_day` ist kein Projektionsstand, sondern Daten
 //! des Users; ein Rebuild lässt ihn unberührt.
@@ -175,9 +176,61 @@ pub(crate) async fn index_event(
             .execute(&mut *conn)
             .await?;
         }
+        EventPayload::UsageRateLimitHigh(u) => {
+            let window = beton_core::usage::window_name(&u.window);
+            let harness: Option<String> =
+                sqlx::query_scalar("SELECT harness FROM sessions WHERE org_id = ? AND id = ?")
+                    .bind(org.to_string())
+                    .bind(session.to_string())
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            let who = harness.unwrap_or_else(|| u.vendor.clone());
+            let title = format!(
+                "Abo-Kontingent fast aufgebraucht: {who}, Fenster {window} zu {} %",
+                pct(u.used_pct)
+            );
+            let summary = format!(
+                "Das Fenster {window} setzt sich um {} (UTC) zurück; bis dahin kann die CLI \
+                 Anfragen ablehnen.",
+                u.resets_at
+            );
+            sqlx::query(
+                "INSERT INTO inbox_items (id, org_id, session_id, kind, status, title, summary, \
+                 detail, created_seq, created_at) VALUES (?, ?, ?, 'notice', 'info', ?, ?, ?, ?, ?)",
+            )
+            .bind(item_id(session, seq))
+            .bind(org.to_string())
+            .bind(session.to_string())
+            .bind(title)
+            .bind(summary)
+            .bind(
+                json!({
+                    "notification": "rate_limit_high",
+                    "vendor": u.vendor,
+                    "window": window,
+                    "used_pct": u.used_pct,
+                    "resets_at": u.resets_at,
+                    "threshold_pct": u.threshold_pct,
+                })
+                .to_string(),
+            )
+            .bind(to_i64(seq)?)
+            .bind(ts.to_string())
+            .execute(&mut *conn)
+            .await?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Prozentwert wie in der UI: ganze Zahl, sonst eine Nachkommastelle mit Komma.
+fn pct(v: f64) -> String {
+    if (v - v.round()).abs() < 0.05 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.1}").replace('.', ",")
+    }
 }
 
 const COLUMNS: &str = "i.id, i.session_id, s.title AS session_title, i.kind, i.status, \
@@ -276,6 +329,30 @@ impl Store {
             .await?
             .ok_or_else(|| Error::NotFound(format!("Inbox-Eintrag {id}")))?;
         from_row(&row)
+    }
+
+    /// Gibt es den Hinweis „Abo-Fenster fast aufgebraucht“ für dieses Fenster und diesen
+    /// Reset-Zeitpunkt schon (USE-004 AC3: einmal je Fenster und Periode)?
+    pub async fn rate_limit_notice_exists(
+        &self,
+        org: OrgId,
+        vendor: &str,
+        window: &str,
+        resets_at: Timestamp,
+    ) -> Result<bool> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM inbox_items WHERE org_id = ? AND kind = 'notice' \
+             AND json_extract(detail, '$.notification') = 'rate_limit_high' \
+             AND json_extract(detail, '$.vendor') = ? AND json_extract(detail, '$.window') = ? \
+             AND json_extract(detail, '$.resets_at') = ?",
+        )
+        .bind(org.to_string())
+        .bind(vendor)
+        .bind(beton_core::usage::window_name(window))
+        .bind(resets_at.to_string())
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n > 0)
     }
 
     /// Zähler der Inbox: offene Freigaben und Fragen (UX-001 AC3).

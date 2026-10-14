@@ -479,17 +479,6 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     out
 }
 
-/// Name eines Abo-Fensters wie bei Codex (`5h`, `7d`): `five_hour` → `5h`, `seven_day` →
-/// `7d`, `seven_day_opus` → `7d_opus`; Unbekanntes bleibt unverändert.
-pub fn window_name(kind: &str) -> String {
-    for (prefix, short) in [("five_hour", "5h"), ("seven_day", "7d")] {
-        if let Some(rest) = kind.strip_prefix(prefix) {
-            return format!("{short}{rest}");
-        }
-    }
-    kind.to_owned()
-}
-
 /// `rate_limit_event` → je Fenster ein `usage.subscription` (USE-004, HAR-021). Gegen 2.1.296
 /// verifiziert: `unifiedWindows` nennt alle Fenster (`five_hour`, `seven_day`) mit
 /// `utilization` (0–1) und `resetsAt` (Unix-Sekunden), `rateLimitType` nur das gerade
@@ -500,7 +489,7 @@ fn map_rate_limit(v: &Value) -> Vec<EventPayload> {
         let resets_at = time::OffsetDateTime::from_unix_timestamp(resets?).ok()?;
         Some(EventPayload::UsageSubscription(UsageSubscription {
             vendor: "anthropic".into(),
-            window: window_name(kind),
+            window: beton_core::usage::window_name(kind),
             used_pct: (used? * 100.0 * 10.0).round() / 10.0,
             resets_at: Timestamp::from(resets_at),
         }))
@@ -749,14 +738,6 @@ mod tests {
             result_cost(&result, AuthSource::ApiKey).cost_micro,
             Some(50_000)
         );
-    }
-
-    #[test]
-    fn window_names_follow_codex() {
-        assert_eq!(window_name("five_hour"), "5h");
-        assert_eq!(window_name("seven_day"), "7d");
-        assert_eq!(window_name("seven_day_sonnet"), "7d_sonnet");
-        assert_eq!(window_name("overage"), "overage");
     }
 
     #[test]
