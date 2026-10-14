@@ -65,6 +65,8 @@ pub const EVAL_TIMEOUT: Duration = Duration::from_millis(250);
 pub const USAGE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Wartezeit auf eine menschliche Freigabe (wie das Gate der Adapter, HAR-005 AC4).
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Claude-Tool, mit dem das Modell den Plan-Modus verlassen will (HAR-027).
+const EXIT_PLAN_MODE: &str = "ExitPlanMode";
 /// Begründung, wenn eine Rückfrage andere Argumente trägt als der geprüfte Call (#233).
 pub const CHANGED_AFTER_CHECK: &str = "Abgelehnt von beton: Die Argumente wurden nach der Policy-Prüfung verändert (z. B. durch einen weiteren Hook).";
 /// Präfix eigener Call-IDs des Relay-Hubs (Aufruf ohne zugeordnetes `tool.call.requested`).
@@ -2203,7 +2205,17 @@ impl Gate for PolicyGate {
                     .lock()
                     .map(|s| s.permission_mode == Some(PermissionMode::Yolo))
                     .unwrap_or(false);
-                if req.origin == GateOrigin::AutoApproval || v.human || kind == "system" || yolo {
+                // #151 gilt nur für System-Tools, die beton selbst einbindet (reservierter
+                // Server), nicht für Claude-Builtins der Klasse `system`; `ExitPlanMode`
+                // entscheidet immer ein Mensch (Re-Review R3 zu #253, HAR-027).
+                let beton_system = kind == "system"
+                    && normalize_source(&self.tool_source(&req), &req.args)
+                        .is_ok_and(|n| n.server != "builtin");
+                let plan_exit = req.tool == EXIT_PLAN_MODE;
+                if v.human
+                    || (!plan_exit
+                        && (req.origin == GateOrigin::AutoApproval || beton_system || yolo))
+                {
                     return GateDecision::Allow {
                         updated_args: updated,
                     };

@@ -250,6 +250,18 @@ pub fn policy_start_mode(
     Ok(Some(mode))
 }
 
+/// Ist die Session an `plan` gebunden (`SessionSpec.plan_locked`, HAR-027)? Wie
+/// [`plan_bound`], zusätzlich wenn eine Policy den Modus beim Start auf `plan` gesetzt hat
+/// (Re-Review R3 zu #253): Dann verlässt die Session `plan` nicht per `ExitPlanMode`.
+pub fn plan_locked(
+    agent: Option<PermissionMode>,
+    start: Option<PermissionMode>,
+    policy: Option<PermissionMode>,
+) -> bool {
+    plan_bound(agent, start)
+        || (policy == Some(PermissionMode::Plan) && start == Some(PermissionMode::Plan))
+}
+
 /// Einstellungen beim Start einer Session (aus `session.created` bzw. den letzten
 /// `session.settings_changed`). Der Effort wird gegen die Stufen des Harness gemappt; ob der
 /// Harness den Permission-Mode abbilden kann, prüft der Adapter beim Start (manche kennen ihre

@@ -787,6 +787,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
     }
     let mut pre = PreStart::default();
+    // Von einer Policy beim Start gesetzter Permission-Mode (bindet `plan`, HAR-027).
+    let mut policy_mode: Option<beton_harness::PermissionMode> = None;
     if refusal.is_none() {
         let start = beton_policy::vars::StartVars {
             trigger: Some(
@@ -834,11 +836,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     &m,
                     caps.as_ref().unwrap_or(&fallback_caps),
                 ) {
-                    Ok(()) => gate.set_settings(
-                        start_settings.model.clone(),
-                        start_settings.effort.clone(),
-                        start_settings.permission_mode,
-                    ),
+                    Ok(mode) => {
+                        policy_mode = mode;
+                        gate.set_settings(
+                            start_settings.model.clone(),
+                            start_settings.effort.clone(),
+                            start_settings.permission_mode,
+                        );
+                    }
                     // Fail closed (#231): z. B. `yolo` ohne Sandbox.
                     Err(r) => {
                         refusal = Some((vec![format!("{}: {}", r.code, r.detail)], Vec::new()))
@@ -868,10 +873,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         mcp: setup.injection.clone(),
         max_turns: setup.max_turns,
         instructions: setup.instructions.clone(),
-        // Ein Agent mit `permission_mode: plan` verlässt `plan` nicht selbst (AGT-011).
-        plan_locked: settings::plan_bound(
+        // Ein Agent mit `permission_mode: plan` bzw. eine Policy, die `plan` erzwingt, verlässt
+        // `plan` nicht selbst (AGT-011, HAR-027).
+        plan_locked: settings::plan_locked(
             setup.agent_permission_mode,
             start_settings.permission_mode,
+            policy_mode,
         ),
         hook: hook.clone(),
         ..SessionSpec::default()
@@ -1740,7 +1747,7 @@ fn apply_start_modifications(
     start: &mut settings::Change,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
-) -> Result<(), settings::Rejected> {
+) -> Result<Option<beton_harness::PermissionMode>, settings::Rejected> {
     let mode = settings::policy_start_mode(
         start.permission_mode,
         m.permission_mode.as_deref(),
@@ -1758,7 +1765,7 @@ fn apply_start_modifications(
     if let Some(mode) = mode {
         start.permission_mode = Some(mode);
     }
-    Ok(())
+    Ok(mode)
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
