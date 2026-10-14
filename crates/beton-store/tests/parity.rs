@@ -34,16 +34,23 @@ fn data_003_ac1_every_migration_exists_in_both_dialects() {
         postgres.keys().collect::<Vec<_>>(),
         "Migrationen müssen in beiden Dialekten mit gleichem Namen existieren"
     );
-    for (i, name) in sqlite.keys().enumerate() {
+    // Nummern sind eindeutig und aufsteigend ab 0001. Eine Lücke ist erlaubt, solange ein
+    // paralleles Arbeitspaket die Nummer reserviert hat; der Migrator zieht sie nach.
+    let mut last = 0;
+    for name in sqlite.keys() {
         let number: i64 = name[..4].parse().unwrap();
-        assert_eq!(
-            number,
-            i as i64 + 1,
-            "{name}: Nummerierung lückenlos ab 0001"
+        assert!(
+            number > last,
+            "{name}: Nummer doppelt oder nicht aufsteigend"
         );
         assert_eq!(&name[4..5], "_", "{name}: Format NNNN_<name>.sql");
+        last = number;
     }
-    assert_eq!(sqlite.len() as i64, beton_store::SCHEMA_VERSION);
+    assert!(
+        sqlite.contains_key("0001_init.sql"),
+        "Nummerierung beginnt bei 0001"
+    );
+    assert_eq!(last, beton_store::SCHEMA_VERSION);
 }
 
 #[tokio::test]

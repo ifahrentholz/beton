@@ -4,7 +4,7 @@ use beton_core::event::{
     Actor, Event, EventPayload, SessionCreated, SessionKind, SessionStatus, SessionTrigger,
     TitleSource,
 };
-use beton_core::id::{EventId, NodeId, OrgId, PrincipalId, ProjectId, SessionId, UserId};
+use beton_core::id::{NodeId, OrgId, PrincipalId, ProjectId, SessionId, UserId};
 use beton_core::time::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -108,17 +108,6 @@ pub struct Tombstone {
     pub owner: PrincipalId,
     pub deleted_at: Timestamp,
     pub deleted_by: PrincipalId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct AuditEntry {
-    pub id: String,
-    pub at: Timestamp,
-    pub actor: PrincipalId,
-    pub action: String,
-    pub target_kind: String,
-    pub target_id: String,
-    pub details: serde_json::Value,
 }
 
 pub(crate) fn enum_to_str<T: Serialize>(value: &T) -> String {
@@ -511,26 +500,27 @@ impl Store {
         let now = Timestamp::now();
         let tombstones = delete_tree(&mut tx, org, id, by, now).await?;
         let deleted: Vec<&str> = tombstones.iter().map(|t| t.id.as_str()).collect();
-        sqlx::query(
-            "INSERT INTO audit_entries (id, org_id, at, actor_id, action, target_kind, target_id, \
-             details) VALUES (?, ?, ?, ?, 'session.delete', 'session', ?, ?)",
+        crate::audit::append_in(
+            &mut tx,
+            org,
+            &crate::audit::NewAuditEntry {
+                at: now,
+                actor: by,
+                action: "session.delete".into(),
+                target_kind: "session".into(),
+                target_id: id.to_string(),
+                session_id: None,
+                host_id: None,
+                details: serde_json::json!({
+                    "deleted": deleted,
+                    "authority": match authority {
+                        DeleteAuthority::Owner => "owner",
+                        DeleteAuthority::OrgAdmin => "org_admin",
+                    },
+                }),
+            },
+            1,
         )
-        .bind(EventId::new().ulid().to_string())
-        .bind(org.to_string())
-        .bind(now.to_string())
-        .bind(by.to_string())
-        .bind(id.to_string())
-        .bind(
-            serde_json::json!({
-                "deleted": deleted,
-                "authority": match authority {
-                    DeleteAuthority::Owner => "owner",
-                    DeleteAuthority::OrgAdmin => "org_admin",
-                },
-            })
-            .to_string(),
-        )
-        .execute(&mut *tx)
         .await?;
         tx.commit().await?;
         Ok(tombstones)
@@ -582,31 +572,6 @@ impl Store {
                 owner: parse(row.try_get("owner_id")?)?,
                 deleted_at: parse(row.try_get("deleted_at")?)?,
                 deleted_by: parse(row.try_get("deleted_by")?)?,
-            })
-        })
-        .collect()
-    }
-
-    /// Audit-Einträge, neueste zuerst.
-    pub async fn audit_entries(&self, org: OrgId, limit: u32) -> Result<Vec<AuditEntry>> {
-        sqlx::query(
-            "SELECT id, at, actor_id, action, target_kind, target_id, details FROM audit_entries \
-             WHERE org_id = ? ORDER BY at DESC, id DESC LIMIT ?",
-        )
-        .bind(org.to_string())
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?
-        .iter()
-        .map(|row| {
-            Ok(AuditEntry {
-                id: row.try_get("id")?,
-                at: parse(row.try_get("at")?)?,
-                actor: parse(row.try_get("actor_id")?)?,
-                action: row.try_get("action")?,
-                target_kind: row.try_get("target_kind")?,
-                target_id: row.try_get("target_id")?,
-                details: serde_json::from_str(row.try_get("details")?)?,
             })
         })
         .collect()

@@ -5,6 +5,8 @@
 //! - Ein exklusiver Datei-Lock (`<db>.lock`) verhindert, dass zwei gleichzeitig startende
 //!   Daemons doppelt migrieren.
 //! - Vor jeder Migration einer bestehenden Datenbank entsteht `<db>.bak-<version>`.
+//! - Fehlende Versionen werden auch unterhalb des aktuellen Stands nachgezogen (Lücken durch
+//!   reservierte Nummern paralleler Arbeitspakete).
 //! - Down-Migrationen gibt es nicht; eine Datenbank mit neuerer Version wird abgelehnt
 //!   (`schema_too_new`).
 
@@ -64,10 +66,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "session_title_source",
         sql: include_str!("../migrations/sqlite/0008_session_title_source.sql"),
     },
+    // 0009 ist für WP-34 (Usage) reserviert; siehe `migrate` zu Lücken.
+    Migration {
+        version: 10,
+        name: "secrets_audit",
+        sql: include_str!("../migrations/sqlite/0010_secrets_audit.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 10;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
@@ -106,8 +114,14 @@ async fn migrate(
             binary: latest,
         });
     }
+    // Angewendet wird jede noch fehlende Version, nicht nur die oberhalb des Stands: Parallele
+    // Arbeitspakete reservieren Nummern, und eine niedrigere kann nach einer höheren gemergt
+    // werden. Migrationen mit Lücke dürfen deshalb nicht voneinander abhängen.
+    let applied: Vec<i64> = sqlx::query_scalar("SELECT version FROM schema_migrations")
+        .fetch_all(&mut *conn)
+        .await?;
     let mut version = current;
-    for m in migrations.iter().filter(|m| m.version > current) {
+    for m in migrations.iter().filter(|m| !applied.contains(&m.version)) {
         if version > 0 {
             backup(conn, db_path, version).await?;
         }
@@ -125,7 +139,7 @@ async fn migrate(
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        version = m.version;
+        version = version.max(m.version);
     }
     Ok(())
 }
@@ -198,9 +212,42 @@ mod tests {
     fn migration_files_are_embedded_in_order() {
         let latest = MIGRATIONS.last().unwrap().version;
         assert_eq!(latest, SCHEMA_VERSION);
-        for (i, m) in MIGRATIONS.iter().enumerate() {
-            assert_eq!(m.version, i as i64 + 1);
+        // Streng aufsteigend; Lücken sind erlaubt, solange parallele Arbeitspakete Nummern
+        // reserviert haben (die fehlende Migration wird später nachgezogen).
+        for pair in MIGRATIONS.windows(2) {
+            assert!(pair[0].version < pair[1].version, "{pair:?}");
         }
+        assert_eq!(MIGRATIONS[0].version, 1);
+    }
+
+    /// Eine Migration, die erst nach einer höheren Nummer gemergt wird (reservierte Nummer
+    /// eines parallelen Arbeitspakets), wird trotzdem nachgezogen (DATA-003).
+    #[tokio::test]
+    async fn data_003_late_migration_below_head_is_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("beton.db");
+        let first = Migration {
+            version: 1,
+            name: "a",
+            sql: "CREATE TABLE a (id TEXT NOT NULL PRIMARY KEY);",
+        };
+        let late = Migration {
+            version: 2,
+            name: "b",
+            sql: "CREATE TABLE b (id TEXT NOT NULL PRIMARY KEY);",
+        };
+        let head = Migration {
+            version: 3,
+            name: "c",
+            sql: "CREATE TABLE c (id TEXT NOT NULL PRIMARY KEY);",
+        };
+        run(&db, &[first, head]).await.unwrap();
+        assert_eq!(versions(&db).await, vec![1, 3]);
+        run(&db, &[first, late, head]).await.unwrap();
+        assert_eq!(versions(&db).await, vec![1, 2, 3]);
+        // Erneut: nichts mehr zu tun.
+        run(&db, &[first, late, head]).await.unwrap();
+        assert_eq!(versions(&db).await, vec![1, 2, 3]);
     }
 
     #[tokio::test]
@@ -236,7 +283,7 @@ mod tests {
         assert_eq!(versions(&backup).await, vec![1]);
         assert_eq!(
             versions(&db).await,
-            (1..=SCHEMA_VERSION).collect::<Vec<_>>()
+            MIGRATIONS.iter().map(|m| m.version).collect::<Vec<_>>()
         );
     }
 
@@ -271,7 +318,11 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 rt.block_on(versions(&db)),
-                (1..=SCHEMA_VERSION + 1).collect::<Vec<_>>()
+                MIGRATIONS
+                    .iter()
+                    .map(|m| m.version)
+                    .chain([SCHEMA_VERSION + 1])
+                    .collect::<Vec<_>>()
             );
         }
     }
