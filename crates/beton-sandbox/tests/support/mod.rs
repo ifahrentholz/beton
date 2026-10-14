@@ -177,7 +177,7 @@ pub fn exe_grant() -> String {
 pub fn probe_result(out: &Out) -> String {
     out.stdout
         .lines()
-        .find_map(|l| l.strip_prefix("PROBE "))
+        .find_map(|l| l.split_once("PROBE ").map(|(_, r)| r))
         .unwrap_or_else(|| panic!("Sonde lief nicht: {out:?}"))
         .to_owned()
 }
@@ -397,10 +397,10 @@ pub fn processes_with(marker: &str) -> Vec<u32> {
             let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
             };
-            if let Ok(cmd) = std::fs::read(e.path().join("cmdline")) {
-                if String::from_utf8_lossy(&cmd).contains(marker) {
-                    found.push(pid);
-                }
+            if let Ok(cmd) = std::fs::read(e.path().join("cmdline"))
+                && String::from_utf8_lossy(&cmd).contains(marker)
+            {
+                found.push(pid);
             }
         }
         found

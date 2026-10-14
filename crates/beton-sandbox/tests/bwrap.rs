@@ -87,11 +87,8 @@ fn sbx_009_ac3_bwrap_arguments_contain_no_environment_values() {
     }
     let ssh = root.join("home/.ssh").display().to_string();
     let env = root.join("ws/.env").display().to_string();
-    assert!(
-        args.iter().any(|a| *a == ssh),
-        "Maske ~/.ssh fehlt: {joined}"
-    );
-    assert!(args.iter().any(|a| *a == env), "Maske .env fehlt: {joined}");
+    assert!(args.contains(&ssh), "Maske ~/.ssh fehlt: {joined}");
+    assert!(args.contains(&env), "Maske .env fehlt: {joined}");
     // Nach `--` folgen nur der Launcher und sein Modus, nicht das Ziel-Kommando.
     let tail = &args[args.iter().position(|a| a == "--").unwrap() + 1..];
     assert_eq!(tail, ["/usr/bin/beton", "__sandbox-exec"]);

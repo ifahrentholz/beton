@@ -110,7 +110,7 @@ mod live {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let line = stdout
             .lines()
-            .find_map(|l| l.strip_prefix("PROBE "))
+            .find_map(|l| l.split_once("PROBE ").map(|(_, r)| r))
             .unwrap_or_else(|| panic!("Sonde lief nicht: {stdout}"));
         let started: usize = line
             .split_whitespace()

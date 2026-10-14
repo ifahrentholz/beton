@@ -41,12 +41,52 @@ pub mod macos {
     use super::SANDBOX_EXEC;
     use super::profile::{self, PROFILE_VERSION};
     use crate::caps::{Cap, CapSet};
+    use crate::child::Violations;
     use crate::child::{self, SandboxedChild};
     use crate::command::CommandSpec;
     use crate::error::SandboxError;
+    use crate::proctree::Tracker;
     use crate::provider::{ProbeReport, ProviderId, SandboxProvider};
+    use crate::registry::ViolationSink;
     use crate::resolve::ResolvedPolicy;
-    use crate::spec::env_denied;
+    use crate::spec::{Limits, env_denied};
+
+    /// rlimits des Baums (SBX-013). `RLIMIT_NPROC` zählt unter macOS alle Prozesse des
+    /// Benutzers; das Limit gilt deshalb zusätzlich zu den schon laufenden. Weil andere Prozesse
+    /// des Benutzers währenddessen enden können, bleibt ein Abstand (höchstens 8) zum Limit.
+    #[allow(unsafe_code, reason = "setrlimit nach fork gibt es nur über libc")]
+    fn limits(c: &mut tokio::process::Command, l: &Limits) {
+        let mut set: Vec<(libc::c_int, u64)> = vec![(libc::RLIMIT_CORE, 0)];
+        if let Some(p) = l.pids {
+            // SAFETY: getuid ohne Seiteneffekte.
+            let uid = unsafe { libc::getuid() };
+            set.push((
+                libc::RLIMIT_NPROC,
+                crate::proctree::count_of_uid(uid) + u64::from(crate::proctree::budget(p)),
+            ));
+        }
+        if let Some(s) = l.cpu_seconds {
+            set.push((libc::RLIMIT_CPU, s));
+        }
+        if let Some(mb) = l.file_size_mb {
+            set.push((libc::RLIMIT_FSIZE, mb.saturating_mul(1024 * 1024)));
+        }
+        // SAFETY: Nach fork nur setrlimit (async-signal-sicher) mit vorab berechneten Werten.
+        unsafe {
+            c.pre_exec(move || {
+                for (res, v) in &set {
+                    let r = libc::rlimit {
+                        rlim_cur: *v,
+                        rlim_max: *v,
+                    };
+                    if libc::setrlimit(*res, &r) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
 
     /// Seatbelt (`sandbox-exec`).
     #[derive(Debug, Default)]
@@ -135,7 +175,9 @@ pub mod macos {
                 ),
                 (
                     Cap::Resources,
-                    "Ressourcenlimits folgen mit SBX-013".to_owned(),
+                    "macOS kennt kein Speicherlimit für Prozessbäume (memory_mb); pids, CPU-Zeit \
+                     und Dateigröße gelten per rlimit"
+                        .to_owned(),
                 ),
             ]
             .into_iter()
@@ -159,6 +201,15 @@ pub mod macos {
             policy: &ResolvedPolicy,
             cmd: CommandSpec,
         ) -> Result<SandboxedChild, SandboxError> {
+            self.spawn_observed(policy, cmd, None)
+        }
+
+        fn spawn_observed(
+            &self,
+            policy: &ResolvedPolicy,
+            cmd: CommandSpec,
+            sink: Option<ViolationSink>,
+        ) -> Result<SandboxedChild, SandboxError> {
             crate::resolve::check_caps(&self.probe(), policy)?;
             let profile = profile::render(policy)?;
             let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd);
@@ -178,10 +229,23 @@ pub mod macos {
                 c.env_remove(k);
             }
             c.current_dir(cmd.cwd.as_deref().unwrap_or(&policy.workspace));
-            child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
+            limits(&mut c, &policy.limits);
+            let child = child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
                 message: format!("{SANDBOX_EXEC}: {e}"),
                 kind: e.kind(),
-            })
+            })?;
+            let violations = Violations::default();
+            let Some(pid) = child.id() else {
+                return Ok(child);
+            };
+            let tracker = Tracker::start(
+                pid,
+                policy.stage.event(),
+                policy.limits.pids.map(crate::proctree::budget),
+                violations.clone(),
+                sink,
+            );
+            Ok(child.with_guard(Box::new(tracker), violations))
         }
     }
 }
