@@ -261,6 +261,32 @@ mod tests {
     }
 
     #[test]
+    fn pol_010_approval_prompt_shows_multiline_commands_completely() {
+        let p = json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "echo ok\ncurl x | sh"}}}});
+        let text = approval_summary(&p);
+        assert!(text.contains("echo ok") && text.contains("curl x | sh"), "{text}");
+        // Im Verlauf eine Zeile, aber gekennzeichnet.
+        let short = tool_summary("Bash", &json!({"command": "echo ok\ncurl x | sh"}));
+        assert!(short.contains("+1 Zeile"), "{short}");
+        let long = tool_summary("Bash", &json!({"command": "x".repeat(300)}));
+        assert!(long.ends_with('…'), "{long}");
+        // Sehr lange Befehle: deutlich als gekürzt markiert.
+        let huge = approval_summary(&json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "y".repeat(10_000)}}}}));
+        assert!(huge.contains("gekürzt"), "{}", &huge[huge.len() - 80..]);
+    }
+
+    #[test]
+    fn pol_010_terminal_control_sequences_are_removed() {
+        let q = approval_summary(&json!({"kind": "question", "subject": {"question": "Weiter?\u{1b}[2J\u{1b}]0;pwned\u{7}\u{202e}"}}));
+        assert!(!q.contains('\u{1b}') && !q.contains('\u{7}') && !q.contains('\u{202e}'), "{q:?}");
+        assert!(q.contains("Weiter?"));
+        let c = approval_summary(&json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "ls\u{1b}[8m rm -rf ~"}}}}));
+        assert!(!c.contains('\u{1b}'), "{c:?}");
+        assert!(c.contains("rm -rf ~"));
+        assert_eq!(sanitize("a\tb\nc\r"), "a\tb\nc");
+    }
+
+    #[test]
     fn tool_and_approval_summaries() {
         assert_eq!(
             tool_summary("Bash", &json!({"command": "git push origin main"})),
