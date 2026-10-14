@@ -180,6 +180,8 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
             write_file("/proc/self/setgroups", "deny")?;
             write_file("/proc/self/uid_map", &format!("{uid} {uid} 1"))?;
             write_file("/proc/self/gid_map", &format!("{gid} {gid} 1"))?;
+            // Erst nach den ID-Maps: Sie verlangen ein beschreibbares /proc/self.
+            util::set_dumpable(false).map_err(|e| StepError::io("start", "dumpable", e))?;
             match util::fork().map_err(|e| StepError::io("start", "fork", e))? {
                 0 => {
                     close(go_w);
@@ -190,6 +192,7 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
             }
         }
         LaunchMode::Bwrap { bwrap } => {
+            util::set_dumpable(false).map_err(|e| StepError::io("start", "dumpable", e))?;
             let dir = tempfile::Builder::new()
                 .prefix("beton-mask-")
                 .tempdir()
@@ -434,6 +437,9 @@ fn p1_run(
     } else {
         plan::mask_targets(plan).map_err(|e| StepError::new("masken", e.to_string()))?
     };
+    // Nach den Mounts (die /proc/self/fd brauchen): Das Ziel kann P1 bzw. den inneren Launcher
+    // weder über /proc/<pid>/mem noch per ptrace erreichen, auch ohne Yama.
+    util::set_dumpable(false).map_err(|e| StepError::io("start", "dumpable", e))?;
     let proxy_port = match plan.net {
         NetMode::ProxyOnly { port } => Some(port),
         NetMode::None => None,

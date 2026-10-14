@@ -108,6 +108,7 @@ fn recv_fd(sock: RawFd) -> io::Result<Option<(u8, Option<RawFd>)>> {
 
 /// Hilfsprozess: alle Rechte abgeben, die er nicht braucht.
 fn confine(abi: u32, connect_port: Option<u16>) -> Result<(), String> {
+    util::set_dumpable(false).map_err(|e| e.to_string())?;
     util::set_no_new_privs().map_err(|e| e.to_string())?;
     super::landlock::deny_all(abi, connect_port)?;
     super::seccomp::apply(abi)

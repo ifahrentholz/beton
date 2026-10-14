@@ -193,6 +193,16 @@ pub fn set_pdeathsig(sig: libc::c_int) -> io::Result<()> {
     Ok(())
 }
 
+/// Nicht „dumpable“: `/proc/<pid>/mem` und ptrace verlangen dann `CAP_SYS_PTRACE`. Die
+/// Hilfsprozesse der Sandbox (Launcher, Relay, Connector) sind so auch dort nicht von außen
+/// beschreibbar, wo Yama ptrace nicht einschränkt (z. B. Debian, `ptrace_scope=0`). `execve`
+/// setzt das für das Ziel zurück.
+pub fn set_dumpable(yes: bool) -> io::Result<()> {
+    // SAFETY: prctl mit einfachen Ganzzahl-Argumenten.
+    cvt(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, libc::c_ulong::from(yes), 0, 0, 0) })?;
+    Ok(())
+}
+
 pub fn set_no_new_privs() -> io::Result<()> {
     // SAFETY: prctl mit einfachen Ganzzahl-Argumenten.
     cvt(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })?;
