@@ -50,6 +50,9 @@ pub struct Settings {
     pub features: Vec<String>,
     /// Eigene Preise (USE-003); nur in der User-Konfiguration.
     pub pricing: PricingSettings,
+    /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
+    /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
+    pub sandbox: beton_sandbox::SandboxSpec,
 }
 
 impl Settings {
@@ -540,7 +543,33 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
             message,
         })?;
     }
+    validate_sandbox(&settings.sandbox).map_err(|(key, message)| ConfigError::Invalid {
+        origin: origin.to_owned(),
+        key,
+        message,
+    })?;
     Ok(settings)
+}
+
+/// SBX-003: Die Sandbox-Konfiguration wird beim Laden geprüft (fail closed), samt Syntax der
+/// Egress-Regeln (PRX-003) und der privaten Freigaben (PRX-007).
+fn validate_sandbox(spec: &beton_sandbox::SandboxSpec) -> Result<(), (String, String)> {
+    spec.validate().map_err(|e| match e {
+        beton_sandbox::SandboxError::InvalidSpec { path, message }
+        | beton_sandbox::SandboxError::PathEscape { path, message } => {
+            (format!("sandbox.{path}"), message)
+        }
+        other => ("sandbox".to_owned(), other.to_string()),
+    })?;
+    for (i, rule) in spec.egress_rules.iter().flatten().enumerate() {
+        beton_proxy::RuleSet::compile(std::slice::from_ref(rule))
+            .map_err(|e| (format!("sandbox.egress_rules[{i}]"), e.to_string()))?;
+    }
+    if let Some(entries) = &spec.egress_allow_private {
+        beton_proxy::PrivateAllowList::parse(entries)
+            .map_err(|e| ("sandbox.egress_allow_private".to_owned(), e.to_string()))?;
+    }
+    Ok(())
 }
 
 fn read_file(path: &Path) -> Result<Value, ConfigError> {

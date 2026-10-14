@@ -62,6 +62,10 @@ fn kill_child_writer() {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Test: eigener Prozess für den Kill-Test"
+)]
 fn spawn(path: &Path, start: u64, phase: Option<u8>) -> Child {
     let mut cmd = Command::new(std::env::current_exe().unwrap());
     cmd.args([

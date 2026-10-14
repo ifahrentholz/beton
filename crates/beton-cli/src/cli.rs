@@ -104,6 +104,9 @@ pub enum Command {
     /// Egress-Proxy der Sandbox verwalten.
     #[command(subcommand)]
     Proxy(ProxyCommand),
+    /// Sandbox: Fähigkeiten der Backends prüfen und die aufgelöste Sandbox anzeigen.
+    #[command(subcommand)]
+    Sandbox(SandboxCommand),
     /// Wartung von Datenbank und Projektionen.
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -594,6 +597,32 @@ pub enum AuthCommand {
     /// Lokales Token erneuern; laufende Clients lesen es neu.
     #[command(name = "rotate-local")]
     RotateLocal,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SandboxCommand {
+    /// Alle Sandbox-Backends dieses Rechners mit ihren Fähigkeiten und je fehlender Fähigkeit
+    /// dem Grund (ändert nichts).
+    Probe,
+    /// Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln
+    /// und die Namen der Environment-Variablen (nie ihre Werte).
+    Explain(SandboxExplainArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SandboxExplainArgs {
+    /// Stufe: `harness` (Vendor-CLI, Stufe 1) oder `tools` (Tool-Ausführung, Stufe 2).
+    #[arg(long, value_enum, default_value_t = SandboxStageArg::Tools)]
+    pub stage: SandboxStageArg,
+    /// Harness, dessen eigene Credential- und State-Pfade Stufe 1 bekommt (`claude`, `codex`).
+    #[arg(long, value_name = "HARNESS")]
+    pub harness: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SandboxStageArg {
+    Harness,
+    Tools,
 }
 
 #[derive(Debug, Subcommand)]

@@ -1,6 +1,10 @@
 //! Automatische Session-Titel (SES-010) mit echtem Runner, Fake-Harness bzw. Fake-CLI.
 //! Keine echten Vendor-CLIs, kein Netz.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

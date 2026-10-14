@@ -2,6 +2,10 @@
 //! AGT-007, AGT-008): Daemon im Prozess, Runner-Binary, Fake-Vendor-CLI (QA-002) als Harness
 //! und das Runner-Binary als MCP-Relay. Keine echten Vendor-CLIs, kein Netz außer Loopback.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

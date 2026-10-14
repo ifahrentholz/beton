@@ -453,7 +453,9 @@ dependencies = [
  "beton-harness-direct",
  "beton-host",
  "beton-mcp",
+ "beton-proxy",
  "beton-runner",
+ "beton-sandbox",
  "beton-sdk",
  "beton-secrets",
  "beton-server",
@@ -526,8 +528,9 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "beton-core",
- "process-wrap",
+ "beton-sandbox",
  "regex",
+ "rustix",
  "schemars",
  "semver",
  "serde",
@@ -619,6 +622,7 @@ dependencies = [
  "beton-core",
  "beton-harness",
  "beton-runner",
+ "beton-sandbox",
  "schemars",
  "serde",
  "serde_json",
@@ -638,6 +642,7 @@ dependencies = [
  "beton-agents",
  "beton-core",
  "beton-harness",
+ "beton-sandbox",
  "getrandom 0.4.3",
  "hex",
  "ignore",
@@ -742,6 +747,7 @@ dependencies = [
  "beton-host",
  "beton-mcp",
  "beton-proto",
+ "beton-sandbox",
  "beton-server",
  "beton-store",
  "futures-util",
@@ -752,6 +758,30 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
+name = "beton-sandbox"
+version = "0.0.0"
+dependencies = [
+ "beton-core",
+ "beton-proxy",
+ "libc",
+ "process-wrap",
+ "proptest",
+ "rcgen",
+ "regex",
+ "rustls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

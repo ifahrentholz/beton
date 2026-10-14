@@ -2,6 +2,10 @@
 //! HAR-026 AC1, RUN-002 AC1, SES-002 AC3). Echte Vendor-CLIs kommen nicht vor: `claude`
 //! ist die Fake-CLI über `BETON_CLAUDE_PATH` (QA-002), sonst der Fake-Harness.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 mod common;

@@ -612,6 +612,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Testaufbau: git initialisiert das Repo"
+    )]
     fn ses_017_search_by_name_and_content_respects_gitignore() {
         let (_tmp, ws, _) = ws();
         let root = ws.root().to_path_buf();

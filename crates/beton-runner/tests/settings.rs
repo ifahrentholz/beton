@@ -3,6 +3,10 @@
 //! die Fake-CLI (QA-002), ihr Verlauf liegt mit `--persist` in einem eigenen
 //! `CLAUDE_CONFIG_DIR`; sonst spielt der Fake-Harness.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

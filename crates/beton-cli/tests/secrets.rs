@@ -2,6 +2,10 @@
 //! Daemon. Ohne `BETON_TEST_KEYCHAIN=1` nutzen alle Tests den Datei-Store
 //! (`secrets.backend: file`), damit nie der Keychain des Entwicklers berührt wird.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 mod common;

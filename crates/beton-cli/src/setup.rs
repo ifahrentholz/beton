@@ -115,6 +115,10 @@ pub struct RealSpawner;
 
 #[async_trait]
 impl Spawner for RealSpawner {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Stufe 0: Installation und Login einer Vendor-CLI im Vordergrund auf Wunsch des Benutzers"
+    )]
     async fn run(&self, program: &str, args: &[String]) -> bool {
         tokio::process::Command::new(program)
             .args(args)
