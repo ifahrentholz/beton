@@ -69,7 +69,7 @@ impl PolicyStore {
         Self::default()
     }
 
-    /// Registriert ein Verzeichnis mit `*.yaml`-Policy-Sets (nicht rekursiv;
+    /// Registriert ein Verzeichnis mit `*.yaml`- bzw. `*.yml`-Policy-Sets (nicht rekursiv;
     /// `*.policytest.yaml` sind Tests und keine Sets).
     pub fn add_dir(&mut self, scope: Scope, dir: impl Into<PathBuf>) {
         self.dirs.push((scope, dir.into()));
@@ -252,9 +252,11 @@ fn is_policy_file(path: &Path) -> bool {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
+    // `.yml` wie `.yaml`: eine Datei mit der anderen Endung bliebe sonst still wirkungslos.
     path.is_file()
-        && name.ends_with(".yaml")
+        && (name.ends_with(".yaml") || name.ends_with(".yml"))
         && !name.ends_with(".policytest.yaml")
+        && !name.ends_with(".policytest.yml")
         && !name.starts_with('.')
 }
 

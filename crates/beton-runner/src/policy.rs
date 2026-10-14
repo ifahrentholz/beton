@@ -187,6 +187,37 @@ struct Verdict {
     subject: String,
 }
 
+/// `tool.*` aus einem normalisierten Tool-Call (POL-004).
+fn tool_vars(n: &beton_policy::normalize::NormalizedTool, call_index: Option<i64>) -> ToolVars {
+    let args = match &n.args {
+        Value::Object(m) => Some(m.clone().into_iter().collect()),
+        _ => None,
+    };
+    ToolVars {
+        name: Some(n.name.clone()),
+        native_name: Some(n.native_name.clone()),
+        server: Some(n.server.clone()),
+        kind: Some(n.kind.clone()),
+        args,
+        command: n.command.clone(),
+        argv: Some(n.argv.clone()),
+        cwd: Some(n.cwd.clone()),
+        paths: Some(n.paths.clone()),
+        urls: Some(n.urls.clone()),
+        call_index,
+        is_subagent_spawn: Some(n.is_subagent_spawn),
+        parse_uncertain: Some(n.parse_uncertain),
+        ..ToolVars::default()
+    }
+}
+
+/// Klasse des Adapters, wenn die Abbildungstabelle das Tool nicht kennt (z. B. Fake-Szenario).
+fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateRequest) {
+    if n.kind == "other" && beton_policy::enforcement::KINDS.contains(&req.kind.as_str()) {
+        n.kind.clone_from(&req.kind);
+    }
+}
+
 /// Hash des Subjekts eines Tool-Calls (`tool` und `args`), wie in `policy.decision`.
 fn tool_subject(tool: &str, args: &Value) -> String {
     subject_hash(&json!({"tool": tool, "args": args}))
@@ -427,17 +458,19 @@ impl PolicyGate {
 
     /// Enforcement-Matrix des Harness der Session (POL-024).
     pub fn set_matrix(&self, matrix: Matrix) {
-        if let Ok(mut m) = self.inner.matrix.lock() {
-            *m = matrix;
+        match self.inner.matrix.lock() {
+            Ok(mut m) => *m = matrix,
+            Err(p) => *p.into_inner() = matrix,
         }
     }
 
     fn matrix(&self) -> Matrix {
+        // Vergifteter Mutex: die zuletzt gesetzte Matrix, nie pauschal `full` (#234).
         self.inner
             .matrix
             .lock()
             .map(|m| m.clone())
-            .unwrap_or_else(|_| Matrix::full())
+            .unwrap_or_else(|p| p.into_inner().clone())
     }
 
     /// Modell, Effort und Permission-Mode der Session (für `session.*`).
@@ -781,7 +814,10 @@ impl PolicyGate {
                 approval_id: approval,
             },
         );
-        self.emit(EventPayload::PolicyDecision(event), turn, raw);
+        // Die Original-Zeile einer Rückfrage enthält die Argumente im Klartext; sie gehört nicht
+        // an `policy.decision` (POL-025 AC2, #234).
+        let _ = raw;
+        self.emit(EventPayload::PolicyDecision(event), turn, None);
         // `notify` blockiert nie (POL-006 AC2): als Hinweis ins Log; Zustellung über Inbox und
         // Push folgt mit WP-37.
         for n in &decision.notifications {
@@ -961,11 +997,7 @@ impl PolicyGate {
                         ..DecisionMeta::new(level)
                     },
                 );
-                self.emit(
-                    EventPayload::PolicyDecision(event),
-                    req.turn_id,
-                    req.raw.clone(),
-                );
+                self.emit(EventPayload::PolicyDecision(event), req.turn_id, None);
                 Verdict {
                     allowed: false,
                     human: false,
@@ -975,35 +1007,11 @@ impl PolicyGate {
                 }
             }
             Ok(mut n) => {
-                // Unbekannt in der Tabelle, aber vom Adapter klassifiziert (z. B. Fake-Szenario).
-                if n.kind == "other"
-                    && beton_policy::enforcement::KINDS.contains(&req.kind.as_str())
-                {
-                    n.kind.clone_from(&req.kind);
-                }
+                adapter_kind(&mut n, req);
                 if let Some(path) = self.touches_policy_files(&n) {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
-                let args = match &n.args {
-                    Value::Object(m) => Some(m.clone().into_iter().collect()),
-                    _ => None,
-                };
-                vars.tool = Some(ToolVars {
-                    name: Some(n.name.clone()),
-                    native_name: Some(n.native_name.clone()),
-                    server: Some(n.server.clone()),
-                    kind: Some(n.kind.clone()),
-                    args,
-                    command: n.command.clone(),
-                    argv: Some(n.argv.clone()),
-                    cwd: Some(n.cwd.clone()),
-                    paths: Some(n.paths.clone()),
-                    urls: Some(n.urls.clone()),
-                    call_index: Some(call_index),
-                    is_subagent_spawn: Some(n.is_subagent_spawn),
-                    parse_uncertain: Some(n.parse_uncertain),
-                    ..ToolVars::default()
-                });
+                vars.tool = Some(tool_vars(&n, Some(call_index)));
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,
@@ -1049,11 +1057,20 @@ impl PolicyGate {
                                 req.turn_id,
                             )
                             .await;
+                        // Vom Menschen geänderte Argumente prüft die Policy erneut (#234).
+                        let denied = match &human.updated_args {
+                            Some(new) if human.allow => {
+                                self.recheck_human_args(req, level, new).await
+                            }
+                            _ => None,
+                        };
                         let updated_args = human.updated_args.or(updated);
                         Verdict {
-                            allowed: human.allow,
+                            allowed: human.allow && denied.is_none(),
                             human: true,
-                            reason: human.reason.or_else(|| Some(reason_text(reasons))),
+                            reason: denied
+                                .or(human.reason)
+                                .or_else(|| Some(reason_text(reasons))),
                             subject: tool_subject(
                                 &req.tool,
                                 updated_args.as_ref().unwrap_or(&req.args),
@@ -1105,6 +1122,47 @@ impl PolicyGate {
             )
         } else {
             req.kind.clone()
+        }
+    }
+
+    /// Prüft vom Menschen geänderte Argumente erneut (eigenes `policy.decision` mit
+    /// `subject_ref.recheck`); `Some(Begründung)` bei `deny`. Ein `ask` gilt als beantwortet:
+    /// der Mensch hat genau diese Argumente freigegeben (#234).
+    async fn recheck_human_args(
+        &self,
+        req: &GateRequest,
+        level: Level,
+        args: &Value,
+    ) -> Option<String> {
+        let source = self.tool_source(req);
+        let mut n = match normalize_source(&source, args) {
+            Ok(n) => n,
+            Err(e) => return Some(format!("Geänderte Argumente nicht prüfbar: {e}")),
+        };
+        adapter_kind(&mut n, req);
+        if let Some(path) = self.touches_policy_files(&n) {
+            return Some(format!(
+                "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+            ));
+        }
+        let mut vars = self.base_vars("agent");
+        vars.tool = Some(tool_vars(&n, None));
+        let subject = json!({"tool": req.tool, "args": args});
+        let ev = self
+            .evaluate(
+                Phase::ToolCall,
+                vars,
+                Some(source),
+                level,
+                json!({"call_id": req.call_id, "recheck": true}),
+                Some(&subject),
+                req.turn_id,
+                None,
+            )
+            .await;
+        match ev.decision.outcome {
+            Outcome::Deny { reasons } => Some(reason_text(&reasons)),
+            Outcome::Allow | Outcome::Ask { .. } => None,
         }
     }
 
@@ -1346,6 +1404,13 @@ impl PolicyGate {
 #[async_trait]
 impl Gate for PolicyGate {
     async fn decide(&self, req: GateRequest) -> GateDecision {
+        // Ohne Call-ID teilten sich Calls gespeicherte Entscheide (#234): fail closed.
+        if req.call_id.trim().is_empty() {
+            tracing::warn!("Policy: Tool-Call ohne Call-ID abgelehnt");
+            return GateDecision::Deny {
+                reason: Some("Abgelehnt von beton: Tool-Call ohne ID.".into()),
+            };
+        }
         let kind = self.kind_of(&req);
         match req.origin {
             GateOrigin::PreTool => {
@@ -1409,11 +1474,27 @@ impl Gate for PolicyGate {
                         req.turn_id,
                     )
                     .await;
+                let denied = match &human.updated_args {
+                    Some(new) if human.allow => {
+                        let level = if had_prior {
+                            Level::Full
+                        } else {
+                            Level::ApprovalOnly
+                        };
+                        self.recheck_human_args(&req, level, new).await
+                    }
+                    _ => None,
+                };
                 if let Ok(mut d) = self.inner.decided.lock()
                     && let Some(entry) = d.get_mut(&req.call_id)
                 {
                     entry.human = true;
-                    entry.allowed = human.allow;
+                    entry.allowed = human.allow && denied.is_none();
+                }
+                if let Some(reason) = denied {
+                    return GateDecision::Deny {
+                        reason: Some(reason),
+                    };
                 }
                 if human.allow {
                     GateDecision::Allow {
@@ -1450,18 +1531,10 @@ impl Gate for PolicyGate {
         let source = self.tool_source(&req.call);
         let mut vars = self.base_vars("agent");
         match normalize_source(&source, &req.call.args) {
-            Ok(n) => {
-                vars.tool = Some(ToolVars {
-                    name: Some(n.name.clone()),
-                    native_name: Some(n.native_name.clone()),
-                    server: Some(n.server.clone()),
-                    kind: Some(n.kind.clone()),
-                    command: n.command.clone(),
-                    argv: Some(n.argv.clone()),
-                    paths: Some(n.paths.clone()),
-                    urls: Some(n.urls.clone()),
-                    ..ToolVars::default()
-                });
+            // Alle `tool.*` wie in `tool_call` (POL-004, #234).
+            Ok(mut n) => {
+                adapter_kind(&mut n, &req.call);
+                vars.tool = Some(tool_vars(&n, None));
             }
             Err(e) => {
                 return GateDecision::Deny {

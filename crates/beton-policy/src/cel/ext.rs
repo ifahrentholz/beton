@@ -129,17 +129,18 @@ pub fn bytes_human(n: u64) -> String {
 
 /// `url.host(u)`: Host nach WHATWG-URL-Regeln (wie ihn ein HTTP-Client auflöst), klein
 /// geschrieben; Fehler, wenn `u` keine URL mit Host ist.
+/// Fehlertexte nennen den Wert nicht: er stammt oft aus den Tool-Argumenten (POL-025 AC2).
 pub fn url_host(u: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL `{u}`: {e}"))?;
+    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL: {e}"))?;
     parsed
         .host_str()
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| format!("URL `{u}` hat keinen Host"))
+        .ok_or_else(|| "URL hat keinen Host".to_owned())
 }
 
 /// `url.path(u)`: Pfad der URL (ohne Query und Fragment).
 pub fn url_path(u: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL `{u}`: {e}"))?;
+    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL: {e}"))?;
     Ok(parsed.path().to_owned())
 }
 

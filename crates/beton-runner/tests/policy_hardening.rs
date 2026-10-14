@@ -513,7 +513,10 @@ async fn pol_010_human_changed_args_are_checked_again() {
     });
     loop {
         let e = rx.recv().await.unwrap();
-        if matches!(e.payload, beton_core::event::EventPayload::ApprovalRequested(_)) {
+        if matches!(
+            e.payload,
+            beton_core::event::EventPayload::ApprovalRequested(_)
+        ) {
             break;
         }
     }
