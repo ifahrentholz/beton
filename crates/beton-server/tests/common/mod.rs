@@ -52,6 +52,55 @@ pub async fn app_full(
     let store = Store::open(dir.path(), StoreOptions::default())
         .await
         .unwrap();
+    app_inner(dir, store, None, extra, peer, customize).await
+}
+
+/// App mit Redaction-Pipeline (SEC-013): Store und Secret-Dienst teilen sich die Pipeline;
+/// die bekannten Werte kommen über die `RedactionCap` aus `backend` (wie in `serve`).
+pub async fn app_redacting(
+    backend: Arc<dyn beton_secrets::backend::Backend>,
+) -> (
+    TestApp,
+    Arc<beton_secrets::Redactor>,
+    beton_secrets::Secrets,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let redactor = Arc::new(beton_secrets::Redactor::pending());
+    let store = Store::open(
+        dir.path(),
+        StoreOptions {
+            redactor: redactor.clone(),
+            ..StoreOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let local = store.ensure_local().await.unwrap();
+    let (secrets, caps) = beton_secrets::Secrets::new(store.clone(), local, backend);
+    caps.redaction
+        .attach(&secrets, redactor.clone())
+        .await
+        .unwrap();
+    let t = app_inner(
+        dir,
+        store,
+        Some(secrets.clone()),
+        |r| r,
+        "127.0.0.1:50000",
+        |r| r,
+    )
+    .await;
+    (t, redactor, secrets)
+}
+
+async fn app_inner(
+    dir: tempfile::TempDir,
+    store: Store,
+    secrets: Option<beton_secrets::Secrets>,
+    extra: impl FnOnce(Router<AppState>) -> Router<AppState>,
+    peer: &str,
+    customize: impl FnOnce(app::Runtime) -> app::Runtime,
+) -> TestApp {
     let local = store.ensure_local().await.unwrap();
     let token = LocalToken::load_or_create(dir.path()).unwrap();
     let token_text = std::fs::read_to_string(token.path())
@@ -80,7 +129,7 @@ pub async fn app_full(
                 app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands(),
             ),
             web_dir: Some(web),
-            secrets: None,
+            secrets,
         },
     )
     .layer(MockConnectInfo(peer.parse::<SocketAddr>().unwrap()));
