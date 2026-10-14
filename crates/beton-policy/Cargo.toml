@@ -1,0 +1,32 @@
+[package]
+name = "beton-policy"
+description = "Policy-Engine: CEL-Ausdrücke, Policy-Dokumente, Tool-Normalisierung und Kombination über die Ebenen (03-policies.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+beton-core.workspace = true
+# Nur der Parser (AST mit Positionen und Makro-Expansion); Typprüfung und Auswertung mit
+# Kostenbudget implementiert beton-policy selbst (POL-002).
+cel = { version = "0.15", default-features = false }
+hex.workspace = true
+regex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url = "2.5"
+yaml-rust2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

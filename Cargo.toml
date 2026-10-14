@@ -28,6 +28,7 @@ beton-mcp = { path = "crates/beton-mcp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 beton-git = { path = "crates/beton-git", version = "0.0.0" }
+beton-policy = { path = "crates/beton-policy", version = "0.0.0" }
 
 # extern
 anyhow = "1"
