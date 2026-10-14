@@ -42,7 +42,7 @@ pub struct MapState {
 }
 
 /// `system`-Untertypen, die beton nicht als Event braucht.
-const IGNORED_SYSTEM: [&str; 8] = [
+const IGNORED_SYSTEM: [&str; 9] = [
     "status",
     "hook_started",
     "hook_response",
@@ -51,6 +51,8 @@ const IGNORED_SYSTEM: [&str; 8] = [
     "post_turn_summary",
     "api_retry",
     "task_summary",
+    // Seit 2.1.296: Hinweis an die eigene Oberfläche der CLI, neu zu zeichnen.
+    "ui_invalidate",
 ];
 
 /// Eine Zeile auf null oder mehr Events abbilden. `control_request` und
