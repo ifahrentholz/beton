@@ -411,6 +411,17 @@ pub trait EventObserver: Send + Sync {
     fn observe(&self, session: SessionId, written: &[Event]);
 }
 
+/// Mehrere Beobachter nacheinander (Session-Titel, Abo-Fenster).
+pub struct Observers(pub Vec<Arc<dyn EventObserver>>);
+
+impl EventObserver for Observers {
+    fn observe(&self, session: SessionId, written: &[Event]) {
+        for o in &self.0 {
+            o.observe(session, written);
+        }
+    }
+}
+
 /// Zustand des Tunnel-Endpunkts.
 #[derive(Clone)]
 pub struct TunnelState {

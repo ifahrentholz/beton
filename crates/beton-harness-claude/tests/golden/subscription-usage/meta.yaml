@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.296
+recorded_at: 2026-10-14T21:41:55.562Z
+scenario: 'Kurzer Turn mit Subscription-Login: rate_limit_event mit allen Fenstern und Tokens je Modell im result (USE-004)'
+platform: macos-aarch64
+exit_code: 0

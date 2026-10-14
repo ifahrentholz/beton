@@ -91,3 +91,23 @@ fn har_025_ac4_recorded_versions_match_catalog() {
     let problems = golden::check_versions(&capabilities(), &TESTED_VERSIONS, &root()).unwrap();
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+/// USE-004 gegen die echte CLI (0.161.0, Subscription): beide Abo-Fenster aus
+/// `account/rateLimits/updated`, Tokens ohne Geldbetrag (Subscription-Teil von HAR-006 AC3).
+#[tokio::test]
+async fn use_004_ac2_subscription_usage_from_the_real_cli() {
+    let events = case("subscription-usage").await;
+    let lines: Vec<serde_json::Value> = events
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let windows: Vec<&str> = lines
+        .iter()
+        .filter(|e| e["type"] == "usage.subscription")
+        .map(|e| e["payload"]["window"].as_str().unwrap())
+        .collect();
+    assert_eq!(windows, ["5h", "7d"]);
+    let cost = lines.iter().find(|e| e["type"] == "cost.delta").unwrap();
+    assert_eq!(cost["payload"]["source"], "subscription");
+    assert!(cost["payload"].get("cost_micro").is_none(), "{cost}");
+}
