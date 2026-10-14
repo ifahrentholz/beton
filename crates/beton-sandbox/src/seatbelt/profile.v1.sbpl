@@ -1,0 +1,59 @@
+(version 1)
+;; beton Seatbelt-Profil v1 (SBX-007).
+;; Dieser Text ist fest. Pfade, Muster und der Proxy-Port kommen ausschließlich als Parameter
+;; (`sandbox-exec -D KEY=VALUE`) und werden nur über `(param "KEY")` referenziert; die
+;; generierten Zeilen an den Markierungen `;;@…` enthalten nur feste Bausteine und Schlüssel.
+;; Reihenfolge ist Semantik: Bei Seatbelt gewinnt die zuletzt passende Regel.
+(deny default)
+
+;; Prozesse: forken und ausführen; Signale und Prozessinformationen nur im eigenen Baum.
+(allow process-fork)
+(allow process-exec)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+(allow sysctl-read)
+
+;; Minimale System-Lesepfade (Betriebssystem, Developer-Tools, Zeitzonen).
+(allow file-read* (literal "/"))
+(allow file-read-metadata
+  (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private") (literal "/private/var")
+  (literal "/private/var/db") (literal "/Applications") (literal "/Library")
+  (literal "/Library/Developer") (literal "/Library/Preferences"))
+(allow file-read*
+  (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System")
+  (subpath "/private/etc") (subpath "/private/var/select") (subpath "/private/var/db/timezone")
+  (subpath "/Library/Developer/CommandLineTools")
+  (literal "/private/var/db/xcode_select_link")
+  (literal "/Library/Preferences/com.apple.dt.Xcode.plist")
+  (regex #"^/Applications/Xcode[^/]*\.app/Contents/Developer(/.*)?$"))
+(allow file-read* (literal "/dev/random") (literal "/dev/urandom") (literal "/dev/zero"))
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* file-write-data (subpath "/dev/fd"))
+
+;; Benutzer-/Gruppen-Auflösung, Benachrichtigungen, Logging. Kein DNS (Auflösung im Proxy),
+;; kein Keychain (nur Stufe 1 mit `keychain: true`, unten).
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.logd"))
+(allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
+
+;; Freigaben aus `read_paths`/`write_paths`.
+;;@GRANT_ROOTS
+;; Dotfiles direkt in diesen Freigaben sind maskiert, außer `allow_hidden`.
+;;@HIDDEN
+;; Workspace, Scratch, Git und die eigenen Pfade des Harness (Stufe 1).
+;;@ROOTS
+;; Metadaten der Vorfahren aller Wurzeln (für `realpath`, `cd ..`).
+;;@ANCESTORS
+;; Masken: nach den Freigaben, damit sie gewinnen (SBX-004).
+;;@MASKS
+;; Vorfahren von Masken in Schreib-Wurzeln: nicht umbenennen oder löschen (SBX-004 AC4).
+;;@KEEP
+;; Git: Hooks und Konfiguration read-only, `.git` nicht austauschbar (SBX-003 AC4).
+;;@GIT
+;; Keychain (nur Stufe 1 mit `keychain: true`).
+;;@KEYCHAIN
+;; Netz: ausschließlich zur Proxy-Instanz dieser Stufe.
+;;@NETWORK

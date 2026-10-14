@@ -756,6 +756,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "beton-sandbox"
+version = "0.0.0"
+dependencies = [
+ "beton-core",
+ "beton-proxy",
+ "process-wrap",
+ "proptest",
+ "rcgen",
+ "regex",
+ "rustls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "beton-sdk"
 version = "0.0.0"
 dependencies = [
