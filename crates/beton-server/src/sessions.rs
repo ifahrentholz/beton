@@ -56,9 +56,22 @@ pub struct Launched {
     /// Tunnel-Token des zuletzt gestarteten Runners je Session. Ist es gesperrt (geordneter
     /// Stopp), startet dieser Runner nicht mehr, auch wenn sein Prozess noch läuft (#198).
     tokens: Mutex<HashMap<SessionId, String>>,
+    /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
+    /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
+    starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
 }
 
 impl Launched {
+    /// Sperre für Starts der Session.
+    fn start_lock(&self, session: SessionId) -> Arc<Mutex<()>> {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session)
+            .or_default()
+            .clone()
+    }
+
     /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
     pub async fn pid(&self, session: SessionId) -> Option<u32> {
         self.handles.lock().await.get(&session).and_then(|h| h.pid)
@@ -656,6 +669,9 @@ impl<'a> SessionManager<'a> {
         let start = Instant::now();
         while !self.state.runtime.runners.connected(session) {
             if start.elapsed() > CONNECT_TIMEOUT {
+                // Wer sich nicht meldet, wird beendet und verliert sein Token; der nächste
+                // Versuch startet neu, statt weiter auf diesen Runner zu warten.
+                self.abandon_start(session).await;
                 return Err(
                     Problem::new(ProblemCode::Unavailable).detail("Runner meldet sich nicht")
                 );
@@ -665,12 +681,33 @@ impl<'a> SessionManager<'a> {
         Ok(())
     }
 
+    /// Beendet einen Runner, der sich nicht gemeldet hat, und sperrt sein Token.
+    async fn abandon_start(&self, session: SessionId) {
+        if self.state.runtime.runners.connected(session) {
+            return;
+        }
+        if let Some(token) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            self.state.runtime.runners.revoke_token(&token);
+        }
+        if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
+            let _ = self
+                .cfg()
+                .provider
+                .terminate(&h, TerminateMode::Force)
+                .await;
+        }
+    }
+
     /// Setzt eine gestoppte Session mit neuem Runner fort (SES-003).
     pub async fn resume(&self, session: SessionId) -> Result<SessionRecord, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
-        if !self.await_adopted(session).await {
-            let reference = self.last_native_ref(session).await?;
-            self.launch(&record, reference).await?;
+        {
+            let starts = self.cfg().launched.start_lock(session);
+            let _start = starts.lock().await;
+            if !self.await_adopted(session).await && !self.runner_starting(session).await {
+                let reference = self.last_native_ref(session).await?;
+                self.launch(&record, reference).await?;
+            }
         }
         self.wait_connected(session).await?;
         Ok(self.state.store.session(self.org(), session).await?)
@@ -1187,7 +1224,11 @@ impl<'a> SessionManager<'a> {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
-        self.cfg().launched.tokens.lock().await.remove(&session);
+        // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
+        // Tunnel (Security-Review zu #198).
+        if let Some(token) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            runners.revoke_token(&token);
+        }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()

@@ -625,8 +625,9 @@ async fn ses_003_ac3_input_resumes_while_the_stopped_runner_is_still_exiting() {
     d.daemon.shutdown().await;
 }
 
-/// Runner-Provider, der die Tunnel-Tokens der Starts mitschreibt. Mit `broken` meldet sich der
-/// Runner nie (falscher Tunnel-Socket), mit `delay` dauert der Start länger.
+/// Runner-Provider, der die Tunnel-Tokens der Starts mitschreibt. Mit `broken` scheitert der
+/// Start, nachdem das Token vergeben ist (falscher Tunnel-Socket, Prozess gleich beendet); mit
+/// `delay` dauert der Start länger.
 #[derive(Clone)]
 struct Capture {
     inner: std::sync::Arc<LocalProvider>,
@@ -673,10 +674,17 @@ impl beton_host::RunnerProvider for Capture {
         let delay = *self.delay.lock().unwrap();
         tokio::time::sleep(delay).await;
         let mut boot = boot.clone();
-        if self.broken.load(std::sync::atomic::Ordering::SeqCst) {
+        let broken = self.broken.load(std::sync::atomic::Ordering::SeqCst);
+        if broken {
             boot.tunnel_socket = "/nicht/vorhanden.sock".into();
         }
-        self.inner.start(env, &boot).await
+        let h = self.inner.start(env, &boot).await?;
+        if broken {
+            self.inner
+                .terminate(&h, beton_host::TerminateMode::Force)
+                .await?;
+        }
+        Ok(h)
     }
     async fn exec(
         &self,

@@ -134,9 +134,18 @@ impl RunnerRegistry {
     /// Neues Runner-Token für genau eine Session.
     /// Token für einen neuen Runner-Prozess. Der zählt `rseq` wieder ab 1; der gespeicherte
     /// Stand des Vorgängers darf seine Events nicht als Duplikate verwerfen (PROTO-015).
+    ///
+    /// Je Session gilt nur das jüngste Token (Generation): Ältere, auch die nie verbundener
+    /// Starts oder eines abgekoppelten Runners, verfallen hier. Bestehende Verbindungen bleiben
+    /// davon unberührt; neu anmelden kann sich nur der neue Runner.
     pub fn mint_token(&self, session: SessionId) -> Result<String, crate::local_auth::AuthError> {
         let token = format!("bt_run_{}", crate::local_auth::random_hex(32)?);
-        lock(&self.tokens).insert(hash(&token), session);
+        {
+            let mut tokens = lock(&self.tokens);
+            tokens.retain(|_, s| *s != session);
+            tokens.insert(hash(&token), session);
+        }
+        lock(&self.expected).remove(&session);
         lock(&self.persisted).remove(&session);
         Ok(token)
     }
@@ -150,8 +159,8 @@ impl RunnerRegistry {
         self.session_for(token).is_some()
     }
 
-    /// Sperrt genau ein Token, z. B. das eines geordnet gestoppten Runners. Tokens eines
-    /// inzwischen gestarteten Nachfolgers derselben Session bleiben gültig (#198).
+    /// Sperrt genau ein Token, z. B. das eines geordnet gestoppten Runners. Das Token eines
+    /// inzwischen gestarteten Nachfolgers derselben Session bleibt gültig (#198).
     pub fn revoke_token(&self, token: &str) {
         lock(&self.tokens).remove(&hash(token));
     }
