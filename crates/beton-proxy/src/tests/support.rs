@@ -174,6 +174,11 @@ impl Upstream {
                 let Ok((tcp, _)) = listener.accept().await else {
                     return;
                 };
+                // Wie ein Server im Produktivbetrieb (und wie der Proxy selbst): ohne Nagle.
+                // Sonst hält der Kernel kleine HTTP/2-Frames bis zum verzögerten ACK zurück
+                // (unter Linux 40 ms), und das trifft nur den Weg durch den Proxy, der zum
+                // Upstream h2 spricht (#221).
+                let _ = tcp.set_nodelay(true);
                 let (r, s, tls) = (r.clone(), s.clone(), tls.clone());
                 tokio::spawn(async move {
                     let service = service_fn(move |req| handle(req, r.clone(), s.clone()));
@@ -503,6 +508,7 @@ pub async fn connect(
     auth: Option<&str>,
 ) -> (TcpStream, Raw) {
     let mut stream = TcpStream::connect(instance.addr()).await.unwrap();
+    let _ = stream.set_nodelay(true);
     let mut req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
     if let Some(auth) = auth {
         req.push_str(&format!("Proxy-Authorization: {auth}\r\n"));

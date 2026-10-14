@@ -121,6 +121,33 @@ pub async fn poll(tracker: &Shared) -> Option<(Vec<FsChange>, String)> {
     }
 }
 
+/// Snapshot für die laufende Beobachtung: `current` und `deliver` laufen unter der Sperre des
+/// Trackers. Gilt der Turn nicht mehr (`current` ist `false`), entfällt der Snapshot; den
+/// letzten nimmt dann das Turn-Ende selbst. Wer nach diesem Aufruf den Tracker sperrt, sieht
+/// die Änderungen also schon zugestellt (Reihenfolge `fs.changed` vor dem Turn-Ende, #189).
+pub async fn poll_and_deliver(
+    tracker: &Shared,
+    current: impl FnOnce() -> bool + Send + 'static,
+    deliver: impl FnOnce(Vec<FsChange>) + Send + 'static,
+) {
+    let t = tracker.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut guard = t.lock().map_err(|_| "Tracker gesperrt".to_owned())?;
+        if !current() {
+            return Ok(());
+        }
+        let (changes, _) = guard.poll().map_err(|e| e.to_string())?;
+        if !changes.is_empty() {
+            deliver(changes);
+        }
+        Ok::<(), String>(())
+    })
+    .await;
+    if let Ok(Err(e)) | Err(e) = result.map_err(|e| e.to_string()) {
+        tracing::warn!("Workspace-Snapshot fehlgeschlagen: {e}");
+    }
+}
+
 /// Setzt eine Turn-Ref blockierend; Fehler nur ins Log.
 pub async fn mark(tracker: &Shared, turn: String, side: &'static str, tree: String) {
     let t = tracker.clone();
