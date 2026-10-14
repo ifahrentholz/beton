@@ -13,6 +13,7 @@ pub mod drive;
 pub mod exit;
 pub mod logging;
 pub mod picker;
+pub mod policy;
 pub mod render;
 pub mod run;
 pub mod sandbox;

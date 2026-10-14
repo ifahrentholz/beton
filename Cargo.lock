@@ -453,6 +453,7 @@ dependencies = [
  "beton-harness-direct",
  "beton-host",
  "beton-mcp",
+ "beton-policy",
  "beton-proxy",
  "beton-runner",
  "beton-sandbox",
