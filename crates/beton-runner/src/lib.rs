@@ -314,6 +314,43 @@ impl policy::UsageSource for TunnelUsage {
     }
 }
 
+/// Zustand der Policies über den Tunnel (System-Calls `policy.state`, `policy.state.apply`,
+/// POL-009/POL-010).
+struct TunnelState {
+    calls: mpsc::UnboundedSender<mcp::SystemRequest>,
+}
+
+impl TunnelState {
+    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        self.calls
+            .send(mcp::SystemRequest {
+                tool: tool.into(),
+                args,
+                reply,
+            })
+            .map_err(|_| "Runner beendet".to_owned())?;
+        match rx.await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(p)) => Err(p["code"].as_str().unwrap_or("failed").to_owned()),
+            Err(_) => Err("keine Antwort".into()),
+        }
+    }
+}
+
+#[async_trait]
+impl policy::StateSource for TunnelState {
+    async fn load(&self) -> Result<policy::LoadedState, String> {
+        let v = self.call("policy.state", json!({})).await?;
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
+    async fn apply(&self, op: &beton_policy::state::StateOp) -> Result<(), String> {
+        let args = serde_json::to_value(op).map_err(|e| e.to_string())?;
+        self.call("policy.state.apply", args).await.map(|_| ())
+    }
+}
+
 /// Unbestätigte Events in Runner-Reihenfolge.
 #[derive(Default)]
 struct Unacked {
@@ -563,7 +600,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         },
         gate_tx,
     )
-    .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
+    .with_usage(Arc::new(TunnelUsage {
+        calls: usage_tx.clone(),
+    }))
+    .with_state(Arc::new(TunnelState { calls: usage_tx }));
     let ctx = AdapterContext {
         gate: Arc::new(gate.clone()),
         launcher: Arc::new(SandboxLauncher::new(sandbox)),
@@ -600,6 +640,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // Tool-Call selbst durch das Gate schickt (POL-024).
                 (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
                     .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
+                // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
+                Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
             )
             .await
         }
@@ -926,6 +968,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
 
     let mut tracker = StatusTracker::default();
     let mut turn_running = false;
+    // Offene Freigaben (gestapelt, WEB-007): `waiting_approval`, solange eine offen ist.
+    let mut open_approvals: std::collections::HashSet<beton_core::id::ApprovalId> =
+        std::collections::HashSet::new();
     // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
     let mut held_context: Option<NormalizedEvent> = None;
     // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
@@ -1127,13 +1172,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     let mut events = vec![gate_event(&boot, first, &call_events)];
                     events.extend(drain_gate(&boot, &mut gate_rx, &call_events));
                     let mut batch = Vec::with_capacity(events.len() + 1);
+                    let mut abort = false;
                     for e in events {
-                        let next = match e.payload() {
-                            Some(EventPayload::ApprovalRequested(_)) => Some(SessionStatus::WaitingApproval),
-                            Some(EventPayload::ApprovalResolved(_)) if turn_running => Some(SessionStatus::Running),
-                            Some(EventPayload::ApprovalResolved(_)) => Some(SessionStatus::Idle),
-                            _ => None,
-                        };
+                        if let Some(EventPayload::ApprovalResolved(r)) = e.payload() {
+                            abort |= r.decision == beton_core::event::ApprovalDecision::Abort;
+                        }
+                        let next = approval_status(e.payload(), &mut open_approvals, turn_running);
                         batch.push(e);
                         if let Some(st) = next {
                             tracker.set(&boot, st, &mut batch);
@@ -1141,6 +1185,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     }
                     if !push(&mut ws, &boot, &mut unacked, batch).await {
                         break None;
+                    }
+                    // Abgelaufen mit `on_timeout: abort` (POL-010): Turn abbrechen.
+                    if abort && turn_running {
+                        let _ = session.interrupt().await;
                     }
                 }
                 ev = harness_rx.recv(), if !paused => {
@@ -1176,8 +1224,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         }
                         let busy = matches!(ev.payload, EventPayload::TurnStarted(_));
                         let next_status = match &ev.payload {
-                            EventPayload::TurnStarted(_) | EventPayload::ApprovalResolved(_) => Some(SessionStatus::Running),
-                            EventPayload::ApprovalRequested(_) => Some(SessionStatus::WaitingApproval),
+                            EventPayload::TurnStarted(_) if !open_approvals.is_empty() => Some(SessionStatus::WaitingApproval),
+                            EventPayload::TurnStarted(_) => Some(SessionStatus::Running),
+                            EventPayload::ApprovalRequested(_) | EventPayload::ApprovalResolved(_) => {
+                                approval_status(Some(&ev.payload), &mut open_approvals, true)
+                            }
                             EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_) => Some(SessionStatus::Idle),
                             _ => None,
                         };
@@ -1679,6 +1730,32 @@ fn track_tool_calls(
         );
     }
     out
+}
+
+/// Status nach einer Freigabe: `waiting_approval`, solange eine offen ist (gestapelte
+/// Freigaben, WEB-007), danach `running` bzw. `idle`.
+fn approval_status(
+    payload: Option<&EventPayload>,
+    open: &mut std::collections::HashSet<beton_core::id::ApprovalId>,
+    turn_running: bool,
+) -> Option<SessionStatus> {
+    match payload? {
+        EventPayload::ApprovalRequested(r) => {
+            open.insert(r.approval_id);
+            Some(SessionStatus::WaitingApproval)
+        }
+        EventPayload::ApprovalResolved(r) => {
+            open.remove(&r.approval_id);
+            Some(if !open.is_empty() {
+                SessionStatus::WaitingApproval
+            } else if turn_running {
+                SessionStatus::Running
+            } else {
+                SessionStatus::Idle
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Ein Gate-Ereignis als Event der Session; `policy.decision` erhält die Event-ID des
@@ -2192,16 +2269,27 @@ async fn run_one_shot(
 }
 
 /// Entscheidung aus `approval.resolve`. `updated_args: null` (so serialisiert die REST-API
-/// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“.
+/// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“. `remember: session`
+/// merkt die Freigabe (POL-010), `answer` beantwortet eine Frage (AGT-007 AC4), `actor` nennt,
+/// wer entschieden hat (WEB-007 AC2).
 fn gate_decision(args: &Value) -> policy::Human {
+    let allow = args["decision"] == "allow";
     policy::Human {
-        allow: args["decision"] == "allow",
+        allow,
+        remember: allow && args["remember"] == "session",
         reason: args["reason"].as_str().map(str::to_owned),
-        updated_args: if args["decision"] == "allow" {
+        updated_args: if allow {
             args.get("updated_args").filter(|a| !a.is_null()).cloned()
         } else {
             None
         },
+        answer: (args["decision"] == "answer")
+            .then(|| args["answer"].as_str().map(str::to_owned))
+            .flatten(),
+        actor: args
+            .get("actor")
+            .filter(|a| !a.is_null())
+            .and_then(|a| serde_json::from_value(a.clone()).ok()),
     }
 }
 
@@ -2419,8 +2507,7 @@ mod tests {
             gate_decision(&json!({"decision": "allow", "updated_args": null})),
             policy::Human {
                 allow: true,
-                reason: None,
-                updated_args: None
+                ..policy::Human::default()
             }
         );
         assert_eq!(
@@ -2432,8 +2519,78 @@ mod tests {
             policy::Human {
                 allow: false,
                 reason: Some("nein".into()),
-                updated_args: None
+                ..policy::Human::default()
             }
         );
+    }
+
+    #[test]
+    fn web_007_status_stays_waiting_while_stacked_approvals_are_open() {
+        use beton_core::event::{
+            ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, ResolvedVia,
+            TimeoutAction,
+        };
+        use beton_core::id::ApprovalId;
+        let (a, b) = (ApprovalId::new(), ApprovalId::new());
+        let req = |id| {
+            EventPayload::ApprovalRequested(ApprovalRequested {
+                approval_id: id,
+                kind: ApprovalKind::Policy,
+                subject: json!({}),
+                options: vec![],
+                expires_at: beton_core::time::Timestamp::now(),
+                on_timeout: TimeoutAction::Deny,
+            })
+        };
+        let res = |id| {
+            EventPayload::ApprovalResolved(ApprovalResolved {
+                approval_id: id,
+                decision: ApprovalDecision::Allow,
+                answer: None,
+                actor: Actor::default(),
+                via: ResolvedVia::User,
+                remember: None,
+                comment: None,
+                on_timeout_applied: None,
+            })
+        };
+        let mut open = std::collections::HashSet::new();
+        assert_eq!(
+            approval_status(Some(&req(a)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&req(b)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(a)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(b)), &mut open, true),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(
+            approval_status(Some(&req(a)), &mut open, false),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(a)), &mut open, false),
+            Some(SessionStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn pol_010_resolve_args_carry_remember_answer_and_actor() {
+        let h = gate_decision(&json!({"decision": "allow", "remember": "session",
+            "actor": {"kind": "user", "id": "usr_local"}}));
+        assert!(h.allow && h.remember);
+        assert!(h.actor.is_some());
+        // Merken nur beim Erlauben.
+        assert!(!gate_decision(&json!({"decision": "deny", "remember": "session"})).remember);
+        let a = gate_decision(&json!({"decision": "answer", "answer": "Pro IP"}));
+        assert_eq!(a.answer.as_deref(), Some("Pro IP"));
+        assert!(!a.allow);
     }
 }

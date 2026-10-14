@@ -761,8 +761,8 @@ payload!(PolicyStateChanged {
     value: Value
 });
 payload!(PolicyRuleIssue { rule_ids: Vec<String>, reason: String });
-/// Zustellung einer `notify`-Regel (POL-006, UX-001): Kanal `inbox` (und bis Web-Push bzw.
-/// Desktop-Notifications `push`) wird zum Inbox-Eintrag, `log` steht nur im Verlauf.
+// Zustellung einer `notify`-Regel (POL-006, UX-001): Kanal `inbox` (und bis Web-Push bzw.
+// Desktop-Notifications `push`) wird zum Inbox-Eintrag, `log` steht nur im Verlauf.
 payload!(PolicyNotified {
     rule_id: String,
     scope: String,

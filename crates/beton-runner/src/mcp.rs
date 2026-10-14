@@ -38,9 +38,21 @@ pub struct SystemRequest {
     pub reply: oneshot::Sender<Result<Value, Value>>,
 }
 
+/// Stellt dem Menschen eine Frage (`ask_user`, AGT-007 AC4); im Runner das Policy-Gate.
+#[async_trait]
+pub trait Asker: Send + Sync {
+    async fn ask(
+        &self,
+        question: &str,
+        choices: &[String],
+        timeout: std::time::Duration,
+    ) -> Option<String>;
+}
+
 /// System-Tools im Runner.
 struct RunnerBackend {
     calls: mpsc::UnboundedSender<SystemRequest>,
+    asker: Option<Arc<dyn Asker>>,
 }
 
 #[async_trait]
@@ -75,6 +87,25 @@ impl SystemBackend for RunnerBackend {
         // `session_wait` → `session.wait` usw.
         let name = beton_mcp::system::tool_name(tool).replacen('_', ".", 1);
         self.server(&name, args.clone()).await
+    }
+
+    async fn ask_user(
+        &self,
+        question: &str,
+        choices: &[String],
+        timeout: std::time::Duration,
+    ) -> Result<Option<String>, ToolFailure> {
+        match &self.asker {
+            Some(a) => Ok(a.ask(question, choices, timeout).await),
+            None => Err(ToolFailure::new(
+                "unavailable",
+                "Fragen sind hier nicht möglich",
+            )),
+        }
+    }
+
+    async fn inbox_read(&self, args: &Value) -> Result<Value, ToolFailure> {
+        self.server("inbox.read", args.clone()).await
     }
 }
 
@@ -296,6 +327,7 @@ pub async fn prepare(
     paths: &Paths,
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
     gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
+    asker: Option<Arc<dyn Asker>>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
     let loaded = load(source, workdir, paths)?;
@@ -380,7 +412,10 @@ pub async fn prepare(
             plan.system_tools.clone(),
             SkillSet::new(plan.skills.clone()),
             spawn,
-            Arc::new(RunnerBackend { calls: calls_tx }),
+            Arc::new(RunnerBackend {
+                calls: calls_tx,
+                asker,
+            }),
         ))
     });
     #[cfg(unix)]

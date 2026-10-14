@@ -18,7 +18,7 @@
 //! - Freigaben und Policy-Ereignisse gehen als [`GateEvent`] an die Schleife des Runners; sie
 //!   versieht sie mit Session, Reihenfolge und Bezug auf das `tool.call.requested`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,7 +27,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, EventPayload,
-    Notice, NoticeLevel, PolicyRuleIssue, RawJson, ResolvedVia, SystemComponent, TimeoutAction,
+    Notice, NoticeLevel, PolicyNotified, PolicyRuleIssue, RawJson, RememberScope, ResolvedVia,
+    SystemComponent, TimeoutAction,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -36,19 +37,23 @@ use beton_harness::{
     PermissionMode, ResultGateRequest,
 };
 use beton_policy::Phase;
+use beton_policy::approval::{ApprovalPlan, plan};
 use beton_policy::audit::{DecisionMeta, decision_event, subject_hash};
 use beton_policy::cel::ext::{LexicalResolver, PathResolver};
 use beton_policy::context::Activation;
+use beton_policy::doc::StateScope;
 use beton_policy::enforcement::{Level, Matrix, StartCheck, check_start};
 use beton_policy::engine::{
     Decision, EffectiveSet, EvalOptions, Modifications, Outcome, Reason, RuleError, merge_patch,
 };
+use beton_policy::grants::SessionGrants;
 use beton_policy::load::{RuleRef, Scope};
 use beton_policy::normalize::{ToolSource, harness_family, normalize_source};
+use beton_policy::state::{FinalOutcome, PolicyState, StateChange, StateOp, effects_due};
 use beton_policy::store::{PolicyStore, StoreEvent};
 use beton_policy::vars::{
     ActorVars, AgentVars, ApprovalsVars, CelTimestamp, HostVars, OrgVars, RequestVars, ResultVars,
-    SessionVars, StartVars, ToolVars, UserVars, Vars,
+    SessionVars, StartVars, StateVars, ToolVars, UserVars, Vars,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -164,8 +169,60 @@ impl Default for PolicyOptions {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Human {
     pub allow: bool,
+    /// „Für diese Session erlauben“ (`approve_session`); nur wirksam, wenn die Card die
+    /// Option anbietet (POL-010).
+    pub remember: bool,
     pub reason: Option<String>,
     pub updated_args: Option<Value>,
+    /// Antwort auf eine Frage (`ask_user`, AGT-007 AC4).
+    pub answer: Option<String>,
+    /// Wer entschieden hat (WEB-007 AC2); ohne Angabe der lokale User.
+    pub actor: Option<Actor>,
+}
+
+/// Zustand der Policies und gemerkte Freigaben einer Session vom Server (POL-009, POL-010):
+/// `session`/`run` aus dem Session-Log, `user_day`/`user` aus dem Store.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct LoadedState {
+    #[serde(default)]
+    pub session: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub run: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub user_day: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub user: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub grants: Vec<GrantRecord>,
+}
+
+/// Ein Grant aus dem Log (`approval.resolved { remember: session }`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct GrantRecord {
+    pub id: String,
+    pub scope: String,
+    pub set: String,
+    pub rule_id: String,
+    pub fingerprint: String,
+}
+
+/// Quelle des Zustands (im Runner: System-Calls `policy.state` und `policy.state.apply`).
+#[async_trait]
+pub trait StateSource: Send + Sync {
+    async fn load(&self) -> Result<LoadedState, String>;
+    /// Wendet eine Änderung in `user_day`/`user` im Store an.
+    async fn apply(&self, op: &StateOp) -> Result<(), String>;
+}
+
+fn scope_from(s: &str) -> Option<Scope> {
+    Some(match s {
+        "org" => Scope::Org,
+        "team" => Scope::Team,
+        "user" => Scope::User,
+        "project" => Scope::Project,
+        "agent" => Scope::Agent,
+        _ => return None,
+    })
 }
 
 /// Ergebnis der Prüfung eines Tool-Calls.
@@ -214,6 +271,14 @@ struct Inner {
     seen: tokio::sync::Notify,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
+    /// Zustand `session`/`run` (POL-009); gültig, sobald `state_ready`.
+    state: Mutex<PolicyState>,
+    /// Zuletzt geladener Zustand `user_day`/`user`.
+    user_state: Mutex<(BTreeMap<String, Value>, BTreeMap<String, Value>)>,
+    state_ready: std::sync::atomic::AtomicBool,
+    state_source: Option<Arc<dyn StateSource>>,
+    /// Gemerkte Freigaben (`approve_session`, POL-010).
+    grants: Mutex<SessionGrants>,
     calls: AtomicI64,
     granted: AtomicI64,
     denied: AtomicI64,
@@ -336,6 +401,76 @@ fn strictness(mode: PermissionMode) -> u8 {
     }
 }
 
+/// Gründe einer Approval-Card (POL-010): Regel, Ebene, Set, Text, Schwere und – für
+/// gemerkte Freigaben – der Fingerprint.
+fn reasons_json(reasons: &[Reason]) -> Vec<Value> {
+    reasons
+        .iter()
+        .map(|r| {
+            let mut v = json!({
+                "rule_id": r.rule.rule_id,
+                "scope": r.rule.scope.as_str(),
+                "set": r.rule.set,
+                "reason": r.reason,
+            });
+            if let Some(sev) = r.severity {
+                v["severity"] = serde_json::to_value(sev).unwrap_or(Value::Null);
+            }
+            if let Some(fp) = &r.fingerprint {
+                v["fingerprint"] = Value::String(fp.clone());
+            }
+            v
+        })
+        .collect()
+}
+
+/// Titel der Card nach Tool-Klasse.
+fn tool_title(kind: &str) -> &'static str {
+    match kind {
+        "shell" => "Shell-Kommando bestätigen",
+        "file_write" | "file_edit" => "Datei-Änderung bestätigen",
+        "mcp" => "MCP-Tool bestätigen",
+        "web_fetch" => "Abruf bestätigen",
+        "system" => "System-Tool bestätigen",
+        "browser" => "Browser-Aktion bestätigen",
+        _ => "Tool-Call bestätigen",
+    }
+}
+
+/// Subjekt einer Card für einen Tool-Call (Payload `approval.requested`, POL-010).
+fn tool_card(
+    phase: &str,
+    tool: &str,
+    kind: &str,
+    summary: Option<&str>,
+    args: &Value,
+    modified: Option<&Value>,
+    reasons: &[Reason],
+) -> Value {
+    let summary: String = summary.unwrap_or(tool).chars().take(500).collect();
+    json!({
+        "phase": phase,
+        "title": tool_title(kind),
+        "summary": summary,
+        "tool": {
+            "name": tool,
+            "kind": kind,
+            "args": args,
+            "args_modified": modified,
+        },
+        "reasons": reasons_json(reasons),
+    })
+}
+
+/// Ergebnis einer menschlichen Freigabe.
+struct Answered {
+    human: Human,
+    /// Endentscheidung für Effects (POL-009).
+    outcome: FinalOutcome,
+    /// Abgelaufen mit `on_timeout: abort`: der Turn wird abgebrochen.
+    aborted: bool,
+}
+
 /// Ergebnis einer Auswertung mit ID des Freigabe-Vorgangs bei `ask`.
 struct Evaluated {
     decision: Decision,
@@ -362,6 +497,12 @@ impl PolicyGate {
                 seen: tokio::sync::Notify::new(),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
+                state: Mutex::new(PolicyState::default()),
+                user_state: Mutex::new((BTreeMap::new(), BTreeMap::new())),
+                // Ohne Quelle beginnt die Session leer (neue Session, Tests).
+                state_ready: std::sync::atomic::AtomicBool::new(true),
+                state_source: None,
+                grants: Mutex::new(SessionGrants::default()),
                 calls: AtomicI64::new(0),
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
@@ -390,6 +531,187 @@ impl PolicyGate {
     /// Quelle für Verbrauchswerte (`session.cost_usd`, `user.daily_cost_usd`).
     pub fn with_usage(self, usage: Arc<dyn UsageSource>) -> Self {
         self.rebuild(|i| i.usage = Some(usage))
+    }
+
+    /// Quelle für Zustand und Grants (POL-009, POL-010); geladen vor der ersten Auswertung.
+    pub fn with_state(self, source: Arc<dyn StateSource>) -> Self {
+        self.rebuild(|i| {
+            i.state_source = Some(source);
+            i.state_ready = std::sync::atomic::AtomicBool::new(false);
+        })
+    }
+
+    /// Lädt Zustand und Grants einmal vom Server. `false`, solange das nicht gelungen ist.
+    async fn ensure_state(&self) -> bool {
+        if self.inner.state_ready.load(Ordering::SeqCst) {
+            return true;
+        }
+        let Some(source) = &self.inner.state_source else {
+            return true;
+        };
+        let loaded = match tokio::time::timeout(USAGE_TIMEOUT, source.load()).await {
+            Ok(Ok(l)) => l,
+            _ => {
+                tracing::warn!("Policy: Zustand nicht verfügbar");
+                return false;
+            }
+        };
+        if self.inner.state_ready.swap(true, Ordering::SeqCst) {
+            return true;
+        }
+        if let Ok(mut st) = self.inner.state.lock() {
+            let mut fresh = PolicyState::default();
+            for (scope, map) in [
+                (StateScope::Session, &loaded.session),
+                (StateScope::Run, &loaded.run),
+            ] {
+                for (key, value) in map {
+                    fresh.restore(&StateChange {
+                        scope,
+                        key: key.clone(),
+                        op: beton_policy::doc::EffectOp::Set,
+                        value: Some(value.clone()),
+                    });
+                }
+            }
+            *st = fresh;
+        }
+        if let Ok(mut u) = self.inner.user_state.lock() {
+            *u = (loaded.user_day.clone(), loaded.user.clone());
+        }
+        if let Ok(mut g) = self.inner.grants.lock() {
+            for r in &loaded.grants {
+                if let Some(scope) = scope_from(&r.scope) {
+                    let rule = RuleRef {
+                        scope,
+                        set: r.set.clone(),
+                        set_version: String::new(),
+                        rule_id: r.rule_id.clone(),
+                    };
+                    g.add_with_id(&rule, &r.fingerprint, &r.id);
+                }
+            }
+        }
+        true
+    }
+
+    /// `state.*` für den Kontext; `user_day`/`user` frisch, wenn eine Regel sie liest.
+    async fn with_state_values(&self, set: &EffectiveSet, phase: Phase, vars: &mut Vars) {
+        if !self.ensure_state().await {
+            return;
+        }
+        let used: BTreeSet<String> = set.programs(phase).flat_map(|p| p.fields()).collect();
+        let user_scopes = used.iter().any(|f| f.starts_with("state.user"));
+        if user_scopes
+            && let Some(source) = &self.inner.state_source
+            && let Ok(Ok(fresh)) = tokio::time::timeout(USAGE_TIMEOUT, source.load()).await
+            && let Ok(mut u) = self.inner.user_state.lock()
+        {
+            *u = (fresh.user_day, fresh.user);
+        }
+        let (session, run) = self
+            .inner
+            .state
+            .lock()
+            .map(|s| (s.snapshot(StateScope::Session), s.snapshot(StateScope::Run)))
+            .unwrap_or_default();
+        let (user_day, user) = self
+            .inner
+            .user_state
+            .lock()
+            .map(|u| u.clone())
+            .unwrap_or_default();
+        vars.state = Some(StateVars {
+            session: Some(session),
+            run: Some(run),
+            user_day: Some(user_day),
+            user: Some(user),
+        });
+    }
+
+    /// Wendet die Effects einer Entscheidung an, deren `effects_on` zur Endentscheidung passt
+    /// (POL-009): `session`/`run` als `policy.state_changed` ins Log, `user_day`/`user` in den
+    /// Store. Ohne geladenen Zustand unterbleiben sie mit Warnung.
+    async fn apply_effects(
+        &self,
+        decision: &Decision,
+        outcome: FinalOutcome,
+        turn: Option<TurnId>,
+    ) {
+        let due: Vec<_> = decision
+            .effects
+            .iter()
+            .filter(|e| effects_due(&e.effects_on, outcome))
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        if !self.ensure_state().await {
+            let rules: Vec<_> = due.iter().map(|e| e.rule.rule_id.as_str()).collect();
+            self.emit(
+                EventPayload::Notice(Notice {
+                    level: NoticeLevel::Warn,
+                    text: format!(
+                        "Policy-Zustand nicht verfügbar: Effects von {} nicht angewendet",
+                        rules.join(", ")
+                    ),
+                }),
+                turn,
+                None,
+            );
+            return;
+        }
+        for pending in due {
+            for op in &pending.ops {
+                let failed = match op.scope {
+                    StateScope::Session | StateScope::Run => {
+                        let applied = self
+                            .inner
+                            .state
+                            .lock()
+                            .map_err(|_| "interner Fehler".to_owned())
+                            .and_then(|mut st| {
+                                st.apply(op.scope, &op.key, op.op, op.value.clone())
+                                    .map_err(|e| e.to_string())
+                            });
+                        match applied {
+                            Ok(change) => {
+                                self.emit(
+                                    EventPayload::PolicyStateChanged(change.to_event()),
+                                    turn,
+                                    None,
+                                );
+                                None
+                            }
+                            Err(e) => Some(e),
+                        }
+                    }
+                    StateScope::UserDay | StateScope::User => match &self.inner.state_source {
+                        None => None,
+                        Some(source) => {
+                            match tokio::time::timeout(USAGE_TIMEOUT, source.apply(op)).await {
+                                Ok(Ok(())) => None,
+                                Ok(Err(e)) => Some(e),
+                                Err(_) => Some("keine Antwort".into()),
+                            }
+                        }
+                    },
+                };
+                if let Some(e) = failed {
+                    self.emit(
+                        EventPayload::Notice(Notice {
+                            level: NoticeLevel::Warn,
+                            text: format!(
+                                "Effect `{}` von Regel `{}` nicht angewendet: {e}",
+                                op.key, pending.rule.rule_id
+                            ),
+                        }),
+                        turn,
+                        None,
+                    );
+                }
+            }
+        }
     }
 
     /// Enforcement-Matrix des Harness der Session (POL-024).
@@ -628,7 +950,14 @@ impl PolicyGate {
     ) -> Evaluated {
         let set = self.refresh(turn);
         self.with_usage_values(&set, phase, &mut vars).await;
+        self.with_state_values(&set, phase, &mut vars).await;
         let capabilities = self.matrix().capabilities(phase);
+        let grants = self
+            .inner
+            .grants
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let decision = match Activation::new(phase, vars.to_json()) {
             Err(e) => engine_deny(phase, set.hash(), format!("Kontext ungültig: {e}")),
             Ok(act) => {
@@ -641,6 +970,7 @@ impl PolicyGate {
                 let job = tokio::task::spawn_blocking(move || {
                     let opts = EvalOptions {
                         capabilities,
+                        grants: Some(&grants),
                         ..EvalOptions::default()
                     };
                     evaluator.evaluate(&set2, &act, &opts)
@@ -669,37 +999,73 @@ impl PolicyGate {
             },
         );
         self.emit(EventPayload::PolicyDecision(event), turn, raw);
-        // `notify` blockiert nie (POL-006 AC2): als Hinweis ins Log; Zustellung über Inbox und
-        // Push folgt mit WP-37.
+        // `notify` blockiert nie (POL-006 AC2): `inbox` (und bis Web-Push bzw.
+        // Desktop-Notifications auch `push`) wird zum Inbox-Eintrag (`policy.notified`, UX-001),
+        // `log` zum Hinweis im Verlauf.
         for n in &decision.notifications {
-            let channels: Vec<&str> = n
+            use beton_policy::doc::Channel;
+            let channels: Vec<String> = n
                 .channels
                 .iter()
                 .map(|c| match c {
-                    beton_policy::doc::Channel::Inbox => "inbox",
-                    beton_policy::doc::Channel::Push => "push",
-                    beton_policy::doc::Channel::Log => "log",
+                    Channel::Inbox => "inbox",
+                    Channel::Push => "push",
+                    Channel::Log => "log",
                 })
+                .map(str::to_owned)
                 .collect();
-            self.emit(
-                EventPayload::Notice(Notice {
-                    level: NoticeLevel::Info,
-                    text: format!(
-                        "Policy-Hinweis ({}, {}): {}",
-                        n.rule.rule_id,
-                        channels.join(", "),
-                        n.message.as_deref().unwrap_or("Regel hat gegriffen")
-                    ),
-                }),
-                turn,
-                None,
-            );
+            if n.channels
+                .iter()
+                .any(|c| matches!(c, Channel::Inbox | Channel::Push))
+            {
+                self.emit(
+                    EventPayload::PolicyNotified(PolicyNotified {
+                        rule_id: n.rule.rule_id.clone(),
+                        scope: n.rule.scope.as_str().to_owned(),
+                        set: n.rule.set.clone(),
+                        channels: channels.clone(),
+                        message: n.message.clone(),
+                    }),
+                    turn,
+                    None,
+                );
+            }
+            if n.channels.contains(&Channel::Log) {
+                self.emit(
+                    EventPayload::Notice(Notice {
+                        level: NoticeLevel::Info,
+                        text: format!(
+                            "Policy-Hinweis ({}): {}",
+                            n.rule.rule_id,
+                            n.message.as_deref().unwrap_or("Regel hat gegriffen")
+                        ),
+                    }),
+                    turn,
+                    None,
+                );
+            }
         }
         Evaluated { decision, approval }
     }
 
-    /// Menschliche Freigabe: `approval.requested`, warten, `approval.resolved`. Ohne Antwort
-    /// binnen Frist `deny` (fail closed).
+    /// Wer fragt und in welchem Kontext (Approval-Card, POL-010).
+    fn card_context(&self, subject: &mut Value) {
+        subject["requested_by"] = json!({
+            "actor": "agent",
+            "harness": self.inner.opts.harness.to_string(),
+            "agent": self.inner.opts.agent.as_ref().and_then(|a| a.name.clone()),
+        });
+        subject["context"] = json!({
+            "worktree": self.inner.opts.workdir.display().to_string(),
+        });
+    }
+
+    /// Menschliche Freigabe: `approval.requested`, warten, `approval.resolved` (POL-010).
+    /// Frist, `on_timeout` und Optionen kommen aus dem Plan der Card; ohne Plan (Rückfrage des
+    /// Vendors) gilt die Frist des Gates und `deny`. Merken (`approve_session`) wirkt nur, wenn
+    /// der Plan es anbietet; dann erfüllen Grants künftig dieselben Regeln für denselben
+    /// Fingerprint.
+    #[allow(clippy::too_many_arguments)]
     async fn ask_human(
         &self,
         kind: ApprovalKind,
@@ -707,23 +1073,39 @@ impl PolicyGate {
         approval_id: ApprovalId,
         mut subject: Value,
         turn: Option<TurnId>,
-    ) -> Human {
-        let timeout = self.inner.opts.approval_timeout;
+        plan: Option<&ApprovalPlan>,
+        reasons: &[Reason],
+    ) -> Answered {
+        let timeout = plan.map_or(self.inner.opts.approval_timeout, |p| p.timeout);
+        let on_timeout = plan.map_or(beton_policy::doc::TimeoutAction::Deny, |p| p.on_timeout);
+        let options: Vec<String> = match (kind, plan) {
+            (ApprovalKind::Question, _) => vec!["answer".into()],
+            (_, Some(p)) => p.options().into_iter().map(str::to_owned).collect(),
+            (_, None) => vec!["approve".into(), "deny".into()],
+        };
         subject["call_id"] = Value::String(key.clone());
+        if subject.get("requested_by").is_none() {
+            self.card_context(&mut subject);
+        }
         let (tx, rx) = oneshot::channel();
         if let Ok(mut p) = self.inner.pending.lock() {
             p.insert(key.clone(), tx);
         }
         let expires = time::OffsetDateTime::now_utc()
             + time::Duration::try_from(timeout).unwrap_or(time::Duration::HOUR);
+        let wire_timeout = match on_timeout {
+            beton_policy::doc::TimeoutAction::Allow => TimeoutAction::Allow,
+            beton_policy::doc::TimeoutAction::Deny => TimeoutAction::Deny,
+            beton_policy::doc::TimeoutAction::Abort => TimeoutAction::Abort,
+        };
         self.emit(
             EventPayload::ApprovalRequested(ApprovalRequested {
                 approval_id,
                 kind,
                 subject,
-                options: vec!["allow".into(), "deny".into()],
+                options,
                 expires_at: Timestamp::from(expires),
-                on_timeout: TimeoutAction::Deny,
+                on_timeout: wire_timeout,
             }),
             turn,
             None,
@@ -732,58 +1114,123 @@ impl PolicyGate {
         if let Ok(mut p) = self.inner.pending.lock() {
             p.remove(&key);
         }
-        let (human, via) = match answer {
+        let (mut human, via) = match answer {
             Ok(Ok(h)) => (h, ResolvedVia::User),
             Ok(Err(_)) => (
                 Human {
-                    allow: false,
                     reason: Some("Runner beendet".into()),
-                    updated_args: None,
+                    ..Human::default()
                 },
                 ResolvedVia::System,
             ),
             Err(_) => (
                 Human {
-                    allow: false,
-                    reason: None,
-                    updated_args: None,
+                    allow: kind != ApprovalKind::Question && wire_timeout == TimeoutAction::Allow,
+                    ..Human::default()
                 },
                 ResolvedVia::Timeout,
             ),
         };
-        if human.allow {
+        let remember = via == ResolvedVia::User
+            && human.allow
+            && human.remember
+            && plan.is_some_and(|p| p.approve_session);
+        human.remember = remember;
+        if remember && let Ok(mut g) = self.inner.grants.lock() {
+            for r in reasons {
+                if let Some(fp) = &r.fingerprint {
+                    g.add(&r.rule, fp);
+                }
+            }
+        }
+        let answer_text = human.answer.clone().filter(|a| {
+            kind == ApprovalKind::Question && !a.trim().is_empty() && via == ResolvedVia::User
+        });
+        let decision = if answer_text.is_some() {
+            ApprovalDecision::Answer
+        } else if via == ResolvedVia::Timeout && wire_timeout == TimeoutAction::Abort {
+            ApprovalDecision::Abort
+        } else if human.allow && kind != ApprovalKind::Question {
+            ApprovalDecision::Allow
+        } else {
+            ApprovalDecision::Deny
+        };
+        if decision == ApprovalDecision::Allow || decision == ApprovalDecision::Answer {
             self.inner.granted.fetch_add(1, Ordering::SeqCst);
         } else {
             self.inner.denied.fetch_add(1, Ordering::SeqCst);
         }
+        let actor = match via {
+            ResolvedVia::User => human.actor.clone().unwrap_or(Actor::User {
+                id: PrincipalId::User(UserId::LOCAL),
+                device_id: None,
+            }),
+            _ => Actor::System {
+                component: SystemComponent::Runner,
+            },
+        };
         self.emit(
             EventPayload::ApprovalResolved(ApprovalResolved {
                 approval_id,
-                decision: if human.allow {
-                    ApprovalDecision::Allow
-                } else {
-                    ApprovalDecision::Deny
-                },
-                answer: None,
-                actor: if via == ResolvedVia::User {
-                    Actor::User {
-                        id: PrincipalId::User(UserId::LOCAL),
-                        device_id: None,
-                    }
-                } else {
-                    Actor::System {
-                        component: SystemComponent::Runner,
-                    }
-                },
+                decision,
+                answer: answer_text.clone(),
+                actor,
                 via,
-                remember: None,
+                remember: remember.then_some(RememberScope::Session),
                 comment: human.reason.clone(),
-                on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
+                on_timeout_applied: (via == ResolvedVia::Timeout).then_some(wire_timeout),
             }),
             turn,
             None,
         );
-        human
+        let outcome = match (via, decision) {
+            (ResolvedVia::Timeout | ResolvedVia::System, _) => FinalOutcome::Expired,
+            (_, ApprovalDecision::Allow | ApprovalDecision::Answer) => FinalOutcome::Allow,
+            _ => FinalOutcome::Deny,
+        };
+        human.answer = answer_text;
+        Answered {
+            human,
+            outcome,
+            aborted: decision == ApprovalDecision::Abort,
+        }
+    }
+
+    /// Frage an den Menschen (`ask_user`, AGT-007 AC4): eine Inbox-Frage
+    /// (`approval.requested { kind: question }`); die Antwort kommt zurück, ohne Antwort binnen
+    /// `timeout` `None`.
+    pub async fn ask_question(
+        &self,
+        key: &str,
+        question: String,
+        choices: Vec<String>,
+        timeout: Duration,
+        turn: Option<TurnId>,
+    ) -> Option<String> {
+        let summary: String = question.chars().take(200).collect();
+        let subject = json!({
+            "title": "Frage des Agents",
+            "summary": summary,
+            "question": question,
+            "choices": choices,
+        });
+        let plan = ApprovalPlan {
+            timeout,
+            on_timeout: beton_policy::doc::TimeoutAction::Deny,
+            approve_session: false,
+        };
+        let answered = self
+            .ask_human(
+                ApprovalKind::Question,
+                key.to_owned(),
+                ApprovalId::new(),
+                subject,
+                turn,
+                Some(&plan),
+                &[],
+            )
+            .await;
+        answered.human.answer
     }
 
     /// Entscheidung aus `approval.resolve` (Schlüssel: `subject.call_id`). `false`, wenn
@@ -898,34 +1345,78 @@ impl PolicyGate {
                 });
                 match (&ev.decision.outcome, level) {
                     // Nur beobachtbar: protokolliert, aber nicht durchgesetzt.
-                    (_, Level::ObserveOnly) | (Outcome::Allow, _) => Verdict {
-                        allowed: true,
-                        human: false,
-                        reason: None,
-                        updated_args: updated,
-                    },
-                    (Outcome::Deny { reasons }, _) => Verdict {
-                        allowed: false,
-                        human: false,
-                        reason: Some(reason_text(reasons)),
-                        updated_args: None,
-                    },
+                    (outcome, Level::ObserveOnly) => {
+                        let fin = match outcome {
+                            Outcome::Allow => FinalOutcome::Allow,
+                            Outcome::Deny { .. } => FinalOutcome::Deny,
+                            Outcome::Ask { .. } => FinalOutcome::Expired,
+                        };
+                        self.apply_effects(&ev.decision, fin, req.turn_id).await;
+                        Verdict {
+                            allowed: true,
+                            human: false,
+                            reason: None,
+                            updated_args: updated,
+                        }
+                    }
+                    (Outcome::Allow, _) => {
+                        self.apply_effects(&ev.decision, FinalOutcome::Allow, req.turn_id)
+                            .await;
+                        Verdict {
+                            allowed: true,
+                            human: false,
+                            reason: None,
+                            updated_args: updated,
+                        }
+                    }
+                    (Outcome::Deny { reasons }, _) => {
+                        self.apply_effects(&ev.decision, FinalOutcome::Deny, req.turn_id)
+                            .await;
+                        Verdict {
+                            allowed: false,
+                            human: false,
+                            reason: Some(reason_text(reasons)),
+                            updated_args: None,
+                        }
+                    }
                     (Outcome::Ask { reasons }, _) => {
-                        let human = self
+                        let card = plan(reasons, None);
+                        let subject = tool_card(
+                            "tool_call",
+                            &req.tool,
+                            &n.kind,
+                            n.command
+                                .as_deref()
+                                .or_else(|| n.paths.first().map(String::as_str)),
+                            &req.args,
+                            updated.as_ref(),
+                            reasons,
+                        );
+                        let answered = self
                             .ask_human(
                                 ApprovalKind::Policy,
                                 req.call_id.clone(),
                                 ev.approval.unwrap_or_default(),
-                                json!({"phase": "tool_call", "tool": req.tool, "kind": n.kind,
-                                       "args": updated.clone().unwrap_or_else(|| req.args.clone()),
-                                       "reasons": reasons.iter().map(|r| r.reason.clone()).collect::<Vec<_>>()}),
+                                subject,
                                 req.turn_id,
+                                Some(&card),
+                                reasons,
                             )
                             .await;
+                        self.apply_effects(&ev.decision, answered.outcome, req.turn_id)
+                            .await;
+                        let human = answered.human;
                         Verdict {
                             allowed: human.allow,
                             human: true,
-                            reason: human.reason.or_else(|| Some(reason_text(reasons))),
+                            reason: human.reason.or_else(|| {
+                                Some(if answered.aborted {
+                                    "Freigabe abgelaufen; der Turn wird abgebrochen (beton-Policy)"
+                                        .to_owned()
+                                } else {
+                                    reason_text(reasons)
+                                })
+                            }),
                             updated_args: human.updated_args.or(updated),
                         }
                     }
@@ -990,28 +1481,45 @@ impl PolicyGate {
                 None,
             )
             .await;
-        match ev.decision.outcome {
-            Outcome::Allow => Checked::Allow(ev.decision.modified),
-            Outcome::Deny { reasons } => Checked::Deny {
-                reason: reason_text(&reasons),
-                rules: rule_ids(&reasons),
-            },
+        match ev.decision.outcome.clone() {
+            Outcome::Allow => {
+                self.apply_effects(&ev.decision, FinalOutcome::Allow, req.turn_id)
+                    .await;
+                Checked::Allow(ev.decision.modified)
+            }
+            Outcome::Deny { reasons } => {
+                self.apply_effects(&ev.decision, FinalOutcome::Deny, req.turn_id)
+                    .await;
+                Checked::Deny {
+                    reason: reason_text(&reasons),
+                    rules: rule_ids(&reasons),
+                }
+            }
             Outcome::Ask { .. } if !ask_human => Checked::AskNeeded,
             Outcome::Ask { reasons } => {
                 let approval = ev.approval.unwrap_or_default();
                 if let Some(w) = waiting {
                     let _ = w.send(approval);
                 }
-                let human = self
+                let card = plan(&reasons, None);
+                let model = req.model.clone().unwrap_or_default();
+                let answered = self
                     .ask_human(
                         ApprovalKind::Policy,
                         key,
                         approval,
-                        json!({"phase": "model_request", "model": req.model,
-                               "reasons": reasons.iter().map(|r| r.reason.clone()).collect::<Vec<_>>()}),
+                        json!({"phase": "model_request", "title": "Modell-Anfrage bestätigen",
+                               "summary": if model.is_empty() { "Nächster Turn".to_owned() } else { format!("Modell {model}") },
+                               "model": req.model,
+                               "reasons": reasons_json(&reasons)}),
                         req.turn_id,
+                        Some(&card),
+                        &reasons,
                     )
                     .await;
+                self.apply_effects(&ev.decision, answered.outcome, req.turn_id)
+                    .await;
+                let human = answered.human;
                 if human.allow {
                     Checked::Allow(ev.decision.modified)
                 } else {
@@ -1062,27 +1570,42 @@ impl PolicyGate {
             // Lockern ist nicht erlaubt: Änderung verwerfen.
             modified.permission_mode = None;
         }
-        match ev.decision.outcome {
-            Outcome::Allow => Checked::Allow(modified),
-            Outcome::Deny { reasons } => Checked::Deny {
-                reason: reason_text(&reasons),
-                rules: rule_ids(&reasons),
-            },
+        match ev.decision.outcome.clone() {
+            Outcome::Allow => {
+                self.apply_effects(&ev.decision, FinalOutcome::Allow, None)
+                    .await;
+                Checked::Allow(modified)
+            }
+            Outcome::Deny { reasons } => {
+                self.apply_effects(&ev.decision, FinalOutcome::Deny, None)
+                    .await;
+                Checked::Deny {
+                    reason: reason_text(&reasons),
+                    rules: rule_ids(&reasons),
+                }
+            }
             Outcome::Ask { reasons } => {
                 let approval = ev.approval.unwrap_or_default();
                 if let Some(w) = waiting {
                     let _ = w.send(approval);
                 }
-                let human = self
+                let card = plan(&reasons, None);
+                let answered = self
                     .ask_human(
                         ApprovalKind::Policy,
                         key,
                         approval,
-                        json!({"phase": "session_start",
-                               "reasons": reasons.iter().map(|r| r.reason.clone()).collect::<Vec<_>>()}),
+                        json!({"phase": "session_start", "title": "Session-Start bestätigen",
+                               "summary": format!("Harness {}", self.inner.opts.harness),
+                               "reasons": reasons_json(&reasons)}),
                         None,
+                        Some(&card),
+                        &reasons,
                     )
                     .await;
+                self.apply_effects(&ev.decision, answered.outcome, None)
+                    .await;
+                let human = answered.human;
                 if human.allow {
                     Checked::Allow(modified)
                 } else {
@@ -1160,17 +1683,34 @@ impl Gate for PolicyGate {
                         updated_args: updated,
                     };
                 }
-                // Rückfrage des Vendors: der Mensch entscheidet (WEB-018, bis WP-37).
+                // Rückfrage des Vendors: der Mensch entscheidet (Approval-Card, WEB-007).
                 let args = updated.clone().unwrap_or_else(|| req.args.clone());
+                let summary = args["command"]
+                    .as_str()
+                    .or_else(|| args["file_path"].as_str())
+                    .or_else(|| args["path"].as_str())
+                    .map(str::to_owned);
+                let subject = tool_card(
+                    "tool_call",
+                    &req.tool,
+                    &kind,
+                    summary.as_deref(),
+                    &args,
+                    None,
+                    &[],
+                );
                 let human = self
                     .ask_human(
                         ApprovalKind::Tool,
                         req.call_id.clone(),
                         ApprovalId::new(),
-                        json!({"tool": req.tool, "kind": kind, "args": args}),
+                        subject,
                         req.turn_id,
+                        None,
+                        &[],
                     )
-                    .await;
+                    .await
+                    .human;
                 if let Ok(mut d) = self.inner.decided.lock()
                     && let Some(entry) = d.get_mut(&req.call_id)
                 {
@@ -1253,22 +1793,39 @@ impl Gate for PolicyGate {
                 None,
             )
             .await;
-        match ev.decision.outcome {
-            Outcome::Allow => GateDecision::Allow { updated_args: None },
-            Outcome::Deny { reasons } => GateDecision::Deny {
-                reason: Some(reason_text(&reasons)),
-            },
+        let turn = req.call.turn_id;
+        match ev.decision.outcome.clone() {
+            Outcome::Allow => {
+                self.apply_effects(&ev.decision, FinalOutcome::Allow, turn)
+                    .await;
+                GateDecision::Allow { updated_args: None }
+            }
+            Outcome::Deny { reasons } => {
+                self.apply_effects(&ev.decision, FinalOutcome::Deny, turn)
+                    .await;
+                GateDecision::Deny {
+                    reason: Some(reason_text(&reasons)),
+                }
+            }
             Outcome::Ask { reasons } => {
-                let human = self
+                let card = plan(&reasons, None);
+                let answered = self
                     .ask_human(
                         ApprovalKind::Policy,
                         format!("tool_result:{}", req.call.call_id),
                         ev.approval.unwrap_or_default(),
-                        json!({"phase": "tool_result", "tool": req.call.tool,
-                               "reasons": reasons.iter().map(|r| r.reason.clone()).collect::<Vec<_>>()}),
-                        req.call.turn_id,
+                        json!({"phase": "tool_result", "title": "Tool-Ergebnis freigeben",
+                               "summary": req.call.tool,
+                               "tool": {"name": req.call.tool, "kind": req.call.kind},
+                               "reasons": reasons_json(&reasons)}),
+                        turn,
+                        Some(&card),
+                        &reasons,
                     )
                     .await;
+                self.apply_effects(&ev.decision, answered.outcome, turn)
+                    .await;
+                let human = answered.human;
                 if human.allow {
                     GateDecision::Allow { updated_args: None }
                 } else {
@@ -1278,6 +1835,15 @@ impl Gate for PolicyGate {
                 }
             }
         }
+    }
+}
+
+#[async_trait]
+impl crate::mcp::Asker for PolicyGate {
+    async fn ask(&self, question: &str, choices: &[String], timeout: Duration) -> Option<String> {
+        let key = format!("ask_user:{}", ApprovalId::new());
+        self.ask_question(&key, question.to_owned(), choices.to_vec(), timeout, None)
+            .await
     }
 }
 
@@ -1427,6 +1993,10 @@ mod tests {
     }
 
     fn with_policy(body: &str) -> Policy {
+        with_policy_state(body, None)
+    }
+
+    fn with_policy_state(body: &str, state: Option<Arc<dyn StateSource>>) -> Policy {
         let dir = tempfile::tempdir().unwrap();
         let pdir = dir.path().join("policies");
         std::fs::create_dir_all(&pdir).unwrap();
@@ -1441,8 +2011,12 @@ mod tests {
             workdir: dir.path().to_path_buf(),
             ..PolicyOptions::default()
         };
+        let mut gate = PolicyGate::new(opts, tx);
+        if let Some(source) = state {
+            gate = gate.with_state(source);
+        }
         Policy {
-            gate: PolicyGate::new(opts, tx),
+            gate,
             rx,
             _dir: dir,
         }
@@ -1492,7 +2066,8 @@ mod tests {
     async fn pol_010_ac1_one_card_with_all_reasons_and_the_combined_plan() {
         let mut p = with_policy(TWO_ASKS);
         let g = p.gate.clone();
-        let call = tokio::spawn(async move { g.decide(pre("c1", "git push origin feature/x")).await });
+        let call =
+            tokio::spawn(async move { g.decide(pre("c1", "git push origin feature/x")).await });
         let req = next_request(&mut p.rx).await;
         assert_eq!(req.kind, ApprovalKind::Policy);
         let reasons = req.subject["reasons"].as_array().unwrap();
@@ -1503,13 +2078,16 @@ mod tests {
         assert_eq!(reasons[0]["severity"], "high");
         assert_eq!(req.subject["tool"]["name"], "Bash");
         assert_eq!(req.subject["tool"]["kind"], "shell");
-        assert_eq!(req.subject["tool"]["args"]["command"], "git push origin feature/x");
+        assert_eq!(
+            req.subject["tool"]["args"]["command"],
+            "git push origin feature/x"
+        );
         assert_eq!(req.subject["summary"], "git push origin feature/x");
         assert_eq!(req.subject["call_id"], "c1");
         assert_eq!(req.options, ["approve", "approve_session", "deny"]);
         // Kürzeste Frist (30 min), strengstes on_timeout (abort).
         assert_eq!(req.on_timeout, TimeoutAction::Abort);
-        let left = time::OffsetDateTime::from(req.expires_at) - time::OffsetDateTime::now_utc();
+        let left = req.expires_at.as_offset_date_time() - time::OffsetDateTime::now_utc();
         assert!(
             left > time::Duration::minutes(29) && left <= time::Duration::minutes(30),
             "{left}"
@@ -1556,12 +2134,19 @@ mod tests {
         assert_eq!(resolved.remember, Some(RememberScope::Session));
 
         // Derselbe Befehl: ohne Card erlaubt, das policy.decision nennt den Grant.
-        let d = tokio::time::timeout(Duration::from_secs(5), p.gate.decide(pre("c2", "git push origin x")))
-            .await
-            .expect("ohne Rückfrage");
+        let d = tokio::time::timeout(
+            Duration::from_secs(5),
+            p.gate.decide(pre("c2", "git push origin x")),
+        )
+        .await
+        .expect("ohne Rückfrage");
         assert!(matches!(d, GateDecision::Allow { .. }));
         let events = drain(&mut p.rx);
-        assert!(!events.iter().any(|e| matches!(e, EventPayload::ApprovalRequested(_))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EventPayload::ApprovalRequested(_)))
+        );
         let decision = events
             .iter()
             .find_map(|e| match e {
@@ -1574,7 +2159,8 @@ mod tests {
 
         // Ein anderer Befehl erzeugt wieder eine Card.
         let g = p.gate.clone();
-        let other = tokio::spawn(async move { g.decide(pre("c3", "git push --tags origin")).await });
+        let other =
+            tokio::spawn(async move { g.decide(pre("c3", "git push --tags origin")).await });
         let _ = next_request(&mut p.rx).await;
         assert!(p.gate.resolve("c3", Human::default()));
         assert!(matches!(other.await.unwrap(), GateDecision::Deny { .. }));
@@ -1615,7 +2201,10 @@ mod tests {
         let d = p.gate.decide(pre("c1", "rm -rf dist")).await;
         assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
         let waited = started.elapsed();
-        assert!(waited >= Duration::from_millis(900) && waited < Duration::from_secs(10), "{waited:?}");
+        assert!(
+            waited >= Duration::from_millis(900) && waited < Duration::from_secs(10),
+            "{waited:?}"
+        );
         let resolved = drain(&mut p.rx)
             .into_iter()
             .find_map(|e| match e {
@@ -1668,14 +2257,20 @@ mod tests {
         let _ = next_request(&mut p.rx).await;
         assert!(p.gate.resolve("c1", allow()));
         call.await.unwrap();
-        assert_eq!(state_changes(&drain(&mut p.rx)), [("asked".to_owned(), json!(1))]);
+        assert_eq!(
+            state_changes(&drain(&mut p.rx)),
+            [("asked".to_owned(), json!(1))]
+        );
         // Ablehnung (Default effects_on): angewendet.
         let g = p.gate.clone();
         let call = tokio::spawn(async move { g.decide(pre("c2", "ls")).await });
         let _ = next_request(&mut p.rx).await;
         assert!(p.gate.resolve("c2", Human::default()));
         call.await.unwrap();
-        assert_eq!(state_changes(&drain(&mut p.rx)), [("asked".to_owned(), json!(2))]);
+        assert_eq!(
+            state_changes(&drain(&mut p.rx)),
+            [("asked".to_owned(), json!(2))]
+        );
         // Ablauf: nicht angewendet.
         p.gate.decide(pre("c3", "ls")).await;
         assert_eq!(state_changes(&drain(&mut p.rx)), []);
@@ -1700,9 +2295,6 @@ mod tests {
 
     #[tokio::test]
     async fn pol_009_state_comes_from_the_server_and_user_scopes_go_back() {
-        let mut p = with_policy(
-            "rules:\n  - id: count-pushes\n    on: tool_call\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }} heute {{ state.user_day.pushes }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: increment, scope: user_day, key: pushes }\n",
-        );
         let source = Arc::new(FakeState {
             loaded: LoadedState {
                 session: [("pushes".to_owned(), json!(2))].into(),
@@ -1711,8 +2303,11 @@ mod tests {
             },
             ..FakeState::default()
         });
-        let gate = p.gate.clone().with_state(source.clone());
-        let d = gate.decide(pre("c1", "git push")).await;
+        let mut p = with_policy_state(
+            "rules:\n  - id: count-pushes\n    on: tool_call\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }} heute {{ state.user_day.pushes }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: increment, scope: user_day, key: pushes }\n",
+            Some(source.clone()),
+        );
+        let d = p.gate.decide(pre("c1", "git push")).await;
         assert!(matches!(d, GateDecision::Allow { .. }));
         let events = drain(&mut p.rx);
         let notified = events
@@ -1743,15 +2338,20 @@ mod tests {
                 Err("weg".into())
             }
         }
-        let mut p = with_policy(
+        let mut p = with_policy_state(
             "rules:\n  - id: count\n    on: tool_call\n    action: allow\n    effects:\n      - { op: increment, scope: session, key: n }\n",
+            Some(Arc::new(Broken)),
         );
-        let gate = p.gate.clone().with_state(Arc::new(Broken));
-        assert!(matches!(gate.decide(pre("c1", "ls")).await, GateDecision::Allow { .. }));
+        assert!(matches!(
+            p.gate.decide(pre("c1", "ls")).await,
+            GateDecision::Allow { .. }
+        ));
         let events = drain(&mut p.rx);
         assert_eq!(state_changes(&events), []);
         assert!(
-            events.iter().any(|e| matches!(e, EventPayload::Notice(n) if n.level == NoticeLevel::Warn)),
+            events
+                .iter()
+                .any(|e| matches!(e, EventPayload::Notice(n) if n.level == NoticeLevel::Warn)),
             "{events:?}"
         );
     }
@@ -1763,8 +2363,16 @@ mod tests {
         );
         p.gate.decide(pre("c1", "ls")).await;
         let events = drain(&mut p.rx);
-        assert!(!events.iter().any(|e| matches!(e, EventPayload::PolicyNotified(_))));
-        assert!(events.iter().any(|e| matches!(e, EventPayload::Notice(n) if n.text.contains("nur Verlauf"))));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, EventPayload::PolicyNotified(_)))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EventPayload::Notice(n) if n.text.contains("nur Verlauf")))
+        );
     }
 
     #[tokio::test]
@@ -1805,7 +2413,13 @@ mod tests {
         assert_eq!(resolved.answer.as_deref(), Some("Pro IP"));
         // Ohne Antwort binnen Frist: keine Antwort.
         let none = g
-            .ask_question("q2", "Noch da?".into(), Vec::new(), Duration::from_millis(200), None)
+            .ask_question(
+                "q2",
+                "Noch da?".into(),
+                Vec::new(),
+                Duration::from_millis(200),
+                None,
+            )
             .await;
         assert_eq!(none, None);
     }
