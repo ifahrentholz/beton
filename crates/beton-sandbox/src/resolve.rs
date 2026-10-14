@@ -838,9 +838,12 @@ pub fn resolve(
             for k in CA_ENV {
                 env.insert(k.into(), bundle.to_string_lossy().into_owned());
             }
-            // pip ≥ 24.2 prüft sonst mit `truststore` gegen den Trust-Store des Systems (unter
-            // macOS ohne beton-CA) statt gegen `PIP_CERT`.
-            env.insert("PIP_USE_DEPRECATED".into(), "legacy-certs".into());
+            // pip ≥ 24.2 prüft unter macOS mit `truststore` gegen den Trust-Store des Systems
+            // (ohne beton-CA) statt gegen `PIP_CERT`; unter Linux wertet `truststore`
+            // `SSL_CERT_FILE` aus. Ältere pip kennen den Wert nicht, daher nur unter macOS.
+            if backend == ProviderId::Seatbelt {
+                env.insert("PIP_USE_DEPRECATED".into(), "legacy-certs".into());
+            }
             push_unique(&mut read_roots, bundle);
         }
     }

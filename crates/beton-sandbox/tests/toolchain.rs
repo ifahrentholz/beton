@@ -87,7 +87,9 @@ fn tool(name: &str) -> Option<(PathBuf, PathBuf)> {
         return Some((exe.clone(), exe.ancestors().nth(3).unwrap().to_path_buf()));
     }
     // rustup-Proxy: das echte Werkzeug der aktiven Toolchain (`rustc --print sysroot`).
-    if exe.file_name().is_some_and(|n| n == "rustup") {
+    let rustup_proxy = exe.file_name().is_some_and(|n| n == "rustup")
+        || found.parent().is_some_and(|d| d.join("rustup").exists());
+    if rustup_proxy && (name == "cargo" || name == "rustc") {
         let out = std::process::Command::new("rustc")
             .args(["--print", "sysroot"])
             .output()
