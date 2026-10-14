@@ -149,8 +149,28 @@ pub async fn stage_boot(
     cfg: &SessionsConfig,
     session: SessionId,
 ) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
-    let _ = (cfg, session);
-    Ok((None, None))
+    let spec = beton_sandbox::SandboxSpec::merged(&[&cfg.sandbox]);
+    if !beton_host::stages_active(&spec) {
+        return Ok((None, None));
+    }
+    let boot = beton_host::SandboxBoot {
+        spec: cfg.sandbox.clone(),
+        extra_ca_files: cfg.proxy_extra_ca_files.clone(),
+    };
+    if spec.allow_network == Some(false) {
+        return Ok((Some(boot), None));
+    }
+    let source = cfg.proxy_ca.as_ref().ok_or_else(|| {
+        Problem::new(ProblemCode::SandboxUnavailable)
+            .detail("proxy_ca_missing: keine Quelle für die beton-CA")
+    })?;
+    let ca = source.handover(session).await.map_err(|e| {
+        Problem::new(ProblemCode::SandboxUnavailable).detail(format!("beton-CA: {e}"))
+    })?;
+    Ok((
+        Some(boot),
+        Some(beton_host::CaText::new(ca.expose().to_owned())),
+    ))
 }
 
 impl SessionsConfig {
