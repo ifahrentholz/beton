@@ -692,4 +692,5 @@ async fn export(
 }
 
 #[cfg(test)]
+#[path = "otel_tests.rs"]
 mod tests;
