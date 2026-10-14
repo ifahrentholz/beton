@@ -118,7 +118,7 @@ async fn ux_001_ac1_requested_is_open_and_resolved_is_done() {
 }
 
 #[tokio::test]
-async fn ux_001_questions_and_notices() {
+async fn ux_001_ac3_counter_counts_open_approvals_and_questions() {
     let t = store().await;
     let s = session(&t).await;
     let q = ApprovalId::new();
