@@ -890,7 +890,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-001--policy-dokumentformat-ladeorte--hot-reload",
-  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden per Watcher erkannt und gelten ab der nächsten Auswertung.",
+  "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden vor jeder Auswertung über den Inhalts-Hash der Policy-Dateien erkannt (unabhängig von der Latenz eines Dateisystem-Watchers) und gelten ab der nächsten Auswertung.",
   "acs": [
    "Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.",
    "Wird eine Projekt-Policy-Datei während einer laufenden Session geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart.",
@@ -907,7 +907,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-002--cel-engine--erweiterungsfunktionen",
-  "summary": "`when`-Ausdrücke, `modify`-Werte, `effects.value` und `remember_key` sind CEL (`cel-rust`). Ausdrücke werden beim Laden kompiliert und typgeprüft; zur Laufzeit gilt ein Kostenlimit pro Ausdruck.",
+  "summary": "`when`-Ausdrücke, `effects.value`, `remember_key` und `{{ … }}` in `notify.message` sind CEL; `modify`-Werte sind Literale (wie im Beispiel `modify: { model: claude-sonnet-4-5 }`). Ausdrücke werden beim Laden kompiliert und gegen die Kontext-Deklaration (POL-004) typgeprüft; zur Laufzeit gilt ein Kostenlimit pro Ausdruck. `cel-rust` liefert Parser und Makro-Expansion; Typprüfung und Auswertung mit Kostenbudget implementiert `beton-policy` selbst, weil `cel-rust` beides nicht anbietet.",
   "acs": [
    "Ein Ausdruck mit Typfehler (`session.cost_usd > \"5\"`) wird beim Laden mit Position abgelehnt.",
    "`tool.name == \"bash\" && tool.args.command.matches(\"rm -rf\")` liefert für ein Tool ohne `command` `false` statt eines Fehlers (Error-Absorption).",
