@@ -412,3 +412,52 @@ async fn pol_001_tools_cannot_write_policy_files() {
     let d = g.decide(write("w4", "Read", "file_read", &project)).await;
     assert_eq!(d, GateDecision::Allow { updated_args: None });
 }
+
+// ------------------------------------------------------------- M6 (#234), AGT-014
+
+#[cfg(unix)]
+#[tokio::test]
+async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
+    // `policies:` im `agent.yaml` wird validiert, aber noch nicht geladen (WP-49). Statt die
+    // Regeln still zu ignorieren, startet ein solcher Agent nicht (fail closed).
+    let tmp = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let work = tmp.path().join("work");
+    let agent = work.join(".beton/agents/streng");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(
+        agent.join("agent.yaml"),
+        "spec_version: 1\nname: streng\nexecutor: { harness: fake }\npolicies:\n  - { id: no-shell, on: tool_call, when: 'tool.kind == \"shell\"', action: deny }\n",
+    )
+    .unwrap();
+    let run_dir = tmp.path().join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let paths = beton_runner::mcp::Paths {
+        beton_home: tmp.path().join("home/.beton"),
+        home: Some(tmp.path().join("home")),
+        run_dir,
+        relay: std::path::PathBuf::from("/bin/false"),
+    };
+    let fake: HarnessId = "fake".parse().unwrap();
+    let caps = beton_harness::Capabilities::minimal(
+        beton_harness::Mode::Native,
+        beton_harness::Transport::Native,
+    );
+    let err = beton_runner::mcp::prepare(
+        beton_core::id::SessionId::new(),
+        &fake,
+        &caps,
+        &work,
+        beton_runner::mcp::AgentSource::Ref("streng"),
+        &beton_harness::registry::HarnessLayers::default(),
+        &paths,
+        None,
+        None,
+    )
+    .await
+    .err()
+    .expect("Start verweigert");
+    assert!(err.contains("policies") && err.contains("WP-49"), "{err}");
+}
