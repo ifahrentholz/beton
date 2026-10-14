@@ -50,6 +50,13 @@ pub struct ProxyEndpoint {
     pub port: u16,
 }
 
+impl ProxyEndpoint {
+    /// Nur der Port (ohne Proxy-Variablen im Environment).
+    pub fn port(port: u16) -> Self {
+        Self { port }
+    }
+}
+
 /// Kontext der Auflösung.
 #[derive(Debug, Clone)]
 pub struct ResolveCtx {

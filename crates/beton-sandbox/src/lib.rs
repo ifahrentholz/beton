@@ -26,6 +26,7 @@ pub mod linux;
 pub mod masks;
 pub mod none;
 pub mod paths;
+pub mod preset;
 #[cfg(target_os = "macos")]
 mod proctree;
 pub mod provider;
@@ -47,4 +48,4 @@ pub use resolve::{
     Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Stage, check_caps,
     mark_unenforced_limits, resolve,
 };
-pub use spec::{BackendChoice, Limits, SandboxSpec, WorkspaceAccess};
+pub use spec::{BackendChoice, HarnessSandboxConfig, Limits, Preset, SandboxSpec, WorkspaceAccess};

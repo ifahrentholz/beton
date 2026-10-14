@@ -363,6 +363,34 @@ async fn sbx_007_writes_outside_the_workspace_fail() {
 }
 
 #[tokio::test]
+async fn sbx_012_ac2_readonly_preset_blocks_every_write_in_the_workspace() {
+    let fx = fx();
+    let c = control(&fx, "test -w src/main.rs && test -w .").await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    let policy = fx.policy("preset: readonly\n", Stage::Tools);
+    for attack in [
+        "echo x > neu.txt",
+        "echo x >> src/main.rs",
+        "mkdir neu",
+        "rm src/main.rs",
+        "mv src/main.rs src/umbenannt.rs",
+        "touch src/main.rs",
+        "ln -s /etc/hosts link",
+    ] {
+        let out = sh(&policy, attack).await;
+        assert!(!out.ok, "{attack}: {out:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(fx.ws.join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    assert!(!fx.ws.join("neu.txt").exists() && !fx.ws.join("neu").exists());
+    // Lesen bleibt erlaubt, Scratch bleibt beschreibbar.
+    let out = sh(&policy, "cat src/main.rs && echo y > \"$TMPDIR/t\"").await;
+    assert!(out.ok && out.stdout.contains("fn main"), "{out:?}");
+}
+
+#[tokio::test]
 async fn sbx_007_signals_only_reach_the_own_tree() {
     let fx = fx();
     let policy = fx.policy("{}\n", Stage::Tools);
@@ -727,9 +755,7 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
     std::fs::copy(&upstream_ca, fx.scratch.join("upstream-ca.pem")).unwrap();
 
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.proxy = Some(ProxyEndpoint {
-        port: instance.addr().port(),
-    });
+    ctx.proxy = Some(ProxyEndpoint::port(instance.addr().port()));
     let policy = fx.policy_with("egress_rules: [\"GET 127.0.0.1/**\"]\n", ctx);
     let url = format!("https://127.0.0.1:{port}/ok");
     let run = |script: String| {
@@ -800,7 +826,7 @@ async fn sbx_007_ac5_other_localhost_ports_are_unreachable() {
         }
     });
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.proxy = Some(ProxyEndpoint { port: proxy_port });
+    ctx.proxy = Some(ProxyEndpoint::port(proxy_port));
     let policy = fx.policy_with("{}\n", ctx);
     let c = control(&fx, &format!("nc -z -w 3 127.0.0.1 {service_port}")).await;
     assert!(c.ok, "Kontrollgruppe: {c:?}");

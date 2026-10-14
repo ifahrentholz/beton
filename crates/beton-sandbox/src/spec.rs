@@ -84,6 +84,44 @@ impl JsonSchema for BackendChoice {
     }
 }
 
+/// Eingebautes Preset (SBX-012): Startpunkt, den eigene Felder gemäß den Merge-Regeln
+/// überschreiben bzw. ergänzen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// Workspace rw, in Stufe 2 kein Netz (keine Egress-Regel); Stufe 1 erreicht nur ihre
+    /// Vendor-Hosts.
+    #[default]
+    Default,
+    /// Wie `default`, zusätzlich lesend gängige Paket-Registries und Toolchain-Caches.
+    Dev,
+    /// Workspace read-only, kein Netz (z. B. Side-Chats, Reviewer-Agents).
+    Readonly,
+}
+
+impl Preset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Preset::Default => "default",
+            Preset::Dev => "dev",
+            Preset::Readonly => "readonly",
+        }
+    }
+}
+
+/// `sandbox.harness` (Stufe 1, selten nötig).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessSandboxConfig {
+    /// Zusätzliche Egress-Regeln der Stufe 1 (z. B. Remote-MCP-Server), mit MITM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_extra: Option<Vec<String>>,
+    /// Zusätzliche Passthrough-Hosts der Stufe 1 (`host` oder `host:port`), ohne
+    /// TLS-Terminierung (PRX-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_passthrough: Option<Vec<String>>,
+}
+
 /// Zugriff auf den Workspace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -193,6 +231,13 @@ pub struct SandboxSpec {
     /// `none` (keine Isolation, nur ausdrücklich).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendChoice>,
+    /// Eingebautes Preset `default`, `dev` oder `readonly` (SBX-012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<Preset>,
+    /// Startet ein Harness nur, wenn er Tools in Stufe 2 erzwingt (Default `true`, SBX-002
+    /// AC4); `false` erlaubt `tool_isolation: inherited` als *degraded*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_tool_isolation: Option<bool>,
     /// `rw` (Default) oder `ro`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceAccess>,
@@ -222,9 +267,20 @@ pub struct SandboxSpec {
     /// Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_allow_private: Option<Vec<String>>,
+    /// Passthrough in Stufe 2 (`host` oder `host:port`): nur ausdrücklich, ohne
+    /// TLS-Terminierung und ohne Credential-Injection (PRX-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_passthrough: Option<Vec<String>>,
+    /// Loopback-Ports für Dev-Server in der Sandbox (PRX-008 AC3, #210): `bind` und `connect`
+    /// nur auf diesen Ports. Linux: im eigenen Net-Namespace; macOS: Loopback des Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_ports: Option<Vec<u16>>,
     /// Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<Limits>,
+    /// Stufe-1-Overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessSandboxConfig>,
 }
 
 /// Environment-Variablen, die nie in eine Sandbox gelangen, auch nicht per `passthrough`
@@ -275,8 +331,27 @@ impl SandboxSpec {
         crate::paths::validate_spec(self)
     }
 
-    /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`.
+    /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`. Setzt eine Ebene
+    /// ein Preset (SBX-012), liegt das Preset der spezifischsten Ebene als unterste Ebene
+    /// darunter.
     pub fn merged(layers: &[&SandboxSpec]) -> SandboxSpec {
+        Self::merged_with_origins(&layers.iter().map(|l| ("config", *l)).collect::<Vec<_>>()).0
+    }
+
+    /// Wie [`SandboxSpec::merged`] mit Herkunft je Feld (`explain`, SBX-012 AC3): Schlüssel
+    /// ist der Feldname (bei vereinigten Listen `masks[<eintrag>]`), Wert der Name der
+    /// Ebene bzw. `preset:<name>`.
+    pub fn merged_with_origins(
+        layers: &[(&str, &SandboxSpec)],
+    ) -> (SandboxSpec, BTreeMap<String, String>) {
+        let origins = BTreeMap::new();
+        (
+            Self::merge_plain(&layers.iter().map(|(_, l)| *l).collect::<Vec<_>>()),
+            origins,
+        )
+    }
+
+    fn merge_plain(layers: &[&SandboxSpec]) -> SandboxSpec {
         let mut out = SandboxSpec::default();
         for layer in layers {
             if layer.backend.is_some() {

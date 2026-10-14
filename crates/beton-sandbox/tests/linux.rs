@@ -346,6 +346,44 @@ async fn sbx_008_ac1_system_secrets_unreadable_writes_only_in_workspace() {
 }
 
 #[tokio::test]
+async fn sbx_012_ac2_readonly_preset_blocks_every_write_in_the_workspace() {
+    let fx = fx();
+    let c = control(&fx, "test -w src/main.rs && test -w .").await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    for p in backends() {
+        let policy = fx.policy(p.as_ref(), "preset: readonly\n", Stage::Tools);
+        for attack in [
+            "echo x > neu.txt",
+            "echo x >> src/main.rs",
+            "mkdir neu",
+            "rm src/main.rs",
+            "mv src/main.rs src/umbenannt.rs",
+            "touch src/main.rs",
+            "ln -s /etc/hosts link",
+        ] {
+            let out = sh(p.as_ref(), &policy, attack).await;
+            assert!(!out.ok, "{} {attack}: {out:?}", p.id());
+        }
+        assert_eq!(
+            std::fs::read_to_string(fx.ws.join("src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+        assert!(!fx.ws.join("neu.txt").exists() && !fx.ws.join("neu").exists());
+        let out = sh(
+            p.as_ref(),
+            &policy,
+            "cat src/main.rs && echo y > \"$TMPDIR/t\"",
+        )
+        .await;
+        assert!(
+            out.ok && out.stdout.contains("fn main"),
+            "{}: {out:?}",
+            p.id()
+        );
+    }
+}
+
+#[tokio::test]
 async fn sbx_008_ac1_shell_rc_and_autostart_are_not_writable_in_both_stages() {
     let fx = fx();
     let attack = "echo pwned >> \"$HOME/.bashrc\"; echo pwned > \"$HOME/.config/systemd/user/x.service\"; echo pwned > \"$HOME/.profile\"";
@@ -763,9 +801,7 @@ async fn sbx_008_ac2_only_loopback_and_the_relay_to_the_proxy() {
 
     for p in backends() {
         let mut ctx = fx.ctx(Stage::Tools);
-        ctx.proxy = Some(ProxyEndpoint {
-            port: instance.addr().port(),
-        });
+        ctx.proxy = Some(ProxyEndpoint::port(instance.addr().port()));
         let yaml = format!(
             "read_paths: [{}]\negress_rules: [\"GET 127.0.0.1/**\"]\n",
             exe_grant()

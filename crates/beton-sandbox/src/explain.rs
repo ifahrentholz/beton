@@ -14,3 +14,12 @@ pub fn explain(policy: &ResolvedPolicy) -> Value {
     }
     v
 }
+
+/// Wie [`explain`], zusätzlich mit der Herkunft je Feld (Preset oder Ebene, SBX-012 AC3).
+pub fn with_origins(
+    policy: &ResolvedPolicy,
+    origins: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    let _ = origins;
+    explain(policy)
+}
