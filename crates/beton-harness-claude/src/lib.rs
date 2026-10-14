@@ -164,10 +164,25 @@ pub fn kind_of(tool: &str) -> String {
 /// `disableAllHooks: false` hat Vorrang vor `disableAllHooks: true` aus anderen Quellen (gegen
 /// 2.1.296 geprüft, #233).
 pub fn hook_settings(command: &str, timeout_s: u64) -> String {
-    json!({"disableAllHooks": false, "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
-        {"type": "command", "command": command, "timeout": timeout_s}
-    ]}]}})
-    .to_string()
+    Value::Object(session_settings(Some((command, timeout_s)))).to_string()
+}
+
+/// Inhalt des `--settings`-JSON einer Session als Objekt: `disableAllHooks: false` und – mit
+/// Hook – `hooks.PreToolUse`. Weitere Schlüssel (z. B. `env`) ergänzt der Aufrufer mit
+/// `insert`, bevor er das Objekt serialisiert; alles, was beton der CLI über Einstellungen
+/// vorgibt, gehört in dieses eine JSON (die CLI kennt nur ein `--settings`).
+pub fn session_settings(hook: Option<(&str, u64)>) -> serde_json::Map<String, Value> {
+    let mut settings = serde_json::Map::new();
+    settings.insert("disableAllHooks".into(), Value::Bool(false));
+    if let Some((command, timeout_s)) = hook {
+        settings.insert(
+            "hooks".into(),
+            json!({"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": command, "timeout": timeout_s}
+            ]}]}),
+        );
+    }
+    settings
 }
 
 /// Einstellungsquellen der CLI (#233): nur die des Nutzers. `.claude/settings.json` und
@@ -566,8 +581,10 @@ impl HarnessAdapter for ClaudeAdapter {
             _ => None,
         };
         let settings = hook.as_ref().map(|(_, line)| {
-            // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013).
-            hook_settings(line, self.gate_timeout.as_secs() + 30)
+            // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013). Weitere
+            // Einstellungen (z. B. `env`) hier in dasselbe Objekt einfügen.
+            let settings = session_settings(Some((line, self.gate_timeout.as_secs() + 30)));
+            Value::Object(settings).to_string()
         });
         args.extend(command_args_with(
             &spec,
@@ -1410,6 +1427,10 @@ mod mcp_tests {
         let settings = hook_settings("/bin/beton hook claude", 60);
         let v: Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(v["disableAllHooks"], false, "{settings}");
+        // Erweiterbar: weitere Schlüssel landen im selben JSON.
+        let mut extended = session_settings(None);
+        extended.insert("env".into(), json!({"A": "1"}));
+        assert_eq!(Value::Object(extended)["disableAllHooks"], false);
         assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "*");
         for isolated in [false, true] {
             let args = command_args_with(&spec(), isolated, None, Some(&settings));
