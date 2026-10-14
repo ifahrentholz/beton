@@ -427,6 +427,14 @@ string_enum!(AuthSource {
     None
 });
 string_enum!(ContextSource { Harness, Estimated });
+string_enum!(
+    /// Auslöser einer Compaction (USE-009): `user` über Button, `/compact` oder API, `beton`
+    /// automatisch vor dem nächsten Turn (`compaction.auto: beton`), `harness` vom Harness selbst.
+    CompactionTrigger {
+    User,
+    Beton,
+    Harness
+});
 string_enum!(FsChangeKind {
     Added,
     Modified,
@@ -824,6 +832,8 @@ payload!(ContextUsage {
 payload!(Compaction {
     before_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] after_tokens: Option<u64>,
+    /// Wer die Compaction ausgelöst hat (USE-009); setzt der Runner. Fehlt in Logs vor M2.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] trigger: Option<CompactionTrigger>,
 });
 
 payload!(FsChange {

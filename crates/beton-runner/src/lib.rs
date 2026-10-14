@@ -19,7 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, Event, EventPayload, FsChange, FsChanged, SessionStatus, SessionStatusChanged,
+    Actor, CompactionTrigger, Event, EventPayload, FsChange, FsChanged, SessionStatus,
+    SessionStatusChanged,
 };
 use beton_core::id::{RunnerId, SessionId, TurnId};
 use beton_harness::process::SandboxLauncher;
@@ -70,6 +71,8 @@ pub mod env {
     pub const FORK_PLAN: &str = "BETON_FORK_PLAN";
     /// `1`: Das Ergebnis des Fork-Plans steht schon im Log.
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
+    /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
+    pub const COMPACTION: &str = "BETON_COMPACTION";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -106,6 +109,8 @@ pub struct RunnerBoot {
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
     pub fork_logged: bool,
+    /// Automatische Compaction (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -178,6 +183,11 @@ impl RunnerBoot {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             fork_logged: std::env::var(env::FORK_LOGGED).is_ok_and(|v| v == "1"),
+            compaction: match std::env::var(env::COMPACTION) {
+                Ok(json) => serde_json::from_str(&json)
+                    .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::COMPACTION)))?,
+                Err(_) => beton_harness::CompactionSettings::default(),
+            },
         })
     }
 
@@ -855,6 +865,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             start_settings.permission_mode,
         ),
         hook: hook.clone(),
+        compaction: boot.compaction,
         ..SessionSpec::default()
     };
     // Für einen Neustart mit Resume (Capability `restart`, HAR-017 AC2).
@@ -1000,6 +1011,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         std::collections::HashSet::new();
     // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
     let mut held_context: Option<NormalizedEvent> = None;
+    // Auslöser der angestoßenen Compaction (USE-009), bis `compaction.completed` kommt.
+    let mut compaction_trigger: Option<CompactionTrigger> = None;
     // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
     pre_events.extend(drain_gate(&boot, &mut gate_rx, &HashMap::new()));
     pending_status.splice(0..0, pre_events);
@@ -1246,6 +1259,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     for mut ev in incoming {
                         if timed_out && let EventPayload::TurnInterrupted(t) = &mut ev.payload {
                             t.reason = Some(TIMED_OUT.into());
+                        }
+                        stamp_compaction(&mut ev.payload, &mut compaction_trigger);
+                        if let EventPayload::ContextUsage(c) = &mut ev.payload {
+                            fill_window(c, spec.model.as_deref());
                         }
                         if deadline.is_none()
                             && let (Some(limit), EventPayload::TurnStarted(_)) = (run_timeout, &ev.payload)
@@ -1523,7 +1540,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 }
                                 continue;
                             }
+                            if name == "session.compact" && !turn_running {
+                                compaction_trigger = Some(requested_trigger(&args));
+                            }
                             let reply = deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await;
+                            if name == "session.compact" && reply.is_err() {
+                                compaction_trigger = None;
+                            }
                             // Ab der Zustellung läuft ein Turn, auch bevor `turn.started` ankommt.
                             if name == "input.submit" && reply.is_ok() {
                                 turn_running = true;
@@ -2340,6 +2363,45 @@ fn gate_decision(args: &Value) -> policy::Human {
     }
 }
 
+/// Auslöser aus `session.compact {trigger}`: `beton` für die Automatik des Servers
+/// (`compaction.auto: beton`), sonst ein Mensch (USE-009).
+fn requested_trigger(args: &Value) -> CompactionTrigger {
+    match args["trigger"].as_str() {
+        Some("beton") => CompactionTrigger::Beton,
+        _ => CompactionTrigger::User,
+    }
+}
+
+/// Setzt den Auslöser an `compaction.*` (USE-009): den des Kommandos, sonst hat der Harness
+/// selbst kompaktiert (eigene Automatik der CLI bzw. des Direkt-API-Loops).
+fn stamp_compaction(payload: &mut EventPayload, pending: &mut Option<CompactionTrigger>) {
+    let (EventPayload::CompactionStarted(c) | EventPayload::CompactionCompleted(c)) = payload
+    else {
+        return;
+    };
+    if c.trigger.is_none() {
+        c.trigger = Some(pending.unwrap_or(CompactionTrigger::Harness));
+    }
+    if matches!(payload, EventPayload::CompactionCompleted(_)) {
+        *pending = None;
+    }
+}
+
+/// Fehlt das Kontextfenster (`window_tokens: 0`), ergänzt es der Runner aus dem Preis-Katalog
+/// des Modells (USE-008); ist es auch dort unbekannt, bleibt es `0` („Fenster unbekannt“).
+fn fill_window(c: &mut beton_core::event::ContextUsage, model: Option<&str>) {
+    if c.window_tokens > 0 {
+        return;
+    }
+    if let Some(window) = model.and_then(|m| {
+        beton_core::pricing::Catalog::embedded()
+            .resolve(m)
+            .and_then(|e| e.context_window)
+    }) {
+        c.window_tokens = window;
+    }
+}
+
 /// Kommandos vom Server an den Harness (`cmd.deliver`).
 /// Wechselt Modell, Effort und Permission-Mode live (HAR-017, HAR-027).
 async fn apply_live(
@@ -2522,6 +2584,53 @@ mod tests {
     }
 
     use super::*;
+
+    /// USE-009: Der Runner nennt den Auslöser; ohne Kommando hat der Harness kompaktiert.
+    #[test]
+    fn compaction_trigger_is_stamped() {
+        let compaction = |done: bool| {
+            let c = beton_core::event::Compaction::default();
+            if done {
+                EventPayload::CompactionCompleted(c)
+            } else {
+                EventPayload::CompactionStarted(c)
+            }
+        };
+        let trigger = |p: &EventPayload| match p {
+            EventPayload::CompactionStarted(c) | EventPayload::CompactionCompleted(c) => c.trigger,
+            _ => None,
+        };
+        let mut pending = Some(requested_trigger(&serde_json::json!({"trigger": "beton"})));
+        let (mut a, mut b) = (compaction(false), compaction(true));
+        stamp_compaction(&mut a, &mut pending);
+        stamp_compaction(&mut b, &mut pending);
+        assert_eq!(trigger(&a), Some(CompactionTrigger::Beton));
+        assert_eq!(trigger(&b), Some(CompactionTrigger::Beton));
+        assert_eq!(pending, None);
+        let mut c = compaction(false);
+        stamp_compaction(&mut c, &mut pending);
+        assert_eq!(trigger(&c), Some(CompactionTrigger::Harness));
+        assert_eq!(requested_trigger(&Value::Null), CompactionTrigger::User);
+    }
+
+    /// USE-008: Ein fehlendes Fenster kommt aus dem Katalog; unbekannt bleibt es `0`.
+    #[test]
+    fn missing_context_window_comes_from_the_catalog() {
+        let usage = |window| beton_core::event::ContextUsage {
+            used_tokens: 150_000,
+            window_tokens: window,
+            source: beton_core::event::ContextSource::Harness,
+        };
+        let mut known = usage(0);
+        fill_window(&mut known, Some("claude-opus-5-5"));
+        assert!(known.window_tokens > 0);
+        let mut unknown = usage(0);
+        fill_window(&mut unknown, Some("ein-eigenes-modell"));
+        assert_eq!(unknown.window_tokens, 0);
+        let mut reported = usage(200_000);
+        fill_window(&mut reported, Some("claude-opus-5-5"));
+        assert_eq!(reported.window_tokens, 200_000);
+    }
 
     fn notice() -> Event {
         Event::new(

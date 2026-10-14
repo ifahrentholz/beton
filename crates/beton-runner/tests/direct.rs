@@ -76,6 +76,22 @@ impl Env {
         vars: &[(&str, String)],
         prepare: impl FnOnce(&Path),
     ) -> Self {
+        Self::start_with(
+            providers,
+            vars,
+            prepare,
+            beton_harness::CompactionSettings::default(),
+        )
+        .await
+    }
+
+    /// Wie [`Self::start`] mit `compaction:` aus der User-Konfiguration (USE-009).
+    async fn start_with(
+        providers: BTreeMap<String, Value>,
+        vars: &[(&str, String)],
+        prepare: impl FnOnce(&Path),
+        compaction: beton_harness::CompactionSettings,
+    ) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("bt")
             .tempdir_in("/tmp")
@@ -112,6 +128,7 @@ impl Env {
             );
             r.sessions.dev = true;
             r.sessions.providers = providers;
+            r.compaction = compaction;
             r.harnesses = beton_runner::builtin_registry_with_options(
                 &layers,
                 true,
@@ -174,6 +191,19 @@ impl Env {
                 "POST",
                 "/v1/sessions",
                 Some(json!({"target": target, "cwd": self.work()})),
+            )
+            .await;
+        assert_eq!(status, 201, "{body}");
+        body["id"].as_str().unwrap().to_owned()
+    }
+
+    /// Fake-Harness-Session mit Szenario (HAR-026).
+    async fn create_fake(&self, scenario: &Path) -> String {
+        let (status, body) = self
+            .http(
+                "POST",
+                "/v1/sessions",
+                Some(json!({"target": "fake", "cwd": self.work(), "harness_opts": {"scenario": scenario}})),
             )
             .await;
         assert_eq!(status, 201, "{body}");
@@ -685,5 +715,108 @@ async fn ses_011_compact_api_on_the_direct_harness_runs_its_own_compaction() {
         .await;
     assert_eq!(of_type(&events, "compaction.started").len(), 1);
     assert_eq!(server.requests_to(PATH).len(), 2, "Summary-Request");
+    env.daemon.shutdown().await;
+}
+
+// ------------------------------------------------------------------ USE-009
+
+/// Drei Turns: 85 % Kontext, danach (nach der Compaction) 50 %, dann wieder ein Turn.
+const OVER_THRESHOLD: &str = "turns:\n  - emit:\n      - { message: \"eins\" }\n      - { usage: { input_tokens: 170000, output_tokens: 10, context_window: 200000 } }\n  - emit:\n      - { message: \"zwei\" }\n      - { usage: { input_tokens: 100000, output_tokens: 10, context_window: 200000 } }\n  - emit:\n      - { message: \"drei\" }\n";
+
+/// Drei Turns nacheinander; liefert alle Events danach.
+async fn three_turns(env: &Env, id: &str) -> Vec<Value> {
+    for (i, text) in ["eins", "zwei", "drei"].into_iter().enumerate() {
+        env.input(id, text).await;
+        let start = Instant::now();
+        loop {
+            let events = env.events(id).await;
+            if of_type(&events, "turn.completed").len() > i {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(30),
+                "Turn {text} endet nicht"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    env.events(id).await
+}
+
+/// Reihenfolge der für USE-009 relevanten Events.
+fn compaction_trail(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e["type"].as_str()? {
+            t @ ("turn.started" | "compaction.started" | "compaction.completed") => {
+                Some(match e["payload"]["trigger"].as_str() {
+                    Some(trigger) => format!("{t} {trigger}"),
+                    None => t.to_owned(),
+                })
+            }
+            "context.usage" => Some(format!("context {}", e["payload"]["used_tokens"])),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn use_009_ac2_beton_compacts_exactly_once_above_the_threshold_before_the_next_turn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scenario = write(&tmp.path().join("fake.yaml"), OVER_THRESHOLD);
+    let env = Env::start_with(
+        BTreeMap::new(),
+        &[],
+        |_| {},
+        beton_harness::CompactionSettings {
+            auto: beton_harness::AutoCompaction::Beton,
+            threshold: 0.8,
+        },
+    )
+    .await;
+    let id = env.create_fake(&scenario).await;
+    let events = three_turns(&env, &id).await;
+    // Nach Turn 1 (85 %) genau eine Compaction vor Turn 2; nach Turn 2 (50 %) keine.
+    assert_eq!(
+        compaction_trail(&events),
+        [
+            "turn.started",
+            "context 170000",
+            "compaction.started beton",
+            "compaction.completed beton",
+            "context 34000",
+            "turn.started",
+            "context 100000",
+            "turn.started",
+        ],
+        "{events:#?}"
+    );
+    env.daemon.shutdown().await;
+}
+
+#[tokio::test]
+async fn use_009_without_beton_automation_nothing_is_compacted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scenario = write(&tmp.path().join("fake.yaml"), OVER_THRESHOLD);
+    // Default `compaction.auto: harness`: der Fake kompaktiert nie von selbst.
+    let env = Env::start(BTreeMap::new(), &[], |_| {}).await;
+    let id = env.create_fake(&scenario).await;
+    let events = three_turns(&env, &id).await;
+    assert!(
+        of_type(&events, "compaction.started").is_empty(),
+        "{events:#?}"
+    );
+    // Manuell über die API: Auslöser `user` (USE-009 AC1, serverseitiger Teil).
+    let (status, body) = env
+        .http("POST", &format!("/v1/sessions/{id}/compact"), None)
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let events = env
+        .wait_for(&id, |e| e["type"] == "compaction.completed")
+        .await;
+    assert_eq!(
+        of_type(&events, "compaction.completed")[0]["payload"]["trigger"],
+        "user"
+    );
     env.daemon.shutdown().await;
 }

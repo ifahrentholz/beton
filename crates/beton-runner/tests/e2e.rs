@@ -128,6 +128,7 @@ impl Fixture {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    compaction: Default::default(),
                 },
             )
             .await
@@ -477,6 +478,7 @@ async fn runner_token_only_opens_its_own_session() {
                 agent_snapshot: None,
                 snapshots: None,
                 fork: None,
+                compaction: Default::default(),
             },
         )
         .await

@@ -51,8 +51,9 @@ pub struct LoopSettings {
     pub max_turns: u32,
     /// `max_tokens` je Request.
     pub max_tokens: u32,
-    /// Ab diesem Anteil des Kontextfensters wird vor dem nächsten Request kompaktiert.
-    pub compaction_threshold: f64,
+    /// Ab diesem Anteil des Kontextfensters wird vor dem nächsten Request kompaktiert;
+    /// `None` = keine eigene Automatik (`compaction.auto: beton|off`, USE-009).
+    pub compaction_threshold: Option<f64>,
     /// Parallele Tool-Calls eines Model-Requests.
     pub parallel_tools: usize,
     /// Höchstens so lange wartet ein Tool-Call auf das Gate; danach `deny`.
@@ -64,7 +65,7 @@ impl Default for LoopSettings {
         Self {
             max_turns: 200,
             max_tokens: 8192,
-            compaction_threshold: 0.8,
+            compaction_threshold: Some(beton_harness::DEFAULT_COMPACTION_THRESHOLD),
             parallel_tools: 4,
             gate_timeout: Duration::from_secs(30 * 60),
         }
@@ -753,6 +754,7 @@ async fn compact(
             EventPayload::CompactionStarted(Compaction {
                 before_tokens: before,
                 after_tokens: None,
+                trigger: None,
             }),
             turn,
         )
@@ -835,6 +837,7 @@ async fn compact(
             EventPayload::CompactionCompleted(Compaction {
                 before_tokens: before,
                 after_tokens: Some(after),
+                trigger: None,
             }),
             turn,
         )
@@ -869,9 +872,9 @@ async fn run_turn(
         }
         let model = shared.model();
         let window = shared.window(&model);
-        if conv
-            .last_context
-            .is_some_and(|used| used as f64 > window as f64 * shared.settings.compaction_threshold)
+        if let (Some(used), Some(threshold)) =
+            (conv.last_context, shared.settings.compaction_threshold)
+            && used as f64 > window as f64 * threshold
         {
             match compact(&shared, &mut conv, Some(turn), false, &mut cancel).await {
                 Ok(u) => total.add(u),

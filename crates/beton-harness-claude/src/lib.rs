@@ -1153,6 +1153,7 @@ impl HarnessSession for ClaudeSession {
                 EventPayload::CompactionStarted(beton_core::event::Compaction {
                     before_tokens: before,
                     after_tokens: None,
+                    trigger: None,
                 }),
                 None,
             ))

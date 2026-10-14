@@ -233,6 +233,12 @@ impl RunnerProvider for LocalProvider {
                 vars.push((beton_runner::env::FORK_LOGGED.into(), "1".into()));
             }
         }
+        if boot.compaction != beton_harness::CompactionSettings::default() {
+            vars.push((
+                beton_runner::env::COMPACTION.into(),
+                serde_json::to_string(&boot.compaction).unwrap_or_default(),
+            ));
+        }
         if boot.harnesses != beton_harness::registry::HarnessLayers::default() {
             vars.push((
                 beton_runner::env::HARNESSES.into(),

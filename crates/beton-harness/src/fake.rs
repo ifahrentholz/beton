@@ -9,10 +9,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    AuthSource, Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired,
-    HarnessExited, HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, TextDelta,
-    ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus, TurnCompleted,
-    TurnFailed, TurnInterrupted, TurnStarted,
+    AuthSource, Compaction, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
+    HarnessAuthRequired, HarnessExited, HarnessReady, MessageCompleted, MessageRole,
+    ReasoningCompleted, TextDelta, ToolCallCompleted, ToolCallRequested, ToolCallStarted,
+    ToolSource, ToolStatus, TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
 };
 use beton_core::id::{PrincipalId, TurnId, UserId};
 use serde_json::{Value, json};
@@ -34,6 +34,10 @@ use crate::scenario::{Scenario, StartBehavior, Step};
 
 /// Kennung, unter der die Fake-Session sich beim Harness meldet.
 pub const FAKE_SESSION_REF: &str = "fake-session";
+
+/// Zuletzt gemeldeter Kontext (`used_tokens`, `window_tokens`) der Session (SES-011): Basis für
+/// `compaction.*` und den neuen Stand danach (USE-009).
+type LastContext = Arc<std::sync::Mutex<Option<(u64, u64)>>>;
 
 /// „Nativer“ Verlauf einer Fake-Session: Ein Neustart mit `resume` setzt beim nächsten
 /// Szenario-Turn fort und kennt die bisherigen Eingaben (`echo_history`), wie ein Vendor-Harness
@@ -262,6 +266,7 @@ pub struct FakeSession {
     native_key: Option<String>,
     /// Instructions für die erste Nachricht (`first_message_prefix`, AGT-005).
     instructions: Option<String>,
+    context: LastContext,
 }
 
 impl std::fmt::Debug for FakeSession {
@@ -336,6 +341,7 @@ impl FakeSession {
             history: Vec::new(),
             native_key: None,
             instructions: None,
+            context: LastContext::default(),
         })
     }
 
@@ -440,6 +446,7 @@ impl HarnessSession for FakeSession {
             history,
             effort: self.effort.clone(),
             permission_mode: self.permission_mode,
+            context: self.context.clone(),
         };
         self.running = Some(tokio::spawn(player.play(turn.emit)));
         Ok(id)
@@ -493,18 +500,35 @@ impl HarnessSession for FakeSession {
         Ok(())
     }
 
+    /// Kompaktiert auf ein Fünftel des zuletzt gemeldeten Kontexts (ohne Meldung 1000 → 200)
+    /// und meldet den neuen Stand als `context.usage` außerhalb eines Turns (SES-011, USE-009).
     async fn compact(&mut self) -> Result<(), HarnessError> {
         self.capabilities.check(Action::Compact)?;
+        let last = *self.context.lock().unwrap_or_else(|e| e.into_inner());
+        let before = last.map_or(1000, |(used, _)| used);
+        let after = before / 5;
         self.emit(EventPayload::CompactionStarted(Compaction {
-            before_tokens: 1000,
+            before_tokens: before,
             after_tokens: None,
+            trigger: None,
         }))
         .await?;
         self.emit(EventPayload::CompactionCompleted(Compaction {
-            before_tokens: 1000,
-            after_tokens: Some(200),
+            before_tokens: before,
+            after_tokens: Some(after),
+            trigger: None,
         }))
-        .await
+        .await?;
+        if let Some((_, window)) = last {
+            *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some((after, window));
+            self.emit(EventPayload::ContextUsage(ContextUsage {
+                used_tokens: after,
+                window_tokens: window,
+                source: ContextSource::Harness,
+            }))
+            .await?;
+        }
+        Ok(())
     }
 
     fn events(&mut self) -> Option<mpsc::Receiver<NormalizedEvent>> {
@@ -560,6 +584,7 @@ struct Player {
     history: Vec<String>,
     effort: Option<String>,
     permission_mode: PermissionMode,
+    context: LastContext,
 }
 
 enum Outcome {
@@ -782,6 +807,12 @@ impl Player {
             self.complete_call(ToolStatus::Error, Value::String(error))
                 .await;
         } else if let Some(usage) = step.usage {
+            // Mit `context_window` auch den Kontextfüllstand wie Claude (Eingabe plus Cache,
+            // SES-011); `0` heißt „Fenster unbekannt“ (USE-008 AC2).
+            let context = usage.context_window.map(|window| {
+                let used = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+                (used, window)
+            });
             self.send(EventPayload::CostDelta(CostDelta {
                 harness: HarnessId::FAKE.into(),
                 model: usage.model.unwrap_or_else(|| self.model.clone()),
@@ -797,6 +828,15 @@ impl Player {
                 ..CostDelta::default()
             }))
             .await;
+            if let Some((used, window)) = context {
+                *self.context.lock().unwrap_or_else(|e| e.into_inner()) = Some((used, window));
+                self.send(EventPayload::ContextUsage(ContextUsage {
+                    used_tokens: used,
+                    window_tokens: window,
+                    source: ContextSource::Harness,
+                }))
+                .await;
+            }
         } else if let Some(limit) = step.rate_limit {
             let resets = time::OffsetDateTime::from_unix_timestamp(limit.resets_at())
                 .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
@@ -1055,6 +1095,47 @@ turns:
         let s = Scenario::from_yaml("start: { refuse: \"Policy nicht durchsetzbar\" }").unwrap();
         let err = FakeSession::start(s, None, Arc::new(AllowAll)).unwrap_err();
         assert_eq!(err.code(), "start_refused");
+    }
+
+    /// Kontext aus `usage.context_window` und Compaction auf ein Fünftel davon (SES-011,
+    /// Grundlage für USE-008 und USE-009 gegen den Fake-Harness).
+    #[tokio::test]
+    async fn fake_reports_context_and_compaction_lowers_it() {
+        let yaml = "turns:\n  - emit: [{ usage: { input_tokens: 100000, cache_read_tokens: 50000, context_window: 200000 } }]\n";
+        let mut s =
+            FakeSession::start(Scenario::from_yaml(yaml).unwrap(), None, Arc::new(AllowAll))
+                .unwrap();
+        let mut rx = s.events().unwrap();
+        s.send("los".into()).await.unwrap();
+        if let Some(h) = s.running.take() {
+            h.await.unwrap();
+        }
+        s.compact().await.unwrap();
+        Box::new(s).shutdown(Shutdown::Kill).await.unwrap();
+        let mut seen = Vec::new();
+        while let Some(e) = rx.recv().await {
+            match e.payload {
+                EventPayload::ContextUsage(c) => {
+                    seen.push(format!("context {}/{}", c.used_tokens, c.window_tokens))
+                }
+                EventPayload::CompactionStarted(c) => {
+                    seen.push(format!("started {}", c.before_tokens))
+                }
+                EventPayload::CompactionCompleted(c) => {
+                    seen.push(format!("completed {:?}", c.after_tokens))
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                "context 150000/200000",
+                "started 150000",
+                "completed Some(30000)",
+                "context 30000/200000"
+            ]
+        );
     }
 
     #[tokio::test]
