@@ -312,6 +312,16 @@ pub async fn prepare(
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
     let loaded = load(source, workdir, paths)?;
+    // AGT-014 (#234): `policies` des Agents wertet beton erst mit WP-49 aus. Bis dahin startet
+    // ein solcher Agent nicht, statt seine Regeln still zu ignorieren (fail closed).
+    if let Some((a, _)) = &loaded
+        && !a.spec.policies.is_empty()
+    {
+        return Err(format!(
+            "Agent `{}` bringt `policies` mit, die beton noch nicht durchsetzt (AGT-014, kommt mit WP-49); Start verweigert",
+            a.spec.name
+        ));
+    }
     if let Some((a, params)) = &loaded {
         let composed = compose_instructions(a, params, caps, workdir)?;
         setup.instructions = composed.text;
