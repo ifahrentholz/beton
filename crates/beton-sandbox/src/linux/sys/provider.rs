@@ -267,6 +267,8 @@ impl LinuxProvider {
             net: NetMode::None,
             unix_sockets: Vec::new(),
             dev_ports: Vec::new(),
+            read_only: Vec::new(),
+            no_symlinks: Vec::new(),
             limits: Limits::default(),
             abi_cap: self.cfg().abi_cap,
             cgroup: None,
