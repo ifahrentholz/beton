@@ -134,8 +134,14 @@ async fn prx_001_dropped_instance_stops_listening() {
     let a = h.instance(&[]).await;
     let addr = a.addr();
     drop(a);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(tokio::net::TcpStream::connect(addr).await.is_err());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tokio::net::TcpStream::connect(addr).await.is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "Instanz lauscht nach Drop weiter"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Lastprofil aus PRX-001 AC3: `conns` parallele HTTPS-Verbindungen durch eine Instanz, je
