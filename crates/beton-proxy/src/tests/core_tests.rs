@@ -239,30 +239,40 @@ async fn prx_001_ac3_200_parallel_https_connections_without_errors() {
 /// PRX-001 AC3 (Latenz): p99-Zusatzlatenz < 20 ms. Läuft im Release-Build als eigener
 /// CI-Schritt (`cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored`).
 ///
-/// Gewertet wird der Median aus fünf Runden (#221): Auf geteilten CI-Runnern hebt ein einzelner
-/// Stillstand des Hosts das p99 einer Runde auf über 40 ms, während die übrigen Runden bei
-/// wenigen Millisekunden liegen. Eine echte Verlangsamung des Proxys trifft jede Runde und
-/// damit auch den Median; der Grenzwert bleibt 20 ms.
+/// Eine erste Runde wärmt auf und zählt nicht (#221: in der CI lag genau sie bei über 40 ms,
+/// die übrigen bei wenigen Millisekunden). Gewertet wird das p99 über alle Requests der
+/// folgenden fünf Runden zusammen (5 × 4 000), mit Proxy gegen direkt. So zählt jede
+/// gemessene Request; ein kurzer Stillstand des geteilten Runners trifft weniger als 1 % von
+/// ihnen, eine echte Verlangsamung des Proxys alle. Der Grenzwert bleibt 20 ms.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Benchmark; im Release-Build ausführen"]
 async fn prx_001_ac3_p99_added_latency_below_20ms() {
     const ROUNDS: usize = 5;
-    let mut added: Vec<Duration> = Vec::with_capacity(ROUNDS);
-    for (i, (proxied, direct)) in load_rounds(200, 20, ROUNDS).await.into_iter().enumerate() {
-        let (p, d) = (p99(proxied), p99(direct));
-        let a = p.saturating_sub(d);
+    let mut rounds = load_rounds(200, 20, ROUNDS + 1).await.into_iter();
+    let (warm_p, warm_d) = rounds.next().unwrap();
+    println!(
+        "Aufwärmen (nicht gewertet): p99 mit Proxy {:?}, direkt {:?}",
+        p99(warm_p),
+        p99(warm_d)
+    );
+    let (mut proxied, mut direct) = (Vec::new(), Vec::new());
+    for (i, (p, d)) in rounds.enumerate() {
         println!(
-            "Runde {}: p99 mit Proxy {p:?}, direkt {d:?}, Zusatz {a:?}",
-            i + 1
+            "Runde {}: p99 mit Proxy {:?}, direkt {:?}",
+            i + 1,
+            p99(p.clone()),
+            p99(d.clone())
         );
-        added.push(a);
+        proxied.extend(p);
+        direct.extend(d);
     }
-    added.sort();
-    let median = added[ROUNDS / 2];
-    println!("Median der p99-Zusatzlatenz über {ROUNDS} Runden: {median:?}");
+    assert_eq!(proxied.len(), ROUNDS * 200 * 20);
+    let (p, d) = (p99(proxied), p99(direct));
+    let added = p.saturating_sub(d);
+    println!("p99 über {ROUNDS} Runden: mit Proxy {p:?}, direkt {d:?}, Zusatz {added:?}");
     assert!(
-        median < Duration::from_millis(20),
-        "p99-Zusatzlatenz (Median über {ROUNDS} Runden) {median:?}, Runden {added:?}"
+        added < Duration::from_millis(20),
+        "p99-Zusatzlatenz über {ROUNDS} Runden {added:?} (mit Proxy {p:?}, direkt {d:?})"
     );
 }
 
