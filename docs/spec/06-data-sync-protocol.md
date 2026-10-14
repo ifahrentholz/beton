@@ -327,7 +327,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Paginieren über 1 000 Sessions mit `limit=50` liefert jede genau einmal, auch wenn währenddessen neue entstehen.
   - [ ] AC2 — Gleicher `Idempotency-Key` mit anderem Body liefert 422 `idempotency_key_reused`.
-  - [ ] AC3 — `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts.
+  - [ ] AC3 — (ab M4, mit POL-008: erster schreibender Policy-Endpunkt `PUT /v1/orgs/{org}/policies/{name}`) `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts. *(Verschoben, WP-40, #255: In M2 gibt es keinen schreibenden Policy-Endpunkt; lokale Policies sind Dateien. `extract::check_if_match` steht bereit.)*
   - [ ] AC4 — Ein Lint über das OpenAPI-Dokument erzwingt `snake_case`, Cursor-Pagination auf allen Listen-Endpunkten und Problem-Responses für 4xx/5xx.
 - **Abhängigkeiten:** PROTO-011, PROTO-013
 
