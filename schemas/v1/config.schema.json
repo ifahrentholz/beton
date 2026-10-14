@@ -297,6 +297,49 @@
         "$ref": "#/$defs/HarnessCommandConfig"
       }
     },
+    "Limits": {
+      "description": "`sandbox.limits` (SBX-013): Grenzen für den ganzen Prozessbaum einer Sandbox. Nicht gesetzte\nFelder begrenzen nichts.",
+      "type": "object",
+      "properties": {
+        "cpu_seconds": {
+          "description": "CPU-Zeit je Prozess in Sekunden (`RLIMIT_CPU`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "file_size_mb": {
+          "description": "Größe einzelner Dateien in MiB (`RLIMIT_FSIZE`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "memory_mb": {
+          "description": "Speicher des Baums in MiB (Linux: cgroup v2 `memory.max`, nur mit Delegation).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pids": {
+          "description": "Höchstzahl gleichzeitiger Prozesse und Threads (cgroup `pids.max` bzw. `RLIMIT_NPROC`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "ModelConfig": {
       "description": "Ein Modell unter `providers.<name>.models`.",
       "type": "object",
@@ -621,6 +664,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/SandboxEnvConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "description": "Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Limits"
             },
             {
               "type": "null"

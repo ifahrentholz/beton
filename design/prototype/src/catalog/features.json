@@ -1469,7 +1469,7 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-008--linux-backend-landlock--seccomp--namespaces",
-  "summary": "Nativ in Rust (Crates `landlock`, `seccompiler`/libseccomp, `nix`), ohne externes Binary. Der Launcher (`beton __sandbox-exec`) erzeugt unprivilegiert User-, Mount-, PID-, Net-, IPC- und UTS-Namespaces, richtet Masken und privates `/tmp` ein, startet im Net-NS einen Relay (`127.0.0.1:<R>` → Unix-Socket des Proxys), setzt `PR_SET_NO_NEW_PRIVS`, wendet Landlock-Regeln an, lädt den seccomp-Filter und führt das Ziel als Kind von PID 1 (Reaper) aus. `PR_SET_PDEATHSIG` beendet alles mit dem Runner.",
+  "summary": "Nativ in Rust (Crates `landlock`, `seccompiler`, `libc`), ohne externes Binary. Der Launcher (`beton __sandbox-exec`) erzeugt unprivilegiert User-, Mount-, PID-, Net-, IPC- und UTS-Namespaces, richtet Masken und privates `/tmp` ein, startet im Net-NS einen Relay (`127.0.0.1:<Proxy-Port>` → Proxy), setzt `PR_SET_NO_NEW_PRIVS`, wendet Landlock-Regeln an, lädt den seccomp-Filter und führt das Ziel als Kind von PID 1 (Reaper) aus. Stirbt der Runner, beendet der Launcher die Sandbox.",
   "acs": [
    "Auf Kernel ≥ 6.2: `cat /etc/shadow`, `echo x > /etc/beton-test`, `cat ~/.ssh/id_ed25519` scheitern in Stufe 2; Schreiben im Workspace gelingt.",
    "In Stufe 2 scheitert jede TCP-/UDP-Verbindung außer zum Relay (z. B. `nc 1.1.1.1 53`, `curl --noproxy '*' https://example.com`); der Net-NS enthält nur `lo`.",

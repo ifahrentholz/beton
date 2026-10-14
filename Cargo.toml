@@ -70,6 +70,10 @@ hex = "0.4"
 http-body-util = "0.1"
 # Dateiauswahl mit ripgrep-Semantik (`.gitignore`) für die Workspace-Suche (SES-017).
 ignore = "0.4"
+# Linux-Sandbox (SBX-008, SBX-009, SBX-013): Landlock, seccomp-BPF, Namespaces und rlimits.
+landlock = "0.4.4"
+libc = "0.2"
+seccompiler = "0.5"
 process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 proptest = "1"
 regex = "1"

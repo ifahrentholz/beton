@@ -274,3 +274,44 @@ fn sbx_003_project_config_may_not_widen_the_sandbox() {
     assert!(!o.status.success());
     assert!(stderr(&o).contains("sandbox"), "{}", stderr(&o));
 }
+
+/// SBX-008: `beton __sandbox-exec` ist der Linux-Launcher; ohne Plan vom Runner startet er
+/// nichts (fail closed) und endet mit 125.
+#[cfg(unix)]
+#[test]
+fn sbx_008_sandbox_exec_without_plan_fails_closed() {
+    let e = env("");
+    let o = run(beton(&e.beton_home).arg("__sandbox-exec"));
+    assert_eq!(o.status.code(), Some(125), "{}", stderr(&o));
+    assert!(stderr(&o).contains("sandbox"), "{}", stderr(&o));
+}
+
+/// SBX-008: Unter Linux meldet die Probe das Landlock-Backend des `beton`-Binarys mit ABI und
+/// Kernel. In der CI muss es verfügbar sein.
+#[cfg(target_os = "linux")]
+#[test]
+fn sbx_008_probe_reports_landlock_abi_and_kernel() {
+    let e = env("");
+    let v = json(&sandbox(&e, &["probe", "--json"]));
+    let landlock = v["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "landlock")
+        .unwrap()
+        .clone();
+    if std::env::var_os("CI").is_some() {
+        assert_eq!(landlock["available"], true, "{landlock}");
+    }
+    if landlock["available"] == true {
+        let version = landlock["version"].as_str().unwrap();
+        assert!(
+            version.contains("ABI") && version.contains("Kernel"),
+            "{version}"
+        );
+        assert!(
+            landlock["caps"].to_string().contains("syscall"),
+            "{landlock}"
+        );
+    }
+}

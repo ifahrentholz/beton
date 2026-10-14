@@ -5,6 +5,11 @@ use beton_cli::exit::Exit;
 use clap::Parser as _;
 
 fn main() -> ExitCode {
+    // SBX-008: `beton __sandbox-exec` ist der Linux-Sandbox-Launcher. Er muss vor jedem
+    // weiteren Thread laufen (`unshare(CLONE_NEWUSER)` verlangt einen einthreadigen Prozess).
+    if let Some(code) = beton_sandbox::linux::launcher_dispatch() {
+        return code;
+    }
     // Fehlerhafte Aufrufe: clap schreibt Usage und Hinweis auf stderr, Exit-Code 2 (CLI-001 AC2).
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
