@@ -14,15 +14,17 @@ mod json;
 mod rolling;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context as _;
+use beton_secrets::Redactor;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
-pub use json::JsonLayer;
+pub use json::{JsonLayer, RedactingWriter};
 pub use rolling::{Clock, Retention, RollingFile, SystemClock};
 
 /// Umgebungsvariable für den Log-Filter.
@@ -61,6 +63,9 @@ pub struct LogConfig {
     /// Zusätzlich menschenlesbare Ausgabe auf stderr (CLI).
     pub stderr_human: bool,
     pub retention: Retention,
+    /// Redaction aller Zeilen (OBS-002). Standard: nur Detektoren (Prozess ohne Secret-Store);
+    /// der Daemon übergibt seine Pipeline mit den bekannten Werten.
+    pub redactor: Arc<Redactor>,
 }
 
 impl LogConfig {
@@ -73,6 +78,7 @@ impl LogConfig {
             stdout_json: false,
             stderr_human: component == Component::Cli,
             retention: Retention::default(),
+            redactor: Arc::new(Redactor::detectors_only()),
         }
     }
 }
@@ -135,20 +141,31 @@ pub fn init(config: LogConfig) -> anyhow::Result<LogGuard> {
     let stdout_layer = if config.stdout_json {
         let (writer, guard) = tracing_appender::non_blocking(std::io::stdout());
         guards.push(guard);
-        Some(JsonLayer::new(config.component, writer))
+        Some(JsonLayer::new(
+            config.component,
+            writer,
+            config.redactor.clone(),
+        ))
     } else {
         None
     };
     let stderr_layer = config.stderr_human.then(|| {
         tracing_subscriber::fmt::layer()
-            .with_writer(std::io::stderr)
+            .with_writer(RedactingWriter::new(
+                std::io::stderr,
+                config.redactor.clone(),
+            ))
             .with_target(false)
             .compact()
     });
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(JsonLayer::new(config.component, file_writer))
+        .with(JsonLayer::new(
+            config.component,
+            file_writer,
+            config.redactor.clone(),
+        ))
         .with(stdout_layer)
         .with(stderr_layer)
         .try_init()
@@ -203,12 +220,142 @@ mod tests {
     }
 
     fn with_capture(filter: Option<&str>, f: impl FnOnce()) -> Vec<serde_json::Value> {
+        with_redactor(filter, Arc::new(Redactor::detectors_only()), f)
+    }
+
+    fn with_redactor(
+        filter: Option<&str>,
+        redactor: Arc<Redactor>,
+        f: impl FnOnce(),
+    ) -> Vec<serde_json::Value> {
         let capture = Capture::default();
         let subscriber = tracing_subscriber::registry()
             .with(build_filter(filter).unwrap())
-            .with(JsonLayer::new(Component::Daemon, capture.clone()));
+            .with(JsonLayer::new(Component::Daemon, capture.clone(), redactor));
         tracing::subscriber::with_default(subscriber, f);
         capture.lines()
+    }
+
+    /// Wert ohne Token-Format: nur der Abgleich mit den bekannten Werten findet ihn.
+    const TEST_KEY: &str = "Zx9-keychain-TEST-key-4711";
+    const GITHUB: &str = "ghp_0123456789abcdefghijABCDEFGHIJ012345";
+
+    /// Pipeline mit einem Secret aus dem Store. Das Speicher-Backend steht für den Keychain:
+    /// beide sind Backends desselben Traits; die CI hat keinen Keychain des Entwicklers.
+    async fn pipeline_with_secret(
+        dir: &Path,
+    ) -> (Arc<Redactor>, beton_store::Store, beton_secrets::Secrets) {
+        let store = beton_store::Store::open(dir, beton_store::StoreOptions::default())
+            .await
+            .unwrap();
+        let local = store.ensure_local().await.unwrap();
+        let (secrets, caps) = beton_secrets::Secrets::new(
+            store.clone(),
+            local,
+            Arc::new(beton_secrets::backend::MemoryBackend::default()),
+        );
+        secrets
+            .put(beton_secrets::NewSecret {
+                secret_ref: beton_secrets::SecretRef::user("openai", "default", None).unwrap(),
+                kind: beton_secrets::SecretKind::Token,
+                value: beton_secrets::SecretValue::from(TEST_KEY),
+            })
+            .await
+            .unwrap();
+        let redactor = Arc::new(Redactor::pending());
+        caps.redaction
+            .attach(&secrets, redactor.clone())
+            .await
+            .unwrap();
+        (redactor, store, secrets)
+    }
+
+    #[tokio::test]
+    async fn obs_002_ac1_stored_key_in_an_error_message_is_redacted_in_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let (redactor, _store, _secrets) = pipeline_with_secret(dir.path()).await;
+        let lines = with_redactor(None, redactor, || {
+            let span = tracing::info_span!("session", session_id = "ses_1", key = TEST_KEY);
+            let _s = span.enter();
+            let err = std::io::Error::other(format!("401 invalid api key {TEST_KEY}"));
+            tracing::error!(target: "beton_harness_direct", error = %err, "Anfrage abgelehnt: {err}");
+        });
+        let text = serde_json::to_string(&lines).unwrap();
+        assert!(!text.contains(TEST_KEY), "{text}");
+        assert_eq!(
+            lines[0]["message"],
+            "Anfrage abgelehnt: 401 invalid api key [REDACTED:secret]"
+        );
+        assert_eq!(
+            lines[0]["fields"]["error"],
+            "401 invalid api key [REDACTED:secret]"
+        );
+    }
+
+    #[test]
+    fn obs_002_patterns_in_fields_and_span_context_are_redacted() {
+        let lines = with_capture(None, || {
+            let span = tracing::info_span!("req", request_id = GITHUB);
+            let _s = span.enter();
+            tracing::warn!(
+                header = "Authorization: Bearer abcdef0123456789xyz",
+                "Token {GITHUB}"
+            );
+        });
+        let text = serde_json::to_string(&lines).unwrap();
+        assert!(!text.contains(GITHUB), "{text}");
+        assert!(!text.contains("abcdef0123456789xyz"), "{text}");
+        assert_eq!(lines[0]["message"], "Token [REDACTED:github]");
+        assert_eq!(lines[0]["request_id"], "[REDACTED:github]");
+    }
+
+    #[tokio::test]
+    async fn obs_002_blocked_pipeline_writes_no_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = beton_store::Store::open(dir.path(), beton_store::StoreOptions::default())
+            .await
+            .unwrap();
+        let local = store.ensure_local().await.unwrap();
+        let (secrets, caps) = beton_secrets::Secrets::new(
+            store.clone(),
+            local,
+            Arc::new(beton_secrets::backend::MemoryBackend::default()),
+        );
+        store.close().await;
+        let redactor = Arc::new(Redactor::pending());
+        assert!(
+            caps.redaction
+                .attach(&secrets, redactor.clone())
+                .await
+                .is_err()
+        );
+        let lines = with_redactor(None, redactor, || {
+            tracing::error!(target: "beton_server", detail = "egal", "Inhalt {TEST_KEY}");
+        });
+        assert_eq!(lines.len(), 1, "die Zeile bleibt als Hinweis erhalten");
+        assert_eq!(lines[0]["message"], "[REDACTED:unavailable]");
+        assert_eq!(lines[0]["level"], "ERROR");
+        assert!(lines[0].get("fields").is_none());
+        assert!(!serde_json::to_string(&lines).unwrap().contains(TEST_KEY));
+    }
+
+    #[test]
+    fn obs_002_human_stderr_output_is_redacted() {
+        let capture = Capture::default();
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(RedactingWriter::new(
+                capture.clone(),
+                Arc::new(Redactor::detectors_only()),
+            ))
+            .with_ansi(false)
+            .compact();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(token = GITHUB, "Login mit {GITHUB}");
+        });
+        let out = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!out.contains(GITHUB), "{out}");
+        assert!(out.contains("[REDACTED:github]"), "{out}");
     }
 
     #[test]

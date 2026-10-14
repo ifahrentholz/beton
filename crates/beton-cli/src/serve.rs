@@ -270,6 +270,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let redactor = Arc::new(beton_secrets::Redactor::pending());
     let _log = crate::logging::init(crate::logging::LogConfig {
         stderr_human: !ctx.global.quiet,
+        redactor: redactor.clone(),
         ..crate::logging::LogConfig::for_component(crate::logging::Component::Daemon)
     })
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))

@@ -1,6 +1,9 @@
 //! `tracing`-Layer, der jedes Event als eine JSON-Zeile schreibt (OBS-001).
 
 use std::io::Write as _;
+use std::sync::Arc;
+
+use beton_secrets::Redactor;
 
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
@@ -18,15 +21,21 @@ use super::Component;
 /// Felder aus dem Span-Kontext, die als Top-Level-Felder in jede Zeile übernommen werden.
 const CONTEXT_KEYS: [&str; 4] = ["session_id", "runner_id", "request_id", "seq"];
 
-/// Schreibt Events als JSON-Lines mit den Pflichtfeldern aus OBS-001.
+/// Schreibt Events als JSON-Lines mit den Pflichtfeldern aus OBS-001; jede Zeile läuft vorher
+/// durch die Redaction-Pipeline (OBS-002).
 pub struct JsonLayer<W> {
     component: Component,
     writer: W,
+    redactor: Arc<Redactor>,
 }
 
 impl<W> JsonLayer<W> {
-    pub fn new(component: Component, writer: W) -> Self {
-        Self { component, writer }
+    pub fn new(component: Component, writer: W, redactor: Arc<Redactor>) -> Self {
+        Self {
+            component,
+            writer,
+            redactor,
+        }
     }
 }
 
@@ -125,5 +134,27 @@ impl Visit for JsonVisitor<'_> {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         self.0
             .insert(field.name().into(), format!("{value:?}").into());
+    }
+}
+
+/// Writer für menschenlesbare Ausgaben (stderr), der jede formatierte Zeile schwärzt (OBS-002).
+#[derive(Clone)]
+pub struct RedactingWriter<M> {
+    inner: M,
+    redactor: Arc<Redactor>,
+}
+
+impl<M> RedactingWriter<M> {
+    pub fn new(inner: M, redactor: Arc<Redactor>) -> Self {
+        Self { inner, redactor }
+    }
+}
+
+impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for RedactingWriter<M> {
+    type Writer = M::Writer;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        let _ = &self.redactor;
+        self.inner.make_writer()
     }
 }
