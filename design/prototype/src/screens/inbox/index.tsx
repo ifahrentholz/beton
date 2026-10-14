@@ -4,6 +4,7 @@ import { AppLayout } from '@/app/app-layout'
 import { HarnessBadge, StatusMark, VoiceDot } from '@/app/harness'
 import { Composer, SessionHeader } from '@/app/session-chrome'
 import { AgentMessage, ToolCall, UserMessage } from '@/app/stream'
+import { ApprovalDetails, type BarItem } from '@/app/kit/approvals'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from '@/components/ui/command'
 import { Switch } from '@/components/ui/switch'
 import { F } from '@/proto/feature-marker'
@@ -27,8 +28,38 @@ function titleOf(item: InboxItem): ReactNode {
   return item.mono ? <code className="font-mono text-[12.5px]">{item.title}</code> : item.title
 }
 
-function InboxRow({ item, answering, selected }: { item: InboxItem; answering?: boolean; selected?: boolean }) {
-  const waiting = item.kind === 'approval' || item.kind === 'question'
+/** Ausklappbare Argumente der Freigaben (dieselbe Darstellung wie in der Freigabe-Leiste, WEB-007). */
+const DETAILS: Record<string, BarItem> = {
+  inb_1: {
+    id: 'inb_1',
+    kind: 'approval',
+    title: 'Shell-Kommando',
+    summary: 'git push -u origin beton/rate-limiter-7f3k',
+    requestedBy: 'Claude Code',
+    timeout: '',
+    args: `{
+  "command": "git push -u origin beton/rate-limiter-7f3k",
+  "description": "Branch zum Remote pushen"
+}`,
+  },
+}
+
+function InboxRow({
+  item,
+  answering,
+  selected,
+  expanded,
+  decidedBy,
+}: {
+  item: InboxItem
+  answering?: boolean
+  selected?: boolean
+  expanded?: boolean
+  /** Ein anderer Client hat entschieden: Eintrag ist erledigt und wandert nach „Erledigt“. */
+  decidedBy?: string
+}) {
+  const [open, setOpen] = useState(!!expanded)
+  const waiting = (item.kind === 'approval' || item.kind === 'question') && !decidedBy
   const K = KIND[item.kind]
   const content = (
     <div
@@ -36,6 +67,7 @@ function InboxRow({ item, answering, selected }: { item: InboxItem; answering?: 
         'relative border-l-4 px-4 py-3',
         waiting ? 'chamfer border-signal bg-signal-soft' : 'border-transparent',
         selected && !waiting && 'border-foreground bg-accent/60',
+        decidedBy && 'rounded-r-md border-border bg-card',
       )}
       aria-current={selected ? 'true' : undefined}
     >
@@ -50,14 +82,23 @@ function InboxRow({ item, answering, selected }: { item: InboxItem; answering?: 
       </div>
       <div className={cn('mt-1 text-[14px]', (waiting || item.kind !== 'notice') && 'font-medium')}>{titleOf(item)}</div>
       {item.body && <p className="mt-1 text-[13px] text-muted-foreground">{item.body}</p>}
-      {item.paused && (
+      {item.kind === 'question' && !decidedBy && (
+        <p className="mt-1 text-[12px] text-muted-foreground">Claude Code fragt über ask_user · Antwort bis morgen 02:41, sonst erhält der Agent „keine Antwort“.</p>
+      )}
+      {DETAILS[item.id] && !decidedBy && <ApprovalDetails item={DETAILS[item.id]} open={open} onToggle={() => setOpen((v) => !v)} />}
+      {decidedBy && (
+        <p className="mt-2 flex items-center gap-1.5 text-[13px]" role="status">
+          <Check className="size-3.5 text-ok" aria-hidden /> {decidedBy}
+        </p>
+      )}
+      {item.paused && !decidedBy && (
         <p className="mt-1 flex items-center gap-1.5 text-[12px]">
           <span className="chamfer-sm size-2 bg-signal" aria-hidden /> Session im Hintergrund pausiert, niemand schaut zu – sie läuft weiter, sobald du
           antwortest.
         </p>
       )}
 
-      {item.kind === 'approval' && (
+      {item.kind === 'approval' && !decidedBy && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
           <button className="chamfer-sm bg-foreground px-3 py-1.5 text-[13px] font-semibold text-background">Erlauben</button>
           <button className="rounded-md border border-foreground/30 px-3 py-1.5 text-[13px]">Ablehnen …</button>
@@ -105,9 +146,10 @@ function InboxRow({ item, answering, selected }: { item: InboxItem; answering?: 
 }
 
 function InboxList({ state }: { state: string }) {
+  const open = state === 'empty' ? 0 : state === 'decided' ? inboxOpen.length - 1 : inboxOpen.length
   const filters = [
-    { id: 'open', label: 'Offen', n: state === 'empty' ? 0 : inboxOpen.length },
-    { id: 'all', label: 'Alles Neue', n: state === 'empty' ? 0 : inboxOpen.length + inboxFyi.length },
+    { id: 'open', label: 'Offen', n: open },
+    { id: 'all', label: 'Alles Neue', n: state === 'empty' ? 0 : open + inboxFyi.length },
     { id: 'approval', label: 'Freigaben' },
     { id: 'question', label: 'Fragen' },
     { id: 'agents', label: 'Hintergrund-Agents' },
@@ -116,7 +158,7 @@ function InboxList({ state }: { state: string }) {
   ]
   const active = state === 'done' ? 'done' : 'all'
   return (
-    <AppLayout nav="inbox" sessionList={false} inboxCount={state === 'empty' ? 0 : undefined}>
+    <AppLayout nav="inbox" sessionList={false} inboxCount={state === 'empty' ? 0 : state === 'decided' ? inboxOpen.length - 1 : undefined}>
       <F id="UX-001" className="flex min-h-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-border px-6 py-3">
           <h1 className="type-wide text-xl font-[700]">Inbox</h1>
@@ -165,9 +207,16 @@ function InboxList({ state }: { state: string }) {
             </div>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-2 px-6 py-4">
-              <div className="text-[12px] font-medium text-muted-foreground">Du bist dran · {inboxOpen.length}</div>
+              <div className="text-[12px] font-medium text-muted-foreground">Du bist dran · {state === 'decided' ? inboxOpen.length - 1 : inboxOpen.length}</div>
               {inboxOpen.map((it, i) => (
-                <InboxRow key={it.id} item={it} answering={state === 'answering' && it.kind === 'question'} selected={i === 0 && state !== 'answering'} />
+                <InboxRow
+                  key={it.id + state}
+                  item={it}
+                  answering={state === 'answering' && it.kind === 'question'}
+                  selected={i === 0 && state !== 'answering'}
+                  expanded={state === 'args' && i === 0}
+                  decidedBy={state === 'decided' && i === 0 ? 'Erlaubt von Mara in der Session (Browser) · gerade eben – wandert nach „Erledigt“' : undefined}
+                />
               ))}
               <div className="mt-4 text-[12px] font-medium text-muted-foreground">Zur Info · {inboxFyi.length}</div>
               <div className="divide-y divide-border rounded-md border border-border">
@@ -184,7 +233,7 @@ function InboxList({ state }: { state: string }) {
           <span><kbd className="font-mono">d</kbd> ablehnen</span>
           <span><kbd className="font-mono">↵</kbd> Session öffnen</span>
           <span><kbd className="font-mono">e</kbd> erledigt</span>
-          <span className="ml-auto">Zähler auch im Dock und in der Menüleiste</span>
+          <span className="ml-auto">Zähler = offene Freigaben und Fragen; in der Desktop-App auch im Dock und in der Menüleiste (ab M3)</span>
         </div>
       </F>
     </AppLayout>
@@ -355,7 +404,17 @@ function InboxSwitcher({ state }: { state: string }) {
 const SHORTCUTS: { group: string; items: [string, string][] }[] = [
   { group: 'Allgemein', items: [['Befehlspalette', '⌘K'], ['Neue Session', '⌘N'], ['Zu Session wechseln', '⌘⌥S'], ['Inbox', '⌘⇧I'], ['Einstellungen', '⌘,'], ['Tastenkürzel anzeigen', '⌘/']] },
   { group: 'Session', items: [['Senden', '↵'], ['Unterbrechen', 'Esc Esc'], ['Modell wechseln', '⌘⇧M'], ['Session forken', '⌘⇧F'], ['Umbenennen', 'F2']] },
-  { group: 'Freigaben', items: [['Fokussierte Freigabe erlauben', '⌘↵'], ['Fokussierte Freigabe ablehnen', '⌘⌫']] },
+  {
+    group: 'Freigaben',
+    items: [
+      ['Oberste Freigabe erlauben / Frage beantworten', '⌘↵'],
+      ['Für diese Session erlauben', '⌘⇧↵'],
+      ['Ablehnen (Grund optional, zweimal = ohne Grund)', '⌘⌫'],
+      ['In die Freigabe-Leiste springen', '⌘⇧A'],
+      ['Nächste / vorherige Freigabe (in der Leiste)', '↓ / ↑'],
+      ['Zurück zur Eingabe', 'Esc'],
+    ],
+  },
   { group: 'Inbox', items: [['Nächster / vorheriger Eintrag', 'j / k'], ['Erlauben', 'a'], ['Ablehnen', 'd'], ['Session öffnen', '↵']] },
 ]
 
@@ -423,7 +482,7 @@ function InboxShortcuts({ state }: { state: string }) {
           </div>
         )}
         <div className="border-t border-border px-4 py-1.5 text-[11px] text-muted-foreground">
-          Unter Windows und Linux: Ctrl statt ⌘. Kürzel wirken nicht, solange ein Eingabefeld Fokus hat – außer ⌘K.
+          Unter Windows und Linux: Ctrl statt ⌘. Kürzel wirken nicht, solange ein Eingabefeld Fokus hat – außer ⌘K und den Freigabe-Kürzeln mit ⌘ (⌘⌫ löscht in einem Feld mit Text weiter wie gewohnt).
         </div>
       </F>
     </SessionBackdrop>
@@ -789,10 +848,12 @@ export const group: ScreenGroup = {
       title: 'Inbox',
       description:
         'Alles, was auf dich wartet: Freigaben und Fragen (gelb, mit Fase) direkt beantwortbar – auch für pausierte Hintergrund-Sessions –, darunter fertige Agents, Erwähnungen und Hinweise.',
-      features: ['UX-001', 'USE-004'],
+      features: ['UX-001', 'USE-004', 'AGT-007', 'POL-010'],
       states: [
         { id: 'open', title: 'Offene Einträge' },
-        { id: 'answering', title: 'Frage beantworten' },
+        { id: 'args', title: 'Argumente ausgeklappt' },
+        { id: 'answering', title: 'Frage beantworten (ask_user)' },
+        { id: 'decided', title: 'Anderswo entschieden' },
         { id: 'done', title: 'Erledigt' },
         { id: 'empty', title: 'Leer' },
       ],
