@@ -210,7 +210,7 @@ impl RealProcess {
         info
     }
 
-    fn signal_group(&self, signal: Signal) {
+    fn signal_group(&mut self, signal: Signal) {
         #[cfg(unix)]
         {
             let _ = self.child.signal_tree(match signal {
@@ -225,6 +225,9 @@ impl RealProcess {
         }
     }
 }
+
+/// Wie lange `kill` nach einem abgelehnten Signal auf das Ende eines endenden Prozesses wartet.
+const KILL_SETTLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy)]
 enum Signal {
@@ -283,7 +286,15 @@ impl ProcessHandle for RealProcess {
         if let Some(exit) = &self.exit {
             return Ok(exit.clone());
         }
-        self.child.start_kill()?;
+        if let Err(e) = self.child.start_kill() {
+            // Schon beendet bzw. gerade beim Beenden (z. B. nach dem Schließen von stdin): macOS
+            // meldet für eine Prozessgruppe nur aus Zombies oder endenden Prozessen EPERM. Dann
+            // kurz auf den Status warten; läuft der Prozess danach noch, bleibt es ein Fehler.
+            return match tokio::time::timeout(KILL_SETTLE, self.child.wait()).await {
+                Ok(status) => Ok(self.finish(status?).await),
+                Err(_) => Err(e),
+            };
+        }
         let status = self.child.wait().await?;
         Ok(self.finish(status).await)
     }
@@ -383,6 +394,30 @@ mod tests {
         assert_eq!(exit.signal.as_deref(), Some("SIGKILL"), "{exit:?}");
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(wait_until_gone(pgid).await, "Prozessgruppe lebt noch");
+    }
+
+    /// Ein Harness, der nach dem Schließen von stdin schon von selbst endete, lässt sich ohne
+    /// Fehler „töten“: Unter macOS meldet das Signal an eine Prozessgruppe nur aus Zombies
+    /// EPERM (gesehen als Flake in har_022_ac1).
+    #[tokio::test]
+    async fn har_001_ac2_kill_after_own_exit_reports_the_exit() {
+        let mut p = RealLauncher.launch(sh("exit 3")).await.unwrap();
+        let pgid = p.id().unwrap();
+        // Warten, bis der Prozess beendet, aber noch nicht abgeholt ist (Zombie): `NOWAIT`
+        // lässt den Status für `kill` liegen.
+        tokio::task::spawn_blocking(move || {
+            let pid = rustix::process::Pid::from_raw(pgid as i32).unwrap();
+            rustix::process::waitid(
+                rustix::process::WaitId::Pid(pid),
+                rustix::process::WaitIdOptions::EXITED | rustix::process::WaitIdOptions::NOWAIT,
+            )
+            .map(|_| ())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let exit = p.kill().await.unwrap();
+        assert_eq!(exit.code, Some(3), "{exit:?}");
     }
 
     #[tokio::test]

@@ -584,14 +584,22 @@ async fn ses_011_ac1_exactly_one_context_usage_per_turn() {
     })
     .await;
     env.input(&id, "zwei").await;
-    let events = env
-        .wait_for(&id, |e| {
-            e["type"] == "message.completed" && e["payload"]["content"][0]["text"] == "zwei"
-        })
-        .await;
-    let _ = events;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let events = env.events(&id).await;
+    // Auf das Ende des zweiten Turns warten (Event statt Zeit): `message.completed` mit „zwei“
+    // ist auch die Nachricht des Users, und `context.usage` kommt erst mit dem Turn-Ende.
+    let start = std::time::Instant::now();
+    let events = loop {
+        let events = env.events(&id).await;
+        if events
+            .iter()
+            .filter(|e| e["type"] == "turn.completed")
+            .count()
+            >= 2
+        {
+            break events;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "{events:#?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(context_per_turn(&events), [1, 1], "{events:#?}");
     let id = env.create("codex").await;
     env.turn_approving(&id, "eins").await;

@@ -72,6 +72,38 @@ fn list() -> Vec<Proc> {
     }
 }
 
+/// `proc_listpids`-Filter für die reale UID (`PROC_RUID_ONLY` aus `libproc.h`).
+const PROC_RUID_ONLY: u32 = 5;
+
+/// Prozesse mit realer UID `uid` laut der Liste des Kernels. Sie enthält auch Prozesse, deren
+/// Daten `proc_pidinfo` nicht liefert (z. B. geschützte Prozesse); [`list`] sieht diese nicht.
+fn listed_of_ruid(uid: u32) -> u64 {
+    // SAFETY: proc_listpids schreibt höchstens `bytes` Bytes in den eigenen Puffer.
+    unsafe {
+        let n = libc::proc_listpids(PROC_RUID_ONLY, uid, std::ptr::null_mut(), 0);
+        if n <= 0 {
+            return 0;
+        }
+        let mut pids = vec![0 as libc::pid_t; n as usize / std::mem::size_of::<libc::pid_t>() + 64];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        let n = libc::proc_listpids(PROC_RUID_ONLY, uid, pids.as_mut_ptr().cast(), bytes);
+        if n <= 0 {
+            return 0;
+        }
+        pids.truncate(n as usize / std::mem::size_of::<libc::pid_t>());
+        pids.iter().filter(|p| **p > 0).count() as u64
+    }
+}
+
+/// Ist das `pids`-Limit erreicht? Der Kernel zählt für `RLIMIT_NPROC` alle Prozesse der realen
+/// UID; genau sehen lässt sich diese Zahl nicht. Die lesbaren Prozesse (`visible`) zählen zu
+/// wenig, wenn der Benutzer Prozesse hat, die `proc_pidinfo` nicht beschreibt; die Liste des
+/// Kernels (`listed`) zählt eher etwas zu viel. Gemeldet wird, sobald eine der beiden das Limit
+/// erreicht (#226).
+fn limit_reached(visible: u64, listed: u64, limit: u64) -> bool {
+    visible + u64::from(SLACK) >= limit || listed >= limit
+}
+
 /// Prozesse, die ein Baum mit `limits.pids = p` unter macOS starten darf: Andere Prozesse des
 /// Benutzers können währenddessen enden und Platz freigeben, deshalb bleibt ein Abstand (ein
 /// Viertel, höchstens 32). Strenger ist hier sicherer als ungenau.
@@ -157,9 +189,9 @@ impl Tracker {
                 }
                 // Der Kernel prüft RLIMIT_NPROC gegen alle Prozesse des Benutzers; genau das
                 // zählt hier.
-                if let Some((_, limit)) = nproc
+                if let Some((uid, limit)) = nproc
                     && !reported
-                    && of_uid + u64::from(SLACK) >= limit
+                    && limit_reached(of_uid, listed_of_ruid(uid), limit)
                 {
                     reported = true;
                     let v = SandboxViolation {
@@ -183,6 +215,14 @@ impl Tracker {
 }
 
 impl TreeGuard for Tracker {
+    /// Nicht erst auf den nächsten Durchlauf des Hintergrund-Threads warten: Was jetzt zum Baum
+    /// gehört, ist danach bekannt, auch wenn es die Prozessgruppe verlassen hat.
+    fn capture(&mut self) {
+        if let Ok(mut s) = self.state.lock() {
+            s.scan();
+        }
+    }
+
     fn kill_tree(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let Ok(mut s) = self.state.lock() else { return };
@@ -203,3 +243,6 @@ impl TreeGuard for Tracker {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
