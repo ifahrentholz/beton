@@ -633,3 +633,89 @@ fn pol_009_ac3_user_day_resets_at_midnight_in_the_users_timezone() {
         "2026-01-02"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Security-Review B1: Fingerprint bindet Tool, Server und Arbeitsverzeichnis
+// ---------------------------------------------------------------------------
+
+fn mcp_act(server: &str, name: &str, args: Value) -> Activation {
+    Activation::new(
+        Phase::ToolCall,
+        json!({ "tool": { "name": name, "native_name": format!("mcp__{server}__{name}"),
+                          "server": server, "kind": "mcp", "args": args } }),
+    )
+    .unwrap()
+}
+
+fn granted_after(sets: &[Arc<LoadedSet>], first: &Activation) -> SessionGrants {
+    let reasons = ask_reasons(&eval(sets, first));
+    let mut grants = SessionGrants::default();
+    grants.add(&reasons[0].rule, reasons[0].fingerprint.as_deref().unwrap());
+    grants
+}
+
+fn outcome_with(sets: &[Arc<LoadedSet>], grants: &SessionGrants, act: &Activation) -> Outcome {
+    let opts = EvalOptions {
+        grants: Some(grants),
+        ..EvalOptions::default()
+    };
+    EffectiveSet::new(sets.to_vec()).evaluate(act, &opts).outcome
+}
+
+#[test]
+fn pol_010_ac2_grant_does_not_cover_another_tool_with_the_same_args() {
+    let sets = [require("{ servers: [github, gitlab] }")];
+    let args = json!({"owner": "ifahrentholz", "repo": "shop"});
+    let grants = granted_after(&sets, &mcp_act("github", "get_repository", args.clone()));
+    // Derselbe Aufruf: erlaubt.
+    assert_eq!(
+        outcome_with(&sets, &grants, &mcp_act("github", "get_repository", args.clone())),
+        Outcome::Allow
+    );
+    // Anderes Tool mit gleichen Argumenten: neue Card.
+    assert!(matches!(
+        outcome_with(&sets, &grants, &mcp_act("github", "delete_repository", args.clone())),
+        Outcome::Ask { .. }
+    ));
+    // Anderer Server, gleiches Tool und gleiche Argumente: neue Card.
+    assert!(matches!(
+        outcome_with(&sets, &grants, &mcp_act("gitlab", "get_repository", args)),
+        Outcome::Ask { .. }
+    ));
+}
+
+#[test]
+fn pol_010_ac2_grant_for_empty_args_is_bound_to_the_tool() {
+    let sets = [set(
+        Scope::Project,
+        "p",
+        "rules:\n  - id: other\n    on: tool_call\n    action: ask\n",
+    )];
+    let act = |name: &str| {
+        Activation::new(
+            Phase::ToolCall,
+            json!({ "tool": { "name": name, "server": "builtin", "kind": "other", "args": {} } }),
+        )
+        .unwrap()
+    };
+    let grants = granted_after(&sets, &act("Harmless"));
+    assert_eq!(outcome_with(&sets, &grants, &act("Harmless")), Outcome::Allow);
+    assert!(matches!(outcome_with(&sets, &grants, &act("Dangerous")), Outcome::Ask { .. }));
+}
+
+#[test]
+fn pol_010_ac2_shell_grant_is_bound_to_the_working_directory() {
+    let sets = [set(
+        Scope::Project,
+        "p",
+        &format!("rules:\n{}", ask_rule("confirm", "{ remember: session }")),
+    )];
+    let in_dir = |cwd: &str| {
+        let mut tool = shell_tool("rm -rf build");
+        tool["cwd"] = json!(cwd);
+        Activation::new(Phase::ToolCall, json!({ "tool": tool })).unwrap()
+    };
+    let grants = granted_after(&sets, &in_dir("/work/repo"));
+    assert_eq!(outcome_with(&sets, &grants, &in_dir("/work/repo")), Outcome::Allow);
+    assert!(matches!(outcome_with(&sets, &grants, &in_dir("/work/other")), Outcome::Ask { .. }));
+}
