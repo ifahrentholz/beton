@@ -1379,6 +1379,43 @@ mod tests {
         assert!(matches!(waiting.await.unwrap(), GateDecision::Deny { .. }));
     }
 
+    #[tokio::test]
+    async fn pol_003_system_tools_pass_the_policy_without_a_human_card() {
+        // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
+        // beton, entscheidet allein die Policy; eine Approval-Card entsteht nicht.
+        let (g, mut rx) = gate();
+        let req = GateRequest {
+            call_id: "c1".into(),
+            tool: "mcp__beton__session_list".into(),
+            kind: "system".into(),
+            mcp_server: Some("beton".into()),
+            args: json!({}),
+            origin: GateOrigin::VendorAsk,
+            ..GateRequest::default()
+        };
+        let decision = tokio::time::timeout(Duration::from_secs(2), g.decide(req))
+            .await
+            .expect("keine Wartezeit auf einen Menschen");
+        assert_eq!(decision, GateDecision::Allow { updated_args: None });
+        let mut seen = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            seen.push(e.payload);
+        }
+        assert_eq!(
+            seen.iter()
+                .filter(|e| matches!(e, EventPayload::PolicyDecision(_)))
+                .count(),
+            1,
+            "{seen:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|e| matches!(e, EventPayload::ApprovalRequested(_))),
+            "{seen:?}"
+        );
+    }
+
     #[test]
     fn pol_002_fs_resolver_follows_symlinks() {
         let dir = tempfile::tempdir().unwrap();
