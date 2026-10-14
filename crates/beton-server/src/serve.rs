@@ -26,6 +26,9 @@ pub enum StartError {
     Store(#[from] beton_store::Error),
     #[error("{addr} konnte nicht gebunden werden: {source}")]
     Bind { addr: String, source: io::Error },
+    /// Die Redaction-Pipeline ließ sich nicht laden (SEC-013); der Daemon startet nicht.
+    #[error("Redaction-Pipeline nicht bereit: {0}")]
+    Redaction(#[from] beton_secrets::Error),
 }
 
 /// Ein laufender Daemon.
@@ -113,9 +116,23 @@ pub async fn start_with(
         .unwrap_or_else(|| "localhost".into());
 
     let (stop, stop_rx) = watch::channel(false);
-    let runtime = customize(
+    let mut runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
+    // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
+    // Werte, bevor irgendein Task schreibt oder verteilt (SEC-013); die übrigen Capabilities
+    // bleiben hier ungenutzt (die REST-API gibt nie Werte heraus).
+    let (secrets, caps) =
+        beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone());
+    if let Some(redactor) = &runtime.redactor {
+        caps.redaction.attach(&secrets, redactor.clone()).await?;
+    }
+    // Die Proxy-Capability bekommt nur die Quelle der beton-CA für die Runner (PRX-002, #191).
+    runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+        store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+        cap: caps.proxy,
+        host_id: runtime.host.id.to_string(),
+    }));
     let store_for_tunnel = store.clone();
     let janitor = tokio::spawn(crate::sessions::worktree_janitor(
         store.clone(),
@@ -132,8 +149,7 @@ pub async fn start_with(
         openapi_json: Arc::default(),
         runtime: runtime.clone(),
         web_dir: None,
-        secrets: beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone())
-            .0,
+        secrets: secrets.clone(),
     };
     let router = app::build(AppParts {
         store,
@@ -145,6 +161,7 @@ pub async fn start_with(
         primary_host,
         runtime: runtime.clone(),
         web_dir: config.web_dir.clone(),
+        secrets: Some(secrets),
     });
 
     let mut tasks = vec![janitor];
@@ -171,6 +188,7 @@ pub async fn start_with(
             events: crate::hub::EventService {
                 store: store_for_tunnel.clone(),
                 hub: runtime.hub.clone(),
+                tracer: runtime.tracer.clone(),
             },
             local,
             runners: runtime.runners.clone(),

@@ -49,6 +49,13 @@ pub const NETWORK_FUNCTIONS: &[NetFunction] = &[
         model_provider: true,
     },
     NetFunction {
+        name: "observability.otlp",
+        purpose: "Der Daemon sendet Traces je Session per OTLP/HTTP an den Collector, den der Betreiber unter `observability.otlp.endpoint` bzw. `OTEL_EXPORTER_OTLP_ENDPOINT` einträgt (OBS-003). Ohne Endpoint gibt es keinen Exporter und keine Verbindung; Inhalte nur mit `capture_content`, immer geschwärzt.",
+        default: NetDefault::Off,
+        offline_alternative: "Collector auf Loopback (z. B. `http://127.0.0.1:4318`) oder die JSON-Logs unter `~/.beton/logs/`.",
+        model_provider: false,
+    },
+    NetFunction {
         name: "server.bind",
         purpose: "`beton serve --bind <adresse>` macht Server und Web-UI außerhalb von Loopback erreichbar.",
         default: NetDefault::UserAction,

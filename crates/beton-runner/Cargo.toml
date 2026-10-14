@@ -39,9 +39,11 @@ tracing.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 beton-harness-direct = { workspace = true, features = ["mock"] }
 beton-host.workspace = true
 futures-util.workspace = true
+beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
 tempfile.workspace = true

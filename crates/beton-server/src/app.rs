@@ -51,6 +51,7 @@ impl AppState {
         EventService {
             store: self.store.clone(),
             hub: self.runtime.hub.clone(),
+            tracer: self.runtime.tracer.clone(),
         }
     }
 
@@ -100,6 +101,12 @@ pub struct Runtime {
     /// Backend für Secret-Werte (SEC-002/SEC-003). Default: keins (fail closed);
     /// `beton serve` wählt Keychain oder Datei.
     pub secret_backend: Arc<dyn beton_secrets::backend::Backend>,
+    /// Redaction-Pipeline (SEC-013); dieselbe wie in den `StoreOptions` und im Logging.
+    /// `beton serve` setzt sie immer; der Start lädt die bekannten Werte über die
+    /// `RedactionCap`, bevor irgendetwas geschrieben oder verteilt wird.
+    pub redactor: Option<Arc<beton_secrets::Redactor>>,
+    /// Session-Traces (OBS-003); nur mit konfiguriertem OTLP-Endpoint.
+    pub tracer: Option<Arc<crate::otel::SessionTracer>>,
 }
 
 impl Runtime {
@@ -146,6 +153,8 @@ impl Runtime {
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
             secret_backend: Arc::new(beton_secrets::backend::NoBackend),
+            redactor: None,
+            tracer: None,
         }
     }
 
@@ -335,6 +344,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::put_read_state))
         .routes(routes!(crate::api_sessions::put_pin))
         .routes(routes!(crate::api_sessions::list_events))
+        .routes(routes!(crate::api_sessions::redact_event))
         .routes(routes!(crate::sse::stream_events))
         .routes(routes!(crate::api_sessions::list_approvals))
         .routes(routes!(crate::api_sessions::resolve_approval))
@@ -392,6 +402,9 @@ pub struct AppParts {
     pub primary_host: String,
     pub runtime: Runtime,
     pub web_dir: Option<std::path::PathBuf>,
+    /// Secret-Dienst samt angebundener Redaction (`serve::start_with`); ohne Angabe entsteht
+    /// ein eigener (Tests).
+    pub secrets: Option<beton_secrets::Secrets>,
 }
 
 /// Die vollständige App mit allen Schichten.
@@ -404,22 +417,30 @@ pub fn build(parts: AppParts) -> Router {
 /// zusätzlichen Routen).
 pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Router {
     let openapi_json = Arc::new(doc.to_pretty_json().unwrap_or_default().into_bytes());
-    // Die REST-API gibt nie Secret-Werte heraus. Die Proxy-Capability bekommt nur die Quelle
-    // der beton-CA für den Runner (PRX-002, #191); Direkt-API-Harness und Git-Provider-Client
-    // bekommen ihre mit ihren Arbeitspaketen (HAR-011, GIT-002).
-    let (secrets, caps) = beton_secrets::Secrets::new(
-        parts.store.clone(),
-        parts.local,
-        parts.runtime.secret_backend.clone(),
-    );
+    // Die REST-API gibt nie Secret-Werte heraus. `beton serve` reicht den Secret-Dienst samt
+    // Redaction herein und die Proxy-Capability an die Quelle der beton-CA (PRX-002, #191).
+    // Ohne Angabe (Tests) entsteht ein eigener Dienst; dann bekommt die CA-Quelle dessen
+    // Proxy-Capability. Direkt-API-Harness und Git-Provider-Client bekommen ihre mit ihren
+    // Arbeitspaketen (HAR-011, GIT-002).
     let mut parts = parts;
-    if parts.runtime.sessions.proxy_ca.is_none() {
-        parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
-            store: beton_proxy::CaStore::new(secrets.clone(), parts.store.clone(), parts.local),
-            cap: caps.proxy,
-            host_id: parts.runtime.host.id.to_string(),
-        }));
-    }
+    let secrets = match parts.secrets.take() {
+        Some(s) => s,
+        None => {
+            let (s, caps) = beton_secrets::Secrets::new(
+                parts.store.clone(),
+                parts.local,
+                parts.runtime.secret_backend.clone(),
+            );
+            if parts.runtime.sessions.proxy_ca.is_none() {
+                parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+                    store: beton_proxy::CaStore::new(s.clone(), parts.store.clone(), parts.local),
+                    cap: caps.proxy,
+                    host_id: parts.runtime.host.id.to_string(),
+                }));
+            }
+            s
+        }
+    };
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

@@ -717,9 +717,16 @@ async fn rebuild_projections(ctx: &Ctx, session: Option<&str>) -> CliResult {
     let settings = layers
         .daemon_settings()
         .map_err(|e| CliError::new(Exit::General, e))?;
-    let store = beton_store::Store::open(&ctx.home, crate::serve::store_options(&settings))
-        .await
-        .context("Datenbank öffnen")?;
+    // Ohne Daemon und ohne neue Events: nur die Detektoren.
+    let store = beton_store::Store::open(
+        &ctx.home,
+        crate::serve::store_options(
+            &settings,
+            std::sync::Arc::new(beton_secrets::Redactor::detectors_only()),
+        ),
+    )
+    .await
+    .context("Datenbank öffnen")?;
     let local = store.ensure_local().await.context("lokale Identität")?;
     let count = store
         .rebuild_projections(local.org, session)

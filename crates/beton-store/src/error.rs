@@ -27,6 +27,9 @@ pub enum Error {
     Conflict(String),
     #[error("invalid_event: {0}")]
     InvalidEvent(String),
+    /// Die Redaction-Pipeline ist nicht bereit; nichts wurde geschrieben (SEC-013, fail closed).
+    #[error("redaction_unavailable: Redaction nicht bereit, nichts geschrieben oder gesendet")]
+    RedactionUnavailable,
     #[error("Datenbankfehler: {0}")]
     Db(#[from] sqlx::Error),
     #[error("E/A-Fehler: {0}")]
@@ -48,6 +51,7 @@ impl Error {
             Self::Tombstoned(_) => "tombstoned",
             Self::Conflict(_) => "conflict",
             Self::InvalidEvent(_) => "invalid_event",
+            Self::RedactionUnavailable => "redaction_unavailable",
             Self::Db(_) | Self::Io(_) | Self::Corrupt(_) => "internal",
         }
     }
@@ -60,5 +64,11 @@ impl Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Self::corrupt(e)
+    }
+}
+
+impl From<crate::RedactionUnavailable> for Error {
+    fn from(_: crate::RedactionUnavailable) -> Self {
+        Self::RedactionUnavailable
     }
 }

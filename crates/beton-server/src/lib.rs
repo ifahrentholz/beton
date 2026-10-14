@@ -27,6 +27,7 @@ pub mod hub;
 pub mod idempotency;
 pub mod imports;
 pub mod local_auth;
+pub mod otel;
 pub mod problem;
 pub mod queue;
 pub mod security;

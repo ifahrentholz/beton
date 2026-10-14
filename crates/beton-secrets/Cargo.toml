@@ -10,12 +10,15 @@ authors.workspace = true
 
 [dependencies]
 aes-gcm.workspace = true
+aho-corasick.workspace = true
 argon2.workspace = true
+base64.workspace = true
 beton-core.workspace = true
 beton-store.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
 keyring-core.workspace = true
+regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,6 +39,7 @@ windows-native-keyring-store = { workspace = true }
 zbus-secret-service-keyring-store = { workspace = true }
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

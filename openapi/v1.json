@@ -2776,6 +2776,107 @@
         }
       }
     },
+    "/v1/sessions/{id}/events/{seq}/redact": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Ein Event nachträglich schwärzen (DATA-012), z. B. nach einem entdeckten Secret-Leak.\nLokal ist der Owner berechtigt; Rollen (Owner/Admin, `view` → 403) folgen mit COL-001\nin M4. Verbundene Clients erhalten `event.redacted`; die Aktion steht im Audit-Log.",
+        "operationId": "redact_event",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedactEventRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Geschwärzt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedactEventResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`validation_failed`: Grund fehlt, Pfad fehlt in der Nutzlast oder verletzt ihren Typ",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nicht Owner der Session",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session oder Event unbekannt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/export": {
       "get": {
         "tags": [
@@ -6288,6 +6389,7 @@
           "secrets_corrupt",
           "unavailable",
           "secrets_unavailable",
+          "redaction_unavailable",
           "sandbox_unavailable"
         ]
       },
@@ -6396,6 +6498,48 @@
             "format": "int64",
             "description": "Bis hierhin hat der Client die Session angezeigt.",
             "minimum": 0
+          }
+        }
+      },
+      "RedactEventRequest": {
+        "type": "object",
+        "description": "Manuelle Nachredaktion eines Events (DATA-012).",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "paths": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "JSON-Pointer in die Nutzlast (ohne `type`), z. B. `/content/0/text`. Ohne Angabe wird\ndie ganze Nutzlast geschwärzt; IDs, Aufzählungen und Zeitstempel bleiben lesbar."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Grund, z. B. „Secret-Leak“ (Pflicht, höchstens 500 Zeichen); steht im\n`event.redacted` und im Audit-Log."
+          }
+        },
+        "additionalProperties": false
+      },
+      "RedactEventResponse": {
+        "type": "object",
+        "description": "Ergebnis einer Nachredaktion.",
+        "required": [
+          "target",
+          "event"
+        ],
+        "properties": {
+          "target": {
+            "type": "object",
+            "description": "Das geschwärzte Event in Draht-Form."
+          },
+          "event": {
+            "type": "object",
+            "description": "Das neue `event.redacted`, das den Vorgang dokumentiert."
           }
         }
       },

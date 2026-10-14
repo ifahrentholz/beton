@@ -55,6 +55,8 @@ pub struct Settings {
     pub sandbox: beton_sandbox::SandboxSpec,
     /// Egress-Proxy (PRX-002); nur in der User-Konfiguration.
     pub proxy: ProxySettings,
+    /// Betreiber-Observability (OBS-003); nur in der User-Konfiguration.
+    pub observability: ObservabilitySettings,
 }
 
 /// `proxy:` (PRX-002).
@@ -64,6 +66,27 @@ pub struct ProxySettings {
     /// Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut
     /// oder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.
     pub extra_ca_files: Vec<String>,
+}
+
+/// Traces je Session (OBS-003). Ohne Endpoint gibt es keinen Export (ADR-0025, ADR-0033).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ObservabilitySettings {
+    pub otlp: OtlpSettings,
+    /// Prompts und Tool-Argumente als Span-Attribute (geschwärzt); Default `false`.
+    pub capture_content: bool,
+}
+
+/// OTLP-Export (OBS-003): OTLP/HTTP mit JSON-Kodierung.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct OtlpSettings {
+    /// Basis-URL des Collectors, z. B. `http://127.0.0.1:4318`; Traces gehen an
+    /// `<endpoint>/v1/traces`. Ohne Angabe gilt `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` bzw.
+    /// `OTEL_EXPORTER_OTLP_ENDPOINT`; fehlt auch das, wird nichts exportiert.
+    pub endpoint: Option<String>,
+    /// Zusätzliche HTTP-Header, z. B. für die Anmeldung beim Collector.
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 impl Settings {

@@ -115,6 +115,9 @@ problem_codes! {
     Unavailable = "unavailable", 503, "Vorübergehend nicht verfügbar";
     /// Kein Secret-Backend nutzbar (SEC-002), z. B. Keychain nicht erreichbar.
     SecretsUnavailable = "secrets_unavailable", 503, "Secret-Store nicht verfügbar";
+    /// Die Redaction-Pipeline ist nicht bereit; nichts wurde geschrieben oder gesendet
+    /// (SEC-013, fail closed).
+    RedactionUnavailable = "redaction_unavailable", 503, "Redaction nicht bereit";
     /// Sandbox bzw. Egress-Proxy der Session nicht startbar (SBX-006, PRX-002, PROTO-011).
     SandboxUnavailable = "sandbox_unavailable", 503, "Sandbox nicht verfügbar";
 }
@@ -222,6 +225,7 @@ impl From<beton_store::Error> for Problem {
             E::Tombstoned(_) => ProblemCode::Tombstoned,
             E::Conflict(_) => ProblemCode::Conflict,
             E::InvalidEvent(_) => ProblemCode::ValidationFailed,
+            E::RedactionUnavailable => ProblemCode::RedactionUnavailable,
             E::BlobCorrupt(_) => {
                 let p = Self::new(ProblemCode::BlobCorrupt);
                 tracing::error!(trace_id = %p.trace_id, "{e}");
