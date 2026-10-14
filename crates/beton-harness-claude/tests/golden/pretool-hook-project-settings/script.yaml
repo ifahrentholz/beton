@@ -1,0 +1,5 @@
+model: haiku
+inputs:
+- send: Führe mit dem Bash-Tool genau `echo beton-hook` aus und antworte danach nur mit der Ausgabe.
+gate:
+- allow
