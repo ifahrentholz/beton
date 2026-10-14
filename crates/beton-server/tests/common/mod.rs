@@ -64,6 +64,19 @@ pub async fn app_redacting(
     Arc<beton_secrets::Redactor>,
     beton_secrets::Secrets,
 ) {
+    let (t, redactor, secrets, _) = app_redacting_hub(backend).await;
+    (t, redactor, secrets)
+}
+
+/// Wie [`app_redacting`], dazu der Hub für Live-Events (verbundene Clients).
+pub async fn app_redacting_hub(
+    backend: Arc<dyn beton_secrets::backend::Backend>,
+) -> (
+    TestApp,
+    Arc<beton_secrets::Redactor>,
+    beton_secrets::Secrets,
+    Arc<beton_server::hub::Hub>,
+) {
     let dir = tempfile::tempdir().unwrap();
     let redactor = Arc::new(beton_secrets::Redactor::pending());
     let store = Store::open(
@@ -81,16 +94,23 @@ pub async fn app_redacting(
         .attach(&secrets, redactor.clone())
         .await
         .unwrap();
+    let hub = Arc::new(beton_server::hub::Hub::default());
+    let shared = hub.clone();
+    let for_runtime = redactor.clone();
     let t = app_inner(
         dir,
         store,
         Some(secrets.clone()),
         |r| r,
         "127.0.0.1:50000",
-        |r| r,
+        move |mut r| {
+            r.hub = shared;
+            r.redactor = Some(for_runtime);
+            r
+        },
     )
     .await;
-    (t, redactor, secrets)
+    (t, redactor, secrets, hub)
 }
 
 async fn app_inner(
