@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use beton_policy::Phase;
-use beton_policy::enforcement::{KINDS, Level, Matrix, check_start, targets};
+use beton_policy::enforcement::{KINDS, Level, Matrix, StartCheck, check_start, targets};
 use beton_policy::engine::EffectiveSet;
 use beton_policy::load::{LoadedSet, Scope, parse_set};
 
@@ -205,4 +205,53 @@ fn pol_024_matrix_reports_levels_and_modify_support() {
     assert!(!Level::ObserveOnly.enforces());
     let full = Matrix::full();
     assert!(full.capabilities(Phase::ToolCall).args);
+}
+
+#[test]
+fn pol_024_gaps_describe_themselves_without_file_contents() {
+    let mut m = codex_like();
+    m.model_request = Level::ObserveOnly;
+    let body = [
+        rule("no-push", "tool.kind == \"shell\"", "deny"),
+        "  - id: no-opus\n    on: model_request\n    when: 'request.model == \"opus\"'\n    action: deny\n    reason: geheim-123\n".to_owned(),
+        "  - id: soft-model\n    on: model_request\n    when: 'request.model == \"x\"'\n    action: deny\n    enforcement: best_effort\n".to_owned(),
+    ]
+    .concat();
+    let check = check_start(&EffectiveSet::new(vec![set(&body)]), &m);
+    assert!(!check.is_clean());
+    assert_eq!(check.refused_rules(), vec!["no-opus".to_owned()]);
+    assert_eq!(check.degraded_rules(), vec!["soft-model".to_owned()]);
+    let text = check.refused[0].describe();
+    assert!(
+        text.contains("no-opus") && text.contains("observe_only"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("geheim-123"),
+        "keine Inhalte der Datei: {text}"
+    );
+    // Mit Klassen: Lücke auf lesenden Klassen nennt sie.
+    let read = rule("no-read", "tool.kind == \"file_read\"", "deny");
+    let check = check_start(&EffectiveSet::new(vec![set(&read)]), &codex_like());
+    let text = check.degraded[0].describe();
+    assert!(text.contains("file_read"), "{text}");
+    assert!(StartCheck::default().is_clean());
+}
+
+#[test]
+fn pol_024_dry_run_sets_and_weakest_level_across_classes() {
+    let mut fake = Matrix::full();
+    fake.tool_call.insert("shell".into(), Level::ObserveOnly);
+    let shadow = "spec_version: 1\nname: shadow\nmode: dry_run\nrules:\n  - id: r\n    on: tool_call\n    when: 'tool.kind == \"shell\"'\n    action: deny\n";
+    let loaded = Arc::new(parse_set(Scope::Project, "shadow.yaml", shadow).unwrap());
+    assert!(check_start(&EffectiveSet::new(vec![loaded]), &fake).is_clean());
+    // Ohne Klasse gilt die schwächste Stufe aller Klassen.
+    assert_eq!(fake.level(Phase::ToolCall, None), Level::ObserveOnly);
+    assert_eq!(Matrix::full().level(Phase::ToolResult, None), Level::Full);
+    assert_eq!(
+        Matrix::full().level(Phase::BrowserNavigate, None),
+        Level::Full
+    );
+    assert_eq!(Level::Full.to_string(), "full");
+    assert_eq!(Level::ObserveOnly.to_string(), "observe_only");
 }
