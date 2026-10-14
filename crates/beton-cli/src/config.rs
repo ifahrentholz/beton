@@ -67,6 +67,19 @@ pub struct ProxySettings {
 }
 
 impl Settings {
+    /// `proxy.extra_ca_files` mit expandiertem `~` (PRX-002).
+    pub fn proxy_extra_ca_files(&self) -> Vec<std::path::PathBuf> {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        self.proxy
+            .extra_ca_files
+            .iter()
+            .map(|f| match (f.strip_prefix("~/"), &home) {
+                (Some(rest), Some(h)) => h.join(rest),
+                _ => std::path::PathBuf::from(f),
+            })
+            .collect()
+    }
+
     /// Preis-Overrides in Deklarationsreihenfolge: zuerst `pricing.overrides`, danach die
     /// Preise unter `providers.<name>.models[].pricing` (HAR-011) mit genau diesem Provider
     /// und Modell. Ungültige Provider-Einträge meldet die Registry; sie liefern keine Preise.
@@ -559,6 +572,15 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
         key,
         message,
     })?;
+    for (i, file) in settings.proxy_extra_ca_files().iter().enumerate() {
+        beton_proxy::check_extra_ca_files(std::slice::from_ref(file)).map_err(|e| {
+            ConfigError::Invalid {
+                origin: origin.to_owned(),
+                key: format!("proxy.extra_ca_files[{i}]"),
+                message: e.to_string(),
+            }
+        })?;
+    }
     Ok(settings)
 }
 

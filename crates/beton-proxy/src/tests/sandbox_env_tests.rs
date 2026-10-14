@@ -84,3 +84,16 @@ async fn prx_008_test_hosts_map_names_to_local_upstreams_only() {
     .await;
     assert_denied(&got, 502, "dns_error");
 }
+
+#[test]
+fn prx_002_extra_ca_files_missing_or_empty_are_configuration_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("leer.pem");
+    std::fs::write(&empty, "").unwrap();
+    let good = dir.path().join("ca.pem");
+    let ca = BetonCa::generate("nod_x", OffsetDateTime::now_utc()).unwrap();
+    std::fs::write(&good, ca.cert_pem()).unwrap();
+    assert!(crate::check_extra_ca_files(&[dir.path().join("fehlt.pem")]).is_err());
+    assert!(crate::check_extra_ca_files(&[empty]).is_err());
+    assert!(crate::check_extra_ca_files(&[good]).is_ok());
+}

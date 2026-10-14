@@ -6287,7 +6287,8 @@
           "blob_corrupt",
           "secrets_corrupt",
           "unavailable",
-          "secrets_unavailable"
+          "secrets_unavailable",
+          "sandbox_unavailable"
         ]
       },
       "ProviderInfo": {

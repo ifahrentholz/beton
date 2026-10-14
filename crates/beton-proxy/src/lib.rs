@@ -32,5 +32,8 @@ pub use ca::{BetonCa, CaError, CaHandover, CaInfo, CaStore, LeafIssuer};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
 pub use passthrough::{Passthrough, PassthroughError};
-pub use proxy::{EgressProxy, InstanceSpec, ProxyError, ProxyInstance, ProxyOptions, ProxyToken};
+pub use proxy::{
+    EgressProxy, InstanceSpec, ProxyError, ProxyInstance, ProxyOptions, ProxyToken,
+    check_extra_ca_files,
+};
 pub use rules::{Decision, DenyReason, Request, RuleError, RuleSet};

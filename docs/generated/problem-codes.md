@@ -57,3 +57,4 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `secrets_corrupt` | 500 | Secret-Datei beschädigt |
 | `unavailable` | 503 | Vorübergehend nicht verfügbar |
 | `secrets_unavailable` | 503 | Secret-Store nicht verfügbar |
+| `sandbox_unavailable` | 503 | Sandbox nicht verfügbar |

@@ -116,6 +116,12 @@ fn extra_roots(files: &[PathBuf]) -> Result<Vec<CertificateDer<'static>>, ProxyE
     Ok(out)
 }
 
+/// Prüft `proxy.extra_ca_files` (beim Laden der Konfiguration): Jede Datei muss lesbar sein und
+/// mindestens ein Zertifikat enthalten (PRX-002).
+pub fn check_extra_ca_files(files: &[PathBuf]) -> Result<(), ProxyError> {
+    extra_roots(files).map(|_| ())
+}
+
 /// TLS-Client-Konfiguration für Upstreams: strikte webpki-Prüfung gegen `roots`, kein
 /// Override.
 fn upstream_tls(roots: &RootCertStore, alpn: &[&[u8]]) -> Result<Arc<ClientConfig>, ProxyError> {

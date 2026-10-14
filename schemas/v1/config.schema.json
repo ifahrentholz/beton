@@ -52,6 +52,13 @@
       },
       "default": {}
     },
+    "proxy": {
+      "description": "Egress-Proxy (PRX-002); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/ProxySettings",
+      "default": {
+        "extra_ca_files": []
+      }
+    },
     "sandbox": {
       "description": "Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)\ndarf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.",
       "$ref": "#/$defs/SandboxSpec",
@@ -562,6 +569,21 @@
         "kind",
         "base_url"
       ]
+    },
+    "ProxySettings": {
+      "description": "`proxy:` (PRX-002).",
+      "type": "object",
+      "properties": {
+        "extra_ca_files": {
+          "description": "Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut\noder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "SandboxBackend": {
       "description": "Isolations-Backend; `auto` wählt je Betriebssystem (SBX-001).",

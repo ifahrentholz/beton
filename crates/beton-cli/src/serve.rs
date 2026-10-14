@@ -293,6 +293,9 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runner_command = vec![exe.display().to_string(), "__runner".to_owned()];
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
+    // Stufenmodell und Egress-Proxy (SBX-002, #191): nur aus der User-Konfiguration.
+    let sandbox_user = settings.sandbox.clone();
+    let proxy_extra_ca_files = settings.proxy_extra_ca_files();
     let titles = titles_config(&settings.titles);
     let attachments = beton_server::attachments::AttachmentLimits {
         max_file_bytes: settings.attachments.max_file_bytes,
@@ -366,6 +369,8 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
         r.sessions.harnesses_user = harnesses_user;
+        r.sessions.sandbox = sandbox_user;
+        r.sessions.proxy_extra_ca_files = proxy_extra_ca_files;
         r.sessions.providers = providers;
         r.harnesses = registry;
         r.features = Arc::new(features);
