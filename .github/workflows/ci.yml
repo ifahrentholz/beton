@@ -91,6 +91,16 @@ jobs:
             cargo nextest run --workspace --offline
             cargo test --workspace --doc --offline
           '
+      # Gate über alle mitgelieferten Policies und Built-in-Agents (QA-004): als Schritt dieses
+      # Jobs statt eigenem Job, weil jeder Job Required Check sein muss (QA-010 AC3).
+      # covers: QA-004 AC1 (Fehlschlag zeigt erwartete und tatsächliche Entscheidung samt Regel)
+      # covers: QA-004 AC2 (jede mitgelieferte Policy und jeder Built-in-Agent hat einen Test)
+      - name: Policy-Tests der mitgelieferten Policies und Built-in-Agents (QA-004)
+        run: |
+          mkdir -p target/policy-tests
+          cargo run --offline -q -p beton-cli -- policy test policies/tests \
+            --junit target/policy-tests/junit.xml
+          cargo test --offline -q -p beton-policy --test shipped
       # Sandbox-Fälle, die Einstellungen des Hosts brauchen; jeder Lauf prüft, dass die
       # Einstellung wirklich galt, statt Fälle zu überspringen. Danach ist alles zurückgesetzt.
       # covers: SBX-008 AC5 (AppArmor-Restriktion: mit Paketprofil nutzbar, ohne Grund und Fallback)
