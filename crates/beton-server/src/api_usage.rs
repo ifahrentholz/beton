@@ -373,7 +373,9 @@ pub struct UsageReportView {
     pub group_by: Vec<String>,
     /// Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene.
     pub pricing_version: String,
-    pub items: Vec<UsageItem>,
+    /// Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:
+    /// eine Auswertung, keine Liste von Ressourcen).
+    pub groups: Vec<UsageItem>,
     pub totals: UsageTotals,
     pub subscriptions: Vec<SubscriptionWindowView>,
     pub reporting: Vec<HarnessReportingView>,
@@ -390,7 +392,7 @@ impl UsageReportView {
             pricing_version: beton_core::pricing::Catalog::embedded()
                 .version()
                 .to_owned(),
-            items: report.groups.iter().map(UsageItem::from).collect(),
+            groups: report.groups.iter().map(UsageItem::from).collect(),
             totals: UsageTotals::from_groups(&report.totals),
             subscriptions: report
                 .windows
@@ -528,9 +530,7 @@ fn invalid(detail: String) -> Problem {
 /// Aggregierte Usage (USE-005): Summen je Gruppe und Abrechnungsart, Abo-Fenster, Melde-Stand.
 #[utoipa::path(get, path = "/v1/usage", tag = "usage",
     params(UsageParams),
-    responses(
-        (status = 200, description = "Summen, Abo-Fenster und Melde-Stand", body = UsageReportView),
-        (status = 400, description = "Ungültige Parameter (validation_failed)")))]
+    responses((status = 200, description = "Summen, Abo-Fenster und Melde-Stand", body = UsageReportView)))]
 pub async fn get_usage(
     State(state): State<AppState>,
     ApiQuery(params): ApiQuery<UsageParams>,

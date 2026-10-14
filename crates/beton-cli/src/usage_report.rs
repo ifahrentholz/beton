@@ -535,12 +535,12 @@ fn table(
 pub fn tables(view: &UsageReportView, out: &mut dyn std::io::Write) -> std::io::Result<()> {
     let dims = dim_columns(view);
     let sub: Vec<&UsageItem> = view
-        .items
+        .groups
         .iter()
         .filter(|i| i.billing == "subscription")
         .collect();
     let metered: Vec<&UsageItem> = view
-        .items
+        .groups
         .iter()
         .filter(|i| i.billing == "metered")
         .collect();
@@ -645,7 +645,7 @@ pub fn windows(
 ) -> std::io::Result<()> {
     // Harnesses mit Subscription-Nutzung oder ganz ohne Meldung gehören in diesen Abschnitt.
     let subscription_harnesses: Vec<String> = view
-        .items
+        .groups
         .iter()
         .filter(|i| i.billing == "subscription")
         .filter_map(|i| i.harness.clone())
@@ -729,7 +729,7 @@ pub fn windows(
 }
 
 fn notes(ctx: &Ctx, view: &UsageReportView) {
-    if view.items.iter().any(|i| i.billing == "subscription") {
+    if view.groups.iter().any(|i| i.billing == "subscription") {
         let eq = view.totals.subscription.equivalent_usd.unwrap_or(0.0);
         ctx.note(format!(
             "Hinweis: Subscription-Nutzung wird nicht abgerechnet; API-Äquivalent laut Katalog {} \
@@ -899,7 +899,7 @@ pub fn report_csv(view: &UsageReportView, out: &mut dyn std::io::Write) -> std::
         .map(str::to_owned),
     );
     writeln!(out, "{}", header.join(","))?;
-    for i in &view.items {
+    for i in &view.groups {
         let mut cells: Vec<String> = Vec::new();
         for d in &view.group_by {
             cells.push(
@@ -997,7 +997,7 @@ mod tests {
             group_by: vec!["harness".into()],
             pricing_version: "2026-10-01".into(),
             totals: UsageTotals::default(),
-            items,
+            groups: items,
             subscriptions: Vec::new(),
             reporting: Vec::new(),
         }

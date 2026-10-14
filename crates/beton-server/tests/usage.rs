@@ -132,7 +132,7 @@ async fn use_005_ac1_usage_by_day_and_harness() {
     assert_eq!(body["group_by"], json!(["day", "harness"]));
     assert_eq!(body["from"], "2026-10-01T00:00:00.000Z");
     assert_eq!(body["to"], "2026-10-03T00:00:00.000Z");
-    let items = body["items"].as_array().unwrap();
+    let items = body["groups"].as_array().unwrap();
     assert_eq!(items.len(), 2, "{body:#}");
     let sub = &items[0];
     assert_eq!(

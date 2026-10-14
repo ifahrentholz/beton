@@ -5487,7 +5487,14 @@
             }
           },
           "400": {
-            "description": "Ungültige Parameter (validation_failed)"
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Nicht angemeldet",
@@ -8251,7 +8258,7 @@
           "tz",
           "group_by",
           "pricing_version",
-          "items",
+          "groups",
           "totals",
           "subscriptions",
           "reporting"
@@ -8279,11 +8286,12 @@
             "type": "string",
             "description": "Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene."
           },
-          "items": {
+          "groups": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/UsageItem"
-            }
+            },
+            "description": "Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:\neine Auswertung, keine Liste von Ressourcen)."
           },
           "totals": {
             "$ref": "#/components/schemas/UsageTotals"

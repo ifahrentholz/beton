@@ -24,4 +24,9 @@ tz: string, group_by: Array<string>,
 /**
  * Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene.
  */
-pricing_version: string, items: Array<UsageItem>, totals: UsageTotals, subscriptions: Array<SubscriptionWindowView>, reporting: Array<HarnessReportingView>, };
+pricing_version: string, 
+/**
+ * Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:
+ * eine Auswertung, keine Liste von Ressourcen).
+ */
+groups: Array<UsageItem>, totals: UsageTotals, subscriptions: Array<SubscriptionWindowView>, reporting: Array<HarnessReportingView>, };

@@ -14,7 +14,8 @@
         "type": "string"
       }
     },
-    "items": {
+    "groups": {
+      "description": "Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:\neine Auswertung, keine Liste von Ressourcen).",
       "type": "array",
       "items": {
         "$ref": "#/$defs/UsageItem"
@@ -54,7 +55,7 @@
     "tz",
     "group_by",
     "pricing_version",
-    "items",
+    "groups",
     "totals",
     "subscriptions",
     "reporting"

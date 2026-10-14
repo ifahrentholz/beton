@@ -156,7 +156,7 @@ async fn use_007_ac3_usage_with_and_without_daemon() {
         .await
         .unwrap();
     assert_eq!(stable(with_daemon.clone()), stable(api));
-    let items = with_daemon["items"].as_array().unwrap();
+    let items = with_daemon["groups"].as_array().unwrap();
     let claude = items
         .iter()
         .find(|i| i["model"] == "fake-model" || i["billing"] == "subscription")
