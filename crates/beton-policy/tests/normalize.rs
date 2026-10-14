@@ -369,3 +369,13 @@ fn pol_005_beton_server_classes_only_for_servers_beton_injected() {
         assert!(!tool.is_subagent_spawn || kind == "system", "{name}");
     }
 }
+
+/// Claude Code 2.1.296 heißt das Sub-Agent-Tool `Agent` (vorher `Task`; bei der Verifikation zu
+/// #233 aufgefallen): `system` mit `is_subagent_spawn`.
+#[test]
+fn pol_005_claude_agent_tool_is_a_subagent_spawn() {
+    let none = json!({});
+    let tool = normalize(&raw("claude", "Agent", &none)).unwrap();
+    assert_eq!(tool.kind, "system");
+    assert!(tool.is_subagent_spawn);
+}
