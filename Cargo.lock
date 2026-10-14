@@ -777,6 +777,7 @@ version = "0.0.0"
 dependencies = [
  "beton-core",
  "beton-proxy",
+ "getrandom 0.4.3",
  "landlock",
  "libc",
  "process-wrap",

@@ -181,7 +181,7 @@ fn error_code(reply: &Reply) -> &str {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_ac3_broker_rejects_foreign_cwd_denied_env_and_bad_requests() {
     let fx = fx();
     let (sandbox, started) = tools(&fx, ctx(&fx, Stage::Tools));
@@ -273,7 +273,7 @@ fn processes_with(marker: &str) -> Vec<String> {
         .collect()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_ac5_exit_codes_signals_and_stdio_pass_through_bt_exec() {
     let fx = fx();
     let (sandbox, _) = tools(&fx, ctx(&fx, Stage::Tools));
@@ -414,7 +414,7 @@ async fn in_stage_one(
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_ac2_command_via_bt_exec_runs_in_stage_two() {
     let fx = fx();
     // Ein Dienst im Runtime-Verzeichnis des Benutzers (wie der D-Bus-Session-Bus).
@@ -473,7 +473,7 @@ async fn sbx_002_ac2_command_via_bt_exec_runs_in_stage_two() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_ac1_tool_via_bt_exec_cannot_read_the_harness_credentials() {
     let fx = fx();
     let (sandbox, _) = tools(&fx, ctx(&fx, Stage::Tools));
@@ -485,7 +485,7 @@ async fn sbx_002_ac1_tool_via_bt_exec_cannot_read_the_harness_credentials() {
         &broker,
         "claude",
         &format!(
-            "cat {creds} && echo; {} /bin/sh -c 'cat {creds}' ; echo \"rc=$?\"",
+            "cat {creds} && echo; {} /bin/sh -c 'echo \"stufe=$BETON_STAGE\"; cat {creds}' ; echo \"rc=$?\"",
             shim.display()
         ),
     )
@@ -495,5 +495,9 @@ async fn sbx_002_ac1_tool_via_bt_exec_cannot_read_the_harness_credentials() {
     assert!(stdout.starts_with(FIXTURE_CLAUDE), "{stdout}{stderr}");
     // … das Bash-Tool über bt-exec nicht (Stufe 2).
     assert_eq!(stdout.matches(FIXTURE_CLAUDE).count(), 1, "{stdout}");
+    assert!(
+        stdout.contains("stufe=tools"),
+        "bt-exec lief nicht: {stdout}{stderr}"
+    );
     assert!(!stdout.contains("rc=0"), "{stdout}{stderr}");
 }

@@ -39,12 +39,55 @@ pub const EXEC_ARG: &str = "__exec";
 /// weitergibt): gesperrt (SBX-005), von beton je Stufe gesetzt, Familie eines Harness oder
 /// kein gültiger Name. `None`: erlaubt.
 pub fn override_rejected(name: &str) -> Option<&'static str> {
-    let _ = name;
+    let valid = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        return Some("kein gültiger Variablenname");
+    }
+    if crate::spec::env_denied(name) {
+        return Some("gelangt nie in eine Sandbox (SBX-005)");
+    }
+    if crate::resolve::controlled_env(name) {
+        return Some("setzt beton je Stufe selbst");
+    }
+    let family = crate::masks::builtin_harness_grants()
+        .iter()
+        .flat_map(|g| g.env_families.clone())
+        .any(|f| name.starts_with(f.as_str()));
+    if family {
+        return Some("gehört zur Stufe 1 eines Harness");
+    }
     None
 }
 
 /// Einstieg von `bt-exec` bzw. `beton __exec`: `Some(exit)`, wenn dieses Programm als Shim
-/// aufgerufen wurde.
+/// aufgerufen wurde (Name `bt-exec` bzw. `bt-exec-<shell>` oder erstes Argument `__exec`).
 pub fn exec_dispatch() -> Option<std::process::ExitCode> {
-    None
+    let mut args = std::env::args_os();
+    let argv0 = args.next()?;
+    let base = std::path::Path::new(&argv0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    let rest: Vec<std::ffi::OsString> = args.collect();
+    let code = if base == SHIM || base.starts_with("bt-exec-") {
+        client::run(&argv0, rest)
+    } else if rest.first().map(|a| a.as_os_str()) == Some(std::ffi::OsStr::new(EXEC_ARG)) {
+        client::run(&std::ffi::OsString::from(SHIM), rest[1..].to_vec())
+    } else {
+        return None;
+    };
+    Some(std::process::ExitCode::from(
+        u8::try_from(code).unwrap_or(126),
+    ))
+}
+
+/// Vergleich in konstanter Zeit (Token).
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() || a.is_empty() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
