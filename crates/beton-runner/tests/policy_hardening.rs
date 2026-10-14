@@ -715,3 +715,24 @@ fn har_027_policy_forced_plan_binds_like_the_agent() {
     assert!(!plan_locked(None, Some(Plan), None));
     assert!(!plan_locked(None, Some(Default), Some(AcceptEdits)));
 }
+
+#[tokio::test]
+async fn pol_001_loosening_user_change_is_not_applied_during_the_session() {
+    // Re-Review #2 N3 (#253): Ohne Sandbox erreicht ein Tool auch die User-Policies, z. B.
+    // `find ~ -path '*pol*' -name defaults.yaml -exec sed -i s/deny/allow/ {} +`.
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(dir.path(), Scope::User, "defaults", NO_RM);
+    let (g, _rx) = gate(dir.path(), "claude");
+    let d = g
+        .decide(bash("n3_1", "rm -rf /x", GateOrigin::PreTool))
+        .await;
+    assert!(matches!(d, GateDecision::Deny { .. }));
+    write_policy(dir.path(), Scope::User, "defaults", "  []\n");
+    let d = g
+        .decide(bash("n3_2", "rm -rf /x", GateOrigin::PreTool))
+        .await;
+    assert!(
+        matches!(d, GateDecision::Deny { .. }),
+        "Lockerung übernommen: {d:?}"
+    );
+}

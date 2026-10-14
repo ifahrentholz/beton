@@ -676,3 +676,62 @@ fn pol_001_loosening_project_changes_wait_for_a_new_session() {
     fresh.refresh();
     assert!(!denies(&mut fresh));
 }
+
+/// Re-Review #2 N1/N2 (#253): Neue Regeln mit `effects` (z. B. ein Zähler-Reset, der eine
+/// `deny`-Regel der User-Ebene aushebelt) und neue `ask`-Regeln mit eigenem Timeout bzw.
+/// `on_timeout: allow` (der kürzeste Timeout gilt für die ganze Card) lockern.
+#[test]
+fn pol_001_new_rules_with_effects_or_approval_timeouts_count_as_loosening() {
+    use beton_policy::store::only_tightens;
+    let base = parse_set(Scope::Project, "g.yaml", DENY_SHELL).unwrap();
+    for added in [
+        "  - id: reset\n    on: tool_call\n    action: notify\n    effects:\n      - { op: delete, scope: user_day, key: pushes }\n",
+        "  - id: fast\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s }\n",
+        "  - id: lax\n    on: tool_call\n    action: ask\n    approval: { on_timeout: allow }\n",
+        "  - id: lax-type\n    type: require_approval\n    params: { kinds: [shell], on_timeout: allow }\n",
+    ] {
+        let new = parse_set(Scope::Project, "g.yaml", &format!("{DENY_SHELL}{added}")).unwrap();
+        assert!(only_tightens(Some(&base), &new).is_err(), "{added}");
+    }
+    // Ohne Effects und ohne eigenen Timeout bleibt es eine Verschärfung.
+    let new = parse_set(
+        Scope::Project,
+        "g.yaml",
+        &format!("{DENY_SHELL}  - id: ok\n    on: tool_call\n    action: ask\n  - id: tell\n    on: tool_call\n    action: notify\n"),
+    )
+    .unwrap();
+    assert!(only_tightens(Some(&base), &new).is_ok());
+}
+
+/// N2 (#253): `only_tightens` behandelt noch nicht entzuckerte Regeltypen als verschärfend, weil
+/// die Engine sie fail closed als Fehler wertet; entzuckerte (bisher nur `require_approval`)
+/// klassifiziert es über ihre CEL-Fassung. Wird ein weiterer Typ in CEL übersetzt, schlägt dieser
+/// Test fehl: dann die Klassifikation in `only_tightens` (store.rs) prüfen und den Typ hier
+/// eintragen (ein `tool_allowlist` z. B. enthält `allow`-Anteile).
+#[test]
+fn pol_001_builtin_rule_types_are_not_yet_desugared() {
+    use beton_policy::load::RuleKind;
+    for (t, params) in [
+        ("spend_cap", "{ limit_usd: 1 }"),
+        ("daily_budget", "{ limit_usd: 1 }"),
+        ("model_route", "{}"),
+        ("require_approval", "{ kinds: [shell] }"),
+        ("tool_allowlist", "{}"),
+        ("path_guard", "{}"),
+        ("git_guard", "{}"),
+        ("loop_detection", "{}"),
+        ("pii_redaction", "{}"),
+        ("browser_guard", "{}"),
+    ] {
+        let text = format!(
+            "spec_version: 1\nname: t\nrules:\n  - id: r\n    type: {t}\n    params: {params}\n"
+        );
+        let set = parse_set(Scope::User, "t.yaml", &text).unwrap_or_else(|e| panic!("{t}: {e}"));
+        let desugared = ["require_approval"];
+        assert_eq!(
+            matches!(set.rules[0].kind, RuleKind::Builtin(_)),
+            !desugared.contains(&t),
+            "{t}: Entzuckerung geändert – only_tightens (store.rs) prüfen"
+        );
+    }
+}
