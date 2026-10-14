@@ -28,7 +28,9 @@ fn invalid(ws: &Path, why: impl std::fmt::Display) -> SandboxError {
 }
 
 fn read_trimmed(p: &Path) -> std::io::Result<String> {
-    Ok(std::fs::read_to_string(p)?.trim_end_matches(['\n', '\r']).to_owned())
+    Ok(std::fs::read_to_string(p)?
+        .trim_end_matches(['\n', '\r'])
+        .to_owned())
 }
 
 impl GitLayout {
@@ -69,23 +71,33 @@ impl GitLayout {
             .parent()
             .ok_or_else(|| invalid(workspace, "gitdir ohne Elternverzeichnis"))?;
         if worktrees.file_name().and_then(|n| n.to_str()) != Some("worktrees") {
-            return Err(invalid(workspace, "gitdir liegt nicht unter `…/worktrees/`"));
+            return Err(invalid(
+                workspace,
+                "gitdir liegt nicht unter `…/worktrees/`",
+            ));
         }
         let common_dir = worktrees
             .parent()
             .ok_or_else(|| invalid(workspace, "worktrees ohne Elternverzeichnis"))?
             .to_path_buf();
-        let commondir = read_trimmed(&git_dir.join("commondir")).map_err(|e| invalid(workspace, e))?;
+        let commondir =
+            read_trimmed(&git_dir.join("commondir")).map_err(|e| invalid(workspace, e))?;
         let commondir = git_dir.join(commondir);
         if std::fs::canonicalize(&commondir).ok().as_deref() != Some(common_dir.as_path()) {
             return Err(invalid(workspace, "`commondir` zeigt nicht auf das Repo"));
         }
         let back = read_trimmed(&git_dir.join("gitdir")).map_err(|e| invalid(workspace, e))?;
         if std::fs::canonicalize(&back).ok().as_deref() != Some(dot.as_path()) {
-            return Err(invalid(workspace, "der Worktree-Eintrag verweist nicht zurück"));
+            return Err(invalid(
+                workspace,
+                "der Worktree-Eintrag verweist nicht zurück",
+            ));
         }
         if !common_dir.join("HEAD").is_file() || !common_dir.join("objects").is_dir() {
-            return Err(invalid(workspace, "gemeinsames Git-Verzeichnis unvollständig"));
+            return Err(invalid(
+                workspace,
+                "gemeinsames Git-Verzeichnis unvollständig",
+            ));
         }
         Ok(Some(Self {
             dot_git: dot,

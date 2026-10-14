@@ -42,9 +42,16 @@ fn normalize(raw: &str) -> String {
         Some(rest) => ("~", rest),
         None => ("", raw),
     };
-    let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty() && *p != ".").collect();
+    let parts: Vec<&str> = rest
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
     if parts.is_empty() {
-        return if prefix.is_empty() { "/".into() } else { "~".into() };
+        return if prefix.is_empty() {
+            "/".into()
+        } else {
+            "~".into()
+        };
     }
     format!("{prefix}/{}", parts.join("/"))
 }
@@ -102,7 +109,10 @@ pub(crate) fn lexical_forbidden(raw: &str, write: bool) -> Option<String> {
 pub(crate) fn check_pattern(field: &str, raw: &str) -> Result<(), SandboxError> {
     let seg = raw.strip_suffix('/').unwrap_or(raw);
     if seg.is_empty() || seg == "." || seg == ".." {
-        return Err(SandboxError::invalid(field, format!("ungültiges Muster `{raw}`")));
+        return Err(SandboxError::invalid(
+            field,
+            format!("ungültiges Muster `{raw}`"),
+        ));
     }
     if seg.contains('/') {
         return Err(SandboxError::invalid(
@@ -125,10 +135,7 @@ fn check_env_name(field: &str, name: &str, allow_prefix: bool) -> Result<(), San
     } else {
         name
     };
-    let valid = !name.is_empty()
-        && base
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let valid = !name.is_empty() && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !valid {
         return Err(SandboxError::invalid(
             field,
@@ -245,7 +252,10 @@ impl Forbidden {
             return Some("`/` ist als Grant verboten".into());
         }
         if let Some(r) = self.roots.iter().find(|r| p.starts_with(r)) {
-            return Some(format!("liegt in {}, das als Grant verboten ist", r.display()));
+            return Some(format!(
+                "liegt in {}, das als Grant verboten ist",
+                r.display()
+            ));
         }
         if p != self.home && self.home.starts_with(p) {
             return Some(format!(
@@ -253,9 +263,7 @@ impl Forbidden {
                 self.home.display()
             ));
         }
-        if write
-            && let Some(w) = self.write_protected.iter().find(|w| w.starts_with(p))
-        {
+        if write && let Some(w) = self.write_protected.iter().find(|w| w.starts_with(p)) {
             return Some(format!(
                 "würde {} beschreibbar machen, das als Schreib-Wurzel verboten ist",
                 w.display()

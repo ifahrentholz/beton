@@ -43,7 +43,11 @@ impl Env {
         ResolveCtx::new(stage, &self.ws, &self.home, &self.scratch)
     }
 
-    fn resolve(&self, yaml: &str, stage: Stage) -> Result<beton_sandbox::ResolvedPolicy, SandboxError> {
+    fn resolve(
+        &self,
+        yaml: &str,
+        stage: Stage,
+    ) -> Result<beton_sandbox::ResolvedPolicy, SandboxError> {
         let spec = SandboxSpec::from_yaml(yaml)?;
         resolve(ProviderId::Seatbelt, &spec, &self.ctx(stage))
     }
@@ -74,7 +78,10 @@ fn sbx_003_ac1_write_paths_home_is_rejected_when_loading() {
         ("read_paths: [/]\n", "read_paths[0]"),
         ("write_paths: [\"~/\"]\n", "write_paths[0]"),
         ("write_paths: [/opt, \"~/Library\"]\n", "write_paths[1]"),
-        ("write_paths: [\"~/Library/LaunchAgents\"]\n", "write_paths[0]"),
+        (
+            "write_paths: [\"~/Library/LaunchAgents\"]\n",
+            "write_paths[0]",
+        ),
         ("read_paths: [\"~/.beton\"]\n", "read_paths[0]"),
         ("read_paths: [\"~/.ssh/config\"]\n", "read_paths[0]"),
         ("read_paths: [/proc/self]\n", "read_paths[0]"),
@@ -110,7 +117,9 @@ fn sbx_003_ac1_ancestor_of_home_is_rejected_when_resolving() {
 fn sbx_003_ac2_symlink_into_ssh_is_path_escape() {
     let e = env();
     std::os::unix::fs::symlink(e.home.join(".ssh"), e.home.join("link")).unwrap();
-    let err = e.resolve("read_paths: [\"~/link\"]\n", Stage::Tools).unwrap_err();
+    let err = e
+        .resolve("read_paths: [\"~/link\"]\n", Stage::Tools)
+        .unwrap_err();
     match &err {
         SandboxError::PathEscape { path, message } => {
             assert_eq!(path, "read_paths[0]");
@@ -120,18 +129,24 @@ fn sbx_003_ac2_symlink_into_ssh_is_path_escape() {
     }
     // Auch über eine Kette von Symlinks und als Schreib-Grant.
     std::os::unix::fs::symlink(e.home.join("link"), e.home.join("link2")).unwrap();
-    let err = e.resolve("write_paths: [\"~/link2\"]\n", Stage::Harness).unwrap_err();
+    let err = e
+        .resolve("write_paths: [\"~/link2\"]\n", Stage::Harness)
+        .unwrap_err();
     assert_eq!(err.code(), "path_escape", "{err}");
     // Ein Symlink auf `/` oder auf das Home als Schreib-Wurzel ebenso.
     std::os::unix::fs::symlink("/", e.home.join("root")).unwrap();
     assert_eq!(
-        e.resolve("read_paths: [\"~/root\"]\n", Stage::Tools).unwrap_err().code(),
+        e.resolve("read_paths: [\"~/root\"]\n", Stage::Tools)
+            .unwrap_err()
+            .code(),
         "path_escape"
     );
     std::os::unix::fs::symlink(&e.home, e.ws.parent().unwrap().join("h")).unwrap();
     let raw = e.ws.parent().unwrap().join("h").display().to_string();
     assert_eq!(
-        e.resolve(&format!("write_paths: [\"{raw}\"]\n"), Stage::Tools).unwrap_err().code(),
+        e.resolve(&format!("write_paths: [\"{raw}\"]\n"), Stage::Tools)
+            .unwrap_err()
+            .code(),
         "path_escape"
     );
 }
@@ -169,11 +184,18 @@ fn sbx_003_ac3_dollar_home_is_not_expanded_and_rejected_as_relative() {
 fn sbx_003_missing_grants_are_not_granted_but_noted() {
     let e = env();
     let p = e
-        .resolve("read_paths: [\"~/.cargo/registry\", \"~/Documents\"]\n", Stage::Tools)
+        .resolve(
+            "read_paths: [\"~/.cargo/registry\", \"~/Documents\"]\n",
+            Stage::Tools,
+        )
         .unwrap();
     assert!(p.read_roots.contains(&e.home.join("Documents")));
     assert!(!p.read_roots.iter().any(|r| r.ends_with("registry")));
-    assert!(p.notes.iter().any(|n| n.contains(".cargo/registry")), "{:?}", p.notes);
+    assert!(
+        p.notes.iter().any(|n| n.contains(".cargo/registry")),
+        "{:?}",
+        p.notes
+    );
 }
 
 #[test]
@@ -190,7 +212,8 @@ fn sbx_003_workspace_and_scratch_are_write_roots_and_env_is_explicit() {
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v.to_owned()))
     .collect();
-    let spec = SandboxSpec::from_yaml("env: {passthrough: [RUST_LOG], set: {CI: \"1\"}}\n").unwrap();
+    let spec =
+        SandboxSpec::from_yaml("env: {passthrough: [RUST_LOG], set: {CI: \"1\"}}\n").unwrap();
     let p = resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap();
     assert!(p.write_roots.contains(&e.ws));
     assert!(p.write_roots.contains(&e.scratch));
@@ -229,10 +252,14 @@ fn sbx_003_layers_merge_grants_from_most_specific_and_union_masks() {
     )
     .unwrap();
     let project = SandboxSpec::from_yaml("masks: [\"*.pem\"]\nenv: {set: {B: \"2\"}}\n").unwrap();
-    let agent = SandboxSpec::from_yaml("read_paths: [\"~/.cargo/registry\"]\nbackend: none\n").unwrap();
+    let agent =
+        SandboxSpec::from_yaml("read_paths: [\"~/.cargo/registry\"]\nbackend: none\n").unwrap();
     let m = SandboxSpec::merged(&[&user, &project, &agent]);
     assert_eq!(m.read_paths, Some(vec!["~/.cargo/registry".to_owned()]));
-    assert_eq!(m.masks, Some(vec!["secrets/".to_owned(), "*.pem".to_owned()]));
+    assert_eq!(
+        m.masks,
+        Some(vec!["secrets/".to_owned(), "*.pem".to_owned()])
+    );
     let env = m.env.unwrap();
     assert_eq!(env.set["A"], "1");
     assert_eq!(env.set["B"], "2");
@@ -245,14 +272,20 @@ fn sbx_003_net_only_via_proxy_and_none_without_proxy() {
     let e = env();
     let mut ctx = e.ctx(Stage::Tools);
     let spec = SandboxSpec::default();
-    assert_eq!(resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap().net, NetMode::None);
+    assert_eq!(
+        resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap().net,
+        NetMode::None
+    );
     ctx.proxy = Some(ProxyEndpoint { port: 4711 });
     assert_eq!(
         resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap().net,
         NetMode::ProxyOnly { port: 4711 }
     );
     let off = SandboxSpec::from_yaml("allow_network: false\n").unwrap();
-    assert_eq!(resolve(ProviderId::Seatbelt, &off, &ctx).unwrap().net, NetMode::None);
+    assert_eq!(
+        resolve(ProviderId::Seatbelt, &off, &ctx).unwrap().net,
+        NetMode::None
+    );
 }
 
 fn git(dir: &Path, args: &[&str]) {
@@ -265,7 +298,11 @@ fn git(dir: &Path, args: &[&str]) {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[cfg(unix)]
@@ -275,32 +312,59 @@ fn sbx_003_git_worktree_layout_is_validated_in_both_directions() {
     let repo = e.ws.parent().unwrap().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q"]);
-    git(&repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "i"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "i",
+        ],
+    );
     let wt = e.ws.join("wt");
     git(&repo, &["worktree", "add", "-q", wt.to_str().unwrap()]);
-    let layout = GitLayout::discover(&wt.canonicalize().unwrap()).unwrap().unwrap();
+    let layout = GitLayout::discover(&wt.canonicalize().unwrap())
+        .unwrap()
+        .unwrap();
     assert!(layout.dot_git_is_file);
     assert_eq!(layout.common_dir, repo.canonicalize().unwrap().join(".git"));
     assert!(layout.git_dir.starts_with(&layout.common_dir));
     let roots = layout.write_roots();
     assert!(roots.contains(&layout.common_dir.join("objects")));
-    assert!(!roots.contains(&layout.common_dir), "das ganze .git ist keine Schreib-Wurzel");
+    assert!(
+        !roots.contains(&layout.common_dir),
+        "das ganze .git ist keine Schreib-Wurzel"
+    );
 
     // Ein gefälschtes `.git` (zeigt auf ein fremdes Verzeichnis) gibt nichts frei.
     let fake = e.ws.join("fake");
     std::fs::create_dir_all(&fake).unwrap();
     std::fs::write(fake.join(".git"), format!("gitdir: {}\n", e.home.display())).unwrap();
-    assert_eq!(GitLayout::discover(&fake).unwrap_err().code(), "invalid_spec");
+    assert_eq!(
+        GitLayout::discover(&fake).unwrap_err().code(),
+        "invalid_spec"
+    );
     let other = e.ws.join("other");
     std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(other.join(".git"), format!("gitdir: {}\n", layout.git_dir.display())).unwrap();
+    std::fs::write(
+        other.join(".git"),
+        format!("gitdir: {}\n", layout.git_dir.display()),
+    )
+    .unwrap();
     assert_eq!(
         GitLayout::discover(&other).unwrap_err().code(),
         "invalid_spec",
         "Rückverweis fehlt"
     );
     // Ein normales Repo: `.git` liegt im Workspace, keine zusätzlichen Wurzeln.
-    let plain = GitLayout::discover(&repo.canonicalize().unwrap()).unwrap().unwrap();
+    let plain = GitLayout::discover(&repo.canonicalize().unwrap())
+        .unwrap()
+        .unwrap();
     assert!(!plain.dot_git_is_file);
     assert!(plain.write_roots().is_empty());
 }
@@ -311,10 +375,23 @@ fn sbx_004_default_masks_cover_credential_paths_in_both_stages() {
     for stage in [Stage::Harness, Stage::Tools] {
         let p = e.resolve("read_paths: [\"~\"]\n", stage).unwrap();
         let masks = mask_paths(&p);
-        for rel in [".ssh", ".aws", ".config/gh", ".netrc", ".gnupg", ".beton", ".docker/config.json", "Library/Keychains"] {
+        for rel in [
+            ".ssh",
+            ".aws",
+            ".config/gh",
+            ".netrc",
+            ".gnupg",
+            ".beton",
+            ".docker/config.json",
+            "Library/Keychains",
+        ] {
             assert!(masks.contains(&e.home.join(rel)), "{stage:?}: {rel} fehlt");
         }
-        assert!(p.masks.iter().any(|m| matches!(m, Mask::Pattern { glob, .. } if glob == "credentials*")));
+        assert!(
+            p.masks
+                .iter()
+                .any(|m| matches!(m, Mask::Pattern { glob, .. } if glob == "credentials*"))
+        );
         // Dotfiles direkt im Grant `~` sind maskiert.
         assert!(p.hidden.iter().any(|h| h.root == e.home));
         assert!(p.read_roots.contains(&e.home));
@@ -329,15 +406,27 @@ fn sbx_004_ac2_workspace_masks_default_to_env_files_and_can_be_cleared() {
         .masks
         .iter()
         .filter_map(|m| match m {
-            Mask::Pattern { root, glob, any_depth: true, .. } if *root == e.ws => Some(glob.as_str()),
+            Mask::Pattern {
+                root,
+                glob,
+                any_depth: true,
+                ..
+            } if *root == e.ws => Some(glob.as_str()),
             _ => None,
         })
         .collect();
     assert_eq!(globs, [".env", ".env.*"]);
     // Der Workspace selbst ist keine Grant-Wurzel: seine Dotfiles bleiben sichtbar.
     assert!(!p.hidden.iter().any(|h| h.root == e.ws));
-    let open = e.resolve("masks: []\nallow_hidden: [.env]\n", Stage::Tools).unwrap();
-    assert!(!open.masks.iter().any(|m| matches!(m, Mask::Pattern { root, .. } if *root == e.ws)));
+    let open = e
+        .resolve("masks: []\nallow_hidden: [.env]\n", Stage::Tools)
+        .unwrap();
+    assert!(
+        !open
+            .masks
+            .iter()
+            .any(|m| matches!(m, Mask::Pattern { root, .. } if *root == e.ws))
+    );
 }
 
 #[test]
@@ -361,7 +450,11 @@ fn sbx_004_ac3_stage_two_masks_all_adapter_paths_stage_one_grants_its_own() {
     ctx.adapters = beton_sandbox::masks::builtin_harness_grants();
     let harness = resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap();
     assert!(!mask_paths(&harness).contains(&e.home.join(".codex/auth.json")));
-    assert!(harness.read_roots.contains(&e.home.join(".codex/auth.json")));
+    assert!(
+        harness
+            .read_roots
+            .contains(&e.home.join(".codex/auth.json"))
+    );
     assert!(harness.write_roots.contains(&e.home.join(".codex")));
 }
 
@@ -389,7 +482,9 @@ fn sbx_004_keychain_only_in_stage_one_with_declared_need() {
 fn sbx_004_grant_inside_a_mask_is_rejected() {
     let e = env();
     std::fs::create_dir_all(e.home.join(".aws/sso")).unwrap();
-    let err = e.resolve("read_paths: [\"~/.aws/sso\"]\n", Stage::Tools).unwrap_err();
+    let err = e
+        .resolve("read_paths: [\"~/.aws/sso\"]\n", Stage::Tools)
+        .unwrap_err();
     assert_eq!(err.code(), "path_escape", "{err}");
     let err = e.resolve("masks: [\"a/b\"]\n", Stage::Tools).unwrap_err();
     assert_eq!(err.code(), "invalid_spec", "Muster mit `/` sind umgehbar");

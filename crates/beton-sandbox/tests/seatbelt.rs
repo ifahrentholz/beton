@@ -86,19 +86,29 @@ impl Fx {
 fn seatbelt() -> Arc<dyn SandboxProvider> {
     let p = Registry::platform().get(ProviderId::Seatbelt).unwrap();
     let probe = p.probe();
-    assert!(probe.available, "Seatbelt muss auf macOS verfügbar sein: {probe:?}");
+    assert!(
+        probe.available,
+        "Seatbelt muss auf macOS verfügbar sein: {probe:?}"
+    );
     p
 }
 
 #[derive(Debug)]
-#[allow(dead_code, reason = "stderr erscheint in den Fehlermeldungen der Asserts")]
+#[allow(
+    dead_code,
+    reason = "stderr erscheint in den Fehlermeldungen der Asserts"
+)]
 struct Out {
     ok: bool,
     stdout: String,
     stderr: String,
 }
 
-async fn run_with(provider: &dyn SandboxProvider, policy: &ResolvedPolicy, cmd: CommandSpec) -> Out {
+async fn run_with(
+    provider: &dyn SandboxProvider,
+    policy: &ResolvedPolicy,
+    cmd: CommandSpec,
+) -> Out {
     let child = provider
         .spawn(policy, cmd.stdio(Stdio::Null, Stdio::Piped, Stdio::Piped))
         .unwrap();
@@ -115,7 +125,9 @@ async fn sh(policy: &ResolvedPolicy, script: &str) -> Out {
     run_with(
         seatbelt().as_ref(),
         policy,
-        CommandSpec::new("/bin/sh").args(["-c", script]).cwd(&policy.workspace),
+        CommandSpec::new("/bin/sh")
+            .args(["-c", script])
+            .cwd(&policy.workspace),
     )
     .await
 }
@@ -137,14 +149,27 @@ async fn sbx_004_ac1_home_grant_masks_ssh_key_in_both_stages() {
     let fx = fx();
     let attack = "cat \"$HOME/.ssh/id_ed25519\"";
     let control_out = control(&fx, attack).await;
-    assert!(control_out.ok && control_out.stdout.contains(FIXTURE_SSH), "Kontrollgruppe: {control_out:?}");
+    assert!(
+        control_out.ok && control_out.stdout.contains(FIXTURE_SSH),
+        "Kontrollgruppe: {control_out:?}"
+    );
     for stage in [Stage::Harness, Stage::Tools] {
         let policy = fx.policy("read_paths: [\"~\"]\n", stage);
         let out = sh(&policy, attack).await;
         assert!(!out.ok, "{stage:?}: {out:?}");
-        assert!(!out.stdout.contains(FIXTURE_SSH), "{stage:?}: Secret gelesen");
-        let out = sh(&policy, "ls \"$HOME/Documents\" && cat \"$HOME/Documents/notiz.txt\"").await;
-        assert!(out.ok && out.stdout.contains("notiz.txt"), "{stage:?}: {out:?}");
+        assert!(
+            !out.stdout.contains(FIXTURE_SSH),
+            "{stage:?}: Secret gelesen"
+        );
+        let out = sh(
+            &policy,
+            "ls \"$HOME/Documents\" && cat \"$HOME/Documents/notiz.txt\"",
+        )
+        .await;
+        assert!(
+            out.ok && out.stdout.contains("notiz.txt"),
+            "{stage:?}: {out:?}"
+        );
         // Auch Listing, Kopieren und Dotfiles direkt im Grant scheitern.
         for script in [
             "ls \"$HOME/.ssh\"",
@@ -154,7 +179,10 @@ async fn sbx_004_ac1_home_grant_masks_ssh_key_in_both_stages() {
             "cat \"$HOME/.zshrc\"",
         ] {
             let out = sh(&policy, script).await;
-            assert!(!out.ok && !out.stdout.contains("FIXTURE"), "{stage:?}: {script}: {out:?}");
+            assert!(
+                !out.ok && !out.stdout.contains("FIXTURE"),
+                "{stage:?}: {script}: {out:?}"
+            );
         }
     }
 }
@@ -163,7 +191,10 @@ async fn sbx_004_ac1_home_grant_masks_ssh_key_in_both_stages() {
 async fn sbx_004_allow_hidden_unmasks_only_the_named_dotfile() {
     let fx = fx();
     write(&fx.home.join(".cargo/config.toml"), "[build]\n");
-    let policy = fx.policy("read_paths: [\"~\"]\nallow_hidden: [.cargo]\n", Stage::Tools);
+    let policy = fx.policy(
+        "read_paths: [\"~\"]\nallow_hidden: [.cargo]\n",
+        Stage::Tools,
+    );
     let out = sh(&policy, "cat \"$HOME/.cargo/config.toml\"").await;
     assert!(out.ok, "{out:?}");
     let out = sh(&policy, "cat \"$HOME/.zshrc\"").await;
@@ -200,7 +231,10 @@ async fn sbx_004_ac3_codex_auth_readable_only_in_codex_stage_one() {
     let out = sh(&tools, attack).await;
     assert!(!out.ok && !out.stdout.contains(FIXTURE_CODEX), "{out:?}");
     // Auch mit `read_paths: ["~"]` und `allow_hidden: [.codex]` bleibt es in Stufe 2 maskiert.
-    let tools = fx.policy("read_paths: [\"~\"]\nallow_hidden: [.codex]\n", Stage::Tools);
+    let tools = fx.policy(
+        "read_paths: [\"~\"]\nallow_hidden: [.codex]\n",
+        Stage::Tools,
+    );
     let out = sh(&tools, attack).await;
     assert!(!out.ok && !out.stdout.contains(FIXTURE_CODEX), "{out:?}");
 
@@ -218,7 +252,10 @@ async fn sbx_004_ac3_codex_auth_readable_only_in_codex_stage_one() {
 async fn sbx_004_ac4_masks_survive_rename_hardlink_and_symlink_attempts() {
     let fx = fx();
     // Schreib-Wurzel, die eine Default-Maske enthält.
-    let policy = fx.policy("read_paths: [\"~\"]\nwrite_paths: [\"~/.config\"]\nallow_hidden: [.config]\n", Stage::Tools);
+    let policy = fx.policy(
+        "read_paths: [\"~\"]\nwrite_paths: [\"~/.config\"]\nallow_hidden: [.config]\n",
+        Stage::Tools,
+    );
     let attacks = [
         // Maskiertes Verzeichnis umbenennen bzw. das Elternverzeichnis.
         "mv \"$HOME/.config/gh\" \"$HOME/.config/gh2\"; cat \"$HOME/.config/gh2/hosts.yml\"",
@@ -234,7 +271,10 @@ async fn sbx_004_ac4_masks_survive_rename_hardlink_and_symlink_attempts() {
         let out = sh(&policy, attack).await;
         assert!(!out.stdout.contains("FIXTURE"), "{attack}: {out:?}");
     }
-    assert!(fx.home.join(".config/gh/hosts.yml").is_file(), "Maske wurde verschoben");
+    assert!(
+        fx.home.join(".config/gh/hosts.yml").is_file(),
+        "Maske wurde verschoben"
+    );
     assert!(!fx.home.join(".config2").exists());
 
     // Eigene Maske tief im Workspace: Umbenennen der Elternverzeichnisse hilft nicht.
@@ -251,7 +291,11 @@ async fn sbx_004_ac4_masks_survive_rename_hardlink_and_symlink_attempts() {
         assert!(!out.stdout.contains("FIXTURE"), "{attack}: {out:?}");
     }
     // Normale Arbeit in denselben Verzeichnissen geht weiter.
-    let out = sh(&policy, "echo ok > a/b/neu.txt && cat a/b/neu.txt && rm a/b/neu.txt").await;
+    let out = sh(
+        &policy,
+        "echo ok > a/b/neu.txt && cat a/b/neu.txt && rm a/b/neu.txt",
+    )
+    .await;
     assert!(out.ok && out.stdout.contains("ok"), "{out:?}");
     // Kontrollgruppe: ohne Sandbox gelingt der Umweg.
     let c = control(&fx, "mv a z && cat z/b/geheim.txt").await;
@@ -261,8 +305,13 @@ async fn sbx_004_ac4_masks_survive_rename_hardlink_and_symlink_attempts() {
 #[tokio::test]
 async fn sbx_007_ac4_launch_agents_and_shell_rc_are_not_writable_in_both_stages() {
     let fx = fx();
-    let attack = "echo pwned > \"$HOME/Library/LaunchAgents/x.plist\"; echo pwned >> \"$HOME/.zshrc\"";
-    let c = control(&fx, "echo ok > \"$HOME/Library/LaunchAgents/c.plist\" && echo ok >> \"$HOME/.zshrc\"").await;
+    let attack =
+        "echo pwned > \"$HOME/Library/LaunchAgents/x.plist\"; echo pwned >> \"$HOME/.zshrc\"";
+    let c = control(
+        &fx,
+        "echo ok > \"$HOME/Library/LaunchAgents/c.plist\" && echo ok >> \"$HOME/.zshrc\"",
+    )
+    .await;
     assert!(c.ok, "{c:?}");
     std::fs::remove_file(fx.home.join("Library/LaunchAgents/c.plist")).unwrap();
     write(&fx.home.join(".zshrc"), "# fixture\n");
@@ -275,7 +324,10 @@ async fn sbx_007_ac4_launch_agents_and_shell_rc_are_not_writable_in_both_stages(
         let out = sh(&policy, attack).await;
         assert!(!out.ok, "{:?}: {out:?}", policy.stage);
         assert!(!fx.home.join("Library/LaunchAgents/x.plist").exists());
-        assert_eq!(std::fs::read_to_string(fx.home.join(".zshrc")).unwrap(), "# fixture\n");
+        assert_eq!(
+            std::fs::read_to_string(fx.home.join(".zshrc")).unwrap(),
+            "# fixture\n"
+        );
     }
 }
 
@@ -284,9 +336,15 @@ async fn sbx_007_writes_outside_the_workspace_fail() {
     let fx = fx();
     let policy = fx.policy("read_paths: [\"~\"]\n", Stage::Tools);
     for (attack, target) in [
-        ("echo x > \"$HOME/Documents/neu.txt\"", fx.home.join("Documents/neu.txt")),
+        (
+            "echo x > \"$HOME/Documents/neu.txt\"",
+            fx.home.join("Documents/neu.txt"),
+        ),
         ("echo x > ../draussen.txt", fx.root.join("draussen.txt")),
-        ("echo x > /private/tmp/beton-sbx-escape.txt", PathBuf::from("/private/tmp/beton-sbx-escape.txt")),
+        (
+            "echo x > /private/tmp/beton-sbx-escape.txt",
+            PathBuf::from("/private/tmp/beton-sbx-escape.txt"),
+        ),
     ] {
         let out = sh(&policy, attack).await;
         assert!(!out.ok, "{attack}: {out:?}");
@@ -295,7 +353,11 @@ async fn sbx_007_writes_outside_the_workspace_fail() {
     let out = sh(&policy, "echo x > /etc/beton-test").await;
     assert!(!out.ok);
     // Scratch und Workspace sind beschreibbar; `TMPDIR` zeigt auf den Scratch.
-    let out = sh(&policy, "echo x > ws.txt && echo y > \"$TMPDIR/t\" && cat \"$TMPDIR/t\"").await;
+    let out = sh(
+        &policy,
+        "echo x > ws.txt && echo y > \"$TMPDIR/t\" && cat \"$TMPDIR/t\"",
+    )
+    .await;
     assert!(out.ok && out.stdout.contains('y'), "{out:?}");
     assert!(fx.scratch.join("t").is_file());
 }
@@ -306,7 +368,10 @@ async fn sbx_007_signals_only_reach_the_own_tree() {
     let policy = fx.policy("{}\n", Stage::Tools);
     let me = std::process::id();
     let out = sh(&policy, &format!("kill -0 {me}")).await;
-    assert!(!out.ok, "Signal an den Runner (Elternprozess) muss scheitern: {out:?}");
+    assert!(
+        !out.ok,
+        "Signal an den Runner (Elternprozess) muss scheitern: {out:?}"
+    );
     let out = sh(&policy, "sleep 30 & kill $! && wait $!; echo eigenes-kind").await;
     assert!(out.stdout.contains("eigenes-kind"), "{out:?}");
     let c = control(&fx, &format!("kill -0 {me}")).await;
@@ -349,7 +414,11 @@ fn git_host(git: &Path, dir: &Path, args: &[&str]) {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 const GIT_ENV: &str = "export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
@@ -360,13 +429,33 @@ async fn sbx_003_ac4_git_hooks_are_read_only_but_commits_work() {
     let fx = fx();
     let (git, prefix) = git_binary();
     git_host(&git, &fx.ws, &["init", "-q"]);
-    git_host(&git, &fx.ws, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git_host(
+        &git,
+        &fx.ws,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
     let mut ctx = fx.ctx(Stage::Tools);
     ctx.git = GitLayout::discover(&fx.ws).unwrap();
     let yaml = format!("read_paths: [\"{}\"]\n", prefix.display());
     let policy = fx.policy_with(&yaml, ctx);
     let g = git.display();
-    let out = sh(&policy, &format!("{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m c1 && {g} log --oneline")).await;
+    let out = sh(
+        &policy,
+        &format!(
+            "{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m c1 && {g} log --oneline"
+        ),
+    )
+    .await;
     assert!(out.ok && out.stdout.contains("c1"), "{out:?}");
     for attack in [
         "echo 'echo pwned' > .git/hooks/pre-commit",
@@ -391,13 +480,32 @@ async fn sbx_003_ac4_commits_in_a_worktree_reach_the_object_db_but_not_hooks() {
     let repo = fx.root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git_host(&git, &repo, &["init", "-q"]);
-    git_host(&git, &repo, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git_host(
+        &git,
+        &repo,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
     let wt = fx.ws.join("wt");
-    git_host(&git, &repo, &["worktree", "add", "-q", "-b", "agent", wt.to_str().unwrap()]);
+    git_host(
+        &git,
+        &repo,
+        &["worktree", "add", "-q", "-b", "agent", wt.to_str().unwrap()],
+    );
     let wt = wt.canonicalize().unwrap();
     let mut ctx = ResolveCtx::new(Stage::Tools, &wt, &fx.home, &fx.scratch);
     ctx.git = GitLayout::discover(&wt).unwrap();
-    let spec = SandboxSpec::from_yaml(&format!("read_paths: [\"{}\"]\n", prefix.display())).unwrap();
+    let spec =
+        SandboxSpec::from_yaml(&format!("read_paths: [\"{}\"]\n", prefix.display())).unwrap();
     let policy = seatbelt().resolve(&spec, &ctx).unwrap();
     let g = git.display();
     let out = sh(&policy, &format!("{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m im-worktree && {g} log --oneline -1")).await;
@@ -413,7 +521,11 @@ async fn sbx_003_ac4_commits_in_a_worktree_reach_the_object_db_but_not_hooks() {
         assert!(!out.ok, "{attack}: {out:?}");
     }
     assert!(!repo.join("main.txt").exists());
-    assert!(std::fs::read_to_string(wt.join(".git")).unwrap().starts_with("gitdir: "));
+    assert!(
+        std::fs::read_to_string(wt.join(".git"))
+            .unwrap()
+            .starts_with("gitdir: ")
+    );
 }
 
 /// Lokaler TLS-Upstream, der auf jeden Request mit `ok` antwortet.
@@ -430,13 +542,16 @@ impl Drop for Upstream {
 }
 
 async fn tls_upstream() -> Upstream {
-    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, PKCS_ECDSA_P256_SHA256};
+    use rcgen::{
+        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, PKCS_ECDSA_P256_SHA256,
+    };
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
     let mut ca = CertificateParams::default();
-    ca.distinguished_name.push(DnType::CommonName, "beton sandbox test upstream CA");
+    ca.distinguished_name
+        .push(DnType::CommonName, "beton sandbox test upstream CA");
     ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     let ca_cert = ca.self_signed(&ca_key).unwrap();
     let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
@@ -444,15 +559,17 @@ async fn tls_upstream() -> Upstream {
         .unwrap()
         .signed_by(&key, &Issuer::from_params(&ca, &ca_key))
         .unwrap();
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.der().clone(), ca_cert.der().clone()],
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
-        )
-        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![leaf.der().clone(), ca_cert.der().clone()],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+    )
+    .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -460,7 +577,9 @@ async fn tls_upstream() -> Upstream {
         while let Ok((tcp, _)) = listener.accept().await {
             let acceptor = acceptor.clone();
             tokio::spawn(async move {
-                let Ok(mut tls) = acceptor.accept(tcp).await else { return };
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 1024];
                 while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -502,7 +621,8 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
         .start(beton_proxy::InstanceSpec {
             label: "sbx-test/tools".into(),
             rules: beton_proxy::RuleSet::compile(&[format!("GET 127.0.0.1:{port}/**")]).unwrap(),
-            allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")]).unwrap(),
+            allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")])
+                .unwrap(),
         })
         .await
         .unwrap();
@@ -512,7 +632,9 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
     std::fs::copy(&upstream_ca, fx.scratch.join("upstream-ca.pem")).unwrap();
 
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.proxy = Some(ProxyEndpoint { port: instance.addr().port() });
+    ctx.proxy = Some(ProxyEndpoint {
+        port: instance.addr().port(),
+    });
     let policy = fx.policy_with("egress_rules: [\"GET 127.0.0.1/**\"]\n", ctx);
     let url = format!("https://127.0.0.1:{port}/ok");
     let run = |script: String| {
@@ -527,7 +649,14 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
         }
     };
     // Kontrollgruppe: Der Upstream ist ohne Sandbox direkt erreichbar.
-    let c = control(&fx, &format!("curl -sS --max-time 10 --cacert {} {url}", upstream_ca.display())).await;
+    let c = control(
+        &fx,
+        &format!(
+            "curl -sS --max-time 10 --cacert {} {url}",
+            upstream_ca.display()
+        ),
+    )
+    .await;
     assert!(c.ok && c.stdout.contains("upstream"), "{c:?}");
     // Ohne Proxy-Variable: Verbindungsfehler (Exit 7), auch mit der richtigen CA.
     let out = run(format!(
@@ -535,17 +664,29 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
     ))
     .await;
     assert!(!out.ok && !out.stdout.contains("upstream"), "{out:?}");
-    let out = run(format!("curl -sS --noproxy '*' --max-time 10 --cacert \"$TMPDIR/upstream-ca.pem\" {url}")).await;
+    let out = run(format!(
+        "curl -sS --noproxy '*' --max-time 10 --cacert \"$TMPDIR/upstream-ca.pem\" {url}"
+    ))
+    .await;
     assert!(!out.ok, "{out:?}");
     // Mit Proxy und passender Regel gelingt es (TLS terminiert der Proxy mit der beton-CA).
-    let out = run(format!("curl -sS --max-time 10 --cacert \"$TMPDIR/beton-ca.pem\" {url}")).await;
+    let out = run(format!(
+        "curl -sS --max-time 10 --cacert \"$TMPDIR/beton-ca.pem\" {url}"
+    ))
+    .await;
     assert!(out.ok && out.stdout.contains("upstream"), "{out:?}");
     // Ohne passende Regel lehnt der Proxy ab.
-    let out = run(format!("curl -sS -f --max-time 10 --cacert \"$TMPDIR/beton-ca.pem\" -X POST {url}")).await;
+    let out = run(format!(
+        "curl -sS -f --max-time 10 --cacert \"$TMPDIR/beton-ca.pem\" -X POST {url}"
+    ))
+    .await;
     assert!(!out.ok, "{out:?}");
     // Direktverbindung an eine Nicht-Loopback-Adresse (TEST-NET-1, kein öffentlicher Host).
     let out = run("nc -z -w 3 192.0.2.1 443".into()).await;
-    assert!(!out.ok, "Direktverbindung an eine Nicht-Loopback-Adresse: {out:?}");
+    assert!(
+        !out.ok,
+        "Direktverbindung an eine Nicht-Loopback-Adresse: {out:?}"
+    );
 }
 
 #[tokio::test]
@@ -585,7 +726,9 @@ async fn sbx_007_ac5_other_localhost_ports_are_unreachable() {
 /// berührt kein Test den Keychain eines Entwicklers. In der CI fehlt er nie.
 fn test_keychain() -> Option<PathBuf> {
     match std::env::var("BETON_TEST_KEYCHAIN").as_deref() {
-        Ok("1") => Some(PathBuf::from(std::env::var("BETON_TEST_KEYCHAIN_PATH").expect("BETON_TEST_KEYCHAIN_PATH"))),
+        Ok("1") => Some(PathBuf::from(
+            std::env::var("BETON_TEST_KEYCHAIN_PATH").expect("BETON_TEST_KEYCHAIN_PATH"),
+        )),
         _ => {
             assert!(
                 std::env::var_os("CI").is_none(),
@@ -604,39 +747,68 @@ async fn sbx_007_ac1_keychain_only_in_stage_one_with_declared_need() {
     let mut tools_ctx = fx.ctx(Stage::Tools);
     tools_ctx.harness = beton_sandbox::masks::harness_grants("claude");
     let tools = fx.policy_with("{}\n", tools_ctx);
-    let text = beton_sandbox::seatbelt::profile::render(&tools).unwrap().text;
+    let text = beton_sandbox::seatbelt::profile::render(&tools)
+        .unwrap()
+        .text;
     assert!(!text.contains("SecurityServer") && !text.contains("securityd"));
     let Some(kc) = test_keychain() else { return };
     let kc_s = kc.display().to_string();
     let add = std::process::Command::new("/usr/bin/security")
-        .args(["add-generic-password", "-U", "-s", "Claude Code-credentials", "-a", "beton-test", "-w", "FIXTURE-KEYCHAIN", &kc_s])
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            "Claude Code-credentials",
+            "-a",
+            "beton-test",
+            "-w",
+            "FIXTURE-KEYCHAIN",
+            &kc_s,
+        ])
         .output()
         .unwrap();
-    assert!(add.status.success(), "{}", String::from_utf8_lossy(&add.stderr));
-    let query = format!("/usr/bin/security find-generic-password -s 'Claude Code-credentials' -w '{kc_s}'");
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    let query =
+        format!("/usr/bin/security find-generic-password -s 'Claude Code-credentials' -w '{kc_s}'");
     let c = control(&fx, &query).await;
-    assert!(c.ok && c.stdout.contains("FIXTURE-KEYCHAIN"), "Kontrollgruppe: {c:?}");
+    assert!(
+        c.ok && c.stdout.contains("FIXTURE-KEYCHAIN"),
+        "Kontrollgruppe: {c:?}"
+    );
     let grant = format!("read_paths: [\"{}\"]\n", kc.parent().unwrap().display());
     let mut tools_ctx = fx.ctx(Stage::Tools);
     tools_ctx.harness = beton_sandbox::masks::harness_grants("claude");
     let tools = fx.policy_with(&grant, tools_ctx);
     let out = sh(&tools, &query).await;
-    assert!(!out.ok && !out.stdout.contains("FIXTURE-KEYCHAIN"), "Stufe 2: {out:?}");
+    assert!(
+        !out.ok && !out.stdout.contains("FIXTURE-KEYCHAIN"),
+        "Stufe 2: {out:?}"
+    );
     let mut harness_ctx = fx.ctx(Stage::Harness);
     harness_ctx.harness = beton_sandbox::masks::harness_grants("claude");
     let harness = fx.policy_with(&grant, harness_ctx);
     let out = sh(&harness, &query).await;
-    assert!(out.ok && out.stdout.contains("FIXTURE-KEYCHAIN"), "Stufe 1: {out:?}");
+    assert!(
+        out.ok && out.stdout.contains("FIXTURE-KEYCHAIN"),
+        "Stufe 1: {out:?}"
+    );
 }
 
 #[tokio::test]
 async fn sbx_007_environment_is_not_inherited() {
     let fx = fx();
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.host_env = [("AWS_SECRET_ACCESS_KEY", "FIXTURE-AWS-ENV"), ("PATH", "/usr/bin:/bin")]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect();
+    ctx.host_env = [
+        ("AWS_SECRET_ACCESS_KEY", "FIXTURE-AWS-ENV"),
+        ("PATH", "/usr/bin:/bin"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
     let policy = fx.policy_with("{}\n", ctx);
     // Auch ein Aufrufer kann gesperrte Variablen nicht durchreichen.
     let cmd = CommandSpec::new("/usr/bin/env")
@@ -646,7 +818,11 @@ async fn sbx_007_environment_is_not_inherited() {
     let out = run_with(seatbelt().as_ref(), &policy, cmd).await;
     assert!(out.ok, "{out:?}");
     assert!(!out.stdout.contains("FIXTURE-AWS-ENV"));
-    assert!(!out.stdout.contains("DYLD_") && !out.stdout.contains("SSH_AUTH_SOCK"), "{}", out.stdout);
+    assert!(
+        !out.stdout.contains("DYLD_") && !out.stdout.contains("SSH_AUTH_SOCK"),
+        "{}",
+        out.stdout
+    );
     assert!(out.stdout.contains("BETON_STAGE=tools"));
 }
 

@@ -6,9 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Eine vom Backend erzwingbare Eigenschaft.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cap {
     /// Lesen nur aus freigegebenen Wurzeln.
@@ -67,9 +65,16 @@ pub type CapSet = BTreeSet<Cap>;
 /// Die Capabilities, die eine Sandbox standardmäßig erzwingen muss. `syscall` und `resources`
 /// sind (noch) nicht Pflicht: Seatbelt filtert keine Syscalls, Limits folgen mit SBX-013.
 pub fn required_default() -> CapSet {
-    [Cap::FsRead, Cap::FsWrite, Cap::Masks, Cap::Net, Cap::Env, Cap::Proc]
-        .into_iter()
-        .collect()
+    [
+        Cap::FsRead,
+        Cap::FsWrite,
+        Cap::Masks,
+        Cap::Net,
+        Cap::Env,
+        Cap::Proc,
+    ]
+    .into_iter()
+    .collect()
 }
 
 /// Alle Capabilities.

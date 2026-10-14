@@ -61,9 +61,18 @@ fn sbx_007_template_is_versioned_deny_default() {
     assert!(TEMPLATE.starts_with("(version 1)"));
     assert!(TEMPLATE.contains("\n(deny default)\n"));
     // Kein DNS-Dienst, kein Keychain im festen Teil.
-    for forbidden in ["dnssd", "mDNSResponder", "SecurityServer", "securityd", "network-outbound", "(allow default)"] {
+    for forbidden in [
+        "dnssd",
+        "mDNSResponder",
+        "SecurityServer",
+        "securityd",
+        "network-outbound",
+        "(allow default)",
+    ] {
         assert!(
-            !template_lines().iter().any(|l| !l.trim_start().starts_with(";;") && l.contains(forbidden)),
+            !template_lines()
+                .iter()
+                .any(|l| !l.trim_start().starts_with(";;") && l.contains(forbidden)),
             "{forbidden} im Template"
         );
     }
@@ -83,8 +92,15 @@ fn sbx_007_generated_lines_only_reference_parameters() {
         assert!(key.is_match(line), "Zeile ohne Parameter: {line}");
     }
     for (k, _) in &p.params {
-        assert!(k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'), "{k}");
-        assert!(p.text.contains(&format!("(param \"{k}\")")), "{k} unbenutzt");
+        assert!(
+            k.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+            "{k}"
+        );
+        assert!(
+            p.text.contains(&format!("(param \"{k}\")")),
+            "{k} unbenutzt"
+        );
     }
     assert!(p.params.iter().any(|(_, v)| v == "4711"));
 }
@@ -94,9 +110,19 @@ fn sbx_007_masks_come_after_grants_and_stage_two_has_no_keychain() {
     let mut policy = policy_for("/w");
     policy.keychain = true; // Stufe 2 ignoriert das immer.
     let p = render(&policy).unwrap();
-    let pos = |needle: &str| p.text.find(needle).unwrap_or_else(|| panic!("{needle} fehlt"));
+    let pos = |needle: &str| {
+        p.text
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} fehlt"))
+    };
     let write = p.params.iter().find(|(_, v)| v == "/w").unwrap().0.clone();
-    let mask = p.params.iter().find(|(_, v)| v == "/w/geheim").unwrap().0.clone();
+    let mask = p
+        .params
+        .iter()
+        .find(|(_, v)| v == "/w/geheim")
+        .unwrap()
+        .0
+        .clone();
     assert!(pos(&format!("(param \"{write}\")")) < pos(&format!("(param \"{mask}\")")));
     assert!(!p.text.contains("SecurityServer"));
     policy.stage = Stage::Harness;
@@ -117,10 +143,15 @@ fn sbx_007_no_network_rule_without_proxy() {
 #[test]
 fn sbx_007_oversized_profile_is_rejected() {
     let mut policy = policy_for("/w");
-    policy.read_roots = (0..5000).map(|i| PathBuf::from(format!("/w/{i:0>60}"))).collect();
+    policy.read_roots = (0..5000)
+        .map(|i| PathBuf::from(format!("/w/{i:0>60}")))
+        .collect();
     let err = render(&policy).unwrap_err();
     assert_eq!(err.code(), "invalid_spec");
-    assert!(err.to_string().contains(&MAX_PROFILE_BYTES.to_string()), "{err}");
+    assert!(
+        err.to_string().contains(&MAX_PROFILE_BYTES.to_string()),
+        "{err}"
+    );
 }
 
 #[test]

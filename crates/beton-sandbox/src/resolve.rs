@@ -211,7 +211,9 @@ fn grant(
     let canon = match std::fs::canonicalize(&lexical) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            notes.push(format!("{field}: `{raw}` existiert nicht und wird nicht freigegeben"));
+            notes.push(format!(
+                "{field}: `{raw}` existiert nicht und wird nicht freigegeben"
+            ));
             return Ok(None);
         }
         Err(e) => {
@@ -227,11 +229,14 @@ fn grant(
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        let meta = std::fs::metadata(&canon).map_err(|e| SandboxError::invalid(field, e.to_string()))?;
+        let meta =
+            std::fs::metadata(&canon).map_err(|e| SandboxError::invalid(field, e.to_string()))?;
         if meta.is_file() && meta.nlink() > 1 {
             return Err(SandboxError::escape(
                 field,
-                format!("`{raw}` ist ein Hardlink; Dateien mit mehreren Links werden nicht freigegeben"),
+                format!(
+                    "`{raw}` ist ein Hardlink; Dateien mit mehreren Links werden nicht freigegeben"
+                ),
             ));
         }
     }
@@ -241,7 +246,10 @@ fn grant(
 /// Ein absoluter Masken-Eintrag (`~/…`, `/…`, Muster im letzten Segment).
 fn absolute_mask(raw: &str, home: &Path, source: &str, out: &mut Vec<Mask>) {
     let path = expand(raw, home);
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     if name.contains(['*', '?']) {
         let Some(parent) = path.parent() else { return };
         let mut parents = vec![parent.to_path_buf()];
@@ -303,9 +311,8 @@ pub fn resolve(
             format!("{} {reason}", workspace.display()),
         ));
     }
-    let scratch = std::fs::canonicalize(&ctx.scratch).map_err(|e| {
-        SandboxError::invalid("scratch", format!("{}: {e}", ctx.scratch.display()))
-    })?;
+    let scratch = std::fs::canonicalize(&ctx.scratch)
+        .map_err(|e| SandboxError::invalid("scratch", format!("{}: {e}", ctx.scratch.display())))?;
     if let Some(reason) = forbidden.reason(&scratch, true) {
         return Err(SandboxError::invalid(
             "scratch",
@@ -318,13 +325,27 @@ pub fn resolve(
     let mut write_roots = Vec::new();
     let mut grant_roots: Vec<(PathBuf, bool)> = Vec::new();
     for (i, raw) in spec.read_paths.iter().flatten().enumerate() {
-        if let Some(p) = grant(&format!("read_paths[{i}]"), raw, &home, &forbidden, false, &mut notes)? {
+        if let Some(p) = grant(
+            &format!("read_paths[{i}]"),
+            raw,
+            &home,
+            &forbidden,
+            false,
+            &mut notes,
+        )? {
             push_unique(&mut read_roots, p.clone());
             grant_roots.push((p, false));
         }
     }
     for (i, raw) in spec.write_paths.iter().flatten().enumerate() {
-        if let Some(p) = grant(&format!("write_paths[{i}]"), raw, &home, &forbidden, true, &mut notes)? {
+        if let Some(p) = grant(
+            &format!("write_paths[{i}]"),
+            raw,
+            &home,
+            &forbidden,
+            true,
+            &mut notes,
+        )? {
             push_unique(&mut write_roots, p.clone());
             grant_roots.push((p, true));
         }
@@ -361,7 +382,14 @@ pub fn resolve(
         }
         for root in g.write_roots() {
             let field = "workspace (git)";
-            let p = grant(field, &root.to_string_lossy(), &home, &forbidden, writable_ws, &mut notes)?;
+            let p = grant(
+                field,
+                &root.to_string_lossy(),
+                &home,
+                &forbidden,
+                writable_ws,
+                &mut notes,
+            )?;
             if let Some(p) = p {
                 if writable_ws {
                     push_unique(&mut write_roots, p);
@@ -372,7 +400,14 @@ pub fn resolve(
         }
         if g.dot_git_is_file {
             // Hooks und Konfiguration des Repos lesen (`git` braucht sie).
-            if let Some(p) = grant("workspace (git)", &g.common_dir.to_string_lossy(), &home, &forbidden, false, &mut notes)? {
+            if let Some(p) = grant(
+                "workspace (git)",
+                &g.common_dir.to_string_lossy(),
+                &home,
+                &forbidden,
+                false,
+                &mut notes,
+            )? {
                 push_unique(&mut read_roots, p);
             }
         }
@@ -403,7 +438,11 @@ pub fn resolve(
     let mut masks = Vec::new();
     for raw in DEFAULT_MASKS {
         if raw == "$XDG_RUNTIME_DIR" {
-            if let Some(dir) = ctx.host_env.get("XDG_RUNTIME_DIR").filter(|d| d.starts_with('/')) {
+            if let Some(dir) = ctx
+                .host_env
+                .get("XDG_RUNTIME_DIR")
+                .filter(|d| d.starts_with('/'))
+            {
                 absolute_mask(dir, &home, "default", &mut masks);
             }
             continue;
@@ -422,7 +461,10 @@ pub fn resolve(
     }
     let user_masks: Vec<String> = match &spec.masks {
         Some(m) => m.clone(),
-        None => DEFAULT_WORKSPACE_MASKS.iter().map(|s| (*s).to_owned()).collect(),
+        None => DEFAULT_WORKSPACE_MASKS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
     };
     let mut pattern_roots: Vec<PathBuf> = vec![workspace.clone()];
     for (root, _) in &grant_roots {
@@ -453,7 +495,11 @@ pub fn resolve(
             if workspace.starts_with(path) {
                 return Err(SandboxError::invalid(
                     "workspace",
-                    format!("{} liegt in der Maske {}", workspace.display(), path.display()),
+                    format!(
+                        "{} liegt in der Maske {}",
+                        workspace.display(),
+                        path.display()
+                    ),
                 ));
             }
             for root in read_roots.iter().chain(&write_roots) {

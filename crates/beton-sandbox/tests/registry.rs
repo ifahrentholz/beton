@@ -52,7 +52,13 @@ fn sbx_001_ac1_unavailable_backends_fail_closed_on_this_platform() {
     let registry = Registry::platform();
     // Linux-, Windows- und Container-Backends folgen mit eigenen Arbeitspaketen; bis dahin
     // melden sie `unavailable` und starten nichts (kein Fallback).
-    for id in [ProviderId::Landlock, ProviderId::Bwrap, ProviderId::Windows, ProviderId::Docker, ProviderId::Podman] {
+    for id in [
+        ProviderId::Landlock,
+        ProviderId::Bwrap,
+        ProviderId::Windows,
+        ProviderId::Docker,
+        ProviderId::Podman,
+    ] {
         let p = registry.get(id).unwrap();
         let report = p.probe();
         assert!(!report.available, "{id} meldet sich verfügbar");
@@ -89,7 +95,10 @@ fn sbx_001_ac3_auto_picks_seatbelt_on_macos_and_landlock_on_linux() {
     assert_eq!(picked, expected);
     // `none` wird nie automatisch gewählt, nur ausdrücklich.
     assert_eq!(
-        registry.select(BackendChoice::Provider(ProviderId::None)).unwrap().id(),
+        registry
+            .select(BackendChoice::Provider(ProviderId::None))
+            .unwrap()
+            .id(),
         ProviderId::None
     );
 }
@@ -99,7 +108,9 @@ fn sbx_001_ac3_unknown_backend_is_invalid_spec_when_loading() {
     let err = SandboxSpec::from_yaml("backend: firejail\n").unwrap_err();
     assert_eq!(err.code(), "invalid_spec", "{err}");
     assert!(err.to_string().contains("firejail"), "{err}");
-    for known in ["auto", "seatbelt", "landlock", "bwrap", "windows", "docker", "podman", "none"] {
+    for known in [
+        "auto", "seatbelt", "landlock", "bwrap", "windows", "docker", "podman", "none",
+    ] {
         let spec = SandboxSpec::from_yaml(&format!("backend: {known}\n")).unwrap();
         assert_eq!(spec.backend.unwrap().as_str(), known);
     }
@@ -112,8 +123,20 @@ fn sbx_001_ac3_unknown_backend_is_invalid_spec_when_loading() {
 fn sbx_001_ac3_registry_without_backend_is_unavailable_not_none() {
     let empty = Registry::empty(Os::Linux);
     let err = empty.select(BackendChoice::Auto).err().unwrap();
-    assert!(matches!(err, SandboxError::Unavailable { provider: ProviderId::Landlock, .. }), "{err}");
-    let err = Registry::empty(Os::Other).select(BackendChoice::Auto).err().unwrap();
+    assert!(
+        matches!(
+            err,
+            SandboxError::Unavailable {
+                provider: ProviderId::Landlock,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    let err = Registry::empty(Os::Other)
+        .select(BackendChoice::Auto)
+        .err()
+        .unwrap();
     assert_eq!(err.code(), "sandbox_unavailable");
 }
 
@@ -159,7 +182,10 @@ async fn sbx_001_ac4_failed_spawn_emits_no_event() {
         .spawn(CommandSpec::new("/nonexistent/beton-sbx-missing"))
         .unwrap_err();
     assert_eq!(err.code(), "spawn_failed");
-    assert_eq!(std::io::Error::from(err).kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        std::io::Error::from(err).kind(),
+        std::io::ErrorKind::NotFound
+    );
     // Ein nicht verfügbares Backend startet nichts und meldet nichts.
     let unavailable = Registry::platform().get(ProviderId::Docker).unwrap();
     let mut policy = ResolvedPolicy::unsandboxed(Stage::Tools);
@@ -184,7 +210,9 @@ fn sbx_001_missing_required_cap_is_unavailable_with_reasons() {
         id: ProviderId::Seatbelt,
         available: true,
         caps: [Cap::FsRead, Cap::FsWrite].into_iter().collect(),
-        degraded_reasons: [(Cap::Net, "kein Netzfilter".to_owned())].into_iter().collect(),
+        degraded_reasons: [(Cap::Net, "kein Netzfilter".to_owned())]
+            .into_iter()
+            .collect(),
         unavailable_reason: None,
         version: String::new(),
     };
@@ -192,7 +220,11 @@ fn sbx_001_missing_required_cap_is_unavailable_with_reasons() {
     policy.backend = ProviderId::Seatbelt;
     policy.required = [Cap::FsRead, Cap::Net].into_iter().collect();
     match beton_sandbox::check_caps(&probe, &policy).unwrap_err() {
-        SandboxError::Unavailable { provider, missing, hint } => {
+        SandboxError::Unavailable {
+            provider,
+            missing,
+            hint,
+        } => {
             assert_eq!(provider, ProviderId::Seatbelt);
             assert_eq!(missing, [Cap::Net].into_iter().collect());
             assert!(hint.contains("kein Netzfilter"), "{hint}");

@@ -64,7 +64,11 @@ impl SandboxProvider for UnavailableProvider {
         ProbeReport::unavailable(self.id, self.reason.clone())
     }
 
-    fn spawn(&self, policy: &ResolvedPolicy, _cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
+    fn spawn(
+        &self,
+        policy: &ResolvedPolicy,
+        _cmd: CommandSpec,
+    ) -> Result<SandboxedChild, SandboxError> {
         Err(SandboxError::Unavailable {
             provider: self.id,
             missing: policy.required.clone(),
@@ -151,11 +155,13 @@ impl Registry {
     /// ist [`SandboxError::Unavailable`]. `none` wird nie automatisch gewählt.
     pub fn select(&self, choice: BackendChoice) -> Result<Arc<dyn SandboxProvider>, SandboxError> {
         let id = match choice {
-            BackendChoice::Auto => auto_backend(self.os).ok_or_else(|| SandboxError::Unavailable {
-                provider: ProviderId::None,
-                missing: crate::caps::required_default(),
-                hint: "für dieses Betriebssystem gibt es kein Sandbox-Backend".into(),
-            })?,
+            BackendChoice::Auto => {
+                auto_backend(self.os).ok_or_else(|| SandboxError::Unavailable {
+                    provider: ProviderId::None,
+                    missing: crate::caps::required_default(),
+                    hint: "für dieses Betriebssystem gibt es kein Sandbox-Backend".into(),
+                })?
+            }
             BackendChoice::Provider(id) => id,
         };
         self.get(id).ok_or_else(|| SandboxError::Unavailable {

@@ -73,29 +73,7 @@ impl SandboxedChild {
     /// Wartet auf das Ende und sammelt stdout und stderr (sofern als Pipe angelegt). Nach
     /// `timeout` wird der Baum beendet und `TimedOut` gemeldet.
     pub async fn output(mut self, timeout: Duration) -> io::Result<Output> {
-        let stdout = self.take_stdout();
-        let stderr = self.take_stderr();
-        drop(self.take_stdin());
-        let read_all = |r: Option<Box<dyn tokio::io::AsyncRead + Send + Unpin>>| async move {
-            let mut buf = Vec::new();
-            if let Some(mut r) = r {
-                r.read_to_end(&mut buf).await?;
-            }
-            Ok::<_, io::Error>(buf)
-        };
-        let work = async {
-            let (out, err) = tokio::join!(
-                read_all(stdout.map(|s| Box::new(s) as Box<_>)),
-                read_all(stderr.map(|s| Box::new(s) as Box<_>))
-            );
-            let status = self.inner.wait().await?;
-            Ok::<_, io::Error>(Output {
-                status,
-                stdout: out?,
-                stderr: err?,
-            })
-        };
-        match tokio::time::timeout(timeout, work).await {
+        match tokio::time::timeout(timeout, collect(&mut self)).await {
             Ok(r) => r,
             Err(_) => {
                 let _ = self.inner.start_kill();
@@ -106,6 +84,31 @@ impl SandboxedChild {
             }
         }
     }
+
+    /// Wie [`SandboxedChild::output`], ohne Frist.
+    pub async fn wait_with_output(mut self) -> io::Result<Output> {
+        collect(&mut self).await
+    }
+}
+
+async fn collect(child: &mut SandboxedChild) -> io::Result<Output> {
+    let stdout = child.take_stdout();
+    let stderr = child.take_stderr();
+    drop(child.take_stdin());
+    async fn read_all<R: tokio::io::AsyncRead + Unpin>(r: Option<R>) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        if let Some(mut r) = r {
+            r.read_to_end(&mut buf).await?;
+        }
+        Ok(buf)
+    }
+    let (out, err) = tokio::join!(read_all(stdout), read_all(stderr));
+    let status = child.inner.wait().await?;
+    Ok(Output {
+        status,
+        stdout: out?,
+        stderr: err?,
+    })
 }
 
 fn stdio(mode: Stdio) -> std::process::Stdio {

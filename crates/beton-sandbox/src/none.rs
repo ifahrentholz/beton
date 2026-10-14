@@ -32,7 +32,11 @@ impl SandboxProvider for NoneProvider {
         }
     }
 
-    fn spawn(&self, policy: &ResolvedPolicy, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
+    fn spawn(
+        &self,
+        policy: &ResolvedPolicy,
+        cmd: CommandSpec,
+    ) -> Result<SandboxedChild, SandboxError> {
         if policy.backend != ProviderId::None {
             return Err(SandboxError::spawn(format!(
                 "Policy für {} an Backend none übergeben",

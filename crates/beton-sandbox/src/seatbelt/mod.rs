@@ -109,10 +109,7 @@ pub mod macos {
 
     fn probe_now() -> ProbeReport {
         if !Path::new(SANDBOX_EXEC).is_file() {
-            return ProbeReport::unavailable(
-                ProviderId::Seatbelt,
-                format!("{SANDBOX_EXEC} fehlt"),
-            );
+            return ProbeReport::unavailable(ProviderId::Seatbelt, format!("{SANDBOX_EXEC} fehlt"));
         }
         if let Err(reason) = self_test() {
             return ProbeReport::unavailable(ProviderId::Seatbelt, reason);

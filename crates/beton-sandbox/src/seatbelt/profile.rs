@@ -71,16 +71,16 @@ pub fn glob_regex(glob: &str) -> String {
 
 fn utf8(p: &Path) -> Result<String, SandboxError> {
     p.to_str().map(str::to_owned).ok_or_else(|| {
-        SandboxError::invalid(
-            "paths",
-            format!("{} ist kein gültiges UTF-8", p.display()),
-        )
+        SandboxError::invalid("paths", format!("{} ist kein gültiges UTF-8", p.display()))
     })
 }
 
 /// Regex für einen Pfad samt Inhalt unter `root`.
 fn root_regex(root: &Path) -> Result<String, SandboxError> {
-    Ok(format!("^{}", regex_escape(utf8(root)?.trim_end_matches('/'))))
+    Ok(format!(
+        "^{}",
+        regex_escape(utf8(root)?.trim_end_matches('/'))
+    ))
 }
 
 struct Builder {
@@ -205,7 +205,9 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
     let mut keep_lines = Vec::new();
     for a in &keep {
         let key = b.path("KEEP", a)?;
-        keep_lines.push(format!("(deny file-write-unlink (literal (param \"{key}\")))"));
+        keep_lines.push(format!(
+            "(deny file-write-unlink (literal (param \"{key}\")))"
+        ));
     }
 
     let mut git_lines = Vec::new();
@@ -228,13 +230,17 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
             git_lines.push(format!("(deny file-write* (regex (param \"{key}\")))"));
             // `hooks` und `config` selbst nicht austauschen (Umbenennen des Elternteils).
             let keep = b.path("GIT_DIR", d)?;
-            git_lines.push(format!("(deny file-write-unlink (literal (param \"{keep}\")))"));
+            git_lines.push(format!(
+                "(deny file-write-unlink (literal (param \"{keep}\")))"
+            ));
         }
         let dot = b.path("DOT_GIT", &g.dot_git)?;
         if g.dot_git_is_file {
             git_lines.push(format!("(deny file-write* (literal (param \"{dot}\")))"));
         } else {
-            git_lines.push(format!("(deny file-write-unlink (literal (param \"{dot}\")))"));
+            git_lines.push(format!(
+                "(deny file-write-unlink (literal (param \"{dot}\")))"
+            ));
         }
     }
 
@@ -285,7 +291,9 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
                 .iter()
                 .find(|(n, _)| *n == name)
                 .map(|(_, l)| *l)
-                .ok_or_else(|| SandboxError::spawn(format!("Template: unbekannte Markierung {name}")))?;
+                .ok_or_else(|| {
+                    SandboxError::spawn(format!("Template: unbekannte Markierung {name}"))
+                })?;
             for l in lines {
                 text.push_str(l);
                 text.push('\n');

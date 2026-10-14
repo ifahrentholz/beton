@@ -103,12 +103,20 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Kanonisiert Pfade, expandiert Masken und prüft, ob das Backend alle geforderten
     /// Capabilities erzwingen kann (sonst [`SandboxError::Unavailable`]).
-    fn resolve(&self, spec: &SandboxSpec, ctx: &ResolveCtx) -> Result<ResolvedPolicy, SandboxError> {
+    fn resolve(
+        &self,
+        spec: &SandboxSpec,
+        ctx: &ResolveCtx,
+    ) -> Result<ResolvedPolicy, SandboxError> {
         let policy = crate::resolve::resolve(self.id(), spec, ctx)?;
         crate::resolve::check_caps(&self.probe(), &policy)?;
         Ok(policy)
     }
 
     /// Startet den Prozess(baum) isoliert gemäß `policy`.
-    fn spawn(&self, policy: &ResolvedPolicy, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError>;
+    fn spawn(
+        &self,
+        policy: &ResolvedPolicy,
+        cmd: CommandSpec,
+    ) -> Result<SandboxedChild, SandboxError>;
 }

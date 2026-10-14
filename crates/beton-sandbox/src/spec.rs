@@ -40,12 +40,17 @@ impl BackendChoice {
         if s == "auto" {
             return Ok(BackendChoice::Auto);
         }
-        ProviderId::parse(s).map(BackendChoice::Provider).ok_or_else(|| {
-            let known: Vec<&str> = std::iter::once("auto")
-                .chain(ProviderId::ALL.iter().map(|p| p.as_str()))
-                .collect();
-            format!("unbekanntes Sandbox-Backend `{s}`; erlaubt: {}", known.join(", "))
-        })
+        ProviderId::parse(s)
+            .map(BackendChoice::Provider)
+            .ok_or_else(|| {
+                let known: Vec<&str> = std::iter::once("auto")
+                    .chain(ProviderId::ALL.iter().map(|p| p.as_str()))
+                    .collect();
+                format!(
+                    "unbekanntes Sandbox-Backend `{s}`; erlaubt: {}",
+                    known.join(", ")
+                )
+            })
     }
 }
 
