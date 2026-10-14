@@ -48,7 +48,6 @@ async fn har_004_ac2_error_max_turns() {
 async fn har_005_ac1_denied_bash_is_not_executed() {
     case("bash-deny").await;
     let events = std::fs::read_to_string(root().join("bash-deny/expected.events.jsonl")).unwrap();
-    assert!(events.contains("\"decision\":\"deny\""), "Ablehnung im Log");
     assert!(
         events.contains("\"status\":\"denied\""),
         "Tool-Call als abgelehnt"

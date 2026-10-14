@@ -83,6 +83,10 @@ struct Args {
     append_system_prompt_file: Option<PathBuf>,
     /// Kontext-Aufzeichnung (`--record <datei>`, sonst `BETON_FAKE_RECORD`).
     record: Option<PathBuf>,
+    /// `--settings` von Claude Code (JSON-Text): `PreToolUse`-Hook (HAR-005).
+    settings: Option<String>,
+    /// `--safe-mode` von Claude Code: schaltet auch Hooks aus `--settings` ab (wie 2.1.296).
+    safe_mode: bool,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -123,6 +127,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                 let _ = args.next();
             }
             "--record" => out.record = args.next().map(PathBuf::from),
+            "--settings" => out.settings = args.next(),
+            "--safe-mode" => out.safe_mode = true,
             "--append-system-prompt-file" => {
                 out.append_system_prompt_file = args.next().map(PathBuf::from);
             }
@@ -158,8 +164,32 @@ fn logged_in() -> bool {
     std::env::var("BETON_FAKE_AUTH").as_deref() != Ok("logged_out")
 }
 
+/// `beton-fake-cli hook <harness> --event … --socket … --token-file …`: dasselbe Hook-Kommando
+/// wie `beton hook` (Hook-Brücke, HAR-005), damit Tests ohne das `beton`-Binary auskommen.
+fn hook_command(args: &[String]) -> ExitCode {
+    use std::io::{Read as _, Write as _};
+    let mut input = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut input);
+    let out = beton_harness::hook::client(args, &input);
+    let _ = std::io::stdout().write_all(out.stdout.as_bytes());
+    let _ = std::io::stderr().write_all(out.stderr.as_bytes());
+    ExitCode::from(u8::try_from(out.exit).unwrap_or(2))
+}
+
+/// Kommando des `PreToolUse`-Hooks aus `--settings` (erster Eintrag).
+fn pre_tool_hook(settings: Option<&str>) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(settings?).ok()?;
+    v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .map(str::to_owned)
+}
+
 fn main() -> ExitCode {
-    let args = match parse_args(std::env::args().skip(1)) {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("hook") {
+        return hook_command(&raw[1..]);
+    }
+    let args = match parse_args(raw.into_iter()) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("beton-fake-cli: {e}");
@@ -321,6 +351,11 @@ fn main() -> ExitCode {
             stdin.lock(),
             stdout.lock(),
         )
+        .with_pre_tool_hook(if args.safe_mode {
+            None
+        } else {
+            pre_tool_hook(args.settings.as_deref())
+        })
         .run(&scenario),
         "app-server" => app_server::AppServer::new(
             &scenario,

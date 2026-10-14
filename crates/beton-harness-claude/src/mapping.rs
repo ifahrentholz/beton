@@ -185,6 +185,7 @@ fn map_assistant(v: &Value) -> Vec<EventPayload> {
                 let (tool, mcp_server) = split_mcp_name(name);
                 out.push(EventPayload::ToolCallRequested(ToolCallRequested {
                     call_id: block["id"].as_str().unwrap_or_default().to_owned(),
+                    kind: Some(crate::kind_of(name)),
                     // System-Tools des Servers `beton` (AGT-007) als `source: beton_mcp`.
                     source: if mcp_server.as_deref() == Some("beton") {
                         ToolSource::BetonMcp

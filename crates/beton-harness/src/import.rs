@@ -755,6 +755,7 @@ mod tests {
             EventPayload::ToolCallRequested(ToolCallRequested {
                 call_id: "c1".into(),
                 tool: "Bash".into(),
+                kind: None,
                 mcp_server: None,
                 args: json!({}),
                 source: ToolSource::Harness,

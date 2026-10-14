@@ -44,18 +44,6 @@ pub const TOOLS: [&str; 6] = [
     "shell_exec",
 ];
 
-/// Kanonische Tool-Klasse (POL-005) eines Workspace-Tools.
-pub fn tool_kind(tool: &str) -> &'static str {
-    match tool {
-        "fs_read" => "file_read",
-        "fs_write" => "file_write",
-        "fs_edit" => "file_edit",
-        "fs_glob" | "fs_grep" => "search",
-        "shell_exec" => "shell",
-        _ => "other",
-    }
-}
-
 /// Fehler eines Tool-Aufrufs, wie ihn das Modell sieht.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -657,6 +645,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(call["result"]["isError"], true);
-        assert_eq!(tool_kind("shell_exec"), "shell");
+        // Klassen stehen in der Abbildungstabelle von beton-policy (#182).
+        assert_eq!(
+            beton_harness::tool_kind("direct", "shell_exec", None, Some("beton-workspace")),
+            "shell"
+        );
     }
 }

@@ -495,6 +495,7 @@ pub fn parse_rollout(bytes: &[u8]) -> Result<ImportedTranscript, ImportError> {
                         b.push(
                             EventPayload::ToolCallRequested(ToolCallRequested {
                                 call_id,
+                                kind: Some(crate::mapping::kind_of(&name, mcp_server.as_deref())),
                                 tool: name,
                                 source: if mcp_server.as_deref() == Some("beton") {
                                     ToolSource::BetonMcp

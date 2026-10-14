@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use beton_core::event::{EventPayload, McpServerFailed, ToolSource};
 use beton_harness::McpLaunch;
 use beton_harness::process::{LaunchSpec, ProcessHandle, ProcessLauncher};
-use beton_mcp::workspace::{self, WORKSPACE_SERVER, WorkspaceServer};
+use beton_mcp::workspace::{WORKSPACE_SERVER, WorkspaceServer};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, oneshot};
@@ -286,7 +286,12 @@ impl McpTools {
                     let name = def["name"].as_str().unwrap_or_default().to_owned();
                     tools.push(ToolInfo {
                         model_name: name.clone(),
-                        kind: workspace::tool_kind(&name).into(),
+                        kind: beton_harness::tool_kind(
+                            "direct",
+                            &name,
+                            None,
+                            Some(WORKSPACE_SERVER),
+                        ),
                         tool: name,
                         server: WORKSPACE_SERVER.into(),
                         description: def["description"].as_str().unwrap_or_default().into(),
@@ -316,6 +321,8 @@ impl McpTools {
                             continue;
                         }
                         let system = launch.name == beton_mcp::config::SYSTEM_SERVER;
+                        let kind =
+                            beton_harness::tool_kind("direct", &tool, None, Some(&launch.name));
                         tools.push(ToolInfo {
                             model_name,
                             tool,
@@ -326,7 +333,7 @@ impl McpTools {
                             } else {
                                 json!({"type": "object"})
                             },
-                            kind: if system { "system" } else { "mcp" }.into(),
+                            kind,
                             source: if system {
                                 ToolSource::BetonMcp
                             } else {

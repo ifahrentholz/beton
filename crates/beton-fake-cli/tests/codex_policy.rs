@@ -96,7 +96,10 @@ async fn run(mode: Option<PermissionMode>, deny: bool) -> (Vec<GateRequest>, Vec
     s.send("los".into()).await.unwrap();
     let mut events = Vec::new();
     while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
-        let end = matches!(e.payload, EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_));
+        let end = matches!(
+            e.payload,
+            EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_)
+        );
         events.push(e.payload);
         if end {
             break;
@@ -132,7 +135,11 @@ async fn har_006_ac2_vendor_ask_goes_to_the_gate_with_the_policy_kind() {
 #[tokio::test]
 async fn har_027_accept_edits_still_asks_the_policy_without_a_human() {
     let (requests, events) = run(Some(PermissionMode::AcceptEdits), true).await;
-    assert_eq!(requests.len(), 1, "Policy entscheidet auch bei accept_edits");
+    assert_eq!(
+        requests.len(),
+        1,
+        "Policy entscheidet auch bei accept_edits"
+    );
     assert_eq!(requests[0].origin, GateOrigin::AutoApproval);
     assert_eq!(status(&events), Some(ToolStatus::Denied));
 }

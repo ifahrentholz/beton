@@ -9,17 +9,16 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    Compaction, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
+    AuthSource, Compaction, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
     HarnessAuthRequired, MessageCompleted, MessageRole, Notice, NoticeLevel, ReasoningCompleted,
-    ResolvedVia, SystemComponent, TextDelta, TimeoutAction, ToolCallCompleted, ToolCallRequested,
-    ToolCallStarted, ToolStatus, TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
+    TextDelta, ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolStatus, TurnCompleted,
+    TurnFailed, TurnInterrupted, TurnStarted,
 };
-use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
-use beton_core::time::Timestamp;
+use beton_core::id::{PrincipalId, TurnId, UserId};
 use beton_harness::{
-    Action, Capabilities, ExitInfo, Gate, GateDecision, GateRequest, HarnessError, HarnessSession,
-    NormalizedEvent, PermissionMode, Shutdown, SwitchOutcome, UserInput,
+    Action, Capabilities, ExitInfo, Gate, GateDecision, GateOrigin, GateRequest, HarnessError,
+    HarnessSession, ModelGateDecision, ModelGateRequest, NormalizedEvent, PermissionMode,
+    ResultGateRequest, Shutdown, SwitchOutcome, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore, mpsc, watch};
@@ -277,13 +276,107 @@ impl StreamSink for Collector<'_> {
     }
 }
 
-/// Ein Model-Request; streamt Deltas als Events, wenn `turn` gesetzt ist.
+/// Höchstgröße von `request.prompt` (POL-004).
+const PROMPT_MAX: usize = 64 * 1024;
+
+/// Nachrichten für `request.messages` (nur Text und Tool-Namen, POL-004).
+fn messages_json(messages: &[Message]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|m| {
+            let content: Vec<Value> = m
+                .blocks
+                .iter()
+                .map(|b| match b {
+                    Block::Text(t) => json!({"type": "text", "text": t}),
+                    Block::Thinking { .. } => json!({"type": "thinking"}),
+                    Block::ToolUse { name, .. } => json!({"type": "tool_use", "name": name}),
+                    Block::ToolResult { is_error, .. } => {
+                        json!({"type": "tool_result", "is_error": is_error})
+                    }
+                })
+                .collect();
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            json!({"role": role, "content": content})
+        })
+        .collect()
+}
+
+/// Letzte User-Nachricht mit Text (höchstens 64 KiB).
+fn last_prompt(messages: &[Message]) -> Option<String> {
+    let text = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::User)
+        .find_map(|m| {
+            let t: String = m
+                .blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!t.is_empty()).then_some(t)
+        })?;
+    let mut end = text.len().min(PROMPT_MAX);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(text[..end].to_owned())
+}
+
+/// Phase `model_request` vor jedem Model-Request (HAR-010 AC5, Granularität `call`): `deny`
+/// verhindert den Request, `modify` setzt das Modell; ohne Entscheidung binnen Frist `deny`.
+async fn gate_request(
+    shared: &Shared,
+    turn: Option<TurnId>,
+    req: &mut ModelRequest,
+) -> Result<(), CallError> {
+    let chars: usize = req.messages.iter().map(Message::chars).sum();
+    let ask = ModelGateRequest {
+        turn_id: turn,
+        model: Some(req.model.clone()),
+        provider: Some(shared.harness.clone()),
+        reasoning_effort: None,
+        prompt: last_prompt(&req.messages),
+        messages: Some(messages_json(&req.messages)),
+        tools: req.tools.iter().map(|t| t.name.clone()).collect(),
+        estimated_input_tokens: Some(wire::estimate_tokens(chars)),
+    };
+    let decision =
+        tokio::time::timeout(shared.settings.gate_timeout, shared.gate.model_request(ask)).await;
+    match decision {
+        Ok(ModelGateDecision::Allow { model, .. }) => {
+            if let Some(m) = model {
+                req.model = m;
+            }
+            Ok(())
+        }
+        Ok(ModelGateDecision::Deny { reason }) => {
+            Err(CallError::PolicyDenied(reason.unwrap_or_else(|| {
+                "Model-Request von beton abgelehnt".into()
+            })))
+        }
+        Err(_) => Err(CallError::PolicyDenied(
+            "Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt.".into(),
+        )),
+    }
+}
+
+/// Ein Model-Request; streamt Deltas als Events, wenn `turn` gesetzt ist. Vorher entscheidet
+/// die Policy (Phase `model_request`).
 async fn request(
     shared: &Shared,
     turn: Option<TurnId>,
-    req: ModelRequest,
+    mut req: ModelRequest,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<Response, CallError> {
+    gate_request(shared, turn, &mut req).await?;
     let body = wire::request_body(shared.provider.wire, &req);
     let mut sink = Collector {
         shared,
@@ -364,89 +457,36 @@ async fn one_call(
         complete(&shared, turn, &call_id, ToolStatus::Error, &text, 0).await;
         return result(text, true);
     };
-    let approval_id = ApprovalId::new();
-    let expires = time::OffsetDateTime::now_utc() + shared.settings.gate_timeout;
-    shared
-        .emit(
-            EventPayload::ApprovalRequested(ApprovalRequested {
-                approval_id,
-                kind: ApprovalKind::Tool,
-                subject: json!({"tool": name, "args": input, "call_id": call_id}),
-                options: vec!["allow".into(), "deny".into()],
-                expires_at: Timestamp::from(expires),
-                on_timeout: TimeoutAction::Deny,
-            }),
-            Some(turn),
-        )
-        .await;
+    // Phase `tool_call`: jeder Call passiert das Gate (voll durchsetzbar, POL-024); Freigabe-
+    // Events schreibt ab M2 das Gate des Runners.
+    let request = GateRequest {
+        turn_id: Some(turn),
+        call_id: call_id.clone(),
+        // Name ohne MCP-Präfix; der Server steht in `mcp_server` (POL-005).
+        tool: info.tool.clone(),
+        kind: info.kind.clone(),
+        args: input.clone(),
+        mcp_server: Some(info.server.clone()),
+        acp_kind: None,
+        origin: GateOrigin::PreTool,
+        raw: None,
+    };
     let decide = tokio::time::timeout(
         shared.settings.gate_timeout,
-        shared.gate.decide(GateRequest {
-            turn_id: Some(turn),
-            call_id: call_id.clone(),
-            tool: name.clone(),
-            kind: info.kind.clone(),
-            args: input.clone(),
-        }),
+        shared.gate.decide(request.clone()),
     );
-    let system = Actor::System {
-        component: SystemComponent::Runner,
-    };
-    let user = Actor::User {
-        id: PrincipalId::User(UserId::LOCAL),
-        device_id: None,
-    };
     let decision = tokio::select! {
         d = decide => d,
         () = wait_cancel(&mut cancel) => {
-            shared.emit(EventPayload::ApprovalResolved(ApprovalResolved {
-                approval_id, decision: ApprovalDecision::Abort, answer: None, actor: system,
-                via: ResolvedVia::System, remember: None, comment: None, on_timeout_applied: None,
-            }), Some(turn)).await;
             let text = format!("{CANCELLED_PREFIX}: Turn unterbrochen");
             complete(&shared, turn, &call_id, ToolStatus::Cancelled, &text, 0).await;
             return result(text, true);
         }
     };
     // Fail closed: ohne Entscheidung innerhalb der Frist gilt `deny`.
-    let (decision, via, actor, comment, timed_out) = match decision {
-        Ok(d) => {
-            let comment = match &d {
-                GateDecision::Deny { reason } => reason.clone(),
-                GateDecision::Allow { .. } => None,
-            };
-            (d, ResolvedVia::User, user, comment, false)
-        }
-        Err(_) => (
-            GateDecision::Deny {
-                reason: Some(
-                    "Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt.".into(),
-                ),
-            },
-            ResolvedVia::Timeout,
-            system,
-            None,
-            true,
-        ),
-    };
-    shared
-        .emit(
-            EventPayload::ApprovalResolved(ApprovalResolved {
-                approval_id,
-                decision: match decision {
-                    GateDecision::Allow { .. } => ApprovalDecision::Allow,
-                    GateDecision::Deny { .. } => ApprovalDecision::Deny,
-                },
-                answer: None,
-                actor,
-                via,
-                remember: None,
-                comment,
-                on_timeout_applied: timed_out.then_some(TimeoutAction::Deny),
-            }),
-            Some(turn),
-        )
-        .await;
+    let decision = decision.unwrap_or(GateDecision::Deny {
+        reason: Some("Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt.".into()),
+    });
     let updated = match decision {
         GateDecision::Deny { reason } => {
             let text = denied_text(reason.as_deref());
@@ -477,20 +517,62 @@ async fn one_call(
         }
     };
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    // Phase `tool_result`: `deny` ersetzt das Ergebnis, bevor es das Modell sieht.
+    let (ok, text) = match tool_result_gate(&shared, request, &outcome, ms).await {
+        Some(reason) => (false, denied_text(Some(&reason))),
+        None => (outcome.ok, outcome.text),
+    };
     complete(
         &shared,
         turn,
         &call_id,
-        if outcome.ok {
+        if ok {
             ToolStatus::Ok
         } else {
             ToolStatus::Error
         },
-        &outcome.text,
+        &text,
         ms,
     )
     .await;
-    result(outcome.text, !outcome.ok)
+    result(text, !ok)
+}
+
+/// Phase `tool_result` (POL-003): `Some(grund)`, wenn die Policy das Ergebnis zurückhält
+/// (auch ohne Entscheidung binnen Frist, fail closed).
+async fn tool_result_gate(
+    shared: &Shared,
+    call: GateRequest,
+    outcome: &crate::tools::ToolOutcome,
+    ms: u64,
+) -> Option<String> {
+    const TEXT_MAX: usize = 64 * 1024;
+    let mut end = outcome.text.len().min(TEXT_MAX);
+    while !outcome.text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let request = ResultGateRequest {
+        call,
+        ok: outcome.ok,
+        exit_code: None,
+        error: (!outcome.ok).then(|| outcome.text[..end].to_owned()),
+        text: outcome.text[..end].to_owned(),
+        bytes: outcome.text.len() as u64,
+        duration_ms: ms,
+        truncated: end < outcome.text.len(),
+    };
+    match tokio::time::timeout(
+        shared.settings.gate_timeout,
+        shared.gate.tool_result(request),
+    )
+    .await
+    {
+        Ok(GateDecision::Allow { .. }) => None,
+        Ok(GateDecision::Deny { reason }) => {
+            Some(reason.unwrap_or_else(|| "Ergebnis von beton zurückgehalten".into()))
+        }
+        Err(_) => Some("Keine Entscheidung erhalten; Ergebnis zurückgehalten".into()),
+    }
 }
 
 /// Führt die Tool-Calls einer Antwort aus (höchstens `parallel_tools` gleichzeitig);
@@ -505,14 +587,25 @@ async fn run_tools(
     let mut infos = Vec::new();
     for (id, name, input) in calls {
         let info = tools.iter().find(|t| t.model_name == *name).cloned();
-        let (tool, mcp_server, source) = match &info {
-            Some(i) => (i.tool.clone(), Some(i.server.clone()), i.source),
-            None => (name.clone(), None, beton_core::event::ToolSource::Harness),
+        let (tool, mcp_server, source, kind) = match &info {
+            Some(i) => (
+                i.tool.clone(),
+                Some(i.server.clone()),
+                i.source,
+                i.kind.clone(),
+            ),
+            None => (
+                name.clone(),
+                None,
+                beton_core::event::ToolSource::Harness,
+                "other".to_owned(),
+            ),
         };
         shared
             .emit(
                 EventPayload::ToolCallRequested(ToolCallRequested {
                     call_id: id.clone(),
+                    kind: Some(kind),
                     tool,
                     mcp_server,
                     args: input.clone(),

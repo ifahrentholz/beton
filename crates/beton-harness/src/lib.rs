@@ -11,6 +11,7 @@ pub mod contract;
 pub mod fake;
 pub mod golden;
 pub mod handover;
+pub mod hook;
 mod id;
 pub mod import;
 pub mod jsonrpc;
@@ -20,16 +21,40 @@ pub mod registry;
 pub mod scenario;
 
 pub use crate::adapter::{
-    AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateRequest,
-    HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment, InvalidPermissionMode,
-    McpInjection, McpLaunch, Mode, NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode,
-    ProbeReport, RebuildRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
-    VENDOR_DIR_VARS, prefix_instructions,
+    AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateOrigin,
+    GateRequest, HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment,
+    InvalidPermissionMode, McpInjection, McpLaunch, Mode, ModelGateDecision, ModelGateRequest,
+    NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, RebuildRequest,
+    ResultGateRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
+    prefix_instructions,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,
-    DEFAULT_CONTEXT_WINDOW, EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ResumeSupport,
-    Subagents, SwitchSupport, ToolCallGate, UsageReporting, map_effort,
+    DEFAULT_CONTEXT_WINDOW, EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ModelRequestGate,
+    ResumeSupport, Subagents, SwitchSupport, ToolCallGate, UsageReporting, map_effort,
 };
 pub use crate::id::{HarnessId, InvalidHarnessId};
 pub use crate::permission::{SandboxStatus, check_permission_mode};
+
+/// Kanonische Tool-Klasse (POL-005) aus der Abbildungstabelle von `beton-policy` – die einzige
+/// Quelle für `tool.call.requested.kind` und `GateRequest::kind` aller Adapter (#182).
+/// `harness` ist die Familie (`claude`, `codex`, `acp`, `direct`); unbekannt → `other`.
+pub fn tool_kind(
+    harness: &str,
+    native_name: &str,
+    acp_kind: Option<&str>,
+    mcp_server: Option<&str>,
+) -> String {
+    beton_policy::normalize::tool_map()
+        .ok()
+        .and_then(|m| {
+            m.kind_of(
+                beton_policy::normalize::harness_family(harness),
+                native_name,
+                acp_kind,
+                mcp_server,
+            )
+        })
+        .unwrap_or("other")
+        .to_owned()
+}

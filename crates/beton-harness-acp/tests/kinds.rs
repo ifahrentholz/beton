@@ -10,7 +10,9 @@ use serde_json::json;
 fn kind_of(acp_kind: &str) -> Option<String> {
     let mut st = MapState::default();
     st.begin_turn();
-    match st.requested(&json!({ "toolCallId": "t1", "title": "x", "kind": acp_kind, "rawInput": {} })) {
+    match st
+        .requested(&json!({ "toolCallId": "t1", "title": "x", "kind": acp_kind, "rawInput": {} }))
+    {
         Some(EventPayload::ToolCallRequested(r)) => r.kind,
         other => panic!("{other:?}"),
     }

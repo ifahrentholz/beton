@@ -243,6 +243,7 @@ mod tests {
                 EventPayload::ToolCallRequested(ToolCallRequested {
                     call_id: "c1".into(),
                     tool: "Bash".into(),
+                    kind: None,
                     mcp_server: None,
                     args: json!({"command": "ls"}),
                     source: ToolSource::Harness,
@@ -276,6 +277,7 @@ mod tests {
             EventPayload::ToolCallRequested(ToolCallRequested {
                 call_id: id.into(),
                 tool: "Grep".into(),
+                kind: None,
                 mcp_server: None,
                 args: json!({}),
                 source: ToolSource::Harness,

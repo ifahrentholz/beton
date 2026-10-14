@@ -107,8 +107,6 @@ async fn qa_002_ac1_claude_adapter_runs_tool_approval_scenario() {
         "message.delta",
         "message.completed",
         "tool.call.requested",
-        "approval.requested",
-        "approval.resolved",
         "tool.call.started",
         "tool.call.completed",
         "cost.delta",
@@ -154,6 +152,20 @@ impl Gate for Modifying {
             updated_args: Some(args),
         }
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: beton_harness::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 #[tokio::test]
@@ -184,7 +196,7 @@ async fn har_005_ac2_modified_args_are_visible_on_started() {
 }
 
 #[tokio::test]
-async fn har_005_ac3_one_approval_per_request_and_fast_bridge() {
+async fn har_005_ac3_one_gate_request_per_permission_request_and_fast_bridge() {
     let mut yaml = String::from("turns:\n  - emit:\n");
     for i in 0..60 {
         yaml.push_str(&format!(
@@ -192,25 +204,28 @@ async fn har_005_ac3_one_approval_per_request_and_fast_bridge() {
         ));
     }
     let (_dir, path) = scenario(&yaml);
-    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll), ClaudeAdapter::default()).await;
+    let gate = Arc::new(Modifying::default());
+    let (mut s, mut rx) = start(&path, "", gate.clone(), ClaudeAdapter::default()).await;
     s.send("los".into()).await.unwrap();
     let mut requested_at = Vec::new();
     let mut latencies = Vec::new();
-    let mut approvals = 0;
     while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
         match e.payload {
-            EventPayload::ApprovalRequested(_) => {
-                approvals += 1;
-                requested_at.push(Instant::now());
-            }
-            EventPayload::ApprovalResolved(_) => {
+            EventPayload::ToolCallRequested(_) => requested_at.push(Instant::now()),
+            // Zwischen Rückfrage und Antwort liegt nur das Gate (ohne Menschen).
+            EventPayload::ToolCallStarted(_) => {
                 latencies.push(requested_at.last().unwrap().elapsed());
             }
             EventPayload::TurnCompleted(_) => break,
             _ => {}
         }
     }
-    assert_eq!(approvals, 60, "genau ein approval.requested je Anfrage");
+    assert_eq!(
+        gate.calls.lock().unwrap().len(),
+        60,
+        "genau eine Gate-Anfrage je Rückfrage"
+    );
+    assert_eq!(latencies.len(), 60);
     latencies.sort();
     let p99 = latencies[(latencies.len() * 99 / 100).min(latencies.len() - 1)];
     assert!(p99 < Duration::from_millis(20), "p99 {p99:?}");
@@ -224,6 +239,20 @@ impl Gate for Silent {
     async fn decide(&self, _request: GateRequest) -> GateDecision {
         std::future::pending().await
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: beton_harness::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 #[tokio::test]
@@ -235,15 +264,6 @@ async fn har_005_ac4_unanswered_gate_denies() {
     let (mut s, mut rx) = start(&push_ask(), "", Arc::new(Silent), adapter).await;
     s.send("Bitte pushen".into()).await.unwrap();
     let events = until_turn_end(&mut rx).await;
-    let resolved = events
-        .iter()
-        .find_map(|e| match e {
-            EventPayload::ApprovalResolved(r) => Some(r),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(resolved.decision, beton_core::event::ApprovalDecision::Deny);
-    assert_eq!(resolved.via, beton_core::event::ResolvedVia::Timeout);
     let completed = events
         .iter()
         .find_map(|e| match e {

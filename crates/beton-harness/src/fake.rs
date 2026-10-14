@@ -9,22 +9,21 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired, HarnessExited,
-    HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, ResolvedVia, TextDelta,
-    TimeoutAction, ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus,
-    TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
+    AuthSource, Compaction, CostDelta, CostSource, EventPayload, HarnessAuthRequired,
+    HarnessExited, HarnessReady, MessageCompleted, MessageRole, ReasoningCompleted, TextDelta,
+    ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus, TurnCompleted,
+    TurnFailed, TurnInterrupted, TurnStarted,
 };
-use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
-use beton_core::time::Timestamp;
+use beton_core::id::{PrincipalId, TurnId, UserId};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::adapter::{
-    AdapterContext, AuthStatus, ExitInfo, Gate, GateDecision, GateRequest, HarnessAdapter,
-    HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, OneShotReply, OneShotRequest,
-    PermissionMode, ProbeReport, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput,
+    AdapterContext, AuthStatus, ExitInfo, Gate, GateDecision, GateOrigin, GateRequest,
+    HarnessAdapter, HarnessError, HarnessSession, HostEnv, Mode, NormalizedEvent, OneShotReply,
+    OneShotRequest, PermissionMode, ProbeReport, ResultGateRequest, SessionSpec, Shutdown,
+    SwitchOutcome, Transport, UserInput,
 };
 use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CompactionSupport, ForkHistory, InstructionsDelivery,
@@ -87,6 +86,10 @@ pub fn default_capabilities() -> Capabilities {
         auth_sources: vec![AuthSource::None],
         approval: ApprovalMechanism::NativeRequest,
         tool_call_gate: ToolCallGate::Full,
+        approval_kinds: Vec::new(),
+        // Der Runner prüft vor jedem Turn (POL-003); Ergebnisse passieren das Gate.
+        model_request_gate: crate::capabilities::ModelRequestGate::Turn,
+        tool_result_gate: ToolCallGate::Full,
         model_switch: SwitchSupport::Live,
         effort_switch: SwitchSupport::Live,
         resume: ResumeSupport::Warm,
@@ -427,6 +430,10 @@ impl HarnessSession for FakeSession {
             text: String::new(),
             last_call: None,
             last_decision: None,
+            last_request: None,
+            last_updated_args: None,
+            tool_call_gate: self.capabilities.tool_call_gate,
+            tool_result_gate: self.capabilities.tool_result_gate,
             steer: steer_rx,
             workdir: self.workdir.clone(),
             input: delivered,
@@ -539,6 +546,12 @@ struct Player {
     text: String,
     last_call: Option<String>,
     last_decision: Option<bool>,
+    /// Anfrage des letzten Tool-Calls (für `tool_result`) und geänderte Argumente.
+    last_request: Option<GateRequest>,
+    last_updated_args: Option<Value>,
+    /// Wie der Harness Tool-Calls und Ergebnisse durchsetzt (Capabilities der Session).
+    tool_call_gate: ToolCallGate,
+    tool_result_gate: ToolCallGate,
     steer: mpsc::UnboundedReceiver<String>,
     workdir: std::path::PathBuf,
     /// Eingabe dieses Turns (für `echo_input`).
@@ -667,63 +680,52 @@ impl Player {
             self.send(EventPayload::ToolCallRequested(ToolCallRequested {
                 call_id: call_id.clone(),
                 tool: call.name.clone(),
+                kind: Some(call.kind.clone()),
                 mcp_server: None,
                 args: call.args.clone(),
                 source: ToolSource::Harness,
                 parent_call_id: None,
             }))
             .await;
-            let allowed = if step.gate {
-                // Wie die echten Adapter: Anfrage und Entscheidung als Events (HAR-005).
-                let approval_id = ApprovalId::from_ulid(ulid::Ulid(
-                    (self.turn_index as u128 + 1) * 1000 + self.calls as u128,
-                ));
-                self.send(EventPayload::ApprovalRequested(ApprovalRequested {
-                    approval_id,
-                    kind: ApprovalKind::Tool,
-                    subject: json!({"tool": call.name, "args": call.args, "call_id": call_id}),
-                    options: vec!["allow".into(), "deny".into()],
-                    expires_at: Timestamp::default(),
-                    on_timeout: TimeoutAction::Deny,
-                }))
-                .await;
-                let decision = self
-                    .gate
-                    .decide(GateRequest {
-                        turn_id: Some(self.turn),
-                        call_id: call_id.clone(),
-                        tool: call.name,
-                        kind: call.kind,
-                        args: call.args,
-                    })
-                    .await;
-                let allowed = matches!(decision, GateDecision::Allow { .. });
-                let comment = match &decision {
-                    GateDecision::Deny { reason } => reason.clone(),
-                    GateDecision::Allow { .. } => None,
-                };
-                self.send(EventPayload::ApprovalResolved(ApprovalResolved {
-                    approval_id,
-                    decision: if allowed {
-                        ApprovalDecision::Allow
-                    } else {
-                        ApprovalDecision::Deny
-                    },
-                    answer: None,
-                    actor: Actor::User {
-                        id: local_user(),
-                        device_id: None,
-                    },
-                    via: ResolvedVia::User,
-                    remember: None,
-                    comment,
-                    on_timeout_applied: None,
-                }))
-                .await;
-                allowed
-            } else {
-                true
+            // Wie Claude mit `PreToolUse`-Hook: Bei vollem Gate passiert jeder Call das Gate
+            // (POL-003); `gate: true` ist zusätzlich eine Rückfrage des Vendors (HAR-005).
+            // Freigabe-Events schreibt der Runner, nicht der Adapter.
+            let request = GateRequest {
+                turn_id: Some(self.turn),
+                call_id: call_id.clone(),
+                tool: call.name,
+                kind: call.kind,
+                args: call.args,
+                mcp_server: None,
+                acp_kind: None,
+                origin: GateOrigin::PreTool,
+                raw: None,
             };
+            let mut allowed = true;
+            let mut updated = None;
+            if self.tool_call_gate == ToolCallGate::Full {
+                match self.gate.decide(request.clone()).await {
+                    GateDecision::Allow { updated_args } => updated = updated_args,
+                    GateDecision::Deny { .. } => allowed = false,
+                }
+            }
+            if allowed && step.gate {
+                let ask = GateRequest {
+                    origin: GateOrigin::VendorAsk,
+                    args: updated.clone().unwrap_or_else(|| request.args.clone()),
+                    ..request.clone()
+                };
+                match self.gate.decide(ask).await {
+                    GateDecision::Allow { updated_args } => {
+                        if updated_args.is_some() {
+                            updated = updated_args;
+                        }
+                    }
+                    GateDecision::Deny { .. } => allowed = false,
+                }
+            }
+            self.last_request = Some(request);
+            self.last_updated_args = updated;
             if !allowed {
                 self.send(EventPayload::ToolCallCompleted(ToolCallCompleted {
                     call_id: call_id.clone(),
@@ -744,6 +746,7 @@ impl Player {
             self.send(EventPayload::ToolCallRequested(ToolCallRequested {
                 call_id: call_id.clone(),
                 tool: call.tool,
+                kind: Some("mcp".into()),
                 mcp_server: Some(call.server),
                 args: call.args,
                 source: ToolSource::Harness,
@@ -857,12 +860,42 @@ impl Player {
         let Some(call_id) = self.last_call.take() else {
             return;
         };
+        let updated = self.last_updated_args.take();
         self.send(EventPayload::ToolCallStarted(ToolCallStarted {
             call_id: call_id.clone(),
             sandbox_stage: None,
-            args: None,
+            args: updated,
         }))
         .await;
+        let (mut status, mut result) = (status, result);
+        // Phase `tool_result` (POL-003): `deny` ersetzt das Ergebnis durch die Begründung.
+        if self.tool_result_gate == ToolCallGate::Full
+            && let Some(call) = self.last_request.take()
+        {
+            let text = match &result {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            let decision = self
+                .gate
+                .tool_result(ResultGateRequest {
+                    call,
+                    ok: status == ToolStatus::Ok,
+                    exit_code: None,
+                    error: (status != ToolStatus::Ok).then(|| text.clone()),
+                    bytes: text.len() as u64,
+                    text,
+                    duration_ms: 0,
+                    truncated: false,
+                })
+                .await;
+            if let GateDecision::Deny { reason } = decision {
+                status = ToolStatus::Error;
+                result = Value::String(
+                    reason.unwrap_or_else(|| "Ergebnis von beton zurückgehalten.".into()),
+                );
+            }
+        }
         self.send(EventPayload::ToolCallCompleted(ToolCallCompleted {
             call_id,
             status,
@@ -966,15 +999,13 @@ turns:
                 "message.delta",
                 "message.completed",
                 "tool.call.requested",
-                "approval.requested",
-                "approval.resolved",
                 "tool.call.started",
                 "tool.call.completed",
                 "cost.delta",
                 "turn.completed",
             ]
         );
-        let EventPayload::CostDelta(cost) = &a[12].payload else {
+        let EventPayload::CostDelta(cost) = &a[10].payload else {
             panic!()
         };
         assert_eq!(cost.cost_micro, Some(10_000));

@@ -198,6 +198,20 @@ impl Gate for ScriptGate {
             },
         }
     }
+
+    async fn model_request(
+        &self,
+        _request: crate::adapter::ModelGateRequest,
+    ) -> crate::adapter::ModelGateDecision {
+        crate::adapter::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: crate::adapter::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 /// Ergebnis eines Durchlaufs, normalisiert.

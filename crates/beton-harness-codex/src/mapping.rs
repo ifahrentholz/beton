@@ -110,16 +110,10 @@ pub fn unmapped(v: &Value) -> EventPayload {
     EventPayload::HarnessUnmapped(HarnessUnmapped { raw: v.clone() })
 }
 
-/// Kanonische Tool-Klasse (POL-005) eines Codex-Items.
-pub fn item_kind(item_type: &str) -> &'static str {
-    match item_type {
-        "commandExecution" => "shell",
-        "fileChange" => "file_edit",
-        "mcpToolCall" => "mcp",
-        "webSearch" => "web_fetch",
-        "imageView" => "file_read",
-        _ => "other",
-    }
+/// Kanonische Tool-Klasse (POL-005) eines Codex-Tools aus der Abbildungstabelle von
+/// `beton-policy` (#182): Item-Typ bzw. bei MCP Tool und Server.
+pub fn kind_of(tool: &str, mcp_server: Option<&str>) -> String {
+    beton_harness::tool_kind("codex", tool, None, mcp_server)
 }
 
 /// Item-Typen, die Tool-Calls sind.
@@ -164,6 +158,7 @@ pub fn requested(item: &Value, st: &mut MapState) -> Option<EventPayload> {
     let (tool, mcp_server, args) = tool_of(item);
     Some(EventPayload::ToolCallRequested(ToolCallRequested {
         call_id: id,
+        kind: Some(kind_of(&tool, mcp_server.as_deref())),
         tool,
         // System-Tools des Servers `beton` (AGT-007) als `source: beton_mcp`.
         source: if mcp_server.as_deref() == Some("beton") {

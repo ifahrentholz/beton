@@ -29,6 +29,12 @@ cap_enum!(
     /// Wie weit beton Tool-Calls vor der Ausführung prüfen kann.
     ToolCallGate { ObserveOnly, ApprovalOnly, Full }
 );
+cap_enum!(
+    /// Wo die Phase `model_request` geprüft wird (POL-003, POL-024): `turn` – der Runner vor
+    /// jedem Turn bzw. jeder Eingabe; `call` – der Adapter vor jedem Model-Request
+    /// (Direkt-API); `observe_only` – gar nicht durchsetzbar.
+    ModelRequestGate { ObserveOnly, Turn, Call }
+);
 cap_enum!(SwitchSupport {
     None,
     Restart,
@@ -67,6 +73,17 @@ pub struct Capabilities {
     pub auth_sources: Vec<AuthSource>,
     pub approval: ApprovalMechanism,
     pub tool_call_gate: ToolCallGate,
+    /// Tool-Klassen (POL-005), für die der Vendor bei `tool_call_gate: approval_only` um
+    /// Freigabe fragt; die übrigen sind nur beobachtbar (POL-024).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub approval_kinds: Vec<String>,
+    /// Phase `model_request` (POL-024).
+    #[serde(default)]
+    pub model_request_gate: ModelRequestGate,
+    /// Phase `tool_result`: `full` heißt, das Ergebnis lässt sich vor dem Modell ersetzen.
+    #[serde(default)]
+    pub tool_result_gate: ToolCallGate,
     pub model_switch: SwitchSupport,
     pub effort_switch: SwitchSupport,
     pub resume: ResumeSupport,
@@ -123,6 +140,9 @@ impl Capabilities {
             auth_sources: vec![AuthSource::None],
             approval: ApprovalMechanism::None,
             tool_call_gate: ToolCallGate::ObserveOnly,
+            approval_kinds: Vec::new(),
+            model_request_gate: ModelRequestGate::ObserveOnly,
+            tool_result_gate: ToolCallGate::ObserveOnly,
             model_switch: SwitchSupport::None,
             effort_switch: SwitchSupport::None,
             resume: ResumeSupport::None,
@@ -148,6 +168,80 @@ impl Capabilities {
     /// Kontextfenster in Tokens; ohne Angabe [`DEFAULT_CONTEXT_WINDOW`] (HAR-018).
     pub fn context_window(&self) -> u64 {
         self.context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW)
+    }
+
+    /// Enforcement-Matrix (POL-024 AC2), abgeleitet aus diesen Capabilities:
+    ///
+    /// - `session_start`: immer `full` (der Runner entscheidet vor dem Start).
+    /// - `model_request`: `turn`/`call` → `full`, sonst `observe_only`.
+    /// - `tool_call`: `tool_call_gate: full` → alle Klassen `full`; `approval_only` → die
+    ///   Klassen aus `approval_kinds` `approval_only`, der Rest `observe_only`. System- und
+    ///   Browser-Tools laufen bei MCP-Injektion über den Relay-Hub des Runners und sind dort
+    ///   immer voll durchsetzbar (HAR-009).
+    /// - `tool_result`: `tool_result_gate`.
+    /// - Modifikationen: `model`/`reasoning_effort` je Turn nur mit Live-Wechsel, `args` nur
+    ///   mit vollem Gate; `redact` gibt es noch nicht (Redaction-Pipeline, WP-38).
+    pub fn enforcement(&self) -> beton_policy::enforcement::Matrix {
+        use beton_policy::Phase;
+        use beton_policy::enforcement::{KINDS, Level, Matrix};
+        use beton_policy::engine::Capabilities as Modify;
+        let level = |g: ToolCallGate| match g {
+            ToolCallGate::Full => Level::Full,
+            ToolCallGate::ApprovalOnly => Level::ApprovalOnly,
+            ToolCallGate::ObserveOnly => Level::ObserveOnly,
+        };
+        let mut tool_call = std::collections::BTreeMap::new();
+        let mut tool_result = std::collections::BTreeMap::new();
+        for kind in KINDS {
+            let call = match self.tool_call_gate {
+                ToolCallGate::ApprovalOnly if !self.approval_kinds.iter().any(|k| k == kind) => {
+                    Level::ObserveOnly
+                }
+                other => level(other),
+            };
+            let via_hub = self.mcp_injection && matches!(kind, "system" | "browser");
+            tool_call.insert(kind.to_owned(), if via_hub { Level::Full } else { call });
+            tool_result.insert(kind.to_owned(), level(self.tool_result_gate));
+        }
+        let model_request = match self.model_request_gate {
+            ModelRequestGate::Turn | ModelRequestGate::Call => Level::Full,
+            ModelRequestGate::ObserveOnly => Level::ObserveOnly,
+        };
+        let mut modify = std::collections::BTreeMap::new();
+        modify.insert(
+            Phase::SessionStart,
+            Modify {
+                redact: false,
+                args: false,
+                ..Modify::default()
+            },
+        );
+        modify.insert(
+            Phase::ModelRequest,
+            Modify {
+                model: model_request.enforces() && self.model_switch == SwitchSupport::Live,
+                reasoning_effort: model_request.enforces()
+                    && self.effort_switch == SwitchSupport::Live,
+                ..Modify::none()
+            },
+        );
+        modify.insert(
+            Phase::ToolCall,
+            Modify {
+                args: self.tool_call_gate == ToolCallGate::Full,
+                ..Modify::none()
+            },
+        );
+        modify.insert(Phase::ToolResult, Modify::none());
+        Matrix {
+            session_start: Level::Full,
+            model_request,
+            tool_call,
+            tool_result,
+            // Browser-Phasen prüfen die beton-Browser-Tools selbst (ab M3).
+            browser: Level::Full,
+            modify,
+        }
     }
 
     /// Prüft, ob eine Aktion möglich ist (HAR-002 AC3).

@@ -65,6 +65,50 @@ pub struct RelayCommand {
     pub prefix: Vec<String>,
 }
 
+/// Policy-Prüfung jedes `tools/call` über den Hub (POL-024): System-Tools (`beton`) und
+/// weitergeleitete Server sind hier voll durchsetzbar, auch wenn der Harness selbst nur
+/// Rückfragen kennt (Codex, ACP). Fail closed: ein Fehler der Prüfung lehnt ab.
+#[async_trait::async_trait]
+pub trait McpGate: Send + Sync {
+    /// `Ok(None)` erlaubt, `Ok(Some(args))` erlaubt mit geänderten Argumenten, `Err(grund)`
+    /// lehnt ab (das Modell erhält den Grund als Tool-Fehler).
+    async fn check(&self, server: &str, tool: &str, args: &Value) -> Result<Option<Value>, String>;
+}
+
+/// Prüft eine Nachricht des Harness vor dem Weiterleiten. `Err(antwort)`: abgelehnt, direkt
+/// beantworten; sonst die (ggf. geänderte) Nachricht.
+pub(crate) async fn gate_call(
+    gate: Option<&Arc<dyn McpGate>>,
+    server: &str,
+    mut msg: Value,
+) -> Result<Value, Value> {
+    let Some(gate) = gate else {
+        return Ok(msg);
+    };
+    if protocol::kind(&msg) != Kind::Request || msg["method"] != "tools/call" {
+        return Ok(msg);
+    }
+    let tool = msg["params"]["name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let args = msg["params"]
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    match gate.check(server, &tool, &args).await {
+        Ok(None) => Ok(msg),
+        Ok(Some(updated)) => {
+            msg["params"]["arguments"] = updated;
+            Ok(msg)
+        }
+        Err(reason) => Err(protocol::result(
+            &msg["id"],
+            protocol::text_result(format!("policy_denied: {reason}"), true),
+        )),
+    }
+}
+
 /// Startparameter des Hubs.
 pub struct HubOptions {
     pub session_id: SessionId,
@@ -77,6 +121,9 @@ pub struct HubOptions {
     /// Der Server `beton`; `None` bei `mcp_bridge: false`.
     pub system: Option<Arc<SystemServer>>,
     pub relay: RelayCommand,
+    /// Policy-Prüfung für `tools/call`; `None`, wenn der Harness jeden Tool-Call selbst durch
+    /// das Gate schickt (z. B. Claude mit `PreToolUse`-Hook).
+    pub gate: Option<Arc<dyn McpGate>>,
 }
 
 /// Laufender Hub. Beim Drop werden Socket und Token-Datei entfernt.
@@ -105,6 +152,7 @@ struct Shared {
     servers: BTreeMap<String, ConfiguredServer>,
     system: Option<Arc<SystemServer>>,
     events: mpsc::UnboundedSender<EventPayload>,
+    pub(crate) gate: Option<Arc<dyn McpGate>>,
 }
 
 fn random_hex(n: usize) -> std::io::Result<String> {
@@ -185,6 +233,7 @@ impl Hub {
             servers,
             system: opts.system,
             events,
+            gate: opts.gate,
         });
         let task = tokio::spawn(async move {
             loop {
@@ -360,7 +409,7 @@ where
     };
     if h.server == SYSTEM_SERVER {
         if let Some(system) = shared.system.clone() {
-            serve_system(system, r, w).await;
+            serve_system(system, shared.gate.clone(), r, w).await;
         }
         return;
     }
@@ -370,7 +419,7 @@ where
     match server.endpoint() {
         Ok(Endpoint::Stdio { .. }) => proxy_stdio(shared, server, r, w).await,
         Ok(Endpoint::Http { .. }) => {
-            crate::http::proxy_http(shared_events(&shared), server, r, w).await
+            crate::http::proxy_http(shared_events(&shared), shared.gate.clone(), server, r, w).await
         }
         Err(_) => {}
     }
@@ -395,8 +444,12 @@ pub(crate) fn writer<W: AsyncWrite + Unpin + Send + 'static>(
     tx
 }
 
-async fn serve_system<R, W>(system: Arc<SystemServer>, mut r: R, w: W)
-where
+async fn serve_system<R, W>(
+    system: Arc<SystemServer>,
+    gate: Option<Arc<dyn McpGate>>,
+    mut r: R,
+    w: W,
+) where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
 {
@@ -420,7 +473,16 @@ where
         // Jede Anfrage in eigenem Task: ein langer `session_spawn` blockiert kein `ping`.
         let system = system.clone();
         let out = out.clone();
+        let gate = gate.clone();
         tokio::spawn(async move {
+            // Phase `tool_call` mit `tool.kind = "system"` (02-agents.md, POL-024).
+            let msg = match gate_call(gate.as_ref(), SYSTEM_SERVER, msg).await {
+                Ok(m) => m,
+                Err(reply) => {
+                    let _ = out.send(reply);
+                    return;
+                }
+            };
             if let Some(reply) = system.handle(&msg).await {
                 let _ = out.send(reply);
             }
@@ -458,6 +520,13 @@ impl Filter {
             p.insert(id.to_string(), method.to_owned());
         }
         Ok(())
+    }
+
+    /// Vergisst eine offene Anfrage, die nicht weitergeleitet wurde.
+    pub(crate) fn forget(&self, id: &Value) {
+        if let Ok(mut p) = self.pending.lock() {
+            p.remove(&id.to_string());
+        }
     }
 
     /// Nachricht vom Server, ggf. gefiltert. Liefert die Methode der beantworteten Anfrage.
@@ -591,6 +660,15 @@ where
                     let _ = out.send(reply);
                     continue;
                 }
+                let msg = match gate_call(shared.gate.as_ref(), &server.name, msg).await {
+                    Ok(m) => m,
+                    Err(reply) => {
+                        // Nicht weitergeleitet: offene Anfrage im Filter wieder vergessen.
+                        filter.forget(&reply["id"]);
+                        let _ = out.send(reply);
+                        continue;
+                    }
+                };
                 let mut bytes = serde_json::to_vec(&msg).unwrap_or_default();
                 bytes.push(b'\n');
                 if stdin.write_all(&bytes).await.is_err() || stdin.flush().await.is_err() {

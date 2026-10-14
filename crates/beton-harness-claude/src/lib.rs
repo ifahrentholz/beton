@@ -21,14 +21,16 @@ use beton_core::event::{
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
+use beton_harness::hook::{HookHandler, HookReply, HookServer};
 use beton_harness::process::{LaunchSpec, ProcessHandle, ShutdownTimeouts};
 use beton_harness::registry::{VersionProbe, resolve_binary};
 use beton_harness::{
     Action, AdapterContext, ApprovalMechanism, AuthStatus, Capabilities, CompactionSupport,
-    ExitInfo, ForkHistory, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError,
-    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent, OneShotReply,
-    OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents,
-    SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
+    ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
+    HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, ModelRequestGate,
+    NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport,
+    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport,
+    UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -107,8 +109,15 @@ pub fn capabilities() -> Capabilities {
         version_range: Some(VERSION_RANGE.into()),
         auth_sources: vec![AuthSource::VendorCli, AuthSource::ApiKey],
         approval: ApprovalMechanism::NativeRequest,
-        // Vollständig erst mit dem PreToolUse-Hook (HAR-005, ab M2).
-        tool_call_gate: ToolCallGate::ApprovalOnly,
+        // Jeder Tool-Call passiert über den `PreToolUse`-Hook das Gate (HAR-005 ab M2); ohne
+        // Hook (isoliert, Hook-Brücke nicht verfügbar) nur die Rückfragen des Vendors.
+        tool_call_gate: ToolCallGate::Full,
+        approval_kinds: VENDOR_ASK_KINDS.iter().map(|k| (*k).to_owned()).collect(),
+        // Der Runner prüft vor jedem Turn; Modellwechsel per `set_model` (POL-024).
+        model_request_gate: ModelRequestGate::Turn,
+        // `PostToolUse` kann ein Ergebnis nicht ersetzen, nur Feedback anhängen (gegen
+        // 2.1.296 geprüft): nur beobachtbar.
+        tool_result_gate: ToolCallGate::ObserveOnly,
         // `set_model` bzw. `apply_flag_settings {effortLevel}` (HAR-017, gegen 2.1.285 geprüft).
         model_switch: SwitchSupport::Live,
         effort_switch: SwitchSupport::Live,
@@ -137,6 +146,25 @@ pub fn capabilities() -> Capabilities {
         // Claude Code liest `CLAUDE.md` selbst, `AGENTS.md` nicht (AGT-005).
         native_project_files: vec!["CLAUDE.md".into()],
     }
+}
+
+/// Tool-Klassen, für die Claude Code im Modus `default` selbst um Freigabe fragt
+/// (`can_use_tool`); Lesen, Suchen und sichere Shell-Kommandos wie `echo` erlaubt die CLI ohne
+/// Rückfrage. Gilt, wenn kein `PreToolUse`-Hook installiert ist (POL-024).
+pub const VENDOR_ASK_KINDS: [&str; 4] = ["shell", "file_write", "file_edit", "web_fetch"];
+
+/// Kanonische Klasse eines Claude-Tools aus der Abbildungstabelle (POL-005, #182).
+pub fn kind_of(tool: &str) -> String {
+    beton_harness::tool_kind("claude", tool, None, None)
+}
+
+/// Settings mit dem `PreToolUse`-Hook (HAR-005): `command` ist die shell-gequotete
+/// Kommandozeile von `beton hook claude …`, `timeout_s` die Frist der CLI für den Hook.
+pub fn hook_settings(command: &str, timeout_s: u64) -> String {
+    json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": command, "timeout": timeout_s}
+    ]}]}})
+    .to_string()
 }
 
 /// Name der Instructions-Datei im privaten Verzeichnis der Session.
@@ -188,6 +216,17 @@ pub fn command_args(
     isolated: bool,
     instructions: Option<&std::path::Path>,
 ) -> Vec<String> {
+    command_args_with(spec, isolated, instructions, None)
+}
+
+/// Wie [`command_args`], mit Hook-Settings (`--settings`, HAR-005); isoliert wirkungslos, weil
+/// `--safe-mode` auch per `--settings` übergebene Hooks abschaltet (gegen 2.1.296 geprüft).
+pub fn command_args_with(
+    spec: &SessionSpec,
+    isolated: bool,
+    instructions: Option<&std::path::Path>,
+    settings: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = [
         "-p",
         "--input-format",
@@ -238,6 +277,9 @@ pub fn command_args(
         }
         if let Some(dir) = &spec.mcp.skills_dir {
             args.extend(["--plugin-dir".into(), dir.display().to_string()]);
+        }
+        if let Some(settings) = settings {
+            args.extend(["--settings".into(), settings.to_owned()]);
         }
     }
     args
@@ -352,6 +394,12 @@ impl HarnessAdapter for ClaudeAdapter {
     fn capabilities(&self, _mode: Mode, _probe: &ProbeReport) -> Capabilities {
         let caps = capabilities();
         Capabilities {
+            // Isoliert (`--safe-mode`) gibt es keinen Hook: nur die Rückfragen des Vendors.
+            tool_call_gate: if self.isolated {
+                ToolCallGate::ApprovalOnly
+            } else {
+                ToolCallGate::Full
+            },
             // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009), und Claude liest
             // auch `CLAUDE.md` nicht (laut `claude --help` 2.1.285).
             mcp_injection: !self.isolated,
@@ -478,10 +526,43 @@ impl HarnessAdapter for ClaudeAdapter {
             })?),
             None => None,
         };
-        args.extend(command_args(
+        let state = Arc::new(Mutex::new(MapState {
+            auth_source: Some(self.auth),
+            expected_mode: ModeGuard::new(vendor_mode(
+                spec.permission_mode.unwrap_or(PermissionMode::Default),
+            )),
+            ..MapState::default()
+        }));
+        // `PreToolUse`-Hook (HAR-005 ab M2): Ist er verlangt, aber nicht einrichtbar, startet
+        // die Session nicht (fail closed); der Runner hat die Policies gegen `full` geprüft.
+        let hook = match (&spec.hook, self.isolated) {
+            (Some(setup), false) => {
+                let handler = Arc::new(PreToolHook {
+                    gate: ctx.gate.clone(),
+                    state: state.clone(),
+                    gate_timeout: self.gate_timeout,
+                });
+                let server = HookServer::start(&setup.run_dir, handler)
+                    .await
+                    .map_err(|e| {
+                        HarnessError::StartRefused(format!(
+                            "PreToolUse-Hook nicht einrichtbar: {e}"
+                        ))
+                    })?;
+                let line = server.command_line(&setup.command, "claude", "PreToolUse");
+                Some((server, line))
+            }
+            _ => None,
+        };
+        let settings = hook.as_ref().map(|(_, line)| {
+            // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013).
+            hook_settings(line, self.gate_timeout.as_secs() + 30)
+        });
+        args.extend(command_args_with(
             &spec,
             self.isolated,
             instructions.as_ref().map(|(_, p)| p.as_path()),
+            settings.as_deref(),
         ));
         // Eigene Session-ID für neue Sessions; beim Fortsetzen bleibt die ID der CLI (ohne
         // `--fork-session`), beim Abzweigen vergibt die CLI eine neue.
@@ -505,14 +586,11 @@ impl HarnessAdapter for ClaudeAdapter {
         let mut process = ctx.launcher.launch(launch).await?;
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
-        let state = Arc::new(Mutex::new(MapState {
-            auth_source: Some(self.auth),
-            session_ref,
-            expected_mode: ModeGuard::new(vendor_mode(
-                spec.permission_mode.unwrap_or(PermissionMode::Default),
-            )),
-            ..MapState::default()
-        }));
+        state.lock().await.session_ref = session_ref;
+        let mut caps = HarnessAdapter::capabilities(self, Mode::Native, &ProbeReport::default());
+        if hook.is_none() {
+            caps.tool_call_gate = ToolCallGate::ApprovalOnly;
+        }
         let (tx, rx) = mpsc::channel(4096);
         let process = Arc::new(Mutex::new(process));
         let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -545,6 +623,8 @@ impl HarnessAdapter for ClaudeAdapter {
             closing,
             requests: 0,
             _instructions: instructions.map(|(dir, _)| dir),
+            _hook: hook.map(|(server, _)| server),
+            caps,
         }))
     }
 }
@@ -696,7 +776,84 @@ pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
 /// Begründung an das Modell, wenn der Agent die Session an `plan` bindet (AGT-011).
 pub const PLAN_LOCKED_REASON: &str = "Abgelehnt von beton: Diese Session bleibt im Plan-Modus, weil ihr Agent `permission_mode: plan` festlegt; er schreibt selbst keinen Code. Rufe ExitPlanMode nicht auf, sondern gib Plan oder Ergebnis als normale Antwort. Soll etwas umgesetzt werden, delegiere es per session_spawn an einen Sub-Agent.";
 
-/// Permission-Bridge (HAR-005): `can_use_tool` → Gate → `control_response`.
+/// `PreToolUse`-Hook (HAR-005 ab M2): jeder Tool-Call passiert das Gate, auch vom Vendor ohne
+/// Rückfrage erlaubte. `deny` blockiert mit Begründung (das Modell sieht sie als Tool-Fehler),
+/// geänderte Argumente gehen als `updatedInput` zurück; sonst entscheidet die CLI wie üblich
+/// (ggf. mit Rückfrage per `can_use_tool`). Ohne Entscheidung binnen Frist: `deny`.
+struct PreToolHook {
+    gate: Arc<dyn Gate>,
+    state: Arc<Mutex<MapState>>,
+    gate_timeout: Duration,
+}
+
+/// Hook-Ausgabe: Ablehnung mit Begründung.
+fn hook_deny(reason: &str) -> HookReply {
+    HookReply {
+        exit: 0,
+        stdout: Some(json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }})),
+        stderr: None,
+    }
+}
+
+#[async_trait]
+impl HookHandler for PreToolHook {
+    async fn handle(&self, event: &str, payload: Value) -> HookReply {
+        if event != "PreToolUse" {
+            return HookReply::block(format!("beton: unerwarteter Hook {event}"));
+        }
+        let tool = payload["tool_name"].as_str().unwrap_or_default().to_owned();
+        let call_id = payload["tool_use_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let args = payload["tool_input"].clone();
+        let (_, mcp_server) = mapping::split_mcp_name(&tool);
+        let turn = self.state.lock().await.turn;
+        let request = GateRequest {
+            turn_id: turn,
+            call_id: call_id.clone(),
+            kind: kind_of(&tool),
+            tool,
+            args,
+            mcp_server,
+            acp_kind: None,
+            origin: GateOrigin::PreTool,
+            raw: None,
+        };
+        let decision = tokio::time::timeout(self.gate_timeout, self.gate.decide(request)).await;
+        match decision {
+            Ok(GateDecision::Allow { updated_args: None }) => HookReply::pass(),
+            // Nur die Argumente ändern; die CLI prüft sie danach wie gewohnt (gegen 2.1.296
+            // geprüft: ohne `permissionDecision` gilt `updatedInput` samt normaler Rückfrage).
+            Ok(GateDecision::Allow {
+                updated_args: Some(args),
+            }) => HookReply {
+                exit: 0,
+                stdout: Some(json!({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": args,
+                }})),
+                stderr: None,
+            },
+            Ok(GateDecision::Deny { reason }) => {
+                self.state.lock().await.denied.insert(call_id);
+                hook_deny(reason.as_deref().unwrap_or("Von beton abgelehnt."))
+            }
+            // Fail closed (HAR-005 AC4).
+            Err(_) => {
+                self.state.lock().await.denied.insert(call_id);
+                hook_deny("Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt.")
+            }
+        }
+    }
+}
+
+/// Permission-Bridge (HAR-005): `can_use_tool` (Rückfrage des Vendors) → Gate →
+/// `control_response`. Freigabe-Events schreibt ab M2 das Gate des Runners.
 async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     let req = &v["request"];
     let request_id = v["request_id"].clone();
@@ -713,80 +870,55 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     let tool = req["tool_name"].as_str().unwrap_or_default().to_owned();
     let input = req["input"].clone();
     let call_id = req["tool_use_id"].as_str().unwrap_or_default().to_owned();
-    let approval_id = ApprovalId::new();
-    let expires = time::OffsetDateTime::now_utc() + r.gate_timeout;
-    send(
-        &r.tx,
-        EventPayload::ApprovalRequested(ApprovalRequested {
-            approval_id,
-            kind: ApprovalKind::Tool,
-            subject: json!({"tool": tool, "args": input, "call_id": call_id}),
-            options: vec!["allow".into(), "deny".into()],
-            expires_at: Timestamp::from(expires),
-            on_timeout: TimeoutAction::Deny,
-        }),
-        raw,
-        turn,
-    )
-    .await;
     // AGT-011, HAR-027: Bindet der Agent die Session an `plan`, lehnt der Adapter
     // `ExitPlanMode` ohne Rückfrage ab; die Begründung geht als Tool-Ergebnis an das Modell.
-    let by_agent = r.plan_locked && tool == EXIT_PLAN_MODE;
-    let decision = if by_agent {
-        Ok(GateDecision::Deny {
-            reason: Some(PLAN_LOCKED_REASON.into()),
-        })
-    } else {
-        tokio::time::timeout(
-            r.gate_timeout,
-            r.gate.decide(GateRequest {
-                turn_id: turn,
-                call_id: call_id.clone(),
-                tool: tool.clone(),
-                kind: tool_kind(&tool).into(),
-                args: input.clone(),
-            }),
-        )
-        .await
-    };
-    let (response, decision, via, modified, comment) = match decision {
+    if r.plan_locked && tool == EXIT_PLAN_MODE {
+        plan_locked_deny(r, &request_id, &tool, &input, &call_id, raw, turn).await;
+        return;
+    }
+    let (_, mcp_server) = mapping::split_mcp_name(&tool);
+    let decision = tokio::time::timeout(
+        r.gate_timeout,
+        r.gate.decide(GateRequest {
+            turn_id: turn,
+            call_id: call_id.clone(),
+            tool: tool.clone(),
+            kind: kind_of(&tool),
+            args: input.clone(),
+            mcp_server,
+            acp_kind: None,
+            origin: GateOrigin::VendorAsk,
+            raw,
+        }),
+    )
+    .await;
+    let (response, allowed, modified) = match decision {
         Ok(GateDecision::Allow { updated_args }) => {
             let args = updated_args.clone().unwrap_or_else(|| input.clone());
             (
                 json!({"behavior": "allow", "updatedInput": args}),
-                ApprovalDecision::Allow,
-                ResolvedVia::User,
+                true,
                 updated_args,
-                None,
             )
         }
         Ok(GateDecision::Deny { reason }) => (
-            json!({"behavior": "deny", "message": reason.clone().unwrap_or_else(|| "Von beton abgelehnt.".into())}),
-            ApprovalDecision::Deny,
-            if by_agent {
-                ResolvedVia::Policy
-            } else {
-                ResolvedVia::User
-            },
+            json!({"behavior": "deny", "message": reason.unwrap_or_else(|| "Von beton abgelehnt.".into())}),
+            false,
             None,
-            // Die Begründung sehen auch andere Clients (WEB-018 AC1).
-            reason,
         ),
         // Fail closed (HAR-005 AC4).
         Err(_) => (
             json!({"behavior": "deny", "message": "Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt."}),
-            ApprovalDecision::Deny,
-            ResolvedVia::Timeout,
-            None,
+            false,
             None,
         ),
     };
-    if decision == ApprovalDecision::Deny {
+    if !allowed {
         r.state.lock().await.denied.insert(call_id.clone());
     }
     // Ein freigegebenes `ExitPlanMode` verlässt `plan` zum Modus davor (HAR-027); das Log
     // erfährt es, und der Wächter erwartet den neuen Modus.
-    let left_plan = if decision == ApprovalDecision::Allow && tool == EXIT_PLAN_MODE {
+    let left_plan = if allowed && tool == EXIT_PLAN_MODE {
         r.state.lock().await.expected_mode.plan_exit_approved()
     } else {
         None
@@ -809,32 +941,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
         )
         .await;
     }
-    send(
-        &r.tx,
-        EventPayload::ApprovalResolved(ApprovalResolved {
-            approval_id,
-            decision,
-            answer: None,
-            actor: if via == ResolvedVia::User {
-                Actor::User {
-                    id: PrincipalId::User(UserId::LOCAL),
-                    device_id: None,
-                }
-            } else {
-                Actor::System {
-                    component: beton_core::event::SystemComponent::Runner,
-                }
-            },
-            via,
-            remember: None,
-            comment,
-            on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
-        }),
-        None,
-        turn,
-    )
-    .await;
-    if decision == ApprovalDecision::Allow {
+    if allowed {
         send(
             &r.tx,
             EventPayload::ToolCallStarted(ToolCallStarted {
@@ -849,19 +956,58 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     }
 }
 
-/// Kanonische Tool-Klasse (POL-005) für die bekannten Claude-Tools.
-pub fn tool_kind(tool: &str) -> &'static str {
-    match tool {
-        "Bash" | "BashOutput" | "KillShell" => "shell",
-        "Read" | "NotebookRead" => "file_read",
-        "Write" => "file_write",
-        "Edit" | "MultiEdit" | "NotebookEdit" => "file_edit",
-        "Glob" | "Grep" => "search",
-        "WebFetch" | "WebSearch" => "web_fetch",
-        t if t.starts_with("mcp__beton__") => "system",
-        t if t.starts_with("mcp__") => "mcp",
-        _ => "other",
-    }
+/// `ExitPlanMode` in einer an `plan` gebundenen Session (AGT-011): ohne Rückfrage ablehnen,
+/// als Freigabe mit `via: policy` im Log.
+async fn plan_locked_deny(
+    r: &Reader,
+    request_id: &Value,
+    tool: &str,
+    input: &Value,
+    call_id: &str,
+    raw: Option<RawJson>,
+    turn: Option<TurnId>,
+) {
+    let approval_id = ApprovalId::new();
+    let expires = time::OffsetDateTime::now_utc() + r.gate_timeout;
+    send(
+        &r.tx,
+        EventPayload::ApprovalRequested(ApprovalRequested {
+            approval_id,
+            kind: ApprovalKind::Tool,
+            subject: json!({"tool": tool, "args": input, "call_id": call_id}),
+            options: vec!["allow".into(), "deny".into()],
+            expires_at: Timestamp::from(expires),
+            on_timeout: TimeoutAction::Deny,
+        }),
+        raw,
+        turn,
+    )
+    .await;
+    r.state.lock().await.denied.insert(call_id.to_owned());
+    let _ = write_json(
+        &r.stdin,
+        &json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id,
+            "response": {"behavior": "deny", "message": PLAN_LOCKED_REASON}}}),
+    )
+    .await;
+    send(
+        &r.tx,
+        EventPayload::ApprovalResolved(ApprovalResolved {
+            approval_id,
+            decision: ApprovalDecision::Deny,
+            answer: None,
+            actor: Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            via: ResolvedVia::Policy,
+            remember: None,
+            comment: Some(PLAN_LOCKED_REASON.into()),
+            on_timeout_applied: None,
+        }),
+        None,
+        turn,
+    )
+    .await;
 }
 
 /// Eine laufende Claude-Code-Session.
@@ -875,6 +1021,9 @@ pub struct ClaudeSession {
     requests: u64,
     /// Privates Verzeichnis der Instructions-Datei; wird mit der Session entfernt.
     _instructions: Option<tempfile::TempDir>,
+    /// Hook-Brücke des `PreToolUse`-Hooks; endet mit der Session.
+    _hook: Option<HookServer>,
+    caps: Capabilities,
 }
 
 impl ClaudeSession {
@@ -1017,6 +1166,10 @@ impl HarnessSession for ClaudeSession {
             .try_lock()
             .ok()
             .and_then(|s| s.session_ref.clone())
+    }
+
+    fn capabilities(&self) -> Option<Capabilities> {
+        Some(self.caps.clone())
     }
 
     async fn shutdown(self: Box<Self>, how: Shutdown) -> Result<ExitInfo, HarnessError> {
@@ -1228,8 +1381,9 @@ mod mcp_tests {
 
     #[test]
     fn agt_007_system_tools_are_classified_as_system() {
-        assert_eq!(tool_kind("mcp__beton__policy_query"), "system");
-        assert_eq!(tool_kind("mcp__gh__get"), "mcp");
+        assert_eq!(kind_of("mcp__beton__policy_query"), "system");
+        assert_eq!(kind_of("mcp__gh__get"), "mcp");
+        assert_eq!(kind_of("Bash"), "shell");
         assert_eq!(
             mapping::split_mcp_name("mcp__beton__session_spawn"),
             ("session_spawn".to_owned(), Some("beton".to_owned()))

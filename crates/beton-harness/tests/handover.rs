@@ -75,6 +75,7 @@ impl Log {
         self.push(EventPayload::ToolCallRequested(ToolCallRequested {
             call_id: call_id.clone(),
             tool: tool.into(),
+            kind: None,
             mcp_server: None,
             args,
             source: ToolSource::Harness,

@@ -33,6 +33,7 @@ struct State {
 
 pub(crate) async fn proxy_http<R, W>(
     events: mpsc::UnboundedSender<EventPayload>,
+    gate: Option<std::sync::Arc<dyn crate::hub::McpGate>>,
     server: ConfiguredServer,
     mut r: R,
     w: W,
@@ -94,6 +95,14 @@ pub(crate) async fn proxy_http<R, W>(
             let _ = state.out.send(reply);
             continue;
         }
+        let msg = match crate::hub::gate_call(gate.as_ref(), &state.server.name, msg).await {
+            Ok(m) => m,
+            Err(reply) => {
+                state.filter.forget(&reply["id"]);
+                let _ = state.out.send(reply);
+                continue;
+            }
+        };
         if msg["method"] == "initialize" {
             // Synchron, damit Folgeanfragen die Session-ID tragen.
             post(state.clone(), msg).await;

@@ -671,6 +671,9 @@ payload!(ReasoningCompleted {
 payload!(ToolCallRequested {
     call_id: String,
     tool: String,
+    /// Kanonische Klasse (POL-005: `shell`, `file_read`, `file_edit`, `mcp`, …), abgeleitet aus
+    /// der Abbildungstabelle in `beton-policy`.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] mcp_server: Option<String>,
     args: Value,
     source: ToolSource,

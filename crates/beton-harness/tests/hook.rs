@@ -99,7 +99,10 @@ async fn har_005_command_line_is_shell_quoted_and_contains_no_token() {
         prefix: Vec::new(),
     };
     let line = server.command_line(&cmd, "claude", "PreToolUse");
-    assert!(line.starts_with("'/opt/be ton/beton' hook claude --event PreToolUse --socket '"), "{line}");
+    assert!(
+        line.starts_with("'/opt/be ton/beton' hook claude --event PreToolUse --socket '"),
+        "{line}"
+    );
     let token = std::fs::read_to_string(server.token_file()).unwrap();
     assert!(!line.contains(token.trim()));
 }

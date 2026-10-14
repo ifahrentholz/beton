@@ -1032,7 +1032,13 @@ async fn har_010_ac5_model_request_deny_prevents_the_http_request() {
         mock::anthropic("msg_mock000000000001", &[Say::Text("nie".into(), 1)]),
     );
     let work = tempfile::tempdir().unwrap();
-    let a = adapter(provider("mock", wire, &server.base_url(""), KeyRef::None, None));
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
     let gate = Arc::new(Recorder {
         deny_model: true,
         ..Recorder::default()
@@ -1068,7 +1074,13 @@ async fn pol_003_direct_model_request_modify_sets_the_model_of_the_request() {
         mock::anthropic("msg_mock000000000001", &[Say::Text("ok".into(), 1)]),
     );
     let work = tempfile::tempdir().unwrap();
-    let a = adapter(provider("mock", wire, &server.base_url(""), KeyRef::None, None));
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
     let gate = Arc::new(Recorder {
         route_model: Some("mock-billig".into()),
         ..Recorder::default()
@@ -1092,7 +1104,11 @@ async fn pol_003_direct_tool_call_passes_pre_tool_and_result_deny_replaces_the_r
         path,
         mock::anthropic(
             "msg_mock000000000001",
-            &[tool("toolu_mock000000000001", "fs_read", json!({"path": "geheim.txt"}))],
+            &[tool(
+                "toolu_mock000000000001",
+                "fs_read",
+                json!({"path": "geheim.txt"}),
+            )],
         ),
     );
     server.push(
@@ -1101,7 +1117,13 @@ async fn pol_003_direct_tool_call_passes_pre_tool_and_result_deny_replaces_the_r
     );
     let work = tempfile::tempdir().unwrap();
     std::fs::write(work.path().join("geheim.txt"), "PASSWORT-4711").unwrap();
-    let a = adapter(provider("mock", wire, &server.base_url(""), KeyRef::None, None));
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
     let gate = Arc::new(Recorder {
         deny_result: true,
         ..Recorder::default()
@@ -1123,7 +1145,10 @@ async fn pol_003_direct_tool_call_passes_pre_tool_and_result_deny_replaces_the_r
     let reqs = server.requests_to(path);
     assert_eq!(reqs.len(), 2);
     let second = reqs[1].body.to_string();
-    assert!(!second.contains("PASSWORT-4711"), "Ergebnis ersetzt: {second}");
+    assert!(
+        !second.contains("PASSWORT-4711"),
+        "Ergebnis ersetzt: {second}"
+    );
     assert!(second.contains("Geheimnisse"), "{second}");
     s.shutdown(Shutdown::Kill).await.unwrap();
 }

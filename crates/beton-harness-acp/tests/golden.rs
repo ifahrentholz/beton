@@ -44,14 +44,14 @@ async fn har_007_ac1_text_turn_matches_golden() {
 #[tokio::test]
 async fn har_007_ac1_tool_call_with_permission_matches_golden() {
     let events = case("tool-call").await;
-    assert!(events.contains("\"decision\":\"allow\""));
+    // Die Rückfrage beantwortet das Gate; Freigabe-Events schreibt ab M2 der Runner.
     assert!(events.contains("\"type\":\"tool.call.started\""));
+    assert!(events.contains("\"kind\":\"shell\""));
 }
 
 #[tokio::test]
 async fn har_007_ac1_permission_deny_matches_golden() {
     let events = case("permission-deny").await;
-    assert!(events.contains("\"decision\":\"deny\""));
     assert!(events.contains("\"status\":\"denied\""));
     assert!(!events.contains("\"type\":\"tool.call.started\""));
 }

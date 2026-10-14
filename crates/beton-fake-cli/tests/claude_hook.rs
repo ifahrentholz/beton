@@ -51,7 +51,9 @@ impl Gate for Recording {
         self.requests.lock().unwrap().push(request.clone());
         match request.origin {
             GateOrigin::PreTool => (self.pre_tool)(&request),
-            GateOrigin::VendorAsk => GateDecision::Allow { updated_args: None },
+            GateOrigin::VendorAsk | GateOrigin::AutoApproval => {
+                GateDecision::Allow { updated_args: None }
+            }
         }
     }
 
@@ -208,7 +210,10 @@ async fn pol_006_ac3_modified_args_from_the_hook_are_executed() {
     let events = turn(&mut run, "los").await;
     let requests = gate.requests();
     // Die Rückfrage des Vendors sieht die geänderten Argumente.
-    assert_eq!(requests[1].args["command"], "git push --dry-run origin main");
+    assert_eq!(
+        requests[1].args["command"],
+        "git push --dry-run origin main"
+    );
     // `tool.call.requested` behält die Originalargumente.
     let requested = events
         .iter()
