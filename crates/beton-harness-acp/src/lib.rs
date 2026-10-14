@@ -850,14 +850,22 @@ impl HarnessSession for AcpSession {
             Some(i) => beton_harness::prefix_instructions(&i, &input.text),
             None => input.text,
         };
-        let id = self
+        // Die ID vor dem Senden ablegen: Antwortet der Agent schneller, als das Senden
+        // zurückkehrt, verwarf die Auswertung seine Antwort, und der Turn endete nie (#193).
+        let id = self.rpc.reserve_id();
+        self.state.lock().await.prompt_request = Some(id);
+        let sent = self
             .rpc
-            .send_request(
+            .send_reserved(
+                id,
                 "session/prompt",
                 json!({"sessionId": self.session_id, "prompt": [{"type": "text", "text": text}]}),
             )
-            .await?;
-        self.state.lock().await.prompt_request = Some(id);
+            .await;
+        if let Err(e) = sent {
+            self.state.lock().await.prompt_request = None;
+            return Err(e.into());
+        }
         Ok(turn)
     }
 

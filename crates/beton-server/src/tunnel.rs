@@ -134,15 +134,35 @@ impl RunnerRegistry {
     /// Neues Runner-Token für genau eine Session.
     /// Token für einen neuen Runner-Prozess. Der zählt `rseq` wieder ab 1; der gespeicherte
     /// Stand des Vorgängers darf seine Events nicht als Duplikate verwerfen (PROTO-015).
+    ///
+    /// Je Session gilt nur das jüngste Token (Generation): Ältere, auch die nie verbundener
+    /// Starts oder eines abgekoppelten Runners, verfallen hier. Bestehende Verbindungen bleiben
+    /// davon unberührt; neu anmelden kann sich nur der neue Runner.
     pub fn mint_token(&self, session: SessionId) -> Result<String, crate::local_auth::AuthError> {
         let token = format!("bt_run_{}", crate::local_auth::random_hex(32)?);
-        lock(&self.tokens).insert(hash(&token), session);
+        {
+            let mut tokens = lock(&self.tokens);
+            tokens.retain(|_, s| *s != session);
+            tokens.insert(hash(&token), session);
+        }
+        lock(&self.expected).remove(&session);
         lock(&self.persisted).remove(&session);
         Ok(token)
     }
 
     pub fn revoke_tokens(&self, session: SessionId) {
         lock(&self.tokens).retain(|_, s| *s != session);
+    }
+
+    /// Gilt das Token noch (Runner darf sich anmelden)?
+    pub fn token_valid(&self, token: &str) -> bool {
+        self.session_for(token).is_some()
+    }
+
+    /// Sperrt genau ein Token, z. B. das eines geordnet gestoppten Runners. Das Token eines
+    /// inzwischen gestarteten Nachfolgers derselben Session bleibt gültig (#198).
+    pub fn revoke_token(&self, token: &str) {
+        lock(&self.tokens).remove(&hash(token));
     }
 
     fn session_for(&self, token: &str) -> Option<SessionId> {
@@ -437,8 +457,8 @@ pub async fn tunnel_upgrade(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
-    let Some(session) =
-        crate::security::bearer(&headers).and_then(|t| state.runners.session_for(t))
+    let Some((token, session)) = crate::security::bearer(&headers)
+        .and_then(|t| state.runners.session_for(t).map(|s| (t.to_owned(), s)))
     else {
         return Problem::new(ProblemCode::Unauthorized).into_response();
     };
@@ -448,7 +468,7 @@ pub async fn tunnel_upgrade(
             .into_response();
     };
     ws.protocols([SUBPROTOCOL])
-        .on_upgrade(move |socket| connection(socket, state, session))
+        .on_upgrade(move |socket| connection(socket, state, session, token))
 }
 
 fn problem_msg(p: Problem) -> Message {
@@ -465,7 +485,12 @@ fn close_msg(code: u16, reason: &str) -> Message {
     }))
 }
 
-async fn connection(socket: WebSocket, state: TunnelState, token_session: SessionId) {
+async fn connection(
+    socket: WebSocket,
+    state: TunnelState,
+    token_session: SessionId,
+    token: String,
+) {
     let (mut sink, mut stream) = socket.split();
     if lock(&state.runners.refuse_until)
         .get(&token_session)
@@ -640,6 +665,12 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
             }
         }
     }
+    // Ein geordnet gestoppter Runner meldet sich nicht wieder an: sein Token sperren, bevor
+    // die Verbindung als getrennt gilt. Nur dieses Token, und vor `stopped`: Wer daraufhin eine
+    // Eingabe schickt, startet einen Nachfolger mit neuem Token (SES-003 AC3, #198).
+    if lock(&state.runners.stopping).contains_key(&session_id) {
+        state.runners.revoke_token(&token);
+    }
     // Abmelden (nur wenn die Verbindung noch die aktuelle ist).
     {
         let mut conns = lock(&state.runners.conns);
@@ -651,7 +682,6 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     if let Some(reason) = stopped {
         // RUN-003 AC2, SES-001 AC2: nach geordnetem Stopp ist die Session `stopped`.
         append_status(&state, session_id, SessionStatus::Stopped, &reason).await;
-        state.runners.revoke_tokens(session_id);
     }
 }
 
@@ -897,6 +927,38 @@ mod tests {
         c.busy = false;
         c.last_activity = Instant::now();
         assert!(!c.idle(timeout));
+    }
+
+    /// #198: Nach dem geordneten Stopp verliert nur das Token des beendeten Runners seine
+    /// Gültigkeit. Ein Nachfolger, der schon gestartet wurde (Eingabe an die gestoppte Session),
+    /// meldet sich mit seinem eigenen Token weiter an.
+    /// Security-Review zu #198: Tokens gelten je Session nur für den zuletzt gestarteten Runner
+    /// (Generation). Ein früherer, nie verbundener Start kommt danach nicht mehr in den Tunnel.
+    #[test]
+    fn ses_003_ac3_minting_revokes_older_tokens_of_the_session() {
+        let runners = RunnerRegistry::default();
+        let (session, other) = (SessionId::new(), SessionId::new());
+        let first = runners.mint_token(session).unwrap();
+        let foreign = runners.mint_token(other).unwrap();
+        let second = runners.mint_token(session).unwrap();
+        assert_eq!(runners.session_for(&first), None, "ältere Generation");
+        assert_eq!(runners.session_for(&second), Some(session));
+        assert_eq!(runners.session_for(&foreign), Some(other), "andere Session");
+    }
+
+    #[test]
+    fn ses_003_ac3_stopping_a_runner_keeps_the_token_of_its_successor() {
+        let runners = RunnerRegistry::default();
+        let session = SessionId::new();
+        let old = runners.mint_token(session).unwrap();
+        let successor = runners.mint_token(session).unwrap();
+        runners.revoke_token(&old);
+        assert_eq!(
+            runners.session_for(&old),
+            None,
+            "altes Token bleibt gesperrt"
+        );
+        assert_eq!(runners.session_for(&successor), Some(session));
     }
 
     fn approval(

@@ -597,6 +597,26 @@ async fn pol_025_ac1_every_tool_call_has_exactly_one_decision() {
             .map(|e| e["payload"]["call_id"].as_str().unwrap().to_owned())
             .collect();
         assert_eq!(calls.len(), 3);
+        // Beobachtete Calls (ohne Gate-Anfrage) wertet der Runner nach ihrem Abschluss aus;
+        // deren Entscheidung darf nach dem Turn-Ende im Log stehen. Auf sie warten statt sie
+        // im Stand beim Turn-Ende zu erwarten (gesehen als Flake unter Last).
+        let start = Instant::now();
+        let turn = loop {
+            let all = env.events(&id).await;
+            let d = decisions(&all, "tool_call");
+            let decided = |call: &String| {
+                d.iter()
+                    .any(|e| e["payload"]["subject_ref"]["call_id"] == call.as_str())
+            };
+            if calls.iter().all(decided) {
+                break all;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "{caps}: Entscheidung fehlt: {all:#?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
         let d = decisions(&turn, "tool_call");
         for call in &calls {
             let n = d
