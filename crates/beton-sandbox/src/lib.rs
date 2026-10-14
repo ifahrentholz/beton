@@ -8,6 +8,9 @@
 //!   (SBX-003); Credential-Pfade und Dotfiles sind maskiert (SBX-004).
 //! - Seatbelt (macOS, SBX-007): deny-default-Profil aus einem versionierten Template mit
 //!   Parametern.
+//! - Linux (SBX-008, SBX-009): Landlock + seccomp + Namespaces über den Launcher
+//!   `beton __sandbox-exec`, bubblewrap als Fallback.
+//! - Ressourcenlimits und Aufräumen des Prozessbaums (SBX-013).
 //!
 //! Alle Prozessstarts von Harness- und Tool-Prozessen laufen über dieses Crate; außerhalb
 //! verbietet ein Clippy-Lint (`disallowed-methods`) den direkten `Command`-Start (SBX-001 AC2).
@@ -19,9 +22,12 @@ pub mod command;
 pub mod error;
 pub mod explain;
 pub mod git;
+pub mod linux;
 pub mod masks;
 pub mod none;
 pub mod paths;
+#[cfg(target_os = "macos")]
+mod proctree;
 pub mod provider;
 pub mod registry;
 pub mod resolve;
@@ -36,8 +42,9 @@ pub use git::GitLayout;
 pub use masks::HarnessGrants;
 pub use none::NoneProvider;
 pub use provider::{ProbeReport, ProviderId, SandboxProvider};
-pub use registry::{EventSink, Os, Registry, Sandbox, auto_backend};
+pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
 pub use resolve::{
-    Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Stage, check_caps, resolve,
+    Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Stage, check_caps,
+    mark_unenforced_limits, resolve,
 };
-pub use spec::{BackendChoice, SandboxSpec, WorkspaceAccess};
+pub use spec::{BackendChoice, Limits, SandboxSpec, WorkspaceAccess};

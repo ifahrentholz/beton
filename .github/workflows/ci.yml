@@ -65,10 +65,22 @@ jobs:
         run: |
           cargo nextest run --workspace --no-run
           cargo fetch
+      - name: bubblewrap installieren (SBX-009)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          bwrap --version
       - name: Unprivilegierte User-Namespaces erlauben
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        # ptrace ohne Yama-Einschränkung wie unter Debian: Die Sandbox darf sich nicht auf Yama
+        # verlassen (SBX-008 AC3).
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.yama.ptrace_scope=0
       # covers: QA-001 AC2 (Tests laufen ohne ausgehendes Netz; ein Netzzugriff scheitert)
       - name: Tests ohne Netzwerk (nur Loopback)
+        # Die Linux-Escape-Suite läuft für beide Backends; keins darf fehlen (SBX-008, SBX-009).
+        env:
+          BETON_TEST_LINUX_BACKENDS: landlock,bwrap
         run: |
           unshare --user --map-root-user --net -- sh -euc '
             ip link set lo up
@@ -79,6 +91,47 @@ jobs:
             cargo nextest run --workspace --offline
             cargo test --workspace --doc --offline
           '
+      # Sandbox-Fälle, die Einstellungen des Hosts brauchen; jeder Lauf prüft, dass die
+      # Einstellung wirklich galt, statt Fälle zu überspringen. Danach ist alles zurückgesetzt.
+      # covers: SBX-008 AC5 (AppArmor-Restriktion: mit Paketprofil nutzbar, ohne Grund und Fallback)
+      - name: Sandbox mit AppArmor-Userns-Restriktion und Profil (SBX-008 AC5)
+        run: |
+          # Kernel, Landlock-ABI und bwrap dieses Runners im Log (QA-005 AC3 folgt mit WP-48).
+          uname -r
+          target/debug/beton sandbox probe
+          launcher="$PWD/target/debug/beton-sandbox-exec"
+          sed -e "s#/usr/bin/beton#$launcher#" -e 's#profile beton #profile beton-ci #' \
+            deploy/apparmor/beton | sudo tee /etc/apparmor.d/beton-ci >/dev/null
+          sudo apparmor_parser -r /etc/apparmor.d/beton-ci
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+          status=0
+          BETON_TEST_EXPECT_USERNS_RESTRICTED=1 BETON_TEST_APPARMOR_LAUNCHER="$launcher" \
+            cargo nextest run -p beton-sandbox --offline -E 'test(sbx_008_ac5)' || status=$?
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apparmor_parser -R /etc/apparmor.d/beton-ci
+          exit $status
+      # covers: SBX-009 AC1 (ohne unprivilegierte User-Namespaces wählt auto bwrap; Suite besteht)
+      - name: Sandbox ohne User-Namespaces mit setuid-bwrap (SBX-009 AC1)
+        run: |
+          sudo chmod u+s /usr/bin/bwrap
+          sudo sysctl -w kernel.unprivileged_userns_clone=0
+          status=0
+          BETON_TEST_LINUX_BACKENDS=bwrap BETON_TEST_EXPECT_AUTO=bwrap \
+            cargo nextest run -p beton-sandbox --offline \
+            -E '(binary(linux) | binary(limits)) & not test(sbx_008_ac5)' || status=$?
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          sudo chmod u-s /usr/bin/bwrap
+          exit $status
+      # covers: SBX-013 AC3 (Speicherlimit mit cgroup-v2-Delegation, OOM des Tools)
+      - name: Sandbox mit delegierter cgroup (SBX-013 AC1, AC3)
+        run: |
+          cg=/sys/fs/cgroup/beton-ci
+          sudo mkdir -p "$cg/tests"
+          echo "+memory +pids" | sudo tee "$cg/cgroup.subtree_control" >/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$cg"
+          echo $$ | sudo tee "$cg/tests/cgroup.procs" >/dev/null
+          BETON_TEST_EXPECT_CGROUP=1 cargo nextest run -p beton-sandbox --offline -E 'test(sbx_013)'
+
       # covers: AUTH-001 AC3 (zweiter OS-User kann weder Token-Datei noch Socket öffnen)
       - name: Zweiter OS-User ohne Zugriff
         run: |

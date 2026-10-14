@@ -9,7 +9,7 @@
 //! Über die Ebenen (Agent > Projekt > User > Default) gilt: Skalare und Grants
 //! (`read_paths`, `write_paths`, `allow_hidden`, `egress_rules`, `egress_allow_private`,
 //! `env.passthrough`) kommen von der spezifischsten Ebene, die sie setzt; `masks` werden
-//! vereinigt, `env.set` schlüsselweise überschrieben.
+//! vereinigt, `env.set` und `limits` feldweise überschrieben.
 
 use std::collections::BTreeMap;
 
@@ -106,6 +106,83 @@ pub struct SandboxEnvConfig {
     pub set: BTreeMap<String, String>,
 }
 
+/// `sandbox.limits` (SBX-013): Grenzen für den ganzen Prozessbaum einer Sandbox. Nicht gesetzte
+/// Felder begrenzen nichts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    /// Speicher des Baums in MiB (Linux: cgroup v2 `memory.max`, nur mit Delegation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mb: Option<u64>,
+    /// Höchstzahl gleichzeitiger Prozesse und Threads (cgroup `pids.max` bzw. `RLIMIT_NPROC`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pids: Option<u32>,
+    /// CPU-Zeit je Prozess in Sekunden (`RLIMIT_CPU`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_seconds: Option<u64>,
+    /// Größe einzelner Dateien in MiB (`RLIMIT_FSIZE`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size_mb: Option<u64>,
+}
+
+impl Limits {
+    /// Kleinstes sinnvolles `pids`-Limit (Shell, Launcher und ein Werkzeug brauchen mehr).
+    pub const MIN_PIDS: u32 = 16;
+    /// Kleinstes `memory_mb`.
+    pub const MIN_MEMORY_MB: u64 = 16;
+
+    /// Ist irgendein Limit gesetzt?
+    pub fn any(&self) -> bool {
+        self.memory_mb.is_some()
+            || self.pids.is_some()
+            || self.cpu_seconds.is_some()
+            || self.file_size_mb.is_some()
+    }
+
+    /// Prüft die Werte (lexikalisch, beim Laden).
+    pub fn validate(&self) -> Result<(), SandboxError> {
+        if let Some(p) = self.pids
+            && p < Self::MIN_PIDS
+        {
+            return Err(SandboxError::invalid(
+                "limits.pids",
+                format!("{p} ist zu klein (mindestens {})", Self::MIN_PIDS),
+            ));
+        }
+        if let Some(m) = self.memory_mb
+            && m < Self::MIN_MEMORY_MB
+        {
+            return Err(SandboxError::invalid(
+                "limits.memory_mb",
+                format!("{m} ist zu klein (mindestens {})", Self::MIN_MEMORY_MB),
+            ));
+        }
+        if self.cpu_seconds == Some(0) {
+            return Err(SandboxError::invalid(
+                "limits.cpu_seconds",
+                "0 ist kein gültiges Limit",
+            ));
+        }
+        if self.file_size_mb == Some(0) {
+            return Err(SandboxError::invalid(
+                "limits.file_size_mb",
+                "0 ist kein gültiges Limit",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Je Feld gewinnt `other`, wenn gesetzt.
+    pub fn merged_with(self, other: &Limits) -> Limits {
+        Limits {
+            memory_mb: other.memory_mb.or(self.memory_mb),
+            pids: other.pids.or(self.pids),
+            cpu_seconds: other.cpu_seconds.or(self.cpu_seconds),
+            file_size_mb: other.file_size_mb.or(self.file_size_mb),
+        }
+    }
+}
+
 /// Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der
 /// weniger spezifischen Ebene.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -145,6 +222,9 @@ pub struct SandboxSpec {
     /// Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_allow_private: Option<Vec<String>>,
+    /// Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<Limits>,
 }
 
 /// Environment-Variablen, die nie in eine Sandbox gelangen, auch nicht per `passthrough`
@@ -218,6 +298,9 @@ impl SandboxSpec {
                 if value.is_some() {
                     field.clone_from(value);
                 }
+            }
+            if let Some(l) = &layer.limits {
+                out.limits = Some(out.limits.unwrap_or_default().merged_with(l));
             }
             if let Some(masks) = &layer.masks {
                 let all = out.masks.get_or_insert_with(Vec::new);

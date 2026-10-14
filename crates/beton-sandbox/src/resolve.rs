@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::caps::{self, CapSet};
 use crate::error::SandboxError;
@@ -16,10 +16,10 @@ use crate::git::GitLayout;
 use crate::masks::{DEFAULT_MASKS, DEFAULT_WORKSPACE_MASKS, HarnessGrants, KEYCHAINS};
 use crate::paths::{Forbidden, canonical, expand};
 use crate::provider::{ProbeReport, ProviderId};
-use crate::spec::{SandboxSpec, WorkspaceAccess, env_denied};
+use crate::spec::{Limits, SandboxSpec, WorkspaceAccess, env_denied};
 
 /// Stufe einer Sandbox.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     /// Stufe 1: der Vendor-Harness-Prozess.
@@ -89,7 +89,7 @@ impl ResolveCtx {
 }
 
 /// Eine Maske innerhalb freigegebener Wurzeln.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mask {
     /// Fester Pfad (Datei oder Verzeichnis samt Inhalt).
@@ -104,7 +104,7 @@ pub enum Mask {
 }
 
 /// Dotfiles direkt in einer Grant-Wurzel sind maskiert, außer `allow` (SBX-004).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HiddenDotfiles {
     pub root: PathBuf,
     pub allow: Vec<String>,
@@ -113,7 +113,7 @@ pub struct HiddenDotfiles {
 }
 
 /// Git-Verzeichnisse, deren Hooks und Konfiguration read-only bleiben (SBX-003 AC4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitProtection {
     /// `<workspace>/.git` darf weder ersetzt noch umbenannt werden.
     pub dot_git: PathBuf,
@@ -123,7 +123,7 @@ pub struct GitProtection {
 }
 
 /// Netzmodus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum NetMode {
     /// Gar kein Netz.
@@ -152,6 +152,8 @@ pub struct ResolvedPolicy {
     pub net: NetMode,
     pub egress_rules: Vec<String>,
     pub egress_allow_private: Vec<String>,
+    /// Ressourcenlimits des Prozessbaums (SBX-013).
+    pub limits: Limits,
     /// Capabilities, die das Backend erzwingen muss.
     pub required: CapSet,
     /// Ausdrücklich nicht erzwungene Capabilities (Opt-out, z. B. `backend: none`).
@@ -179,6 +181,7 @@ impl ResolvedPolicy {
             net: NetMode::None,
             egress_rules: Vec::new(),
             egress_allow_private: Vec::new(),
+            limits: Limits::default(),
             required: CapSet::new(),
             degraded: caps::required_default(),
             notes: Vec::new(),
@@ -583,10 +586,28 @@ pub fn resolve(
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
+        limits: spec.limits.unwrap_or_default(),
         required,
         degraded,
         notes,
     })
+}
+
+/// Markiert Limits, die das Backend laut Probe nicht durchsetzen kann, als *degraded* (sichtbar
+/// in `sandbox.started` und `explain`). Ressourcenlimits sind kein Pflicht-Cap: Seatbelt kennt
+/// kein Speicherlimit, Linux nur mit cgroup-Delegation (SBX-013 AC3).
+pub fn mark_unenforced_limits(probe: &ProbeReport, policy: &mut ResolvedPolicy) {
+    if policy.limits.memory_mb.is_some() && !probe.caps.contains(&crate::caps::Cap::Resources) {
+        policy.degraded.insert(crate::caps::Cap::Resources);
+        let why = probe
+            .degraded_reasons
+            .get(&crate::caps::Cap::Resources)
+            .cloned()
+            .unwrap_or_else(|| "nicht durchsetzbar".into());
+        policy
+            .notes
+            .push(format!("limits.memory_mb wird nicht durchgesetzt: {why}"));
+    }
 }
 
 /// Kann das Backend laut Probe alle geforderten Capabilities erzwingen?

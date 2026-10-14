@@ -108,8 +108,10 @@ pub trait SandboxProvider: Send + Sync {
         spec: &SandboxSpec,
         ctx: &ResolveCtx,
     ) -> Result<ResolvedPolicy, SandboxError> {
-        let policy = crate::resolve::resolve(self.id(), spec, ctx)?;
-        crate::resolve::check_caps(&self.probe(), &policy)?;
+        let mut policy = crate::resolve::resolve(self.id(), spec, ctx)?;
+        let probe = self.probe();
+        crate::resolve::check_caps(&probe, &policy)?;
+        crate::resolve::mark_unenforced_limits(&probe, &mut policy);
         Ok(policy)
     }
 
@@ -119,4 +121,16 @@ pub trait SandboxProvider: Send + Sync {
         policy: &ResolvedPolicy,
         cmd: CommandSpec,
     ) -> Result<SandboxedChild, SandboxError>;
+
+    /// Wie [`SandboxProvider::spawn`]; erkannte Verstöße (z. B. ein erreichtes Limit,
+    /// SBX-013 AC1) meldet das Backend zusätzlich an `violations`.
+    fn spawn_observed(
+        &self,
+        policy: &ResolvedPolicy,
+        cmd: CommandSpec,
+        violations: Option<crate::registry::ViolationSink>,
+    ) -> Result<SandboxedChild, SandboxError> {
+        let _ = violations;
+        self.spawn(policy, cmd)
+    }
 }
