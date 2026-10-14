@@ -10,6 +10,11 @@ fn main() -> ExitCode {
     if let Some(code) = beton_sandbox::linux::launcher_dispatch() {
         return code;
     }
+    // SBX-002: als `bt-exec` (bzw. `beton __exec`) ist beton der Client des Exec-Brokers in
+    // Stufe 1, ohne Laufzeit und ohne Konfiguration.
+    if let Some(code) = beton_sandbox::broker::exec_dispatch() {
+        return code;
+    }
     // Fehlerhafte Aufrufe: clap schreibt Usage und Hinweis auf stderr, Exit-Code 2 (CLI-001 AC2).
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
