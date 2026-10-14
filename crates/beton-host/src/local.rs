@@ -327,6 +327,15 @@ impl RunnerProvider for LocalProvider {
         })
     }
 
+    async fn release(&self, h: &RunnerHandle) -> Result<(), RunnerError> {
+        // Der Prozess endet sonst mit dem `Drop` seines Handles (Prozessgruppe, SBX-001);
+        // freigegeben läuft er weiter, bis er von selbst endet (POL-010 AC4).
+        if let Some(p) = self.running.lock().await.remove(&h.runner_id) {
+            std::mem::forget(p);
+        }
+        Ok(())
+    }
+
     async fn terminate(&self, h: &RunnerHandle, mode: TerminateMode) -> Result<(), RunnerError> {
         let mut running = self.running.lock().await;
         let Some(p) = running.get_mut(&h.runner_id) else {

@@ -74,6 +74,26 @@ impl RunnerConn {
     }
 }
 
+/// Wartet, bis der Daemon herunterfährt; ohne Signal nie.
+async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match rx {
+        Some(rx) => {
+            while !*rx.borrow() {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Offene Freigaben einer Session: Ablauf (Unix-Sekunden) und Art.
+type OpenApprovals = HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>;
+
+/// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
+pub const DETACH_MAX: Duration = Duration::from_secs(3600);
+
 /// Verbundene Runner und ihre Tokens.
 #[derive(Default)]
 pub struct RunnerRegistry {
@@ -85,6 +105,13 @@ pub struct RunnerRegistry {
     stopping: Mutex<HashMap<SessionId, String>>,
     /// Test-Haken: Sessions, deren Verbindungen bis zum Zeitpunkt abgelehnt werden.
     refuse_until: Mutex<HashMap<SessionId, Instant>>,
+    /// Offene Freigaben je Session mit Ablauf (Unix-Sekunden) aus dem Event-Strom des Runners.
+    approvals: Mutex<HashMap<SessionId, OpenApprovals>>,
+    /// Abgekoppelte Runner eines vorigen Daemons, die sich bis zur Frist neu verbinden dürfen
+    /// (POL-010 AC4).
+    expected: Mutex<HashMap<SessionId, (Instant, [u8; 32])>>,
+    /// Beim Herunterfahren abgekoppelte Sessions: Close-Frame mit Grund `detached`.
+    detached: Mutex<std::collections::HashSet<SessionId>>,
     next_conn: AtomicU64,
     next_cmd: AtomicU64,
 }
@@ -139,6 +166,150 @@ impl RunnerRegistry {
 
     pub fn connected(&self, session: SessionId) -> bool {
         lock(&self.conns).contains_key(&session)
+    }
+
+    /// Verfolgt offene Freigaben aus den Events des Runners (POL-010 AC4, Leerlauf).
+    pub fn note_events<'a>(
+        &self,
+        session: SessionId,
+        events: impl IntoIterator<Item = &'a beton_core::event::Event>,
+    ) {
+        let mut all = lock(&self.approvals);
+        let open = all.entry(session).or_default();
+        for e in events {
+            match e.payload() {
+                Some(EventPayload::ApprovalRequested(r)) => {
+                    open.insert(
+                        r.approval_id,
+                        (r.expires_at.as_offset_date_time().unix_timestamp(), r.kind),
+                    );
+                }
+                Some(EventPayload::ApprovalResolved(r)) => {
+                    open.remove(&r.approval_id);
+                }
+                _ => {}
+            }
+        }
+        if open.is_empty() {
+            all.remove(&session);
+        }
+    }
+
+    /// Wartet der Runner der Session auf eine Freigabe?
+    pub fn has_open_approvals(&self, session: SessionId) -> bool {
+        lock(&self.approvals)
+            .get(&session)
+            .is_some_and(|m| !m.is_empty())
+    }
+
+    /// Offene Freigaben eines (übernommenen) Runners aus der Projektion: ID, Ablauf, Art.
+    pub fn restore_open(
+        &self,
+        session: SessionId,
+        items: impl IntoIterator<
+            Item = (
+                beton_core::id::ApprovalId,
+                i64,
+                beton_core::event::ApprovalKind,
+            ),
+        >,
+    ) {
+        let mut all = lock(&self.approvals);
+        let open = all.entry(session).or_default();
+        for (id, until, kind) in items {
+            open.insert(id, (until, kind));
+        }
+        if open.is_empty() {
+            all.remove(&session);
+        }
+    }
+
+    /// Koppelt Runner mit offener **Policy-Freigabe** ab (POL-010 AC4): Session, Hash des
+    /// Tokens und Frist = Ablauf der letzten Policy-Freigabe, höchstens [`DETACH_MAX`]. Fragen
+    /// (`ask_user`) halten keinen Runner über den Daemon hinaus.
+    pub fn detach(&self, sessions: &[SessionId]) -> Vec<crate::detached::DetachedRunner> {
+        let approvals = lock(&self.approvals);
+        let tokens = lock(&self.tokens);
+        let mut detached = lock(&self.detached);
+        let cap = time::OffsetDateTime::now_utc().unix_timestamp()
+            + i64::try_from(DETACH_MAX.as_secs()).unwrap_or(3600);
+        let mut out = Vec::new();
+        for session in sessions {
+            let Some(until) = approvals.get(session).and_then(|m| {
+                m.values()
+                    .filter(|(_, k)| *k == beton_core::event::ApprovalKind::Policy)
+                    .map(|(u, _)| *u)
+                    .max()
+            }) else {
+                continue;
+            };
+            for (hash, s) in tokens.iter() {
+                if s == session {
+                    detached.insert(*session);
+                    out.push(crate::detached::DetachedRunner {
+                        session_id: *session,
+                        token_sha256: hex::encode(hash),
+                        until: until.min(cap),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Wurde die Session beim Herunterfahren abgekoppelt?
+    pub fn is_detached(&self, session: SessionId) -> bool {
+        lock(&self.detached).contains(&session)
+    }
+
+    /// Nimmt einen abgekoppelten Runner eines vorigen Daemons an (POL-010 AC4): sein Token gilt
+    /// nur bis zur Frist bzw. bis er sich verbunden hat.
+    pub fn adopt(&self, d: &crate::detached::DetachedRunner) {
+        let Ok(bytes) = hex::decode(&d.token_sha256) else {
+            return;
+        };
+        let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return;
+        };
+        let left = d.until - time::OffsetDateTime::now_utc().unix_timestamp();
+        if left <= 0 {
+            return;
+        }
+        let left = Duration::from_secs(left.unsigned_abs()).min(DETACH_MAX);
+        lock(&self.tokens).insert(hash, d.session_id);
+        lock(&self.expected).insert(d.session_id, (Instant::now() + left, hash));
+    }
+
+    /// Wird ein abgekoppelter Runner für die Session noch erwartet? Nach der Frist verfällt
+    /// sein Token.
+    pub fn expected(&self, session: SessionId) -> bool {
+        if self.connected(session) {
+            lock(&self.expected).remove(&session);
+            return false;
+        }
+        let entry = lock(&self.expected).get(&session).copied();
+        match entry {
+            Some((until, _)) if until > Instant::now() => true,
+            Some(_) => {
+                self.forget_expected(session);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Ein erwarteter Runner kommt nicht zurück: Erwartung und Token verfallen.
+    pub fn forget_expected(&self, session: SessionId) {
+        if let Some((_, hash)) = lock(&self.expected).remove(&session)
+            && !self.connected(session)
+        {
+            lock(&self.tokens).remove(&hash);
+        }
+    }
+
+    /// Verbundene Sessions.
+    pub fn connected_sessions(&self) -> Vec<SessionId> {
+        lock(&self.conns).keys().copied().collect()
     }
 
     /// Kommando an den Runner zustellen (`cmd.deliver`) und auf `cmd.result` warten.
@@ -244,6 +415,8 @@ pub struct TunnelState {
     pub queues: Arc<crate::queue::Queues>,
     /// Weitere Beobachter gespeicherter Events (Session-Titel, SES-010).
     pub observer: Option<Arc<dyn EventObserver>>,
+    /// Herunterfahren: Verbindungen enden mit 4503, Runner verbinden sich neu (POL-010 AC4).
+    pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl TunnelState {
@@ -395,6 +568,23 @@ async fn connection(
 
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
     let conn_id = state.runners.next_conn.fetch_add(1, Ordering::Relaxed);
+    lock(&state.runners.expected).remove(&session_id);
+    // Offene Freigaben aus der Projektion: ein übernommener Runner meldet sie nicht erneut
+    // (POL-010 AC4, Leerlauf).
+    if let Ok(open) = state.events.store.open_approvals(org).await {
+        state.runners.restore_open(
+            session_id,
+            open.into_iter()
+                .filter(|a| a.session_id == session_id)
+                .map(|a| {
+                    (
+                        a.id,
+                        a.expires_at.as_offset_date_time().unix_timestamp(),
+                        a.kind,
+                    )
+                }),
+        );
+    }
     lock(&state.runners.conns).insert(
         session_id,
         RunnerConn {
@@ -409,8 +599,20 @@ async fn connection(
     let mut ping = tokio::time::interval(state.config.ping_interval);
     ping.reset();
     let mut last_pong = Instant::now();
+    let mut shutdown = state.shutdown.clone();
     loop {
         tokio::select! {
+            () = shutting_down(&mut shutdown) => {
+                // Abgekoppelte Runner warten auf den nächsten Daemon (POL-010 AC4), alle anderen
+                // enden mit dem Daemon.
+                let reason = if state.runners.is_detached(session_id) {
+                    "detached"
+                } else {
+                    "Daemon fährt herunter"
+                };
+                let _ = sink.send(close_msg(close::SHUTTING_DOWN, reason)).await;
+                break;
+            }
             down = rx.recv() => {
                 let Some(down) = down else { break };
                 if sink.send(Message::Text(serde_json::to_string(&down).unwrap_or_default().into())).await.is_err() {
@@ -569,6 +771,7 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                 .unwrap_or(persisted)
                 .max(persisted);
             let fresh: Vec<_> = batch.into_iter().filter(|e| e.rseq > persisted).collect();
+            runners.note_events(session, fresh.iter().map(|e| &e.event));
             let mut busy = None;
             for e in &fresh {
                 match e.event.payload() {
@@ -661,7 +864,11 @@ pub async fn idle_reaper(
         }
         let idle: Vec<SessionId> = lock(&state.runners.conns)
             .iter()
-            .filter(|(s, c)| c.idle(state.config.idle_timeout) && hub.subscribers(**s) == 0)
+            .filter(|(s, c)| {
+                c.idle(state.config.idle_timeout)
+                    && hub.subscribers(**s) == 0
+                    && !state.runners.has_open_approvals(**s)
+            })
             .map(|(s, _)| *s)
             .collect();
         for session in idle {
@@ -718,5 +925,217 @@ mod tests {
             "altes Token bleibt gesperrt"
         );
         assert_eq!(runners.session_for(&successor), Some(session));
+    }
+
+    fn approval(
+        session: SessionId,
+        id: beton_core::id::ApprovalId,
+        secs: i64,
+    ) -> beton_core::event::Event {
+        beton_core::event::Event::new(
+            session,
+            0,
+            beton_core::event::Actor::default(),
+            EventPayload::ApprovalRequested(beton_core::event::ApprovalRequested {
+                approval_id: id,
+                kind: beton_core::event::ApprovalKind::Policy,
+                expires_at: (time::OffsetDateTime::now_utc() + time::Duration::seconds(secs))
+                    .into(),
+                ..beton_core::event::ApprovalRequested::default()
+            }),
+        )
+    }
+
+    #[test]
+    fn pol_010_ac4_runner_with_open_approval_is_detached_and_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let (s1, s2) = (SessionId::new(), SessionId::new());
+        let old = RunnerRegistry::default();
+        let t1 = old.mint_token(s1).unwrap();
+        let _t2 = old.mint_token(s2).unwrap();
+        let a = beton_core::id::ApprovalId::new();
+        old.note_events(s1, [&approval(s1, a, 600)]);
+        assert!(old.has_open_approvals(s1));
+        assert!(!old.has_open_approvals(s2));
+        // Nur Runner mit offener Freigabe überdauern den Daemon.
+        let detached = old.detach(&[s1, s2]);
+        assert_eq!(detached.len(), 1);
+        assert_eq!(detached[0].session_id, s1);
+        crate::detached::save(&file, &detached).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // Die Datei enthält nur den Hash des Tokens.
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains(&t1));
+
+        let new = RunnerRegistry::default();
+        for d in crate::detached::take(&file) {
+            new.adopt(&d);
+        }
+        assert!(!file.exists(), "einmal gelesen, dann gelöscht");
+        assert_eq!(new.session_for(&t1), Some(s1));
+        assert!(new.expected(s1));
+        assert!(!new.expected(s2));
+        // Aufgelöst: nicht mehr offen.
+        let resolved = beton_core::event::Event::new(
+            s1,
+            0,
+            beton_core::event::Actor::default(),
+            EventPayload::ApprovalResolved(beton_core::event::ApprovalResolved {
+                approval_id: a,
+                ..beton_core::event::ApprovalResolved::default()
+            }),
+        );
+        old.note_events(s1, [&resolved]);
+        assert!(!old.has_open_approvals(s1));
+    }
+
+    #[test]
+    fn pol_010_ac4_expired_detached_runners_are_not_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        old.mint_token(s).unwrap();
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), -5)]);
+        let detached = old.detach(&[s]);
+        crate::detached::save(&file, &detached).unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+        // Kaputte Datei: nichts übernehmen, fail closed.
+        std::fs::write(&file, "kein json").unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+    }
+
+    fn approval_of(
+        session: SessionId,
+        id: beton_core::id::ApprovalId,
+        secs: i64,
+        kind: beton_core::event::ApprovalKind,
+    ) -> beton_core::event::Event {
+        let mut e = approval(session, id, secs);
+        if let beton_core::event::EventBody::Inline(EventPayload::ApprovalRequested(r)) =
+            &mut e.body
+        {
+            r.kind = kind;
+        }
+        e
+    }
+
+    #[test]
+    fn pol_010_ac4_only_policy_approvals_detach_and_at_most_one_hour() {
+        use beton_core::event::ApprovalKind;
+        let (policy, question) = (SessionId::new(), SessionId::new());
+        let r = RunnerRegistry::default();
+        r.mint_token(policy).unwrap();
+        r.mint_token(question).unwrap();
+        r.note_events(
+            policy,
+            [&approval_of(
+                policy,
+                beton_core::id::ApprovalId::new(),
+                24 * 3600,
+                ApprovalKind::Policy,
+            )],
+        );
+        r.note_events(
+            question,
+            [&approval_of(
+                question,
+                beton_core::id::ApprovalId::new(),
+                3600,
+                ApprovalKind::Question,
+            )],
+        );
+        // Eine Frage (`ask_user`) hält keinen Runner über den Daemon hinaus.
+        let d = r.detach(&[policy, question]);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].session_id, policy);
+        assert!(r.is_detached(policy));
+        assert!(!r.is_detached(question));
+        // Frist höchstens eine Stunde, auch wenn die Freigabe länger läuft.
+        let max = time::OffsetDateTime::now_utc().unix_timestamp() + DETACH_MAX.as_secs() as i64;
+        assert!(d[0].until <= max, "{} > {max}", d[0].until);
+        assert_eq!(DETACH_MAX, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn pol_010_ac4_unclaimed_adoption_expires_with_its_token() {
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        let token = old.mint_token(s).unwrap();
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        let mut d = old.detach(&[s]).remove(0);
+        let new = RunnerRegistry::default();
+        // Abgelaufen: weder erwartet noch Token gültig.
+        d.until = time::OffsetDateTime::now_utc().unix_timestamp() - 1;
+        new.adopt(&d);
+        assert_eq!(new.session_for(&token), None);
+        assert!(!new.expected(s));
+        // Frist läuft ab, ohne dass der Runner kommt: Token wird entfernt.
+        d.until = time::OffsetDateTime::now_utc().unix_timestamp() + 600;
+        new.adopt(&d);
+        assert_eq!(new.session_for(&token), Some(s));
+        new.forget_expected(s);
+        assert_eq!(
+            new.session_for(&token),
+            None,
+            "Token gilt nur bis zur Übernahme"
+        );
+        // Falsches Token: nie gültig.
+        new.adopt(&d);
+        assert_eq!(new.session_for("bt_run_falsch"), None);
+    }
+
+    #[test]
+    fn pol_010_ac4_open_approvals_are_restored_from_the_projection() {
+        use beton_core::event::ApprovalKind;
+        let s = SessionId::new();
+        let r = RunnerRegistry::default();
+        assert!(!r.has_open_approvals(s));
+        let until = time::OffsetDateTime::now_utc().unix_timestamp() + 600;
+        r.restore_open(
+            s,
+            [(
+                beton_core::id::ApprovalId::new(),
+                until,
+                ApprovalKind::Policy,
+            )],
+        );
+        assert!(r.has_open_approvals(s));
+        r.mint_token(s).unwrap();
+        assert_eq!(r.detach(&[s]).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pol_010_ac4_detached_file_must_be_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let s = SessionId::new();
+        let r = RunnerRegistry::default();
+        r.mint_token(s).unwrap();
+        r.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        crate::detached::save(&file, &r.detach(&[s])).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            crate::detached::take(&file).is_empty(),
+            "lesbar für andere: nicht übernehmen"
+        );
+        // Ein Symlink statt der Datei wird nicht gelesen.
+        let target = dir.path().join("ziel.json");
+        crate::detached::save(&target, &r.detach(&[s])).unwrap();
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+        // Eine liegengebliebene Temp-Datei verhindert das Speichern nicht.
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(file.with_extension("json.tmp"), "alt").unwrap();
+        crate::detached::save(&file, &r.detach(&[s])).unwrap();
+        assert_eq!(crate::detached::take(&file).len(), 1);
     }
 }

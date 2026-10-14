@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from 'react'
-import { MessagesSquare } from 'lucide-react'
+import { Link, useRouterState } from '@tanstack/react-router'
+import { Inbox, MessagesSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSessions } from '@/store/sessions'
+import { useInboxCount } from './inbox'
 import { useLayout } from './layout-state'
 import { NewSessionDialog } from './new-session'
 import { SessionList } from './session-list'
@@ -15,12 +17,36 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
   const closeList = useLayout((s) => s.closeList)
   const offline = useSessions((s) => s.offline)
   const [newOpen, setNewOpen] = useState(false)
+  const path = useRouterState({ select: (s) => s.location.pathname })
+  const inbox = path.startsWith('/inbox')
+  const count = useInboxCount()
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background text-foreground">
       <div className="hidden w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-2 sm:flex">
-        <span className="flex size-9 items-center justify-center rounded-md bg-accent text-foreground" title="Sessions" aria-current="page">
+        <Link
+          to="/"
+          title="Sessions"
+          aria-label="Sessions"
+          aria-current={!inbox ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && 'bg-accent text-foreground')}
+        >
           <MessagesSquare className="size-[18px]" />
-        </span>
+        </Link>
+        <Link
+          to="/inbox"
+          title="Inbox"
+          aria-label={count ? `Inbox, ${count} offen` : 'Inbox'}
+          aria-current={inbox ? 'page' : undefined}
+          className={cn('relative flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', inbox && 'bg-accent text-foreground')}
+          data-testid="nav-inbox"
+        >
+          <Inbox className="size-[18px]" />
+          {count > 0 && (
+            <span className="chamfer-sm absolute -top-0.5 -right-0.5 min-w-4 bg-signal px-0.5 text-center text-[10px] leading-4 font-semibold text-signal-foreground" data-testid="inbox-count">
+              {count}
+            </span>
+          )}
+        </Link>
         <div className="mt-auto flex flex-col items-center gap-2 pb-1">
           <span
             title={offline ? 'Daemon nicht erreichbar' : 'Lokaler Server auf diesem Rechner'}
