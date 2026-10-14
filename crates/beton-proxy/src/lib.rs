@@ -15,10 +15,12 @@
 //! Fail closed: Jeder Fehler (Regel ungültig, DNS, TLS, Secret-Store gesperrt) führt zur
 //! Ablehnung, nie zu stillschweigendem Erlauben.
 
+pub mod ca;
 pub mod ip;
 pub mod normalize;
 pub mod rules;
 
+pub use ca::{BetonCa, CaError, CaInfo, CaStore, LeafIssuer};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
 pub use rules::{Decision, DenyReason, Request, RuleError, RuleSet};
