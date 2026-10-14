@@ -1,0 +1,17 @@
+# PRX-003 AC1: Deny-Regeln haben Vorrang, unabhängig von der Reihenfolge.
+- name: Deny vor Allow
+  rules:
+    - "!DELETE api.github.com/**"
+    - "* api.github.com/repos/ifahrentholz/**"
+  cases:
+    - { request: "GET https://api.github.com/repos/ifahrentholz/beton", expect: allow, rule: "* api.github.com/repos/ifahrentholz/**" }
+    - { request: "DELETE https://api.github.com/repos/ifahrentholz/beton", expect: deny, reason: denied_by_rule, rule: "!DELETE api.github.com/**" }
+    - { request: "GET https://api.github.com/user", expect: deny, reason: no_matching_rule }
+- name: Deny nach Allow
+  rules:
+    - "* *.example.test"
+    - "!POST secret.example.test/admin/**"
+  cases:
+    - { request: "POST https://secret.example.test/admin/x", expect: deny, reason: denied_by_rule }
+    - { request: "POST https://secret.example.test/public", expect: allow }
+    - { request: "GET https://secret.example.test/admin/x", expect: allow }

@@ -1,0 +1,24 @@
+# PRX-003 AC1/AC4: Ports und Klartext-HTTP nur mit expliziter http://-Regel.
+- name: Default-Port 443
+  rules: ["GET example.test"]
+  cases:
+    - { request: "GET https://example.test/", expect: allow }
+    - { request: "GET https://example.test:443/", expect: allow }
+    - { request: "GET https://example.test:8443/", expect: deny }
+- name: Expliziter Port
+  rules: ["GET example.test:8443/api/**"]
+  cases:
+    - { request: "GET https://example.test:8443/api/x", expect: allow }
+    - { request: "GET https://example.test/api/x", expect: deny }
+- name: HTTP ohne http-Regel (AC4)
+  rules: ["* example.test"]
+  cases:
+    - { request: "GET http://example.test/", expect: deny, reason: no_matching_rule }
+- name: HTTP mit http-Regel
+  rules: ["GET http://example.test/**", "GET http://example.test:8080/x"]
+  cases:
+    - { request: "GET http://example.test/", expect: allow }
+    - { request: "GET http://example.test:80/a", expect: allow }
+    - { request: "GET http://example.test:8080/x", expect: allow }
+    - { request: "GET http://example.test:8080/y", expect: deny }
+    - { request: "GET https://example.test/", expect: deny }

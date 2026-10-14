@@ -1,0 +1,24 @@
+# PRX-003 AC1: Methoden-Listen, "*" und Methoden, die nie erlaubt sind.
+- name: Methoden-Liste
+  rules: ["GET,HEAD registry.npmjs.org/**"]
+  cases:
+    - { request: "GET https://registry.npmjs.org/react", expect: allow }
+    - { request: "HEAD https://registry.npmjs.org/react", expect: allow }
+    - { request: "POST https://registry.npmjs.org/react", expect: deny, reason: no_matching_rule }
+    - { request: "PUT https://registry.npmjs.org/react", expect: deny }
+- name: Stern steht für alle sieben Methoden
+  rules: ["* api.example.test"]
+  cases:
+    - { request: "GET https://api.example.test/", expect: allow }
+    - { request: "HEAD https://api.example.test/", expect: allow }
+    - { request: "POST https://api.example.test/x", expect: allow }
+    - { request: "PUT https://api.example.test/x", expect: allow }
+    - { request: "PATCH https://api.example.test/x", expect: allow }
+    - { request: "DELETE https://api.example.test/x", expect: allow }
+    - { request: "OPTIONS https://api.example.test/x", expect: allow }
+    - { request: "PROPFIND https://api.example.test/x", expect: deny, reason: no_matching_rule }
+- name: TRACE und CONNECT sind nie erlaubt
+  rules: ["* api.example.test"]
+  cases:
+    - { request: "TRACE https://api.example.test/", expect: deny, reason: method_not_allowed }
+    - { request: "CONNECT https://api.example.test/", expect: deny, reason: method_not_allowed }

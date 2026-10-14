@@ -112,6 +112,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
+        Command::Proxy(cmd) => crate::secrets::proxy(&ctx, cmd).await,
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }

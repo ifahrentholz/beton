@@ -522,6 +522,12 @@ impl Client {
         self.get("/v1/audit/verify").await
     }
 
+    /// `POST /v1/proxy/ca/rotate`: neue beton-CA (PRX-002); liefert Subject, Fingerabdruck
+    /// und Gültigkeit, nie den Schlüssel.
+    pub async fn rotate_proxy_ca(&self) -> Result<Value> {
+        self.post("/v1/proxy/ca/rotate", &Value::Null).await
+    }
+
     /// WebSocket-Verbindung (`/v1/ws`, Subprotokoll `beton.v1`) mit Begrüßung.
     pub async fn connect_ws(&self) -> Result<ws::Connection> {
         ws::Connection::open(self).await

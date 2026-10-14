@@ -1,0 +1,14 @@
+# PRX-003: Ungültige Regeln sind ein Konfigurationsfehler.
+- name: Ungültige Regeln
+  invalid_rules:
+    - ""
+    - "GET"
+    - "FOO example.test"
+    - "get example.test"
+    - "GET https://example.test"
+    - "GET example.test:70000"
+    - "GET example.test/a/**b"
+    - "GET example.test/a/../b"
+    - "GET example.test/a%2Fb"
+    - "GET *example.test"
+    - "GET a.*.example.test"
