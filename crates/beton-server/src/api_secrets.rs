@@ -204,6 +204,7 @@ fn store_view(state: &AppState) -> SecretStoreView {
     }
 }
 
+/// Secrets auflisten (nur Metadaten, nie Werte).
 #[utoipa::path(get, path = "/v1/secrets", tag = "secrets",
     params(PageQuery),
     responses((status = 200, description = "Metadaten der Secrets, nie Werte", body = SecretList)))]
@@ -239,6 +240,7 @@ pub async fn list_secrets(
     }))
 }
 
+/// Secret anlegen; der Wert geht nur in den Request.
 #[utoipa::path(post, path = "/v1/secrets", tag = "secrets",
     request_body = CreateSecretRequest,
     responses((status = 201, description = "Secret angelegt", body = SecretMetaView),
@@ -260,6 +262,7 @@ pub async fn create_secret(
     Ok((StatusCode::CREATED, axum::Json(SecretMetaView::from(meta))).into_response())
 }
 
+/// Neuen Wert für ein vorhandenes Secret setzen.
 #[utoipa::path(put, path = "/v1/secrets", tag = "secrets",
     request_body = RotateSecretRequest,
     responses((status = 200, description = "Wert ersetzt", body = SecretMetaView),
@@ -276,6 +279,7 @@ pub async fn rotate_secret(
     Ok(axum::Json(meta.into()))
 }
 
+/// Secret samt Wert entfernen.
 #[utoipa::path(delete, path = "/v1/secrets", tag = "secrets",
     params(SecretRefQuery),
     responses((status = 204, description = "Wert und Metadaten entfernt"),
@@ -289,6 +293,7 @@ pub async fn delete_secret(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Datei-Store entsperren, anlegen oder die Passphrase wechseln.
 #[utoipa::path(post, path = "/v1/secrets/unlock", tag = "secrets",
     request_body = UnlockRequest,
     responses((status = 204, description = "Entsperrt (bzw. angelegt oder Passphrase gewechselt)"),
@@ -371,6 +376,7 @@ struct AuditCursor {
     before_seq: u64,
 }
 
+/// Audit-Log lesen, neueste Einträge zuerst.
 #[utoipa::path(get, path = "/v1/audit", tag = "audit",
     params(PageQuery, AuditFilter),
     responses((status = 200, description = "Audit-Einträge, neueste zuerst", body = AuditPageView)))]
@@ -415,6 +421,7 @@ pub struct AuditVerifyView {
     pub reason: Option<String>,
 }
 
+/// Hash-Kette des Audit-Logs prüfen.
 #[utoipa::path(get, path = "/v1/audit/verify", tag = "audit",
     responses((status = 200, description = "Ergebnis der Prüfung der Hash-Kette", body = AuditVerifyView)))]
 pub async fn verify_audit(State(state): State<AppState>) -> ApiResult<axum::Json<AuditVerifyView>> {

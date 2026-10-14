@@ -140,6 +140,7 @@
         "tags": [
           "audit"
         ],
+        "summary": "Audit-Log lesen, neueste Einträge zuerst.",
         "operationId": "list_audit",
         "parameters": [
           {
@@ -231,6 +232,7 @@
         "tags": [
           "audit"
         ],
+        "summary": "Hash-Kette des Audit-Logs prüfen.",
         "operationId": "verify_audit",
         "responses": {
           "200": {
@@ -894,6 +896,7 @@
         "tags": [
           "secrets"
         ],
+        "summary": "Secrets auflisten (nur Metadaten, nie Werte).",
         "operationId": "list_secrets",
         "parameters": [
           {
@@ -974,6 +977,7 @@
         "tags": [
           "secrets"
         ],
+        "summary": "Neuen Wert für ein vorhandenes Secret setzen.",
         "operationId": "rotate_secret",
         "requestBody": {
           "content": {
@@ -1062,6 +1066,7 @@
         "tags": [
           "secrets"
         ],
+        "summary": "Secret anlegen; der Wert geht nur in den Request.",
         "operationId": "create_secret",
         "requestBody": {
           "content": {
@@ -1160,6 +1165,7 @@
         "tags": [
           "secrets"
         ],
+        "summary": "Secret samt Wert entfernen.",
         "operationId": "delete_secret",
         "parameters": [
           {
@@ -1243,6 +1249,7 @@
         "tags": [
           "secrets"
         ],
+        "summary": "Datei-Store entsperren, anlegen oder die Passphrase wechseln.",
         "operationId": "unlock_secrets",
         "requestBody": {
           "content": {
