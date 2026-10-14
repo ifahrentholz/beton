@@ -73,6 +73,12 @@ where
         line.insert("target".into(), Value::String(meta.target().to_owned()));
         line.insert("component".into(), self.component.as_str().into());
         line.insert("version".into(), crate::VERSION.into());
+        // Fallback, wenn die Pipeline blockiert: nur Metadaten, kein Inhalt (OBS-002).
+        let mut blocked = line.clone();
+        blocked.insert(
+            "message".into(),
+            beton_secrets::redact::marker("unavailable").into(),
+        );
 
         // Span-Kontext: vom äußersten zum innersten Span, innere Werte gewinnen.
         if let Some(scope) = ctx.event_scope(event) {
@@ -101,7 +107,12 @@ where
             line.insert("fields".into(), Value::Object(fields));
         }
 
-        let Ok(mut bytes) = serde_json::to_vec(&Value::Object(line)) else {
+        // OBS-002: Nachricht, Felder und Span-Kontext laufen durch die Redaction.
+        let mut line = Value::Object(line);
+        if self.redactor.redact_log_json(&mut line).is_err() {
+            line = Value::Object(blocked);
+        }
+        let Ok(mut bytes) = serde_json::to_vec(&line) else {
             return;
         };
         bytes.push(b'\n');
@@ -151,10 +162,36 @@ impl<M> RedactingWriter<M> {
 }
 
 impl<'a, M: MakeWriter<'a>> MakeWriter<'a> for RedactingWriter<M> {
-    type Writer = M::Writer;
+    type Writer = RedactingLine<M::Writer>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        let _ = &self.redactor;
-        self.inner.make_writer()
+        RedactingLine {
+            inner: self.inner.make_writer(),
+            redactor: self.redactor.clone(),
+        }
+    }
+}
+
+/// Ein Schreibvorgang des `fmt`-Layers: eine vollständig formatierte Zeile.
+pub struct RedactingLine<W> {
+    inner: W,
+    redactor: Arc<Redactor>,
+}
+
+impl<W: std::io::Write> std::io::Write for RedactingLine<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        match self.redactor.redact_log_str(&text) {
+            Ok(red) => self.inner.write_all(red.as_bytes())?,
+            Err(_) => {
+                let blocked = beton_secrets::redact::marker("unavailable");
+                self.inner.write_all(format!("{blocked}\n").as_bytes())?;
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }
