@@ -72,6 +72,38 @@ fn list() -> Vec<Proc> {
     }
 }
 
+/// `proc_listpids`-Filter für die reale UID (`PROC_RUID_ONLY` aus `libproc.h`).
+const PROC_RUID_ONLY: u32 = 5;
+
+/// Prozesse mit realer UID `uid` laut der Liste des Kernels. Sie enthält auch Prozesse, deren
+/// Daten `proc_pidinfo` nicht liefert (z. B. geschützte Prozesse); [`list`] sieht diese nicht.
+fn listed_of_ruid(uid: u32) -> u64 {
+    // SAFETY: proc_listpids schreibt höchstens `bytes` Bytes in den eigenen Puffer.
+    unsafe {
+        let n = libc::proc_listpids(PROC_RUID_ONLY, uid, std::ptr::null_mut(), 0);
+        if n <= 0 {
+            return 0;
+        }
+        let mut pids = vec![0 as libc::pid_t; n as usize / std::mem::size_of::<libc::pid_t>() + 64];
+        let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
+        let n = libc::proc_listpids(PROC_RUID_ONLY, uid, pids.as_mut_ptr().cast(), bytes);
+        if n <= 0 {
+            return 0;
+        }
+        pids.truncate(n as usize / std::mem::size_of::<libc::pid_t>());
+        pids.iter().filter(|p| **p > 0).count() as u64
+    }
+}
+
+/// Ist das `pids`-Limit erreicht? Der Kernel zählt für `RLIMIT_NPROC` alle Prozesse der realen
+/// UID; genau sehen lässt sich diese Zahl nicht. Die lesbaren Prozesse (`visible`) zählen zu
+/// wenig, wenn der Benutzer Prozesse hat, die `proc_pidinfo` nicht beschreibt; die Liste des
+/// Kernels (`listed`) zählt eher etwas zu viel. Gemeldet wird, sobald eine der beiden das Limit
+/// erreicht (#226).
+fn limit_reached(visible: u64, listed: u64, limit: u64) -> bool {
+    visible + u64::from(SLACK) >= limit || listed >= limit
+}
+
 /// Prozesse, die ein Baum mit `limits.pids = p` unter macOS starten darf: Andere Prozesse des
 /// Benutzers können währenddessen enden und Platz freigeben, deshalb bleibt ein Abstand (ein
 /// Viertel, höchstens 32). Strenger ist hier sicherer als ungenau.
@@ -157,9 +189,9 @@ impl Tracker {
                 }
                 // Der Kernel prüft RLIMIT_NPROC gegen alle Prozesse des Benutzers; genau das
                 // zählt hier.
-                if let Some((_, limit)) = nproc
+                if let Some((uid, limit)) = nproc
                     && !reported
-                    && of_uid + u64::from(SLACK) >= limit
+                    && limit_reached(of_uid, listed_of_ruid(uid), limit)
                 {
                     reported = true;
                     let v = SandboxViolation {
@@ -229,6 +261,21 @@ mod tests {
             .lines()
             .filter_map(|l| l.trim().parse().ok())
             .collect()
+    }
+
+    /// SBX-013 AC1 (#226): Gemessen auf einem Entwickler-Mac, an dem die Meldung fehlte. Die
+    /// lesbaren Prozesse des Benutzers blieben 3 unter dem Limit, weil der Kernel Prozesse
+    /// mitzählt, deren Daten `proc_pidinfo` nicht liefert; die Kernel-Liste der Prozesse mit
+    /// dieser realen UID lag dagegen darüber.
+    #[test]
+    fn sbx_013_ac1_limit_counts_processes_the_kernel_lists_but_does_not_describe() {
+        // Der Fall aus #226: lesbar 724, Kernel-Liste 732, Limit 727.
+        assert!(limit_reached(724, 732, 727));
+        // Ohne verborgene Prozesse wie bisher mit Abstand `SLACK`.
+        assert!(limit_reached(725, 725, 727));
+        assert!(!limit_reached(724, 724, 727));
+        // Weit unter dem Limit meldet keine der beiden Zählungen.
+        assert!(!limit_reached(700, 708, 727));
     }
 
     /// SBX-013 AC2 (#224): Ein per `setsid` abgelöster Nachfahre endet mit dem Stoppen, auch wenn
