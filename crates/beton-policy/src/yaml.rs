@@ -15,6 +15,9 @@ use yaml_rust2::scanner::{Marker, TScalarStyle};
 /// Höchstzahl an Knoten eines Dokuments (inklusive aufgelöster Aliase).
 const MAX_NODES: usize = 100_000;
 
+/// Größte Verschachtelungstiefe (das spätere Deserialisieren ist rekursiv).
+const MAX_YAML_DEPTH: usize = 64;
+
 /// 1-basierte Position in der Datei.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pos {
@@ -215,6 +218,13 @@ impl MarkedEventReceiver for Receiver {
                     self.fail(mark, "Nur einfache Schlüssel sind erlaubt".into());
                     return;
                 }
+                if self.stack.len() >= MAX_YAML_DEPTH {
+                    self.fail(
+                        mark,
+                        format!("Dokument ist tiefer als {MAX_YAML_DEPTH} Ebenen verschachtelt"),
+                    );
+                    return;
+                }
                 let path = self.child_path(mark);
                 if matches!(ev, Event::MappingStart(..)) {
                     self.stack.push(Frame::Map {
@@ -379,6 +389,18 @@ mod tests {
         }
         let err = parse(&bomb).unwrap_err();
         assert!(err.message.contains("Knoten"), "{err:?}");
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_crash() {
+        // yaml-rust2 begrenzt selbst (≈ 256), beton schon bei 64.
+        let deep = format!("a: {}1{}\n", "[".repeat(5000), "]".repeat(5000));
+        assert!(parse(&deep).is_err());
+        let deep = format!("a: {}1{}\n", "[".repeat(100), "]".repeat(100));
+        let err = parse(&deep).unwrap_err();
+        assert!(err.message.contains("verschachtelt"), "{err:?}");
+        let ok = format!("a: {}1{}\n", "[".repeat(30), "]".repeat(30));
+        assert!(parse(&ok).is_ok());
     }
 
     #[test]

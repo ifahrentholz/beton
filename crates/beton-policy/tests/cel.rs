@@ -324,3 +324,42 @@ fn pol_002_time_budget_exceeded_is_an_error() {
         Err(EvalError::Deadline)
     );
 }
+
+#[test]
+fn pol_002_deep_or_long_expressions_are_load_errors_not_crashes() {
+    let act = empty();
+    // Tiefe Klammern scheitern beim Laden statt den Stack zu sprengen.
+    for (src, needle) in [
+        (
+            format!("{}true{}", "(".repeat(2000), ")".repeat(2000)),
+            "verschachtelt",
+        ),
+        (
+            format!("{}1{}", "[".repeat(40), "]".repeat(40)),
+            "verschachtelt",
+        ),
+        (format!("{} > 0", vec!["1"; 1000].join("+")), "tief"),
+    ] {
+        let src = &src[..src.len().min(4096)];
+        let err = compile_bool(src, Phase::ToolCall).unwrap_err();
+        assert!(err.message.contains(needle), "{err}");
+    }
+    // Klammern in Strings zählen nicht.
+    let p = compile_bool(&format!("\"{}\" != \"\"", "(".repeat(100)), Phase::ToolCall).unwrap();
+    assert!(p.eval_bool(&act, &mut Meter::unlimited()).unwrap());
+    // Innerhalb der Grenzen: auf einem Thread mit kleinem Stack (wie ein Tokio-Worker)
+    // auswertbar.
+    let chain = vec!["true"; 60].join(" && ");
+    let nested = format!("{}true{}", "(".repeat(30), ")".repeat(30));
+    for src in [chain, nested] {
+        let p = compile_bool(&src, Phase::ToolCall).unwrap();
+        let act = act.clone();
+        let ok = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(move || p.eval_bool(&act, &mut Meter::unlimited()))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(ok, Ok(true));
+    }
+}

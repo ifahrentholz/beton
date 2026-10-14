@@ -15,6 +15,17 @@ use crate::value::Value;
 /// Maximale Verschachtelungstiefe beim Parsen (schützt Stack und Laufzeit).
 const MAX_DEPTH: u16 = 64;
 
+/// Maximale Klammerverschachtelung im Quelltext (vor dem Parsen geprüft).
+const MAX_NESTING: usize = 32;
+
+/// Maximale Tiefe des Auswertungsbaums. Die Auswertung läuft rekursiv auf dem Thread des
+/// Aufrufers (z. B. einem Tokio-Worker mit 2 MiB Stack); die Tiefe ist deshalb begrenzt.
+const MAX_AST_DEPTH: usize = 128;
+
+/// Stack für Parser und Typprüfung: der ANTLR-Parser von cel-rust braucht im Debug-Build
+/// über 100 KiB je Verschachtelungsebene.
+const PARSE_STACK: usize = 64 << 20;
+
 /// Aufgelöste Funktion bzw. Operator.
 #[derive(Debug, Clone)]
 pub(crate) enum Func {
@@ -97,12 +108,74 @@ struct Checker<'a> {
     src: &'a str,
     info: &'a SourceInfo,
     locals: Vec<(String, Ty)>,
+    depth: usize,
 }
 
 type Res<T> = Result<T, CompileError>;
 
-/// Parst, prüft und übersetzt `src`.
+/// Parst, prüft und übersetzt `src`. Läuft auf einem eigenen Thread mit großem Stack,
+/// damit tief verschachtelte Ausdrücke nie den Prozess abbrechen (fail closed als Ladefehler).
 pub(crate) fn check(src: &str, phase: Phase) -> Res<(Node, Ty)> {
+    nesting(src)?;
+    let spawn_failed = |msg: String| CompileError {
+        line: 1,
+        column: 1,
+        message: format!("Ausdruck konnte nicht geprüft werden: {msg}"),
+    };
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("beton-policy-cel".into())
+            .stack_size(PARSE_STACK)
+            .spawn_scoped(scope, || check_inner(src, phase))
+            .map_err(|e| spawn_failed(e.to_string()))?
+            .join()
+            .unwrap_or_else(|_| Err(spawn_failed("interner Fehler".into())))
+    })
+}
+
+/// Klammerverschachtelung außerhalb von String-Literalen.
+fn nesting(src: &str) -> Res<()> {
+    let (mut depth, mut line, mut column) = (0usize, 1u32, 0u32);
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in src.chars() {
+        column += 1;
+        if c == '\n' {
+            line += 1;
+            column = 0;
+        }
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return Err(CompileError {
+                        line,
+                        column,
+                        message: format!(
+                            "Ausdruck ist tiefer als {MAX_NESTING} Ebenen verschachtelt"
+                        ),
+                    });
+                }
+            }
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn check_inner(src: &str, phase: Phase) -> Res<(Node, Ty)> {
     let parser = cel::parser::Parser::new().max_recursion_depth(MAX_DEPTH);
     let (expr, info) = parser.parse_with_source_info(src).map_err(|errs| {
         let first = errs.errors.first();
@@ -121,6 +194,7 @@ pub(crate) fn check(src: &str, phase: Phase) -> Res<(Node, Ty)> {
         src,
         info: &info,
         locals: Vec::new(),
+        depth: 0,
     };
     checker.expr(&expr)
 }
@@ -159,6 +233,19 @@ impl Checker<'_> {
     }
 
     fn expr(&mut self, e: &IdedExpr) -> Res<(Node, Ty)> {
+        self.depth += 1;
+        if self.depth > MAX_AST_DEPTH {
+            return Err(self.err(
+                e.id,
+                format!("Ausdruck ist zu tief geschachtelt (mehr als {MAX_AST_DEPTH} Ebenen)"),
+            ));
+        }
+        let result = self.expr_inner(e);
+        self.depth -= 1;
+        result
+    }
+
+    fn expr_inner(&mut self, e: &IdedExpr) -> Res<(Node, Ty)> {
         match &e.expr {
             Expr::Literal(lit) => Ok(literal(lit)),
             Expr::Ident(name) => self.ident(e.id, name),
