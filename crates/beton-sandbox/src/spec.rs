@@ -179,7 +179,10 @@ impl SandboxSpec {
 
     /// Liest eine Ebene aus einem JSON-Wert und prüft sie.
     pub fn from_value(value: serde_json::Value) -> Result<Self, SandboxError> {
-        todo!("SBX-003")
+        let spec: Self = serde_json::from_value(value)
+            .map_err(|e| SandboxError::invalid("sandbox", e.to_string()))?;
+        spec.validate()?;
+        Ok(spec)
     }
 
     /// Prüft eine Ebene ohne Dateisystemzugriff (lexikalisch).

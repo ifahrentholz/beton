@@ -286,5 +286,34 @@ pub fn resolve(
 
 /// Kann das Backend laut Probe alle geforderten Capabilities erzwingen?
 pub fn check_caps(probe: &ProbeReport, policy: &ResolvedPolicy) -> Result<(), SandboxError> {
-        todo!("SBX-001")
+    if probe.id != policy.backend {
+        return Err(SandboxError::spawn(format!(
+            "Policy für {} an Backend {} übergeben",
+            policy.backend, probe.id
+        )));
     }
+    if !probe.available {
+        return Err(SandboxError::Unavailable {
+            provider: probe.id,
+            missing: policy.required.clone(),
+            hint: probe
+                .unavailable_reason
+                .clone()
+                .unwrap_or_else(|| "nicht verfügbar".into()),
+        });
+    }
+    let missing: CapSet = policy.required.difference(&probe.caps).copied().collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let hint = missing
+        .iter()
+        .filter_map(|c| probe.degraded_reasons.get(c).map(|r| format!("{c}: {r}")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(SandboxError::Unavailable {
+        provider: probe.id,
+        missing,
+        hint,
+    })
+}

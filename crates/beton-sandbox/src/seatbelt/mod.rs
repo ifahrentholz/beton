@@ -108,7 +108,44 @@ pub mod macos {
     }
 
     fn probe_now() -> ProbeReport {
-        todo!("SBX-007")
+        if !Path::new(SANDBOX_EXEC).is_file() {
+            return ProbeReport::unavailable(
+                ProviderId::Seatbelt,
+                format!("{SANDBOX_EXEC} fehlt"),
+            );
+        }
+        if let Err(reason) = self_test() {
+            return ProbeReport::unavailable(ProviderId::Seatbelt, reason);
+        }
+        let caps: CapSet = [
+            Cap::FsRead,
+            Cap::FsWrite,
+            Cap::Masks,
+            Cap::Net,
+            Cap::Env,
+            Cap::Proc,
+        ]
+        .into_iter()
+        .collect();
+        ProbeReport {
+            id: ProviderId::Seatbelt,
+            available: true,
+            caps,
+            degraded_reasons: [
+                (
+                    Cap::Syscall,
+                    "Seatbelt filtert keine Syscalls (seccomp gibt es nur unter Linux)".to_owned(),
+                ),
+                (
+                    Cap::Resources,
+                    "Ressourcenlimits folgen mit SBX-013".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            unavailable_reason: None,
+            version: format!("profile v{PROFILE_VERSION}, macOS {}", macos_version()),
+        }
     }
 
     impl SandboxProvider for SeatbeltProvider {

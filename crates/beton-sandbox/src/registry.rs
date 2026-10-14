@@ -40,8 +40,13 @@ impl Os {
 /// Backend für `auto` (SBX-001 AC3). Linux: `landlock`; ob stattdessen `bwrap` greift,
 /// entscheidet SBX-009 anhand der Probe.
 pub fn auto_backend(os: Os) -> Option<ProviderId> {
-        todo!("SBX-001")
+    match os {
+        Os::MacOs => Some(ProviderId::Seatbelt),
+        Os::Linux => Some(ProviderId::Landlock),
+        Os::Windows => Some(ProviderId::Windows),
+        Os::Other => None,
     }
+}
 
 /// Ein registriertes, auf dieser Plattform (noch) nicht nutzbares Backend.
 #[derive(Debug, Clone)]
@@ -145,12 +150,24 @@ impl Registry {
     /// Backend zu `choice`. `auto` wählt nach Betriebssystem; ein nicht registriertes Backend
     /// ist [`SandboxError::Unavailable`]. `none` wird nie automatisch gewählt.
     pub fn select(&self, choice: BackendChoice) -> Result<Arc<dyn SandboxProvider>, SandboxError> {
-        todo!("SBX-001")
+        let id = match choice {
+            BackendChoice::Auto => auto_backend(self.os).ok_or_else(|| SandboxError::Unavailable {
+                provider: ProviderId::None,
+                missing: crate::caps::required_default(),
+                hint: "für dieses Betriebssystem gibt es kein Sandbox-Backend".into(),
+            })?,
+            BackendChoice::Provider(id) => id,
+        };
+        self.get(id).ok_or_else(|| SandboxError::Unavailable {
+            provider: id,
+            missing: crate::caps::required_default(),
+            hint: "Backend ist nicht registriert".into(),
+        })
     }
 
     /// Probe aller registrierten Backends (sortiert nach ID).
     pub fn probe_all(&self) -> Vec<ProbeReport> {
-        todo!("SBX-001")
+        self.providers.values().map(|p| p.probe()).collect()
     }
 }
 
@@ -204,11 +221,26 @@ impl Sandbox {
 
     /// Das Event, das ein erfolgreicher Start dieser Sandbox meldet.
     pub fn started_event(&self) -> SandboxStarted {
-        todo!("SBX-001")
+        let caps: Vec<&str> = self
+            .provider
+            .probe()
+            .caps
+            .iter()
+            .map(|c| c.as_str())
+            .collect();
+        SandboxStarted {
+            stage: self.policy.stage.event(),
+            backend: self.policy.backend.as_str().to_owned(),
+            caps: serde_json::json!(caps),
+            degraded: !self.policy.degraded.is_empty(),
+        }
     }
 
     pub fn spawn(&self, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
-        let _ = &self.events;
-        self.provider.spawn(&self.policy, cmd)
+        let child = self.provider.spawn(&self.policy, cmd)?;
+        if let Some(events) = &self.events {
+            events(self.started_event());
+        }
+        Ok(child)
     }
 }

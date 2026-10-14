@@ -33,6 +33,27 @@ impl SandboxProvider for NoneProvider {
     }
 
     fn spawn(&self, policy: &ResolvedPolicy, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
-        todo!("SBX-001")
+        if policy.backend != ProviderId::None {
+            return Err(SandboxError::spawn(format!(
+                "Policy für {} an Backend none übergeben",
+                policy.backend
+            )));
+        }
+        let mut c = child::command(&cmd.program, &cmd);
+        if cmd.env.clear {
+            c.env_clear();
+        }
+        for key in &cmd.env.remove {
+            c.env_remove(key);
+        }
+        c.args(&cmd.args)
+            .envs(cmd.env.set.iter().map(|(k, v)| (k, v)));
+        if let Some(cwd) = &cmd.cwd {
+            c.current_dir(cwd);
+        }
+        child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
+            message: format!("{}: {e}", cmd.program.display()),
+            kind: e.kind(),
+        })
     }
 }
