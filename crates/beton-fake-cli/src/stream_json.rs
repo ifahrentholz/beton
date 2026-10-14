@@ -598,6 +598,24 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             }
         } else if let Some(usage) = &step.usage {
             state.usage = usage.clone();
+        } else if let Some(limit) = &step.rate_limit {
+            // Wie Claude Code 2.1.296: `unifiedWindows` je Fenster mit Auslastung 0–1.
+            let kind = match limit.window.as_str() {
+                "5h" => "five_hour".to_owned(),
+                "7d" => "seven_day".to_owned(),
+                other => other.to_owned(),
+            };
+            let resets = limit.resets_at();
+            self.emit(json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "status": if limit.used_pct >= 100.0 { "rejected" } else { "allowed" },
+                    "resetsAt": resets,
+                    "rateLimitType": kind,
+                    "unifiedWindows": {kind.clone(): {"utilization": limit.used_pct / 100.0, "resetsAt": resets}},
+                },
+                "session_id": self.session_id,
+            }))?;
         } else if let Some(message) = &step.error {
             return Ok(TurnEnd::Failed(message.clone()));
         } else if let Some(code) = step.crash {

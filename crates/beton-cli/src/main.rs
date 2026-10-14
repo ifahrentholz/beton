@@ -17,6 +17,8 @@ fn main() -> ExitCode {
     }
     // Fehlerhafte Aufrufe: clap schreibt Usage und Hinweis auf stderr, Exit-Code 2 (CLI-001 AC2).
     let cli = Cli::parse();
+    // Lokale Zeitzone für `beton usage`, solange der Prozess einthreadig ist (USE-007).
+    beton_cli::usage_report::init_local_offset();
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

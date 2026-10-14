@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UsageReportView",
+  "description": "Antwort von `GET /v1/usage` und Ausgabe von `beton usage --json` (USE-005 AC1, USE-007\nAC1; Schema `schemas/v1/usage.schema.json`).",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "Beginn (inklusiv), RFC 3339 UTC.",
+      "type": "string"
+    },
+    "group_by": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "groups": {
+      "description": "Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:\neine Auswertung, keine Liste von Ressourcen).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UsageItem"
+      }
+    },
+    "pricing_version": {
+      "description": "Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene.",
+      "type": "string"
+    },
+    "reporting": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/HarnessReportingView"
+      }
+    },
+    "subscriptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SubscriptionWindowView"
+      }
+    },
+    "to": {
+      "description": "Ende (exklusiv), RFC 3339 UTC.",
+      "type": "string"
+    },
+    "totals": {
+      "$ref": "#/$defs/UsageTotals"
+    },
+    "tz": {
+      "description": "Zeitzone der Tagesgrenzen, z. B. `+02:00`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from",
+    "to",
+    "tz",
+    "group_by",
+    "pricing_version",
+    "groups",
+    "totals",
+    "subscriptions",
+    "reporting"
+  ],
+  "$defs": {
+    "HarnessReportingView": {
+      "description": "Was ein Harness im Zeitraum meldet (USE-004 AC4): `false` heißt „nicht gemeldet“.",
+      "type": "object",
+      "properties": {
+        "harness": {
+          "type": "string"
+        },
+        "rate_limits": {
+          "description": "Abo-Fenster gemeldet.",
+          "type": "boolean"
+        },
+        "sessions": {
+          "description": "Sessions mit Aktivität im Zeitraum.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tokens": {
+          "description": "Tokens gemeldet (Usage-Records im Zeitraum).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "harness",
+        "sessions",
+        "tokens",
+        "rate_limits"
+      ]
+    },
+    "SubscriptionWindowView": {
+      "description": "Jüngster gemeldeter Stand eines Abo-Fensters (USE-004 AC2).",
+      "type": "object",
+      "properties": {
+        "expired": {
+          "description": "Reset-Zeitpunkt liegt in der Vergangenheit: der Wert ist überholt.",
+          "type": "boolean"
+        },
+        "harness": {
+          "type": "string"
+        },
+        "observed_at": {
+          "description": "Zeitpunkt der Meldung.",
+          "type": "string"
+        },
+        "resets_at": {
+          "description": "RFC 3339 (UTC); die Anzeige rechnet in die Zeitzone des Users um.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "used_pct": {
+          "description": "Genutzter Anteil in Prozent.",
+          "type": "number",
+          "format": "double"
+        },
+        "vendor": {
+          "description": "`anthropic`, `openai`, …",
+          "type": "string"
+        },
+        "window": {
+          "description": "`5h`, `7d`, `7d_opus`, …",
+          "type": "string"
+        }
+      },
+      "required": [
+        "harness",
+        "vendor",
+        "window",
+        "used_pct",
+        "resets_at",
+        "observed_at",
+        "session_id",
+        "expired"
+      ]
+    },
+    "UsageItem": {
+      "description": "Ein Eintrag: gruppierte Dimensionen (nur die angefragten) und Summen.",
+      "type": "object",
+      "properties": {
+        "auth_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "billing": {
+          "description": "`subscription` (Login der Vendor-CLI) oder `metered` (API-Key, Gateway, lokal).",
+          "type": "string"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "description": "Kosten in USD; `null` bei Subscription (kein Geldbetrag).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "day": {
+          "description": "Kalendertag in der Zeitzone `tz` (`YYYY-MM-DD`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equivalent_usd": {
+          "description": "API-Äquivalent in USD, nur informativ; `null` außer bei Subscription.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "project_id": {
+          "description": "Fehlt bei Sessions ohne Projekt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessions": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "turns": {
+          "description": "Turns (Usage-Records).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "unpriced_count": {
+          "description": "Turns ohne Preis („ohne Preis – Override anlegen“).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "billing",
+        "turns",
+        "sessions",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "unpriced_count"
+      ]
+    },
+    "UsageTotals": {
+      "description": "Summen je Abrechnungsart; es gibt bewusst keine Gesamtsumme.",
+      "type": "object",
+      "properties": {
+        "metered": {
+          "description": "API-Key, Gateway, lokal: mit Kosten.",
+          "$ref": "#/$defs/UsageItem"
+        },
+        "subscription": {
+          "description": "Login der Vendor-CLI: Tokens, kein Geld.",
+          "$ref": "#/$defs/UsageItem"
+        }
+      },
+      "required": [
+        "metered",
+        "subscription"
+      ]
+    }
+  }
+}

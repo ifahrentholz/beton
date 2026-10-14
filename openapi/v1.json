@@ -4467,6 +4467,77 @@
         }
       }
     },
+    "/v1/sessions/{id}/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Usage einer Session je Turn (USE-007 AC2): Tokens, Kosten, Preisquelle.",
+        "operationId": "get_session_usage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Records und Summen der Session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsageView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/workspace": {
       "get": {
         "tags": [
@@ -5317,6 +5388,147 @@
         }
       }
     },
+    "/v1/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Aggregierte Usage (USE-005): Summen je Gruppe und Abrechnungsart, Abo-Fenster, Melde-Stand.",
+        "operationId": "get_usage",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Beginn: RFC 3339 oder `YYYY-MM-DD` (00:00 in `tz`). Default: `to` minus 30 Tage.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Ende, exklusiv: RFC 3339 oder `YYYY-MM-DD` (dieser Tag zählt noch mit). Default: jetzt.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tz",
+            "in": "query",
+            "description": "Zeitzone des Users als Versatz (`+02:00`, `-05:00`, `Z`); bestimmt Tagesgrenzen von\n`day` und Datumsangaben. Default UTC.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "description": "Komma-Liste aus `day`, `session`, `project`, `harness`, `model`, `auth_source`\n(`user` und `team` ab M4).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "harness",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Lokal gibt es nur den Owner; Sichtbarkeit nach Rolle kommt mit M4 (AUTH-014).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team",
+            "in": "query",
+            "description": "Ab M4.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Summen, Abo-Fenster und Melde-Stand",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReportView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/ws": {
       "get": {
         "tags": [
@@ -6091,6 +6303,35 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "HarnessReportingView": {
+        "type": "object",
+        "description": "Was ein Harness im Zeitraum meldet (USE-004 AC4): `false` heißt „nicht gemeldet“.",
+        "required": [
+          "harness",
+          "sessions",
+          "tokens",
+          "rate_limits"
+        ],
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sessions mit Aktivität im Zeitraum.",
+            "minimum": 0
+          },
+          "tokens": {
+            "type": "boolean",
+            "description": "Tokens gemeldet (Usage-Records im Zeitraum)."
+          },
+          "rate_limits": {
+            "type": "boolean",
+            "description": "Abo-Fenster gemeldet."
           }
         }
       },
@@ -7452,6 +7693,29 @@
           }
         }
       },
+      "SessionUsageView": {
+        "type": "object",
+        "description": "Antwort von `GET /v1/sessions/{id}/usage` und `beton usage --session <id> --json`.",
+        "required": [
+          "session_id",
+          "records",
+          "totals"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageRecordView"
+            }
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotals"
+          }
+        }
+      },
       "SessionWorktree": {
         "type": "object",
         "description": "Worktree einer Session (aus `git.worktree_created`).",
@@ -7606,6 +7870,53 @@
           }
         }
       },
+      "SubscriptionWindowView": {
+        "type": "object",
+        "description": "Jüngster gemeldeter Stand eines Abo-Fensters (USE-004 AC2).",
+        "required": [
+          "harness",
+          "vendor",
+          "window",
+          "used_pct",
+          "resets_at",
+          "observed_at",
+          "session_id",
+          "expired"
+        ],
+        "properties": {
+          "harness": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string",
+            "description": "`anthropic`, `openai`, …"
+          },
+          "window": {
+            "type": "string",
+            "description": "`5h`, `7d`, `7d_opus`, …"
+          },
+          "used_pct": {
+            "type": "number",
+            "format": "double",
+            "description": "Genutzter Anteil in Prozent."
+          },
+          "resets_at": {
+            "type": "string",
+            "description": "RFC 3339 (UTC); die Anzeige rechnet in die Zeitzone des Users um."
+          },
+          "observed_at": {
+            "type": "string",
+            "description": "Zeitpunkt der Meldung."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Reset-Zeitpunkt liegt in der Vergangenheit: der Wert ist überholt."
+          }
+        }
+      },
       "TombstonePage": {
         "type": "object",
         "required": [
@@ -7729,6 +8040,294 @@
           }
         },
         "additionalProperties": false
+      },
+      "UsageItem": {
+        "type": "object",
+        "description": "Ein Eintrag: gruppierte Dimensionen (nur die angefragten) und Summen.",
+        "required": [
+          "billing",
+          "turns",
+          "sessions",
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "unpriced_count"
+        ],
+        "properties": {
+          "day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kalendertag in der Zeitzone `tz` (`YYYY-MM-DD`)."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fehlt bei Sessions ohne Projekt."
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "auth_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing": {
+            "type": "string",
+            "description": "`subscription` (Login der Vendor-CLI) oder `metered` (API-Key, Gateway, lokal)."
+          },
+          "turns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Turns (Usage-Records).",
+            "minimum": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Kosten in USD; `null` bei Subscription (kein Geldbetrag)."
+          },
+          "equivalent_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "API-Äquivalent in USD, nur informativ; `null` außer bei Subscription."
+          },
+          "unpriced_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Turns ohne Preis („ohne Preis – Override anlegen“).",
+            "minimum": 0
+          }
+        }
+      },
+      "UsageRecordView": {
+        "type": "object",
+        "description": "Ein Turn einer Session (USE-007 AC2): Tokens, Kosten und Preisquelle.",
+        "required": [
+          "seq",
+          "ts",
+          "harness",
+          "model",
+          "auth_source",
+          "billing",
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "cost_source"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ts": {
+            "type": "string"
+          },
+          "harness": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "auth_source": {
+            "type": "string"
+          },
+          "billing": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Zweck außerhalb der Unterhaltung, z. B. `title` oder `compaction`."
+          },
+          "input_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "output_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_read_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cache_write_tokens": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`null` bei Subscription und ohne Preis."
+          },
+          "cost_source": {
+            "type": "string",
+            "description": "`override`, `harness`, `catalog`, `none` oder `subscription`."
+          },
+          "pricing_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "equivalent_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "API-Äquivalent (informativ), nur bei Subscription."
+          }
+        }
+      },
+      "UsageReportView": {
+        "type": "object",
+        "description": "Antwort von `GET /v1/usage` und Ausgabe von `beton usage --json` (USE-005 AC1, USE-007\nAC1; Schema `schemas/v1/usage.schema.json`).",
+        "required": [
+          "from",
+          "to",
+          "tz",
+          "group_by",
+          "pricing_version",
+          "groups",
+          "totals",
+          "subscriptions",
+          "reporting"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Beginn (inklusiv), RFC 3339 UTC."
+          },
+          "to": {
+            "type": "string",
+            "description": "Ende (exklusiv), RFC 3339 UTC."
+          },
+          "tz": {
+            "type": "string",
+            "description": "Zeitzone der Tagesgrenzen, z. B. `+02:00`."
+          },
+          "group_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pricing_version": {
+            "type": "string",
+            "description": "Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageItem"
+            },
+            "description": "Eine Gruppe je Kombination der `group_by`-Werte und Abrechnungsart (kein Paging:\neine Auswertung, keine Liste von Ressourcen)."
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionWindowView"
+            }
+          },
+          "reporting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarnessReportingView"
+            }
+          }
+        }
+      },
+      "UsageTotals": {
+        "type": "object",
+        "description": "Summen je Abrechnungsart; es gibt bewusst keine Gesamtsumme.",
+        "required": [
+          "metered",
+          "subscription"
+        ],
+        "properties": {
+          "metered": {
+            "$ref": "#/components/schemas/UsageItem",
+            "description": "API-Key, Gateway, lokal: mit Kosten."
+          },
+          "subscription": {
+            "$ref": "#/components/schemas/UsageItem",
+            "description": "Login der Vendor-CLI: Tokens, kein Geld."
+          }
+        }
       },
       "WorkspaceFile": {
         "type": "object",

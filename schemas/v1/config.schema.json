@@ -100,6 +100,13 @@
         "instructions": null,
         "provider": null
       }
+    },
+    "usage": {
+      "description": "Usage-Anzeige und -Hinweise (USE-004).",
+      "$ref": "#/$defs/UsageSettings",
+      "default": {
+        "rate_limit_notice": true
+      }
     }
   },
   "additionalProperties": false,
@@ -931,6 +938,18 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "UsageSettings": {
+      "description": "Usage (USE-004): Hinweise zu Abo-Fenstern der Vendor-Logins.",
+      "type": "object",
+      "properties": {
+        "rate_limit_notice": {
+          "description": "Inbox-Hinweis, sobald ein Abo-Fenster (z. B. 5h) zu mindestens 90 % genutzt ist; einmal\nje Fenster und Periode. Default `true`.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

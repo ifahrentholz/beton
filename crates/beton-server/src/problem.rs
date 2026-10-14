@@ -232,7 +232,11 @@ impl From<beton_store::Error> for Problem {
                 return p;
             }
             E::BlobTooLarge { .. } => ProblemCode::PayloadTooLarge,
-            E::SchemaTooNew { .. } | E::Db(_) | E::Io(_) | E::Corrupt(_) => {
+            E::SchemaTooNew { .. }
+            | E::SchemaOutdated { .. }
+            | E::Db(_)
+            | E::Io(_)
+            | E::Corrupt(_) => {
                 return Self::internal(&e);
             }
         };

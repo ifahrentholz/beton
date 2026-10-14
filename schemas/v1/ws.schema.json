@@ -2009,6 +2009,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/UsageRateLimitHigh"
+            },
+            "type": {
+              "type": "string",
+              "const": "usage.rate_limit_high"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/ContextUsage"
             },
             "type": {
@@ -2973,6 +2989,7 @@
         "budget.lease_overdrawn",
         "cost.delta",
         "usage.subscription",
+        "usage.rate_limit_high",
         "context.usage",
         "compaction.started",
         "compaction.completed",
@@ -4912,6 +4929,35 @@
       "required": [
         "turn_id",
         "author"
+      ]
+    },
+    "UsageRateLimitHigh": {
+      "type": "object",
+      "properties": {
+        "resets_at": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "threshold_pct": {
+          "type": "number",
+          "format": "double"
+        },
+        "used_pct": {
+          "type": "number",
+          "format": "double"
+        },
+        "vendor": {
+          "type": "string"
+        },
+        "window": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "vendor",
+        "window",
+        "used_pct",
+        "resets_at",
+        "threshold_pct"
       ]
     },
     "UsageSubscription": {

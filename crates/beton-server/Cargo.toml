@@ -33,6 +33,7 @@ getrandom.workspace = true
 hex.workspace = true
 ignore.workspace = true
 regex.workspace = true
+schemars.workspace = true
 reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
 serde.workspace = true
 serde_json.workspace = true

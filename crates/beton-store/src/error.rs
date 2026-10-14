@@ -15,6 +15,12 @@ pub enum Error {
         "schema_too_new: Datenbank hat Schema-Version {db}, dieses Binary kennt nur bis {binary}"
     )]
     SchemaTooNew { db: i64, binary: i64 },
+    /// Nur beim Lesen ohne Migration (`Store::open_read_only`): Der Daemon migriert beim Start.
+    #[error(
+        "schema_outdated: Datenbank hat Schema-Version {db}, dieses Binary erwartet {binary}; \
+         einmal `beton serve` starten, damit die Datenbank migriert wird"
+    )]
+    SchemaOutdated { db: i64, binary: i64 },
     #[error("blob_corrupt: Inhalt von {0} passt nicht zu seinem Hash")]
     BlobCorrupt(BlobRef),
     #[error("blob_too_large: {size} Bytes, erlaubt sind {max}")]
@@ -45,6 +51,7 @@ impl Error {
             Self::SeqConflict { .. } => "seq_conflict",
             Self::StaleEpoch { .. } => "stale_epoch",
             Self::SchemaTooNew { .. } => "schema_too_new",
+            Self::SchemaOutdated { .. } => "schema_outdated",
             Self::BlobCorrupt(_) => "blob_corrupt",
             Self::BlobTooLarge { .. } => "blob_too_large",
             Self::Forbidden(_) => "forbidden",

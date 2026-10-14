@@ -807,6 +807,15 @@ payload!(UsageSubscription {
     used_pct: f64,
     resets_at: Timestamp
 });
+// Hinweis des Servers, dass ein Abo-Fenster fast aufgebraucht ist (USE-004 AC3): einmal je
+// Anbieter, Fenster und Reset-Zeitpunkt ab `threshold_pct`; die Inbox zeigt ihn als Hinweis.
+payload!(UsageRateLimitHigh {
+    vendor: String,
+    window: String,
+    used_pct: f64,
+    resets_at: Timestamp,
+    threshold_pct: f64
+});
 payload!(ContextUsage {
     used_tokens: u64,
     window_tokens: u64,
@@ -1144,6 +1153,7 @@ catalog! {
     BudgetLeaseOverdrawn = "budget.lease_overdrawn", Durable, BudgetLeaseOverdrawn;
     CostDelta = "cost.delta", Durable, CostDelta;
     UsageSubscription = "usage.subscription", Durable, UsageSubscription;
+    UsageRateLimitHigh = "usage.rate_limit_high", Durable, UsageRateLimitHigh;
     ContextUsage = "context.usage", Durable, ContextUsage;
     CompactionStarted = "compaction.started", Durable, Compaction;
     CompactionCompleted = "compaction.completed", Durable, Compaction;
