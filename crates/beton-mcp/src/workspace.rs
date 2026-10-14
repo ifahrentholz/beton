@@ -54,9 +54,17 @@ fn err(msg: impl Into<String>) -> ToolError {
 }
 
 /// Der Server einer Session.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkspaceServer {
     root: PathBuf,
+}
+
+impl std::fmt::Debug for WorkspaceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceServer")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkspaceServer {
@@ -67,6 +75,12 @@ impl WorkspaceServer {
             return Err(std::io::Error::other("Arbeitsverzeichnis fehlt"));
         }
         Ok(Self { root })
+    }
+
+    /// `shell_exec` über `launcher` (Stufe-2-Sandbox der Session, SBX-002).
+    pub fn with_launcher(self, launcher: std::sync::Arc<dyn ProcessLauncher>) -> Self {
+        let _ = launcher;
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -594,6 +608,36 @@ mod tests {
                 .unwrap(),
             "src/lib.rs:2: fn c() {}"
         );
+    }
+
+    #[derive(Default, Clone)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<LaunchSpec>>>);
+
+    #[async_trait::async_trait]
+    impl ProcessLauncher for Capture {
+        async fn launch(
+            &self,
+            spec: LaunchSpec,
+        ) -> std::io::Result<Box<dyn beton_harness::process::ProcessHandle>> {
+            self.0.lock().unwrap().push(spec);
+            Err(std::io::Error::other("nur Aufzeichnung"))
+        }
+    }
+
+    #[tokio::test]
+    async fn sbx_002_shell_exec_runs_through_the_stage_two_launcher() {
+        let (_dir, s) = ws();
+        let cap = Capture::default();
+        let s = s.with_launcher(std::sync::Arc::new(cap.clone()));
+        let r = s.call("shell_exec", &json!({"command": "echo hi"})).await;
+        assert!(r.is_err(), "{r:?}");
+        let seen = cap.0.lock().unwrap().clone();
+        assert_eq!(
+            seen.len(),
+            1,
+            "shell_exec lief nicht über den Launcher der Stufe 2"
+        );
+        assert!(seen[0].args.iter().any(|a| a.contains("echo hi")));
     }
 
     #[cfg(unix)]

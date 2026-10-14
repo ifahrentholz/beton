@@ -395,6 +395,7 @@ pub async fn prepare(
             prefix: Vec::new(),
         },
         gate,
+        tools: None,
     })
     .await;
     #[cfg(not(unix))]

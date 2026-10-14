@@ -223,6 +223,9 @@ pub struct ResolvedPolicy {
     pub required: CapSet,
     /// Ausdrücklich nicht erzwungene Capabilities (Opt-out, z. B. `backend: none`).
     pub degraded: CapSet,
+    /// Stufe 1 eines Harness, der Tools selbst ausführt (`tool_isolation: inherited`, nur mit
+    /// `require_tool_isolation: false`): *degraded* (SBX-002 AC4).
+    pub inherited_tools: bool,
     /// Hinweise der Auflösung (z. B. übersprungene, nicht vorhandene Grants).
     pub notes: Vec<String>,
 }
@@ -252,6 +255,7 @@ impl ResolvedPolicy {
             limits: Limits::default(),
             required: CapSet::new(),
             degraded: caps::required_default(),
+            inherited_tools: false,
             notes: Vec::new(),
         }
     }
@@ -837,6 +841,7 @@ pub fn resolve(
         limits: spec.limits.unwrap_or_default(),
         required,
         degraded,
+        inherited_tools: false,
         notes,
     })
 }

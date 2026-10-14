@@ -124,6 +124,9 @@ pub struct HubOptions {
     /// Policy-Prüfung für `tools/call`; `None`, wenn der Harness jeden Tool-Call selbst durch
     /// das Gate schickt (z. B. Claude mit `PreToolUse`-Hook).
     pub gate: Option<Arc<dyn McpGate>>,
+    /// Stufe-2-Sandbox der Session für stdio-Server (SBX-002); `None`: ausdrücklich ohne
+    /// Isolation (`backend: none`, bis SBX-006).
+    pub tools: Option<beton_sandbox::Sandbox>,
 }
 
 /// Laufender Hub. Beim Drop werden Socket und Token-Datei entfernt.
