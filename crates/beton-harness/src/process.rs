@@ -210,7 +210,7 @@ impl RealProcess {
         info
     }
 
-    fn signal_group(&self, signal: Signal) {
+    fn signal_group(&mut self, signal: Signal) {
         #[cfg(unix)]
         {
             let _ = self.child.signal_tree(match signal {
