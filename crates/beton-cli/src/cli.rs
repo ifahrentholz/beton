@@ -86,6 +86,9 @@ pub enum Command {
     /// Konfiguration lesen und schreiben.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// Verbrauch und Preise.
+    #[command(subcommand)]
+    Usage(UsageCommand),
     /// Agent-Definitionen auflisten, anzeigen, prüfen und anlegen.
     #[command(subcommand)]
     Agent(AgentCommand),
@@ -582,6 +585,31 @@ pub enum AuthCommand {
     /// Lokales Token erneuern; laufende Clients lesen es neu.
     #[command(name = "rotate-local")]
     RotateLocal,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UsageCommand {
+    /// Preis-Katalog und eigene Preise.
+    #[command(subcommand)]
+    Pricing(PricingCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PricingCommand {
+    /// Zeigt, woher der Preis eines Modells kommt: eigene Preise in Reihenfolge, vom Harness
+    /// gemeldete Kosten, Preis-Katalog (ohne Daemon).
+    Explain(ExplainArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ExplainArgs {
+    /// Modell-ID, z. B. `llama-3.3-70b-instruct` oder ein Alias aus dem Katalog.
+    #[arg(long, value_name = "M")]
+    pub model: String,
+    /// Provider für den Abgleich mit eigenen Preisen, z. B. `litellm-intern` (Name unter
+    /// `providers:`), `anthropic` oder `openai`.
+    #[arg(long, value_name = "P")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

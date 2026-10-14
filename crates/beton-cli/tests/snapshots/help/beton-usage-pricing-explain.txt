@@ -1,0 +1,38 @@
+Zeigt, woher der Preis eines Modells kommt: eigene Preise in Reihenfolge, vom Harness gemeldete
+Kosten, Preis-Katalog (ohne Daemon)
+
+Usage: beton usage pricing explain [OPTIONS] --model <M>
+
+Options:
+      --model <M>
+          Modell-ID, z. B. `llama-3.3-70b-instruct` oder ein Alias aus dem Katalog
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+      --provider <P>
+          Provider für den Abgleich mit eigenen Preisen, z. B. `litellm-intern` (Name unter
+          `providers:`), `anthropic` oder `openai`
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

@@ -37,6 +37,13 @@
       "$ref": "#/$defs/HarnessesConfig",
       "default": {}
     },
+    "pricing": {
+      "description": "Eigene Preise (USE-003); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/PricingSettings",
+      "default": {
+        "overrides": []
+      }
+    },
     "providers": {
       "description": "Provider des Direkt-API-Harness `direct:<name>` (HAR-011); nur in der\nUser-Konfiguration. Optional: Ohne Eintrag gibt es keinen Direkt-API-Harness\n(ADR-0034). Einträge werden beim Aufbau der Registry geprüft; ein ungültiger wird mit\nPfad und Grund gemeldet und übersprungen.",
       "type": "object",
@@ -279,6 +286,82 @@
         "id"
       ]
     },
+    "OverrideMatch": {
+      "description": "Worauf ein Override passt: Glob (`*`, `?`) auf Provider und/oder Modell.",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Modell-ID, z. B. `llama-3.3-70b*`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "description": "Provider, z. B. `litellm-intern` (Name unter `providers:`), `anthropic`, `openai`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "PriceOverride": {
+      "description": "Eigener Preis für Gateway- und Self-hosted-Modelle (`pricing.overrides[]`).",
+      "type": "object",
+      "properties": {
+        "cache_read_per_mtok": {
+          "description": "Optional; sonst 0,1 × `input_per_mtok`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "cache_write_per_mtok": {
+          "description": "Optional; sonst 1,25 × `input_per_mtok`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "context_window": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "free": {
+          "description": "Kostenlos, z. B. lokales Ollama; dann keine Preise angeben.",
+          "type": "boolean"
+        },
+        "input_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "match": {
+          "$ref": "#/$defs/OverrideMatch"
+        },
+        "output_per_mtok": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "match"
+      ]
+    },
     "Pricing": {
       "description": "Preise eines Modells in USD je Million Tokens (Preis-Override, Owner USE-003).",
       "type": "object",
@@ -297,6 +380,21 @@
         "input_per_mtok",
         "output_per_mtok"
       ]
+    },
+    "PricingSettings": {
+      "description": "Eigene Preise für Gateway- und Self-hosted-Modelle (USE-003).",
+      "type": "object",
+      "properties": {
+        "overrides": {
+          "description": "Preis-Overrides mit Glob auf `provider`/`model`; der erste passende Eintrag gewinnt.\nGilt vor vom Harness gemeldeten Kosten und vor dem Preis-Katalog.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PriceOverride"
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "ProviderConfig": {
       "description": "Ein Eintrag unter `providers.<name>` (Schema für `config.schema.json`).",

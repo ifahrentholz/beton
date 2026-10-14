@@ -12,6 +12,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+use beton_core::pricing::{OverrideMatch, PriceOverride};
 use beton_harness::registry::{HarnessLayers, HarnessesConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,52 @@ pub struct Settings {
     /// Eingeschaltete Feature-Flags, z. B. `[fake_harness]` (UX-007); zusätzlich
     /// `BETON_FEATURES=a,b`. Unbekannte Namen erzeugen nur eine Warnung.
     pub features: Vec<String>,
+    /// Eigene Preise (USE-003); nur in der User-Konfiguration.
+    pub pricing: PricingSettings,
+}
+
+impl Settings {
+    /// Preis-Overrides in Deklarationsreihenfolge: zuerst `pricing.overrides`, danach die
+    /// Preise unter `providers.<name>.models[].pricing` (HAR-011) mit genau diesem Provider
+    /// und Modell. Ungültige Provider-Einträge meldet die Registry; sie liefern keine Preise.
+    pub fn price_overrides(&self) -> Vec<PriceOverride> {
+        let mut out = self.pricing.overrides.clone();
+        for (name, value) in &self.providers {
+            let Ok(provider) = serde_json::from_value::<beton_harness_direct::config::ProviderConfig>(
+                value.clone(),
+            ) else {
+                continue;
+            };
+            for model in provider.models {
+                let Some(price) = model.pricing else {
+                    continue;
+                };
+                let o = PriceOverride {
+                    matcher: OverrideMatch {
+                        provider: Some(name.clone()),
+                        model: Some(model.id),
+                    },
+                    input_per_mtok: Some(price.input_per_mtok),
+                    output_per_mtok: Some(price.output_per_mtok),
+                    context_window: model.context_window,
+                    ..PriceOverride::default()
+                };
+                if o.validate().is_ok() {
+                    out.push(o);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Eigene Preise für Gateway- und Self-hosted-Modelle (USE-003).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct PricingSettings {
+    /// Preis-Overrides mit Glob auf `provider`/`model`; der erste passende Eintrag gewinnt.
+    /// Gilt vor vom Harness gemeldeten Kosten und vor dem Preis-Katalog.
+    pub overrides: Vec<PriceOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -469,11 +516,20 @@ fn check_project_layer(layer: &Value) -> Result<(), (String, String)> {
 
 fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> {
     let de = value.clone();
-    serde_path_to_error::deserialize::<_, Settings>(de).map_err(|e| ConfigError::Invalid {
-        origin: origin.to_owned(),
-        key: e.path().to_string(),
-        message: e.inner().to_string(),
-    })
+    let settings =
+        serde_path_to_error::deserialize::<_, Settings>(de).map_err(|e| ConfigError::Invalid {
+            origin: origin.to_owned(),
+            key: e.path().to_string(),
+            message: e.inner().to_string(),
+        })?;
+    for (i, o) in settings.pricing.overrides.iter().enumerate() {
+        o.validate().map_err(|message| ConfigError::Invalid {
+            origin: origin.to_owned(),
+            key: format!("pricing.overrides[{i}]"),
+            message,
+        })?;
+    }
+    Ok(settings)
 }
 
 fn read_file(path: &Path) -> Result<Value, ConfigError> {

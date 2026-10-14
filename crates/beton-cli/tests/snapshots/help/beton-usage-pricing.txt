@@ -1,0 +1,34 @@
+Preis-Katalog und eigene Preise
+
+Usage: beton usage pricing [OPTIONS] <COMMAND>
+
+Commands:
+  explain  Zeigt, woher der Preis eines Modells kommt: eigene Preise in Reihenfolge, vom Harness
+           gemeldete Kosten, Preis-Katalog (ohne Daemon)
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version
