@@ -109,6 +109,8 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Agent(cmd) => crate::agent::run(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
+        Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
+        Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }
@@ -198,6 +200,16 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
     )
     .await
     .context("stdout")?;
+    // HAR-016 AC3: gefundene API-Keys nur nach Zustimmung in den Secret-Store übernehmen.
+    crate::setup::offer_key_import(
+        &crate::setup::found_env_keys(),
+        interactive,
+        &mut crate::setup::TerminalPrompt,
+        &DaemonImporter { ctx },
+        &mut out,
+    )
+    .await
+    .context("stdout")?;
     if code == 0 {
         Ok(())
     } else {
@@ -205,6 +217,32 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
             Exit::General,
             anyhow::anyhow!("Mindestens eine nutzbare Harness-CLI fehlt"),
         ))
+    }
+}
+
+/// Übernimmt Keys über den Daemon (`POST /v1/secrets`).
+struct DaemonImporter<'a> {
+    ctx: &'a Ctx,
+}
+
+#[async_trait::async_trait]
+impl crate::setup::KeyImporter for DaemonImporter<'_> {
+    async fn import(
+        &self,
+        secret_ref: &str,
+        value: &beton_secrets::SecretValue,
+    ) -> Result<(), String> {
+        let text = std::str::from_utf8(value.expose()).map_err(|_| "kein UTF-8-Text".to_owned())?;
+        let client = crate::daemon::ensure_running(self.ctx)
+            .await
+            .map_err(|e| e.to_string())?;
+        match client.create_secret(secret_ref, "token", text).await {
+            Ok(_) => Ok(()),
+            Err(beton_sdk::Error::Problem { code, .. }) if code == "conflict" => Err(format!(
+                "{secret_ref} existiert bereits (neuer Wert: beton secrets rotate {secret_ref})"
+            )),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 

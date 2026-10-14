@@ -317,6 +317,46 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         // HAR-011 AC4: Pfad und Grund, übrige Provider unbeeinträchtigt.
         tracing::warn!("Konfiguration: Provider übersprungen: {p}");
     }
+    // Secret-Backend (SEC-002/SEC-003): Keychain, sonst verschlüsselte Datei; nie Klartext.
+    let secrets = beton_secrets::select::select(
+        settings.secrets.backend,
+        &ctx.home,
+        std::env::var_os(beton_secrets::select::PASSPHRASE_FILE_ENV).map(std::path::PathBuf::from),
+    );
+    for note in &secrets.notes {
+        tracing::warn!("Secrets: {note}");
+    }
+    if let Some(outcome) = secrets.passphrase_file {
+        // Entsperren beim Start ist sicherheitsrelevant (SEC-012): auch das Scheitern.
+        let local = store.ensure_local().await.context("lokale Identität")?;
+        let (action, details) = match outcome {
+            Ok(()) => (
+                "secrets.unlocked",
+                serde_json::json!({ "via": "passphrase_file" }),
+            ),
+            Err(code) => (
+                "secrets.unlock_failed",
+                serde_json::json!({ "via": "passphrase_file", "code": code }),
+            ),
+        };
+        store
+            .append_audit(
+                local.org,
+                beton_store::NewAuditEntry {
+                    at: beton_core::time::Timestamp::now(),
+                    actor: beton_core::id::PrincipalId::User(local.user),
+                    action: action.into(),
+                    target_kind: "secret_store".into(),
+                    target_id: "file".into(),
+                    session_id: None,
+                    host_id: None,
+                    details,
+                },
+            )
+            .await
+            .context("Audit-Eintrag")?;
+    }
+    let secret_backend = secrets.backend.clone();
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
@@ -326,6 +366,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.features = Arc::new(features);
         r.titles = titles;
         r.attachments = attachments;
+        r.secret_backend = secret_backend;
         r
     })
     .await

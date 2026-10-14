@@ -17,6 +17,8 @@ Commands:
   config      Konfiguration lesen und schreiben
   agent       Agent-Definitionen auflisten, anzeigen, prüfen und anlegen
   auth        Lokale Anmeldung verwalten
+  secrets     Secrets verwalten (API-Keys, Tokens); Werte werden nie angezeigt
+  audit       Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen
   admin       Wartung von Datenbank und Projektionen
   completion  Shell-Vervollständigung ausgeben
   version     Version ausgeben

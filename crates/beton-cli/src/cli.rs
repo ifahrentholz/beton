@@ -92,6 +92,12 @@ pub enum Command {
     /// Lokale Anmeldung verwalten.
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// Secrets verwalten (API-Keys, Tokens); Werte werden nie angezeigt.
+    #[command(subcommand)]
+    Secrets(SecretsCommand),
+    /// Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen.
+    #[command(subcommand)]
+    Audit(AuditCommand),
     /// Wartung von Datenbank und Projektionen.
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -582,6 +588,141 @@ pub enum AuthCommand {
     /// Lokales Token erneuern; laufende Clients lesen es neu.
     #[command(name = "rotate-local")]
     RotateLocal,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SecretsCommand {
+    /// Secret anlegen; den Wert verdeckt am Terminal eingeben, über `--stdin` oder
+    /// `--from-file`, nie als Argument.
+    Add(SecretsAddArgs),
+    /// Secrets auflisten (Ref, Typ, Provider, Account, zuletzt genutzt); nie Werte.
+    List,
+    /// Secret entfernen (Wert im Keychain bzw. in der Datei und Metadaten).
+    Rm(SecretsRmArgs),
+    /// Neuen Wert für ein vorhandenes Secret setzen.
+    Rotate(SecretsRotateArgs),
+    /// Verschlüsselten Datei-Store entsperren (beim ersten Mal anlegen) oder die Passphrase
+    /// wechseln.
+    Unlock(SecretsUnlockArgs),
+}
+
+/// Woher ein Secret-Wert kommt. Werte als Argument werden abgelehnt (Shell-History, `ps`).
+#[derive(Debug, Args)]
+pub struct ValueSource {
+    /// Wert von stdin lesen (ohne abschließenden Zeilenumbruch).
+    #[arg(long, conflicts_with = "from_file")]
+    pub stdin: bool,
+    /// Wert aus dieser Datei lesen.
+    #[arg(long, value_name = "FILE")]
+    pub from_file: Option<PathBuf>,
+    /// Abgelehnt: Werte nie als Argument.
+    #[arg(hide = true, num_args = 0.., allow_hyphen_values = true, value_name = "WERT")]
+    pub rejected_args: Vec<String>,
+    /// Abgelehnt: Werte nie als Argument.
+    #[arg(long = "value", hide = true, allow_hyphen_values = true)]
+    pub rejected_value: Option<String>,
+    /// Abgelehnt: Werte nie als Argument.
+    #[arg(long = "token", hide = true, allow_hyphen_values = true)]
+    pub rejected_token: Option<String>,
+    /// Abgelehnt: Werte nie als Argument.
+    #[arg(long = "password", hide = true, allow_hyphen_values = true)]
+    pub rejected_password: Option<String>,
+}
+
+impl ValueSource {
+    /// `true`, wenn ein Wert als Argument übergeben wurde.
+    pub fn has_argument_value(&self) -> bool {
+        !self.rejected_args.is_empty()
+            || self.rejected_value.is_some()
+            || self.rejected_token.is_some()
+            || self.rejected_password.is_some()
+    }
+}
+
+/// Art eines Secrets (SEC-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SecretKindArg {
+    /// Ein Token, z. B. API-Key oder PAT.
+    Token,
+    /// User und Passwort (`--username`; der Wert ist das Passwort).
+    Basic,
+    /// OAuth-Token als JSON mit `access_token`.
+    Oauth,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsAddArgs {
+    /// Provider (`github`, `gitlab`, `openai`, `anthropic`, `npm`, ein Host wie
+    /// `gitlab.example.com` oder `custom:<name>`) oder eine vollständige SecretRef
+    /// (`secret://user/<provider>/<account>[#name]`).
+    pub target: String,
+    /// Account beim Provider (Default `default`).
+    #[arg(long, value_name = "ACCOUNT")]
+    pub account: Option<String>,
+    /// Zusätzlicher Name, falls es mehrere Secrets je Account gibt.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+    /// Art des Secrets.
+    #[arg(long = "type", value_enum, default_value_t = SecretKindArg::Token)]
+    pub kind: SecretKindArg,
+    /// Benutzername für `--type basic`.
+    #[arg(long, value_name = "USER")]
+    pub username: Option<String>,
+    #[command(flatten)]
+    pub source: ValueSource,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsRmArgs {
+    /// SecretRef, z. B. `secret://user/openai/default`.
+    #[arg(value_name = "REF")]
+    pub secret_ref: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsRotateArgs {
+    /// SecretRef, z. B. `secret://user/openai/default`.
+    #[arg(value_name = "REF")]
+    pub secret_ref: String,
+    #[command(flatten)]
+    pub source: ValueSource,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsUnlockArgs {
+    /// Passphrase von stdin lesen (bei `--change-passphrase`: alte und neue je eine Zeile).
+    #[arg(long)]
+    pub stdin: bool,
+    /// Passphrase wechseln; der Store wird neu verschlüsselt.
+    #[arg(long)]
+    pub change_passphrase: bool,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuditCommand {
+    /// Einträge anzeigen, neueste zuerst.
+    List(AuditListArgs),
+    /// Alle Einträge als JSONL ausgeben, älteste zuerst (mit Hashes).
+    Export(AuditExportArgs),
+    /// Hash-Kette prüfen; Exit 1 mit der ersten ungültigen Position.
+    Verify,
+}
+
+#[derive(Debug, Args)]
+pub struct AuditListArgs {
+    /// Anzahl der Einträge (1 bis 200).
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=200))]
+    pub limit: u32,
+    /// Nur diese Aktion, z. B. `secret.used`.
+    #[arg(long, value_name = "ACTION")]
+    pub action: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct AuditExportArgs {
+    /// Zieldatei (Default: stdout); wird nur für den Eigentümer lesbar angelegt.
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

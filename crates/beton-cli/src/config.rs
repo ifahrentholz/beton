@@ -42,6 +42,8 @@ pub struct Settings {
         with = "std::collections::BTreeMap<String, beton_harness_direct::config::ProviderConfig>"
     )]
     pub providers: std::collections::BTreeMap<String, Value>,
+    /// Secret-Store (SEC-002, SEC-003); nur in der User-Konfiguration.
+    pub secrets: SecretsSettings,
     /// Eingeschaltete Feature-Flags, z. B. `[fake_harness]` (UX-007); zusätzlich
     /// `BETON_FEATURES=a,b`. Unbekannte Namen erzeugen nur eine Warnung.
     pub features: Vec<String>,
@@ -74,6 +76,15 @@ impl Default for ServerSettings {
 pub struct AuthSettings {
     /// Zusätzlich erlaubte Origins für WebSocket und Cookie-Requests (AUTH-003).
     pub ws_allowed_origins: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct SecretsSettings {
+    /// `auto` (Default): OS-Keychain, sonst verschlüsselte Datei `~/.beton/secrets/store.v1`;
+    /// `keychain` oder `file` erzwingen ein Backend. Die Passphrase der Datei kommt von
+    /// `beton secrets unlock` oder aus `BETON_SECRETS_PASSPHRASE_FILE`.
+    pub backend: beton_secrets::select::BackendChoice,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

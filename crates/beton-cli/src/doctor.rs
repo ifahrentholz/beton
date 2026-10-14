@@ -257,6 +257,55 @@ async fn worktrees(home: &Path) -> Check {
     c
 }
 
+/// Secret-Store (SEC-002 AC2): welches Backend der Daemon nimmt. Prüft nur die Verfügbarkeit,
+/// liest und ändert keinen Keychain-Eintrag.
+pub fn secrets_store(
+    choice: beton_secrets::select::BackendChoice,
+    keychain: &beton_secrets::backend::keychain::Availability,
+    home: &Path,
+) -> Check {
+    use beton_secrets::select::{Plan, plan};
+    let file = beton_secrets::backend::FileBackend::default_path(home);
+    let file_state = if file.exists() {
+        format!("{} vorhanden", file.display())
+    } else {
+        format!(
+            "{} wird mit `beton secrets unlock` angelegt",
+            file.display()
+        )
+    };
+    let mut c = match plan(choice, keychain) {
+        Plan::Keychain => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            "OS-Keychain (Service `beton`)",
+            None,
+        ),
+        Plan::File { reason: Some(_) } => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            format!("Keychain nicht verfügbar → Datei-Store ({file_state})"),
+            Some("Entsperren: beton secrets unlock oder BETON_SECRETS_PASSPHRASE_FILE"),
+        ),
+        Plan::File { reason: None } => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            format!("Datei-Store (secrets.backend: file; {file_state})"),
+            Some("Entsperren: beton secrets unlock oder BETON_SECRETS_PASSPHRASE_FILE"),
+        ),
+        Plan::None { reason } => check(
+            "secrets.store",
+            CheckStatus::Warn,
+            format!("Secrets nicht verfügbar: {reason}"),
+            Some("beton config set secrets.backend auto"),
+        ),
+    };
+    if let beton_secrets::backend::keychain::Availability::Unavailable(why) = keychain {
+        c.details = Some(json!({ "keychain": "unavailable", "reason": why }));
+    }
+    c
+}
+
 async fn daemon(home: &Path) -> Check {
     match crate::daemon::running(home).await {
         Some(client) => {
@@ -539,11 +588,12 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
             None
         }
     };
-    let configured = layers
+    let settings = layers.as_ref().and_then(|l| l.daemon_settings().ok());
+    let secrets_choice = settings
         .as_ref()
-        .and_then(|l| l.daemon_settings().ok())
-        .map(|s| s.features)
+        .map(|s| s.secrets.backend)
         .unwrap_or_default();
+    let configured = settings.map(|s| s.features).unwrap_or_default();
     checks.push(features(
         &configured,
         std::env::var(beton_core::feature::ENV_VAR).ok().as_deref(),
@@ -551,6 +601,11 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
     checks.push(permissions(&ctx.home));
     checks.push(database(&ctx.home).await);
     checks.push(worktrees(&ctx.home).await);
+    checks.push(secrets_store(
+        secrets_choice,
+        &beton_secrets::backend::KeychainBackend::availability(),
+        &ctx.home,
+    ));
 
     let harness_layers = layers
         .as_ref()
@@ -593,6 +648,27 @@ pub fn render(report: &DoctorReport, out: &mut dyn std::io::Write) -> std::io::R
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sec_002_ac2_doctor_reports_file_store_without_keychain() {
+        use beton_secrets::backend::keychain::{Availability, availability_for};
+        use beton_secrets::select::BackendChoice;
+        let home = std::path::Path::new("/tmp/beton-home");
+        // Linux ohne D-Bus-Session.
+        let none = availability_for("linux", None);
+        let c = secrets_store(BackendChoice::Auto, &none, home);
+        assert_eq!(c.status, CheckStatus::Ok);
+        assert!(
+            c.message.contains("Keychain nicht verfügbar → Datei-Store"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("secrets/store.v1"), "{}", c.message);
+        let c = secrets_store(BackendChoice::Auto, &Availability::Available, home);
+        assert!(c.message.contains("OS-Keychain"), "{}", c.message);
+        let c = secrets_store(BackendChoice::Keychain, &none, home);
+        assert_eq!(c.status, CheckStatus::Warn);
+    }
+
     use super::*;
 
     #[test]
