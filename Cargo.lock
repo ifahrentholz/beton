@@ -244,6 +244,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+ "toml",
  "ts-rs",
  "ulid",
 ]
@@ -523,6 +524,7 @@ dependencies = [
  "fastrand",
  "fs4",
  "hex",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",

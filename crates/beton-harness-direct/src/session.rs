@@ -166,13 +166,9 @@ impl Shared {
         }
     }
 
+    /// `cost.delta` nur mit Tokens: Preise aus `providers.*.models[].pricing` sind Preis-Overrides
+    /// und werden wie alle Preise beim Append bewertet (USE-003, `beton_core::pricing`).
     fn cost(&self, model: &str, usage: Usage, purpose: Option<&str>) -> EventPayload {
-        let cost_micro = self.provider.model(model).and_then(|m| m.pricing).map(|p| {
-            let input =
-                (usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens) as f64;
-            (input * p.input_per_mtok + usage.output_tokens as f64 * p.output_per_mtok).round()
-                as i64
-        });
         EventPayload::CostDelta(CostDelta {
             harness: self.harness.clone(),
             model: model.to_owned(),
@@ -180,11 +176,12 @@ impl Shared {
             output_tokens: usage.output_tokens,
             cache_read_tokens: usage.cache_read_tokens,
             cache_write_tokens: usage.cache_write_tokens,
-            cost_micro,
+            cost_micro: None,
             currency: "USD".into(),
             source: CostSource::Estimated,
             auth_source: self.auth_source,
             purpose: purpose.map(str::to_owned),
+            ..CostDelta::default()
         })
     }
 }
