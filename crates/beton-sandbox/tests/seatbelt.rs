@@ -816,6 +816,40 @@ async fn sbx_007_ac5_other_localhost_ports_are_unreachable() {
     accept.abort();
 }
 
+#[tokio::test]
+async fn sbx_007_unix_sockets_listening_and_apple_events_are_blocked() {
+    let fx = fx();
+    // Ein Host-Dienst auf einem Unix-Socket (wie SSH-Agent oder Docker) im Workspace.
+    let sock = fx.ws.join("dienst.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+    std::thread::spawn(move || {
+        // Jede Verbindung sofort schließen; `nc` endet dann.
+        for conn in listener.incoming() {
+            drop(conn);
+        }
+    });
+    let connect = format!("nc -U '{}' </dev/null", sock.display());
+    let c = control(&fx, &connect).await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    let policy = fx.policy("read_paths: [\"~\"]\n", Stage::Tools);
+    let out = sh(&policy, &connect).await;
+    assert!(!out.ok, "Unix-Socket erreichbar: {out:?}");
+    // Kein eigener Dienst in der Sandbox (bind/listen).
+    let out = sh(
+        &policy,
+        "nc -l 127.0.0.1 0 & pid=$!; sleep 1; kill $pid 2>/dev/null; wait $pid",
+    )
+    .await;
+    assert!(out.stderr.contains("Operation not permitted"), "{out:?}");
+    // Keine Apple Events an andere Apps (z. B. „Terminal: do script“).
+    let out = sh(
+        &policy,
+        "osascript -e 'tell application \"System Events\" to get name of every process'",
+    )
+    .await;
+    assert!(!out.ok, "{out:?}");
+}
+
 /// Keychain-Test nur mit dem temporären Keychain der CI (`BETON_TEST_KEYCHAIN=1`); lokal
 /// berührt kein Test den Keychain eines Entwicklers. In der CI fehlt er nie.
 fn test_keychain() -> Option<PathBuf> {
