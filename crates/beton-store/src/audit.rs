@@ -24,7 +24,7 @@ use beton_core::id::{EventId, OrgId, PrincipalId, SessionId};
 use beton_core::time::Timestamp;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{Connection as _, Row, SqliteConnection};
 
 use crate::Store;
 use crate::error::{Error, Result};
@@ -261,15 +261,28 @@ pub(crate) async fn append_in(
 }
 
 /// Verkettet Einträge aus der Zeit vor Migration 0010 (DATA-008: ohne `seq`), je Org in der
-/// Reihenfolge ihres Zeitstempels. Idempotent.
-pub(crate) async fn backfill(store: &Store) -> Result<()> {
-    let mut tx = store.write_tx().await?;
+/// Reihenfolge ihres Zeitstempels. Läuft im Migrator auf dessen Verbindung; idempotent und ohne
+/// Schreibzugriff, wenn es nichts zu tun gibt.
+pub(crate) async fn backfill(conn: &mut SqliteConnection) -> Result<()> {
+    let chained: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM pragma_table_info('audit_entries') WHERE name = 'seq' \
+         /* org-übergreifend: Schema */",
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    if chained.is_none() {
+        return Ok(());
+    }
     let rows = sqlx::query(
         "SELECT id, org_id, at, actor_id, action, target_kind, target_id, details \
          FROM audit_entries WHERE seq IS NULL ORDER BY org_id, at, id",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut tx = conn.begin().await?;
     for row in rows {
         let id: String = row.try_get("id")?;
         let org: OrgId = parse(row.try_get("org_id")?)?;

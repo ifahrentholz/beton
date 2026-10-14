@@ -141,7 +141,8 @@ async fn migrate(
         tx.commit().await?;
         version = version.max(m.version);
     }
-    Ok(())
+    // Audit-Einträge von vor der Hash-Kette (Migration 0010) nachverketten (SEC-012).
+    crate::audit::backfill(conn).await
 }
 
 /// Konsistente Kopie der Datenbank vor einer Migration: `<db>.bak-<version>`.

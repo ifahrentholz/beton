@@ -133,13 +133,11 @@ impl Store {
             .connect_with(connect_options(db_path))
             .await?;
         let blobs = BlobStore::open(blob_dir, options.max_blob_bytes)?;
-        let store = Self {
+        Ok(Self {
             pool,
             blobs,
             options,
-        };
-        audit::backfill(&store).await?;
-        Ok(store)
+        })
     }
 
     /// Schreib-Transaktion mit `BEGIN IMMEDIATE`: nimmt die Schreibsperre sofort. Bei
