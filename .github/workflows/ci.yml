@@ -180,6 +180,11 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # Labels und Label-Ereignisse des PRs für `security-tests-touched` (QA-013).
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,6 +200,24 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"
+      # Eigener Schritt statt eigenem Job: jeder Job muss Required Check sein (QA-010 AC3).
+      - name: security-tests-touched (QA-013)
+        # covers: QA-013 AC2 (Code in sicherheitskritischen Crates nur mit Teständerung)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Das Label `no-test-needed` zählt nur, wenn es jetzt am PR hängt und zuletzt von
+          # einem Menschen (Actor-Typ `User`, kein Bot/keine App) gesetzt wurde. Labels werden
+          # zur Laufzeit gelesen, damit ein Neustart des Jobs ein später gesetztes Label sieht.
+          extra=""
+          if gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name' | grep -qx 'no-test-needed'; then
+            actor=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/events" \
+              --jq '.[] | select(.event == "labeled" and .label.name == "no-test-needed") | .actor.type' | tail -n1)
+            if [ "$actor" = "User" ]; then extra="--no-test-needed"; fi
+          fi
+          cargo xtask security-tests-touched --range "origin/${BASE_REF}..HEAD" $extra
 
   web:
     name: web (Vitest, Playwright)

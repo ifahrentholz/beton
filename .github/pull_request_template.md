@@ -13,6 +13,13 @@ Implements:
 
 <!-- Spec-Änderungen oder neue ADRs in diesem PR, nicht erfüllbare ACs (mit Issue-Link). Sonst „keine“. -->
 
+## Sicherheitskritische Pfade (QA-013)
+
+<!-- Nur bei Änderungen an beton-policy, beton-sandbox, beton-proxy, beton-secrets oder am Auth-Code in beton-server; sonst Abschnitt löschen. -->
+- [ ] Test zuerst (rot) — Implementierung (grün) — Escape-/Policy-Suite grün
+- [ ] Label `security-review` gesetzt; Merge erst nach Freigabe durch den Code-Owner.
+- [ ] Ohne Teständerung schlägt `security-tests-touched` fehl; die Ausnahme `no-test-needed` setzt nur der Maintainer.
+
 ## Checkliste
 
 - [ ] Alle genannten ACs sind durch Tests abgedeckt (Testnamen `<prefix>_<nnn>_ac<k>_…`).

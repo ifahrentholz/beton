@@ -1,0 +1,16 @@
+# Code-Owner der sicherheitskritischen Pfade (QA-013, ADR-0031, AGENTS.md §5).
+# Änderungen hier brauchen das Review des Maintainers; die Branch-Protection
+# („Require review from Code Owners“) stellt der Maintainer ein.
+# Die Bereiche müssen zu `xtask/src/security_tests.rs` (Check `security-tests-touched`) passen.
+
+/crates/beton-policy/ @ifahrentholz
+/crates/beton-sandbox/ @ifahrentholz
+/crates/beton-proxy/ @ifahrentholz
+/crates/beton-secrets/ @ifahrentholz
+/crates/beton-server/src/local_auth.rs @ifahrentholz
+/crates/beton-server/src/security.rs @ifahrentholz
+
+# Die Gates selbst
+/.github/CODEOWNERS @ifahrentholz
+/.github/workflows/ @ifahrentholz
+/deny.toml @ifahrentholz
