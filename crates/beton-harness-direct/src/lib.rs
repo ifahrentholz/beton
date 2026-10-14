@@ -345,8 +345,13 @@ impl HarnessAdapter for DirectAdapter {
                 self.provider.name
             )));
         }
-        let (tools, failures) =
-            McpTools::connect(&spec.workdir, &spec.mcp.servers, ctx.launcher.as_ref()).await;
+        let (tools, failures) = McpTools::connect(
+            &spec.workdir,
+            &spec.mcp.servers,
+            ctx.launcher.as_ref(),
+            ctx.stage.as_ref().and_then(|s| s.tools.clone()),
+        )
+        .await;
         let servers = tools.server_names();
         let tools: Arc<dyn ToolHost> = Arc::new(tools);
         match self

@@ -128,6 +128,8 @@ impl Fixture {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    sandbox: None,
+                    proxy_ca: None,
                 },
             )
             .await
@@ -477,6 +479,8 @@ async fn runner_token_only_opens_its_own_session() {
                 agent_snapshot: None,
                 snapshots: None,
                 fork: None,
+                sandbox: None,
+                proxy_ca: None,
             },
         )
         .await

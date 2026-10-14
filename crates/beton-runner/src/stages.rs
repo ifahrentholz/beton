@@ -24,6 +24,42 @@ use beton_sandbox::{
     SandboxProvider, SandboxSpec, Secret, Stage,
 };
 
+/// `sandbox:` und `proxy.extra_ca_files` vom Daemon (Env `BETON_RUNNER_SANDBOX`, nur Pfade
+/// und Regeln, keine Secrets).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SandboxBoot {
+    #[serde(default)]
+    pub spec: SandboxSpec,
+    #[serde(default)]
+    pub extra_ca_files: Vec<PathBuf>,
+}
+
+/// Übergabeform der beton-CA vom Daemon (dritte stdin-Zeile, nie Env oder argv); `Debug`
+/// zeigt nichts, der Speicher wird überschrieben.
+#[derive(Clone)]
+pub struct CaText(zeroize::Zeroizing<String>);
+
+impl CaText {
+    pub fn new(text: String) -> Self {
+        Self(zeroize::Zeroizing::new(text))
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Die CA; kaputt oder abgelaufen → Fehler (fail closed, PRX-002).
+    pub fn ca(&self) -> Result<BetonCa, beton_proxy::CaError> {
+        BetonCa::from_handover(&self.0)
+    }
+}
+
+impl std::fmt::Debug for CaText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CaText(***)")
+    }
+}
+
 /// Einstellungen des Daemons für das Stufenmodell.
 pub struct StageOptions {
     /// `sandbox:` der User-Konfiguration (Projekt- und Agent-Ebene folgen mit #200).
@@ -349,6 +385,7 @@ async fn compose_unix(
         env: StageEnv {
             shim_dir: bin,
             exchange: tools_tmp,
+            tools: None,
         },
         passthrough,
         _broker: broker,

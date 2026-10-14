@@ -505,13 +505,26 @@ pub struct AdapterContext {
 }
 
 /// Was ein Adapter für die zweistufige Sandbox braucht (SBX-002).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct StageEnv {
     /// Verzeichnis mit `bt-exec`, `bt-exec-zsh`, `bt-exec-bash` und `bt-exec-sh`.
     pub shim_dir: std::path::PathBuf,
     /// Austausch zwischen Stufe 1 und Stufe 2 (Stufe-2-Scratch), z. B. für
     /// `CLAUDE_CODE_TMPDIR`.
     pub exchange: std::path::PathBuf,
+    /// Startet Tools in Stufe 2 für Harnesses, deren Tools beton selbst ausführt
+    /// (`tool_isolation: beton`, z. B. `shell_exec` des Direkt-API-Harness).
+    pub tools: Option<Arc<dyn ProcessLauncher>>,
+}
+
+impl std::fmt::Debug for StageEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StageEnv")
+            .field("shim_dir", &self.shim_dir)
+            .field("exchange", &self.exchange)
+            .field("tools", &self.tools.is_some())
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for AdapterContext {

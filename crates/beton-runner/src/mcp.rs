@@ -296,6 +296,7 @@ pub async fn prepare(
     paths: &Paths,
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
     gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
+    tools: Option<beton_sandbox::Sandbox>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
     let loaded = load(source, workdir, paths)?;
@@ -395,7 +396,7 @@ pub async fn prepare(
             prefix: Vec::new(),
         },
         gate,
-        tools: None,
+        tools,
     })
     .await;
     #[cfg(not(unix))]

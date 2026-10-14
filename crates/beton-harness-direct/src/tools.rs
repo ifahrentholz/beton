@@ -277,11 +277,17 @@ impl McpTools {
         workdir: &Path,
         servers: &[McpLaunch],
         launcher: &dyn ProcessLauncher,
+        shell: Option<std::sync::Arc<dyn ProcessLauncher>>,
     ) -> (Self, Vec<EventPayload>) {
         let mut failures = Vec::new();
         let mut tools = Vec::new();
         let workspace = match WorkspaceServer::new(workdir) {
             Ok(ws) => {
+                // `shell_exec` in Stufe 2, wenn das Stufenmodell aktiv ist (SBX-002).
+                let ws = match &shell {
+                    Some(l) => ws.with_launcher(l.clone()),
+                    None => ws,
+                };
                 for def in WorkspaceServer::definitions() {
                     let name = def["name"].as_str().unwrap_or_default().to_owned();
                     tools.push(ToolInfo {

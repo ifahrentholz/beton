@@ -71,6 +71,8 @@ pub mod env {
     pub const FORK_PLAN: &str = "BETON_FORK_PLAN";
     /// `1`: Das Ergebnis des Fork-Plans steht schon im Log.
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
+    /// `sandbox:` der User-Konfiguration und `proxy.extra_ca_files` als JSON (SBX-002, #191).
+    pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -107,6 +109,10 @@ pub struct RunnerBoot {
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
     pub fork_logged: bool,
+    /// Zweistufige Sandbox (SBX-002); `None`: wie bisher ohne Isolation.
+    pub sandbox: Option<stages::SandboxBoot>,
+    /// beton-CA für die Proxy-Instanzen der Session (dritte stdin-Zeile, PRX-002).
+    pub proxy_ca: Option<stages::CaText>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -135,6 +141,14 @@ impl RunnerBoot {
         // Ohne zweite Zeile (stdin geschlossen) gibt es keine Keys.
         let _ = std::io::stdin().read_line(&mut keys);
         let credentials = beton_harness_direct::secret::KeyMap::from_json_line(&keys);
+        keys.clear();
+        // Dritte Zeile: beton-CA für die Proxy-Instanzen (PRX-002), nur mit Stufenmodell.
+        let mut ca = String::new();
+        let _ = std::io::stdin().read_line(&mut ca);
+        let proxy_ca = Some(ca.trim())
+            .filter(|c| !c.is_empty())
+            .map(|c| stages::CaText::new(c.to_owned()));
+        zeroize::Zeroize::zeroize(&mut ca);
         Ok(Self {
             socket: PathBuf::from(var(env::SOCKET)?),
             token: token.trim().to_owned(),
@@ -179,6 +193,14 @@ impl RunnerBoot {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             fork_logged: std::env::var(env::FORK_LOGGED).is_ok_and(|v| v == "1"),
+            sandbox: match std::env::var(env::SANDBOX) {
+                Ok(json) => Some(
+                    serde_json::from_str(&json)
+                        .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::SANDBOX)))?,
+                ),
+                Err(_) => None,
+            },
+            proxy_ca,
         })
     }
 
@@ -471,6 +493,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // ausdrücklich ohne Isolation (`backend: none`).
     let (sandbox_tx, sandbox_rx) = mpsc::unbounded_channel::<EventPayload>();
     let mut sandbox_events = Some(sandbox_rx);
+    let stage_tx = sandbox_tx.clone();
     let sandbox = beton_sandbox::Sandbox::unsandboxed(
         beton_sandbox::Stage::Harness,
         Some(Arc::new(move |ev| {
@@ -565,10 +588,88 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         gate_tx,
     )
     .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
+    // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
+    // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
+    let stages = match &boot.sandbox {
+        Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
+            let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
+                Ok(ca) => ca,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(format!(
+                        "sandbox_unavailable: beton-CA: {e}"
+                    ));
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            };
+            let events: beton_sandbox::EventSink = {
+                let tx = stage_tx.clone();
+                Arc::new(move |ev| {
+                    let _ = tx.send(EventPayload::SandboxStarted(ev));
+                })
+            };
+            let input = stages::StageInput {
+                session_id: boot.session_id.to_string(),
+                harness: boot.harness.as_str(),
+                tool_isolation: predicted_caps(&boot, caps.as_ref(), true).tool_isolation,
+                workdir: &boot.workdir,
+                // Ohne Home scheitert die Auflösung (fail closed).
+                home: paths.home.clone().unwrap_or_default(),
+                host_env: std::env::vars()
+                    .filter(|(k, _)| !k.starts_with("BETON_"))
+                    .collect(),
+                program: beton_harness::registry::resolve_binary(
+                    &boot.harness,
+                    boot.harness.as_str(),
+                    &env,
+                )
+                .map(|b| b.program),
+                events: Some(events),
+            };
+            let opts = stages::StageOptions {
+                spec: sb.spec.clone(),
+                proxy_ca: ca,
+                proxy: beton_proxy::ProxyOptions {
+                    extra_ca_files: sb.extra_ca_files.clone(),
+                },
+                exe: std::env::current_exe().unwrap_or_default(),
+            };
+            match stages::compose(input, opts).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(e.to_string());
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            }
+        }
+        _ => None,
+    };
+    let in_proc = caps
+        .as_ref()
+        .is_some_and(|c| c.transport == beton_harness::Transport::InProc);
+    let (launcher, stage): (
+        Arc<dyn beton_harness::process::ProcessLauncher>,
+        Option<beton_harness::StageEnv>,
+    ) = match &stages {
+        // Direkt-API und Fake laufen im Runner; nur ihre Tools gehen in Stufe 2.
+        Some(st) if in_proc => (
+            Arc::new(SandboxLauncher::new(sandbox)),
+            Some(beton_harness::StageEnv {
+                tools: Some(Arc::new(SandboxLauncher::new(st.tools.clone()))),
+                ..st.env.clone()
+            }),
+        ),
+        Some(st) => (
+            Arc::new(SandboxLauncher::new(st.harness.clone())),
+            Some(st.env.clone()),
+        ),
+        None => (Arc::new(SandboxLauncher::new(sandbox)), None),
+    };
     let ctx = AdapterContext {
-        stage: None,
+        stage,
         gate: Arc::new(gate.clone()),
-        launcher: Arc::new(SandboxLauncher::new(sandbox)),
+        launcher,
         env,
     };
     // `PreToolUse`-Hook (HAR-005): `beton hook claude …` aus dem eigenen Binary.
@@ -602,6 +703,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // Tool-Call selbst durch das Gate schickt (POL-024).
                 (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
                     .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
+                stages.as_ref().map(|s| s.tools.clone()),
             )
             .await
         }
@@ -725,8 +827,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .permission_mode
                 .map(|m| m.as_str().to_owned()),
             sandbox: Some(beton_policy::vars::StartSandboxVars {
-                enabled: Some(beton_harness::SandboxStatus::current().tool_sandbox),
-                backend: Some("none".into()),
+                enabled: Some(stages.is_some()),
+                backend: Some(
+                    stages
+                        .as_ref()
+                        .map(|s| s.harness.policy().backend.as_str())
+                        .unwrap_or("none")
+                        .into(),
+                ),
                 profile: None,
             }),
             network: Some(beton_policy::vars::StartNetworkVars {

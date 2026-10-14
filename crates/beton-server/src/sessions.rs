@@ -632,6 +632,8 @@ impl<'a> SessionManager<'a> {
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
+                    sandbox: None,
+                    proxy_ca: None,
                 },
             )
             .await

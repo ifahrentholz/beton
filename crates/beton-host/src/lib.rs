@@ -111,6 +111,11 @@ pub struct RunnerBoot {
     pub snapshots: Option<PathBuf>,
     /// Session mit übernommenem Verlauf (Fork bzw. Resume eines Imports, HAR-018, HAR-019).
     pub fork: Option<ForkBoot>,
+    /// Zweistufige Sandbox (SBX-002, #191): `sandbox:` und `proxy.extra_ca_files`; geht als
+    /// JSON in die Umgebung des Runners (keine Secrets).
+    pub sandbox: Option<beton_runner::stages::SandboxBoot>,
+    /// beton-CA für die Proxy-Instanzen (PRX-002); nur über stdin (dritte Zeile).
+    pub proxy_ca: Option<beton_runner::stages::CaText>,
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
@@ -256,6 +261,8 @@ macro_rules! runner_provider_contract {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    sandbox: None,
+                    proxy_ca: None,
                 }
             }
 

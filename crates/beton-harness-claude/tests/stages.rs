@@ -50,6 +50,7 @@ async fn sbx_002_claude_bash_tool_goes_through_bt_exec_in_stage_two() {
     let stage = StageEnv {
         shim_dir: PathBuf::from("/sbx/exec/bin"),
         exchange: PathBuf::from("/sbx/tools"),
+        tools: None,
     };
     let spec = launched(Some(stage)).await;
     let get = |k: &str| {
