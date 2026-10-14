@@ -289,3 +289,51 @@ fn pol_005_harness_family_groups_acp_and_direct() {
     assert_eq!(harness_family("direct:anthropic"), "direct");
     assert_eq!(harness_family("claude"), "claude");
 }
+
+/// K2 (#232): Der Claude-Hook meldet `tool_name = "mcp__<server>__<tool>"` und zusätzlich
+/// `mcp_server`. `tool.name` ist trotzdem der Name ohne Präfix, damit serverbezogene Regeln
+/// und Tabelleneinträge greifen.
+#[test]
+fn pol_005_claude_hook_mcp_tool_name_without_prefix() {
+    let none = json!({});
+    for (name, server, want_name, kind, spawn) in [
+        (
+            "mcp__github__delete_repo",
+            "github",
+            "delete_repo",
+            "mcp",
+            false,
+        ),
+        (
+            "mcp__beton__session_spawn",
+            "beton",
+            "session_spawn",
+            "system",
+            true,
+        ),
+    ] {
+        let call = RawToolCall {
+            mcp_server: Some(server),
+            ..raw("claude", name, &none)
+        };
+        let tool = normalize(&call).unwrap();
+        assert_eq!(
+            (tool.server.as_str(), tool.name.as_str()),
+            (server, want_name),
+            "{name}"
+        );
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.is_subagent_spawn, spawn, "{name}");
+        assert_eq!(tool.native_name, name);
+    }
+    // Die Regel aus dem Angriff greift.
+    let call = RawToolCall {
+        mcp_server: Some("github"),
+        ..raw("claude", "mcp__github__delete_repo", &none)
+    };
+    let tool = normalize(&call).unwrap();
+    assert!(cel(
+        "tool.server == \"github\" && tool.name == \"delete_repo\"",
+        tool.to_context()
+    ));
+}

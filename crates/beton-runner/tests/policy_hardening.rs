@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use beton_harness::HarnessId;
+use beton_harness::{Gate, GateDecision, HarnessId};
 use beton_policy::load::Scope;
 use beton_policy::vars::StartVars;
 use beton_runner::policy::{Checked, GateEvent, PolicyGate, PolicyOptions};
@@ -116,4 +116,32 @@ fn har_027_policy_mode_is_rechecked_against_the_sandbox() {
     assert!(policy_start_mode(Some(PermissionMode::Yolo), Some("yolo"), &caps, none).is_err());
     // Unbekannte Werte verwirft beton nicht still.
     assert!(policy_start_mode(None, Some("bypass"), &caps, none).is_err());
+}
+
+// ------------------------------------------------------------- K2 (#232), POL-005
+
+#[tokio::test]
+async fn pol_005_claude_hook_mcp_rule_on_server_and_name_denies() {
+    // Angriff: `deny when tool.server == "github" && tool.name == "delete_repo"` erlaubte den
+    // Aufruf unter Claude, weil `tool.name` das Präfix `mcp__github__` behielt.
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(
+        dir.path(),
+        Scope::Project,
+        "gh",
+        "  - id: no-delete\n    on: tool_call\n    when: 'tool.server == \"github\" && tool.name == \"delete_repo\"'\n    action: deny\n",
+    );
+    let (g, _rx) = gate(dir.path(), "claude");
+    // Genau so, wie der `PreToolUse`-Hook die Anfrage baut.
+    let req = beton_harness_claude::pre_tool_request(
+        &serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "mcp__github__delete_repo",
+                            "tool_input": {"repo": "x"}, "tool_use_id": "toolu_1"}),
+        None,
+    );
+    assert_eq!(req.mcp_server.as_deref(), Some("github"));
+    let decision = g.decide(req).await;
+    assert!(
+        matches!(decision, GateDecision::Deny { .. }),
+        "{decision:?}"
+    );
 }
