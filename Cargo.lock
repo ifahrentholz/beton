@@ -742,6 +742,7 @@ name = "beton-runner"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "beton-agents",
  "beton-core",
  "beton-git",

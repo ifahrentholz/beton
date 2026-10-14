@@ -83,6 +83,8 @@ impl Hub {
 pub struct EventService {
     pub store: Store,
     pub hub: Arc<Hub>,
+    /// Session-Traces aus den gespeicherten Events (OBS-003), falls konfiguriert.
+    pub tracer: Option<Arc<crate::otel::SessionTracer>>,
 }
 
 impl EventService {
@@ -99,6 +101,9 @@ impl EventService {
             .append(org, session, expected_head, epoch, events)
             .await?;
         self.hub.publish_durable(session, &written);
+        if let Some(tracer) = &self.tracer {
+            tracer.observe(&self.store, org, session, &written).await;
+        }
         Ok(written)
     }
 

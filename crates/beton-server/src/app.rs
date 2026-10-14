@@ -51,6 +51,7 @@ impl AppState {
         EventService {
             store: self.store.clone(),
             hub: self.runtime.hub.clone(),
+            tracer: self.runtime.tracer.clone(),
         }
     }
 
@@ -104,6 +105,8 @@ pub struct Runtime {
     /// `beton serve` setzt sie immer; der Start lädt die bekannten Werte über die
     /// `RedactionCap`, bevor irgendetwas geschrieben oder verteilt wird.
     pub redactor: Option<Arc<beton_secrets::Redactor>>,
+    /// Session-Traces (OBS-003); nur mit konfiguriertem OTLP-Endpoint.
+    pub tracer: Option<Arc<crate::otel::SessionTracer>>,
 }
 
 impl Runtime {
@@ -148,6 +151,7 @@ impl Runtime {
             file_index: Arc::default(),
             secret_backend: Arc::new(beton_secrets::backend::NoBackend),
             redactor: None,
+            tracer: None,
         }
     }
 

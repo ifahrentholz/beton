@@ -182,6 +182,7 @@ pub async fn start_with(
             events: crate::hub::EventService {
                 store: store_for_tunnel.clone(),
                 hub: runtime.hub.clone(),
+                tracer: runtime.tracer.clone(),
             },
             local,
             runners: runtime.runners.clone(),
