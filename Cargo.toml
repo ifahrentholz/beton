@@ -30,6 +30,7 @@ beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 beton-git = { path = "crates/beton-git", version = "0.0.0" }
 beton-policy = { path = "crates/beton-policy", version = "0.0.0" }
 beton-secrets = { path = "crates/beton-secrets", version = "0.0.0" }
+beton-proxy = { path = "crates/beton-proxy", version = "0.0.0" }
 
 # extern
 # Secret-Store (SEC-001 … SEC-003): AEAD, KDF und Nullen von Secrets.
@@ -42,6 +43,17 @@ keyring-core = "1"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 windows-native-keyring-store = "1"
 zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
+# Egress-Proxy (PRX-001 … PRX-007): HTTP/1.1 und HTTP/2, TLS über ring (kein aws-lc),
+# Zertifikate der beton-CA, IDN-Hosts.
+http = "1"
+hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "server", "server-auto", "tokio"] }
+idna = "1"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "zeroize"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tower-service = "0.3"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }

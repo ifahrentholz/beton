@@ -1,0 +1,14 @@
+# PRX-003 AC5: CONNECT wird vorab nur zugelassen, wenn eine Regel Host:Port erlauben könnte.
+- name: CONNECT-Vorprüfung
+  rules:
+    - "GET api.github.com/repos/**"
+    - "* *.example.test:8443"
+    - "* http://plain.test"
+  cases:
+    - { connect: "api.github.com:443", expect: allow }
+    - { connect: "API.GITHUB.COM.:443", expect: allow }
+    - { connect: "api.github.com:8443", expect: deny }
+    - { connect: "a.example.test:8443", expect: allow }
+    - { connect: "example.test:8443", expect: deny }
+    - { connect: "plain.test:443", expect: deny }
+    - { connect: "unknown.test:443", expect: deny }

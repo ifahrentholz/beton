@@ -1,0 +1,19 @@
+# PRX-003 AC1/AC2: Gematcht wird gegen den normalisierten Pfad.
+- name: Repo-Glob (AC2)
+  rules: ["GET api.github.com/repos/a/**"]
+  cases:
+    - { request: "GET https://api.github.com/repos/a/x", expect: allow }
+    - { request: "GET https://api.github.com/repos/a/../b/x", expect: deny }
+    - { request: "GET https://api.github.com/repos/a%2F..%2Fb", expect: invalid }
+    - { request: "GET https://api.github.com/repos/a/%2e%2e/b/x", expect: deny }
+    - { request: "GET https://api.github.com/repos/a/x/../../../b", expect: deny }
+- name: Punkt-Segmente, doppelte Schrägstriche, Prozent-Kodierung
+  rules: ["GET example.test/a/b"]
+  cases:
+    - { request: "GET https://example.test/a/./b", expect: allow }
+    - { request: "GET https://example.test/a//b", expect: allow }
+    - { request: "GET https://example.test//a/b", expect: allow }
+    - { request: "GET https://example.test/x/../a/b", expect: allow }
+    - { request: "GET https://example.test/%61/%62", expect: allow }
+    - { request: "GET https://example.test/a%5Cb", expect: invalid }
+    - { request: "GET https://example.test/../a/b", expect: invalid }

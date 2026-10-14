@@ -1,0 +1,49 @@
+[package]
+name = "beton-proxy"
+description = "Egress-Proxy: Proxy-Instanzen pro Session-Stufe, beton-CA und TLS-MITM, Default-Deny-Regeln, Private-IP-Schutz."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+base64.workspace = true
+beton-core.workspace = true
+beton-secrets.workspace = true
+beton-store.workspace = true
+bytes = "1"
+getrandom.workspace = true
+hex.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+idna.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-rustls.workspace = true
+tower-service.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+regex.workspace = true
+serde_norway.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "test-util"] }
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+
+[lints]
+workspace = true
