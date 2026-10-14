@@ -393,11 +393,11 @@ release-please PR gemergt → Tag
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Änderungen an sicherheitskritischen Crates folgen TDD (zuerst fehlschlagender Test, dann Implementierung) und benötigen ein **menschliches** Review: `CODEOWNERS` weist diese Pfade dem Projektinhaber zu; Branch-Protection verlangt dessen Approval, Agents können nicht freigeben. Ein CI-Check verlangt bei Codeänderungen in diesen Crates mindestens eine geänderte oder neue Testdatei, sonst ist das Label `no-test-needed` nötig, das nur Menschen setzen dürfen.
 - **Akzeptanzkriterien:**
-  - [ ] AC1 — Ein PR, der `crates/beton-sandbox/src/**` ändert, ist ohne Approval des Code-Owners nicht mergebar.
+  - [ ] AC1 — Ein PR, der `crates/beton-sandbox/src/**` ändert, ist ohne Approval des Code-Owners nicht mergebar. *Übergang bis M3 (ADR-0036):* Solange Agents den GitHub-Account des Maintainers nutzen, scheitert ein solcher PR ohne Label `security-review` in einem Required Check, und die Freigabe ist die ausdrückliche Zustimmung des Maintainers im Chat oder als PR-Kommentar; das Code-Owner-Approval in der Branch-Protection folgt mit der eigenen Agent-Identität (#177).
   - [ ] AC2 — Ein solcher PR ohne Teständerung schlägt im Check `security-tests-touched` fehl.
   - [ ] AC3 — Die PR-Vorlage enthält für diese Pfade die Checkliste „Test zuerst (rot) — Implementierung (grün) — Escape-/Policy-Suite grün“.
 - **Abhängigkeiten:** QA-010
-- **Referenz:** ADR-0031
+- **Referenz:** ADR-0031, ADR-0036
 
 ### QA-014 — Agent-Workflow & Feature-IDs
 - **Meilenstein:** M0 · **Priorität:** Must
