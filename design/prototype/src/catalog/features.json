@@ -432,7 +432,7 @@
   "anchor": "har-026--fake-harness",
   "summary": "Deterministischer Harness `fake`, der Szenarien aus YAML abspielt (Text-Deltas, Tool-Calls mit Gate-Anfragen, Fehler, Verzögerungen) und alle Capabilities konfigurierbar deklariert. Er ist Grundlage für E2E-Tests (Playwright gegen Web/Desktop), Policy-Integrationstests und Demos ohne Subscription. HAR-026 ist Owner des Szenario-Formats; die Protokoll-Fake-CLIs (QA-002) spielen dieselben Szenarien über die echte Prozessgrenze der Adapter ab.",
   "acs": [
-   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts`, der vom Runner vergebenen IDs – `evt_`, ab M2 auch `pd_` und `apr_` aus dem Policy-Gate – und der Laufzeit `eval_us`; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
+   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts`, der vom Runner vergebenen IDs – `evt_`, ab M2 auch `pd_` und `apr_` aus dem Policy-Gate sowie die Turn-ID `trn_`, die der Runner vor der Phase `model_request` vergibt –, der Laufzeit `eval_us` und des Ablaufs `expires_at` einer Freigabe; Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
    "Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.",
    "Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag (`fake_harness`, UX-007) verfügbar und erscheint sonst nicht im Katalog."
   ]
