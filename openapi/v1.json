@@ -712,6 +712,256 @@
         }
       }
     },
+    "/v1/inbox": {
+      "get": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "Inbox, neueste Einträge zuerst (UX-001).",
+        "operationId": "list_inbox",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`open`, `done` oder `info`; ohne Angabe alle.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "`approval`, `question` oder `notice`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1 bis 500 (Default 100).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Einträge und Zähler",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/{item_id}": {
+      "get": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "Ein Eintrag der Inbox.",
+        "operationId": "get_inbox_item",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eintrag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxItemView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox/{item_id}/resolve": {
+      "post": {
+        "tags": [
+          "inbox"
+        ],
+        "summary": "Freigabe oder Frage aus der Inbox entscheiden (UX-001 AC2): setzt eine pausierte Session\nfort, ohne dass sie geöffnet wurde.",
+        "operationId": "resolve_inbox_item",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Entscheidung zugestellt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/info": {
       "get": {
         "tags": [
@@ -5039,7 +5289,8 @@
           "kind",
           "subject",
           "options",
-          "requested_seq"
+          "requested_seq",
+          "expires_at"
         ],
         "properties": {
           "id": {
@@ -5061,6 +5312,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "Ablauf der Card (RFC 3339, POL-010)."
           }
         }
       },
@@ -5411,7 +5666,8 @@
         "type": "string",
         "enum": [
           "allow",
-          "deny"
+          "deny",
+          "answer"
         ]
       },
       "DiffHunk": {
@@ -6007,6 +6263,100 @@
           }
         }
       },
+      "InboxItemView": {
+        "type": "object",
+        "description": "Ein Eintrag der Inbox.",
+        "required": [
+          "id",
+          "session_id",
+          "session_title",
+          "kind",
+          "status",
+          "title",
+          "summary",
+          "detail",
+          "created_seq",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_title": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`approval`, `question` oder `notice`."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open` (wartet auf dich), `done` (entschieden) oder `info` (Hinweis)."
+          },
+          "approval_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "object",
+            "description": "Freigaben und Fragen: `subject`, `options`, `expires_at`, `on_timeout`,\n`approval_kind`; Hinweise: `rule_id`, `scope`, `set`, `channels`."
+          },
+          "created_seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolution": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`decision`, `via`, `actor`, `comment?`, `answer?`, `remember?`, `on_timeout_applied?`."
+          }
+        }
+      },
+      "InboxPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "open_count"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxItemView"
+            }
+          },
+          "open_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Zähler der Inbox: offene Freigaben und Fragen (UX-001 AC3).",
+            "minimum": 0
+          }
+        }
+      },
       "Info": {
         "type": "object",
         "description": "Server-Informationen.",
@@ -6398,6 +6748,14 @@
           }
         }
       },
+      "Remember": {
+        "type": "string",
+        "description": "Merken einer Freigabe (POL-010).",
+        "enum": [
+          "none",
+          "session"
+        ]
+      },
       "ResolveApprovalRequest": {
         "type": "object",
         "required": [
@@ -6406,6 +6764,17 @@
         "properties": {
           "decision": {
             "$ref": "#/components/schemas/Decision"
+          },
+          "remember": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Remember",
+                "description": "`session` bei `allow`: gilt für denselben Befehl in dieser Session, falls die Card\n`approve_session` anbietet (sonst 409)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "updated_args": {
             "type": [
@@ -6420,6 +6789,13 @@
               "null"
             ],
             "description": "Begründung bei `deny`; das Modell sieht sie."
+          },
+          "answer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Antwort bei `answer`."
           }
         }
       },
