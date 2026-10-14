@@ -17,10 +17,16 @@
 
 pub mod ca;
 pub mod ip;
+mod net;
 pub mod normalize;
+pub mod proxy;
 pub mod rules;
+
+#[cfg(test)]
+mod tests;
 
 pub use ca::{BetonCa, CaError, CaInfo, CaStore, LeafIssuer};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
+pub use proxy::{EgressProxy, InstanceSpec, ProxyError, ProxyInstance, ProxyOptions, ProxyToken};
 pub use rules::{Decision, DenyReason, Request, RuleError, RuleSet};
