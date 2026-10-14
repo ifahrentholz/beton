@@ -113,6 +113,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
         Command::Proxy(cmd) => crate::secrets::proxy(&ctx, cmd).await,
+        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd),
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }
@@ -144,6 +145,7 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Config(_)
             | Command::Usage(_)
             | Command::Agent(_)
+            | Command::Sandbox(_)
             | Command::Completion(_)
             | Command::Version
             | Command::Auth(_)

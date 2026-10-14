@@ -25,7 +25,9 @@ beton-harness-acp.workspace = true
 beton-harness-direct.workspace = true
 beton-host.workspace = true
 beton-mcp.workspace = true
+beton-proxy.workspace = true
 beton-runner.workspace = true
+beton-sandbox.workspace = true
 beton-sdk.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
@@ -38,6 +40,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
 serde_norway.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-std", "signal"] }

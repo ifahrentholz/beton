@@ -15,6 +15,7 @@ pub mod logging;
 pub mod picker;
 pub mod render;
 pub mod run;
+pub mod sandbox;
 pub mod secrets;
 pub mod serve;
 pub mod sessionref;
