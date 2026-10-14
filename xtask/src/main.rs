@@ -10,6 +10,7 @@
 //! cargo xtask security-review-label --range <base>..<head> [--has-label]
 //! cargo xtask spec-check
 //! cargo xtask spec-coverage --milestone <M0…M5> [--report]
+//! cargo xtask spawn-lint
 //! ```
 
 mod codegen;
@@ -18,6 +19,7 @@ mod cov_gate;
 mod coverage;
 mod golden_scan;
 mod security_tests;
+mod spawn_lint;
 mod spec;
 
 use std::path::PathBuf;
@@ -62,14 +64,28 @@ fn run() -> Result<bool> {
         "security-review-label" => security_review_label(&rest),
         "spec-check" => spec_check(&root),
         "spec-coverage" => spec_coverage(&root, &rest),
+        "spawn-lint" => spawn_lint(&root),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spawn-lint|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
         }
     }
+}
+
+/// SBX-001 AC2: keine direkten Spawns außerhalb von `beton-sandbox` (siehe `spawn_lint`).
+fn spawn_lint(root: &std::path::Path) -> Result<bool> {
+    let errors = spawn_lint::check(root);
+    if errors.is_empty() {
+        println!("spawn-lint: ok");
+        return Ok(true);
+    }
+    for e in &errors {
+        eprintln!("spawn-lint: {e}");
+    }
+    Ok(false)
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
