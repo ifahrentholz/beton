@@ -2291,7 +2291,7 @@
    "`beton audit verify` erkennt eine nachträglich in der DB geänderte oder gelöschte Zeile und nennt die erste ungültige Position.",
    "Test mit markiertem Secret-Wert: Der Wert kommt in keinem Audit-Eintrag vor, auch nicht bei Fehlermeldungen.",
    "1 000 Proxy-Nutzungen eines Secrets innerhalb von 5 min erzeugen genau einen Eintrag mit `count: 1000`.",
-   "Ein Member sieht über die API nur Einträge, deren Principal er selbst ist."
+   "(ab M4) Ein Member sieht über die API nur Einträge, deren Principal er selbst ist. *(Lokal gibt es nur den Owner `usr_local`; die Rollen kommen mit AUTH-014.)*"
   ]
  },
  {
@@ -2612,7 +2612,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "data-003--sqlite-backend--migrationen",
-  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.",
+  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version. Nummern sind eindeutig und aufsteigend; eine Lücke ist erlaubt, wenn ein paralleles Arbeitspaket die Nummer reserviert hat. Der Migrator wendet jede noch fehlende Version an, auch unterhalb des aktuellen Stands; Migrationen mit Lücke dürfen daher nicht voneinander abhängen.",
   "acs": [
    "Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.",
    "Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.",

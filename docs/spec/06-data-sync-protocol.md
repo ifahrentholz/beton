@@ -400,7 +400,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### DATA-003 — SQLite-Backend & Migrationen
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.
+- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version. Nummern sind eindeutig und aufsteigend; eine Lücke ist erlaubt, wenn ein paralleles Arbeitspaket die Nummer reserviert hat. Der Migrator wendet jede noch fehlende Version an, auch unterhalb des aktuellen Stands; Migrationen mit Lücke dürfen daher nicht voneinander abhängen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.
   - [ ] AC2 — Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.

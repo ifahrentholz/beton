@@ -317,7 +317,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### SEC-001 — Secret-Store-Abstraktion & SecretRefs
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** `beton-secrets` definiert einen `SecretStore`-Trait (`put`, `get_for_use`, `delete`, `list_meta`) mit Backends Keychain, verschlüsselte Datei (lokal) und Envelope-DB (zentral). Secrets werden überall per SecretRef adressiert; Metadaten (Typ, Provider, Account, Zeitstempel, zuletzt genutzt) liegen in der DB, Werte nur im Backend. Der Wert ist nur über `get_for_use(ref, purpose)` erhältlich, das ausschließlich Proxy, Direkt-API-Harness und Git-Provider-Client aufrufen dürfen und das jeden Abruf auditiert.
-- **Details:** SecretRef: `secret://<user|team:<slug>|org>/<provider>/<account>[#name]`; Provider z. B. `github.com`, `gitlab.example.com`, `anthropic`, `openai`, `npm`, `custom:<name>`. Lokal: `org=local`, `user=usr_local`. Typen: `token`, `basic` (User + Passwort), `oauth` (Access + Refresh + Ablauf).
+- **Details:** SecretRef: `secret://<user|team:<slug>|org>/<provider>/<account>[#name]`; Provider z. B. `github.com`, `gitlab.example.com`, `anthropic`, `openai`, `npm`, `custom:<name>`. Lokal: `org=local`, `user=usr_local`. Typen: `token`, `basic` (User + Passwort, JSON `{username, password}`), `oauth` (Access + Refresh + Ablauf, JSON mit `access_token`). Capability-Sperre: `get_for_use` ist `pub(crate)`; erreichbar nur über die Typen `ProxyCap`, `DirectApiCap`, `GitProviderCap` (private Felder, weder `Clone` noch `Copy`), die ausschließlich zusammen mit dem Dienst entstehen (`Secrets::new`). Die Komposition im Daemon reicht sie an die drei Konsumenten weiter; der Zweck im Audit-Eintrag folgt aus dem Typ. Fail closed: Ohne Metadaten, ohne Backend oder ohne Audit-Eintrag gibt es keinen Wert.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `list_meta` liefert nie Werte; ein Unit-Test stellt sicher, dass `SecretValue` weder `Debug` noch `Serialize` mit Klartext implementiert (Ausgabe `***`).
   - [ ] AC2 — Ein Aufruf von `get_for_use` aus einem nicht freigegebenen Modul wird durch Sichtbarkeit (`pub(crate)`-Fassade + Capability-Typ) zur Compile-Zeit verhindert.
@@ -329,6 +329,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### SEC-002 — Lokaler Store: OS-Keychain
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Lokal speichert beton Secret-Werte im OS-Keychain über die `keyring`-Crate (macOS Keychain, Windows Credential Manager, Linux Secret Service), Service-Name `beton`, Account = SecretRef. Ist kein Keychain verfügbar (Headless-Linux ohne Secret Service), wird der Datei-Fallback (SEC-003) genutzt — nie Klartext.
+- **Details:** Umgesetzt mit `keyring-core` und je Plattform dem Store des keyring-Ökosystems (`apple-native-keyring-store`, `windows-native-keyring-store`, `zbus-secret-service-keyring-store`). `secrets.backend` (User-Konfiguration): `auto` (Default; Keychain, sonst Datei), `keychain` (ohne Keychain sind Secrets nicht verfügbar, `secrets_unavailable`) oder `file`. Unter Linux gilt der Keychain nur mit D-Bus-Session (`DBUS_SESSION_BUS_ADDRESS`) als verfügbar; `beton doctor` prüft das, ohne Einträge zu lesen. Tests berühren nie den Keychain des Entwicklers: Der Keychain-Test läuft nur mit `BETON_TEST_KEYCHAIN=1` in der macOS-CI gegen einen temporären Keychain.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Nach `beton secrets add github` liegt der Wert im Keychain und in keiner Datei unter `~/.beton` (Grep-Test).
   - [ ] AC2 — Auf Linux ohne D-Bus-Session meldet `beton doctor` „Keychain nicht verfügbar → Datei-Store“ und SEC-003 greift.
@@ -338,6 +339,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### SEC-003 — Lokaler Fallback: verschlüsselte Datei (Argon2id)
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Der Fallback-Store `~/.beton/secrets/store.v1` (0600) ist eine mit AES-256-GCM verschlüsselte Datei; der Schlüssel wird per Argon2id aus einer Passphrase abgeleitet (m = 64 MiB, t = 3, p = 1, 16-Byte-Salt, Parameter im Header). Jede Änderung schreibt atomar (Temp-Datei, fsync, rename) mit neuem Nonce. Entsperren interaktiv (`beton secrets unlock`) oder über `BETON_SECRETS_PASSPHRASE_FILE`; gesperrt → Sessions, die Secrets brauchen, scheitern mit `secrets_locked`.
+- **Details:** Aus dem Argon2id-Ergebnis leitet HKDF-SHA256 den Datenschlüssel und einen Key-Check-Value (KCV, 16 Byte, im Header) ab; der KCV trennt „falsche Passphrase“ (`secrets_locked`) von „Datei beschädigt“ (`secrets_corrupt`). Der Header ist AAD des Chiffrats; eine SHA-256-Prüfsumme am Dateiende lässt jede Veränderung als Integritätsfehler auffallen, bevor Argon2 läuft. Die Passphrase-Datei muss 0600 sein. Passphrase-Wechsel: `beton secrets unlock --change-passphrase` (neuer Salt, neu verschlüsselt). Entsperren und Fehlschläge werden auditiert (`secrets.unlocked`, `secrets.unlock_failed`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Falsche Passphrase liefert `secrets_locked` ohne Hinweis, welcher Teil falsch war; die Datei bleibt unverändert.
   - [ ] AC2 — Ein einzelnes geflipptes Bit in der Datei führt zu einem Integritätsfehler statt zu falschen Werten.
@@ -348,6 +350,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### SEC-004 — Secret-Verwaltung über CLI & UI
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** `beton secrets add|list|rm|test|rotate` und die Einstellungs-UI verwalten Secrets. Werte werden nur eingegeben (verdeckte Eingabe, stdin, Datei), nie angezeigt. `test` prüft ein Secret gegen den Provider (z. B. GitHub `/user`) über den Proxy-Pfad, ohne den Wert auszugeben.
+- **Details:** REST: `GET /v1/secrets` (Metadaten, paginiert, dazu Backend und Sperrzustand), `POST /v1/secrets` (anlegen), `PUT /v1/secrets` (Wert rotieren), `DELETE /v1/secrets?secret_ref=…`, `POST /v1/secrets/unlock`. Requests auf `/v1/secrets` werden nicht für Idempotenz gespeichert (kein Hash über einen Body mit Wert), Parserfehler zitieren den Body nicht. `beton secrets test` braucht den Proxy-Pfad und kommt mit SEC-011; die Einstellungs-UI folgt dem Design-Prototyp (eigenes Issue).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton secrets list` zeigt Ref, Typ, Provider, Account, zuletzt genutzt — keine Werte, auch nicht gekürzt.
   - [ ] AC2 — `beton secrets add` mit Wert als Kommandozeilen-Argument wird abgelehnt (Hinweis auf stdin/Prompt), damit er nicht in Shell-History/`ps` landet.
@@ -429,12 +432,12 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 ### SEC-012 — Audit-Log
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Sicherheitsrelevante Aktionen werden in einem Append-only-Audit-Log protokolliert: Secret erstellt/geändert/gelöscht/genutzt/Lease, Credential-Fehlgebrauch, Logins und Fehlschläge, Pairing/Widerruf, Token-Erstellung/-Widerruf, Rollen- und Share-Änderungen, Policy-Änderungen, Sandbox `backend: none`, CA-Rotation, Master-Key-Rotation. Jeder Eintrag enthält Zeit, Principal, Aktion, Ziel, Session/Host, IP/User-Agent (zentral) und Details — nie Secret-Werte. Einträge bilden eine Hash-Kette (`hash = SHA-256(prev_hash ‖ entry)`). Lokal ab M2, zentral mit Org-Bezug ab M4.
-- **Details:** Hochfrequente Nutzung (Proxy) wird pro `(secret, session, host)` in 5-min-Fenstern mit Zähler aggregiert. Retention zentral Default 365 Tage, lokal 90 Tage *(Annahme)*. `beton audit list|export|verify`; REST `GET /v1/audit` (Scope `audit:read`).
+- **Details:** Hochfrequente Nutzung (Proxy) wird pro `(secret, session, host)` in 5-min-Fenstern mit Zähler aggregiert. Retention zentral Default 365 Tage, lokal 90 Tage *(Annahme)*. `beton audit list|export|verify`; REST `GET /v1/audit` (Scope `audit:read`) und `GET /v1/audit/verify`. Kette je Org: `seq` lückenlos ab 1, `hash = SHA-256(prev_hash ‖ Eintrag)` über die längenpräfixierten Felder in gespeicherter Form, `prev_hash` des ersten Eintrags 64 × `0`; ein Kopf-Datensatz (`seq`, `hash`) erkennt auch das Löschen des letzten Eintrags. Offene Nutzungsfenster liegen persistent in der Datenbank und werden nach Ablauf als ein Eintrag `secret.used` mit `count` versiegelt (spätestens beim Lesen des Logs). Die Kette erkennt nachträgliche Änderungen; wer Schreibrechte auf die Datenbank hat, kann sie neu berechnen (ein externer Anker ist nicht Teil von v1).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton audit verify` erkennt eine nachträglich in der DB geänderte oder gelöschte Zeile und nennt die erste ungültige Position.
   - [ ] AC2 — Test mit markiertem Secret-Wert: Der Wert kommt in keinem Audit-Eintrag vor, auch nicht bei Fehlermeldungen.
   - [ ] AC3 — 1 000 Proxy-Nutzungen eines Secrets innerhalb von 5 min erzeugen genau einen Eintrag mit `count: 1000`.
-  - [ ] AC4 — Ein Member sieht über die API nur Einträge, deren Principal er selbst ist.
+  - [ ] AC4 — (ab M4) Ein Member sieht über die API nur Einträge, deren Principal er selbst ist. *(Lokal gibt es nur den Owner `usr_local`; die Rollen kommen mit AUTH-014.)*
 - **Abhängigkeiten:** DATA-001, DATA-002 (siehe 06-data-sync-protocol.md)
 - **Referenz:** ADR-0024
 
