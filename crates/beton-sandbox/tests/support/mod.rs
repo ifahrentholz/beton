@@ -374,6 +374,30 @@ mod probes {
                     )),
                     #[cfg(not(target_arch = "x86_64"))]
                     "x32_unshare" => "err:38".into(),
+                    "procmem" => {
+                        // /proc/<pid>/mem eines anderen Prozesses (z. B. PID 1 der Sandbox).
+                        let p = std::ffi::CString::new(format!("/proc/{}/mem", args[0])).unwrap();
+                        let fd = libc::open(p.as_ptr(), libc::O_RDONLY);
+                        if fd >= 0 {
+                            libc::close(fd);
+                        }
+                        rc(fd as i64)
+                    }
+                    "procmem_child" => {
+                        // Kontrollgruppe: der Speicher eines eigenen Kindes ist erreichbar.
+                        let mut c = std::process::Command::new("/bin/sleep")
+                            .arg("5")
+                            .spawn()
+                            .unwrap();
+                        let p = std::ffi::CString::new(format!("/proc/{}/mem", c.id())).unwrap();
+                        let fd = libc::open(p.as_ptr(), libc::O_RDONLY);
+                        if fd >= 0 {
+                            libc::close(fd);
+                        }
+                        let _ = c.kill();
+                        let _ = c.wait();
+                        rc(fd as i64)
+                    }
                     "uid" => format!("{}", libc::getuid()),
                     "caps" => {
                         let status = std::fs::read_to_string("/proc/self/status").unwrap();

@@ -523,6 +523,25 @@ async fn sbx_008_ac3_namespaces_mount_ptrace_and_kill_fail() {
                 p.id()
             );
         }
+        // Die Prozesse der Sandbox-Verwaltung (PID 1, unter bwrap auch PID 2) sind nicht
+        // beschreibbar, auch wo Yama ptrace nicht einschränkt; der eigene Kindprozess schon.
+        let out = run_with(
+            p.as_ref(),
+            &policy,
+            probe_cmd(&policy, "procmem_child", &[]),
+        )
+        .await;
+        assert_eq!(
+            probe_result(&out),
+            "ok",
+            "{}: Kontrollgruppe: {out:?}",
+            p.id()
+        );
+        for pid in ["1", "2"] {
+            let out = run_with(p.as_ref(), &policy, probe_cmd(&policy, "procmem", &[pid])).await;
+            let r = probe_result(&out);
+            assert!(r.starts_with("err:"), "{}: /proc/{pid}/mem: {r}", p.id());
+        }
         // Keine Capabilities, auch wenn die Sandbox im eigenen User-Namespace als UID 0 läuft.
         let out = run_with(p.as_ref(), &policy, probe_cmd(&policy, "caps", &[])).await;
         let caps = probe_result(&out);

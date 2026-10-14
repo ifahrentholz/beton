@@ -71,7 +71,11 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends bubblewrap
           bwrap --version
       - name: Unprivilegierte User-Namespaces erlauben
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        # ptrace ohne Yama-Einschränkung wie unter Debian: Die Sandbox darf sich nicht auf Yama
+        # verlassen (SBX-008 AC3).
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.yama.ptrace_scope=0
       # covers: QA-001 AC2 (Tests laufen ohne ausgehendes Netz; ein Netzzugriff scheitert)
       - name: Tests ohne Netzwerk (nur Loopback)
         # Die Linux-Escape-Suite läuft für beide Backends; keins darf fehlen (SBX-008, SBX-009).
