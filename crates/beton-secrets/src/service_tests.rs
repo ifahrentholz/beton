@@ -400,11 +400,14 @@ fn take_caps(f: &mut Fixture) -> crate::UseCapabilities {
     std::mem::replace(&mut f.caps, crate::UseCapabilities::new())
 }
 
+/// Die Einträge der Matcher-Aufbauten, älteste zuerst.
 fn redaction_entries(entries: &[beton_store::AuditEntry]) -> Vec<&beton_store::AuditEntry> {
-    entries
+    let mut out: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "secrets.redaction_loaded")
-        .collect()
+        .collect();
+    out.sort_by_key(|e| e.seq);
+    out
 }
 
 #[tokio::test]

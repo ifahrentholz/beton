@@ -21,6 +21,8 @@
 //! `beton-secrets` in diesem Prozess noch keinen Wert herausgegeben (die Capabilities entstehen
 //! erst unmittelbar davor, siehe `beton_server::serve`).
 
+#[cfg(test)]
+mod bench;
 mod detect;
 mod known;
 #[cfg(test)]
@@ -33,7 +35,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 pub use detect::beton_token_checksum;
-pub(crate) use known::KnownSecrets;
+pub(crate) use known::{KnownSecrets, parts};
 
 /// Präfix jeder Ersetzung.
 pub const REDACTED_PREFIX: &str = "[REDACTED:";
@@ -218,11 +220,88 @@ fn redact_text<'a>(
     known: Option<&KnownSecrets>,
     text: &'a str,
 ) -> Result<Cow<'a, str>, Unavailable> {
-    let _ = (known, text);
-    Ok(Cow::Borrowed(text))
+    let mut spans = Vec::new();
+    if let Some(known) = known {
+        known.find(text, &mut spans);
+    }
+    detect::find(text, &mut spans)?;
+    if spans.is_empty() {
+        return Ok(Cow::Borrowed(text));
+    }
+    Ok(Cow::Owned(replace(text, spans)))
+}
+
+/// Ersetzt die (ggf. überlappenden) Bereiche; ein Bereich reicht immer bis zu ganzen Zeichen.
+fn replace(text: &str, mut spans: Vec<Span>) -> String {
+    spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
+    let mut out = String::with_capacity(text.len());
+    let mut pos = 0;
+    let mut current: Option<Span> = None;
+    for span in spans {
+        let start = floor_char(text, span.start);
+        let end = ceil_char(text, span.end);
+        match &mut current {
+            Some(c) if start < c.end => c.end = c.end.max(end),
+            _ => {
+                if let Some(c) = current.take() {
+                    out.push_str(&text[pos..c.start]);
+                    out.push_str(&marker(c.kind));
+                    pos = c.end;
+                }
+                current = Some(Span {
+                    start,
+                    end,
+                    kind: span.kind,
+                });
+            }
+        }
+    }
+    if let Some(c) = current {
+        out.push_str(&text[pos..c.start]);
+        out.push_str(&marker(c.kind));
+        pos = c.end;
+    }
+    out.push_str(&text[pos..]);
+    out
+}
+
+fn floor_char(text: &str, mut i: usize) -> usize {
+    while i > 0 && !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char(text: &str, mut i: usize) -> usize {
+    while i < text.len() && !text.is_char_boundary(i) {
+        i += 1;
+    }
+    i.min(text.len())
 }
 
 fn redact_value(known: Option<&KnownSecrets>, value: &mut Value) -> Result<bool, Unavailable> {
-    let _ = (known, value);
-    Ok(false)
+    match value {
+        Value::String(s) => match redact_text(known, s)? {
+            Cow::Borrowed(_) => Ok(false),
+            Cow::Owned(red) => {
+                *s = red;
+                Ok(true)
+            }
+        },
+        Value::Array(items) => {
+            let mut changed = false;
+            for item in items {
+                changed |= redact_value(known, item)?;
+            }
+            Ok(changed)
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for item in map.values_mut() {
+                changed |= redact_value(known, item)?;
+            }
+            Ok(changed)
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(false),
+    }
 }

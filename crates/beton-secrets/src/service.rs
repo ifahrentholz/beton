@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::{Backend, BackendKind};
 use crate::capability::UseCapabilities;
 use crate::error::{Error, Result};
-use crate::redact::Redactor;
+use crate::redact::{KnownSecrets, KnownSource, Redactor};
 use crate::{SecretRef, SecretValue};
 
 /// Art eines Secrets (SEC-001).
@@ -307,6 +307,7 @@ impl Secrets {
                 other => other.into(),
             });
         }
+        self.after_change("created").await;
         SecretMeta::from_record(record)
     }
 
@@ -325,6 +326,7 @@ impl Secrets {
                 self.audit("secret.rotated", r, serde_json::json!({})),
             )
             .await?;
+        self.after_change("rotated").await;
         SecretMeta::from_record(self.meta(r).await?)
     }
 
@@ -345,6 +347,7 @@ impl Secrets {
                 ),
             )
             .await?;
+        self.after_change("deleted").await;
         Ok(())
     }
 
@@ -353,6 +356,9 @@ impl Secrets {
         let result = blocking(&self.backend, move |b| b.unlock(&passphrase)).await;
         self.audit_store_event("secrets.unlocked", "secrets.unlock_failed", &result)
             .await?;
+        if result.is_ok() {
+            self.after_change("unlocked").await;
+        }
         result
     }
 
@@ -391,10 +397,106 @@ impl Secrets {
         Ok(())
     }
 
-    /// Bindet die Redaction-Pipeline an (nur über [`crate::RedactionCap`]).
+    /// Bindet die Redaction-Pipeline an (nur über [`crate::RedactionCap`]) und lädt die
+    /// bekannten Werte.
     pub(crate) async fn attach_redaction(&self, redactor: Arc<Redactor>) -> Result<()> {
-        let _ = (&self.redaction, redactor);
+        if self.redaction.target.set(redactor.clone()).is_err() {
+            redactor.fail();
+            return Err(Error::Invalid(
+                "Die Redaction-Pipeline ist bereits angebunden".into(),
+            ));
+        }
+        self.refresh_redaction("attach").await
+    }
+
+    /// Baut den Matcher der angebundenen Pipeline neu (nach Anlegen, Rotieren, Löschen,
+    /// Entsperren). Ohne Pipeline nichts zu tun.
+    ///
+    /// - Store gesperrt oder nicht erreichbar: die zuletzt bekannten Werte bleiben aktiv; der
+    ///   Store gibt dann auch für Sessions keinen Wert heraus.
+    /// - Jeder andere Fehler (Datenbank, Matcher, Audit): Pipeline blockiert (fail closed).
+    async fn refresh_redaction(&self, reason: &str) -> Result<()> {
+        let Some(redactor) = self.redaction.target.get() else {
+            return Ok(());
+        };
+        let _serial = self.redaction.rebuild.lock().await;
+        let result = self.rebuild_redaction(redactor, reason).await;
+        if result.is_err() {
+            redactor.fail();
+        }
+        result
+    }
+
+    async fn rebuild_redaction(&self, redactor: &Redactor, reason: &str) -> Result<()> {
+        let (known, details) = match self.known_values().await {
+            Ok((values, missing)) => {
+                let known = KnownSecrets::build(&values).map_err(Error::Unavailable)?;
+                let details = serde_json::json!({
+                    "reason": reason,
+                    "store": "ok",
+                    "values": known.values(),
+                    "missing": missing,
+                });
+                (Some(known), details)
+            }
+            Err(e @ (Error::Locked | Error::Unavailable(_) | Error::Corrupt(_))) => (
+                None,
+                serde_json::json!({ "reason": reason, "store": e.code(), "values": serde_json::Value::Null }),
+            ),
+            Err(other) => return Err(other),
+        };
+        // Erst das Audit, dann der neue Matcher: ohne Eintrag kein Aufbau (wie `get_for_use`).
+        self.store
+            .append_audit(
+                self.org,
+                NewAuditEntry {
+                    at: (self.clock)(),
+                    actor: self.actor,
+                    action: "secrets.redaction_loaded".into(),
+                    target_kind: "secret_store".into(),
+                    target_id: self.backend.kind().as_str().into(),
+                    session_id: None,
+                    host_id: None,
+                    details,
+                },
+            )
+            .await?;
+        match known {
+            Some(known) => redactor.install(known, KnownSource::Store),
+            None => redactor.mark_store_unavailable(),
+        }
         Ok(())
+    }
+
+    /// Alle bekannten Werte (bzw. ihre geheimen Teile). Werte ohne Eintrag im Backend zählen
+    /// als `missing`; sie lassen sich auch nicht nutzen.
+    async fn known_values(&self) -> Result<(Vec<SecretValue>, usize)> {
+        if self.backend.locked() {
+            return Err(Error::Locked);
+        }
+        let mut values = Vec::new();
+        let mut missing = 0;
+        for meta in self.list_meta().await? {
+            let r: SecretRef = meta.secret_ref.parse()?;
+            match blocking(&self.backend, move |b| b.get(&r)).await {
+                Ok(value) => values.extend(crate::redact::parts(meta.kind, &value)),
+                Err(Error::NotFound(_)) => missing += 1,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok((values, missing))
+    }
+
+    /// Nach einer Änderung: Matcher neu bauen. Scheitert das, ist die Pipeline blockiert
+    /// (fail closed) und der Fehler steht im Log; die Änderung selbst bleibt gültig.
+    async fn after_change(&self, reason: &str) {
+        if let Err(e) = self.refresh_redaction(reason).await {
+            tracing::error!(
+                code = e.code(),
+                reason,
+                "Redaction-Matcher nicht neu aufgebaut; Ausgaben bleiben blockiert"
+            );
+        }
     }
 
     /// Versiegelt abgelaufene Nutzungsfenster (vor dem Lesen des Audit-Logs).
