@@ -460,6 +460,7 @@ async fn populate_second_org(t: &TestStore) -> (OrgId, SessionRecord, beton_core
                         harness: "claude".into(),
                         model: "sonnet".into(),
                         cost_micro: Some(5),
+                        auth_source: beton_core::event::AuthSource::ApiKey,
                         ..CostDelta::default()
                     }),
                 ),
@@ -806,6 +807,7 @@ async fn session_with_history(t: &TestStore, title: &str) -> SessionRecord {
                 input_tokens: 1000,
                 output_tokens: 200,
                 cost_micro: Some(12_500),
+                auth_source: beton_core::event::AuthSource::ApiKey,
                 ..CostDelta::default()
             }),
         ),
@@ -817,6 +819,7 @@ async fn session_with_history(t: &TestStore, title: &str) -> SessionRecord {
                 input_tokens: 10,
                 output_tokens: 2,
                 cost_micro: Some(500),
+                auth_source: beton_core::event::AuthSource::ApiKey,
                 ..CostDelta::default()
             }),
         ),
@@ -876,6 +879,7 @@ async fn data_005_ac2_cost_delta_is_visible_right_after_append() {
                 model: "gpt-5".into(),
                 output_tokens: 7,
                 cost_micro: Some(42),
+                auth_source: beton_core::event::AuthSource::ApiKey,
                 ..CostDelta::default()
             }),
         ),
@@ -1428,6 +1432,7 @@ async fn agt_009_session_tree_lists_descendants_with_tokens() {
                 cache_read_tokens: 20,
                 output_tokens: 7,
                 cost_micro: Some(42),
+                auth_source: beton_core::event::AuthSource::ApiKey,
                 ..CostDelta::default()
             }),
         ),

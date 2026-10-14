@@ -99,10 +99,18 @@ problem_codes! {
     ImportSeqGap = "import_seq_gap", 422, "Import abgelehnt: Lücke im Verlauf";
     /// Ungültige Exportdatei, z. B. eine Zeile gegen das Schema (DATA-010 AC2).
     ImportInvalid = "import_invalid", 422, "Import abgelehnt: Datei ungültig";
+    /// Ungültige SecretRef (SEC-001).
+    InvalidSecretRef = "invalid_secret_ref", 400, "Ungültige SecretRef";
+    /// Secret-Store gesperrt oder Passphrase falsch (SEC-003); fail closed.
+    SecretsLocked = "secrets_locked", 423, "Secret-Store gesperrt";
     RateLimited = "rate_limited", 429, "Zu viele Anfragen";
     Internal = "internal", 500, "Interner Fehler";
     BlobCorrupt = "blob_corrupt", 500, "Blob beschädigt";
+    /// Verschlüsselte Secret-Datei beschädigt oder manipuliert (SEC-003 AC2).
+    SecretsCorrupt = "secrets_corrupt", 500, "Secret-Datei beschädigt";
     Unavailable = "unavailable", 503, "Vorübergehend nicht verfügbar";
+    /// Kein Secret-Backend nutzbar (SEC-002), z. B. Keychain nicht erreichbar.
+    SecretsUnavailable = "secrets_unavailable", 503, "Secret-Store nicht verfügbar";
 }
 
 /// Ein Validierungsfehler mit JSON-Pointer auf das Feld.

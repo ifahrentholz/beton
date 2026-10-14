@@ -132,6 +132,8 @@ pub async fn start_with(
         openapi_json: Arc::default(),
         runtime: runtime.clone(),
         web_dir: None,
+        secrets: beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone())
+            .0,
     };
     let router = app::build(AppParts {
         store,

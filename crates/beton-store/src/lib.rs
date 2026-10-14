@@ -7,6 +7,9 @@
 //! Jede Abfrage ist auf eine Org beschränkt (DATA-001 AC2): Alle Methoden nehmen die
 //! `OrgId` als ersten Parameter, und jedes SQL filtert nach `org_id`.
 
+pub mod audit;
+#[cfg(test)]
+mod audit_tests;
 mod blobs;
 mod error;
 mod events;
@@ -19,9 +22,14 @@ mod listing_tests;
 mod migrate;
 mod projections;
 pub mod schema;
+mod secrets_meta;
+#[cfg(test)]
+mod secrets_meta_tests;
 mod sessions;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod usage_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +39,10 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
+pub use crate::audit::{
+    AUDIT_USAGE_WINDOW, AuditEntry, AuditPage, AuditQuery, AuditVerification, NewAuditEntry,
+    UsageKey,
+};
 pub use crate::blobs::{BlobStore, DEFAULT_MAX_BLOB_BYTES, GC_GRACE, GcReport};
 pub use crate::error::{Error, Result};
 pub use crate::export::{
@@ -41,10 +53,11 @@ pub use crate::idempotency::{IDEMPOTENCY_TTL, StoredResponse};
 pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
-pub use crate::projections::{ApprovalRecord, UsageRecord};
+pub use crate::projections::{ApprovalRecord, UsageDaily, UsageRecord, UsageScope, UsageTotals};
+pub use crate::secrets_meta::SecretMetaRecord;
 pub use crate::sessions::{
-    AuditEntry, DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree,
-    Tombstone, TreeEntry,
+    DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree, Tombstone,
+    TreeEntry,
 };
 
 /// Hook, der `raw` vor der Persistenz redigiert (PROTO-001 AC3).
@@ -70,6 +83,8 @@ pub struct StoreOptions {
     pub redactor: Arc<dyn RawRedactor>,
     /// Maximale Blob-Größe (DATA-006, Default 512 MiB).
     pub max_blob_bytes: u64,
+    /// Bewertet jedes `cost.delta` beim Append (USE-001, USE-003): Katalog und Preis-Overrides.
+    pub pricer: Arc<beton_core::pricing::Pricer>,
 }
 
 impl Default for StoreOptions {
@@ -78,6 +93,7 @@ impl Default for StoreOptions {
             store_raw: true,
             redactor: Arc::new(NoRedaction),
             max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
+            pricer: Arc::new(beton_core::pricing::Pricer::default()),
         }
     }
 }
@@ -87,6 +103,8 @@ impl std::fmt::Debug for StoreOptions {
         f.debug_struct("StoreOptions")
             .field("store_raw", &self.store_raw)
             .field("max_blob_bytes", &self.max_blob_bytes)
+            .field("pricing_version", &self.pricer.catalog().version())
+            .field("price_overrides", &self.pricer.overrides().len())
             .finish_non_exhaustive()
     }
 }

@@ -257,6 +257,55 @@ async fn worktrees(home: &Path) -> Check {
     c
 }
 
+/// Secret-Store (SEC-002 AC2): welches Backend der Daemon nimmt. Prüft nur die Verfügbarkeit,
+/// liest und ändert keinen Keychain-Eintrag.
+pub fn secrets_store(
+    choice: beton_secrets::select::BackendChoice,
+    keychain: &beton_secrets::backend::keychain::Availability,
+    home: &Path,
+) -> Check {
+    use beton_secrets::select::{Plan, plan};
+    let file = beton_secrets::backend::FileBackend::default_path(home);
+    let file_state = if file.exists() {
+        format!("{} vorhanden", file.display())
+    } else {
+        format!(
+            "{} wird mit `beton secrets unlock` angelegt",
+            file.display()
+        )
+    };
+    let mut c = match plan(choice, keychain) {
+        Plan::Keychain => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            "OS-Keychain (Service `beton`)",
+            None,
+        ),
+        Plan::File { reason: Some(_) } => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            format!("Keychain nicht verfügbar → Datei-Store ({file_state})"),
+            Some("Entsperren: beton secrets unlock oder BETON_SECRETS_PASSPHRASE_FILE"),
+        ),
+        Plan::File { reason: None } => check(
+            "secrets.store",
+            CheckStatus::Ok,
+            format!("Datei-Store (secrets.backend: file; {file_state})"),
+            Some("Entsperren: beton secrets unlock oder BETON_SECRETS_PASSPHRASE_FILE"),
+        ),
+        Plan::None { reason } => check(
+            "secrets.store",
+            CheckStatus::Warn,
+            format!("Secrets nicht verfügbar: {reason}"),
+            Some("beton config set secrets.backend auto"),
+        ),
+    };
+    if let beton_secrets::backend::keychain::Availability::Unavailable(why) = keychain {
+        c.details = Some(json!({ "keychain": "unavailable", "reason": why }));
+    }
+    c
+}
+
 async fn daemon(home: &Path) -> Check {
     match crate::daemon::running(home).await {
         Some(client) => {
@@ -503,6 +552,54 @@ pub fn features(config: &[String], env: Option<&str>) -> Check {
     c
 }
 
+/// Preis-Katalog und eigene Preise (USE-002, USE-003 AC4). Im zentralen Betrieb
+/// (`--server`) gelten nur die Overrides des Servers; lokale Einträge sind dann wirkungslos.
+pub fn pricing(settings: Option<&crate::config::Settings>, central: bool) -> Check {
+    let catalog = beton_core::pricing::Catalog::embedded();
+    let overrides = settings.map_or(0, |s| s.price_overrides().len());
+    let catalog_text = format!(
+        "Preis-Katalog {} ({} Modelle, mitgeliefert, kein Online-Abruf)",
+        catalog.version(),
+        catalog.models().len()
+    );
+    let mut c = if central && overrides > 0 {
+        check(
+            "pricing",
+            CheckStatus::Warn,
+            format!(
+                "{catalog_text}; eigene Preise der User-Konfiguration ({overrides}) werden im \
+                 zentralen Betrieb ignoriert"
+            ),
+            Some(
+                "Im zentralen Betrieb gelten nur die Preis-Overrides des Servers (Admin); \
+                 lokale Einträge unter pricing.overrides bzw. providers.*.models[].pricing \
+                 entfernen oder dort anlegen",
+            ),
+        )
+    } else if central {
+        check(
+            "pricing",
+            CheckStatus::Ok,
+            format!("{catalog_text}; zentraler Betrieb: es gelten die Preise des Servers"),
+            None,
+        )
+    } else {
+        check(
+            "pricing",
+            CheckStatus::Ok,
+            format!("{catalog_text}; eigene Preise: {overrides}"),
+            None,
+        )
+    };
+    c.details = Some(json!({
+        "catalog_version": catalog.version(),
+        "models": catalog.models().len(),
+        "overrides": overrides,
+        "central": central,
+    }));
+    c
+}
+
 /// Führt alle M0-Prüfungen aus.
 pub async fn run(ctx: &Ctx) -> DoctorReport {
     let mut checks = vec![check(
@@ -539,11 +636,16 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
             None
         }
     };
-    let configured = layers
+    let daemon_settings = layers.as_ref().and_then(|l| l.daemon_settings().ok());
+    checks.push(pricing(
+        daemon_settings.as_ref(),
+        ctx.global.server.is_some(),
+    ));
+    let secrets_choice = daemon_settings
         .as_ref()
-        .and_then(|l| l.daemon_settings().ok())
-        .map(|s| s.features)
+        .map(|s| s.secrets.backend)
         .unwrap_or_default();
+    let configured = daemon_settings.map(|s| s.features).unwrap_or_default();
     checks.push(features(
         &configured,
         std::env::var(beton_core::feature::ENV_VAR).ok().as_deref(),
@@ -551,6 +653,11 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
     checks.push(permissions(&ctx.home));
     checks.push(database(&ctx.home).await);
     checks.push(worktrees(&ctx.home).await);
+    checks.push(secrets_store(
+        secrets_choice,
+        &beton_secrets::backend::KeychainBackend::availability(),
+        &ctx.home,
+    ));
 
     let harness_layers = layers
         .as_ref()
@@ -593,6 +700,27 @@ pub fn render(report: &DoctorReport, out: &mut dyn std::io::Write) -> std::io::R
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sec_002_ac2_doctor_reports_file_store_without_keychain() {
+        use beton_secrets::backend::keychain::{Availability, availability_for};
+        use beton_secrets::select::BackendChoice;
+        let home = std::path::Path::new("/tmp/beton-home");
+        // Linux ohne D-Bus-Session.
+        let none = availability_for("linux", None);
+        let c = secrets_store(BackendChoice::Auto, &none, home);
+        assert_eq!(c.status, CheckStatus::Ok);
+        assert!(
+            c.message.contains("Keychain nicht verfügbar → Datei-Store"),
+            "{}",
+            c.message
+        );
+        assert!(c.message.contains("secrets/store.v1"), "{}", c.message);
+        let c = secrets_store(BackendChoice::Auto, &Availability::Available, home);
+        assert!(c.message.contains("OS-Keychain"), "{}", c.message);
+        let c = secrets_store(BackendChoice::Keychain, &none, home);
+        assert_eq!(c.status, CheckStatus::Warn);
+    }
+
     use super::*;
 
     #[test]
@@ -623,6 +751,38 @@ mod tests {
         assert_eq!(c.status, CheckStatus::Ok);
         assert_eq!(c.message, "fake_harness aktiv");
         assert_eq!(c.details.unwrap()["active"][0]["source"], "config");
+    }
+
+    #[test]
+    fn use_003_ac4_doctor_warns_that_local_overrides_are_ignored_centrally() {
+        let settings: crate::config::Settings = serde_json::from_value(json!({
+            "pricing": {"overrides": [
+                {"match": {"provider": "ollama-local"}, "free": true}
+            ]}
+        }))
+        .unwrap();
+        let local = pricing(Some(&settings), false);
+        assert_eq!(local.status, CheckStatus::Ok);
+        assert!(
+            local.message.ends_with("eigene Preise: 1"),
+            "{}",
+            local.message
+        );
+        let central = pricing(Some(&settings), true);
+        assert_eq!(central.status, CheckStatus::Warn);
+        assert!(
+            central.message.contains("im zentralen Betrieb ignoriert"),
+            "{}",
+            central.message
+        );
+        assert!(
+            central
+                .hint
+                .unwrap()
+                .contains("Preis-Overrides des Servers")
+        );
+        assert_eq!(central.details.unwrap()["overrides"], 1);
+        assert_eq!(pricing(None, true).status, CheckStatus::Ok);
     }
 
     #[test]

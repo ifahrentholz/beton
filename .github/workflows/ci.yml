@@ -141,8 +141,23 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # covers: SEC-002 AC1, SEC-002 AC3 (echter Keychain, aber ein temporärer des Runners;
+      # Tests berühren nie den Keychain eines Entwicklers, lokal bleiben sie aus)
+      - name: Temporären Keychain als Standard anlegen (SEC-002)
+        run: |
+          KC="$RUNNER_TEMP/beton-test.keychain-db"
+          security create-keychain -p beton-ci "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p beton-ci "$KC"
+          security list-keychains -d user -s "$KC"
+          security default-keychain -d user -s "$KC"
+          echo "BETON_TEST_KEYCHAIN=1" >> "$GITHUB_ENV"
+          echo "BETON_TEST_KEYCHAIN_PATH=$KC" >> "$GITHUB_ENV"
       - run: cargo nextest run --workspace
       - run: cargo test --workspace --doc
+      - name: Temporären Keychain entfernen
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/beton-test.keychain-db" || true
 
   build-windows:
     name: build (windows, Beta)

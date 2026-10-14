@@ -22,13 +22,13 @@ Bezug: ADR-0021 (weitere v1-Features), ADR-0023 (Spracheingabe nur lokal), ADR-0
 
 ### Kostenberechnung (Reihenfolge der Preisquellen)
 
-Für jedes `cost.delta` mit `auth_source ∈ {api_key, gateway}` bestimmt `beton-core::pricing` den Preis:
-1. **Preis-Override** (USE-003), wenn `match` greift → `cost_source: override`.
+Für jedes `cost.delta` mit `auth_source ∈ {api_key, gateway, none}` bestimmt `beton-core::pricing` den Preis, und zwar genau einmal beim Append im Server; das Ergebnis steht im Event (`cost_source`, `cost_micro`, `pricing_version`, `equivalent_micro`, PROTO-002) und damit im Log *(präzisiert: so bleiben Records nach einem Katalog-Update unverändert und ein Rebuild ergibt dieselben Summen; Adapter melden nur Tokens bzw. die Kosten des Harness)*:
+1. **Preis-Override** (USE-003), wenn `match` greift → `cost_source: override`. Als `provider` gilt bei `direct:<name>` der Provider-Name, bei `acp:<slug>` der Slug, bei `claude` `anthropic`, bei `codex` `openai`, sonst die Harness-ID.
 2. **Harness-gemeldete Kosten** (z.B. Claude `total_cost_usd`) → `cost_source: harness`.
 3. **Preis-Katalog** (USE-002) → `cost_source: catalog`, mit `pricing_version`.
 4. Sonst `cost_usd: null`, `cost_source: none` → als „ohne Preis“ markiert.
 
-Bei `auth_source: vendor_cli` (Subscription) fließt nichts in Geld-Summen; zusätzlich wird optional das API-Äquivalent (Katalog) als `equivalent_usd` gespeichert. Cache-Raten fehlen → Fallback `cache_read = 0,1 × input`, `cache_write = 1,25 × input`. Interne Rechnung in USD (Ganzzahlen in Mikro-USD, also 6 Nachkommastellen; Felder `*_micro`); alle Geldbeträge in Spec, Policies und Protokoll sind USD, angezeigt als „0,42 $“; Anzeige optional in EUR mit manuell konfiguriertem Kurs (`usage.display_currency: EUR`, `usage.fx_rate_usd_eur: 0.92`) *(Annahme: kein automatischer Kursabruf)*.
+Bei `auth_source: vendor_cli` (Subscription) fließt nichts in Geld-Summen (`cost_source: subscription`, `cost_micro` leer, auch wenn ein Adapter fälschlich einen Betrag meldet); zusätzlich wird das API-Äquivalent (Katalog) als `equivalent_micro` (Anzeige `equivalent_usd`) mit `pricing_version` gespeichert. Cache-Raten fehlen → Fallback `cache_read = 0,1 × input`, `cache_write = 1,25 × input`. Interne Rechnung in USD (Ganzzahlen in Mikro-USD, also 6 Nachkommastellen; Felder `*_micro`); alle Geldbeträge in Spec, Policies und Protokoll sind USD, angezeigt als „0,42 $“; Anzeige optional in EUR mit manuell konfiguriertem Kurs (`usage.display_currency: EUR`, `usage.fx_rate_usd_eur: 0.92`) *(Annahme: kein automatischer Kursabruf)*.
 
 ### Preis-Katalog (Ausschnitt, Werte illustrativ)
 
@@ -49,7 +49,9 @@ cache_write_per_mtok = 3.75
 valid_from = "2026-08-01"
 ```
 
-### Preis-Overrides (User-, Projekt- oder Server-Config)
+### Preis-Overrides (User- oder Server-Config)
+
+*Präzisiert (M2):* Overrides stehen nur in der User-Konfiguration (lokal) bzw. der Server-Konfiguration (zentral), wie `providers` (HAR-011, CLI-008): Eine Projekt-Konfiguration eines Repositorys kann keine Preise setzen, sonst ließen sich Budgets aus einem Repository heraus umgehen. Reihenfolge: zuerst `pricing.overrides`, danach die Preise unter `providers.<name>.models[].pricing` (Match genau auf diesen Provider und dieses Modell). Ein Override braucht `match.provider` oder `match.model` (Glob mit `*` und `?`) und entweder `input_per_mtok` und `output_per_mtok` oder `free: true` (dann ohne Preise); ungültige Einträge lehnt das Laden der Konfiguration mit Pfad (`pricing.overrides[<i>]`) und Grund ab.
 
 ```yaml
 pricing:
@@ -97,6 +99,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Nach einem Fake-Harness-Turn mit `usage: {input_tokens: 1200, output_tokens: 80}` existiert genau ein Usage-Record mit diesen Werten und `cost_source` gemäß Design-Reihenfolge.
   - [ ] AC2 — Ein Rebuild der Projektion aus dem Event-Log ergibt identische Summen (Property-Test über zufällige Event-Folgen).
   - [ ] AC3 — Records mit `auth_source: vendor_cli` tragen nie zu Geld-Summen bei.
+- **Details** *(präzisiert, M2)*: Projektion `usage_records` (Migration 0009, bestehende `cost.delta` werden ohne neue Bewertung übernommen) mit einem Record je `cost.delta`: Session, Projekt, User (Eigentümer der Session), Harness, Modell, `auth_source`, `purpose`, Tokens, `cost_micro`, `cost_source`, `pricing_version`, `equivalent_micro`, Zeitpunkt `ts` und Kalendertag `day` (UTC). Den Tag in der Zeitzone des Users ergibt die Abfrage aus `ts` (Grenzen des Tages in UTC umgerechnet), damit ein Wechsel der Zeitzone keine Records ändert; die Dimension Team kommt mit M4. Events ohne `cost_source` (vor M2 bzw. aus Importen) werden eingestuft, aber nicht neu bewertet: `vendor_cli` → `subscription`, gemeldeter Betrag → `harness`, sonst `none`. Summen (Store-API `usage_totals` je Org, Session bzw. User und Zeitraum) trennen Geld, API-Äquivalent und Records ohne Preis; daraus speisen sich `session.cost_usd` und `user.daily_cost_usd` (POL-004).
 - **Abhängigkeiten:** HAR-021 (siehe 01-harnesses.md), DATA-005 (siehe 06-data-sync-protocol.md)
 - **Referenz:** ADR-0021
 
@@ -107,6 +110,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Ein Record speichert `pricing_version`; nach Katalog-Update bleiben bestehende Records unverändert.
   - [ ] AC2 — Aliase (z.B. datierte Modell-IDs) werden auf das kanonische Modell aufgelöst (Unit-Tests je Katalogeintrag).
   - [ ] AC3 — Ein CI-Test validiert den Katalog (Schema, keine doppelten IDs/Aliase, Preise ≥ 0, `valid_from` gesetzt).
+- **Details** *(präzisiert, M2)*: `crates/beton-core/pricing/catalog.toml`; `context_window` ist optional (nur wenn der Anbieter es nennt), `valid_from` ist das Datum, ab dem der Preis gilt bzw. der Stand der Preisliste des Anbieters. Modelle mit nach Kontextlänge gestaffelten Preisen fehlen im Katalog (ein Preis je Modell); für sie gilt ein Preis-Override. Ohne Katalogeintrag und ohne Override ist ein Record „ohne Preis“ (`cost_source: none`).
 - **Abhängigkeiten:** USE-001
 - **Referenz:** Omnigent `pricing` (Cache-Fallback 0,10×/1,25×)
 
@@ -118,6 +122,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC2 — Fehlen Cache-Raten, wird `0,1 × input` bzw. `1,25 × input` verwendet.
   - [ ] AC3 — Mehrere passende Overrides: der erste in Deklarationsreihenfolge gewinnt; `beton usage pricing explain --model <m>` zeigt die Herleitung.
   - [ ] AC4 — Im zentralen Modus werden User-seitige Overrides ignoriert und `beton doctor` weist darauf hin.
+- **Details** *(präzisiert, M2)*: `beton usage pricing explain --model <m> [--provider <p>] [--json]` läuft ohne Daemon (eingebetteter Katalog und User-Konfiguration) und zeigt je Quelle in Prüfreihenfolge, ob sie passt, verdeckt ist oder keinen Eintrag hat, dazu die wirksamen Raten (geschätzte Cache-Raten gekennzeichnet). Der Server bewertet beim Append immer mit seiner eigenen Konfiguration; User-seitige Overrides erreichen ihn nicht. Lokal gilt als zentraler Betrieb ein CLI-Aufruf mit `--server`: `beton doctor` warnt dann im Check `pricing`, dass lokale Overrides ignoriert werden, und `pricing explain` lässt sie weg. Serverseitige Overrides im zentralen Betrieb kommen mit M4 (Server-Konfiguration).
 - **Abhängigkeiten:** USE-002; HAR-011 (siehe 01-harnesses.md)
 - **Referenz:** ADR-0021
 

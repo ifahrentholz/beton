@@ -301,3 +301,127 @@ async fn data_005_admin_projections_rebuild_restores_the_dump() {
     assert_eq!(store.projection_dump(OrgId::LOCAL).await.unwrap(), before);
     store.close().await;
 }
+
+// --------------------------------------------------------------------------- USE-003
+
+/// Override-Beispiel aus der Spec (11-platform-features.md, „Preis-Overrides“).
+const DESIGN_PRICING: &str = r#"pricing:
+  overrides:
+    - match: { provider: litellm-intern, model: "llama-3.3-70b*" }
+      input_per_mtok: 0.40
+      output_per_mtok: 0.80
+      cache_read_per_mtok: 0.04
+      cache_write_per_mtok: 0.50
+      context_window: 131072
+    - match: { provider: ollama-local }
+      free: true
+"#;
+
+#[test]
+fn use_003_ac3_pricing_explain_shows_the_derivation() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.yaml"), DESIGN_PRICING).unwrap();
+    let explain = |extra: &[&str]| {
+        let mut cmd = beton(home.path());
+        cmd.current_dir(work.path()).args([
+            "usage",
+            "pricing",
+            "explain",
+            "--provider",
+            "litellm-intern",
+            "--model",
+            "llama-3.3-70b-instruct",
+        ]);
+        run(cmd.args(extra))
+    };
+    let out = explain(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "1. Eigener Preis #1 (litellm-intern / llama-3.3-70b*): passt → wird verwendet"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("3. vom Harness gemeldete Kosten: nicht geprüft"),
+        "{text}"
+    );
+    assert!(text.contains("1.000.000 Eingabe-Tokens = 0,40 $"), "{text}");
+    assert!(
+        stderr(&out).is_empty(),
+        "stdout enthält die Daten, stderr bleibt leer"
+    );
+
+    let out = explain(&["--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["cost_source"], "override");
+    assert_eq!(v["steps"][0]["outcome"], "used");
+    assert_eq!(v["steps"][1]["outcome"], "no_match");
+    assert_eq!(v["rates"]["input_micro"], 400_000);
+    assert_eq!(v["central"], false);
+}
+
+#[test]
+fn use_003_ac4_central_mode_ignores_user_overrides_with_hint() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.yaml"), DESIGN_PRICING).unwrap();
+    let out = run(beton(home.path()).current_dir(work.path()).args([
+        "--server",
+        "https://beton.example.invalid",
+        "usage",
+        "pricing",
+        "explain",
+        "--provider",
+        "litellm-intern",
+        "--model",
+        "llama-3.3-70b-instruct",
+        "--json",
+    ]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["central"], true);
+    assert_eq!(v["ignored_overrides"], 2);
+    assert_eq!(v["cost_source"], "none");
+    assert!(
+        stderr(&out).contains("Zentraler Betrieb"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn use_003_invalid_override_is_rejected_and_project_may_not_set_prices() {
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.yaml"),
+        "pricing:\n  overrides:\n    - match: { model: x }\n      free: true\n      input_per_mtok: 1\n",
+    )
+    .unwrap();
+    let out = run(beton(home.path())
+        .current_dir(work.path())
+        .args(["usage", "pricing", "explain", "--model", "x"]));
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("pricing.overrides[0]"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Ein Repository kann keine Preise setzen (sonst ließen sich Budgets umgehen).
+    std::fs::remove_file(home.path().join("config.yaml")).unwrap();
+    std::fs::create_dir_all(work.path().join(".beton")).unwrap();
+    std::fs::write(work.path().join(".beton/config.yaml"), DESIGN_PRICING).unwrap();
+    let out = run(beton(home.path())
+        .current_dir(work.path())
+        .args(["usage", "pricing", "explain", "--model", "x"]));
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("nur in der User-Konfiguration"),
+        "{}",
+        stderr(&out)
+    );
+}

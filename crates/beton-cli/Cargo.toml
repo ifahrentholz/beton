@@ -27,6 +27,7 @@ beton-host.workspace = true
 beton-mcp.workspace = true
 beton-runner.workspace = true
 beton-sdk.workspace = true
+beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
 clap.workspace = true
@@ -43,6 +44,7 @@ tokio = { workspace = true, features = ["io-std", "signal"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["termios"] }

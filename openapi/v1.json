@@ -135,6 +135,159 @@
         "security": []
       }
     },
+    "/v1/audit": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Audit-Log lesen, neueste Einträge zuerst.",
+        "operationId": "list_audit",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Nur diese Aktion, z. B. `secret.used`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Audit-Einträge, neueste zuerst",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPageView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/audit/verify": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "summary": "Hash-Kette des Audit-Logs prüfen.",
+        "operationId": "verify_audit",
+        "responses": {
+          "200": {
+            "description": "Ergebnis der Prüfung der Hash-Kette",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditVerifyView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/local/codes": {
       "post": {
         "tags": [
@@ -727,6 +880,433 @@
           },
           "500": {
             "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Secrets auflisten (nur Metadaten, nie Werte).",
+        "operationId": "list_secrets",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Metadaten der Secrets, nie Werte",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Neuen Wert für ein vorhandenes Secret setzen.",
+        "operationId": "rotate_secret",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RotateSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Wert ersetzt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretMetaView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unbekannte Ref",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Datei-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Secret anlegen; der Wert geht nur in den Request.",
+        "operationId": "create_secret",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Secret angelegt",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretMetaView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Ref existiert bereits (`conflict`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Datei-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Kein Backend (`secrets_unavailable`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Secret samt Wert entfernen.",
+        "operationId": "delete_secret",
+        "parameters": [
+          {
+            "name": "secret_ref",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Wert und Metadaten entfernt"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unbekannte Ref",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Datei-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/secrets/unlock": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Datei-Store entsperren, anlegen oder die Passphrase wechseln.",
+        "operationId": "unlock_secrets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UnlockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Entsperrt (bzw. angelegt oder Passphrase gewechselt)"
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Passphrase falsch (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Datei beschädigt (`secrets_corrupt`)",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4425,6 +5005,131 @@
           }
         }
       },
+      "AuditEntryView": {
+        "type": "object",
+        "description": "Ein Audit-Eintrag (SEC-012); enthält nie Secret-Werte.",
+        "required": [
+          "seq",
+          "id",
+          "at",
+          "actor",
+          "action",
+          "target_kind",
+          "target_id",
+          "count",
+          "details",
+          "prev_hash",
+          "hash"
+        ],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Position in der Hash-Kette, lückenlos ab 1.",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string",
+            "description": "Handelnder Principal."
+          },
+          "action": {
+            "type": "string"
+          },
+          "target_kind": {
+            "type": "string"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Anzahl zusammengefasster Vorgänge (aggregierte Proxy-Nutzung).",
+            "minimum": 0
+          },
+          "details": {
+            "type": "object"
+          },
+          "prev_hash": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          }
+        }
+      },
+      "AuditPageView": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryView"
+            },
+            "description": "Neueste zuerst."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AuditVerifyView": {
+        "type": "object",
+        "description": "Ergebnis der Kettenprüfung (SEC-012 AC1).",
+        "required": [
+          "ok",
+          "entries"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "first_invalid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Erste ungültige Position (`seq`).",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "ChangeScope": {
         "type": "string",
         "description": "Sicht der Änderungsübersicht.",
@@ -4525,6 +5230,30 @@
             ]
           }
         }
+      },
+      "CreateSecretRequest": {
+        "type": "object",
+        "required": [
+          "secret_ref",
+          "kind",
+          "value"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`token`, `basic` (JSON mit `username`, `password`) oder `oauth` (JSON mit\n`access_token`)."
+          },
+          "value": {
+            "type": "string",
+            "format": "password",
+            "description": "Der Wert; wird nie zurückgegeben.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
       },
       "CreateSessionRequest": {
         "type": "object",
@@ -5468,10 +6197,14 @@
           "unsupported_format_version",
           "import_seq_gap",
           "import_invalid",
+          "invalid_secret_ref",
+          "secrets_locked",
           "rate_limited",
           "internal",
           "blob_corrupt",
-          "unavailable"
+          "secrets_corrupt",
+          "unavailable",
+          "secrets_unavailable"
         ]
       },
       "ProviderInfo": {
@@ -5591,6 +6324,24 @@
           "timeout"
         ]
       },
+      "RotateSecretRequest": {
+        "type": "object",
+        "required": [
+          "secret_ref",
+          "value"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
       "RunnerCapabilities": {
         "type": "object",
         "description": "Was ein Provider kann (RUN-001). Der Server kennt Provider nur hierüber.",
@@ -5708,6 +6459,105 @@
             "format": "int64",
             "description": "Nur bei `mode=fuzzy`: Zahl der Dateien im Index (WEB-006).",
             "minimum": 0
+          }
+        }
+      },
+      "SecretList": {
+        "type": "object",
+        "required": [
+          "items",
+          "store"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SecretMetaView"
+            },
+            "description": "Sortiert nach Ref."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "store": {
+            "$ref": "#/components/schemas/SecretStoreView"
+          }
+        }
+      },
+      "SecretMetaView": {
+        "type": "object",
+        "description": "Metadaten eines Secrets; nie der Wert.",
+        "required": [
+          "secret_ref",
+          "kind",
+          "scope",
+          "provider",
+          "account",
+          "backend",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string",
+            "description": "`secret://<user|team:<slug>|org>/<provider>/<account>[#name]`"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`token`, `basic` oder `oauth`."
+          },
+          "scope": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "account": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "backend": {
+            "type": "string",
+            "description": "`keychain` oder `file`."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Letzter Abruf (SEC-004 AC1); `null`, solange nie genutzt."
+          }
+        }
+      },
+      "SecretStoreView": {
+        "type": "object",
+        "description": "Zustand des Secret-Backends.",
+        "required": [
+          "backend",
+          "locked"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "`keychain`, `file` oder `none`."
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "`true`: Werte sind nicht zugänglich (`beton secrets unlock`)."
           }
         }
       },
@@ -6208,6 +7058,30 @@
             ]
           }
         }
+      },
+      "UnlockRequest": {
+        "type": "object",
+        "required": [
+          "passphrase"
+        ],
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "format": "password",
+            "description": "Passphrase des Datei-Stores; legt ihn beim ersten Mal an.",
+            "writeOnly": true
+          },
+          "new_passphrase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "password",
+            "description": "Neue Passphrase (Wechsel, SEC-003 AC3).",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false
       },
       "WorkspaceFile": {
         "type": "object",

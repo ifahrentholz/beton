@@ -2291,7 +2291,7 @@
    "`beton audit verify` erkennt eine nachträglich in der DB geänderte oder gelöschte Zeile und nennt die erste ungültige Position.",
    "Test mit markiertem Secret-Wert: Der Wert kommt in keinem Audit-Eintrag vor, auch nicht bei Fehlermeldungen.",
    "1 000 Proxy-Nutzungen eines Secrets innerhalb von 5 min erzeugen genau einen Eintrag mit `count: 1000`.",
-   "Ein Member sieht über die API nur Einträge, deren Principal er selbst ist."
+   "(ab M4) Ein Member sieht über die API nur Einträge, deren Principal er selbst ist. *(Lokal gibt es nur den Owner `usr_local`; die Rollen kommen mit AUTH-014.)*"
   ]
  },
  {

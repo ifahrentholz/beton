@@ -114,7 +114,6 @@ pub fn web_dir() -> Option<PathBuf> {
         .find(|d| d.join("index.html").is_file())
 }
 
-/// Store-Einstellungen aus der Konfiguration (`events.store_raw`, PROTO-001 AC3).
 /// `titles.*` aus der User-Konfiguration (SES-010).
 pub fn titles_config(t: &crate::config::TitlesSettings) -> beton_server::titles::TitlesConfig {
     use crate::config::TitleGeneratorSetting as S;
@@ -132,9 +131,15 @@ pub fn titles_config(t: &crate::config::TitlesSettings) -> beton_server::titles:
     }
 }
 
+/// Store-Einstellungen: `events.store_raw` (PROTO-001 AC3) und die Preisbewertung mit
+/// eingebettetem Katalog und Preis-Overrides der User-Konfiguration (USE-002, USE-003).
 pub fn store_options(settings: &crate::config::Settings) -> beton_store::StoreOptions {
     beton_store::StoreOptions {
         store_raw: settings.events.store_raw,
+        pricer: std::sync::Arc::new(beton_core::pricing::Pricer::new(
+            beton_core::pricing::Catalog::embedded(),
+            settings.price_overrides(),
+        )),
         ..beton_store::StoreOptions::default()
     }
 }
@@ -317,6 +322,46 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         // HAR-011 AC4: Pfad und Grund, übrige Provider unbeeinträchtigt.
         tracing::warn!("Konfiguration: Provider übersprungen: {p}");
     }
+    // Secret-Backend (SEC-002/SEC-003): Keychain, sonst verschlüsselte Datei; nie Klartext.
+    let secrets = beton_secrets::select::select(
+        settings.secrets.backend,
+        &ctx.home,
+        std::env::var_os(beton_secrets::select::PASSPHRASE_FILE_ENV).map(std::path::PathBuf::from),
+    );
+    for note in &secrets.notes {
+        tracing::warn!("Secrets: {note}");
+    }
+    if let Some(outcome) = secrets.passphrase_file {
+        // Entsperren beim Start ist sicherheitsrelevant (SEC-012): auch das Scheitern.
+        let local = store.ensure_local().await.context("lokale Identität")?;
+        let (action, details) = match outcome {
+            Ok(()) => (
+                "secrets.unlocked",
+                serde_json::json!({ "via": "passphrase_file" }),
+            ),
+            Err(code) => (
+                "secrets.unlock_failed",
+                serde_json::json!({ "via": "passphrase_file", "code": code }),
+            ),
+        };
+        store
+            .append_audit(
+                local.org,
+                beton_store::NewAuditEntry {
+                    at: beton_core::time::Timestamp::now(),
+                    actor: beton_core::id::PrincipalId::User(local.user),
+                    action: action.into(),
+                    target_kind: "secret_store".into(),
+                    target_id: "file".into(),
+                    session_id: None,
+                    host_id: None,
+                    details,
+                },
+            )
+            .await
+            .context("Audit-Eintrag")?;
+    }
+    let secret_backend = secrets.backend.clone();
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
@@ -326,6 +371,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.features = Arc::new(features);
         r.titles = titles;
         r.attachments = attachments;
+        r.secret_backend = secret_backend;
         r
     })
     .await
@@ -416,6 +462,32 @@ mod tests {
         let mut settings = Settings::default();
         settings.events.store_raw = false;
         assert!(!store_options(&settings).store_raw);
+    }
+
+    #[test]
+    fn use_003_price_overrides_reach_the_store() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "pricing": {"overrides": [{"match": {"provider": "ollama-local"}, "free": true}]},
+            "providers": {"gw": {
+                "kind": "openai",
+                "base_url": "http://127.0.0.1:4000/v1",
+                "api_key": "none",
+                "models": [{"id": "m", "pricing": {"input_per_mtok": 1.0, "output_per_mtok": 2.0}}]
+            }}
+        }))
+        .unwrap();
+        let options = store_options(&settings);
+        let labels: Vec<String> = options
+            .pricer
+            .overrides()
+            .iter()
+            .map(|o| o.label())
+            .collect();
+        assert_eq!(labels, ["ollama-local / *", "gw / m"]);
+        assert_eq!(
+            options.pricer.catalog().version(),
+            beton_core::pricing::Catalog::embedded().version()
+        );
     }
 
     #[test]

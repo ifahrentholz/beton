@@ -175,6 +175,28 @@ impl Fixture {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+
+    /// Wartet, bis mindestens `n` Events die Bedingung erfüllen.
+    async fn wait_for_count(&self, pred: impl Fn(&EventPayload) -> bool, n: usize) {
+        let start = Instant::now();
+        loop {
+            let events = self.events().await;
+            if events
+                .iter()
+                .filter(|e| e.payload().is_some_and(&pred))
+                .count()
+                >= n
+            {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "Event kommt nicht: {:?}",
+                events.iter().map(|e| e.type_name()).collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 }
 
 fn gapless(events: &[beton_core::event::Event]) {
@@ -515,4 +537,77 @@ fn run_002_ac2_runner_exits_when_daemon_is_killed() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+const USAGE_TURNS: &str = r#"
+turns:
+  - emit:
+      - { message: "Erster Turn." }
+      - { usage: { input_tokens: 1200, output_tokens: 80 } }
+  - emit:
+      - { message: "Zweiter Turn." }
+      - { usage: { input_tokens: 1200, output_tokens: 80, model: claude-haiku-4-5-20251001 } }
+  - emit:
+      - { message: "Dritter Turn." }
+      - { usage: { input_tokens: 1200, output_tokens: 80, cost_usd: 0.01 } }
+"#;
+
+/// USE-001 AC1: Nach einem Fake-Harness-Turn mit `usage: {input_tokens: 1200, output_tokens: 80}`
+/// existiert genau ein Usage-Record mit diesen Werten und `cost_source` gemäß
+/// Design-Reihenfolge (hier: unbekanntes Modell → `none`, Katalog-Alias → `catalog`,
+/// gemeldete Kosten → `harness`).
+#[tokio::test]
+async fn use_001_ac1_fake_harness_turn_yields_exactly_one_usage_record() {
+    use beton_core::event::PriceSource;
+    let f = fixture(|r| r).await;
+    let h = f.launch(&f.scenario(USAGE_TURNS), 1).await;
+    f.wait_connected().await;
+    let mut expected = Vec::new();
+    for (i, (source, cost)) in [
+        (PriceSource::None, None),
+        // claude-haiku-4-5: 1200 × 1,00 $ + 80 × 5,00 $ je 1 Mio. = 1600 Mikro-USD
+        (PriceSource::Catalog, Some(1_600)),
+        (PriceSource::Harness, Some(10_000)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.deliver("input.submit", json!({"text": format!("Turn {i}")}))
+            .await;
+        let done = i + 1;
+        f.wait_for_count(|p| matches!(p, EventPayload::TurnCompleted(_)), done)
+            .await;
+        expected.push((source, cost));
+        let records = f
+            .store
+            .usage_records(OrgId::LOCAL, f.session.id)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), done, "genau ein Record je Turn");
+        let r = records.last().unwrap();
+        assert_eq!((r.input_tokens, r.output_tokens), (1200, 80));
+        assert_eq!((r.cost_source, r.cost_micro), expected[i]);
+        assert_eq!(r.harness, "fake");
+    }
+    let records = f
+        .store
+        .usage_records(OrgId::LOCAL, f.session.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        records[1].pricing_version.as_deref(),
+        Some(beton_core::pricing::Catalog::embedded().version())
+    );
+    assert_eq!(
+        f.store
+            .session(OrgId::LOCAL, f.session.id)
+            .await
+            .unwrap()
+            .cost_micro,
+        11_600
+    );
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
 }

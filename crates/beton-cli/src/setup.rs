@@ -13,6 +13,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use beton_harness::registry::{BinarySource, Registry, VersionProbe, resolve_binary};
 use beton_harness::{AuthStatus, HarnessId, HostEnv};
+use beton_secrets::{SecretValue, mask};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -140,6 +141,82 @@ impl Prompt for TerminalPrompt {
             "y" | "yes" | "j" | "ja"
         )
     }
+}
+
+/// API-Keys in der Umgebung, die `beton setup` in den Secret-Store übernehmen kann
+/// (HAR-016 AC3): Env-Variable und Provider der SecretRef `secret://user/<provider>/default`.
+pub const ENV_KEYS: [(&str, &str); 4] = [
+    ("ANTHROPIC_API_KEY", "anthropic"),
+    ("OPENAI_API_KEY", "openai"),
+    ("GEMINI_API_KEY", "gemini"),
+    ("OPENROUTER_API_KEY", "openrouter"),
+];
+
+/// Ein in der Umgebung gefundener API-Key.
+#[derive(Debug)]
+pub struct FoundKey {
+    pub env: &'static str,
+    pub provider: &'static str,
+    pub value: SecretValue,
+}
+
+/// Gesetzte API-Keys aus der Prozessumgebung.
+pub fn found_env_keys() -> Vec<FoundKey> {
+    ENV_KEYS
+        .iter()
+        .filter_map(|(env, provider)| {
+            let value = std::env::var(env).ok().filter(|v| !v.is_empty())?;
+            Some(FoundKey {
+                env,
+                provider,
+                value: SecretValue::from(value),
+            })
+        })
+        .collect()
+}
+
+/// Speichert einen Key im Secret-Store (im Test ersetzbar).
+#[async_trait]
+pub trait KeyImporter: Send + Sync {
+    /// Fehlermeldungen enthalten nie den Wert.
+    async fn import(&self, secret_ref: &str, value: &SecretValue) -> Result<(), String>;
+}
+
+/// Bietet an, gefundene API-Keys in den Secret-Store (Keychain) zu übernehmen – je Key nur
+/// nach ausdrücklicher Zustimmung, nie im nicht-interaktiven Modus. Ausgaben zeigen den Wert
+/// nur maskiert (`sk-…abcd`).
+pub async fn offer_key_import(
+    found: &[FoundKey],
+    interactive: bool,
+    prompt: &mut dyn Prompt,
+    importer: &dyn KeyImporter,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    for key in found {
+        let secret_ref = format!("secret://user/{}/default", key.provider);
+        let masked = mask(&key.value);
+        writeln!(out, "{} gefunden ({masked})", key.env)?;
+        if !interactive {
+            writeln!(
+                out,
+                "  Übernehmen: beton setup (interaktiv) oder beton secrets add {} --stdin",
+                key.provider
+            )?;
+            continue;
+        }
+        if !prompt.confirm(&format!(
+            "{} ({masked}) als {secret_ref} in den Secret-Store übernehmen?",
+            key.env
+        )) {
+            writeln!(out, "  nicht übernommen")?;
+            continue;
+        }
+        match importer.import(&secret_ref, &key.value).await {
+            Ok(()) => writeln!(out, "  übernommen als {secret_ref}")?,
+            Err(e) => writeln!(out, "  nicht übernommen: {e}")?,
+        }
+    }
+    Ok(())
 }
 
 /// Status eines Logins über `codex login status` (Textausgabe).
@@ -481,6 +558,75 @@ mod tests {
             l.local_addr().unwrap()
         };
         assert!(!probe_local_server("ollama", free).await);
+    }
+
+    #[derive(Default)]
+    struct Imports(Mutex<Vec<(String, String)>>);
+
+    #[async_trait]
+    impl KeyImporter for Imports {
+        async fn import(&self, secret_ref: &str, value: &SecretValue) -> Result<(), String> {
+            self.0.lock().unwrap().push((
+                secret_ref.to_owned(),
+                String::from_utf8(value.expose().to_vec()).unwrap(),
+            ));
+            Ok(())
+        }
+    }
+
+    const KEY: &str = "sk-proj-0123456789ABCDEFGHIJabcd";
+
+    fn found() -> Vec<FoundKey> {
+        vec![FoundKey {
+            env: "OPENAI_API_KEY",
+            provider: "openai",
+            value: SecretValue::from(KEY),
+        }]
+    }
+
+    #[tokio::test]
+    async fn har_016_ac3_env_key_is_imported_only_with_consent_and_shown_masked() {
+        // Ohne Zustimmung: nichts übernommen.
+        let imports = Imports::default();
+        let mut prompt = Answer(false, Vec::new());
+        let mut out = Vec::new();
+        offer_key_import(&found(), true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            imports.0.lock().unwrap().is_empty(),
+            "ohne Zustimmung nichts gespeichert"
+        );
+        assert_eq!(prompt.1.len(), 1);
+        assert!(prompt.1[0].contains("sk-…abcd"), "{:?}", prompt.1);
+        assert!(text.contains("sk-…abcd"), "{text}");
+        for leak in [KEY, "0123456789", "sk-proj"] {
+            assert!(!text.contains(leak), "{text}");
+            assert!(!prompt.1[0].contains(leak), "{:?}", prompt.1);
+        }
+
+        // Mit Zustimmung: genau dieser Wert unter secret://user/openai/default.
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_key_import(&found(), true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert_eq!(
+            *imports.0.lock().unwrap(),
+            vec![("secret://user/openai/default".to_owned(), KEY.to_owned())]
+        );
+        assert!(!String::from_utf8(out).unwrap().contains(KEY));
+
+        // Nicht interaktiv: keine Rückfrage, nichts übernommen.
+        let imports = Imports::default();
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_key_import(&found(), false, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(prompt.1.is_empty());
+        assert!(imports.0.lock().unwrap().is_empty());
     }
 
     #[test]
