@@ -927,6 +927,7 @@ pub(crate) async fn seal_imported(
         "UPDATE approvals SET status = 'expired' WHERE org_id = ? AND session_id = ? \
          AND status = 'open'",
         "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
+        "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
     ] {
         sqlx::query(sql)
             .bind(&org)
