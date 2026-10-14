@@ -92,3 +92,64 @@ pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> std::io::
         .map(Some)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req() -> Request {
+        Request {
+            v: VERSION,
+            token: "GEHEIM-TOKEN".into(),
+            argv: vec!["/bin/sh".into(), "-c".into(), "true".into()],
+            cwd: PathBuf::from("/ws"),
+            env_overrides: [("LANG".to_owned(), "C".to_owned())].into(),
+            tty: false,
+            cols: None,
+            rows: None,
+        }
+    }
+
+    #[test]
+    fn sbx_002_frames_round_trip_and_end_cleanly() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &req()).unwrap();
+        write_frame(&mut buf, &Reply::Started { pid: 7 }).unwrap();
+        let mut r = buf.as_slice();
+        let got: Option<Request> = read_frame(&mut r).unwrap();
+        assert_eq!(got, Some(req()));
+        let got: Option<Reply> = read_frame(&mut r).unwrap();
+        assert_eq!(got, Some(Reply::Started { pid: 7 }));
+        let end: Option<Reply> = read_frame(&mut r).unwrap();
+        assert_eq!(end, None);
+    }
+
+    #[test]
+    fn sbx_002_oversized_truncated_and_invalid_frames_fail_closed() {
+        let mut big = (MAX_FRAME as u32 + 1).to_be_bytes().to_vec();
+        big.extend_from_slice(b"{}");
+        assert!(read_frame::<_, Reply>(&mut big.as_slice()).is_err());
+        let mut short = 10u32.to_be_bytes().to_vec();
+        short.extend_from_slice(b"{}");
+        assert!(read_frame::<_, Reply>(&mut short.as_slice()).is_err());
+        let mut bad = 2u32.to_be_bytes().to_vec();
+        bad.extend_from_slice(b"[]");
+        let err = read_frame::<_, Reply>(&mut bad.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let huge = Reply::Error {
+            code: "x".into(),
+            message: "y".repeat(MAX_FRAME),
+        };
+        assert!(write_frame(&mut Vec::new(), &huge).is_err());
+    }
+
+    #[test]
+    fn sbx_002_request_debug_hides_the_token_and_env_values() {
+        let text = format!("{:?}", req());
+        assert!(!text.contains("GEHEIM-TOKEN"), "{text}");
+        assert!(text.contains("LANG") && !text.contains("\"C\""), "{text}");
+        let msg = ClientMsg::Signal { signal: 2 };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(json, r#"{"signal":{"signal":2}}"#);
+    }
+}

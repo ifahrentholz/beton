@@ -91,3 +91,14 @@ pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sbx_002_token_comparison_needs_equal_non_empty_input() {
+        assert!(super::same(b"abc", b"abc"));
+        assert!(!super::same(b"abc", b"abd"));
+        assert!(!super::same(b"abc", b"ab"));
+        assert!(!super::same(b"", b""));
+    }
+}

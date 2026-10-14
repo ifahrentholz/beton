@@ -258,6 +258,10 @@ fn bt_exec(fx: &Fx, broker: &Broker, args: &[&str]) -> std::process::Command {
         .env("PATH", "/usr/bin:/bin")
         .env("BETON_EXEC_SOCKET", broker.socket())
         .env("BETON_EXEC_TOKEN", broker.token().expose());
+    // Abdeckung des Shims unter `cargo llvm-cov` (QA-011); sonst ohne Wirkung.
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        c.env("LLVM_PROFILE_FILE", profile);
+    }
     c
 }
 

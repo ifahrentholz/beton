@@ -108,3 +108,42 @@ pub(crate) fn recv_fds(sock: RawFd) -> io::Result<Vec<OwnedFd>> {
         Ok(fds)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+
+    #[test]
+    fn sbx_002_exactly_three_descriptors_arrive_and_work() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let (mut r, w) = UnixStream::pair().unwrap();
+        let fd = w.as_raw_fd();
+        send_fds(a.as_raw_fd(), &[fd, fd, fd]).unwrap();
+        let fds = recv_fds(b.as_raw_fd()).unwrap();
+        assert_eq!(fds.len(), STDIO);
+        let mut out = std::fs::File::from(fds.into_iter().nth(1).unwrap());
+        out.write_all(b"ok").unwrap();
+        drop(out);
+        drop(w);
+        let mut got = String::new();
+        r.read_to_string(&mut got).unwrap();
+        assert_eq!(got, "ok");
+    }
+
+    #[test]
+    fn sbx_002_missing_descriptors_and_closed_peer_fail_closed() {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.write_all(b"S").unwrap();
+        let err = recv_fds(b.as_raw_fd()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        drop(a);
+        let err = recv_fds(b.as_raw_fd()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(send_fds(-1, &[0, 1, 2]).is_err());
+    }
+}

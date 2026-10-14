@@ -114,3 +114,41 @@ impl CommandSpec {
         self
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdio_compares_by_kind_and_descriptor() {
+        assert_eq!(Stdio::Piped, Stdio::Piped);
+        assert_ne!(Stdio::Piped, Stdio::Null);
+        assert_ne!(Stdio::Inherit, Stdio::Null);
+        for s in [Stdio::Piped, Stdio::Null, Stdio::Inherit] {
+            s.to_std().unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sbx_002_passed_descriptor_is_duplicated_for_the_child() {
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let fd = std::sync::Arc::new(std::os::fd::OwnedFd::from(file));
+        let a = Stdio::Fd(fd.clone());
+        assert_eq!(a, Stdio::Fd(fd.clone()));
+        let other = std::sync::Arc::new(std::os::fd::OwnedFd::from(
+            std::fs::File::open("/dev/null").unwrap(),
+        ));
+        assert_ne!(a, Stdio::Fd(other));
+        assert_ne!(a, Stdio::Null);
+        a.to_std().unwrap();
+        let spec = CommandSpec::new("/bin/true")
+            .arg("x")
+            .env("A", "1")
+            .cwd("/")
+            .stdio(a.clone(), Stdio::Null, Stdio::Inherit);
+        assert_eq!(spec.stdin, a);
+        assert_eq!(spec.env.set, [("A".to_owned(), "1".to_owned())]);
+    }
+}

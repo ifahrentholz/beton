@@ -312,6 +312,20 @@ mod tests {
         assert!(target(&OsString::from("bt-exec"), vec![]).is_err());
         let argv = target(&OsString::from("bt-exec"), vec!["sh".into()]).unwrap();
         assert!(Path::new(&argv[0]).is_absolute(), "{argv:?}");
+        let argv = target(
+            &OsString::from("bt-exec"),
+            vec!["./skript".into(), "a".into()],
+        )
+        .unwrap();
+        assert!(
+            Path::new(&argv[0]).is_absolute() && argv[0].ends_with("/skript"),
+            "{argv:?}"
+        );
+        assert_eq!(&argv[1..], ["a"]);
+        let argv = target(&OsString::from("bt-exec"), vec!["/bin/sh".into()]).unwrap();
+        assert_eq!(argv, ["/bin/sh"]);
+        assert!(target(&OsString::from("bt-exec"), vec!["gibt-es-nicht-xyz".into()]).is_err());
+        assert_eq!(run(&OsString::from("bt-exec-fish"), vec![]), CANNOT_EXECUTE);
     }
 
     #[test]
