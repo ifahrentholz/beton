@@ -183,6 +183,14 @@ impl Tracker {
 }
 
 impl TreeGuard for Tracker {
+    /// Nicht erst auf den nächsten Durchlauf des Hintergrund-Threads warten: Was jetzt zum Baum
+    /// gehört, ist danach bekannt, auch wenn es die Prozessgruppe verlassen hat.
+    fn capture(&mut self) {
+        if let Ok(mut s) = self.state.lock() {
+            s.scan();
+        }
+    }
+
     fn kill_tree(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let Ok(mut s) = self.state.lock() else { return };
@@ -200,6 +208,77 @@ impl TreeGuard for Tracker {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::disallowed_methods)]
+
+    use super::*;
+    use crate::command::{CommandSpec, Stdio};
+
+    /// Prozesse, deren Kommandozeile `marker` enthält.
+    fn processes_with(marker: &str) -> Vec<u32> {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    }
+
+    /// SBX-013 AC2 (#224): Ein per `setsid` abgelöster Nachfahre endet mit dem Stoppen, auch wenn
+    /// der Hintergrund-Thread ihn noch nicht erfasst hat (unter Last läuft er seltener als alle
+    /// 25 ms). Der Tracker hier hat keinen Hintergrund-Thread: Erfasst wird nur beim Stoppen,
+    /// und das muss geschehen, solange die Wurzel noch lebt.
+    #[tokio::test]
+    async fn sbx_013_ac2_stop_finds_setsid_descendants_without_a_background_scan() {
+        let marker = format!("1001.{}", std::process::id());
+        let script = format!(
+            "perl -e 'use POSIX; POSIX::setsid(); exec \"sleep\", \"{marker}\"' & sleep {marker}"
+        );
+        let spec = CommandSpec::new("/bin/sh").stdio(Stdio::Null, Stdio::Null, Stdio::Null);
+        let mut cmd = crate::child::command(std::path::Path::new("/bin/sh"), &spec);
+        cmd.args(["-c", &script]);
+        let child = crate::child::spawn(cmd).unwrap();
+        let root = child.id().unwrap();
+        let tracker = Tracker {
+            state: Arc::new(Mutex::new(State {
+                root: root as i32,
+                known: BTreeMap::new(),
+            })),
+            stop: Arc::new(AtomicBool::new(true)),
+        };
+        let mut child = child.with_guard(Box::new(tracker), Violations::default());
+        let start = std::time::Instant::now();
+        while processes_with(&format!("sleep {marker}")).len() < 2 {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "Prozesse starten nicht"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        child.start_kill().unwrap();
+        let _ = child.wait().await;
+        let start = std::time::Instant::now();
+        loop {
+            let left = processes_with(&marker);
+            if left.is_empty() {
+                break;
+            }
+            if start.elapsed() > Duration::from_secs(2) {
+                // Aufräumen, damit der Test keinen Prozess hinterlässt.
+                for pid in &left {
+                    // SAFETY: Signal an einen eben gefundenen Testprozess.
+                    unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                }
+                panic!("übrig: {left:?}");
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 }
