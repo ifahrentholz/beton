@@ -30,6 +30,7 @@ use crate::doc::{
     Action, ApprovalDoc, Channel, DefaultAction, EffectDoc, Mode, OnUnsupported, Severity,
 };
 use crate::load::{LoadedRule, LoadedSet, RuleKind, RuleRef, Scope};
+use crate::state::StateOp;
 
 /// Welche Modifikationen der Harness in dieser Phase anwenden kann (Enforcement-Matrix,
 /// POL-024, [`crate::enforcement::Matrix::capabilities`]).
@@ -79,9 +80,9 @@ impl Capabilities {
 }
 
 /// Gemerkte Freigaben (POL-010). Liefert die Grant-ID, wenn für die `ask`-Regel ein
-/// gültiger Grant mit passendem Fingerprint existiert.
+/// gültiger Grant mit diesem Fingerprint existiert ([`crate::grants::SessionGrants`]).
 pub trait Grants {
-    fn grant(&self, rule: &RuleRef, ctx: &Activation) -> Option<String>;
+    fn grant(&self, rule: &RuleRef, fingerprint: &str) -> Option<String>;
 }
 
 /// Optionen einer Auswertung.
@@ -149,6 +150,11 @@ pub struct Reason {
     /// Approval-Einstellungen der Regel (Kombination: POL-010).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalDoc>,
+    /// Grant-Fingerprint einer merkbaren `ask`-Regel in Phase `tool_call` (POL-010):
+    /// `remember_key` der Regel, sonst `tool.kind:tool.command` bzw. `tool.kind:sha256:…` über
+    /// die kanonischen Argumente.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 /// Endergebnis.
@@ -230,6 +236,8 @@ pub struct PendingEffects {
     pub rule: RuleRef,
     pub effects: Vec<EffectDoc>,
     pub effects_on: Vec<DefaultAction>,
+    /// Die Effects mit ausgewerteten Werten (Kontext der Entscheidung, POL-009).
+    pub ops: Vec<StateOp>,
 }
 
 /// Ergebnis einer Auswertung mit vollständiger Spur (Explain, Audit).
@@ -316,7 +324,7 @@ impl EffectiveSet {
                     RuleKind::Cel { when: Some(p), .. } => Some(p),
                     _ => None,
                 };
-                when.into_iter().chain(r.aux.iter())
+                when.into_iter().chain(r.aux())
             })
     }
 
@@ -445,6 +453,7 @@ impl<'a> Run<'a> {
                 reason,
                 severity: None,
                 approval: None,
+                fingerprint: None,
             }],
         }
     }
@@ -478,6 +487,7 @@ impl<'a> Run<'a> {
                 reason,
                 severity: None,
                 approval: None,
+                fingerprint: None,
             });
         }
         // Pass 2 – Entscheidung
@@ -488,10 +498,14 @@ impl<'a> Run<'a> {
         self.defaults(&mut verdicts);
         // Grants und Ergebnis
         let mut ask = Vec::new();
-        for (reason, grantable) in verdicts.ask {
-            let grant = grantable
-                .then(|| self.opts.grants.and_then(|g| g.grant(&reason.rule, &ctx)))
-                .flatten();
+        for (mut reason, grantable) in verdicts.ask {
+            if grantable && self.phase == Phase::ToolCall {
+                reason.fingerprint = self.fingerprint(&reason.rule, &ctx);
+            }
+            let grant = reason
+                .fingerprint
+                .as_deref()
+                .and_then(|fp| self.opts.grants.and_then(|g| g.grant(&reason.rule, fp)));
             match grant {
                 Some(id) => self.decision.grants_used.push(id),
                 None => ask.push(reason),
@@ -506,8 +520,55 @@ impl<'a> Run<'a> {
         } else {
             Outcome::Allow
         };
-        self.effects(&outcome);
+        self.effects(&outcome, &ctx);
         outcome
+    }
+
+    /// Die geladene Regel zu einer Referenz (gleiche Version).
+    fn loaded(&self, r: &RuleRef) -> Option<&'a LoadedRule> {
+        self.set
+            .sets
+            .iter()
+            .filter(|s| s.scope == r.scope && s.name == r.set && s.version == r.set_version)
+            .flat_map(|s| s.rules.iter())
+            .find(|rule| rule.id == r.rule_id)
+    }
+
+    /// Grant-Fingerprint einer `ask`-Regel (POL-010). `None`, wenn `remember_key` scheitert
+    /// oder keinen Text liefert: dann ist die Regel nicht merkbar.
+    fn fingerprint(&mut self, r: &RuleRef, ctx: &Activation) -> Option<String> {
+        let rule = self.loaded(r)?;
+        if let Some(program) = &rule.remember_key {
+            self.meter.begin_expr().ok()?;
+            return match program.eval(ctx, &mut self.meter) {
+                Ok(crate::value::Value::String(s)) => Some(s.to_string()),
+                Ok(_) => None,
+                Err(e) => {
+                    self.decision.errors.push(RuleError {
+                        rule: r.clone(),
+                        error: format!("remember_key: {e}"),
+                    });
+                    None
+                }
+            };
+        }
+        let text = |field: &str| match ctx.field("tool", field) {
+            Some(crate::value::Value::String(s)) if !s.is_empty() => Some(s.to_string()),
+            _ => None,
+        };
+        let kind = text("kind").unwrap_or_else(|| "other".into());
+        if let Some(command) = text("command") {
+            return Some(format!("{kind}:{command}"));
+        }
+        let args = ctx
+            .field("tool", "args")
+            .map(|a| a.to_json())
+            .unwrap_or(Value::Null);
+        let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
+        Some(format!(
+            "{kind}:sha256:{}",
+            hex::encode(Sha256::digest(&canonical))
+        ))
     }
 
     fn is_dry(set: &LoadedSet, rule: &LoadedRule) -> bool {
@@ -524,7 +585,43 @@ impl<'a> Run<'a> {
                 .unwrap_or_else(|| fallback.to_owned()),
             severity: rule.doc.severity,
             approval: rule.doc.approval.clone(),
+            fingerprint: None,
         }
+    }
+
+    /// `notify.message` mit ausgewerteten `{{ … }}`-Ausdrücken (POL-002). Ein fehlerhafter
+    /// Ausdruck erscheint als `?` und wird als Fehler protokolliert.
+    fn render(
+        &mut self,
+        set: &LoadedSet,
+        rule: &LoadedRule,
+        text: &str,
+        ctx: &Activation,
+    ) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        let mut exprs = rule.notify_exprs.iter();
+        while let Some(start) = rest.find("{{") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find("}}") else { break };
+            out.push_str(&rest[..start]);
+            let value = exprs.next().map(|p| {
+                self.meter
+                    .begin_expr()
+                    .and_then(|()| p.eval(ctx, &mut self.meter))
+            });
+            match value {
+                Some(Ok(v)) => out.push_str(&display(&v)),
+                Some(Err(e)) => {
+                    self.record_error(set, rule, &e);
+                    out.push('?');
+                }
+                None => out.push('?'),
+            }
+            rest = &after[end + 2..];
+        }
+        out.push_str(rest);
+        out
     }
 
     fn record_error(&mut self, set: &LoadedSet, rule: &LoadedRule, e: &EvalError) {
@@ -774,6 +871,10 @@ impl<'a> Run<'a> {
                 }
                 Action::Notify => {
                     let notify = rule.doc.notify.clone();
+                    let message = notify
+                        .as_ref()
+                        .and_then(|n| n.message.as_deref())
+                        .map(|m| self.render(set, rule, m, ctx));
                     self.decision.notifications.push(Notification {
                         rule: set.rule_ref(&rule.id),
                         channels: notify
@@ -781,7 +882,7 @@ impl<'a> Run<'a> {
                             .map(|n| n.channels.clone())
                             .filter(|c| !c.is_empty())
                             .unwrap_or_else(|| vec![Channel::Inbox]),
-                        message: notify.and_then(|n| n.message),
+                        message,
                     });
                 }
                 Action::Modify => {}
@@ -835,6 +936,7 @@ impl<'a> Run<'a> {
                 ),
                 severity: None,
                 approval: None,
+                fingerprint: None,
             };
             if default == DefaultAction::Deny {
                 verdicts.deny.push(reason);
@@ -848,7 +950,7 @@ impl<'a> Run<'a> {
         verdicts.ask.sort_by_key(|(r, _)| order(r));
     }
 
-    fn effects(&mut self, outcome: &Outcome) {
+    fn effects(&mut self, outcome: &Outcome, ctx: &Activation) {
         let final_action = match outcome {
             Outcome::Allow => DefaultAction::Allow,
             Outcome::Deny { .. } => DefaultAction::Deny,
@@ -861,18 +963,7 @@ impl<'a> Run<'a> {
             .map(|m| m.rule.clone())
             .collect();
         for rule_ref in matched {
-            let Some(rule) = self
-                .set
-                .sets
-                .iter()
-                .filter(|s| {
-                    s.scope == rule_ref.scope
-                        && s.name == rule_ref.set
-                        && s.version == rule_ref.set_version
-                })
-                .flat_map(|s| s.rules.iter())
-                .find(|r| r.id == rule_ref.rule_id)
-            else {
+            let Some(rule) = self.loaded(&rule_ref) else {
                 continue;
             };
             if rule.doc.effects.is_empty() {
@@ -885,13 +976,67 @@ impl<'a> Run<'a> {
                 .unwrap_or_else(|| vec![DefaultAction::Allow, DefaultAction::Deny]);
             // Bei `ask` entscheidet erst die Auflösung (POL-009).
             if final_action == DefaultAction::Ask || effects_on.contains(&final_action) {
+                let mut ops = Vec::with_capacity(rule.doc.effects.len());
+                for (effect, program) in rule.doc.effects.iter().zip(&rule.effect_values) {
+                    let value = match program {
+                        None => None,
+                        Some(p) => {
+                            let evaluated = self
+                                .meter
+                                .begin_expr()
+                                .and_then(|()| p.eval(ctx, &mut self.meter));
+                            match evaluated {
+                                Ok(v) => Some(v.to_json()),
+                                Err(e) => {
+                                    // Ohne Wert unterbleibt die Änderung; die Entscheidung
+                                    // bleibt davon unberührt.
+                                    self.decision.errors.push(RuleError {
+                                        rule: rule_ref.clone(),
+                                        error: format!("effects.{}: {e}", effect.key),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+                    };
+                    ops.push(StateOp {
+                        scope: effect.scope,
+                        key: effect.key.clone(),
+                        op: effect.op,
+                        value,
+                    });
+                }
                 self.decision.effects.push(PendingEffects {
                     rule: rule_ref,
                     effects: rule.doc.effects.clone(),
                     effects_on,
+                    ops,
                 });
             }
         }
+    }
+}
+
+/// Darstellung eines Werts in `notify.message`: Text ohne Anführungszeichen, sonst JSON.
+fn display(v: &crate::value::Value) -> String {
+    match v.to_json() {
+        Value::String(s) => s,
+        other => other.to_string(),
+    }
+}
+
+/// Kanonisches JSON: Objekt-Schlüssel sortiert (unabhängig von der Eingabereihenfolge).
+fn canonical_json(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let sorted: BTreeMap<String, Value> = m
+                .iter()
+                .map(|(k, v)| (k.clone(), canonical_json(v)))
+                .collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(a) => Value::Array(a.iter().map(canonical_json).collect()),
+        other => other.clone(),
     }
 }
 

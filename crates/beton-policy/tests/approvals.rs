@@ -75,7 +75,10 @@ fn pol_010_ac1_two_ask_rules_yield_one_card_with_two_reasons() {
     let project = set(
         Scope::Project,
         "git-and-budget",
-        &format!("rules:\n{}", ask_rule("confirm-destructive-shell", "{ timeout: 30m }")),
+        &format!(
+            "rules:\n{}",
+            ask_rule("confirm-destructive-shell", "{ timeout: 30m }")
+        ),
     );
     let user = set(
         Scope::User,
@@ -94,12 +97,18 @@ fn pol_010_ac5_shortest_timeout_and_strictest_on_timeout() {
     let a = set(
         Scope::Project,
         "a",
-        &format!("rules:\n{}", ask_rule("rule-a", "{ timeout: 30m, on_timeout: deny }")),
+        &format!(
+            "rules:\n{}",
+            ask_rule("rule-a", "{ timeout: 30m, on_timeout: deny }")
+        ),
     );
     let b = set(
         Scope::User,
         "b",
-        &format!("rules:\n{}", ask_rule("rule-b", "{ timeout: 2h, on_timeout: abort }")),
+        &format!(
+            "rules:\n{}",
+            ask_rule("rule-b", "{ timeout: 2h, on_timeout: abort }")
+        ),
     );
     let reasons = ask_reasons(&eval(&[a, b], &shell("rm -rf dist")));
     let p = plan(&reasons, None);
@@ -195,7 +204,11 @@ fn pol_010_approve_session_only_if_all_rules_remember() {
 
 #[test]
 fn pol_010_default_ask_is_not_rememberable() {
-    let s = set(Scope::Project, "p", "defaults:\n  tool_call: ask\nrules: []\n");
+    let s = set(
+        Scope::Project,
+        "p",
+        "defaults:\n  tool_call: ask\nrules: []\n",
+    );
     let reasons = ask_reasons(&eval(&[s], &shell("ls")));
     assert_eq!(plan(&reasons, None).options(), ["approve", "deny"]);
 }
@@ -282,12 +295,21 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
         )
         .unwrap()
     };
-    let a = ask_reasons(&eval(std::slice::from_ref(&s), &act(json!({"b": 1, "a": 2}))));
-    let b = ask_reasons(&eval(std::slice::from_ref(&s), &act(json!({"a": 2, "b": 1}))));
+    let a = ask_reasons(&eval(
+        std::slice::from_ref(&s),
+        &act(json!({"b": 1, "a": 2})),
+    ));
+    let b = ask_reasons(&eval(
+        std::slice::from_ref(&s),
+        &act(json!({"a": 2, "b": 1})),
+    ));
     let c = ask_reasons(&eval(&[s], &act(json!({"a": 3}))));
     let fp = a[0].fingerprint.clone().unwrap();
     assert!(fp.starts_with("mcp:sha256:"), "{fp}");
-    assert_eq!(a[0].fingerprint, b[0].fingerprint, "unabhängig von der Reihenfolge");
+    assert_eq!(
+        a[0].fingerprint, b[0].fingerprint,
+        "unabhängig von der Reihenfolge"
+    );
     assert_ne!(a[0].fingerprint, c[0].fingerprint);
 }
 
@@ -298,7 +320,11 @@ fn pol_010_no_fingerprint_outside_tool_call() {
         "u",
         "rules:\n  - id: start\n    on: session_start\n    action: ask\n    approval: { remember: session }\n",
     );
-    let act = Activation::new(Phase::SessionStart, json!({ "start": { "harness": "fake" } })).unwrap();
+    let act = Activation::new(
+        Phase::SessionStart,
+        json!({ "start": { "harness": "fake" } }),
+    )
+    .unwrap();
     let reasons = ask_reasons(&eval(&[s], &act));
     assert_eq!(reasons[0].fingerprint, None);
     assert_eq!(plan(&reasons, None).options(), ["approve", "deny"]);
@@ -334,14 +360,24 @@ fn require(params: &str) -> Arc<LoadedSet> {
 fn pol_014_ac1_kinds_ask_for_writes_of_all_harnesses() {
     let s = require("{ kinds: [file_write, file_edit] }");
     let cases = [
-        tool_act("claude", "Write", None, json!({"file_path": "/work/repo/a.txt", "content": "x"})),
+        tool_act(
+            "claude",
+            "Write",
+            None,
+            json!({"file_path": "/work/repo/a.txt", "content": "x"}),
+        ),
         tool_act(
             "codex",
             "apply_patch",
             None,
             json!({"input": "*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+b\n*** End Patch\n"}),
         ),
-        tool_act("acp", "Edit a.txt", Some("edit"), json!({"path": "/work/repo/a.txt"})),
+        tool_act(
+            "acp",
+            "Edit a.txt",
+            Some("edit"),
+            json!({"path": "/work/repo/a.txt"}),
+        ),
     ];
     for act in &cases {
         let reasons = ask_reasons(&eval(std::slice::from_ref(&s), act));
@@ -349,7 +385,12 @@ fn pol_014_ac1_kinds_ask_for_writes_of_all_harnesses() {
         assert_eq!(reasons[0].rule.rule_id, "needs-human");
     }
     // Lesen fragt nicht.
-    let read = tool_act("claude", "Read", None, json!({"file_path": "/work/repo/a.txt"}));
+    let read = tool_act(
+        "claude",
+        "Read",
+        None,
+        json!({"file_path": "/work/repo/a.txt"}),
+    );
     assert_eq!(eval(&[s], &read).outcome, Outcome::Allow);
 }
 
@@ -384,13 +425,35 @@ fn pol_014_tools_servers_and_match_are_or_combined() {
         "{ tools: [\"mcp:github/create_*\", \"Bash\"], servers: [linear], match: 'tool.kind == \"web_fetch\"' }",
     );
     let sets = [s];
-    assert!(matches!(eval(&sets, &mcp("github", "create_pull_request")).outcome, Outcome::Ask { .. }));
-    assert_eq!(eval(&sets, &mcp("github", "list_issues")).outcome, Outcome::Allow);
-    assert!(matches!(eval(&sets, &mcp("linear", "anything")).outcome, Outcome::Ask { .. }));
-    assert!(matches!(eval(&sets, &shell("ls")).outcome, Outcome::Ask { .. }));
-    let fetch = tool_act("claude", "WebFetch", None, json!({"url": "https://example.com/"}));
+    assert!(matches!(
+        eval(&sets, &mcp("github", "create_pull_request")).outcome,
+        Outcome::Ask { .. }
+    ));
+    assert_eq!(
+        eval(&sets, &mcp("github", "list_issues")).outcome,
+        Outcome::Allow
+    );
+    assert!(matches!(
+        eval(&sets, &mcp("linear", "anything")).outcome,
+        Outcome::Ask { .. }
+    ));
+    assert!(matches!(
+        eval(&sets, &shell("ls")).outcome,
+        Outcome::Ask { .. }
+    ));
+    let fetch = tool_act(
+        "claude",
+        "WebFetch",
+        None,
+        json!({"url": "https://example.com/"}),
+    );
     assert!(matches!(eval(&sets, &fetch).outcome, Outcome::Ask { .. }));
-    let read = tool_act("claude", "Read", None, json!({"file_path": "/work/repo/a.txt"}));
+    let read = tool_act(
+        "claude",
+        "Read",
+        None,
+        json!({"file_path": "/work/repo/a.txt"}),
+    );
     assert_eq!(eval(&sets, &read).outcome, Outcome::Allow);
 }
 
@@ -400,15 +463,26 @@ fn pol_014_invalid_params_are_load_errors() {
         parse_set(
             Scope::Project,
             "p.yaml",
-            &format!("spec_version: 1\nname: p\nrules:\n  - id: r\n    type: require_approval\n    params: {params}\n"),
+            &format!(
+                "spec_version: 1\nname: p\nrules:\n  - id: r\n    type: require_approval\n    params: {params}\n"
+            ),
         )
     };
     assert!(load("{}").is_err(), "ohne Kriterium");
     assert!(load("{ kinds: [teleport] }").is_err(), "unbekannte Klasse");
-    assert!(load("{ kinds: [shell], unknown: 1 }").is_err(), "unbekannter Parameter");
-    assert!(load("{ match: 'tool.kind == 1' }").is_err(), "Typfehler im CEL");
+    assert!(
+        load("{ kinds: [shell], unknown: 1 }").is_err(),
+        "unbekannter Parameter"
+    );
+    assert!(
+        load("{ match: 'tool.kind == 1' }").is_err(),
+        "Typfehler im CEL"
+    );
     assert!(load("{ kinds: [shell], timeout: soon }").is_err(), "Dauer");
-    assert!(load("{ kinds: [shell], on_timeout: maybe }").is_err(), "on_timeout");
+    assert!(
+        load("{ kinds: [shell], on_timeout: maybe }").is_err(),
+        "on_timeout"
+    );
     let err = load("{ kinds: [shell], remember: forever }").unwrap_err();
     assert!(err.message.contains("remember"), "{err}");
 }
@@ -502,8 +576,14 @@ fn pol_009_operations_and_limits() {
         next_value(Some(&json!(1)), EffectOp::Set, Some(json!("a"))).unwrap(),
         Some(json!("a"))
     );
-    assert!(next_value(None, EffectOp::Set, None).is_err(), "set ohne Wert");
-    assert_eq!(next_value(Some(&json!(1)), EffectOp::Delete, None).unwrap(), None);
+    assert!(
+        next_value(None, EffectOp::Set, None).is_err(),
+        "set ohne Wert"
+    );
+    assert_eq!(
+        next_value(Some(&json!(1)), EffectOp::Delete, None).unwrap(),
+        None
+    );
     // append: Liste, höchstens 100 Elemente (die ältesten fallen heraus).
     let mut v: Option<Value> = None;
     for i in 0..(APPEND_MAX + 5) {
@@ -534,10 +614,22 @@ fn pol_009_ac2_effects_after_resolution() {
 #[test]
 fn pol_009_ac3_user_day_resets_at_midnight_in_the_users_timezone() {
     // UTC (Default bis zur Einstellung `user.timezone`, #195).
-    assert_eq!(day_key(datetime!(2026-01-01 23:59:59 UTC), UtcOffset::UTC), "2026-01-01");
-    assert_eq!(day_key(datetime!(2026-01-02 00:00:00 UTC), UtcOffset::UTC), "2026-01-02");
+    assert_eq!(
+        day_key(datetime!(2026-01-01 23:59:59 UTC), UtcOffset::UTC),
+        "2026-01-01"
+    );
+    assert_eq!(
+        day_key(datetime!(2026-01-02 00:00:00 UTC), UtcOffset::UTC),
+        "2026-01-02"
+    );
     // UTC+2: der Tag beginnt um 22:00Z.
     let plus2 = UtcOffset::from_hms(2, 0, 0).unwrap();
-    assert_eq!(day_key(datetime!(2026-01-01 21:59:59 UTC), plus2), "2026-01-01");
-    assert_eq!(day_key(datetime!(2026-01-01 22:00:00 UTC), plus2), "2026-01-02");
+    assert_eq!(
+        day_key(datetime!(2026-01-01 21:59:59 UTC), plus2),
+        "2026-01-01"
+    );
+    assert_eq!(
+        day_key(datetime!(2026-01-01 22:00:00 UTC), plus2),
+        "2026-01-02"
+    );
 }

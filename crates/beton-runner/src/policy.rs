@@ -305,6 +305,7 @@ fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
                 reason: message.clone(),
                 severity: None,
                 approval: None,
+                fingerprint: None,
             }],
         },
         modified: Modifications::default(),
