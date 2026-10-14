@@ -394,6 +394,9 @@ pub struct AppParts {
     pub primary_host: String,
     pub runtime: Runtime,
     pub web_dir: Option<std::path::PathBuf>,
+    /// Secret-Dienst samt angebundener Redaction (`serve::start_with`); ohne Angabe entsteht
+    /// ein eigener (Tests).
+    pub secrets: Option<beton_secrets::Secrets>,
 }
 
 /// Die vollständige App mit allen Schichten.
@@ -409,11 +412,14 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
     // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
     // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
     // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
-    let (secrets, _no_api_caps) = beton_secrets::Secrets::new(
-        parts.store.clone(),
-        parts.local,
-        parts.runtime.secret_backend.clone(),
-    );
+    let secrets = parts.secrets.unwrap_or_else(|| {
+        beton_secrets::Secrets::new(
+            parts.store.clone(),
+            parts.local,
+            parts.runtime.secret_backend.clone(),
+        )
+        .0
+    });
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

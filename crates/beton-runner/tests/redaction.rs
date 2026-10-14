@@ -188,7 +188,7 @@ impl Env {
         let (status, page) = self
             .json(
                 "GET",
-                &format!("/v1/sessions/{id}/events?after_seq=0&limit=500"),
+                &format!("/v1/sessions/{id}/events?after_seq=0&limit=200"),
                 None,
             )
             .await;

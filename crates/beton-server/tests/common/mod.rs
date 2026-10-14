@@ -80,6 +80,7 @@ pub async fn app_full(
                 app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands(),
             ),
             web_dir: Some(web),
+            secrets: None,
         },
     )
     .layer(MockConnectInfo(peer.parse::<SocketAddr>().unwrap()));

@@ -133,9 +133,15 @@ pub fn titles_config(t: &crate::config::TitlesSettings) -> beton_server::titles:
 
 /// Store-Einstellungen: `events.store_raw` (PROTO-001 AC3) und die Preisbewertung mit
 /// eingebettetem Katalog und Preis-Overrides der User-Konfiguration (USE-002, USE-003).
-pub fn store_options(settings: &crate::config::Settings) -> beton_store::StoreOptions {
+/// Store-Optionen aus der Konfiguration; `redactor` ist die Redaction-Pipeline des Prozesses
+/// (SEC-013).
+pub fn store_options(
+    settings: &crate::config::Settings,
+    redactor: std::sync::Arc<dyn beton_store::ValueRedactor>,
+) -> beton_store::StoreOptions {
     beton_store::StoreOptions {
         store_raw: settings.events.store_raw,
+        redactor,
         pricer: std::sync::Arc::new(beton_core::pricing::Pricer::new(
             beton_core::pricing::Catalog::embedded(),
             settings.price_overrides(),
@@ -259,6 +265,9 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     }
     let dev = args.dev || cfg!(debug_assertions);
 
+    // Eine Redaction-Pipeline für Logs, Store, Live-Events und Traces (SEC-013, OBS-002). Die
+    // bekannten Werte lädt der Serverstart über die `RedactionCap`; bis dahin blockiert sie.
+    let redactor = Arc::new(beton_secrets::Redactor::pending());
     let _log = crate::logging::init(crate::logging::LogConfig {
         stderr_human: !ctx.global.quiet,
         ..crate::logging::LogConfig::for_component(crate::logging::Component::Daemon)
@@ -285,7 +294,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let active: Vec<String> = features.active_ids();
 
     let lock = DaemonLock::acquire(&ctx.home)?;
-    let store = beton_store::Store::open(&ctx.home, store_options(&settings))
+    let store = beton_store::Store::open(&ctx.home, store_options(&settings, redactor.clone()))
         .await
         .context("Datenbank öffnen")?;
 
@@ -372,6 +381,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.titles = titles;
         r.attachments = attachments;
         r.secret_backend = secret_backend;
+        r.redactor = Some(redactor);
         r
     })
     .await
@@ -456,12 +466,29 @@ mod tests {
         assert_eq!(ok.listen, vec!["127.0.0.1:0".parse().unwrap()]);
     }
 
+    fn none() -> Arc<dyn beton_store::ValueRedactor> {
+        Arc::new(beton_store::NoRedaction)
+    }
+
     #[test]
     fn proto_001_ac3_store_raw_setting_reaches_the_store() {
-        assert!(store_options(&Settings::default()).store_raw);
+        assert!(store_options(&Settings::default(), none()).store_raw);
         let mut settings = Settings::default();
         settings.events.store_raw = false;
-        assert!(!store_options(&settings).store_raw);
+        assert!(!store_options(&settings, none()).store_raw);
+    }
+
+    #[test]
+    fn sec_013_the_pipeline_reaches_the_store() {
+        let redactor = Arc::new(beton_secrets::Redactor::pending());
+        let options = store_options(&Settings::default(), redactor);
+        // Die Pipeline des Daemons blockiert, bis die bekannten Werte geladen sind.
+        assert!(
+            options
+                .redactor
+                .redact(&mut serde_json::json!("x"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -476,7 +503,7 @@ mod tests {
             }}
         }))
         .unwrap();
-        let options = store_options(&settings);
+        let options = store_options(&settings, none());
         let labels: Vec<String> = options
             .pricer
             .overrides()
