@@ -734,6 +734,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-service",
  "tracing",
+ "tracing-subscriber",
  "zeroize",
 ]
 

@@ -43,6 +43,7 @@ serde_norway.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "test-util"] }
 tokio-tungstenite.workspace = true
+tracing-subscriber.workspace = true
 futures-util.workspace = true
 
 [lints]

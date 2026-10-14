@@ -717,6 +717,7 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
             rules: beton_proxy::RuleSet::compile(&[format!("GET 127.0.0.1:{port}/**")]).unwrap(),
             allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")])
                 .unwrap(),
+            ..beton_proxy::InstanceSpec::default()
         })
         .await
         .unwrap();

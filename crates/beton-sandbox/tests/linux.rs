@@ -731,6 +731,7 @@ async fn sbx_008_ac2_only_loopback_and_the_relay_to_the_proxy() {
             rules: beton_proxy::RuleSet::compile(&[format!("GET 127.0.0.1:{port}/**")]).unwrap(),
             allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")])
                 .unwrap(),
+            ..beton_proxy::InstanceSpec::default()
         })
         .await
         .unwrap();

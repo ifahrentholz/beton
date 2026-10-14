@@ -43,6 +43,7 @@ use crate::ca::{BetonCa, CaInfo, LeafIssuer};
 use crate::ip::{PrivateAllowList, destination_allowed};
 use crate::net::{ConnectError, Connector, Idle, Net, find_connect_error};
 use crate::normalize::{Host, Scheme, normalize_path};
+use crate::passthrough::Passthrough;
 use crate::rules::{Decision, DenyReason, Request as RulesRequest, RuleSet};
 
 /// Timeout für den Verbindungsaufbau zum Upstream (inkl. DNS und TLS).
@@ -77,6 +78,8 @@ pub struct InstanceSpec {
     pub label: String,
     pub rules: RuleSet,
     pub allow_private: PrivateAllowList,
+    /// Vendor-Hosts ohne TLS-Terminierung (PRX-005); nur in Stufe 1 bzw. ausdrücklich.
+    pub passthrough: Passthrough,
 }
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
