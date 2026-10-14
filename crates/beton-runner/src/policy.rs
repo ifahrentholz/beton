@@ -18,6 +18,8 @@
 //! - Freigaben und Policy-Ereignisse gehen als [`GateEvent`] an die Schleife des Runners; sie
 //!   versieht sie mit Session, Reihenfolge und Bezug auf das `tool.call.requested`.
 
+mod dry;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
