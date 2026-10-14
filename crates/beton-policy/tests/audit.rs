@@ -115,3 +115,17 @@ fn pol_025_ac2_errors_carry_no_argument_values() {
         subject_hash(&json!({ "args": { "a": { "x": 1, "y": 2 }, "b": 1 }, "tool": "Bash" }))
     );
 }
+
+/// Re-Review R6 (#253): Auch `matches()` mit Muster aus den Argumenten, `duration()` und
+/// `under()` mit relativen Pfaden nennen in Fehlern keine Werte.
+#[test]
+fn pol_025_ac2_regex_duration_and_path_errors_carry_no_values() {
+    let effective = EffectiveSet::new(vec![set(
+        "  - id: as-regex\n    on: tool_call\n    when: 'tool.command.matches(tool.args.command + \"(\")'\n    action: deny\n  - id: as-duration\n    on: tool_call\n    when: 'duration(tool.args.command) > duration(\"1s\")'\n    action: deny\n  - id: as-path\n    on: tool_call\n    when: 'under(tool.args.command, \"/repo\")'\n    action: deny\n",
+    )]);
+    let decision = effective.evaluate(&shell(SECRET_ARG), &EvalOptions::default());
+    let event = decision_event(&decision, DecisionMeta::new(Level::Full));
+    assert_eq!(event.errors.len(), 3, "{:?}", event.errors);
+    let text = serde_json::to_string(&event).unwrap();
+    assert!(!text.contains("geheimes-verzeichnis"), "{text}");
+}
