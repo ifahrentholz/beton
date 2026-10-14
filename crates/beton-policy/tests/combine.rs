@@ -619,3 +619,76 @@ fn pol_007_no_sets_allows() {
     assert_eq!(d.outcome, Outcome::Allow);
     assert!(d.policy_set_hash.starts_with("sha256:"));
 }
+
+#[test]
+fn pol_007_effects_and_notifications_are_reported() {
+    let s = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: count\n    on: tool_call\n    when: tool.kind == \"shell\"\n    action: notify\n    notify: { channels: [push, log], message: \"Push {{ 1 + 1 }}\" }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n  - id: only-deny\n    on: tool_call\n    action: allow\n    effects_on: [deny]\n    effects:\n      - { op: set, scope: run, key: k, value: \"tool.kind\" }\n  - id: confirm\n    on: tool_call\n    when: tool.kind == \"file_write\"\n    action: ask\n    approval: { timeout: 30m, on_timeout: deny, remember: session }\n    effects:\n      - { op: append, scope: user, key: writes, value: \"tool.name\" }\n",
+    );
+    let d = eval(vec![s.clone()], &tool("shell", json!({})));
+    assert_eq!(d.outcome, Outcome::Allow);
+    let effect_rules: Vec<_> = d.effects.iter().map(|e| e.rule.rule_id.as_str()).collect();
+    assert_eq!(effect_rules, ["count"]);
+    assert_eq!(d.notifications.len(), 1);
+    assert_eq!(
+        d.notifications[0].message.as_deref(),
+        Some("Push {{ 1 + 1 }}")
+    );
+    // ask: Effects vorgemerkt bis zur Auflösung; Approval-Einstellungen am Grund
+    let d = eval(vec![s], &tool("file_write", json!({})));
+    let Outcome::Ask { reasons } = &d.outcome else {
+        panic!("{d:?}")
+    };
+    assert!(reasons[0].approval.is_some());
+    assert!(d.effects.iter().any(|e| e.rule.rule_id == "confirm"));
+    assert!(serde_json::to_value(&d).unwrap()["outcome"] == "ask");
+}
+
+#[test]
+fn pol_007_redact_and_session_start_modifications() {
+    let user = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: r1\n    on: model_request\n    action: modify\n    modify: { redact: [\"sk-[a-z]+\"], reasoning_effort: low }\n",
+    );
+    let project = set(
+        Scope::Project,
+        "p",
+        "rules:\n  - id: r2\n    on: model_request\n    action: modify\n    modify: { redact: [\"sk-[a-z]+\", \"ghp_\\\\w+\"], reasoning_effort: low }\n",
+    );
+    let d = eval(vec![user, project], &model_request("opus"));
+    assert_eq!(d.modified.redact, ["sk-[a-z]+", "ghp_\\w+"]);
+    assert_eq!(d.modified.reasoning_effort.as_deref(), Some("low"));
+    assert!(d.conflicts.is_empty(), "gleicher Wert ist kein Konflikt");
+    assert!(!d.modified.is_empty());
+
+    let s = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: plan\n    on: session_start\n    action: modify\n    modify: { permission_mode: plan, model: m }\n",
+    );
+    let act = Activation::new(Phase::SessionStart, json!({ "start": { "model": "x" } })).unwrap();
+    let d = eval(vec![s], &act);
+    assert_eq!(d.modified.permission_mode.as_deref(), Some("plan"));
+    assert_eq!(d.modified.model.as_deref(), Some("m"));
+}
+
+#[test]
+fn pol_007_dry_run_modify_and_errors() {
+    let s = set(
+        Scope::User,
+        "u",
+        "mode: dry_run\ndefaults:\n  tool_call: deny\nrules:\n  - id: m\n    on: tool_call\n    action: modify\n    modify: { args: { a: 1 } }\n  - id: e\n    on: tool_call\n    when: tool.args.missing == 1\n    action: deny\n  - id: em\n    on: tool_call\n    when: tool.args.missing == 1\n    action: modify\n    modify: { args: { b: 1 } }\n",
+    );
+    let d = eval(vec![s], &tool("shell", json!({})));
+    assert_eq!(
+        d.outcome,
+        Outcome::Allow,
+        "Dry-Run-Sets entscheiden nicht, auch nicht per Default"
+    );
+    assert_eq!(d.modified.args, None);
+    assert_eq!(d.would.len(), 1);
+    assert_eq!(d.errors.len(), 2);
+}

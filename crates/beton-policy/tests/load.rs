@@ -310,3 +310,141 @@ fn pol_001_store_ignores_policy_tests_and_handles_deleted_files() {
         Outcome::Allow
     );
 }
+
+#[test]
+fn pol_001_load_file_checks_size_and_encoding() {
+    use beton_policy::load::{MAX_FILE_BYTES, load_file};
+    let dir = tempfile::tempdir().unwrap();
+    let ok = dir.path().join("ok.yaml");
+    std::fs::write(&ok, DENY_SHELL).unwrap();
+    let set = load_file(Scope::User, &ok).unwrap();
+    assert_eq!(set.origin, ok.display().to_string());
+    assert!(load_file(Scope::User, &dir.path().join("fehlt.yaml")).is_err());
+    let big = dir.path().join("big.yaml");
+    std::fs::write(&big, vec![b'#'; MAX_FILE_BYTES as usize + 1]).unwrap();
+    assert!(
+        load_file(Scope::User, &big)
+            .unwrap_err()
+            .message
+            .contains("größer")
+    );
+    let bin = dir.path().join("bin.yaml");
+    std::fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+    assert!(
+        load_file(Scope::User, &bin)
+            .unwrap_err()
+            .message
+            .contains("UTF-8")
+    );
+    // Auch der Store meldet unlesbare Dateien als ungültig.
+    let mut store = PolicyStore::new();
+    store.add_dir(Scope::User, dir.path());
+    let events = store.refresh();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, StoreEvent::Invalid(_)))
+            .count(),
+        2
+    );
+    assert_eq!(store.effective().invalid().len(), 2);
+}
+
+#[test]
+fn pol_001_inline_format_errors_name_the_field() {
+    let err = inline_set(
+        Scope::Agent,
+        "a",
+        "agent.yaml",
+        &[json!({ "id": "x", "on": "nie" })],
+    )
+    .unwrap_err();
+    assert!(err.message.starts_with("policies[0].on"), "{err}");
+    let err = inline_set(
+        Scope::Agent,
+        "a",
+        "agent.yaml",
+        &[json!({ "id": "x", "foo": 1 })],
+    )
+    .unwrap_err();
+    assert!(err.message.starts_with("policies[0].foo"), "{err}");
+    let err = inline_set(Scope::Agent, "a", "agent.yaml", &[json!(5)]).unwrap_err();
+    assert!(err.message.starts_with("policies[0]"), "{err}");
+    let err = parse_set(Scope::User, "x.yaml", "- 1\n").unwrap_err();
+    assert_eq!(err.line, 1, "{err}");
+    assert_eq!(err.to_event().file, "x.yaml");
+    assert!(err.to_string().starts_with("x.yaml:1:"));
+}
+
+#[test]
+fn pol_001_store_inline_sets_and_dirs() {
+    use beton_policy::store::policies_dir;
+    assert!(policies_dir(Path::new("/h/.beton")).ends_with(".beton/policies"));
+    let mut store = PolicyStore::new();
+    let before = store.effective().hash().to_owned();
+    let agent = inline_set(
+        Scope::Agent,
+        "pr-fixer",
+        "agents/pr-fixer/agent.yaml",
+        &[json!({ "id": "no-shell", "on": "tool_call", "when": "tool.kind == \"shell\"", "action": "deny" })],
+    )
+    .unwrap();
+    store.set_inline(Scope::Agent, vec![agent]);
+    let eff = store.effective();
+    assert_ne!(eff.hash(), before);
+    assert_eq!(eff.sets().len(), 1);
+    assert!(matches!(
+        eff.evaluate(&shell_call(), &EvalOptions::default()).outcome,
+        Outcome::Deny { .. }
+    ));
+    store.set_inline(Scope::Agent, vec![]);
+    assert_eq!(store.effective().hash(), before);
+}
+
+#[test]
+fn pol_001_rule_types_and_modify_fields() {
+    use beton_policy::doc::{ModifyDoc, RuleType, modifiable};
+    for (t, name) in [
+        (RuleType::SpendCap, "spend_cap"),
+        (RuleType::DailyBudget, "daily_budget"),
+        (RuleType::ModelRoute, "model_route"),
+        (RuleType::RequireApproval, "require_approval"),
+        (RuleType::ToolAllowlist, "tool_allowlist"),
+        (RuleType::PathGuard, "path_guard"),
+        (RuleType::GitGuard, "git_guard"),
+        (RuleType::LoopDetection, "loop_detection"),
+        (RuleType::PiiRedaction, "pii_redaction"),
+        (RuleType::BrowserGuard, "browser_guard"),
+    ] {
+        assert_eq!(t.as_str(), name);
+        assert!(!t.phases().is_empty());
+    }
+    let m = ModifyDoc {
+        model: Some("a".into()),
+        reasoning_effort: Some("low".into()),
+        permission_mode: Some("plan".into()),
+        args: Some(json!({})),
+        redact: Some(vec![]),
+    };
+    assert_eq!(
+        m.fields(),
+        [
+            "model",
+            "reasoning_effort",
+            "permission_mode",
+            "args",
+            "redact"
+        ]
+    );
+    assert!(modifiable(Phase::BrowserAction).is_empty());
+    assert_eq!(modifiable(Phase::ToolResult), ["redact"]);
+    for s in [
+        Scope::Org,
+        Scope::Team,
+        Scope::User,
+        Scope::Project,
+        Scope::Agent,
+    ] {
+        assert!(!s.as_str().is_empty());
+    }
+}
