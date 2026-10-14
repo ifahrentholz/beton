@@ -4,7 +4,7 @@
 //! Parser-Differenzen zwischen Prüfung und Weiterleitung gibt.
 
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Schema eines Ziels: `https` (Default, Port 443) oder `http` (nur mit expliziter Regel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,9 +47,53 @@ pub struct InvalidHost(pub String);
 pub struct InvalidPath(pub String);
 
 impl Host {
-    /// Normalisiert einen Host aus einer Regel, einer URL oder einem CONNECT.
-    pub fn parse(_raw: &str) -> Result<Self, InvalidHost> {
-        Err(InvalidHost("noch nicht umgesetzt".into()))
+    /// Normalisiert einen Host aus einer Regel, einer URL oder einem CONNECT: IPv6 in eckigen
+    /// Klammern, IPv4 auch in Dezimal-, Hex- und Oktalform (wie WHATWG/`inet_aton`, damit
+    /// `http://2130706433/` als `127.0.0.1` geprüft wird), Domains klein, ohne abschließenden
+    /// Punkt und als Punycode.
+    pub fn parse(raw: &str) -> Result<Self, InvalidHost> {
+        let invalid = || InvalidHost(raw.chars().take(256).collect());
+        if let Some(inner) = raw.strip_prefix('[') {
+            let inner = inner.strip_suffix(']').ok_or_else(invalid)?;
+            return inner
+                .parse::<Ipv6Addr>()
+                .map(|ip| Self::Ip(IpAddr::V6(ip)))
+                .map_err(|_| invalid());
+        }
+        if raw.contains(':') {
+            return raw
+                .parse::<Ipv6Addr>()
+                .map(|ip| Self::Ip(IpAddr::V6(ip)))
+                .map_err(|_| invalid());
+        }
+        let trimmed = raw.strip_suffix('.').unwrap_or(raw);
+        if trimmed.is_empty() || trimmed.len() > 253 {
+            return Err(invalid());
+        }
+        let ascii = if trimmed.is_ascii() {
+            trimmed.to_ascii_lowercase()
+        } else {
+            idna::domain_to_ascii(trimmed).map_err(|_| invalid())?
+        };
+        let labels: Vec<&str> = ascii.split('.').collect();
+        let last = labels.last().copied().unwrap_or_default();
+        if ends_in_number(last) {
+            return parse_ipv4(&labels)
+                .map(|ip| Self::Ip(IpAddr::V4(ip)))
+                .ok_or_else(invalid);
+        }
+        let label_ok = |l: &str| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        };
+        if ascii.len() > 253 || !labels.iter().all(|l| label_ok(l)) {
+            return Err(invalid());
+        }
+        Ok(Self::Domain(ascii))
     }
 
     /// Form für URIs: IPv6 in eckigen Klammern.
@@ -68,9 +112,139 @@ impl fmt::Display for Host {
     }
 }
 
-/// Normalisiert den Pfad eines Requests (ohne Query).
-pub fn normalize_path(_raw: &str) -> Result<String, InvalidPath> {
-    Err(InvalidPath("noch nicht umgesetzt".into()))
+/// WHATWG: Endet ein Host auf eine Zahl, ist er eine IPv4-Adresse (oder ungültig).
+fn ends_in_number(label: &str) -> bool {
+    if !label.is_empty() && label.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    label
+        .strip_prefix("0x")
+        .is_some_and(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Eine Zahl im IPv4-Parser von WHATWG: `0x…` hex, führende `0` oktal, sonst dezimal.
+fn ipv4_number(part: &str) -> Option<u64> {
+    if part.is_empty() {
+        return None;
+    }
+    let (digits, radix) = if let Some(hex) = part.strip_prefix("0x") {
+        (hex, 16)
+    } else if part.len() > 1 && part.starts_with('0') {
+        (&part[1..], 8)
+    } else {
+        (part, 10)
+    };
+    if digits.is_empty() {
+        return Some(0);
+    }
+    if digits.len() > 12 {
+        return None;
+    }
+    u64::from_str_radix(digits, radix).ok()
+}
+
+fn parse_ipv4(labels: &[&str]) -> Option<Ipv4Addr> {
+    if labels.is_empty() || labels.len() > 4 {
+        return None;
+    }
+    let numbers: Vec<u64> = labels
+        .iter()
+        .map(|l| ipv4_number(l))
+        .collect::<Option<_>>()?;
+    let (last, init) = numbers.split_last()?;
+    if init.iter().any(|n| *n > 255) {
+        return None;
+    }
+    let rest_bits = 8 * (5 - numbers.len() as u32);
+    if *last >= 1u64 << rest_bits {
+        return None;
+    }
+    let mut value = *last;
+    for (i, n) in init.iter().enumerate() {
+        value += n << (8 * (3 - i as u32));
+    }
+    u32::try_from(value).ok().map(Ipv4Addr::from)
+}
+
+fn is_unreserved(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~')
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    (b as char).to_digit(16).map(|d| d as u8)
+}
+
+/// Prozent-Dekodierung unreservierter Zeichen; übrige Escapes in Großschreibung. `%2F`,
+/// `%5C`, Backslash, Steuerzeichen und kaputte Escapes sind ungültig.
+pub(crate) fn decode_escapes(raw: &str) -> Result<String, InvalidPath> {
+    let invalid = |why: &str| InvalidPath(why.to_owned());
+    let bytes = raw.as_bytes();
+    let mut decoded = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\\' => return Err(invalid("Backslash im Pfad")),
+            b'%' => {
+                let (Some(hi), Some(lo)) = (
+                    bytes.get(i + 1).copied().and_then(hex_value),
+                    bytes.get(i + 2).copied().and_then(hex_value),
+                ) else {
+                    return Err(invalid("ungültiges Prozent-Escape"));
+                };
+                let v = hi * 16 + lo;
+                match v {
+                    b'/' | b'\\' => return Err(invalid("kodierter Pfadtrenner (%2F/%5C)")),
+                    v if is_unreserved(v) => decoded.push(v as char),
+                    v => decoded.push_str(&format!("%{v:02X}")),
+                }
+                i += 3;
+            }
+            b if b.is_ascii() && !b.is_ascii_control() && b != b' ' => {
+                decoded.push(b as char);
+                i += 1;
+            }
+            _ => return Err(invalid("unzulässiges Zeichen im Pfad")),
+        }
+    }
+    Ok(decoded)
+}
+
+/// Normalisiert den Pfad eines Requests (ohne Query): Prozent-Dekodierung unreservierter
+/// Zeichen (übrige Escapes in Großschreibung), `.`/`..` aufgelöst, `//` zusammengefasst.
+/// `%2F`, `%5C`, Backslash, kaputte Escapes und Escape über die Wurzel sind ungültig (400).
+pub fn normalize_path(raw: &str) -> Result<String, InvalidPath> {
+    if !raw.starts_with('/') {
+        return Err(InvalidPath("Pfad muss mit / beginnen".into()));
+    }
+    let decoded = decode_escapes(raw)?;
+    let segments: Vec<&str> = decoded[1..].split('/').collect();
+    let mut stack: Vec<&str> = Vec::with_capacity(segments.len());
+    let mut trailing = false;
+    let count = segments.len();
+    for (idx, seg) in segments.into_iter().enumerate() {
+        let last = idx + 1 == count;
+        match seg {
+            "" | "." => trailing = last,
+            ".." => {
+                if stack.pop().is_none() {
+                    return Err(InvalidPath("Pfad verlässt die Wurzel".into()));
+                }
+                trailing = last;
+            }
+            s => {
+                stack.push(s);
+                trailing = false;
+            }
+        }
+    }
+    let mut out = String::with_capacity(decoded.len());
+    out.push('/');
+    out.push_str(&stack.join("/"));
+    if trailing && !stack.is_empty() {
+        out.push('/');
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

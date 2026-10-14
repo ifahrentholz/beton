@@ -12,7 +12,7 @@
 //! auch wenn eine Allow-Regel passt. `TRACE` und `CONNECT` sind im Tunnel immer verboten.
 //! Regeln werden beim Laden kompiliert; eine ungültige Regel ist ein Konfigurationsfehler.
 
-use crate::normalize::{Host, Scheme};
+use crate::normalize::{Host, Scheme, decode_escapes};
 
 /// Die sieben Methoden, die Regeln kennen; `*` steht für alle.
 pub const METHODS: [&str; 7] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
@@ -74,32 +74,348 @@ impl Decision {
     }
 }
 
+/// Host-Muster einer Regel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HostPattern {
+    /// Genau dieser Host (Domain oder IP).
+    Exact(Host),
+    /// `*.x.com`: beliebige Subdomain (auch mehrstufig), nicht `x.com` selbst. Gespeichert
+    /// mit führendem Punkt (`.x.com`).
+    Subdomains(String),
+}
+
+impl HostPattern {
+    fn matches(&self, host: &Host) -> bool {
+        match (self, host) {
+            (Self::Exact(h), host) => h == host,
+            (Self::Subdomains(suffix), Host::Domain(d)) => {
+                d.len() > suffix.len() && d.ends_with(suffix.as_str())
+            }
+            (Self::Subdomains(_), Host::Ip(_)) => false,
+        }
+    }
+}
+
+/// Teil eines Glob-Segments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Token {
+    Literal(String),
+    /// `*`: beliebig viele Zeichen außer `/`.
+    Star,
+    /// `?`: genau ein Zeichen außer `/`.
+    Question,
+}
+
+/// Ein Segment eines Pfad-Globs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Segment {
+    /// `**`: null oder mehr ganze Segmente.
+    Any,
+    Pattern(Vec<Token>),
+}
+
+#[derive(Debug, Clone)]
+struct Target {
+    scheme: Scheme,
+    host: HostPattern,
+    port: u16,
+    path: Vec<Segment>,
+}
+
+#[derive(Debug, Clone)]
+struct Rule {
+    text: String,
+    deny: bool,
+    /// Bitmaske über [`METHODS`].
+    methods: u8,
+    targets: Vec<Target>,
+}
+
 /// Kompilierte Regeln einer Proxy-Instanz.
 #[derive(Debug, Clone, Default)]
 pub struct RuleSet {
-    _rules: Vec<String>,
+    rules: Vec<Rule>,
+}
+
+fn method_bit(method: &str) -> Option<u8> {
+    METHODS.iter().position(|m| *m == method).map(|i| 1 << i)
+}
+
+fn err(rule: &str, message: impl Into<String>) -> RuleError {
+    RuleError {
+        rule: rule.to_owned(),
+        message: message.into(),
+    }
+}
+
+fn parse_methods(rule: &str, text: &str) -> Result<u8, RuleError> {
+    if text == "*" {
+        return Ok((1 << METHODS.len()) - 1);
+    }
+    let mut mask = 0;
+    for m in text.split(',') {
+        let bit = method_bit(m).ok_or_else(|| {
+            err(
+                rule,
+                format!(
+                    "unbekannte Methode `{m}` (erlaubt: *, {})",
+                    METHODS.join(", ")
+                ),
+            )
+        })?;
+        mask |= bit;
+    }
+    Ok(mask)
+}
+
+fn parse_glob(rule: &str, glob: &str) -> Result<Vec<Segment>, RuleError> {
+    let raw_segments: Vec<&str> = glob[1..].split('/').collect();
+    let count = raw_segments.len();
+    let mut out = Vec::with_capacity(count);
+    for (i, seg) in raw_segments.into_iter().enumerate() {
+        if seg.is_empty() && i + 1 != count {
+            return Err(err(rule, "leeres Pfadsegment (`//`)"));
+        }
+        if seg == "**" {
+            out.push(Segment::Any);
+            continue;
+        }
+        if seg.contains("**") {
+            return Err(err(rule, "`**` nur als ganzes Segment"));
+        }
+        // Escapes wie im Request-Pfad darstellen; Punkt-Segmente sind nicht erlaubt.
+        let decoded = decode_escapes(seg).map_err(|e| err(rule, e.to_string()))?;
+        if decoded == "." || decoded == ".." {
+            return Err(err(rule, "Punkt-Segmente sind in Regeln nicht erlaubt"));
+        }
+        out.push(Segment::Pattern(tokenize(&decoded)));
+    }
+    Ok(out)
+}
+
+fn tokenize(seg: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut lit = String::new();
+    for c in seg.chars() {
+        match c {
+            '*' | '?' => {
+                if !lit.is_empty() {
+                    tokens.push(Token::Literal(std::mem::take(&mut lit)));
+                }
+                tokens.push(if c == '*' {
+                    Token::Star
+                } else {
+                    Token::Question
+                });
+            }
+            c => lit.push(c),
+        }
+    }
+    if !lit.is_empty() {
+        tokens.push(Token::Literal(lit));
+    }
+    tokens
+}
+
+fn parse_target(rule: &str, text: &str) -> Result<Target, RuleError> {
+    let (scheme, rest) = match text.split_once("://") {
+        Some(("http", rest)) => (Scheme::Http, rest),
+        Some((other, _)) => {
+            return Err(err(
+                rule,
+                format!("Schema `{other}://` nicht erlaubt (Default https, sonst `http://`)"),
+            ));
+        }
+        None => (Scheme::Https, text),
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/**"),
+    };
+    let (host_text, port_text) = if let Some(after) = authority.strip_prefix('[') {
+        let close = after
+            .find(']')
+            .ok_or_else(|| err(rule, "`]` fehlt im IPv6-Literal"))?;
+        let host = &authority[..close + 2];
+        let rest = &after[close + 1..];
+        match rest.strip_prefix(':') {
+            Some(p) => (host, Some(p)),
+            None if rest.is_empty() => (host, None),
+            None => return Err(err(rule, "ungültiger Host")),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    let port = match port_text {
+        None => scheme.default_port(),
+        Some(p) => match p.parse::<u16>() {
+            Ok(n) if n > 0 && p.bytes().all(|b| b.is_ascii_digit()) => n,
+            _ => return Err(err(rule, format!("ungültiger Port `{p}`"))),
+        },
+    };
+    let host = if let Some(suffix) = host_text.strip_prefix("*.") {
+        match Host::parse(suffix) {
+            Ok(Host::Domain(d)) => HostPattern::Subdomains(format!(".{d}")),
+            _ => return Err(err(rule, format!("ungültiger Host `{host_text}`"))),
+        }
+    } else {
+        HostPattern::Exact(
+            Host::parse(host_text)
+                .map_err(|_| err(rule, format!("ungültiger Host `{host_text}`")))?,
+        )
+    };
+    Ok(Target {
+        scheme,
+        host,
+        port,
+        path: parse_glob(rule, path)?,
+    })
+}
+
+fn parse_rule(text: &str) -> Result<Rule, RuleError> {
+    let (deny, body) = match text.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let mut parts = body.split(' ');
+    let methods = parts
+        .next()
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| err(text, "Methoden fehlen"))?;
+    let methods = parse_methods(text, methods)?;
+    let targets = parts
+        .map(|t| {
+            if t.is_empty() {
+                Err(err(text, "doppeltes Leerzeichen oder leeres Ziel"))
+            } else {
+                parse_target(text, t)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if targets.is_empty() {
+        return Err(err(text, "Ziel fehlt (z. B. `GET api.github.com/**`)"));
+    }
+    Ok(Rule {
+        text: text.to_owned(),
+        deny,
+        methods,
+        targets,
+    })
+}
+
+/// Passt ein Segment-Muster auf ein Pfadsegment?
+fn segment_matches(tokens: &[Token], seg: &[char]) -> bool {
+    match tokens.split_first() {
+        None => seg.is_empty(),
+        Some((Token::Literal(l), rest)) => {
+            let l: Vec<char> = l.chars().collect();
+            seg.starts_with(&l) && segment_matches(rest, &seg[l.len()..])
+        }
+        Some((Token::Question, rest)) => !seg.is_empty() && segment_matches(rest, &seg[1..]),
+        Some((Token::Star, rest)) => (0..=seg.len()).any(|i| segment_matches(rest, &seg[i..])),
+    }
+}
+
+/// Passt der Glob auf die Pfadsegmente? `**` verschluckt null oder mehr Segmente.
+fn path_matches(glob: &[Segment], path: &[Vec<char>]) -> bool {
+    match glob.split_first() {
+        None => path.is_empty(),
+        Some((Segment::Any, rest)) => (0..=path.len()).any(|i| path_matches(rest, &path[i..])),
+        Some((Segment::Pattern(tokens), rest)) => match path.split_first() {
+            Some((seg, path_rest)) => segment_matches(tokens, seg) && path_matches(rest, path_rest),
+            None => false,
+        },
+    }
+}
+
+impl Target {
+    fn matches(&self, req: &Request<'_>, path: &[Vec<char>]) -> bool {
+        self.scheme == req.scheme
+            && self.port == req.port
+            && self.host.matches(req.host)
+            && path_matches(&self.path, path)
+    }
+}
+
+impl Rule {
+    fn matches(&self, bit: u8, req: &Request<'_>, path: &[Vec<char>]) -> bool {
+        self.methods & bit != 0 && self.targets.iter().any(|t| t.matches(req, path))
+    }
 }
 
 impl RuleSet {
     /// Kompiliert Regeln; die erste ungültige Regel ist ein Fehler.
     pub fn compile<S: AsRef<str>>(rules: &[S]) -> Result<Self, RuleError> {
         Ok(Self {
-            _rules: rules.iter().map(|r| r.as_ref().to_owned()).collect(),
+            rules: rules
+                .iter()
+                .map(|r| parse_rule(r.as_ref()))
+                .collect::<Result<_, _>>()?,
         })
     }
 
-    /// Entscheidet über einen Request.
-    pub fn decide(&self, _req: &Request<'_>) -> Decision {
-        Decision::Deny {
-            reason: DenyReason::NoMatchingRule,
-            rule: None,
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// Entscheidet über einen Request; `req.path` muss normalisiert sein
+    /// ([`crate::normalize_path`]).
+    pub fn decide(&self, req: &Request<'_>) -> Decision {
+        if req.method == "TRACE" || req.method == "CONNECT" {
+            return Decision::Deny {
+                reason: DenyReason::MethodNotAllowed,
+                rule: None,
+            };
+        }
+        let Some(bit) = method_bit(req.method) else {
+            return Decision::Deny {
+                reason: DenyReason::NoMatchingRule,
+                rule: None,
+            };
+        };
+        let segments: Vec<Vec<char>> = req
+            .path
+            .strip_prefix('/')
+            .unwrap_or(req.path)
+            .split('/')
+            .map(|s| s.chars().collect())
+            .collect();
+        if let Some(rule) = self
+            .rules
+            .iter()
+            .find(|r| r.deny && r.matches(bit, req, &segments))
+        {
+            return Decision::Deny {
+                reason: DenyReason::DeniedByRule,
+                rule: Some(rule.text.clone()),
+            };
+        }
+        match self
+            .rules
+            .iter()
+            .find(|r| !r.deny && r.matches(bit, req, &segments))
+        {
+            Some(rule) => Decision::Allow {
+                rule: rule.text.clone(),
+            },
+            None => Decision::Deny {
+                reason: DenyReason::NoMatchingRule,
+                rule: None,
+            },
         }
     }
 
     /// Könnte irgendeine Allow-Regel Requests an `host:port` erlauben? Vorprüfung für CONNECT
     /// (PRX-003 AC5), bevor ein TLS-Handshake stattfindet.
-    pub fn may_connect(&self, _scheme: Scheme, _host: &Host, _port: u16) -> bool {
-        false
+    pub fn may_connect(&self, scheme: Scheme, host: &Host, port: u16) -> bool {
+        self.rules.iter().filter(|r| !r.deny).any(|r| {
+            r.targets
+                .iter()
+                .any(|t| t.scheme == scheme && t.port == port && t.host.matches(host))
+        })
     }
 
     /// Regel, die diesen Request erlauben würde (`rule_hint` in Fehlerantworten).
