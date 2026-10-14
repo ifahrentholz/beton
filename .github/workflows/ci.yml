@@ -97,6 +97,11 @@ jobs:
       - name: Benchmark Policy-Auswertung
         run: cargo test -p beton-policy --release --test bench -- --ignored --nocapture
 
+      # covers: PRX-001 AC3 (200 parallele HTTPS-Verbindungen, p99-Zusatzlatenz < 20 ms im
+      # Release-Build; nur Loopback und lokale Test-Upstreams)
+      - name: Benchmark Egress-Proxy
+        run: cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored --nocapture
+
       # Coverage-Floor und Ratchet (QA-011) als Schritt dieses Jobs statt eigenem Job: jeder
       # Job muss Required Check sein (QA-010 AC3). Die Basis ist der letzte Stand von main
       # (Actions-Cache, geschrieben von Pushes auf main).
