@@ -86,18 +86,23 @@ fn tool(name: &str) -> Option<(PathBuf, PathBuf)> {
         // …/Contents/Developer/usr/bin/git → …/Contents/Developer
         return Some((exe.clone(), exe.ancestors().nth(3).unwrap().to_path_buf()));
     }
-    // rustup-Proxy: das echte Werkzeug der Toolchain.
+    // rustup-Proxy: das echte Werkzeug der aktiven Toolchain (`rustc --print sysroot`).
     if exe.file_name().is_some_and(|n| n == "rustup") {
-        let out = std::process::Command::new(&found)
-            .args(["which", name])
+        let out = std::process::Command::new("rustc")
+            .args(["--print", "sysroot"])
             .output()
             .unwrap();
-        exe = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
-            .canonicalize()
-            .unwrap();
+        let sysroot = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        exe = sysroot.join("bin").join(name).canonicalize().unwrap();
+        return Some((exe, sysroot.canonicalize().unwrap()));
     }
     // Präfix der Installation (…/bin/<werkzeug> → …), für Homebrew die ganze Wurzel.
     let prefix = exe.ancestors().nth(2).unwrap().to_path_buf();
+    // System-Pfade liest jede Sandbox ohnehin; als Grant würde ihr ganzer Baum nach
+    // Muster-Masken durchsucht.
+    if ["/", "/usr", "/bin"].iter().any(|p| prefix == Path::new(p)) {
+        return Some((exe, PathBuf::from("/usr/bin")));
+    }
     let root = if prefix.starts_with("/opt/homebrew") {
         PathBuf::from("/opt/homebrew")
     } else if prefix.starts_with("/usr/local") {
@@ -410,7 +415,12 @@ impl Fixture {
         });
         let mut spec = SandboxSpec::from_yaml(yaml).unwrap();
         let mut reads = spec.read_paths.clone().unwrap_or_default();
-        reads.extend(tools.iter().map(|t| t.display().to_string()));
+        reads.extend(
+            tools
+                .iter()
+                .filter(|t| !t.starts_with("/usr/bin"))
+                .map(|t| t.display().to_string()),
+        );
         spec.read_paths = Some(reads);
         let policy = provider().resolve(&spec, &ctx).unwrap();
         (instance, policy)
