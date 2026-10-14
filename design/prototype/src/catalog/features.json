@@ -1537,7 +1537,7 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-012--eingebaute-presets",
-  "summary": "Presets liefern sinnvolle Startpunkte: `default` (Workspace rw, kein Netz außer Stufe-1-Vendor-Hosts), `dev` (zusätzlich lesender Zugriff auf gängige Paket-Registries und Toolchain-Caches), `readonly` (Workspace ro, kein Netz; z. B. für Side-Chats und Reviewer-Agents). Eigene Felder überschreiben bzw. ergänzen Presets gemäß Merge-Regeln.",
+  "summary": "Presets liefern sinnvolle Startpunkte: `default` (Workspace rw, kein Netz außer Stufe-1-Vendor-Hosts), `dev` (zusätzlich lesender Zugriff auf gängige Paket-Registries und Toolchain-Caches), `readonly` (Workspace ro, kein Netz für die Tools; Stufe 1 erreicht weiter nur ihre Vendor-Hosts; z. B. für Side-Chats und Reviewer-Agents). Eigene Felder überschreiben bzw. ergänzen Presets gemäß Merge-Regeln.",
   "acs": [
    "Mit `preset: dev` gelingt `npm install` eines öffentlichen Pakets; `npm publish` scheitert (PUT nicht erlaubt). (Test gegen eine lokale Registry-Attrappe, ADR-0033.)",
    "Mit `preset: readonly` scheitert jedes Schreiben im Workspace.",

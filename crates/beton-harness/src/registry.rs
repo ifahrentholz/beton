@@ -201,8 +201,8 @@ pub struct HarnessLayers {
 #[serde(rename_all = "snake_case")]
 pub enum BinarySource {
     Env,
-    /// Nicht mehr vergeben: Die Projekt-Config wählt kein Binary (SBX-002); bleibt für ältere
-    /// Events und die API erhalten.
+    // Nicht mehr vergeben: Die Projekt-Config wählt kein Binary (SBX-002); bleibt für die
+    // API erhalten.
     ProjectConfig,
     UserConfig,
     Path,
