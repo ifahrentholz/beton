@@ -217,6 +217,9 @@ struct Inner {
     events: mpsc::UnboundedSender<GateEvent>,
     pending: Mutex<HashMap<String, oneshot::Sender<Human>>>,
     decided: Mutex<HashMap<String, Verdict>>,
+    /// Von beton eingebundene MCP-Server (#234): nur für sie gelten die Klassen reservierter
+    /// Namen (`beton` → `system`). Bis zur MCP-Vorbereitung keiner (fail closed).
+    trusted_servers: Mutex<Vec<String>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
     requested: Mutex<Vec<(String, Option<String>, String)>>,
     /// Reihenfolge im Log: `policy.decision` erst nach dem `tool.call.requested` (POL-025).
@@ -356,6 +359,7 @@ impl PolicyGate {
                 events,
                 pending: Mutex::new(HashMap::new()),
                 decided: Mutex::new(HashMap::new()),
+                trusted_servers: Mutex::new(Vec::new()),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
                 seen: tokio::sync::Notify::new(),
@@ -389,6 +393,14 @@ impl PolicyGate {
     /// Quelle für Verbrauchswerte (`session.cost_usd`, `user.daily_cost_usd`).
     pub fn with_usage(self, usage: Arc<dyn UsageSource>) -> Self {
         self.rebuild(|i| i.usage = Some(usage))
+    }
+
+    /// MCP-Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des
+    /// Direkt-Harness; #234).
+    pub fn set_trusted_servers(&self, servers: Vec<String>) {
+        if let Ok(mut t) = self.inner.trusted_servers.lock() {
+            *t = servers;
+        }
     }
 
     /// Enforcement-Matrix des Harness der Session (POL-024).
@@ -814,6 +826,14 @@ impl PolicyGate {
                 .home
                 .as_ref()
                 .map(|h| h.display().to_string()),
+            // Vergifteter Zustand: niemandem vertrauen (fail closed).
+            trusted_servers: Some(
+                self.inner
+                    .trusted_servers
+                    .lock()
+                    .map(|t| t.clone())
+                    .unwrap_or_default(),
+            ),
         })
     }
 
@@ -962,8 +982,15 @@ impl PolicyGate {
         })
     }
 
-    /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle.
+    /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle. Für
+    /// MCP-Tools entscheidet die Normalisierung mit der Herkunft des Servers (#234): Ein
+    /// fremder Server namens `beton` ist kein System-Tool, auch wenn der Adapter das meint.
     fn kind_of(&self, req: &GateRequest) -> String {
+        if let Ok(n) = normalize_source(&self.tool_source(req), &req.args)
+            && n.server != "builtin"
+        {
+            return n.kind;
+        }
         if req.kind.is_empty() {
             beton_harness::tool_kind(
                 self.inner.opts.harness.as_str(),
@@ -1428,6 +1455,7 @@ mod tests {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
         // beton, entscheidet allein die Policy; eine Approval-Card entsteht nicht.
         let (g, mut rx) = gate();
+        g.set_trusted_servers(vec!["beton".into()]);
         let req = GateRequest {
             call_id: "c1".into(),
             tool: "mcp__beton__session_list".into(),

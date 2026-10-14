@@ -610,7 +610,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         None => Ok(mcp::McpSetup::default()),
     };
     let mut setup = match setup {
-        Ok(s) => s,
+        Ok(s) => {
+            // Nur von beton eingebundene Server tragen die Klassen reservierter Namen (#234).
+            let mut trusted = s.injection.names();
+            if boot.harness.as_str().starts_with("direct") {
+                trusted.push("beton-workspace".into());
+            }
+            gate.set_trusted_servers(trusted);
+            s
+        }
         Err(e) => {
             // Fail closed: ohne ladbaren Agent startet die Session nicht.
             let e = beton_harness::HarnessError::StartRefused(format!("Agent: {e}"));

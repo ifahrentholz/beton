@@ -19,12 +19,19 @@ pub use beton_agents::spec::McpServer;
 /// Name des eingebauten Servers mit den System-Tools (AGT-007); für eigene Server reserviert.
 pub const SYSTEM_SERVER: &str = "beton";
 
+/// Namen, die beton für eigene Server reserviert: `beton`, `beton-*`, `beton_*` (System-Tools,
+/// Workspace-Tools des Direkt-Harness, Browser). Die Abbildungstabelle ordnet ihnen Klassen wie
+/// `system` zu (POL-005, #234).
+pub fn reserved_name(name: &str) -> bool {
+    name == SYSTEM_SERVER || name.starts_with("beton-") || name.starts_with("beton_")
+}
+
 /// Inhalt von `~/.beton/mcp.yaml` bzw. `.beton/mcp.yaml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "beton MCP-Server (mcp.yaml)")]
 pub struct McpFile {
-    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton` ist reserviert).
+    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*` und `beton_*` sind reserviert).
     #[serde(default)]
     pub servers: BTreeMap<String, McpServer>,
 }
@@ -87,9 +94,10 @@ impl ConfiguredServer {
                 self.name
             ));
         }
-        if self.name == SYSTEM_SERVER {
+        if reserved_name(&self.name) {
             return Err(format!(
-                "der Name „{SYSTEM_SERVER}“ ist für die System-Tools reserviert"
+                "der Name „{}“ ist für Server von beton reserviert (`beton`, `beton-*`, `beton_*`)",
+                self.name
             ));
         }
         let s = &self.server;

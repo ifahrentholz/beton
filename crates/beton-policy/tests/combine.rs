@@ -705,6 +705,7 @@ fn pol_005_args_patch_recomputes_derived_fields_for_pass_two() {
         mcp_server: None,
         cwd: "/work/repo".into(),
         home: None,
+        trusted_servers: None,
     });
     let original = json!({ "command": "rm -rf /tmp/x" });
     let normalized = normalize_source(&source, &original).unwrap();
@@ -763,6 +764,7 @@ fn pol_005_failed_renormalization_after_args_patch_denies() {
         mcp_server: None,
         cwd: "relativ/kein/pfad".into(),
         home: None,
+        trusted_servers: None,
     });
     let act = tool("shell", json!({ "command": "ls" })).with_tool_source(source);
     let user = set(
