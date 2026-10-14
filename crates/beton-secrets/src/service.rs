@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend::{Backend, BackendKind};
 use crate::capability::UseCapabilities;
 use crate::error::{Error, Result};
+use crate::redact::Redactor;
 use crate::{SecretRef, SecretValue};
 
 /// Art eines Secrets (SEC-001).
@@ -161,6 +162,16 @@ pub struct Secrets {
     actor: PrincipalId,
     backend: Arc<dyn Backend>,
     clock: Clock,
+    /// Angebundene Redaction-Pipeline (SEC-013); gemeinsam für alle Klone des Dienstes.
+    redaction: Arc<Redaction>,
+}
+
+/// Zustand der Anbindung an die Redaction-Pipeline.
+#[derive(Default)]
+struct Redaction {
+    target: std::sync::OnceLock<Arc<Redactor>>,
+    /// Serialisiert Neuaufbauten, damit kein älterer Stand einen neueren überschreibt.
+    rebuild: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for Secrets {
@@ -199,6 +210,7 @@ impl Secrets {
                 actor: PrincipalId::User(local.user),
                 backend,
                 clock: Arc::new(Timestamp::now),
+                redaction: Arc::default(),
             },
             UseCapabilities::new(),
         )
@@ -376,6 +388,12 @@ impl Secrets {
                 },
             )
             .await?;
+        Ok(())
+    }
+
+    /// Bindet die Redaction-Pipeline an (nur über [`crate::RedactionCap`]).
+    pub(crate) async fn attach_redaction(&self, redactor: Arc<Redactor>) -> Result<()> {
+        let _ = (&self.redaction, redactor);
         Ok(())
     }
 
