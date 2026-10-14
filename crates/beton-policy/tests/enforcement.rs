@@ -253,3 +253,24 @@ fn pol_024_dry_run_sets_and_weakest_level_across_classes() {
     assert_eq!(Level::Full.to_string(), "full");
     assert_eq!(Level::ObserveOnly.to_string(), "observe_only");
 }
+
+/// M5 (#234): `approval_only` setzt nur durch, wenn der Vendor fragt; Calls, die er selbst
+/// erlaubt (Safelist, Allowlist, `accept_edits`), laufen ohne Gate. Eine Pflichtregel auf einer
+/// solchen Klasse ist daher nur eingeschränkt wirksam: Start mit `policy.enforcement_degraded`.
+#[test]
+fn pol_024_approval_only_is_reported_as_degraded() {
+    let effective = EffectiveSet::new(vec![set(&rule(
+        "no-push",
+        "tool.kind == \"shell\"",
+        "deny",
+    ))]);
+    let check = check_start(&effective, &codex_like());
+    assert!(check.refused.is_empty(), "{check:?}");
+    let [gap] = &check.degraded[..] else {
+        panic!("{check:?}");
+    };
+    assert_eq!(gap.rule.rule_id, "no-push");
+    assert_eq!(gap.kinds, vec!["shell".to_owned()]);
+    assert_eq!(gap.level, Level::ApprovalOnly);
+    assert!(gap.describe().contains("approval_only"), "{}", gap.describe());
+}
