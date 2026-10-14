@@ -28,7 +28,7 @@ async fn har_008_ac1_setup_acp_add_writes_entry_and_agent_appears_in_catalog() {
     struct File {
         harnesses: HarnessesConfig,
     }
-    let parsed: File = serde_yaml_ng::from_str(&text).unwrap();
+    let parsed: File = serde_norway::from_str(&text).unwrap();
     let entry = beton_harness_acp::config::parse_entry(
         "mein-agent",
         &parsed.harnesses.acp.agents["mein-agent"],

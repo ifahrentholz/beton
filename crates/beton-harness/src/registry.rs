@@ -125,7 +125,7 @@ impl HarnessesConfig {
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_yaml_ng::from_str::<File>(&text)
+        serde_norway::from_str::<File>(&text)
             .map(|f| f.harnesses)
             .map_err(|e| format!("{}: {e}", path.display()))
     }
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn harnesses_config_parses_spec_example() {
         let yaml = "claude: { command: /opt/homebrew/bin/claude, extra_args: [], env_passthrough: [] }\ncodex:  { command: codex }\ndefault: claude\n";
-        let cfg: HarnessesConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: HarnessesConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.default.as_deref(), Some("claude"));
         assert_eq!(cfg.entries["codex"].command.as_deref(), Some("codex"));
     }
