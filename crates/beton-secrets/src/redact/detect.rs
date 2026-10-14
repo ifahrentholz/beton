@@ -29,7 +29,12 @@ const PLACEHOLDER: &str = "bt_cred_";
 type Check = fn(&str) -> bool;
 
 /// Art, Ausdruck, zu ersetzende Gruppe, Prüfung.
-type Spec = (&'static str, &'static str, Option<&'static str>, Option<Check>);
+type Spec = (
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    Option<Check>,
+);
 
 const SPECS: &[Spec] = &[
     // Reihenfolge zählt bei gleichem Start: Anthropic vor OpenAI (`sk-ant-` vs. `sk-`).

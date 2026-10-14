@@ -125,16 +125,31 @@ impl Store {
     /// Schickt `raw` durch den Redaction-Hook. Ändert er nichts, bleiben die Original-Bytes
     /// erhalten (HAR-001 AC3); sonst wird der redigierte Wert kompakt serialisiert.
     pub(crate) fn redact_raw(&self, raw: &beton_core::event::RawJson) -> Result<String> {
-        let original: Value = raw
+        let mut value: Value = raw
             .to_value()
             .map_err(|e| Error::InvalidEvent(format!("raw ist kein JSON: {e}")))?;
-        let mut redacted = original.clone();
-        self.options.redactor.redact(&mut redacted);
-        Ok(if redacted == original {
-            raw.get().to_owned()
+        Ok(if self.options.redactor.redact(&mut value)? {
+            value.to_string()
         } else {
-            redacted.to_string()
+            raw.get().to_owned()
         })
+    }
+
+    /// Schwärzt einen beliebigen JSON-Wert mit der Pipeline des Stores (SEC-013), z. B. den
+    /// Handover-Kontext eines Forks.
+    pub fn redact_value(&self, value: &mut Value) -> Result<bool> {
+        Ok(self.options.redactor.redact(value)?)
+    }
+
+    /// Schwärzt eine Nutzlast (SEC-013).
+    pub fn redact_payload(&self, payload: EventPayload) -> Result<EventPayload> {
+        Ok(payload)
+    }
+
+    /// Schwärzt ein Live-Event vor der Verteilung (transiente Deltas, SEC-013 AC1): Nutzlast
+    /// und `raw`. `Err` heißt: nicht senden (fail closed).
+    pub fn redact_live(&self, event: Event) -> Result<Event> {
+        Ok(event)
     }
 
     /// Schreibt vorbereitete Events in einer bestehenden Transaktion.

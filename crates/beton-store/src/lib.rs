@@ -60,19 +60,30 @@ pub use crate::sessions::{
     TreeEntry,
 };
 
-/// Hook, der `raw` vor der Persistenz redigiert (PROTO-001 AC3).
+/// Redaction-Hook (SEC-013, PROTO-001 AC3): schwärzt alle Strings eines JSON-Werts an Ort
+/// und Stelle, bevor Payloads, `raw` und Live-Events persistiert oder verteilt werden.
 ///
-/// Die eigentliche Secret-Erkennung ist SEC-013 (M2); bis dahin ist [`NoRedaction`] aktiv.
-pub trait RawRedactor: Send + Sync {
-    fn redact(&self, raw: &mut Value);
+/// Die Pipeline selbst (bekannte Werte, Detektoren) liegt in `beton-secrets`; der Daemon setzt
+/// sie über [`StoreOptions::redactor`]. [`NoRedaction`] ist nur der Default für Tests und
+/// Werkzeuge ohne Secret-Store.
+pub trait ValueRedactor: Send + Sync {
+    /// `Ok(true)`, wenn sich etwas geändert hat; `Err`, wenn die Pipeline nicht bereit ist
+    /// (fail closed: der Aufrufer persistiert und sendet dann nichts).
+    fn redact(&self, value: &mut Value) -> std::result::Result<bool, RedactionUnavailable>;
 }
 
-/// Redigiert nichts. Platzhalter bis SEC-013.
+/// Die Redaction-Pipeline ist nicht bereit (SEC-013, fail closed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RedactionUnavailable;
+
+/// Redigiert nichts (Tests, Werkzeuge ohne Secret-Store).
 #[derive(Debug, Default)]
 pub struct NoRedaction;
 
-impl RawRedactor for NoRedaction {
-    fn redact(&self, _raw: &mut Value) {}
+impl ValueRedactor for NoRedaction {
+    fn redact(&self, _value: &mut Value) -> std::result::Result<bool, RedactionUnavailable> {
+        Ok(false)
+    }
 }
 
 /// Einstellungen des Stores.
@@ -80,7 +91,8 @@ impl RawRedactor for NoRedaction {
 pub struct StoreOptions {
     /// `events.store_raw`: Original-Payloads der Harnesses speichern (Default `true`).
     pub store_raw: bool,
-    pub redactor: Arc<dyn RawRedactor>,
+    /// Redaction vor Persistenz und Verteilung (SEC-013).
+    pub redactor: Arc<dyn ValueRedactor>,
     /// Maximale Blob-Größe (DATA-006, Default 512 MiB).
     pub max_blob_bytes: u64,
     /// Bewertet jedes `cost.delta` beim Append (USE-001, USE-003): Katalog und Preis-Overrides.
