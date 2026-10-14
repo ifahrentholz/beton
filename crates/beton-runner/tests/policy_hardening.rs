@@ -322,3 +322,85 @@ async fn pol_005_foreign_beton_server_is_not_a_system_tool() {
     let decision = g.decide(ask("toolu_7")).await;
     assert_eq!(decision, GateDecision::Allow { updated_args: None });
 }
+
+// ------------------------------------------------------------- M4 (#234), POL-001
+
+fn fatal(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        if e.fatal
+            && let beton_core::event::EventPayload::Error(err) = &e.payload
+        {
+            out.push(err.problem["code"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn pol_001_reload_checks_enforcement_and_validity_like_the_start() {
+    // Eine während der Session hinzugefügte Pflichtregel, die der Harness nicht durchsetzen
+    // kann, bzw. eine nie gültige Datei beenden die Session (wie die Prüfung beim Start).
+    let dir = tempfile::tempdir().unwrap();
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let mut matrix = beton_policy::enforcement::Matrix::full();
+    matrix.tool_call.insert(
+        "file_edit".into(),
+        beton_policy::enforcement::Level::ObserveOnly,
+    );
+    g.set_matrix(matrix);
+    let _ = g.decide(bash("toolu_8", "ls", GateOrigin::PreTool)).await;
+    assert!(fatal(&mut rx).is_empty());
+    write_policy(
+        dir.path(),
+        Scope::Project,
+        "edit",
+        "  - id: no-edit\n    on: tool_call\n    when: 'tool.kind == \"file_edit\"'\n    action: deny\n",
+    );
+    let _ = g.decide(bash("toolu_9", "ls", GateOrigin::PreTool)).await;
+    assert_eq!(fatal(&mut rx), ["policy_enforcement_unavailable"]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let _ = g.decide(bash("toolu_10", "ls", GateOrigin::PreTool)).await;
+    std::fs::create_dir_all(dir.path().join(".beton/policies")).unwrap();
+    std::fs::write(dir.path().join(".beton/policies/kaputt.yaml"), "spec_version: 1\nname: [x\n").unwrap();
+    let _ = g.decide(bash("toolu_11", "ls", GateOrigin::PreTool)).await;
+    assert_eq!(fatal(&mut rx), ["policy_invalid"]);
+}
+
+#[tokio::test]
+async fn pol_001_tools_cannot_write_policy_files() {
+    // Angriff: Der Agent ändert oder löscht `.beton/policies/*.yaml` bzw. die User-Policies.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".beton/policies")).unwrap();
+    std::fs::create_dir_all(dir.path().join("user")).unwrap();
+    let (g, _rx) = gate(dir.path(), "claude");
+    let project = dir.path().join(".beton/policies/x.yaml");
+    let user = dir.path().join("user/defaults.yaml");
+    let write = |call: &str, tool: &str, kind: &str, path: &std::path::Path| GateRequest {
+        call_id: call.into(),
+        tool: tool.into(),
+        kind: kind.into(),
+        args: serde_json::json!({ "file_path": path, "content": "rules: []" }),
+        origin: GateOrigin::PreTool,
+        ..GateRequest::default()
+    };
+    for (i, (tool, kind, path)) in [
+        ("Write", "file_write", &project),
+        ("Edit", "file_edit", &user),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g.decide(write(&format!("w{i}"), tool, kind, path)).await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{tool}: {d:?}");
+    }
+    let d = g
+        .decide(bash("w3", "rm ./.beton/policies/x.yaml", GateOrigin::PreTool))
+        .await;
+    assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
+    // Lesen bleibt erlaubt.
+    let d = g.decide(write("w4", "Read", "file_read", &project)).await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+}

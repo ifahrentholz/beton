@@ -285,8 +285,11 @@ fn pol_001_ac3_broken_change_keeps_old_version_and_reports_file_line_error() {
     assert!(store.effective().invalid().is_empty());
 }
 
+/// M4 (#234): Ein Agent kann eine Policy-Datei löschen. Die letzte gültige Fassung bleibt für
+/// die laufende Session aktiv (fail closed), `policy.set_invalid` meldet die Löschung; erst eine
+/// neue Session liest den Stand ohne die Datei.
 #[test]
-fn pol_001_store_ignores_policy_tests_and_handles_deleted_files() {
+fn pol_001_store_ignores_policy_tests_and_keeps_deleted_files_until_a_new_session() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("guard.yaml"), DENY_SHELL).unwrap();
     std::fs::write(dir.path().join("x.policytest.yaml"), "kein: set").unwrap();
@@ -299,16 +302,65 @@ fn pol_001_store_ignores_policy_tests_and_handles_deleted_files() {
     std::fs::remove_file(dir.path().join("guard.yaml")).unwrap();
     let events = store.refresh();
     assert!(
-        matches!(&events[..], [StoreEvent::Changed(c)] if c.version == "deleted"),
+        matches!(&events[..], [StoreEvent::Invalid(i)] if i.file.ends_with("guard.yaml") && i.error.contains("gelöscht")),
         "{events:?}"
     );
-    assert_eq!(
+    assert!(store.refresh().is_empty(), "nur einmal gemeldet");
+    assert!(matches!(
         store
+            .effective()
+            .evaluate(&shell_call(), &EvalOptions::default())
+            .outcome,
+        Outcome::Deny { .. }
+    ));
+    assert!(store.effective().never_valid().is_empty());
+    // Neue Session: ohne die Datei.
+    let mut fresh = PolicyStore::new();
+    fresh.add_dir(Scope::User, dir.path());
+    fresh.refresh();
+    assert_eq!(
+        fresh
             .effective()
             .evaluate(&shell_call(), &EvalOptions::default())
             .outcome,
         Outcome::Allow
     );
+}
+
+/// M4 (#234): Ein nicht lesbares Policy-Verzeichnis lässt keine Sets still verschwinden: Bekannte
+/// Sets bleiben aktiv; ein Verzeichnis, das nie lesbar war, verhindert den Start (nie gültig).
+#[cfg(unix)]
+#[test]
+fn pol_001_unreadable_policy_dir_fails_closed() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let policies = dir.path().join("policies");
+    std::fs::create_dir_all(&policies).unwrap();
+    std::fs::write(policies.join("guard.yaml"), DENY_SHELL).unwrap();
+    let mut store = PolicyStore::new();
+    store.add_dir(Scope::User, &policies);
+    store.refresh();
+    std::fs::set_permissions(&policies, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = std::fs::read_dir(&policies).is_ok(); // root liest trotzdem
+    let events = store.refresh();
+    let outcome = store
+        .effective()
+        .evaluate(&shell_call(), &EvalOptions::default())
+        .outcome;
+    let mut fresh = PolicyStore::new();
+    fresh.add_dir(Scope::User, &policies);
+    fresh.refresh();
+    let never = fresh.effective().never_valid().to_vec();
+    std::fs::set_permissions(&policies, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if readable {
+        return;
+    }
+    assert!(
+        matches!(&events[..], [StoreEvent::Invalid(i)] if i.error.contains("nicht lesbar")),
+        "{events:?}"
+    );
+    assert!(matches!(outcome, Outcome::Deny { .. }), "Set bleibt aktiv");
+    assert_eq!(never.len(), 1, "Start verweigert");
 }
 
 #[test]
