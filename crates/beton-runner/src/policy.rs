@@ -74,6 +74,9 @@ pub struct GateEvent {
     pub turn: Option<TurnId>,
     /// Original-Zeile der Rückfrage des Vendors (HAR-001 AC3).
     pub raw: Option<RawJson>,
+    /// Die Session muss enden (fail closed): z. B. eine nach dem Start hinzugekommene, nicht
+    /// durchsetzbare Pflichtregel (#234). Das Event ist dann ein `error`.
+    pub fatal: bool,
 }
 
 /// Wertet ein Set aus; austauschbar für Fehlerinjektion (POL-024 AC3).
@@ -224,6 +227,9 @@ struct Inner {
     requested: Mutex<Vec<(String, Option<String>, String)>>,
     /// Reihenfolge im Log: `policy.decision` erst nach dem `tool.call.requested` (POL-025).
     ordered: std::sync::atomic::AtomicBool,
+    /// Reloads werden wie der Start geprüft (#234); vor dem Start nicht (der Runner prüft
+    /// dort selbst).
+    started: std::sync::atomic::AtomicBool,
     seen: tokio::sync::Notify,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
@@ -302,6 +308,21 @@ fn rule_ids(reasons: &[Reason]) -> Vec<String> {
     out
 }
 
+/// Ablehnung durch eine eingebaute Regel des Gates (ohne Engine, kein Fehler).
+fn builtin_deny(phase: Phase, hash: &str, rule_id: &str, message: String) -> Decision {
+    let mut d = engine_deny(phase, hash, message);
+    d.errors.clear();
+    if let Outcome::Deny { reasons } = &mut d.outcome {
+        for r in reasons {
+            r.rule.rule_id = rule_id.to_owned();
+        }
+    }
+    d
+}
+
+/// Tool-Klassen, die Policy-Dateien lesen, aber nicht ändern können (#234).
+const READ_ONLY_KINDS: [&str; 2] = ["file_read", "search"];
+
 /// Ablehnung ohne Auswertung (Fehler, Zeitüberschreitung): fail closed.
 fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
     let rule = RuleRef {
@@ -362,6 +383,7 @@ impl PolicyGate {
                 trusted_servers: Mutex::new(Vec::new()),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
+                started: std::sync::atomic::AtomicBool::new(true),
                 seen: tokio::sync::Notify::new(),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
@@ -498,7 +520,12 @@ impl PolicyGate {
     }
 
     fn emit(&self, payload: EventPayload, turn: Option<TurnId>, raw: Option<RawJson>) {
-        let _ = self.inner.events.send(GateEvent { payload, turn, raw });
+        let _ = self.inner.events.send(GateEvent {
+            payload,
+            turn,
+            raw,
+            fatal: false,
+        });
     }
 
     /// Liest die Policy-Verzeichnisse neu (POL-001, #182) und liefert das effektive Set.
@@ -515,14 +542,89 @@ impl PolicyGate {
                 },
             ]));
         };
-        for e in store.refresh() {
+        let events = store.refresh();
+        let changed = !events.is_empty();
+        for e in events {
             let payload = match e {
                 StoreEvent::Changed(c) => EventPayload::PolicySetChanged(c),
                 StoreEvent::Invalid(i) => EventPayload::PolicySetInvalid(i),
             };
             self.emit(payload, turn, None);
         }
-        store.effective()
+        let set = store.effective();
+        drop(store);
+        if changed && self.inner.started.load(Ordering::SeqCst) {
+            self.recheck(&set, turn);
+        }
+        set
+    }
+
+    /// Nach dem Start bei jeder Änderung dieselbe Prüfung wie vor dem Start (#234): Nie gültige
+    /// Dateien und nicht durchsetzbare Pflichtregeln beenden die Session (fail closed).
+    fn recheck(&self, set: &EffectiveSet, turn: Option<TurnId>) {
+        let (code, detail, rules) = if set.never_valid().is_empty() {
+            let check = self.start_check(set);
+            if check.refused.is_empty() {
+                return;
+            }
+            (
+                "policy_enforcement_unavailable",
+                check
+                    .refused
+                    .iter()
+                    .map(beton_policy::enforcement::Gap::describe)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                check.refused_rules(),
+            )
+        } else {
+            (
+                "policy_invalid",
+                set.never_valid()
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "Policy-Datei {} ist ungültig (Zeile {}): {}",
+                            f.file, f.line, f.error
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                Vec::new(),
+            )
+        };
+        let _ = self.inner.events.send(GateEvent {
+            payload: EventPayload::Error(beton_core::event::ErrorEvent {
+                problem: json!({
+                    "type": format!("urn:beton:problem:{code}"),
+                    "code": code,
+                    "title": "Geänderte Policies sind hier nicht durchsetzbar; Session aus Sicherheitsgründen beendet",
+                    "detail": detail,
+                    "rules": rules,
+                }),
+            }),
+            turn,
+            raw: None,
+            fatal: true,
+        });
+    }
+
+    /// Vor dem Start prüft der Runner selbst (Start verweigert statt Session beendet); bis
+    /// [`PolicyGate::mark_started`] lösen Reloads keine Prüfung aus.
+    pub fn defer_rechecks(&self) {
+        self.inner.started.store(false, Ordering::SeqCst);
+    }
+
+    /// Die Session ist gestartet: ab jetzt prüft jeder Reload wie der Start (#234). Prüft
+    /// sofort einmal, damit eine Änderung zwischen Startprüfung und Start nicht durchrutscht.
+    pub fn mark_started(&self) {
+        self.inner.started.store(true, Ordering::SeqCst);
+        let before = self.inner.store.lock().ok().map(|mut s| s.effective());
+        let set = self.refresh(None);
+        // Hat `refresh` eine Änderung gefunden, hat es schon geprüft.
+        if before.is_some_and(|b| Arc::ptr_eq(&b, &set)) {
+            self.recheck(&set, None);
+        }
     }
 
     /// Prüft die Regeln gegen die Matrix (POL-024); Warnungen gehen sofort ins Log.
@@ -879,6 +981,9 @@ impl PolicyGate {
                 {
                     n.kind.clone_from(&req.kind);
                 }
+                if let Some(path) = self.touches_policy_files(&n) {
+                    return self.policy_files_denied(req, &subject, subject_ref, level, &path);
+                }
                 let args = match &n.args {
                     Value::Object(m) => Some(m.clone().into_iter().collect()),
                     _ => None,
@@ -1001,6 +1106,69 @@ impl PolicyGate {
         } else {
             req.kind.clone()
         }
+    }
+
+    /// Pfad unter einem Policy-Verzeichnis, den ein nicht nur lesender Tool-Call berührt
+    /// (#234): Policies ändert nur der Mensch, nie ein Agent. Symlinks und Groß-/Kleinschreibung
+    /// löst die Pfadauflösung des Dateisystems auf.
+    fn touches_policy_files(&self, n: &beton_policy::normalize::NormalizedTool) -> Option<String> {
+        if READ_ONLY_KINDS.contains(&n.kind.as_str()) {
+            return None;
+        }
+        let resolve = |p: &str| FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned());
+        let dirs: Vec<PathBuf> = self
+            .inner
+            .opts
+            .dirs
+            .iter()
+            .map(|(_, d)| PathBuf::from(resolve(&d.display().to_string())))
+            .collect();
+        n.paths
+            .iter()
+            .find(|p| {
+                let real = PathBuf::from(resolve(p));
+                // Auch das `.beton`-Verzeichnis darüber (`rm -rf .beton`), nicht aber
+                // Arbeitsverzeichnis oder Home.
+                dirs.iter()
+                    .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
+            })
+            .cloned()
+    }
+
+    /// `deny` eines Tool-Calls auf Policy-Dateien samt `policy.decision` (#234).
+    fn policy_files_denied(
+        &self,
+        req: &GateRequest,
+        subject: &Value,
+        subject_ref: Value,
+        level: Level,
+        path: &str,
+    ) -> Verdict {
+        let set = self.refresh(req.turn_id);
+        let reason = format!(
+            "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+        );
+        let decision = builtin_deny(Phase::ToolCall, set.hash(), "policy-files", reason.clone());
+        let event = decision_event(
+            &decision,
+            DecisionMeta {
+                subject_ref,
+                subject_hash: Some(subject_hash(subject)),
+                ..DecisionMeta::new(level)
+            },
+        );
+        self.emit(EventPayload::PolicyDecision(event), req.turn_id, None);
+        let verdict = Verdict {
+            allowed: level == Level::ObserveOnly,
+            human: false,
+            reason: Some(reason),
+            updated_args: None,
+            subject: tool_subject(&req.tool, &req.args),
+        };
+        if let Ok(mut d) = self.inner.decided.lock() {
+            d.insert(req.call_id.clone(), verdict.clone());
+        }
+        verdict
     }
 
     /// Tool-Call ohne Gate-Anfrage des Harness (nur beobachtbar, POL-025 AC1): genau ein

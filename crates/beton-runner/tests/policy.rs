@@ -772,3 +772,32 @@ async fn har_005_tool_call_without_gate_decision_ends_the_session() {
     // Keine Argumente im Klartext.
     assert!(!error.to_string().contains("echo hi"), "{error}");
 }
+
+// ------------------------------------------------------------------ POL-001, #234 (M4)
+
+#[tokio::test]
+async fn pol_001_reload_with_unenforceable_rule_ends_the_session() {
+    // Nach dem Start hinzugefügte Pflichtregel, die der Harness nicht durchsetzen kann: Die
+    // Session endet (wie die Prüfung beim Start, fail closed).
+    let env = Env::start().await;
+    let s = env.scenario(
+        "capabilities: { tool_call_gate: approval_only, approval_kinds: [shell] }\nturns:\n  - emit: [{ message: \"ok\" }]\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    env.project_policy(
+        "edit",
+        "rules:\n  - id: no-edit\n    on: tool_call\n    when: 'tool.kind == \"file_edit\"'\n    action: deny\n",
+    );
+    // Die Eingabe löst den Reload aus; der Runner endet dabei (Antwort 202 oder 503).
+    let _ = env.input(&id, "los").await;
+    let events = env
+        .wait_for(&id, |e| {
+            e["type"] == "error"
+                && e["payload"]["problem"]["code"] == "policy_enforcement_unavailable"
+        })
+        .await;
+    let error = events.iter().find(|e| e["type"] == "error").unwrap();
+    assert_eq!(error["payload"]["problem"]["rules"], json!(["no-edit"]));
+    env.wait_status(&id, "failed").await;
+}

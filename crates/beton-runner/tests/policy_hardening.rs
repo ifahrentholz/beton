@@ -364,7 +364,11 @@ async fn pol_001_reload_checks_enforcement_and_validity_like_the_start() {
     let (g, mut rx) = gate(dir.path(), "claude");
     let _ = g.decide(bash("toolu_10", "ls", GateOrigin::PreTool)).await;
     std::fs::create_dir_all(dir.path().join(".beton/policies")).unwrap();
-    std::fs::write(dir.path().join(".beton/policies/kaputt.yaml"), "spec_version: 1\nname: [x\n").unwrap();
+    std::fs::write(
+        dir.path().join(".beton/policies/kaputt.yaml"),
+        "spec_version: 1\nname: [x\n",
+    )
+    .unwrap();
     let _ = g.decide(bash("toolu_11", "ls", GateOrigin::PreTool)).await;
     assert_eq!(fatal(&mut rx), ["policy_invalid"]);
 }
@@ -397,7 +401,11 @@ async fn pol_001_tools_cannot_write_policy_files() {
         assert!(matches!(d, GateDecision::Deny { .. }), "{tool}: {d:?}");
     }
     let d = g
-        .decide(bash("w3", "rm ./.beton/policies/x.yaml", GateOrigin::PreTool))
+        .decide(bash(
+            "w3",
+            "rm ./.beton/policies/x.yaml",
+            GateOrigin::PreTool,
+        ))
         .await;
     assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
     // Lesen bleibt erlaubt.

@@ -567,6 +567,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         gate_tx,
     )
     .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
+    // Vor dem Start prüft der Runner Policies selbst (Start verweigert, #182, POL-024).
+    gate.defer_rechecks();
     let ctx = AdapterContext {
         gate: Arc::new(gate.clone()),
         launcher: Arc::new(SandboxLauncher::new(sandbox)),
@@ -847,6 +849,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
         }
     }
+    // Ab jetzt prüft jeder Reload der Policies wie der Start (#234).
+    gate.mark_started();
     let capabilities = session
         .capabilities()
         .and_then(|c| serde_json::to_value(c).ok())
@@ -1141,8 +1145,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 biased;
                 ge = gate_rx.recv() => {
                     let Some(first) = ge else { continue };
+                    let mut fatal = first.fatal.then(|| fatal_reason(&first));
                     let mut events = vec![gate_event(&boot, first, &call_events)];
-                    events.extend(drain_gate(&boot, &mut gate_rx, &call_events));
+                    while let Ok(ge) = gate_rx.try_recv() {
+                        if ge.fatal && fatal.is_none() {
+                            fatal = Some(fatal_reason(&ge));
+                        }
+                        events.push(gate_event(&boot, ge, &call_events));
+                    }
                     let mut batch = Vec::with_capacity(events.len() + 1);
                     for e in events {
                         let next = match e.payload() {
@@ -1155,6 +1165,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if let Some(st) = next {
                             tracker.set(&boot, st, &mut batch);
                         }
+                    }
+                    if let Some(why) = fatal {
+                        // Fail closed (#234): Policies nach dem Start nicht durchsetzbar.
+                        end_policy_failure(&boot, &mut lifecycle, &why, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        let _ = session.shutdown(Shutdown::Kill).await;
+                        return Ok(Exit::PolicyViolation);
                     }
                     if !push(&mut ws, &boot, &mut unacked, batch).await {
                         break None;
@@ -1991,6 +2009,27 @@ fn end_integrity_violation(
             }),
         }),
     ));
+    end_policy_failure(boot, lifecycle, "policy_integrity_violation", out);
+}
+
+/// Grund eines `fatal`-Gate-Events: der Problem-Code des `error`.
+fn fatal_reason(ge: &policy::GateEvent) -> String {
+    match &ge.payload {
+        EventPayload::Error(e) => e.problem["code"]
+            .as_str()
+            .unwrap_or("policy_failure")
+            .to_owned(),
+        _ => "policy_failure".into(),
+    }
+}
+
+/// Runner und Session `failed` nach einem Policy-Fehler, der die Session beendet.
+fn end_policy_failure(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    why: &str,
+    out: &mut Vec<Event>,
+) {
     if let Ok(s) = lifecycle.go(RunnerState::Failed, Some(why.to_owned())) {
         out.push(system_event(boot, EventPayload::RunnerStatus(s)));
     }
@@ -1998,7 +2037,7 @@ fn end_integrity_violation(
         boot,
         EventPayload::SessionStatus(SessionStatusChanged {
             status: SessionStatus::Failed,
-            reason: Some("policy_integrity_violation".into()),
+            reason: Some(why.to_owned()),
         }),
     ));
 }

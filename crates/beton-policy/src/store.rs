@@ -7,7 +7,11 @@
 //! - geänderte, gültige Datei → neue Version, `policy.set_changed`
 //! - fehlerhafte Datei → letzte gültige Version bleibt aktiv, `policy.set_invalid` mit Datei,
 //!   Zeile und Fehler (AC3)
-//! - gelöschte Datei → Set entfällt, `policy.set_changed` mit Version `deleted`
+//! - gelöschte Datei → die letzte gültige Version bleibt für die Lebensdauer des Stores (der
+//!   Session) aktiv, `policy.set_invalid` meldet die Löschung (fail closed, #234); erst eine
+//!   neue Session liest den Stand ohne die Datei
+//! - nicht lesbares Verzeichnis (außer „existiert nicht“) → bekannte Sets bleiben aktiv,
+//!   `policy.set_invalid`; war es nie lesbar, zählt es als nie gültige Datei (Start verweigert)
 //!
 //! Der Runner ruft `refresh` vor jeder Auswertung auf (WP-35). Das kostet einen
 //! Verzeichnis-Scan und das Hashen weniger kleiner Dateien und garantiert, dass die nächste
@@ -42,6 +46,8 @@ struct FileEntry {
     invalid: bool,
     /// Letzter Ladefehler (für Dateien ohne gültige Fassung, #182).
     error: Option<PolicySetInvalid>,
+    /// Gelöscht; die letzte gültige Fassung bleibt aktiv (#234).
+    deleted: bool,
 }
 
 /// Policy-Sets aller lokalen Ebenen mit Hot-Reload.
@@ -81,9 +87,39 @@ impl PolicyStore {
     pub fn refresh(&mut self) -> Vec<StoreEvent> {
         let mut events = Vec::new();
         let mut present: Vec<(Scope, PathBuf)> = Vec::new();
+        // Verzeichnisse, die gerade nicht lesbar sind: ihre Dateien gelten nicht als gelöscht.
+        let mut unreadable: Vec<PathBuf> = Vec::new();
         for (scope, dir) in &self.dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue; // Verzeichnis existiert (noch) nicht
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    // Fail closed (#234): nie still verschwinden lassen.
+                    let error = PolicySetInvalid {
+                        file: dir.display().to_string(),
+                        line: 0,
+                        error: format!("Policy-Verzeichnis nicht lesbar: {e}"),
+                    };
+                    let known = self.files.keys().any(|p| p.starts_with(dir));
+                    let entry = self.files.entry(dir.clone()).or_insert(FileEntry {
+                        scope: *scope,
+                        seen: [0; 32],
+                        valid: None,
+                        invalid: false,
+                        error: None,
+                        deleted: false,
+                    });
+                    if !entry.invalid {
+                        events.push(StoreEvent::Invalid(error.clone()));
+                        self.effective = None;
+                    }
+                    entry.invalid = true;
+                    // Nur ohne bekannte Sets zählt es als nie gültig (Start verweigert).
+                    entry.error = (!known).then_some(error);
+                    unreadable.push(dir.clone());
+                    present.push((*scope, dir.clone()));
+                    continue;
+                }
             };
             let mut files: Vec<PathBuf> = entries
                 .filter_map(Result::ok)
@@ -94,27 +130,38 @@ impl PolicyStore {
             present.extend(files.into_iter().map(|p| (*scope, p)));
         }
 
-        // Gelöschte Dateien
+        // Gelöschte Dateien: Die letzte gültige Fassung bleibt aktiv (fail closed, #234).
         let gone: Vec<PathBuf> = self
             .files
             .keys()
             .filter(|p| !present.iter().any(|(_, q)| q == *p))
+            .filter(|p| !unreadable.iter().any(|d| p.starts_with(d)))
             .cloned()
             .collect();
         for path in gone {
-            if let Some(entry) = self.files.remove(&path)
-                && let Some(set) = entry.valid
+            let keep = self.files.get(&path).is_some_and(|e| e.valid.is_some());
+            if !keep {
+                self.files.remove(&path);
+                self.effective = None;
+                continue;
+            }
+            if let Some(entry) = self.files.get_mut(&path)
+                && !entry.deleted
             {
-                events.push(StoreEvent::Changed(PolicySetChanged {
-                    scope: entry.scope.as_str().into(),
-                    set: set.name.clone(),
-                    version: "deleted".into(),
+                entry.deleted = true;
+                entry.seen = [0; 32];
+                events.push(StoreEvent::Invalid(PolicySetInvalid {
+                    file: path.display().to_string(),
+                    line: 0,
+                    error: "Policy-Datei gelöscht; die letzte gültige Fassung bleibt bis zum Ende der Session aktiv".into(),
                 }));
             }
-            self.effective = None;
         }
 
         for (scope, path) in present {
+            if unreadable.contains(&path) {
+                continue;
+            }
             let origin = path.display().to_string();
             let read = read_limited(&path);
             let hash: [u8; 32] = match &read {
@@ -143,9 +190,11 @@ impl PolicyStore {
                 valid: None,
                 invalid: false,
                 error: None,
+                deleted: false,
             });
             entry.seen = hash;
             entry.scope = scope;
+            entry.deleted = false;
             match result {
                 Ok(set) => {
                     events.push(StoreEvent::Changed(PolicySetChanged {
