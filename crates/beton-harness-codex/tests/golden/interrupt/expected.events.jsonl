@@ -15,7 +15,7 @@
 {"has_raw":true,"payload":{"message_id":"<id:4>","text":"\n"},"turn_id":"<id:3>","type":"message.delta"}
 {"has_raw":true,"payload":{"message_id":"<id:4>","text":"7"},"turn_id":"<id:3>","type":"message.delta"}
 {"has_raw":true,"payload":{"message_id":"<id:4>","text":"\n"},"turn_id":"<id:3>","type":"message.delta"}
-{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"300m"},"turn_id":"<id:3>","type":"usage.subscription"}
-{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"10080m"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":0.0,"vendor":"openai","window":"5h"},"turn_id":"<id:3>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":2.0,"vendor":"openai","window":"7d"},"turn_id":"<id:3>","type":"usage.subscription"}
 {"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":0,"cache_write_tokens":0,"currency":"USD","harness":"codex","input_tokens":0,"model":"gpt-5.6-luna","output_tokens":0,"source":"subscription"},"turn_id":"<id:3>","type":"cost.delta"}
 {"has_raw":false,"payload":{"by":"usr_local","turn_id":"<id:3>"},"turn_id":"<id:3>","type":"turn.interrupted"}

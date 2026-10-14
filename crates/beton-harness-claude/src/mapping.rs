@@ -34,6 +34,9 @@ pub struct MapState {
     /// Zuletzt gemeldeter Kontext (`context.usage`).
     pub last_context: Option<u64>,
     pub context_window: Option<u64>,
+    /// Modell der Session laut `system/init`; bei mehreren Modellen in `modelUsage` (etwa
+    /// Sub-Agents mit eigenem Modell) gehört der Kontext-Füllstand zu diesem.
+    pub model: Option<String>,
     /// Welche Permission-Modes die CLI melden darf (HAR-027).
     pub expected_mode: crate::permission::ModeGuard,
 }
@@ -59,7 +62,7 @@ pub fn map_line(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         Some("assistant") => map_assistant(v),
         Some("user") => map_tool_results(v, st),
         Some("result") => map_result(v, st),
-        Some("rate_limit_event") => map_rate_limit(v).into_iter().collect(),
+        Some("rate_limit_event") => map_rate_limit(v),
         _ => vec![unmapped(v)],
     }
 }
@@ -83,6 +86,9 @@ fn map_system(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     match v["subtype"].as_str() {
         Some("init") => {
             st.session_ref = v["session_id"].as_str().map(str::to_owned);
+            if let Some(m) = v["model"].as_str() {
+                st.model = Some(m.to_owned());
+            }
             let names = |key: &str| -> Vec<String> {
                 v[key]
                     .as_array()
@@ -239,15 +245,30 @@ fn map_tool_results(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
 }
 
 /// `cost.delta` aus dem `result` eines Einmal-Aufrufs (SES-010); `purpose` setzt der Aufrufer.
+/// Bei mehreren Modellen zählt die Summe (ein Einmal-Aufruf hat ein Modell).
 pub fn result_cost(v: &Value, auth: AuthSource) -> CostDelta {
     let st = MapState {
         auth_source: Some(auth),
         ..MapState::default()
     };
-    match cost_delta(v, &st, None).0 {
-        EventPayload::CostDelta(c) => c,
-        _ => unreachable!("cost_delta liefert immer cost.delta"),
+    let mut deltas = cost_deltas(v, &st, None)
+        .into_iter()
+        .filter_map(|e| match e {
+            EventPayload::CostDelta(c) => Some(c),
+            _ => None,
+        });
+    let mut first = deltas.next().unwrap_or_default();
+    for c in deltas {
+        first.input_tokens += c.input_tokens;
+        first.output_tokens += c.output_tokens;
+        first.cache_read_tokens += c.cache_read_tokens;
+        first.cache_write_tokens += c.cache_write_tokens;
+        first.cost_micro = match (first.cost_micro, c.cost_micro) {
+            (Some(a), Some(b)) => Some(a + b),
+            (a, b) => a.or(b),
+        };
     }
+    first
 }
 
 /// Modell laut `modelUsage` eines `result`.
@@ -257,54 +278,96 @@ pub fn result_model(v: &Value) -> Option<String> {
         .and_then(|m| m.keys().next().cloned())
 }
 
-fn cost_delta(v: &Value, st: &MapState, purpose: Option<&str>) -> (EventPayload, String) {
-    let usage = &v["usage"];
-    let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
-    let model = v["modelUsage"]
-        .as_object()
-        .and_then(|m| m.keys().next().cloned())
-        .unwrap_or_default();
+/// Modell, zu dem der Kontext-Füllstand gehört: das der Session (`system/init`), sonst das
+/// erste in `modelUsage`.
+fn main_model(v: &Value, st: &MapState) -> String {
+    let usage = v["modelUsage"].as_object();
+    match (&st.model, usage) {
+        (Some(m), Some(map)) if map.contains_key(m) => m.clone(),
+        _ => usage
+            .and_then(|m| m.keys().next().cloned())
+            .unwrap_or_default(),
+    }
+}
+
+/// `cost.delta` je Modell (USE-004 AC1). Mit einem Modell (Regelfall) stammen die Tokens aus
+/// `usage` und die Kosten aus `total_cost_usd` – genau ein Event je Turn (HAR-021 AC1). Nennt
+/// `modelUsage` mehrere Modelle (z. B. Sub-Agents mit eigenem Modell), entsteht je Modell ein
+/// Event mit dessen Tokens und `costUSD`, damit Summen je Modell stimmen (gegen 2.1.296
+/// verifiziert: bei einem Modell stimmen `usage` und `modelUsage` überein).
+fn cost_deltas(v: &Value, st: &MapState, purpose: Option<&str>) -> Vec<EventPayload> {
     let auth = st.auth_source.unwrap_or(AuthSource::VendorCli);
     let subscription = auth == AuthSource::VendorCli;
     // Bei Subscription meldet die CLI nur ein API-Äquivalent; das ist keine Ausgabe (HAR-021 AC2).
-    let cost = EventPayload::CostDelta(CostDelta {
-        harness: "claude".into(),
-        model: model.clone(),
-        input_tokens: tok("input_tokens"),
-        output_tokens: tok("output_tokens"),
-        cache_read_tokens: tok("cache_read_input_tokens"),
-        cache_write_tokens: tok("cache_creation_input_tokens"),
-        cost_micro: if subscription {
-            None
-        } else {
-            v["total_cost_usd"]
-                .as_f64()
-                .map(|usd| (usd * 1_000_000.0).round() as i64)
-        },
-        currency: "USD".into(),
-        source: if subscription {
-            CostSource::Subscription
-        } else {
-            CostSource::Reported
-        },
-        auth_source: auth,
-        purpose: purpose.map(str::to_owned),
-        ..CostDelta::default()
-    });
-    (cost, model)
+    let delta = |model: String, tokens: [u64; 4], usd: Option<f64>| {
+        EventPayload::CostDelta(CostDelta {
+            harness: "claude".into(),
+            model,
+            input_tokens: tokens[0],
+            output_tokens: tokens[1],
+            cache_read_tokens: tokens[2],
+            cache_write_tokens: tokens[3],
+            cost_micro: if subscription {
+                None
+            } else {
+                usd.map(|usd| (usd * 1_000_000.0).round() as i64)
+            },
+            currency: "USD".into(),
+            source: if subscription {
+                CostSource::Subscription
+            } else {
+                CostSource::Reported
+            },
+            auth_source: auth,
+            purpose: purpose.map(str::to_owned),
+            ..CostDelta::default()
+        })
+    };
+    if let Some(models) = v["modelUsage"].as_object()
+        && models.len() > 1
+    {
+        return models
+            .iter()
+            .map(|(model, u)| {
+                let tok = |k: &str| u[k].as_u64().unwrap_or(0);
+                delta(
+                    model.clone(),
+                    [
+                        tok("inputTokens"),
+                        tok("outputTokens"),
+                        tok("cacheReadInputTokens"),
+                        tok("cacheCreationInputTokens"),
+                    ],
+                    u["costUSD"].as_f64(),
+                )
+            })
+            .collect();
+    }
+    let usage = &v["usage"];
+    let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
+    vec![delta(
+        main_model(v, st),
+        [
+            tok("input_tokens"),
+            tok("output_tokens"),
+            tok("cache_read_input_tokens"),
+            tok("cache_creation_input_tokens"),
+        ],
+        v["total_cost_usd"].as_f64(),
+    )]
 }
 
 /// `result` nach `/compact` (HAR-022): `compaction.completed` und der neue Kontext; kein
 /// Turn-Ende. Ohne `post_tokens` gilt die Länge der Zusammenfassung als geschätzter Kontext.
 fn map_compaction_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     st.compacting = false;
-    let (cost, model) = cost_delta(v, st, Some("compaction"));
+    let model = main_model(v, st);
     if let Some(window) = v["modelUsage"][&model]["contextWindow"].as_u64() {
         st.context_window = Some(window);
     }
     let before = st.compact_before.take().or(st.last_context).unwrap_or(0);
     let reported = st.compact_after.take();
-    let mut out = vec![cost];
+    let mut out = cost_deltas(v, st, Some("compaction"));
     if v["is_error"] == true
         || v["subtype"]
             .as_str()
@@ -353,8 +416,8 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     let turn_id = st.turn.take().unwrap_or_default();
     let usage = &v["usage"];
     let tok = |k: &str| usage[k].as_u64().unwrap_or(0);
-    let (cost, model) = cost_delta(v, st, None);
-    let mut out = vec![cost];
+    let model = main_model(v, st);
+    let mut out = cost_deltas(v, st, None);
     if let Some(window) = v["modelUsage"][&model]["contextWindow"].as_u64() {
         let used = tok("input_tokens")
             + tok("cache_read_input_tokens")
@@ -416,19 +479,55 @@ fn map_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     out
 }
 
-fn map_rate_limit(v: &Value) -> Option<EventPayload> {
+/// Name eines Abo-Fensters wie bei Codex (`5h`, `7d`): `five_hour` → `5h`, `seven_day` →
+/// `7d`, `seven_day_opus` → `7d_opus`; Unbekanntes bleibt unverändert.
+pub fn window_name(kind: &str) -> String {
+    for (prefix, short) in [("five_hour", "5h"), ("seven_day", "7d")] {
+        if let Some(rest) = kind.strip_prefix(prefix) {
+            return format!("{short}{rest}");
+        }
+    }
+    kind.to_owned()
+}
+
+/// `rate_limit_event` → je Fenster ein `usage.subscription` (USE-004, HAR-021). Gegen 2.1.296
+/// verifiziert: `unifiedWindows` nennt alle Fenster (`five_hour`, `seven_day`) mit
+/// `utilization` (0–1) und `resetsAt` (Unix-Sekunden), `rateLimitType` nur das gerade
+/// maßgebliche. Ohne `unifiedWindows` gilt das Fenster aus `rateLimitType`.
+fn map_rate_limit(v: &Value) -> Vec<EventPayload> {
     let info = &v["rate_limit_info"];
-    let kind = info["rateLimitType"].as_str()?;
-    let window = &info["unifiedWindows"][kind];
-    let used = window["utilization"].as_f64()?;
-    let resets = window["resetsAt"].as_i64().or(info["resetsAt"].as_i64())?;
-    let resets_at = time::OffsetDateTime::from_unix_timestamp(resets).ok()?;
-    Some(EventPayload::UsageSubscription(UsageSubscription {
-        vendor: "anthropic".into(),
-        window: kind.to_owned(),
-        used_pct: (used * 100.0 * 10.0).round() / 10.0,
-        resets_at: Timestamp::from(resets_at),
-    }))
+    let event = |kind: &str, used: Option<f64>, resets: Option<i64>| {
+        let resets_at = time::OffsetDateTime::from_unix_timestamp(resets?).ok()?;
+        Some(EventPayload::UsageSubscription(UsageSubscription {
+            vendor: "anthropic".into(),
+            window: window_name(kind),
+            used_pct: (used? * 100.0 * 10.0).round() / 10.0,
+            resets_at: Timestamp::from(resets_at),
+        }))
+    };
+    match info["unifiedWindows"].as_object() {
+        Some(windows) if !windows.is_empty() => windows
+            .iter()
+            .filter_map(|(kind, w)| {
+                event(
+                    kind,
+                    w["utilization"].as_f64(),
+                    w["resetsAt"].as_i64().or(info["resetsAt"].as_i64()),
+                )
+            })
+            .collect(),
+        _ => info["rateLimitType"]
+            .as_str()
+            .and_then(|kind| {
+                event(
+                    kind,
+                    info["utilization"].as_f64(),
+                    info["resetsAt"].as_i64(),
+                )
+            })
+            .into_iter()
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -513,14 +612,151 @@ mod tests {
     }
 
     #[test]
-    fn har_021_rate_limit_event_maps_to_usage_subscription() {
+    fn use_004_ac2_rate_limit_event_gives_every_window() {
+        // Form wie von 2.1.296 gemeldet: `rateLimitType` nennt nur das maßgebliche Fenster,
+        // `unifiedWindows` alle.
         let v = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1791051000, "rateLimitType": "five_hour",
-            "unifiedWindows": {"five_hour": {"utilization": 0.19, "resetsAt": 1791051000}}}});
+            "overageStatus": "allowed", "isUsingOverage": false,
+            "unifiedWindows": {"five_hour": {"utilization": 0.19, "resetsAt": 1791051000},
+                               "seven_day": {"utilization": 0.374, "resetsAt": 1791586800}}}});
         let out = map_line(&v, &mut MapState::default());
-        let EventPayload::UsageSubscription(u) = &out[0] else {
+        let windows: Vec<_> = out
+            .iter()
+            .map(|e| match e {
+                EventPayload::UsageSubscription(u) => (
+                    u.vendor.as_str(),
+                    u.window.as_str(),
+                    u.used_pct,
+                    u.resets_at.to_string(),
+                ),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            windows,
+            [
+                (
+                    "anthropic",
+                    "5h",
+                    19.0,
+                    "2026-10-03T18:10:00.000Z".to_owned()
+                ),
+                (
+                    "anthropic",
+                    "7d",
+                    37.4,
+                    "2026-10-09T23:00:00.000Z".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn use_004_rate_limit_event_without_unified_windows_uses_the_type() {
+        let v = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning",
+            "resetsAt": 1791051000, "rateLimitType": "seven_day_opus", "utilization": 0.91}});
+        let out = map_line(&v, &mut MapState::default());
+        let [EventPayload::UsageSubscription(u)] = out.as_slice() else {
+            panic!("{out:?}")
+        };
+        assert_eq!((u.window.as_str(), u.used_pct), ("7d_opus", 91.0));
+        // Ohne Auslastung kein erfundener Wert.
+        let v = json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1791051000}});
+        assert!(map_line(&v, &mut MapState::default()).is_empty());
+    }
+
+    #[test]
+    fn use_004_ac1_result_with_several_models_gives_tokens_per_model() {
+        let result = json!({
+            "type": "result", "subtype": "success", "is_error": false, "stop_reason": "end_turn",
+            "total_cost_usd": 0.05,
+            "usage": {"input_tokens": 12, "output_tokens": 300, "cache_read_input_tokens": 9000, "cache_creation_input_tokens": 500},
+            "modelUsage": {
+                "claude-haiku-5-5": {"inputTokens": 2000, "outputTokens": 40, "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "costUSD": 0.01, "contextWindow": 200000},
+                "claude-opus-5-5": {"inputTokens": 12, "outputTokens": 300, "cacheReadInputTokens": 9000, "cacheCreationInputTokens": 500, "costUSD": 0.04, "contextWindow": 1000000}
+            }
+        });
+        let mut st = MapState {
+            turn: Some(TurnId::new()),
+            model: Some("claude-opus-5-5".into()),
+            ..MapState::default()
+        };
+        let out = map_line(&result, &mut st);
+        assert_eq!(
+            types(&out),
+            [
+                "cost.delta",
+                "cost.delta",
+                "context.usage",
+                "turn.completed"
+            ]
+        );
+        let per_model: Vec<_> = out
+            .iter()
+            .filter_map(|e| match e {
+                EventPayload::CostDelta(c) => Some((
+                    c.model.as_str(),
+                    c.input_tokens,
+                    c.output_tokens,
+                    c.cache_read_tokens,
+                    c.cost_micro,
+                    c.source,
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            per_model,
+            [
+                (
+                    "claude-haiku-5-5",
+                    2000,
+                    40,
+                    0,
+                    None,
+                    CostSource::Subscription
+                ),
+                (
+                    "claude-opus-5-5",
+                    12,
+                    300,
+                    9000,
+                    None,
+                    CostSource::Subscription
+                ),
+            ]
+        );
+        // Kontext gehört zum Modell der Session, nicht zum alphabetisch ersten.
+        let EventPayload::ContextUsage(u) = &out[2] else {
             panic!()
         };
-        assert_eq!((u.window.as_str(), u.used_pct), ("five_hour", 19.0));
+        assert_eq!(u.window_tokens, 1_000_000);
+
+        // Mit API-Key trägt jedes Modell seine gemeldeten Kosten.
+        let mut st = MapState {
+            auth_source: Some(AuthSource::ApiKey),
+            ..MapState::default()
+        };
+        let costs: Vec<_> = map_line(&result, &mut st)
+            .into_iter()
+            .filter_map(|e| match e {
+                EventPayload::CostDelta(c) => c.cost_micro,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(costs, [10_000, 40_000]);
+        assert_eq!(
+            result_cost(&result, AuthSource::ApiKey).cost_micro,
+            Some(50_000)
+        );
+    }
+
+    #[test]
+    fn window_names_follow_codex() {
+        assert_eq!(window_name("five_hour"), "5h");
+        assert_eq!(window_name("seven_day"), "7d");
+        assert_eq!(window_name("seven_day_sonnet"), "7d_sonnet");
+        assert_eq!(window_name("overage"), "overage");
     }
 
     #[test]

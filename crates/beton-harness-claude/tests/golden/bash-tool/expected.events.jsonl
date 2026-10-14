@@ -3,7 +3,8 @@
 {"has_raw":true,"payload":{"message_id":"<id:4>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
 {"has_raw":true,"payload":{"args":{"command":"mkdir beton-ordner","description":"Create directory named beton-ordner"},"call_id":"<id:5>","kind":"shell","source":"harness","tool":"Bash"},"turn_id":"<id:2>","type":"tool.call.requested"}
 {"has_raw":false,"payload":{"call_id":"<id:5>"},"turn_id":"<id:2>","type":"tool.call.started"}
-{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":21.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":21.0,"vendor":"anthropic","window":"5h"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":13.0,"vendor":"anthropic","window":"7d"},"turn_id":"<id:2>","type":"usage.subscription"}
 {"has_raw":true,"payload":{"call_id":"<id:5>","duration_ms":0,"result":"(Bash completed with no output)","status":"ok"},"turn_id":"<id:2>","type":"tool.call.completed"}
 {"has_raw":true,"payload":{"message_id":"<id:6>","redacted":true},"turn_id":"<id:2>","type":"reasoning.completed"}
 {"has_raw":true,"payload":{"message_id":"<id:6>","text":"er"},"turn_id":"<id:2>","type":"message.delta"}
