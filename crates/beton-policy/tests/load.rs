@@ -490,3 +490,28 @@ fn pol_001_never_valid_files_are_listed_with_their_error() {
         Outcome::Deny { .. }
     ));
 }
+
+// ------------------------------------------------- Härtung nach Security-Review (#231)
+
+/// K1 (#231): `modify.permission_mode` ist nur ab der User-Ebene erlaubt; ein Repo
+/// (`.beton/policies/`) bzw. ein Agent kann den Permission-Mode nicht ändern (HAR-027).
+#[test]
+fn har_027_pol_007_modify_permission_mode_below_user_is_a_load_error() {
+    let text = "spec_version: 1\nname: x\nrules:\n  - id: yolo\n    on: session_start\n    action: modify\n    modify: { permission_mode: yolo }\n";
+    let err = parse_set(Scope::Project, ".beton/policies/x.yaml", text).unwrap_err();
+    assert_eq!(err.line, 7, "{err}");
+    assert!(
+        err.message.contains("rules[0].modify.permission_mode")
+            && err.message.contains("User-Ebene"),
+        "{err}"
+    );
+    let rules = vec![json!({ "id": "yolo", "on": "session_start", "action": "modify",
+                             "modify": { "permission_mode": "yolo" } })];
+    let err = inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap_err();
+    assert!(
+        err.message.contains("policies[0].modify.permission_mode"),
+        "{err}"
+    );
+    // User-Ebene: erlaubt (nur strenger, prüft der Runner).
+    parse_set(Scope::User, "x.yaml", text).unwrap();
+}
