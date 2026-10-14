@@ -2048,8 +2048,12 @@ async fn watch_workspace(
         if out.is_closed() {
             return;
         }
-        let pause = workspace::POLL_MIN.max(started.elapsed() * 2);
-        tokio::time::sleep(pause.min(Duration::from_secs(5))).await;
+        // Abstand von Start zu Start: höchstens die Hälfte der Zeit läuft ein Snapshot. Eine
+        // Änderung kurz nach dem Lesen des laufenden Snapshots erscheint so spätestens nach
+        // drei Snapshot-Dauern statt nach vier, wenn die Pause erst nach dem Snapshot begänne
+        // (#116: unter Last ~250 ms je Snapshot).
+        let period = workspace::POLL_MIN.max(started.elapsed() * 2);
+        tokio::time::sleep_until(started + period.min(Duration::from_secs(5))).await;
     }
 }
 
