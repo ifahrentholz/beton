@@ -7,6 +7,8 @@ import type { ForkWorkspace } from './gen/ForkWorkspace.js'
 import type { Info } from './gen/Info.js'
 import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
+import type { InboxItemView } from './gen/InboxItemView.js'
+import type { InboxPage } from './gen/InboxPage.js'
 import type { ResolveApprovalRequest } from './gen/ResolveApprovalRequest.js'
 import type { SessionPage } from './gen/SessionPage.js'
 import type { SubagentTree } from './gen/SubagentTree.js'
@@ -51,6 +53,15 @@ export interface SessionListOptions {
   projectId?: string
 }
 
+/** Filter der Inbox (UX-001). */
+export interface InboxListOptions {
+  status?: 'open' | 'done' | 'info'
+  kind?: 'approval' | 'question' | 'notice'
+  sessionId?: string
+  limit?: number
+  cursor?: string
+}
+
 /** Client der beton-API (API-004). */
 export class BetonClient {
   readonly baseUrl: string
@@ -92,6 +103,24 @@ export class BetonClient {
       const created = await this.request<SessionSummary>('POST', '/v1/sessions', req)
       return new Session(this, created.id)
     },
+  }
+
+  /** Inbox (UX-001): offene Freigaben und Fragen aller Sessions, Hinweise aus `notify`. */
+  readonly inbox = {
+    list: (opts: InboxListOptions = {}): Promise<InboxPage> => {
+      const q = new URLSearchParams()
+      if (opts.status) q.set('status', opts.status)
+      if (opts.kind) q.set('kind', opts.kind)
+      if (opts.sessionId) q.set('session_id', opts.sessionId)
+      if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+      if (opts.cursor) q.set('cursor', opts.cursor)
+      const qs = q.toString()
+      return this.request('GET', `/v1/inbox${qs ? `?${qs}` : ''}`)
+    },
+    get: (id: string): Promise<InboxItemView> => this.request('GET', `/v1/inbox/${enc(id)}`),
+    /** Freigabe oder Frage entscheiden, ohne die Session zu öffnen (UX-001 AC2). */
+    resolve: (id: string, req: ResolveApprovalRequest): Promise<void> =>
+      this.request('POST', `/v1/inbox/${enc(id)}/resolve`, req),
   }
 
   /** Handle für eine vorhandene Session. */
