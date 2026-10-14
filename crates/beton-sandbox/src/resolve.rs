@@ -44,17 +44,57 @@ impl Stage {
     }
 }
 
-/// Endpunkt der Proxy-Instanz dieser Stufe (PRX-001); das Token geht nie ins Profil.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ein Geheimnis im Environment einer Stufe (Proxy-URL mit Token, Broker-Token): `Debug`
+/// zeigt es nie, beim Fallenlassen wird der Speicher überschrieben.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(zeroize::Zeroizing<String>);
+
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Self(zeroize::Zeroizing::new(value))
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
+
+/// Endpunkt der Proxy-Instanz dieser Stufe (PRX-001); das Token geht nie ins Profil, nur als
+/// Proxy-URL ins Environment (PRX-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyEndpoint {
     pub port: u16,
+    /// `http://bt:<token>@127.0.0.1:<port>`; ohne URL setzt die Auflösung keine
+    /// Proxy-Variablen.
+    pub url: Option<Secret>,
+    /// CA-Bundle (beton-CA plus System-Roots); in der Sandbox lesbar.
+    pub ca_bundle: Option<PathBuf>,
 }
 
 impl ProxyEndpoint {
     /// Nur der Port (ohne Proxy-Variablen im Environment).
     pub fn port(port: u16) -> Self {
-        Self { port }
+        Self {
+            port,
+            url: None,
+            ca_bundle: None,
+        }
     }
+}
+
+/// Zugang der Stufe 1 zum Exec-Broker (SBX-002): Socket, Verzeichnis des `bt-exec`-Shims und
+/// Token der Session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecAccess {
+    pub socket: PathBuf,
+    pub shim_dir: PathBuf,
+    pub token: Secret,
 }
 
 /// Kontext der Auflösung.
@@ -77,6 +117,14 @@ pub struct ResolveCtx {
     pub proxy: Option<ProxyEndpoint>,
     /// Environment des Daemons (Quelle für Basis-Variablen und `passthrough`).
     pub host_env: BTreeMap<String, String>,
+    /// Session (Marker `BETON_SESSION_ID`).
+    pub session_id: Option<String>,
+    /// Nur Stufe 1: Zugang zum Exec-Broker.
+    pub exec: Option<ExecAccess>,
+    /// Von beton verwaltete Schreib-Wurzeln, z. B. der Austausch mit Stufe 2.
+    pub shared: Vec<PathBuf>,
+    /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
+    pub programs: Vec<PathBuf>,
 }
 
 impl ResolveCtx {
@@ -91,6 +139,10 @@ impl ResolveCtx {
             adapters: Vec::new(),
             proxy: None,
             host_env: BTreeMap::new(),
+            session_id: None,
+            exec: None,
+            shared: Vec::new(),
+            programs: Vec::new(),
         }
     }
 }
@@ -153,6 +205,8 @@ pub struct ResolvedPolicy {
     pub git: Option<GitProtection>,
     /// Mach-Services bzw. Secret Service des Keychains (nur Stufe 1 mit `keychain: true`).
     pub keychain: bool,
+    /// Unix-Sockets, mit denen sich die Stufe verbinden darf (Stufe 1: Exec-Broker).
+    pub unix_sockets: Vec<PathBuf>,
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
@@ -188,6 +242,7 @@ impl ResolvedPolicy {
             masks: Vec::new(),
             git: None,
             keychain: false,
+            unix_sockets: Vec::new(),
             env: BTreeMap::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
@@ -579,7 +634,7 @@ pub fn resolve(
     env.retain(|k, _| !env_denied(k));
 
     // Netz: nur über den Proxy, ohne Proxy gar nicht.
-    let net = match (spec.allow_network.unwrap_or(true), ctx.proxy) {
+    let net = match (spec.allow_network.unwrap_or(true), ctx.proxy.as_ref()) {
         (true, Some(p)) => NetMode::ProxyOnly { port: p.port },
         (true, None) => {
             notes.push("allow_network: kein Proxy angebunden, daher kein Netz".into());
@@ -604,6 +659,7 @@ pub fn resolve(
         masks,
         git,
         keychain,
+        unix_sockets: Vec::new(),
         env,
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),

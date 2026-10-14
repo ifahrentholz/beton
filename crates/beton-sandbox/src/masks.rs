@@ -40,6 +40,11 @@ pub struct HarnessGrants {
     pub state_paths: Vec<String>,
     /// Mach-Services des Keychains (macOS) bzw. Secret Service (Linux).
     pub keychain: bool,
+    /// Präfixe der Environment-Variablen des Harness (z. B. `CLAUDE`, `ANTHROPIC_`), die
+    /// Stufe 1 aus dem Daemon übernimmt; Stufe 2 nie.
+    pub env_families: Vec<String>,
+    /// Vendor-Hosts für den Passthrough der Stufe 1 (PRX-005).
+    pub passthrough: Vec<String>,
 }
 
 /// Bekannte Vendor-CLIs. *(Annahme, mit SBX-002 pro Adapter zu verifizieren und in die
@@ -51,12 +56,14 @@ pub fn builtin_harness_grants() -> Vec<HarnessGrants> {
             credential_paths: vec!["~/.claude/.credentials.json".into()],
             state_paths: vec!["~/.claude".into(), "~/.claude.json".into()],
             keychain: true,
+            ..HarnessGrants::default()
         },
         HarnessGrants {
             harness: "codex".into(),
             credential_paths: vec!["~/.codex/auth.json".into()],
             state_paths: vec!["~/.codex".into()],
             keychain: false,
+            ..HarnessGrants::default()
         },
     ]
 }

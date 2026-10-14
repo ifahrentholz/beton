@@ -45,7 +45,7 @@ pub use none::NoneProvider;
 pub use provider::{ProbeReport, ProviderId, SandboxProvider};
 pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
 pub use resolve::{
-    Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Stage, check_caps,
-    mark_unenforced_limits, resolve,
+    ExecAccess, Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Secret, Stage,
+    check_caps, mark_unenforced_limits, resolve,
 };
 pub use spec::{BackendChoice, HarnessSandboxConfig, Limits, Preset, SandboxSpec, WorkspaceAccess};
