@@ -330,6 +330,7 @@ function UsageOverviewView({ state }: { state: string }) {
   const high = state === 'quota-high'
   const loading = state === 'loading'
   const failed = state === 'error'
+  const expired = state === 'window-expired'
   const [dim, setDim] = useState<Dim>(team ? 'user' : 'session')
   const [stack, setStack] = useState<'tokens' | 'cost'>('tokens')
   const [period, setPeriod] = useState(state === 'custom-range' ? 'custom' : '14d')
@@ -467,10 +468,14 @@ function UsageOverviewView({ state }: { state: string }) {
                       <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">heute 0 Tokens</div>
                       {equivalent && <Equivalent usd={0} />}
                     </div>
-                    <div>
-                      <QuotaBar label="5-Stunden-Fenster" pct={12} reset="setzt in 4 Std. 2 Min. zurück (18:07)" />
-                      <QuotaBar label="Wochenlimit" pct={23} reset="setzt Do. 11:30 zurück" />
-                    </div>
+                    {expired ? (
+                      <div className="self-center text-[12px] text-muted-foreground">Kontingent zurückgesetzt – der nächste Turn meldet den neuen Stand. 4,2 Mio. Tokens in 14 Tagen.</div>
+                    ) : (
+                      <div>
+                        <QuotaBar label="5-Stunden-Fenster" pct={12} reset="setzt in 4 Std. 2 Min. zurück (18:07)" />
+                        <QuotaBar label="Wochenlimit" pct={23} reset="setzt Do. 11:30 zurück" />
+                      </div>
+                    )}
                   </div>
                   <div className="grid grid-cols-[230px_1fr] items-center gap-4 px-4 py-3">
                     <div>
@@ -638,32 +643,43 @@ function UsagePricing({ state }: { state: string }) {
                   </tr>
                 </thead>
                 <tbody className="type-narrow">
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">1</td>
-                    <td className="font-mono text-[12px]">litellm-intern / llama-3.3-70b*</td>
-                    <td className="px-2 text-right tabular-nums">0,40 $</td>
-                    <td className="px-2 text-right tabular-nums">0,80 $</td>
-                    <td className="px-2 text-right tabular-nums">0,04 $ / 0,50 $</td>
-                    <td className="px-2 text-right tabular-nums">131 k</td>
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">2</td>
-                    <td className="font-mono text-[12px]">ollama-local / *</td>
-                    <td colSpan={3} className="px-2 text-right text-[12px] text-muted-foreground">
-                      kostenlos
-                    </td>
-                    <td className="px-2 text-right text-muted-foreground">aus Modell</td>
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">3</td>
-                    <td className="font-mono text-[12px]">openrouter / *</td>
-                    <td className="px-2 text-right tabular-nums">2,00 $</td>
-                    <td className="px-2 text-right tabular-nums">6,00 $</td>
-                    <td className="px-2 text-right text-muted-foreground tabular-nums" title="Fehlende Cache-Preise: 0,1 × bzw. 1,25 × Eingabe">
-                      0,20 $ / 2,50 $ <span className="text-[10px]">geschätzt</span>
-                    </td>
-                    <td className="px-2 text-right text-muted-foreground">—</td>
-                  </tr>
+                  {state === 'no-overrides' ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-3 py-3 font-sans text-[12px] text-muted-foreground">
+                        Noch keine eigenen Preise. Sie stehen in <span className="font-mono">~/.beton/config.yaml</span> unter{' '}
+                        <span className="font-mono">pricing.overrides</span>; der erste Treffer gewinnt.
+                      </td>
+                    </tr>
+                  ) : (
+                    <>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">1</td>
+                        <td className="font-mono text-[12px]">litellm-intern / llama-3.3-70b*</td>
+                        <td className="px-2 text-right tabular-nums">0,40 $</td>
+                        <td className="px-2 text-right tabular-nums">0,80 $</td>
+                        <td className="px-2 text-right tabular-nums">0,04 $ / 0,50 $</td>
+                        <td className="px-2 text-right tabular-nums">131 k</td>
+                      </tr>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">2</td>
+                        <td className="font-mono text-[12px]">ollama-local / *</td>
+                        <td colSpan={3} className="px-2 text-right text-[12px] text-muted-foreground">
+                          kostenlos
+                        </td>
+                        <td className="px-2 text-right text-muted-foreground">aus Modell</td>
+                      </tr>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">3</td>
+                        <td className="font-mono text-[12px]">openrouter / *</td>
+                        <td className="px-2 text-right tabular-nums">2,00 $</td>
+                        <td className="px-2 text-right tabular-nums">6,00 $</td>
+                        <td className="px-2 text-right text-muted-foreground tabular-nums" title="Fehlende Cache-Preise: 0,1 × bzw. 1,25 × Eingabe">
+                          0,20 $ / 2,50 $ <span className="text-[10px]">geschätzt</span>
+                        </td>
+                        <td className="px-2 text-right text-muted-foreground">—</td>
+                      </tr>
+                    </>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -760,13 +776,15 @@ const CTX: Record<string, { used: number; window: number | null }> = {
   'auto-compacted': { used: 38_500, window: 200_000 },
   'harness-compacted': { used: 41_000, window: 200_000 },
   'compact-failed': { used: 186_400, window: 200_000 },
+  'no-context': { used: 0, window: null },
 }
 
 /** Warum „Kompaktieren“ gerade nicht geht (USE-009 AC3; Tooltip und kurzer sichtbarer Hinweis). */
-const COMPACT_BLOCKED: Record<string, { title: string; hint: string }> = {
+const COMPACT_BLOCKED: Record<string, { title: string; hint?: string }> = {
   unsupported: { title: 'Ollama (Direkt-API) kann nicht kompaktieren. Starte bei Bedarf eine neue Session.', hint: 'nicht verfügbar für diesen Harness' },
   'turn-running': { title: 'Kompaktieren geht erst nach dem laufenden Turn', hint: 'erst nach dem Turn' },
   stopped: { title: 'Session läuft nicht – erst fortsetzen (Nachricht senden)', hint: 'Session läuft nicht' },
+  'no-context': { title: 'Noch nichts zu kompaktieren' },
 }
 
 /** Erklärzeile unter jedem abgeschlossenen Compaction-Ereignis. */
@@ -811,6 +829,7 @@ function UsageContext({ state }: { state: string }) {
   const harness: HarnessId = unsupported ? 'ollama' : 'claude'
   const running = state === 'compacting' || state === 'turn-running'
   const blocked = COMPACT_BLOCKED[state]
+  const fresh = state === 'no-context'
   return (
     <AppLayout activeSession={unsupported ? 'ses_6h2f' : 'ses_7f3k'}>
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
@@ -820,14 +839,20 @@ function UsageContext({ state }: { state: string }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">
-          <UserMessage>Jetzt bitte auch die Register- und Passwort-Reset-Route absichern, gleiche Regeln.</UserMessage>
-          <ToolCall kind="read" name="Lesen" target="src/routes/register.ts" duration="0,1 s" />
-          <ToolCall kind="read" name="Lesen" target="src/routes/password-reset.ts" duration="0,1 s" />
-          <ToolCall kind="edit" name="Bearbeiten" target="src/routes/register.ts" duration="0,2 s" />
-          <AgentMessage harness={harness}>
-            <p>Beide Routen nutzen jetzt dieselbe Middleware. Die Tests für Register und Reset laufen grün.</p>
-          </AgentMessage>
-          <TurnFooter duration="48 s" tokens="21.900" cost="Subscription" />
+          {fresh ? (
+            <SystemNote>Session gestartet · noch kein Turn</SystemNote>
+          ) : (
+            <>
+              <UserMessage>Jetzt bitte auch die Register- und Passwort-Reset-Route absichern, gleiche Regeln.</UserMessage>
+              <ToolCall kind="read" name="Lesen" target="src/routes/register.ts" duration="0,1 s" />
+              <ToolCall kind="read" name="Lesen" target="src/routes/password-reset.ts" duration="0,1 s" />
+              <ToolCall kind="edit" name="Bearbeiten" target="src/routes/register.ts" duration="0,2 s" />
+              <AgentMessage harness={harness}>
+                <p>Beide Routen nutzen jetzt dieselbe Middleware. Die Tests für Register und Reset laufen grün.</p>
+              </AgentMessage>
+              <TurnFooter duration="48 s" tokens="21.900" cost="Subscription" />
+            </>
+          )}
 
           {state === 'turn-running' && (
             <>
@@ -897,12 +922,20 @@ function UsageContext({ state }: { state: string }) {
           </F>
         )}
         <div className="flex items-center gap-3 border-t border-border px-4 py-1.5">
-          <F id="USE-008" as="span" badge="top-left">
-            <ContextRing used={ctx.used} window={ctx.window} />
-          </F>
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            {ctx.window ? `${ctx.used.toLocaleString('de-DE')} von ${ctx.window.toLocaleString('de-DE')} Tokens` : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
-          </span>
+          {fresh ? (
+            <F id="USE-008" as="span" badge="top-left" className="text-[12px] text-muted-foreground">
+              Kontext: noch kein Turn
+            </F>
+          ) : (
+            <>
+              <F id="USE-008" as="span" badge="top-left">
+                <ContextRing used={ctx.used} window={ctx.window} />
+              </F>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {ctx.window ? `${ctx.used.toLocaleString('de-DE')} von ${ctx.window.toLocaleString('de-DE')} Tokens` : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
+              </span>
+            </>
+          )}
           <F id="USE-009" as="span" className="ml-auto flex items-center gap-1" badge="top-right">
             <button
               disabled={!!blocked || state === 'compacting'}
@@ -914,7 +947,7 @@ function UsageContext({ state }: { state: string }) {
             >
               <Minimize2 className="size-3.5" /> {state === 'compacting' ? 'Kompaktiert …' : 'Kompaktieren'}
             </button>
-            {blocked && <span className="text-[11px] text-muted-foreground">{blocked.hint}</span>}
+            {blocked?.hint && <span className="text-[11px] text-muted-foreground">{blocked.hint}</span>}
             <button aria-label="Automatisches Kompaktieren einstellen" className={cn('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent', state === 'auto' && 'bg-accent text-foreground')}>
               <Settings2 className="size-3.5" />
             </button>
@@ -1019,6 +1052,7 @@ export const group: ScreenGroup = {
         { id: 'error', title: 'Daemon nicht erreichbar' },
         { id: 'custom-range', title: 'Eigener Zeitraum' },
         { id: 'equivalent', title: 'API-Äquivalent eingeblendet' },
+        { id: 'window-expired', title: 'Abo-Fenster zurückgesetzt' },
       ],
       component: UsageOverview,
     },
@@ -1031,6 +1065,7 @@ export const group: ScreenGroup = {
         { id: 'default', title: 'Übersicht' },
         { id: 'unpriced', title: 'Turns ohne Preis' },
         { id: 'explain', title: 'Herleitung' },
+        { id: 'no-overrides', title: 'Keine eigenen Preise' },
       ],
       component: UsagePricing,
     },
@@ -1054,6 +1089,7 @@ export const group: ScreenGroup = {
         { id: 'auto-compacted', title: 'Automatisch kompaktiert (beton)' },
         { id: 'harness-compacted', title: 'Vom Harness kompaktiert' },
         { id: 'compact-failed', title: 'Kompaktieren fehlgeschlagen' },
+        { id: 'no-context', title: 'Vor dem ersten Turn' },
       ],
       component: UsageContext,
     },
