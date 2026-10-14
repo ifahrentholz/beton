@@ -10,6 +10,7 @@
 //!   und `user.daily_cost_usd`
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
 //! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
+//! - Shadow-Treffer je Tag und Regel (`policy_shadow_daily`, POL-027 AC4)
 //!
 //! Die Inbox (UX-001) projiziert `crate::inbox`; Kommentare (COL-005, COL-009) kommen mit ihren Features dazu.
 
@@ -271,6 +272,10 @@ pub(crate) async fn apply(
             .execute(&mut *conn)
             .await?;
         }
+        // Shadow-Treffer je Tag und Regel (POL-027 AC4).
+        EventPayload::PolicyDecision(d) => {
+            crate::policy::project_decision(conn, org, session, seq, ts, d).await?;
+        }
         _ => {}
     }
     crate::inbox::index_event(conn, org, session, seq, ts, payload).await?;
@@ -326,6 +331,7 @@ impl Store {
             "DELETE FROM inbox_items WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM policy_shadow_daily WHERE org_id = ? AND session_id = ?",
         ] {
             sqlx::query(sql)
                 .bind(org.to_string())
@@ -495,6 +501,8 @@ impl Store {
             "SELECT * FROM inbox_items WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
             "SELECT * FROM usage_records WHERE org_id = ? ORDER BY session_id, seq",
+            "SELECT * FROM policy_shadow_daily WHERE org_id = ? \
+             ORDER BY session_id, day, scope, set_name, rule_id, verdict",
             "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \
              ORDER BY session_id, doc",
         ] {

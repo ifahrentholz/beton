@@ -934,6 +934,8 @@ pub(crate) async fn seal_imported(
          AND status = 'open'",
         "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
         "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+        // Shadow-Treffer gelten den Policies dieses Rechners, nicht denen der Quelle.
+        "DELETE FROM policy_shadow_daily WHERE org_id = ? AND session_id = ?",
     ] {
         sqlx::query(sql)
             .bind(&org)
