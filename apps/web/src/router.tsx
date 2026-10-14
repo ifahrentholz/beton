@@ -2,6 +2,7 @@ import { createRootRoute, createRoute, createRouter, Outlet, useParams } from '@
 import { Menu } from 'lucide-react'
 import { AppLayout } from '@/components/app-layout'
 import { InboxView } from '@/components/inbox'
+import { PolicyShadowView } from '@/components/policy-shadow'
 import { useLayout } from '@/components/layout-state'
 import { SessionView } from '@/components/session-view'
 import { validateWorkspaceSearch } from '@/lib/workspace'
@@ -71,7 +72,10 @@ const sessionRoute = createRoute({
 // Inbox (UX-001).
 const inboxRoute = createRoute({ getParentRoute: () => rootRoute, path: '/inbox', component: InboxView })
 
-export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute, inboxRoute]) })
+// Shadow-Modus der Policies (POL-027 AC4).
+const shadowRoute = createRoute({ getParentRoute: () => rootRoute, path: '/policies/shadow', component: PolicyShadowView })
+
+export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute, inboxRoute, shadowRoute]) })
 
 declare module '@tanstack/react-router' {
   interface Register {

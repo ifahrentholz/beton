@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Inbox, MessagesSquare } from 'lucide-react'
+import { Inbox, MessagesSquare, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSessions } from '@/store/sessions'
 import { useInboxCount } from './inbox'
@@ -19,6 +19,7 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
   const [newOpen, setNewOpen] = useState(false)
   const path = useRouterState({ select: (s) => s.location.pathname })
   const inbox = path.startsWith('/inbox')
+  const policies = path.startsWith('/policies')
   const count = useInboxCount()
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background text-foreground">
@@ -27,8 +28,8 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
           to="/"
           title="Sessions"
           aria-label="Sessions"
-          aria-current={!inbox ? 'page' : undefined}
-          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && 'bg-accent text-foreground')}
+          aria-current={!inbox && !policies ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && !policies && 'bg-accent text-foreground')}
         >
           <MessagesSquare className="size-[18px]" />
         </Link>
@@ -46,6 +47,16 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
               {count}
             </span>
           )}
+        </Link>
+        <Link
+          to="/policies/shadow"
+          title="Policies: Shadow-Modus"
+          aria-label="Policies: Shadow-Modus"
+          aria-current={policies ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', policies && 'bg-accent text-foreground')}
+          data-testid="nav-policies"
+        >
+          <ShieldCheck className="size-[18px]" />
         </Link>
         <div className="mt-auto flex flex-col items-center gap-2 pb-1">
           <span
