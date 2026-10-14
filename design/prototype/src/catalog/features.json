@@ -44,7 +44,7 @@
   "anchor": "har-003--harness-registry-binary-auflösung--versionsprüfung",
   "summary": "Eingebaute Adapter registrieren sich statisch; Out-of-Process-Harness-Plugins (PLG-002, ab M5, siehe 10-runners-extensibility.md) über denselben Katalog. Das zu startende Binary wird deterministisch aufgelöst, die Version geprüft und das Ergebnis gecacht.",
   "acs": [
-   "Given `BETON_CLAUDE_PATH` und `harnesses.claude.command` sind gesetzt, Then wird der Env-Pfad verwendet; ein Test deckt alle vier Präzedenzstufen ab.",
+   "Given `BETON_CLAUDE_PATH` und `harnesses.claude.command` sind gesetzt, Then wird der Env-Pfad verwendet; ein Test deckt alle drei Präzedenzstufen ab und zeigt, dass ein `command` der Projekt-Config nie gilt.",
    "Hängt `<bin> --version` länger als 5 s, wird der Harness als `probe_failed` markiert, ohne den Daemon zu blockieren.",
    "`beton doctor` listet pro Harness Pfad, Version, Kompatibilität und Auth-Status."
   ]
@@ -127,7 +127,7 @@
   "chapter": "01-harnesses.md",
   "chapterTitle": "01 — Harnesses",
   "anchor": "har-008--acp-agent-registrierung--presets",
-  "summary": "ACP-Agents werden in der User- oder Projekt-Config registriert (interaktiv über `beton setup acp add` oder per Datei). beton liefert Presets für verbreitete Agents mit, die nur aktiv werden, wenn das Binary gefunden wird.",
+  "summary": "ACP-Agents werden in der User-Config registriert (interaktiv über `beton setup acp add` oder per Datei); die Projekt-Config darf keine ACP-Agents setzen, weil ein Repo sonst wählt, was in Stufe 1 läuft (SBX-002, Security-Review #228). beton liefert Presets für verbreitete Agents mit, die nur aktiv werden, wenn das Binary gefunden wird.",
   "acs": [
    "`beton setup acp add mein-agent --command ./agent --arg acp` schreibt einen validen Eintrag in `~/.beton/config.yaml`; danach erscheint `acp:mein-agent` im Katalog.",
    "Ein Preset, dessen Binary nicht im `PATH` liegt, erscheint im Katalog als `installed: false` und ist nicht startbar.",

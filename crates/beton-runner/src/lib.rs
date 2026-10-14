@@ -268,10 +268,9 @@ fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter
     let project = layers.project.entries.get("claude");
     beton_harness_claude::ClaudeAdapter {
         auth: layers.user.auth("claude").source(),
-        isolated: project
-            .and_then(|e| e.isolated)
-            .or_else(|| user.and_then(|e| e.isolated))
-            .unwrap_or(false),
+        // Die Projektebene darf nur verschärfen (SBX-002, HAR-004).
+        isolated: user.and_then(|e| e.isolated).unwrap_or(false)
+            || project.and_then(|e| e.isolated) == Some(true),
         ..beton_harness_claude::ClaudeAdapter::default()
     }
 }

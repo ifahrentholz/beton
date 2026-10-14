@@ -125,9 +125,45 @@ impl HarnessesConfig {
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_norway::from_str::<File>(&text)
+        let cfg = serde_norway::from_str::<File>(&text)
             .map(|f| f.harnesses)
-            .map_err(|e| format!("{}: {e}", path.display()))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        cfg.check_project()
+            .map_err(|(key, message)| format!("{}: {key}: {message}", path.display()))?;
+        Ok(cfg)
+    }
+
+    /// Prüft eine Projektebene (SBX-002, #200): Die Projektdatei ist Repo-Inhalt, den auch
+    /// Harness und Tools in der Sandbox schreiben können. Sie darf Harnesses nur verschärfen
+    /// (`isolated: true`, `mcp_bridge`, `default`) und nie wählen, was in Stufe 1 läuft oder
+    /// dorthin gelangt: kein `command`, keine `extra_args`, kein `env_passthrough`, kein
+    /// `isolated: false`, keine ACP-Agents; `auth` nur vom Benutzer (HAR-015). Fehler:
+    /// (Schlüssel, Grund).
+    pub fn check_project(&self) -> Result<(), (String, String)> {
+        const WHY: &str = "nur in der User-Konfiguration erlaubt: die Projektdatei darf die \
+                           Isolation nur verschärfen (SBX-002)";
+        if !self.acp.is_empty() {
+            return Err(("harnesses.acp".into(), WHY.into()));
+        }
+        for (id, e) in &self.entries {
+            let key = |field: &str| format!("harnesses.{id}.{field}");
+            if e.auth.is_some() {
+                return Err((
+                    key("auth"),
+                    "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
+                ));
+            }
+            let loosening = [
+                ("command", e.command.is_some()),
+                ("extra_args", !e.extra_args.is_empty()),
+                ("env_passthrough", !e.env_passthrough.is_empty()),
+                ("isolated", e.isolated == Some(false)),
+            ];
+            if let Some((field, _)) = loosening.into_iter().find(|(_, set)| *set) {
+                return Err((key(field), WHY.into()));
+            }
+        }
+        Ok(())
     }
 
     /// Auth-Herkunft eines Harness; Default `subscription` (ADR-0034).
@@ -165,6 +201,8 @@ pub struct HarnessLayers {
 #[serde(rename_all = "snake_case")]
 pub enum BinarySource {
     Env,
+    /// Nicht mehr vergeben: Die Projekt-Config wählt kein Binary (SBX-002); bleibt für ältere
+    /// Events und die API erhalten.
     ProjectConfig,
     UserConfig,
     Path,
@@ -177,8 +215,8 @@ pub struct ResolvedBinary {
     pub source: BinarySource,
 }
 
-/// Löst das Binary eines Harness auf: `BETON_<NAME>_PATH` → Projekt-Config → User-Config →
-/// `PATH` (mit `default_command`). Ein Env-Wert, der keine existierende Datei ist, wird an
+/// Löst das Binary eines Harness auf: `BETON_<NAME>_PATH` → User-Config → `PATH` (mit
+/// `default_command`); die Projekt-Config wählt kein Binary (SBX-002). Ein Env-Wert, der keine existierende Datei ist, wird an
 /// Leerzeichen in Programm und Argumente geteilt (z. B. `beton-fake-cli --protocol …`).
 pub fn resolve_binary(
     id: &HarnessId,
@@ -197,19 +235,15 @@ pub fn resolve_binary(
             source: BinarySource::Env,
         });
     }
-    for (config, source) in [
-        (&env.project, BinarySource::ProjectConfig),
-        (&env.user, BinarySource::UserConfig),
-    ] {
-        if let Some(entry) = config.entries.get(id.as_str())
-            && let Some(command) = &entry.command
-        {
-            return Some(ResolvedBinary {
-                program: find_program(command, env)?,
-                args: entry.extra_args.clone(),
-                source,
-            });
-        }
+    // Nie aus der Projektebene (SBX-002): Das Repo wählt nicht, was in Stufe 1 läuft.
+    if let Some(entry) = env.user.entries.get(id.as_str())
+        && let Some(command) = &entry.command
+    {
+        return Some(ResolvedBinary {
+            program: find_program(command, env)?,
+            args: entry.extra_args.clone(),
+            source: BinarySource::UserConfig,
+        });
     }
     Some(ResolvedBinary {
         program: find_program(default_command, env)?,

@@ -562,14 +562,10 @@ fn check_project_layer(layer: &Value) -> Result<(), (String, String)> {
             ));
         }
     }
-    if let Some(harnesses) = map.get("harnesses").and_then(Value::as_object) {
-        for (id, entry) in harnesses {
-            if entry.get("auth").is_some() {
-                return Err((
-                    format!("harnesses.{id}.auth"),
-                    "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
-                ));
-            }
+    if let Some(harnesses) = map.get("harnesses") {
+        // Typfehler meldet die übliche Prüfung; hier zählt nur, was das Projekt setzen darf.
+        if let Ok(cfg) = serde_json::from_value::<HarnessesConfig>(harnesses.clone()) {
+            cfg.check_project()?;
         }
     }
     Ok(())
@@ -900,7 +896,7 @@ mod tests {
             .set(Scope::User, "server.listen", "[\"127.0.0.1:7421\"]")
             .unwrap();
         layers
-            .set(Scope::Project, "harnesses.claude.command", "./claude")
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
             .unwrap();
         let again = f.load(&[]).unwrap();
         assert_eq!(
@@ -913,8 +909,8 @@ mod tests {
         );
         assert!(f.project.join(".beton/config.yaml").is_file());
         assert_eq!(
-            again.get("harnesses.claude.command", Some(Scope::Project)),
-            Some(Value::String("./claude".into()))
+            again.get("harnesses.claude.isolated", Some(Scope::Project)),
+            Some(Value::Bool(true))
         );
         let mut layers = again;
         assert!(layers.unset(Scope::User, "events.store_raw").unwrap());
