@@ -226,6 +226,9 @@ impl RealProcess {
     }
 }
 
+/// Wie lange `kill` nach einem abgelehnten Signal auf das Ende eines endenden Prozesses wartet.
+const KILL_SETTLE: Duration = Duration::from_secs(1);
+
 #[derive(Debug, Clone, Copy)]
 enum Signal {
     Term,
@@ -284,12 +287,12 @@ impl ProcessHandle for RealProcess {
             return Ok(exit.clone());
         }
         if let Err(e) = self.child.start_kill() {
-            // Schon beendet, aber noch nicht abgeholt (z. B. nach dem Schließen von stdin):
-            // macOS meldet für eine Prozessgruppe nur aus Zombies EPERM. Dann den Status
-            // abholen; läuft der Prozess noch, bleibt es ein Fehler.
-            return match self.child.try_wait()? {
-                Some(status) => Ok(self.finish(status).await),
-                None => Err(e),
+            // Schon beendet bzw. gerade beim Beenden (z. B. nach dem Schließen von stdin): macOS
+            // meldet für eine Prozessgruppe nur aus Zombies oder endenden Prozessen EPERM. Dann
+            // kurz auf den Status warten; läuft der Prozess danach noch, bleibt es ein Fehler.
+            return match tokio::time::timeout(KILL_SETTLE, self.child.wait()).await {
+                Ok(status) => Ok(self.finish(status?).await),
+                Err(_) => Err(e),
             };
         }
         let status = self.child.wait().await?;
