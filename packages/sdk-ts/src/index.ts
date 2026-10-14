@@ -10,6 +10,7 @@ export {
   type Forked,
   type InboxListOptions,
   type SessionListOptions,
+  type UsageOptions,
 } from './client.js'
 export { BetonError, type Problem } from './errors.js'
 export { Backoff, BACKOFF_BASE_MS, BACKOFF_MAX_MS, SHUTDOWN_JITTER_MS, shutdownDelay } from './backoff.js'
