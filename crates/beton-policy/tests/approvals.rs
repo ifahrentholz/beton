@@ -223,7 +223,10 @@ fn pol_010_ac2_grant_allows_same_command_only() {
     let sets = [s];
     let reasons = ask_reasons(&eval(&sets, &shell("git push origin feature/x")));
     let fp = reasons[0].fingerprint.clone().expect("Fingerprint");
-    assert_eq!(fp, "shell:git push origin feature/x");
+    assert_eq!(
+        fp,
+        "shell:builtin/Bash@/work/repo:git push origin feature/x"
+    );
 
     let mut grants = SessionGrants::default();
     let id = grants.add(&reasons[0].rule, &fp);
@@ -305,7 +308,10 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
     ));
     let c = ask_reasons(&eval(&[s], &act(json!({"a": 3}))));
     let fp = a[0].fingerprint.clone().unwrap();
-    assert!(fp.starts_with("mcp:sha256:"), "{fp}");
+    assert!(
+        fp.starts_with("mcp:github/create_pull_request:sha256:"),
+        "{fp}"
+    );
     assert_eq!(
         a[0].fingerprint, b[0].fingerprint,
         "unabhängig von der Reihenfolge"
@@ -659,7 +665,9 @@ fn outcome_with(sets: &[Arc<LoadedSet>], grants: &SessionGrants, act: &Activatio
         grants: Some(grants),
         ..EvalOptions::default()
     };
-    EffectiveSet::new(sets.to_vec()).evaluate(act, &opts).outcome
+    EffectiveSet::new(sets.to_vec())
+        .evaluate(act, &opts)
+        .outcome
 }
 
 #[test]
@@ -669,12 +677,20 @@ fn pol_010_ac2_grant_does_not_cover_another_tool_with_the_same_args() {
     let grants = granted_after(&sets, &mcp_act("github", "get_repository", args.clone()));
     // Derselbe Aufruf: erlaubt.
     assert_eq!(
-        outcome_with(&sets, &grants, &mcp_act("github", "get_repository", args.clone())),
+        outcome_with(
+            &sets,
+            &grants,
+            &mcp_act("github", "get_repository", args.clone())
+        ),
         Outcome::Allow
     );
     // Anderes Tool mit gleichen Argumenten: neue Card.
     assert!(matches!(
-        outcome_with(&sets, &grants, &mcp_act("github", "delete_repository", args.clone())),
+        outcome_with(
+            &sets,
+            &grants,
+            &mcp_act("github", "delete_repository", args.clone())
+        ),
         Outcome::Ask { .. }
     ));
     // Anderer Server, gleiches Tool und gleiche Argumente: neue Card.
@@ -699,8 +715,14 @@ fn pol_010_ac2_grant_for_empty_args_is_bound_to_the_tool() {
         .unwrap()
     };
     let grants = granted_after(&sets, &act("Harmless"));
-    assert_eq!(outcome_with(&sets, &grants, &act("Harmless")), Outcome::Allow);
-    assert!(matches!(outcome_with(&sets, &grants, &act("Dangerous")), Outcome::Ask { .. }));
+    assert_eq!(
+        outcome_with(&sets, &grants, &act("Harmless")),
+        Outcome::Allow
+    );
+    assert!(matches!(
+        outcome_with(&sets, &grants, &act("Dangerous")),
+        Outcome::Ask { .. }
+    ));
 }
 
 #[test]
@@ -716,6 +738,12 @@ fn pol_010_ac2_shell_grant_is_bound_to_the_working_directory() {
         Activation::new(Phase::ToolCall, json!({ "tool": tool })).unwrap()
     };
     let grants = granted_after(&sets, &in_dir("/work/repo"));
-    assert_eq!(outcome_with(&sets, &grants, &in_dir("/work/repo")), Outcome::Allow);
-    assert!(matches!(outcome_with(&sets, &grants, &in_dir("/work/other")), Outcome::Ask { .. }));
+    assert_eq!(
+        outcome_with(&sets, &grants, &in_dir("/work/repo")),
+        Outcome::Allow
+    );
+    assert!(matches!(
+        outcome_with(&sets, &grants, &in_dir("/work/other")),
+        Outcome::Ask { .. }
+    ));
 }

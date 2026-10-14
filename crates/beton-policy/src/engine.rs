@@ -151,8 +151,8 @@ pub struct Reason {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalDoc>,
     /// Grant-Fingerprint einer merkbaren `ask`-Regel in Phase `tool_call` (POL-010):
-    /// `remember_key` der Regel, sonst `tool.kind:tool.command` bzw. `tool.kind:sha256:…` über
-    /// die kanonischen Argumente.
+    /// `remember_key` der Regel, sonst `kind:server/name@cwd:command` (Shell) bzw.
+    /// `kind:server/name:sha256:…` über die kanonischen Argumente.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
 }
@@ -556,9 +556,18 @@ impl<'a> Run<'a> {
             Some(crate::value::Value::String(s)) if !s.is_empty() => Some(s.to_string()),
             _ => None,
         };
+        // Bindung an Klasse, Server und Tool (Security-Review B1): ein Grant gilt nie für ein
+        // anderes Tool mit denselben Argumenten.
         let kind = text("kind").unwrap_or_else(|| "other".into());
+        let tool = format!(
+            "{}/{}",
+            text("server").unwrap_or_else(|| "builtin".into()),
+            text("name").unwrap_or_default()
+        );
         if let Some(command) = text("command") {
-            return Some(format!("{kind}:{command}"));
+            // Shell: der ausgeführte Befehl im selben Arbeitsverzeichnis.
+            let cwd = text("cwd").unwrap_or_default();
+            return Some(format!("{kind}:{tool}@{cwd}:{command}"));
         }
         let args = ctx
             .field("tool", "args")
@@ -566,7 +575,7 @@ impl<'a> Run<'a> {
             .unwrap_or(Value::Null);
         let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
         Some(format!(
-            "{kind}:sha256:{}",
+            "{kind}:{tool}:sha256:{}",
             hex::encode(Sha256::digest(&canonical))
         ))
     }
