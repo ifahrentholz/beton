@@ -52,18 +52,20 @@ pub mod macos {
     use crate::spec::{Limits, env_denied};
 
     /// rlimits des Baums (SBX-013). `RLIMIT_NPROC` zählt unter macOS alle Prozesse des
-    /// Benutzers; das Limit gilt deshalb zusätzlich zu den schon laufenden. Weil andere Prozesse
-    /// des Benutzers währenddessen enden können, bleibt ein Abstand (höchstens 8) zum Limit.
+    /// Benutzers; das Limit gilt deshalb zusätzlich zu den schon laufenden, mit Abstand
+    /// ([`crate::proctree::budget`]), weil andere Prozesse des Benutzers währenddessen enden
+    /// können.
     #[allow(unsafe_code, reason = "setrlimit nach fork gibt es nur über libc")]
-    fn limits(c: &mut tokio::process::Command, l: &Limits) {
+    /// Liefert `(uid, RLIMIT_NPROC)`, falls ein `pids`-Limit gilt.
+    fn limits(c: &mut tokio::process::Command, l: &Limits) -> Option<(u32, u64)> {
         let mut set: Vec<(libc::c_int, u64)> = vec![(libc::RLIMIT_CORE, 0)];
+        let mut nproc = None;
         if let Some(p) = l.pids {
             // SAFETY: getuid ohne Seiteneffekte.
             let uid = unsafe { libc::getuid() };
-            set.push((
-                libc::RLIMIT_NPROC,
-                crate::proctree::count_of_uid(uid) + u64::from(crate::proctree::budget(p)),
-            ));
+            let n = crate::proctree::count_of_uid(uid) + u64::from(crate::proctree::budget(p));
+            set.push((libc::RLIMIT_NPROC, n));
+            nproc = Some((uid, n));
         }
         if let Some(s) = l.cpu_seconds {
             set.push((libc::RLIMIT_CPU, s));
@@ -86,6 +88,7 @@ pub mod macos {
                 Ok(())
             });
         }
+        nproc
     }
 
     /// Seatbelt (`sandbox-exec`).
@@ -229,7 +232,7 @@ pub mod macos {
                 c.env_remove(k);
             }
             c.current_dir(cmd.cwd.as_deref().unwrap_or(&policy.workspace));
-            limits(&mut c, &policy.limits);
+            let nproc = limits(&mut c, &policy.limits);
             let child = child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
                 message: format!("{SANDBOX_EXEC}: {e}"),
                 kind: e.kind(),
@@ -238,13 +241,8 @@ pub mod macos {
             let Some(pid) = child.id() else {
                 return Ok(child);
             };
-            let tracker = Tracker::start(
-                pid,
-                policy.stage.event(),
-                policy.limits.pids.map(crate::proctree::budget),
-                violations.clone(),
-                sink,
-            );
+            let tracker =
+                Tracker::start(pid, policy.stage.event(), nproc, violations.clone(), sink);
             Ok(child.with_guard(Box::new(tracker), violations))
         }
     }

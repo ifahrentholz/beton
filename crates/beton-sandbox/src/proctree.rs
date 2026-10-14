@@ -2,7 +2,8 @@
 //! Prozess kann die Prozessgruppe (`setsid`) verlassen. Ein Hintergrund-Thread erfasst deshalb
 //! regelmäßig alle Nachfahren des Wurzelprozesses (über die Eltern-PID) und alle Mitglieder
 //! seiner Prozessgruppe, merkt sie sich mit Startzeit (gegen PID-Wiederverwendung) und beendet
-//! sie beim Stoppen. Er meldet außerdem, wenn der Baum das `pids`-Limit erreicht.
+//! sie beim Stoppen. Er meldet außerdem, wenn das `pids`-Limit erreicht ist (`RLIMIT_NPROC` zählt
+//! unter macOS alle Prozesse des Benutzers).
 //!
 //! Restrisiko (dokumentiert): Ein Prozess, der per `setsid` und doppeltem `fork` zwischen zwei
 //! Erfassungen verwaist, ist nicht mehr als Nachfahre erkennbar; er bleibt in der Sandbox
@@ -72,10 +73,10 @@ fn list() -> Vec<Proc> {
 }
 
 /// Prozesse, die ein Baum mit `limits.pids = p` unter macOS starten darf: Andere Prozesse des
-/// Benutzers können währenddessen enden und Platz freigeben, deshalb bleibt ein Abstand
-/// (höchstens 8).
+/// Benutzers können währenddessen enden und Platz freigeben, deshalb bleibt ein Abstand (ein
+/// Viertel, höchstens 32). Strenger ist hier sicherer als ungenau.
 pub(crate) fn budget(p: u32) -> u32 {
-    p - (p / 8).min(8)
+    p - (p / 4).min(32)
 }
 
 /// Anzahl der Prozesse eines Benutzers (für `RLIMIT_NPROC`, das unter macOS je Benutzer zählt).
@@ -90,9 +91,11 @@ struct State {
 }
 
 impl State {
-    /// Aktualisiert die bekannten Nachfahren; liefert ihre Anzahl.
-    fn scan(&mut self) -> usize {
+    /// Aktualisiert die bekannten Nachfahren; liefert ihre Anzahl und die Zahl der Prozesse
+    /// von `uid`.
+    fn scan_counting(&mut self, uid: Option<u32>) -> (usize, u64) {
         let procs = list();
+        let of_uid = uid.map_or(0, |u| procs.iter().filter(|p| p.ruid == u).count() as u64);
         let by_pid: BTreeMap<i32, Proc> = procs.iter().map(|p| (p.pid, *p)).collect();
         self.known
             .retain(|pid, start| by_pid.get(pid).is_some_and(|p| p.start == *start));
@@ -114,7 +117,11 @@ impl State {
                 break;
             }
         }
-        self.known.len()
+        (self.known.len(), of_uid)
+    }
+
+    fn scan(&mut self) -> usize {
+        self.scan_counting(None).0
     }
 }
 
@@ -128,7 +135,7 @@ impl Tracker {
     pub(crate) fn start(
         root: u32,
         stage: SandboxStage,
-        pids: Option<u32>,
+        nproc: Option<(u32, u64)>,
         violations: Violations,
         sink: Option<ViolationSink>,
     ) -> Self {
@@ -141,13 +148,18 @@ impl Tracker {
         std::thread::spawn(move || {
             let mut reported = false;
             while !st.load(Ordering::Relaxed) {
-                let n = s.lock().map(|mut g| g.scan()).unwrap_or(0);
+                let (n, of_uid) = s
+                    .lock()
+                    .map(|mut g| g.scan_counting(nproc.map(|(u, _)| u)))
+                    .unwrap_or((0, 0));
                 if n == 0 {
                     break;
                 }
-                if let Some(limit) = pids
+                // Der Kernel prüft RLIMIT_NPROC gegen alle Prozesse des Benutzers; genau das
+                // zählt hier.
+                if let Some((_, limit)) = nproc
                     && !reported
-                    && n as u32 + SLACK >= limit
+                    && of_uid + u64::from(SLACK) >= limit
                 {
                     reported = true;
                     let v = SandboxViolation {
