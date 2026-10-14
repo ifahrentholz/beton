@@ -275,3 +275,50 @@ async fn agt_005_agt_008_claude_gets_project_claude_md_and_skills_from_beton() {
         skills.display()
     );
 }
+
+// ------------------------------------------------------------- M1 (#234), POL-005
+
+#[tokio::test]
+async fn pol_005_foreign_beton_server_is_not_a_system_tool() {
+    // Angriff: Ein MCP-Server namens `beton` aus der Vendor-Konfiguration (beton hat selbst
+    // keinen eingebunden) galt als System-Tool und lief ohne menschliche Rückfrage (#151).
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let g = PolicyGate::new(
+        PolicyOptions {
+            harness: "claude".parse::<HarnessId>().unwrap(),
+            workdir: dir.path().to_path_buf(),
+            approval_timeout: std::time::Duration::from_millis(200),
+            ..PolicyOptions::default()
+        },
+        tx,
+    );
+    let ask = |call: &str| GateRequest {
+        call_id: call.into(),
+        tool: "mcp__beton__session_list".into(),
+        kind: "system".into(),
+        mcp_server: Some("beton".into()),
+        args: serde_json::json!({}),
+        origin: GateOrigin::VendorAsk,
+        ..GateRequest::default()
+    };
+    let decision = g.decide(ask("toolu_6")).await;
+    assert!(
+        matches!(decision, GateDecision::Deny { .. }),
+        "{decision:?}"
+    );
+    let mut cards = 0;
+    while let Ok(e) = rx.try_recv() {
+        if let beton_core::event::EventPayload::ApprovalRequested(_) = e.payload {
+            cards += 1;
+        }
+        if let beton_core::event::EventPayload::PolicyDecision(d) = e.payload {
+            assert_eq!(d.outcome, beton_core::event::PolicyOutcome::Allow);
+        }
+    }
+    assert_eq!(cards, 1, "fremder Server: der Mensch entscheidet");
+    // Von beton eingebunden: System-Tool ohne Rückfrage.
+    g.set_trusted_servers(vec!["beton".into()]);
+    let decision = g.decide(ask("toolu_7")).await;
+    assert_eq!(decision, GateDecision::Allow { updated_args: None });
+}

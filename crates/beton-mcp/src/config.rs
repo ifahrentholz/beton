@@ -312,6 +312,29 @@ mod tests {
         assert!(merged[1].allows("anything"));
     }
 
+    /// M1 (#234): Namen mit `beton` (`beton`, `beton-*`, `beton_*`) sind beton-eigenen Servern
+    /// vorbehalten; die Abbildungstabelle ordnet ihnen Klassen wie `system` zu (POL-005).
+    #[test]
+    fn pol_005_beton_server_names_are_reserved() {
+        let f = file(
+            "servers:\n  beton-workspace:\n    command: x\n  beton-browser:\n    command: x\n  beton_x:\n    command: x\n  betonmischer:\n    command: x\n",
+        );
+        let merged = merge(&McpFile::default(), &f, None);
+        let err = |n: &str| {
+            merged
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .endpoint()
+                .err()
+                .unwrap_or_default()
+        };
+        for name in ["beton-workspace", "beton-browser", "beton_x"] {
+            assert!(err(name).contains("reserviert"), "{name}");
+        }
+        assert!(err("betonmischer").is_empty(), "kein Präfix mit Trenner");
+    }
+
     #[test]
     fn invalid_entries_are_rejected_with_reason() {
         let f = file(
