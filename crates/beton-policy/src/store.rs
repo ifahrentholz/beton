@@ -57,6 +57,11 @@ pub struct PolicyStore {
     files: BTreeMap<PathBuf, FileEntry>,
     inline: Vec<Arc<LoadedSet>>,
     effective: Option<Arc<EffectiveSet>>,
+    /// Ebenen, deren Dateien nach dem ersten Durchlauf nur verschärft werden dürfen
+    /// (Re-Review R1 zu #253): lockernde Änderungen gelten erst in einer neuen Session.
+    tighten: Vec<Scope>,
+    /// Der erste Durchlauf ist erfolgt.
+    primed: bool,
 }
 
 /// `~/.beton/policies` bzw. `<repo>/.beton/policies` zu einem beton-Verzeichnis.
@@ -74,6 +79,15 @@ impl PolicyStore {
     pub fn add_dir(&mut self, scope: Scope, dir: impl Into<PathBuf>) {
         self.dirs.push((scope, dir.into()));
         self.effective = None;
+    }
+
+    /// Nach dem ersten [`PolicyStore::refresh`] übernimmt der Store Änderungen an Dateien
+    /// dieser Ebene nur, wenn sie verschärfen ([`only_tightens`]); sonst bleibt die bisherige
+    /// Fassung aktiv und `policy.set_invalid` meldet die lockernde Änderung.
+    pub fn tighten_only(&mut self, scope: Scope) {
+        if !self.tighten.contains(&scope) {
+            self.tighten.push(scope);
+        }
     }
 
     /// Ersetzt die Inline-Sets einer Ebene (z. B. `policies:` des Agents).
@@ -184,6 +198,7 @@ impl PolicyStore {
                     message,
                 }),
             };
+            let tighten_now = self.primed && self.tighten.contains(&scope);
             let entry = self.files.entry(path).or_insert(FileEntry {
                 scope,
                 seen: hash,
@@ -195,6 +210,20 @@ impl PolicyStore {
             entry.seen = hash;
             entry.scope = scope;
             entry.deleted = false;
+            let check = match (&result, tighten_now) {
+                (Ok(set), true) => only_tightens(entry.valid.as_deref(), set).err(),
+                _ => None,
+            };
+            if let Some(why) = check {
+                events.push(StoreEvent::Invalid(PolicySetInvalid {
+                    file: origin.clone(),
+                    line: 0,
+                    error: format!(
+                        "Die Änderung lockert die Policy ({why}); sie gilt erst in einer neuen Session"
+                    ),
+                }));
+                continue;
+            }
             match result {
                 Ok(set) => {
                     events.push(StoreEvent::Changed(PolicySetChanged {
@@ -214,6 +243,7 @@ impl PolicyStore {
                 }
             }
         }
+        self.primed = true;
         events
     }
 
@@ -245,6 +275,57 @@ impl PolicyStore {
         self.effective = Some(effective.clone());
         effective
     }
+}
+
+/// Verschärft `new` gegenüber `old` (ohne `old`: gegenüber einem leeren Set)? Erlaubt sind:
+/// unveränderte Regeln, neue Regeln mit `deny`, `ask` oder `notify` bzw. eingebaute
+/// Regeltypen, Dry-Run-Regeln und strengere Defaults. `Err` nennt den ersten lockernden Punkt.
+pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), String> {
+    use crate::doc::{Action, DefaultAction, Mode};
+    let active = |s: &LoadedSet| s.mode == Mode::Enforce;
+    let old_rules: Vec<&crate::load::LoadedRule> = old
+        .filter(|o| active(o))
+        .map(|o| o.rules.iter().filter(|r| !r.doc.dry_run).collect())
+        .unwrap_or_default();
+    let old_defaults = old
+        .filter(|o| active(o))
+        .map(|o| o.defaults.clone())
+        .unwrap_or_default();
+    if !active(new) {
+        if old_rules.is_empty() && old_defaults.is_empty() {
+            return Ok(());
+        }
+        return Err("mode: dry_run".into());
+    }
+    for (phase, was) in &old_defaults {
+        let now = new
+            .defaults
+            .get(phase)
+            .copied()
+            .unwrap_or(DefaultAction::Allow);
+        if now < *was {
+            return Err(format!("Default für {phase} milder"));
+        }
+    }
+    for rule in &old_rules {
+        if !new.rules.iter().any(|r| r.doc == rule.doc) {
+            return Err(format!("Regel `{}` entfernt oder geändert", rule.id));
+        }
+    }
+    for rule in &new.rules {
+        if rule.doc.dry_run || old_rules.iter().any(|r| r.doc == rule.doc) {
+            continue;
+        }
+        let tightening = rule.doc.rule_type.is_some()
+            || matches!(
+                rule.doc.action,
+                Some(Action::Deny | Action::Ask | Action::Notify)
+            );
+        if !tightening {
+            return Err(format!("Regel `{}` neu mit allow oder modify", rule.id));
+        }
+    }
+    Ok(())
 }
 
 fn is_policy_file(path: &Path) -> bool {

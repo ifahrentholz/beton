@@ -275,6 +275,169 @@ fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateReque
     }
 }
 
+/// Erkennt Bezüge auf Policy-Verzeichnisse in Pfaden und Shell-Wörtern (#234, Re-Review R1).
+/// Best effort gegen Verschleierung; Backstop sind die Regeln des Stores (gelöschte Dateien
+/// bleiben aktiv, lockernde Änderungen erst in einer neuen Session) und die Sandbox.
+struct PolicyPathGuard {
+    /// Kanonische Policy-Verzeichnisse.
+    dirs: Vec<PathBuf>,
+    cwd: String,
+    home: Option<String>,
+}
+
+impl PolicyPathGuard {
+    fn new<'a>(dirs: impl Iterator<Item = &'a Path>, cwd: &str, home: Option<&Path>) -> Self {
+        Self {
+            dirs: dirs
+                .map(|d| PathBuf::from(resolve_fs(&d.display().to_string())))
+                .collect(),
+            cwd: cwd.to_owned(),
+            home: home.map(|h| h.display().to_string()),
+        }
+    }
+
+    /// Absoluter Pfad unter einem Policy-Verzeichnis oder das `.beton`-Verzeichnis darüber
+    /// (`rm -rf .beton`), nicht aber Arbeitsverzeichnis oder Home.
+    fn hits_path(&self, path: &str) -> bool {
+        let real = PathBuf::from(resolve_fs(path));
+        self.dirs
+            .iter()
+            .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
+    }
+
+    fn hits_word(&self, word: &str, vars: &HashMap<String, String>) -> bool {
+        let lower = word.to_lowercase();
+        if lower.contains(".beton") {
+            return true;
+        }
+        let (expanded, unknown) = expand_vars(word, vars, self.home.as_deref());
+        if unknown && mentions_policies(word) {
+            return true;
+        }
+        let expanded_lower = expanded.to_lowercase();
+        if expanded_lower.contains(".beton") {
+            return true;
+        }
+        // Globs wie `.b*` treffen `.beton` (Bash: nur Muster mit führendem Punkt).
+        if expanded.contains(['*', '?', '['])
+            && expanded
+                .split('/')
+                .any(|c| c.starts_with('.') && glob_component(c, ".beton"))
+        {
+            return true;
+        }
+        if expanded.starts_with('-') || expanded.is_empty() {
+            return false;
+        }
+        let candidate = if let Some(rest) = expanded.strip_prefix("~/") {
+            self.home.as_ref().map(|h| format!("{h}/{rest}"))
+        } else if expanded.starts_with('/') {
+            Some(expanded.clone())
+        } else {
+            Some(format!("{}/{expanded}", self.cwd))
+        };
+        candidate
+            .and_then(|c| beton_policy::cel::ext::normalize_path(&c))
+            .is_some_and(|p| self.hits_path(&p))
+    }
+}
+
+fn resolve_fs(p: &str) -> String {
+    FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned())
+}
+
+/// Erwähnt der Text ein Policy-Verzeichnis (für Wörter mit nicht auflösbaren Variablen)?
+fn mentions_policies(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("beton") || lower.contains("polic")
+}
+
+/// `NAME=wert`-Zuweisungen aller Teilkommandos (auch nach `export`).
+fn assignments(argv: &[Vec<String>]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for word in argv.iter().flatten() {
+        if let Some((name, value)) = word.split_once('=')
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+        {
+            out.insert(name.to_owned(), value.to_owned());
+        }
+    }
+    out
+}
+
+/// Setzt `$NAME` und `${NAME}` ein (bekannte Zuweisungen, `HOME`); liefert, ob unbekannte
+/// Expansionen (auch `$(…)`, Backticks) übrig blieben.
+fn expand_vars(word: &str, vars: &HashMap<String, String>, home: Option<&str>) -> (String, bool) {
+    let mut out = String::new();
+    let mut unknown = word.contains('`');
+    let chars: Vec<char> = word.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let braced = chars.get(i + 1) == Some(&'{');
+        let start = if braced { i + 2 } else { i + 1 };
+        let mut end = start;
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        let name: String = chars[start..end].iter().collect();
+        if name.is_empty() || (braced && chars.get(end) != Some(&'}')) {
+            unknown = true;
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let value = vars
+            .get(&name)
+            .cloned()
+            .or_else(|| (name == "HOME").then(|| home.map(str::to_owned)).flatten());
+        match value {
+            Some(v) => out.push_str(&v),
+            None => unknown = true,
+        }
+        i = if braced { end + 1 } else { end };
+    }
+    (out, unknown)
+}
+
+/// Passt ein Glob-Muster (`*`, `?`, `[…]` grob als ein Zeichen) auf einen Namen?
+fn glob_component(pattern: &str, name: &str) -> bool {
+    fn go(p: &[char], n: &[char]) -> bool {
+        match p.first() {
+            None => n.is_empty(),
+            Some('*') => (0..=n.len()).any(|k| go(&p[1..], &n[k..])),
+            Some('?') => !n.is_empty() && go(&p[1..], &n[1..]),
+            Some('[') => {
+                let close = p.iter().position(|c| *c == ']').unwrap_or(p.len() - 1);
+                !n.is_empty() && go(&p[(close + 1).min(p.len())..], &n[1..])
+            }
+            Some(c) => n.first() == Some(c) && go(&p[1..], &n[1..]),
+        }
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    go(&p, &n)
+}
+
+/// Alle Zeichenketten eines JSON-Werts (höchstens 1 000).
+fn collect_strings(v: &Value, out: &mut Vec<String>) {
+    if out.len() >= 1000 {
+        return;
+    }
+    match v {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|i| collect_strings(i, out)),
+        Value::Object(map) => map.values().for_each(|i| collect_strings(i, out)),
+        _ => {}
+    }
+}
+
 /// Hash des Subjekts eines Tool-Calls (`tool` und `args`), wie in `policy.decision`.
 fn tool_subject(tool: &str, args: &Value) -> String {
     subject_hash(&json!({"tool": tool, "args": args}))
@@ -545,6 +708,9 @@ impl PolicyGate {
         for (scope, dir) in &opts.dirs {
             store.add_dir(*scope, dir);
         }
+        // Projekt-Policies liegen in der Hand des Agents bzw. Repos: während der Session nur
+        // verschärfen (Re-Review R1 zu #253).
+        store.tighten_only(Scope::Project);
         Self {
             inner: Arc::new(Inner {
                 opts,
@@ -1695,24 +1861,49 @@ impl PolicyGate {
         if READ_ONLY_KINDS.contains(&n.kind.as_str()) {
             return None;
         }
-        let resolve = |p: &str| FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned());
-        let dirs: Vec<PathBuf> = self
-            .inner
-            .opts
-            .dirs
-            .iter()
-            .map(|(_, d)| PathBuf::from(resolve(&d.display().to_string())))
-            .collect();
-        n.paths
-            .iter()
-            .find(|p| {
-                let real = PathBuf::from(resolve(p));
-                // Auch das `.beton`-Verzeichnis darüber (`rm -rf .beton`), nicht aber
-                // Arbeitsverzeichnis oder Home.
-                dirs.iter()
-                    .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
-            })
-            .cloned()
+        let guard = PolicyPathGuard::new(
+            self.inner.opts.dirs.iter().map(|(_, d)| d.as_path()),
+            &n.cwd,
+            self.inner.opts.home.as_deref(),
+        );
+        if let Some(p) = n.paths.iter().find(|p| guard.hits_path(p)) {
+            return Some(p.clone());
+        }
+        // Shell (Re-Review R1, #253): jedes Wort aller Teilkommandos, nicht nur solche, die
+        // wie ein Pfad aussehen; `$`-Variablen aus Zuweisungen im selben Kommando eingesetzt.
+        if !n.argv.is_empty() {
+            // Der Parser entfernt Zuweisungen aus `argv`; sie stehen im Kommando-Text.
+            let words: Vec<String> = n
+                .command
+                .as_deref()
+                .unwrap_or_default()
+                .split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+                .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
+                .collect();
+            let vars = assignments(std::slice::from_ref(&words));
+            for word in n.argv.iter().flatten() {
+                if guard.hits_word(word, &vars) {
+                    return Some(word.clone());
+                }
+            }
+            if n.parse_uncertain
+                && let Some(cmd) = &n.command
+                && mentions_policies(cmd)
+            {
+                return Some(cmd.clone());
+            }
+        }
+        // MCP- und unbekannte Tools: alle Zeichenketten der Argumente (ohne Pfad-Abbildung).
+        if matches!(n.kind.as_str(), "mcp" | "other") {
+            let mut strings = Vec::new();
+            collect_strings(&n.args, &mut strings);
+            for word in strings.iter().flat_map(|s| s.split_whitespace()) {
+                if guard.hits_word(word, &HashMap::new()) {
+                    return Some(word.to_owned());
+                }
+            }
+        }
+        None
     }
 
     /// `deny` eines Tool-Calls auf Policy-Dateien samt `policy.decision` (#234).
