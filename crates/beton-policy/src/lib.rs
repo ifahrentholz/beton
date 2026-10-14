@@ -5,6 +5,7 @@ pub mod context;
 pub mod normalize;
 pub mod types;
 pub mod value;
+mod yaml;
 
 use serde::{Deserialize, Serialize};
 
