@@ -20,6 +20,8 @@
 
 mod dry;
 
+pub use dry::SnapshotSink;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -286,6 +288,8 @@ struct Inner {
     granted: AtomicI64,
     denied: AtomicI64,
     started_at: CelTimestamp,
+    /// Set-Snapshots je Version für Explain (POL-027 AC2).
+    snapshots: dry::Snapshots,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -328,6 +332,38 @@ impl PathResolver for FsResolver {
                 _ => return Ok(lexical),
             }
         }
+    }
+}
+
+/// `tool.*` aus dem normalisierten Tool-Call (POL-004, POL-005); auch für `policy_query`.
+fn tool_vars(
+    n: &mut beton_policy::normalize::NormalizedTool,
+    req_kind: &str,
+    call_index: i64,
+) -> ToolVars {
+    // Unbekannt in der Tabelle, aber vom Adapter klassifiziert (z. B. Fake-Szenario).
+    if n.kind == "other" && beton_policy::enforcement::KINDS.contains(&req_kind) {
+        n.kind = req_kind.to_owned();
+    }
+    let args = match &n.args {
+        Value::Object(m) => Some(m.clone().into_iter().collect()),
+        _ => None,
+    };
+    ToolVars {
+        name: Some(n.name.clone()),
+        native_name: Some(n.native_name.clone()),
+        server: Some(n.server.clone()),
+        kind: Some(n.kind.clone()),
+        args,
+        command: n.command.clone(),
+        argv: Some(n.argv.clone()),
+        cwd: Some(n.cwd.clone()),
+        paths: Some(n.paths.clone()),
+        urls: Some(n.urls.clone()),
+        call_index: Some(call_index),
+        is_subagent_spawn: Some(n.is_subagent_spawn),
+        parse_uncertain: Some(n.parse_uncertain),
+        ..ToolVars::default()
     }
 }
 
@@ -516,6 +552,7 @@ impl PolicyGate {
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
+                snapshots: dry::Snapshots::default(),
             }),
         }
     }
@@ -948,22 +985,15 @@ impl PolicyGate {
         }
     }
 
-    /// Eine Auswertung samt `policy.decision` (POL-025).
-    #[allow(clippy::too_many_arguments)]
-    async fn evaluate(
+    /// Wertet das Set auf dem Kontext aus (Engine in eigenem Thread, mit Zeitbudget); Fehler,
+    /// Absturz und Zeitüberschreitung ergeben `deny` (POL-024 AC3). Ohne Seiteneffekte.
+    async fn run_engine(
         &self,
+        set: &Arc<EffectiveSet>,
         phase: Phase,
-        mut vars: Vars,
+        vars: Vars,
         source: Option<Arc<ToolSource>>,
-        level: Level,
-        subject_ref: Value,
-        subject: Option<&Value>,
-        turn: Option<TurnId>,
-        raw: Option<RawJson>,
-    ) -> Evaluated {
-        let set = self.refresh(turn);
-        self.with_usage_values(&set, phase, &mut vars).await;
-        self.with_state_values(&set, phase, &mut vars).await;
+    ) -> Decision {
         let capabilities = self.matrix().capabilities(phase);
         let grants = self
             .inner
@@ -971,7 +1001,7 @@ impl PolicyGate {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        let decision = match Activation::new(phase, vars.to_json()) {
+        match Activation::new(phase, vars.to_json()) {
             Err(e) => engine_deny(phase, set.hash(), format!("Kontext ungültig: {e}")),
             Ok(act) => {
                 let mut act = act.with_resolver(Arc::new(FsResolver));
@@ -999,7 +1029,27 @@ impl PolicyGate {
                     ),
                 }
             }
-        };
+        }
+    }
+
+    /// Eine Auswertung samt `policy.decision` (POL-025).
+    #[allow(clippy::too_many_arguments)]
+    async fn evaluate(
+        &self,
+        phase: Phase,
+        mut vars: Vars,
+        source: Option<Arc<ToolSource>>,
+        level: Level,
+        subject_ref: Value,
+        subject: Option<&Value>,
+        turn: Option<TurnId>,
+        raw: Option<RawJson>,
+    ) -> Evaluated {
+        let set = self.refresh(turn);
+        self.ensure_snapshot(&set).await;
+        self.with_usage_values(&set, phase, &mut vars).await;
+        self.with_state_values(&set, phase, &mut vars).await;
+        let decision = self.run_engine(&set, phase, vars, source).await;
         let approval = matches!(decision.outcome, Outcome::Ask { .. }).then(ApprovalId::new);
         let event = decision_event(
             &decision,
@@ -1333,32 +1383,7 @@ impl PolicyGate {
                 }
             }
             Ok(mut n) => {
-                // Unbekannt in der Tabelle, aber vom Adapter klassifiziert (z. B. Fake-Szenario).
-                if n.kind == "other"
-                    && beton_policy::enforcement::KINDS.contains(&req.kind.as_str())
-                {
-                    n.kind.clone_from(&req.kind);
-                }
-                let args = match &n.args {
-                    Value::Object(m) => Some(m.clone().into_iter().collect()),
-                    _ => None,
-                };
-                vars.tool = Some(ToolVars {
-                    name: Some(n.name.clone()),
-                    native_name: Some(n.native_name.clone()),
-                    server: Some(n.server.clone()),
-                    kind: Some(n.kind.clone()),
-                    args,
-                    command: n.command.clone(),
-                    argv: Some(n.argv.clone()),
-                    cwd: Some(n.cwd.clone()),
-                    paths: Some(n.paths.clone()),
-                    urls: Some(n.urls.clone()),
-                    call_index: Some(call_index),
-                    is_subagent_spawn: Some(n.is_subagent_spawn),
-                    parse_uncertain: Some(n.parse_uncertain),
-                    ..ToolVars::default()
-                });
+                vars.tool = Some(tool_vars(&mut n, &req.kind, call_index));
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,

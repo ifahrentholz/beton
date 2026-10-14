@@ -1,4 +1,206 @@
 //! Seiteneffektfreie Auswertung und Set-Snapshots des Policy-Gates (POL-027, AGT-007 AC3).
+//!
+//! - **`policy_query`:** wertet eine geplante Aktion genau wie einen echten Tool-Call aus
+//!   (gleiche Normalisierung, gleicher Kontext, gleiche Grants, aktueller Stand der Dateien),
+//!   aber ohne `policy.decision`, ohne Approval-Card, ohne Effects und ohne Call-Zähler. Die
+//!   Antwort nennt Entscheidung, Regeln und Gründe, nicht die Bedingungen der Regeln (das
+//!   Modell soll Policies nicht gezielt umgehen können).
+//! - **Snapshots:** Vor der ersten Auswertung mit einer neuen Set-Version legt das Gate Manifest
+//!   und Inhalte über den Server im Blob-Store der Session ab (`policy.snapshot`), damit
+//!   `explain` später genau diese Version zeigt. Ein Fehler verhindert keine Auswertung; das
+//!   Gate versucht es bei der nächsten erneut.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use beton_harness::{GateOrigin, GateRequest};
+use beton_policy::Phase;
+use beton_policy::engine::{EffectiveSet, Outcome};
+use beton_policy::normalize::{harness_family, normalize_source};
+use beton_policy::snapshot::Manifest;
+use serde_json::{Value, json};
+
+use super::{PolicyGate, USAGE_TIMEOUT, tool_vars};
+
+/// Ablage der Set-Snapshots (im Runner: System-Call `policy.snapshot` über den Tunnel).
+#[async_trait]
+pub trait SnapshotSink: Send + Sync {
+    /// Speichert Manifest und Inhalte (Version → Inhalt) eines effektiven Sets.
+    async fn store(&self, manifest: &Manifest, sources: &[(String, Vec<u8>)])
+    -> Result<(), String>;
+}
+
+/// Ziel der Snapshots und bereits gespeicherte Set-Hashes.
+#[derive(Default)]
+pub(super) struct Snapshots {
+    sink: Option<Arc<dyn SnapshotSink>>,
+    stored: Mutex<HashSet<String>>,
+}
+
+/// Shell-Tool des Harness für eine Aktion ohne `tool`: (Name, MCP-Server, ACP-Klasse).
+fn shell_tool(harness: &str, action: &str) -> (String, Option<String>, Option<String>) {
+    match harness_family(harness) {
+        "codex" => ("commandExecution".into(), None, None),
+        "acp" => (action.to_owned(), None, Some("execute".into())),
+        "direct" => ("shell_exec".into(), Some("beton-workspace".into()), None),
+        _ => ("Bash".into(), None, None),
+    }
+}
+
+fn denied(reason: &str) -> Value {
+    json!({
+        "decision": "deny",
+        "engine": "beton-policy",
+        "reason": reason,
+        "rules": [],
+        "explain": format!("Entscheidung: deny – {reason}"),
+    })
+}
+
+#[async_trait]
+impl crate::mcp::PolicyOracle for PolicyGate {
+    async fn query(&self, args: &Value) -> Value {
+        PolicyGate::query(self, args).await
+    }
+}
+
+impl PolicyGate {
+    /// Ziel für Set-Snapshots (POL-027 AC2).
+    pub fn with_snapshots(self, sink: Arc<dyn SnapshotSink>) -> Self {
+        self.rebuild(|i| i.snapshots.sink = Some(sink))
+    }
+
+    /// Hinterlegt das Set, falls diese Version noch nicht gespeichert ist.
+    pub(super) async fn ensure_snapshot(&self, set: &EffectiveSet) {
+        let Some(sink) = &self.inner.snapshots.sink else {
+            return;
+        };
+        let known = self
+            .inner
+            .snapshots
+            .stored
+            .lock()
+            .map(|s| s.contains(set.hash()))
+            .unwrap_or(false);
+        if known {
+            return;
+        }
+        let manifest = set.manifest();
+        let sources = set.sources();
+        match tokio::time::timeout(USAGE_TIMEOUT, sink.store(&manifest, &sources)).await {
+            Ok(Ok(())) => {
+                if let Ok(mut s) = self.inner.snapshots.stored.lock() {
+                    s.insert(set.hash().to_owned());
+                }
+            }
+            _ => tracing::warn!(
+                "Policy: Set-Snapshot nicht gespeichert, nächster Versuch bei der nächsten Auswertung"
+            ),
+        }
+    }
+
+    /// Effektives Set mit dem aktuellen Stand der Dateien, ohne Ereignisse (die meldet die
+    /// nächste echte Auswertung).
+    fn quiet_set(&self) -> Option<Arc<EffectiveSet>> {
+        let mut copy = self.inner.store.lock().ok()?.clone();
+        let _ = copy.refresh();
+        Some(copy.effective())
+    }
+
+    /// `policy_query` (AGT-007 AC3, POL-027 AC3): `{action, tool?, args?}` → Entscheidung wie
+    /// bei tatsächlicher Ausführung, ohne Seiteneffekte. Fehler lehnen ab (fail closed).
+    pub async fn query(&self, args: &Value) -> Value {
+        let action = args.get("action").and_then(Value::as_str).unwrap_or("");
+        let (tool, tool_args, mcp_server, acp_kind) = match args.get("tool").and_then(Value::as_str)
+        {
+            Some(t) => (
+                t.to_owned(),
+                args.get("args").cloned().unwrap_or_else(|| json!({})),
+                None,
+                None,
+            ),
+            None if !action.is_empty() => {
+                let (name, server, acp) = shell_tool(self.inner.opts.harness.as_str(), action);
+                (name, json!({ "command": action }), server, acp)
+            }
+            None => return denied("`action` fehlt"),
+        };
+        let kind = beton_harness::tool_kind(
+            self.inner.opts.harness.as_str(),
+            &tool,
+            acp_kind.as_deref(),
+            mcp_server.as_deref(),
+        );
+        let req = GateRequest {
+            call_id: "policy_query".into(),
+            tool,
+            kind,
+            args: tool_args,
+            mcp_server,
+            acp_kind,
+            origin: GateOrigin::PreTool,
+            ..GateRequest::default()
+        };
+        let Some(set) = self.quiet_set() else {
+            return denied("Policy-Zustand nicht lesbar");
+        };
+        let source = self.tool_source(&req);
+        let mut n = match normalize_source(&source, &req.args) {
+            Ok(n) => n,
+            Err(e) => return denied(&format!("Tool-Call nicht prüfbar: {e}")),
+        };
+        // Wie beim echten Call: dieser wäre der nächste.
+        let call_index = self.inner.calls.load(std::sync::atomic::Ordering::SeqCst) + 1;
+        let mut vars = self.base_vars("agent");
+        if let Some(s) = vars.session.as_mut() {
+            s.tool_calls = Some(call_index);
+        }
+        vars.tool = Some(tool_vars(&mut n, &req.kind, call_index));
+        self.with_usage_values(&set, Phase::ToolCall, &mut vars)
+            .await;
+        self.with_state_values(&set, Phase::ToolCall, &mut vars)
+            .await;
+        let decision = self
+            .run_engine(&set, Phase::ToolCall, vars, Some(source))
+            .await;
+        let (verdict, reasons) = match &decision.outcome {
+            Outcome::Allow => ("allow", &[][..]),
+            Outcome::Deny { reasons } => ("deny", reasons.as_slice()),
+            Outcome::Ask { reasons } => ("ask", reasons.as_slice()),
+        };
+        let mut rules: Vec<String> = reasons.iter().map(|r| r.rule.rule_id.clone()).collect();
+        for m in &decision.matched {
+            if !rules.contains(&m.rule.rule_id) {
+                rules.push(m.rule.rule_id.clone());
+            }
+        }
+        let reason = reasons
+            .iter()
+            .map(|r| format!("{} ({})", r.reason, r.rule.rule_id))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let explain = if reason.is_empty() {
+            format!("Entscheidung: {verdict}")
+        } else {
+            format!("Entscheidung: {verdict} – {reason}")
+        };
+        let mut out = json!({
+            "decision": verdict,
+            "engine": "beton-policy",
+            "action": action,
+            "tool": { "name": n.name, "kind": n.kind },
+            "rules": rules,
+            "reason": reason,
+            "policy_set_hash": decision.policy_set_hash,
+            "explain": explain,
+        });
+        if !decision.modified.is_empty() {
+            out["modified"] = serde_json::to_value(&decision.modified).unwrap_or(Value::Null);
+        }
+        out
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -113,10 +315,16 @@ rules:
             .query(&json!({ "action": "x", "tool": "Bash", "args": { "command": "ls" } }))
             .await;
         assert_eq!(allow["decision"], "allow", "{allow}");
-        assert!(drain(&mut s.rx).is_empty(), "Abfragen erzeugen keine Events");
+        assert!(
+            drain(&mut s.rx).is_empty(),
+            "Abfragen erzeugen keine Events"
+        );
 
         // Tatsächliche Ausführung: dieselben Entscheidungen.
-        let real = s.gate.decide(bash("c1", "git push --force origin main")).await;
+        let real = s
+            .gate
+            .decide(bash("c1", "git push --force origin main"))
+            .await;
         assert!(matches!(real, GateDecision::Deny { .. }), "{real:?}");
         let g = s.gate.clone();
         let call = tokio::spawn(async move { g.decide(bash("c2", "git push origin main")).await });
@@ -163,7 +371,13 @@ rules:
             }
         }
         assert!(decision.is_some());
-        assert!(s.gate.resolve("c1", Human { allow: true, ..Human::default() }));
+        assert!(s.gate.resolve(
+            "c1",
+            Human {
+                allow: true,
+                ..Human::default()
+            }
+        ));
         call.await.unwrap();
         let changes: Vec<_> = drain(&mut s.rx)
             .into_iter()
@@ -173,7 +387,7 @@ rules:
             })
             .collect();
         assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].value, Some(json!(1)), "{changes:?}");
+        assert_eq!(changes[0].value, json!(1), "{changes:?}");
     }
 
     #[tokio::test]
@@ -181,12 +395,14 @@ rules:
         let s = setup(PUSH);
         let v = s.gate.query(&json!({})).await;
         assert_eq!(v["decision"], "deny", "{v}");
-        let broken = setup("spec_version: 1\nname: push\nrules:\n  - { id: x, on: tool_call, when: 'tool.args.n > 1', action: deny }\n");
-        let v = broken
-            .gate
-            .query(&json!({ "action": "ls" }))
-            .await;
-        assert_eq!(v["decision"], "deny", "Fehler in einer deny-Regel: fail closed");
+        let broken = setup(
+            "spec_version: 1\nname: push\nrules:\n  - { id: x, on: tool_call, when: 'tool.args.n > 1', action: deny }\n",
+        );
+        let v = broken.gate.query(&json!({ "action": "ls" })).await;
+        assert_eq!(
+            v["decision"], "deny",
+            "Fehler in einer deny-Regel: fail closed"
+        );
     }
 
     #[derive(Default)]
