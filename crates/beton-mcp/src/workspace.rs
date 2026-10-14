@@ -8,8 +8,8 @@
 //! Sicherheitsregel (fail closed): Pfade sind relativ zum Arbeitsverzeichnis der Session.
 //! Absolute Pfade, `..`, `.git` und Pfade, die nach Auflösung aller Symlinks außerhalb des
 //! Arbeitsverzeichnisses liegen, werden abgewiesen – auch wenn das Ziel nicht existiert.
-//! `shell_exec` läuft im Arbeitsverzeichnis ohne interne `BETON_*`-Variablen; die
-//! Tool-Sandbox Stufe 2 folgt mit SBX-002 (M2).
+//! `shell_exec` läuft im Arbeitsverzeichnis ohne interne `BETON_*`-Variablen, mit
+//! Stufenmodell in der Stufe-2-Sandbox der Session (SBX-002).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -57,6 +57,8 @@ fn err(msg: impl Into<String>) -> ToolError {
 #[derive(Clone)]
 pub struct WorkspaceServer {
     root: PathBuf,
+    /// Startet `shell_exec`; mit Stufenmodell die Stufe-2-Sandbox der Session (SBX-002).
+    launcher: std::sync::Arc<dyn ProcessLauncher>,
 }
 
 impl std::fmt::Debug for WorkspaceServer {
@@ -74,12 +76,15 @@ impl WorkspaceServer {
         if !root.is_dir() {
             return Err(std::io::Error::other("Arbeitsverzeichnis fehlt"));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            launcher: std::sync::Arc::new(RealLauncher),
+        })
     }
 
     /// `shell_exec` über `launcher` (Stufe-2-Sandbox der Session, SBX-002).
-    pub fn with_launcher(self, launcher: std::sync::Arc<dyn ProcessLauncher>) -> Self {
-        let _ = launcher;
+    pub fn with_launcher(mut self, launcher: std::sync::Arc<dyn ProcessLauncher>) -> Self {
+        self.launcher = launcher;
         self
     }
 
@@ -453,7 +458,8 @@ impl WorkspaceServer {
             .map(|(k, _)| k.to_string_lossy().into_owned())
             .filter(|k| k.starts_with("BETON_"))
             .collect();
-        let mut process = RealLauncher
+        let mut process = self
+            .launcher
             .launch(LaunchSpec {
                 program,
                 args,
