@@ -126,6 +126,9 @@ pub struct ResolveCtx {
     /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
     /// beschreibbar, in Stufe 2 ohne Symlinks.
     pub exchange: Option<PathBuf>,
+    /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
+    /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
+    pub untrusted_path: Vec<PathBuf>,
     /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
     pub programs: Vec<PathBuf>,
 }
@@ -146,6 +149,7 @@ impl ResolveCtx {
             exec: None,
             shared: Vec::new(),
             exchange: None,
+            untrusted_path: Vec::new(),
             programs: Vec::new(),
         }
     }
@@ -211,6 +215,12 @@ pub struct ResolvedPolicy {
     pub keychain: bool,
     /// Unix-Sockets, mit denen sich die Stufe verbinden darf (Stufe 1: Exec-Broker).
     pub unix_sockets: Vec<PathBuf>,
+    /// Verzeichnisse in Schreib-Wurzeln, die nur lesbar sind und nicht entstehen, umbenannt
+    /// oder ersetzt werden dürfen (Stufe 2: Projekt-Konfiguration, SBX-002).
+    pub read_only: Vec<PathBuf>,
+    /// Schreib-Wurzeln, in denen keine Symlinks entstehen dürfen (Stufe 2: Austausch mit
+    /// Stufe 1, SBX-002).
+    pub no_symlinks: Vec<PathBuf>,
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
@@ -250,6 +260,8 @@ impl ResolvedPolicy {
             git: None,
             keychain: false,
             unix_sockets: Vec::new(),
+            read_only: Vec::new(),
+            no_symlinks: Vec::new(),
             env: BTreeMap::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
@@ -266,6 +278,10 @@ impl ResolvedPolicy {
 }
 
 /// Variablen der Basis-Umgebung, die aus dem Daemon übernommen werden (SBX-005).
+/// Verzeichnisse der Projekt-Konfiguration im Workspace, die Stufe 2 nicht ändern darf
+/// (beton und Claude Code; SBX-002).
+pub const PROJECT_CONFIG_DIRS: [&str; 2] = [".beton", ".claude"];
+
 const BASE_ENV: [&str; 6] = ["PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG"];
 
 /// Proxy-Variablen (PRX-008), groß und klein.
@@ -624,8 +640,41 @@ pub fn resolve(
         let p = own_grant(&format!("shared[{i}]"), p, &forbidden, true)?;
         push_unique(&mut write_roots, p);
     }
+    let mut no_symlinks = Vec::new();
     if let Some(x) = &ctx.exchange {
         let p = own_grant("exchange", x, &forbidden, true)?;
+        // Stufe 1 liest, was Stufe 2 hier ablegt: In Stufe 2 entstehen keine Symlinks (sonst
+        // folgte Stufe 1 einem Link auf ihre Credentials). Unter Linux erben Landlock-Regeln
+        // die Rechte der Vorfahren, daher darf der Austausch in keiner anderen Schreib-Wurzel
+        // und nicht unter einem privaten tmpfs mit Schreibrecht liegen.
+        if ctx.stage == Stage::Tools {
+            let inherited = write_roots
+                .iter()
+                .chain([&scratch])
+                .find(|w| p.starts_with(w) && **w != p)
+                .cloned()
+                .or_else(|| {
+                    matches!(backend, ProviderId::Landlock | ProviderId::Bwrap)
+                        .then(|| {
+                            ["/tmp", "/dev/shm"]
+                                .into_iter()
+                                .map(PathBuf::from)
+                                .find(|t| p.starts_with(t))
+                        })
+                        .flatten()
+                });
+            if let Some(w) = inherited {
+                return Err(SandboxError::escape(
+                    "exchange",
+                    format!(
+                        "{} liegt in {}; dort ließen sich Symlinks nicht sperren",
+                        p.display(),
+                        w.display()
+                    ),
+                ));
+            }
+            no_symlinks.push(p.clone());
+        }
         push_unique(&mut write_roots, p);
     }
     for (i, p) in ctx.programs.iter().enumerate() {
@@ -757,6 +806,21 @@ pub fn resolve(
     }
     env.entry("PATH".to_owned())
         .or_insert_with(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_owned());
+    // Nur absolute Einträge: Ein relativer (oder leerer) Eintrag hinge vom Arbeitsverzeichnis
+    // ab, also vom Workspace, den die Sandbox schreiben kann (SBX-002). Was Stufe 2 schreiben
+    // kann, entfernt der Runner zusätzlich aus dem `PATH` der Stufe 1 (`untrusted_path`).
+    if let Some(path) = env.get_mut("PATH") {
+        *path = path
+            .split(':')
+            .filter(|d| d.starts_with('/'))
+            .filter(|d| {
+                !ctx.untrusted_path
+                    .iter()
+                    .any(|u| Path::new(d).starts_with(u))
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+    }
     for (k, v) in &ctx.host_env {
         if k.starts_with("LC_") || k == "TZ" {
             env.insert(k.clone(), v.clone());
@@ -856,6 +920,17 @@ pub fn resolve(
         }
     }
 
+    // Projekt-Konfiguration, aus der der nächste Start Stufe 1 aufbaut (`.beton/config.yaml`,
+    // Projekt-Agents, `.claude/settings.json` mit Hooks): in Stufe 2 nur lesbar (SBX-002).
+    let read_only = if ctx.stage == Stage::Tools && writable_ws {
+        PROJECT_CONFIG_DIRS
+            .iter()
+            .map(|d| workspace.join(d))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let (required, degraded) = if backend == ProviderId::None {
         (CapSet::new(), caps::required_default())
     } else {
@@ -873,6 +948,8 @@ pub fn resolve(
         git,
         keychain,
         unix_sockets,
+        read_only,
+        no_symlinks,
         env,
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),

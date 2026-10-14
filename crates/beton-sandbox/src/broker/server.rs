@@ -28,6 +28,7 @@ const SIGNALS: [i32; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQ
 pub struct Broker {
     socket: PathBuf,
     token: Secret,
+    started: Arc<std::sync::atomic::AtomicU64>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -49,6 +50,7 @@ impl Drop for Broker {
 struct Shared {
     tools: Sandbox,
     token: Secret,
+    started: Arc<std::sync::atomic::AtomicU64>,
 }
 
 fn token() -> std::io::Result<Secret> {
@@ -74,9 +76,11 @@ impl Broker {
         let listener = tokio::net::UnixListener::bind(&socket)?;
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
         let token = token()?;
+        let started = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let shared = Arc::new(Shared {
             tools,
             token: token.clone(),
+            started: started.clone(),
         });
         let task = tokio::spawn(async move {
             loop {
@@ -95,8 +99,15 @@ impl Broker {
         Ok(Self {
             socket,
             token,
+            started,
             task,
         })
+    }
+
+    /// Kommandos, die der Broker bisher in Stufe 2 gestartet hat (Integritätsprüfung des
+    /// Runners, SBX-002).
+    pub fn started(&self) -> u64 {
+        self.started.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn socket(&self) -> &Path {
@@ -276,6 +287,9 @@ async fn serve(mut conn: UnixStream, shared: Arc<Shared>) {
             return;
         }
     };
+    shared
+        .started
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let pid = child.id().unwrap_or(0);
     tracing::debug!(pid, "Exec-Broker: Stufe 2 gestartet");
     let (mut rd, mut wr) = conn.into_split();

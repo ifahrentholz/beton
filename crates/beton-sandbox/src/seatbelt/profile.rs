@@ -265,6 +265,19 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         }
     }
 
+    let mut ro_lines = Vec::new();
+    for d in &policy.read_only {
+        let key = b.path("READ_ONLY", d)?;
+        ro_lines.push(format!("(deny file-write* (subpath (param \"{key}\")))"));
+    }
+    let mut nosym_lines = Vec::new();
+    for d in &policy.no_symlinks {
+        let key = b.path("NO_SYMLINKS", d)?;
+        nosym_lines.push(format!(
+            "(deny file-write-create (require-all (subpath (param \"{key}\")) (vnode-type SYMLINK)))"
+        ));
+    }
+
     let mut keychain_lines = Vec::new();
     if policy.keychain && policy.stage == Stage::Harness {
         let names: Vec<String> = KEYCHAIN_SERVICES
@@ -309,7 +322,7 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         dev_lines.push(format!("(allow network-outbound (remote ip {ip}))"));
     }
 
-    let sections: [(&str, &Vec<String>); 12] = [
+    let sections: [(&str, &Vec<String>); 14] = [
         ("GRANT_ROOTS", &grant_lines),
         ("HIDDEN", &hidden_lines),
         ("ROOTS", &root_lines),
@@ -317,6 +330,8 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         ("MASKS", &mask_lines),
         ("KEEP", &keep_lines),
         ("GIT", &git_lines),
+        ("READ_ONLY", &ro_lines),
+        ("NO_SYMLINKS", &nosym_lines),
         ("KEYCHAIN", &keychain_lines),
         ("NETWORK", &net_lines),
         ("UNIX_SOCKETS", &unix_lines),

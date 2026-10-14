@@ -91,6 +91,12 @@ pub fn ruleset(
                 w.remove(AccessFs::ResolveUnix);
                 w
             }
+            Acc::WriteNoSymlink => {
+                let mut w = handled;
+                w.remove(AccessFs::ResolveUnix);
+                w.remove(AccessFs::MakeSym);
+                w
+            }
         } & handled;
         if !meta.is_dir() {
             rights &= file_rights();

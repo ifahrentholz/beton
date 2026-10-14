@@ -82,6 +82,12 @@ pub struct LaunchPlan {
     /// Loopback-Ports für Dev-Server (PRX-008 AC3).
     #[serde(default)]
     pub dev_ports: Vec<u16>,
+    /// Verzeichnisse, die read-only gebunden werden (Stufe 2: Projekt-Konfiguration, SBX-002).
+    #[serde(default)]
+    pub read_only: Vec<PathBuf>,
+    /// Schreib-Wurzeln ohne Recht, Symlinks anzulegen (Stufe 2: Austausch, SBX-002).
+    #[serde(default)]
+    pub no_symlinks: Vec<PathBuf>,
     pub limits: Limits,
     /// Höchste genutzte Landlock-ABI (Tests).
     pub abi_cap: Option<u8>,
@@ -125,6 +131,8 @@ impl LaunchPlan {
             net: policy.net,
             unix_sockets: policy.unix_sockets.clone(),
             dev_ports: policy.dev_ports.clone(),
+            read_only: policy.read_only.clone(),
+            no_symlinks: policy.no_symlinks.clone(),
             limits: policy.limits,
             abi_cap: None,
             cgroup: None,
@@ -489,6 +497,20 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             .into_iter()
             .map(|path| MountOp::ReadOnly { path }),
     );
+    // Projekt-Konfiguration (SBX-002): als eigener read-only Mount weder änderbar noch
+    // umbenennbar oder ersetzbar. Der Provider legt fehlende Verzeichnisse vorher an; fehlt
+    // eines trotzdem, könnte die Sandbox es anlegen (fail closed).
+    for path in &plan.read_only {
+        if !path.is_dir()
+            || std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(SandboxError::spawn(format!(
+                "{} fehlt oder ist kein Verzeichnis; read-only nicht durchsetzbar",
+                path.display()
+            )));
+        }
+        ops.push(MountOp::ReadOnly { path: path.clone() });
+    }
     sort_ops(&mut ops);
     Ok((ops, targets))
 }
@@ -598,6 +620,9 @@ pub enum Access {
     Device,
     /// Alles (Lesen, Schreiben, Anlegen, Löschen, Umbenennen, Ausführen).
     Write,
+    /// Wie `Write`, aber ohne Symlinks anzulegen (auch nicht per Umbenennen; Austausch,
+    /// SBX-002).
+    WriteNoSymlink,
 }
 
 /// Die Landlock-Regeln eines Plans (nach den Mounts im Mount-Namespace aufzulösen).
@@ -625,6 +650,11 @@ pub fn landlock_rules(plan: &LaunchPlan, missing_in_write: &[PathBuf]) -> Vec<(P
     }
     for w in &plan.write_roots {
         expand_write(w, missing_in_write, &mut rules);
+    }
+    for (path, acc) in &mut rules {
+        if *acc == Access::Write && plan.no_symlinks.contains(path) {
+            *acc = Access::WriteNoSymlink;
+        }
     }
     rules
 }
@@ -679,6 +709,10 @@ mod tests {
         write(&ws.join(".env"));
         write(&ws.join("a/.env.local"));
         write(&ws.join("src/main.rs"));
+        // Legt sonst der Provider an (read-only Mounts der Projekt-Konfiguration).
+        for d in crate::resolve::PROJECT_CONFIG_DIRS {
+            std::fs::create_dir_all(ws.join(d)).unwrap();
+        }
         std::fs::create_dir_all(&scratch).unwrap();
         let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
         ctx.adapters = crate::masks::builtin_harness_grants();
@@ -722,6 +756,51 @@ mod tests {
                 r.starts_with("/tmp") || r.starts_with("/run"),
                 "{r:?}: {t:?}"
             );
+        }
+    }
+
+    /// SBX-002: Projekt-Konfiguration read-only gebunden (fehlt sie, scheitert der Start),
+    /// im Austausch kein Recht auf Symlinks; unter `/tmp` lehnt die Auflösung ihn ab.
+    #[test]
+    fn sbx_002_project_config_read_only_and_exchange_without_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let base = tempfile::tempdir_in(crate::session_base()).unwrap();
+        let xchg = base.path().canonicalize().unwrap().join("xchg");
+        std::fs::create_dir_all(&xchg).unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let ws = root.join("ws");
+        let (ops, _) = mount_ops(&plan).unwrap();
+        for d in [".beton", ".claude"] {
+            assert!(
+                ops.contains(&MountOp::ReadOnly { path: ws.join(d) }),
+                "{d}: {ops:?}"
+            );
+        }
+        std::fs::remove_dir(ws.join(".claude")).unwrap();
+        assert!(mount_ops(&plan).is_err(), "fehlendes Ziel: fail closed");
+        plan.write_roots.push(xchg.clone());
+        plan.no_symlinks.push(xchg.clone());
+        let rules = landlock_rules(&plan, &[]);
+        assert!(
+            rules.contains(&(xchg.clone(), Access::WriteNoSymlink)),
+            "{rules:?}"
+        );
+        assert!(rules.contains(&(ws.clone(), Access::Write)), "{rules:?}");
+
+        // Austausch unter `/tmp` bzw. in einer anderen Schreib-Wurzel: abgelehnt.
+        let home = root.join("home");
+        let scratch = root.join("scratch");
+        let inside = ws.join("xchg");
+        std::fs::create_dir_all(&inside).unwrap();
+        let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
+        ctx.exchange = Some(inside);
+        let err = resolve(ProviderId::Landlock, &SandboxSpec::default(), &ctx).unwrap_err();
+        assert!(err.to_string().contains("Symlinks"), "{err}");
+        let under_tmp = tempfile::tempdir_in("/tmp").unwrap();
+        ctx.exchange = Some(under_tmp.path().canonicalize().unwrap());
+        if ctx.exchange.as_ref().unwrap().starts_with("/tmp") {
+            assert!(resolve(ProviderId::Landlock, &SandboxSpec::default(), &ctx).is_err());
         }
     }
 

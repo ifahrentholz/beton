@@ -179,6 +179,12 @@ pub(crate) fn command(
     Ok(c)
 }
 
+/// Prozessstarts gegen den Empfang von Deskriptoren: Unter macOS gibt es kein
+/// `MSG_CMSG_CLOEXEC`, zwischen `recvmsg` und `FD_CLOEXEC` erbte sonst ein gleichzeitig
+/// gestartetes Kind die stdio-Deskriptoren eines anderen `bt-exec` (SBX-002). Starts halten die
+/// Lese-, der Empfang die Schreibsperre.
+pub(crate) static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
 /// Startet `cmd` als Prozessgruppen-Leader (Unix) bzw. im Job-Object (Windows); der Baum
 /// endet mit dem `Drop` des Kindes.
 pub(crate) fn spawn(cmd: tokio::process::Command) -> io::Result<SandboxedChild> {
@@ -188,8 +194,14 @@ pub(crate) fn spawn(cmd: tokio::process::Command) -> io::Result<SandboxedChild> 
     #[cfg(windows)]
     wrap.wrap(process_wrap::tokio::JobObject);
     wrap.wrap(KillOnDrop);
+    let inner = {
+        let _starting = SPAWN_LOCK
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        wrap.spawn()?
+    };
     Ok(SandboxedChild {
-        inner: wrap.spawn()?,
+        inner,
         violations: Violations::default(),
         guard: None,
     })

@@ -332,8 +332,7 @@ impl SandboxSpec {
     }
 
     /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`. Setzt eine Ebene
-    /// ein Preset (SBX-012), liegt das Preset der spezifischsten Ebene als unterste Ebene
-    /// darunter.
+    /// ein Preset (SBX-012), liegt das Preset der spezifischsten solchen Ebene direkt unter ihr.
     pub fn merged(layers: &[&SandboxSpec]) -> SandboxSpec {
         Self::merged_with_origins(&layers.iter().map(|l| ("config", *l)).collect::<Vec<_>>()).0
     }
@@ -344,11 +343,17 @@ impl SandboxSpec {
     pub fn merged_with_origins(
         layers: &[(&str, &SandboxSpec)],
     ) -> (SandboxSpec, BTreeMap<String, String>) {
+        // Das Preset der spezifischsten Ebene, die eines setzt, gilt an deren Stelle: über den
+        // weniger spezifischen Ebenen (ein `readonly` des Agents verschärft, was der Benutzer
+        // freigibt), unter den eigenen Feldern dieser Ebene.
+        let at = layers.iter().rposition(|(_, l)| l.preset.is_some());
         let mut all: Vec<(String, SandboxSpec)> = Vec::new();
-        if let Some(p) = layers.iter().rev().find_map(|(_, l)| l.preset) {
-            all.push((format!("preset:{}", p.as_str()), crate::preset::layer(p)));
-        }
-        for (name, layer) in layers {
+        for (i, (name, layer)) in layers.iter().enumerate() {
+            if Some(i) == at
+                && let Some(p) = layer.preset
+            {
+                all.push((format!("preset:{}", p.as_str()), crate::preset::layer(p)));
+            }
             all.push(((*name).to_owned(), (*layer).clone()));
         }
         let mut out = SandboxSpec::default();

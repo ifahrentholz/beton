@@ -32,6 +32,10 @@ fn plan(fx_root: &std::path::Path) -> LaunchPlan {
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::write(home.join(".ssh/id_ed25519"), "x").unwrap();
     std::fs::write(ws.join(".env"), "x").unwrap();
+    // Read-only Mounts der Projekt-Konfiguration (legt sonst der Provider an, SBX-002).
+    for d in beton_sandbox::resolve::PROJECT_CONFIG_DIRS {
+        std::fs::create_dir_all(ws.join(d)).unwrap();
+    }
     let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
     ctx.host_env = [
         ("PATH", "/usr/bin:/bin"),

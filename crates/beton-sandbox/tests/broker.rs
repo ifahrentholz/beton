@@ -247,6 +247,7 @@ async fn sbx_002_ac3_broker_rejects_foreign_cwd_denied_env_and_bad_requests() {
     assert_eq!(error_code(&ask(&broker, &old)), "invalid_request");
     // Nichts davon wurde gestartet.
     assert_eq!(started.load(Ordering::SeqCst), 1);
+    assert_eq!(broker.started(), 1, "Zähler für die Integritätsprüfung");
 }
 
 /// `bt-exec` mit dem Broker-Zugang im Environment.

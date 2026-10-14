@@ -62,6 +62,11 @@ pub(crate) fn recv_fds(sock: RawFd) -> io::Result<Vec<OwnedFd>> {
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let flags = 0;
+    // Ohne atomares CLOEXEC (macOS): keine Prozessstarts zwischen Empfang und `FD_CLOEXEC`.
+    #[cfg(not(target_os = "linux"))]
+    let _receiving = crate::child::SPAWN_LOCK
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // SAFETY: msghdr mit gültigem iovec und Kontrollpuffer; empfangene Deskriptoren werden
     // sofort in OwnedFd übernommen.
     unsafe {

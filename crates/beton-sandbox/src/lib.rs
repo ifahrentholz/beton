@@ -36,9 +36,15 @@ pub mod resolve;
 pub mod seatbelt;
 pub mod spec;
 
-/// Basis für die Verzeichnisse einer Session mit zweistufiger Sandbox (Scratch, Austausch,
-/// Broker). Noch ohne Wirkung.
+/// Basis für die Verzeichnisse einer Session mit zweistufiger Sandbox (Scratch beider Stufen,
+/// Austausch, Broker-Socket, CA-Bundle). Unter Linux `/var/tmp`, nicht `/tmp` bzw. `TMPDIR`:
+/// In der Sandbox ist `/tmp` ein privates tmpfs mit Schreibrecht, und Landlock-Regeln erben die
+/// Rechte der Vorfahren; im Austausch ließen sich dort Symlinks nicht sperren (SBX-002). Sonst
+/// das temporäre Verzeichnis des Benutzers. Die Auflösung prüft das zusätzlich (fail closed).
 pub fn session_base() -> std::path::PathBuf {
+    if cfg!(target_os = "linux") && std::path::Path::new("/var/tmp").is_dir() {
+        return std::path::PathBuf::from("/var/tmp");
+    }
     std::env::temp_dir()
 }
 
