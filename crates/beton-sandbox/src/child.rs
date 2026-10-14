@@ -21,6 +21,8 @@ use crate::command::CommandSpec;
 
 /// Zusatzaufgaben eines Backends am Prozessbaum.
 pub(crate) trait TreeGuard: Send {
+    /// Erfasst den Baum, bevor die Wurzel ein Signal bekommt (macOS: Nachfahren-Erfassung).
+    fn capture(&mut self) {}
     /// Beendet Prozesse, die die Prozessgruppe verlassen haben (best effort).
     fn kill_tree(&mut self) {}
 }
@@ -107,7 +109,14 @@ impl SandboxedChild {
     }
 
     /// Beendet den ganzen Baum (SIGKILL bzw. Job-Object).
+    ///
+    /// Der Guard erfasst die Nachfahren, solange der Wurzelprozess noch lebt: Stirbt die Wurzel
+    /// vorher, hängt ein per `setsid` abgelöster Prozess am Init-Prozess und ist weder über die
+    /// Eltern-PID noch über die Prozessgruppe zu finden (SBX-013 AC2).
     pub fn start_kill(&mut self) -> io::Result<()> {
+        if let Some(g) = &mut self.guard {
+            g.capture();
+        }
         let r = self.inner.start_kill();
         if let Some(g) = &mut self.guard {
             g.kill_tree();
@@ -115,9 +124,14 @@ impl SandboxedChild {
         r
     }
 
-    /// Schickt ein Signal an die Prozessgruppe (Unix).
+    /// Schickt ein Signal an die Prozessgruppe (Unix). Wie bei [`Self::start_kill`] erfasst der
+    /// Guard den Baum vorher: Endet die Wurzel am Signal, sind per `setsid` abgelöste Nachfahren
+    /// sonst nicht mehr zu finden, auch nicht beim späteren Beenden (SBX-013 AC2).
     #[cfg(unix)]
-    pub fn signal_tree(&self, signal: i32) -> io::Result<()> {
+    pub fn signal_tree(&mut self, signal: i32) -> io::Result<()> {
+        if let Some(g) = &mut self.guard {
+            g.capture();
+        }
         self.inner.signal(signal)
     }
 

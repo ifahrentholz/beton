@@ -30,6 +30,20 @@ struct Daemonized {
     daemon: Daemon,
     token: String,
     addr: SocketAddr,
+    _load: Load,
+}
+
+/// Die Latenzmessung von SES-017 AC3 (≤ 1 s) läuft ohne die übrigen Tests dieser Datei: Jeder
+/// davon startet Daemon, Runner und `git`-Prozesse, und unter dieser Last dauert ein
+/// Workspace-Snapshot über eine Sekunde (#116). Gemessen wird das System, nicht die Last des
+/// Testlaufs; die Grenze bleibt 1 s. Unter nextest (ein Prozess je Test) sorgt
+/// `.config/nextest.toml` für dasselbe.
+static LOAD: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+#[allow(dead_code, reason = "hält nur die Sperre bis zum Testende")]
+enum Load {
+    Shared(tokio::sync::RwLockReadGuard<'static, ()>),
+    Alone(tokio::sync::RwLockWriteGuard<'static, ()>),
 }
 
 struct Reply {
@@ -48,6 +62,15 @@ impl Reply {
 }
 
 async fn daemon(data: &Path) -> Daemonized {
+    daemon_with(data, Load::Shared(LOAD.read().await)).await
+}
+
+/// Wie [`daemon`], ohne parallel laufende Tests dieser Datei.
+async fn daemon_alone(data: &Path) -> Daemonized {
+    daemon_with(data, Load::Alone(LOAD.write().await)).await
+}
+
+async fn daemon_with(data: &Path, load: Load) -> Daemonized {
     let store = Store::open(data, StoreOptions::default()).await.unwrap();
     let mut cfg = ServerConfig::local(data.to_path_buf());
     cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
@@ -70,6 +93,7 @@ async fn daemon(data: &Path) -> Daemonized {
         daemon,
         token,
         addr,
+        _load: load,
     }
 }
 
@@ -772,7 +796,7 @@ async fn ses_017_ac3_agent_write_reaches_all_clients_as_fs_changed_within_one_se
     let ws = dir.path().join("ws");
     std::fs::create_dir_all(&data).unwrap();
     write(&ws, "a.txt", "a\n");
-    let d = daemon(&data).await;
+    let d = daemon_alone(&data).await;
     let sc = scenario(
         dir.path(),
         r#"

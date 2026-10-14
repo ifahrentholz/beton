@@ -47,15 +47,35 @@ pub enum InputMode {
 }
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Standard für [`SessionsConfig::start_budget`].
+pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 
 /// Gestartete Runner dieses Knotens.
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
+    /// Tunnel-Token und Startzeit des zuletzt gestarteten Runners je Session. Ist das Token
+    /// gesperrt (geordneter Stopp) oder das Start-Budget abgelaufen, startet dieser Runner nicht
+    /// mehr, auch wenn sein Prozess noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, (String, Instant)>>,
+    /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
+    /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
+    starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
 }
 
 impl Launched {
+    /// Sperre für Starts der Session.
+    fn start_lock(&self, session: SessionId) -> Arc<Mutex<()>> {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session)
+            .or_default()
+            .clone()
+    }
+
     /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
     pub async fn pid(&self, session: SessionId) -> Option<u32> {
         self.handles.lock().await.get(&session).and_then(|h| h.pid)
@@ -72,6 +92,11 @@ impl std::fmt::Debug for Launched {
 #[derive(Clone)]
 pub struct SessionsConfig {
     pub provider: Arc<dyn RunnerProvider>,
+    /// Wie lange eine Eingabe bzw. `resume` auf die Anmeldung eines Runners wartet.
+    pub connect_timeout: Duration,
+    /// Wie lange ein gestarteter Runner als „startet gerade“ gilt; danach ersetzt ihn der
+    /// nächste Start. Deutlich über dem längsten Harness-Handshake (Codex: 30 s).
+    pub start_budget: Duration,
     pub tunnel_socket: Option<PathBuf>,
     /// Entwicklermodus: Fake-Harness erlaubt (HAR-026 AC3).
     pub dev: bool,
@@ -673,6 +698,7 @@ impl<'a> SessionManager<'a> {
             .runners
             .mint_token(session.id)
             .map_err(|e| Problem::internal(&e))?;
+        let boot_token = token.clone();
         let spec = RunnerSpec {
             runner_id: RunnerId::new(),
             session_id: session.id,
@@ -693,7 +719,7 @@ impl<'a> SessionManager<'a> {
                 &provisioned,
                 &RunnerBoot {
                     tunnel_socket: socket,
-                    token,
+                    token: boot_token,
                     session_id: session.id,
                     epoch: session.epoch,
                     harness: session.harness.clone(),
@@ -723,13 +749,20 @@ impl<'a> SessionManager<'a> {
             .await
             .map_err(|e| Problem::new(ProblemCode::Unavailable).detail(e.to_string()))?;
         cfg.launched.handles.lock().await.insert(session.id, handle);
+        cfg.launched
+            .tokens
+            .lock()
+            .await
+            .insert(session.id, (token, Instant::now()));
         Ok(())
     }
 
     pub(crate) async fn wait_connected(&self, session: SessionId) -> Result<(), Problem> {
         let start = Instant::now();
         while !self.state.runtime.runners.connected(session) {
-            if start.elapsed() > CONNECT_TIMEOUT {
+            if start.elapsed() > self.cfg().connect_timeout {
+                // Der Runner startet weiter (Harness-Handshake, MCP-Server); der nächste
+                // Versuch wartet auf ihn, ersetzt wird er erst nach dem Start-Budget.
                 return Err(
                     Problem::new(ProblemCode::Unavailable).detail("Runner meldet sich nicht")
                 );
@@ -739,12 +772,33 @@ impl<'a> SessionManager<'a> {
         Ok(())
     }
 
+    /// Räumt den vorigen Start vor einem neuen ab: Token sperren, Prozess beenden (falls er nach
+    /// dem Start-Budget noch läuft). Nur unter der Start-Sperre der Session aufrufen; dann gehört
+    /// der Eintrag sicher zur Generation vor dem neuen Start.
+    async fn replace_start(&self, session: SessionId) {
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            self.state.runtime.runners.revoke_token(&token);
+        }
+        if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
+            let _ = self
+                .cfg()
+                .provider
+                .terminate(&h, TerminateMode::Force)
+                .await;
+        }
+    }
+
     /// Setzt eine gestoppte Session mit neuem Runner fort (SES-003).
     pub async fn resume(&self, session: SessionId) -> Result<SessionRecord, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
-        if !self.await_adopted(session).await {
-            let reference = self.last_native_ref(session).await?;
-            self.launch(&record, reference).await?;
+        {
+            let starts = self.cfg().launched.start_lock(session);
+            let _start = starts.lock().await;
+            if !self.await_adopted(session).await && !self.runner_starting(session).await {
+                self.replace_start(session).await;
+                let reference = self.last_native_ref(session).await?;
+                self.launch(&record, reference).await?;
+            }
         }
         self.wait_connected(session).await?;
         Ok(self.state.store.session(self.org(), session).await?)
@@ -767,8 +821,27 @@ impl<'a> SessionManager<'a> {
 
     /// Läuft (oder startet gerade) ein Runner für die Session?
     async fn runner_alive(&self, session: SessionId) -> bool {
-        if self.await_adopted(session).await {
-            return true;
+        self.await_adopted(session).await || self.runner_starting(session).await
+    }
+
+    /// Ist der zuletzt gestartete Runner noch auf dem Weg zum Tunnel? Sein Prozess läuft, sein
+    /// Token gilt, und das Start-Budget ist nicht abgelaufen. Nach einem geordneten Stopp ist
+    /// das Token gesperrt: Ein Prozess, der sich nur noch beendet, meldet sich nicht wieder
+    /// (#198).
+    async fn runner_starting(&self, session: SessionId) -> bool {
+        let launched = self
+            .cfg()
+            .launched
+            .tokens
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        let budget = self.cfg().start_budget;
+        if !launched.is_some_and(|(t, at)| {
+            at.elapsed() < budget && self.state.runtime.runners.token_valid(&t)
+        }) {
+            return false;
         }
         let handle = self
             .cfg()
@@ -792,27 +865,9 @@ impl<'a> SessionManager<'a> {
         if self.await_adopted(session).await {
             return Ok(());
         }
-        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
-        let handle = self
-            .cfg()
-            .launched
-            .handles
-            .lock()
-            .await
-            .get(&session)
-            .cloned();
-        let starting = match &handle {
-            Some(h) => matches!(
-                self.cfg().provider.status(h).await,
-                Ok(beton_host::RunnerStatus::Running)
-            ),
-            None => false,
-        };
-        if !starting {
-            self.cfg().launched.handles.lock().await.remove(&session);
-            self.resume(session).await?;
-        }
-        self.wait_connected(session).await
+        // Ein startender Runner verbindet sich gleich; ein beendeter, geordnet gestoppter oder
+        // über das Start-Budget hängender wird unter der Start-Sperre ersetzt.
+        self.resume(session).await.map(|_| ())
     }
 
     /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
@@ -1260,6 +1315,11 @@ impl<'a> SessionManager<'a> {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
+        // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
+        // Tunnel (Security-Review zu #198).
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            runners.revoke_token(&token);
+        }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1312,6 +1372,7 @@ impl<'a> SessionManager<'a> {
             .map_err(|e| Problem::internal(&e))??;
         }
         self.state.runtime.runners.revoke_tokens(session);
+        self.cfg().launched.tokens.lock().await.remove(&session);
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1366,6 +1427,7 @@ pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
 pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerRegistry) {
     let handles: Vec<(SessionId, RunnerHandle)> =
         cfg.launched.handles.lock().await.drain().collect();
+    cfg.launched.tokens.lock().await.clear();
     // Runner mit offener Freigabe überdauern den Daemon (POL-010 AC4): abkoppeln statt beenden;
     // der nächste Daemon nimmt ihr Token bis zum Ablauf der Freigabe an.
     let mut candidates: Vec<SessionId> = runners.connected_sessions();
