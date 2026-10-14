@@ -288,16 +288,6 @@ struct PolicyPathGuard {
 }
 
 impl PolicyPathGuard {
-    fn new<'a>(dirs: impl Iterator<Item = &'a Path>, cwd: &str, home: Option<&Path>) -> Self {
-        Self {
-            dirs: dirs
-                .map(|d| PathBuf::from(resolve_fs(&d.display().to_string())))
-                .collect(),
-            cwd: cwd.to_owned(),
-            home: home.map(|h| h.display().to_string()),
-        }
-    }
-
     /// Absoluter Pfad unter einem Policy-Verzeichnis oder das `.beton`-Verzeichnis darüber
     /// (`rm -rf .beton`), nicht aber Arbeitsverzeichnis oder Home.
     fn hits_path(&self, path: &str) -> bool {
@@ -477,6 +467,8 @@ struct Inner {
     /// Von beton eingebundene MCP-Server (#234): nur für sie gelten die Klassen reservierter
     /// Namen (`beton` → `system`). Bis zur MCP-Vorbereitung keiner (fail closed).
     trusted_servers: Mutex<Vec<String>>,
+    /// Aufgelöste Policy-Verzeichnisse (Cache für die Regel `policy-files`).
+    policy_dirs: Mutex<Option<Vec<PathBuf>>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
     requested: Mutex<Vec<(String, Option<String>, String)>>,
     /// Reihenfolge im Log: `policy.decision` erst nach dem `tool.call.requested` (POL-025).
@@ -710,9 +702,10 @@ impl PolicyGate {
         for (scope, dir) in &opts.dirs {
             store.add_dir(*scope, dir);
         }
-        // Projekt-Policies liegen in der Hand des Agents bzw. Repos: während der Session nur
-        // verschärfen (Re-Review R1 zu #253).
+        // Projekt-Policies liegen in der Hand des Agents bzw. Repos, User-Policies ohne Sandbox
+        // in Reichweite seiner Tools: während der Session nur verschärfen (#253).
         store.tighten_only(Scope::Project);
+        store.tighten_only(Scope::User);
         Self {
             inner: Arc::new(Inner {
                 opts,
@@ -723,6 +716,7 @@ impl PolicyGate {
                 pending: Mutex::new(HashMap::new()),
                 decided: Mutex::new(HashMap::new()),
                 trusted_servers: Mutex::new(Vec::new()),
+                policy_dirs: Mutex::new(None),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
                 started: std::sync::atomic::AtomicBool::new(true),
@@ -1794,6 +1788,29 @@ impl PolicyGate {
         })
     }
 
+    /// Kanonische Policy-Verzeichnisse (einmal aufgelöst; das Ziel eines Symlinks kann sich
+    /// während der Session ändern, deshalb nur, solange es das Verzeichnis gibt).
+    fn policy_dirs(&self) -> Vec<PathBuf> {
+        if let Ok(cache) = self.inner.policy_dirs.lock()
+            && let Some(dirs) = cache.as_ref()
+        {
+            return dirs.clone();
+        }
+        let dirs: Vec<PathBuf> = self
+            .inner
+            .opts
+            .dirs
+            .iter()
+            .map(|(_, d)| PathBuf::from(resolve_fs(&d.display().to_string())))
+            .collect();
+        if self.inner.opts.dirs.iter().all(|(_, d)| d.exists())
+            && let Ok(mut cache) = self.inner.policy_dirs.lock()
+        {
+            *cache = Some(dirs.clone());
+        }
+        dirs
+    }
+
     /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle. Für
     /// MCP-Tools entscheidet die Normalisierung mit der Herkunft des Servers (#234): Ein
     /// fremder Server namens `beton` ist kein System-Tool, auch wenn der Adapter das meint.
@@ -1863,11 +1880,16 @@ impl PolicyGate {
         if READ_ONLY_KINDS.contains(&n.kind.as_str()) {
             return None;
         }
-        let guard = PolicyPathGuard::new(
-            self.inner.opts.dirs.iter().map(|(_, d)| d.as_path()),
-            &n.cwd,
-            self.inner.opts.home.as_deref(),
-        );
+        let guard = PolicyPathGuard {
+            dirs: self.policy_dirs(),
+            cwd: n.cwd.clone(),
+            home: self
+                .inner
+                .opts
+                .home
+                .as_ref()
+                .map(|h| h.display().to_string()),
+        };
         if let Some(p) = n.paths.iter().find(|p| guard.hits_path(p)) {
             return Some(p.clone());
         }
@@ -1883,9 +1905,15 @@ impl PolicyGate {
                 .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
                 .collect();
             let vars = assignments(std::slice::from_ref(&words));
-            for word in n.argv.iter().flatten() {
-                if guard.hits_word(word, &vars) {
-                    return Some(word.clone());
+            for sub in &n.argv {
+                for (i, word) in sub.iter().enumerate() {
+                    // Der Programmname ohne `/` ist kein Pfad (nur auf `.beton` prüfen).
+                    let program = i == 0 && !word.contains('/');
+                    if (program && word.to_lowercase().contains(".beton"))
+                        || (!program && guard.hits_word(word, &vars))
+                    {
+                        return Some(word.clone());
+                    }
                 }
             }
             if n.parse_uncertain

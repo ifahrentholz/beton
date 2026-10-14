@@ -278,10 +278,12 @@ impl PolicyStore {
 }
 
 /// Verschärft `new` gegenüber `old` (ohne `old`: gegenüber einem leeren Set)? Erlaubt sind:
-/// unveränderte Regeln, neue Regeln mit `deny`, `ask` oder `notify` bzw. eingebaute
-/// Regeltypen, Dry-Run-Regeln und strengere Defaults. `Err` nennt den ersten lockernden Punkt.
+/// unveränderte Regeln, neue Regeln mit `deny`, `ask` oder `notify` (bzw. noch nicht
+/// entzuckerte Regeltypen) ohne `effects` und ohne eigenen Freigabe-Timeout bzw.
+/// `on_timeout: allow`, Dry-Run-Regeln und strengere Defaults. `Err` nennt den ersten
+/// lockernden Punkt.
 pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), String> {
-    use crate::doc::{Action, DefaultAction, Mode};
+    use crate::doc::{Action, DefaultAction, Mode, TimeoutAction};
     let active = |s: &LoadedSet| s.mode == Mode::Enforce;
     let old_rules: Vec<&crate::load::LoadedRule> = old
         .filter(|o| active(o))
@@ -316,13 +318,27 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
         if rule.doc.dry_run || old_rules.iter().any(|r| r.doc == rule.doc) {
             continue;
         }
-        let tightening = rule.doc.rule_type.is_some()
-            || matches!(
-                rule.doc.action,
-                Some(Action::Deny | Action::Ask | Action::Notify)
-            );
-        if !tightening {
+        // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`) über ihre
+        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`.
+        let action = match &rule.kind {
+            crate::load::RuleKind::Cel { action, .. } => *action,
+            crate::load::RuleKind::Builtin(_) => Action::Deny,
+        };
+        if !matches!(action, Action::Deny | Action::Ask | Action::Notify) {
             return Err(format!("Regel `{}` neu mit allow oder modify", rule.id));
+        }
+        // Effects können Zähler anderer Regeln zurücksetzen (#253 N1).
+        if !rule.doc.effects.is_empty() {
+            return Err(format!("Regel `{}` neu mit effects", rule.id));
+        }
+        // Der kürzeste Timeout gilt für die ganze Card; `on_timeout: allow` erlaubt (N2).
+        if let Some(a) = &rule.doc.approval
+            && (a.timeout.is_some() || a.on_timeout == Some(TimeoutAction::Allow))
+        {
+            return Err(format!(
+                "Regel `{}` neu mit eigenem Freigabe-Timeout bzw. on_timeout: allow",
+                rule.id
+            ));
         }
     }
     Ok(())
