@@ -374,14 +374,34 @@ mod probes {
                     )),
                     #[cfg(not(target_arch = "x86_64"))]
                     "x32_unshare" => "err:38".into(),
-                    "procmem" => {
-                        // /proc/<pid>/mem eines anderen Prozesses (z. B. PID 1 der Sandbox).
-                        let p = std::ffi::CString::new(format!("/proc/{}/mem", args[0])).unwrap();
-                        let fd = libc::open(p.as_ptr(), libc::O_RDONLY);
-                        if fd >= 0 {
-                            libc::close(fd);
+                    "procmem_ancestors" => {
+                        // /proc/<pid>/mem aller Vorfahren bis PID 1 (PID 1 und unter bwrap der
+                        // innere Launcher verwalten die Sandbox).
+                        let mut pid = libc::getppid();
+                        let mut reached = Vec::new();
+                        while pid > 0 {
+                            let p = std::ffi::CString::new(format!("/proc/{pid}/mem")).unwrap();
+                            let fd = libc::open(p.as_ptr(), libc::O_RDONLY);
+                            if fd >= 0 {
+                                libc::close(fd);
+                                reached.push(pid);
+                            }
+                            if pid == 1 {
+                                break;
+                            }
+                            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+                                .unwrap_or_default();
+                            pid = status
+                                .lines()
+                                .find_map(|l| l.strip_prefix("PPid:"))
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
                         }
-                        rc(fd as i64)
+                        if reached.is_empty() {
+                            "err:alle".into()
+                        } else {
+                            format!("ok:{reached:?}")
+                        }
                     }
                     "procmem_child" => {
                         // Kontrollgruppe: der Speicher eines eigenen Kindes ist erreichbar.
