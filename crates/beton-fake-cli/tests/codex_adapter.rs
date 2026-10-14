@@ -529,3 +529,36 @@ async fn har_006_denial_without_reason_sends_no_steer() {
     );
     s.shutdown(Shutdown::default()).await.unwrap();
 }
+
+#[tokio::test]
+async fn use_004_ac2_codex_rate_limits_become_usage_subscription() {
+    let (_dir, path) = scenario(
+        r#"
+turns:
+  - emit:
+      - { message: "ok" }
+      - { usage: { input_tokens: 100, output_tokens: 5 } }
+      - { rate_limit: { window: 5h, used_pct: 92, resets_in_s: 1800 } }
+      - { rate_limit: { window: 7d, used_pct: 12.5 } }
+"#,
+    );
+    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll)).await;
+    s.send("Hallo".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let windows: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            EventPayload::UsageSubscription(u) => {
+                Some((u.vendor.clone(), u.window.clone(), u.used_pct))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        windows,
+        [
+            ("openai".to_owned(), "5h".to_owned(), 92.0),
+            ("openai".to_owned(), "7d".to_owned(), 12.5)
+        ]
+    );
+}

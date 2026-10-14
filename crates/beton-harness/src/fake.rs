@@ -797,6 +797,18 @@ impl Player {
                 ..CostDelta::default()
             }))
             .await;
+        } else if let Some(limit) = step.rate_limit {
+            let resets = time::OffsetDateTime::from_unix_timestamp(limit.resets_at())
+                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+            self.send(EventPayload::UsageSubscription(
+                beton_core::event::UsageSubscription {
+                    vendor: HarnessId::FAKE.into(),
+                    window: limit.window,
+                    used_pct: limit.used_pct,
+                    resets_at: resets.into(),
+                },
+            ))
+            .await;
         } else if let Some(message) = step.error {
             self.send(EventPayload::TurnFailed(TurnFailed {
                 turn_id: self.turn,

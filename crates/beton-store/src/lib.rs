@@ -32,6 +32,9 @@ mod secrets_meta_tests;
 mod sessions;
 #[cfg(test)]
 mod tests;
+mod usage;
+#[cfg(test)]
+mod usage_report_tests;
 #[cfg(test)]
 mod usage_tests;
 
@@ -64,6 +67,10 @@ pub use crate::secrets_meta::SecretMetaRecord;
 pub use crate::sessions::{
     DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree, Tombstone,
     TreeEntry,
+};
+pub use crate::usage::{
+    Billing, HarnessReporting, SubscriptionWindow, UsageDimension, UsageGroup, UsageQuery,
+    UsageReport,
 };
 
 /// Redaction-Hook (SEC-013, PROTO-001 AC3): schwärzt alle Strings eines JSON-Werts an Ort

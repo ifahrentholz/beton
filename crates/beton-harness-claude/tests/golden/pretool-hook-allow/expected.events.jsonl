@@ -1,7 +1,8 @@
 {"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:1>"},"turn_id":"<id:1>","type":"turn.started"}
 {"has_raw":true,"payload":{"harness_session_ref":"<id:2>","mcp_servers":[],"tools":["Task","Artifact","ArtifactComments","ArtifactData","AskUserQuestion","Bash","CronCreate","CronDelete","CronList","DesignSync","Edit","EnterPlanMode","EnterWorktree","ExitPlanMode","ExitWorktree","ListAgents","Monitor","NotebookEdit","PushNotification","Read","RemoteTrigger","ReportFindings","ScheduleWakeup","SendMessage","ShareOnboardingGuide","Skill","TaskStop","ToolSearch","WebFetch","WebSearch","Workflow","Write"]},"turn_id":"<id:1>","type":"harness.ready"}
 {"has_raw":true,"payload":{"args":{"command":"echo beton-hook","description":"Print the string beton-hook"},"call_id":"<id:3>","kind":"shell","source":"harness","tool":"Bash"},"turn_id":"<id:1>","type":"tool.call.requested"}
-{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":28.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:1>","type":"usage.subscription"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":28.0,"vendor":"anthropic","window":"5h"},"turn_id":"<id:1>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"resets_at":"<ts>","used_pct":14.0,"vendor":"anthropic","window":"7d"},"turn_id":"<id:1>","type":"usage.subscription"}
 {"has_raw":true,"payload":{"call_id":"<id:3>","duration_ms":0,"result":"beton-hook","status":"ok"},"turn_id":"<id:1>","type":"tool.call.completed"}
 {"has_raw":true,"payload":{"message_id":"<id:4>","text":"beton-hook"},"turn_id":"<id:1>","type":"message.delta"}
 {"has_raw":true,"payload":{"content":[{"text":"beton-hook","type":"text"}],"message_id":"<id:4>","role":"assistant"},"turn_id":"<id:1>","type":"message.completed"}

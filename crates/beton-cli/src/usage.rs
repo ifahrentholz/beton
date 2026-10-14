@@ -1,9 +1,10 @@
+//! `beton usage`: Verbrauchsübersicht (USE-007, CLI-010; [`crate::usage_report`]) und
 //! `beton usage pricing explain` (USE-003 AC3): Herleitung des Preises für ein Modell.
 //!
-//! Läuft ohne Daemon: eingebetteter Katalog (USE-002) plus Preis-Overrides der
-//! User-Konfiguration (`pricing.overrides`, `providers.*.models[].pricing`). Im zentralen
+//! `pricing explain` läuft ohne Daemon: eingebetteter Katalog (USE-002) plus Preis-Overrides
+//! der User-Konfiguration (`pricing.overrides`, `providers.*.models[].pricing`). Im zentralen
 //! Betrieb (`--server`) gelten nur die Overrides des Servers; die lokalen werden ignoriert
-//! (USE-003 AC4). Die übrigen `usage`-Kommandos kommen mit USE-007.
+//! (USE-003 AC4).
 
 use std::io::Write as _;
 
@@ -11,7 +12,7 @@ use beton_core::event::PriceSource;
 use beton_core::pricing::{Catalog, Explanation, Pricer, Rates, StepOutcome};
 use serde::Serialize;
 
-use crate::cli::{PricingCommand, UsageCommand};
+use crate::cli::{ExplainArgs, PricingCommand, UsageArgs, UsageCommand};
 use crate::commands::Ctx;
 use crate::config::Settings;
 use crate::exit::{CliError, CliResult, Exit};
@@ -53,8 +54,14 @@ pub fn explain(
     }
 }
 
-pub fn run(ctx: &Ctx, cmd: UsageCommand) -> CliResult {
-    let UsageCommand::Pricing(PricingCommand::Explain(args)) = cmd;
+pub async fn run(ctx: &Ctx, args: UsageArgs) -> CliResult {
+    match args.command {
+        Some(UsageCommand::Pricing(PricingCommand::Explain(explain))) => explain_cmd(ctx, &explain),
+        None => crate::usage_report::run(ctx, &args.report).await,
+    }
+}
+
+fn explain_cmd(ctx: &Ctx, args: &ExplainArgs) -> CliResult {
     let layers = ctx.layers()?;
     let settings = layers
         .daemon_settings()

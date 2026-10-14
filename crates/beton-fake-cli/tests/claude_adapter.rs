@@ -506,3 +506,52 @@ fn har_022_claude_auto_compaction_is_reported() {
     let names: Vec<&str> = out.iter().map(EventPayload::type_name).collect();
     assert_eq!(names, ["compaction.started", "compaction.completed"]);
 }
+
+#[tokio::test]
+async fn use_004_ac1_claude_subscription_turn_reports_tokens_and_windows_without_money() {
+    let (_dir, path) = scenario(
+        r#"
+turns:
+  - emit:
+      - { rate_limit: { window: 5h, used_pct: 72 } }
+      - { message: "ok" }
+      - { usage: { input_tokens: 1200, output_tokens: 80, cache_read_tokens: 300, cost_usd: 0.42 } }
+"#,
+    );
+    let (mut s, mut rx) = start(&path, "", Arc::new(AllowAll), ClaudeAdapter::default()).await;
+    s.send("Hallo".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let window = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::UsageSubscription(u) => Some(u),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            window.vendor.as_str(),
+            window.window.as_str(),
+            window.used_pct
+        ),
+        ("anthropic", "5h", 72.0)
+    );
+    let cost = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::CostDelta(c) => Some(c),
+            _ => None,
+        })
+        .unwrap();
+    // Login der CLI: Tokens ja, der gemeldete Betrag ist nur ein API-Äquivalent (HAR-021 AC2).
+    assert_eq!(cost.auth_source, AuthSource::VendorCli);
+    assert_eq!(
+        (
+            cost.input_tokens,
+            cost.output_tokens,
+            cost.cache_read_tokens
+        ),
+        (1200, 80, 300)
+    );
+    assert_eq!(cost.cost_micro, None);
+}

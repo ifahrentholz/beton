@@ -42,7 +42,7 @@ serde_path_to_error.workspace = true
 serde_norway.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["local-offset"] }
 tokio = { workspace = true, features = ["io-std", "signal"] }
 tracing.workspace = true
 tracing-appender.workspace = true

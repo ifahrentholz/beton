@@ -41,7 +41,7 @@ use tokio::sync::{Mutex, Notify, mpsc};
 use crate::mapping::{MapState, map_notification, requested, started, unmapped};
 
 /// Getestete CLI-Versionen (Golden-Transcripts unter `tests/golden/`).
-pub const TESTED_VERSIONS: [&str; 1] = ["0.153.2"];
+pub const TESTED_VERSIONS: [&str; 2] = ["0.153.2", "0.161.0"];
 /// Unterstützter Bereich. Protokollbrüche innerhalb des Bereichs erkennt der Handshake
 /// (`harness.incompatible`, HAR-006 AC4).
 pub const VERSION_RANGE: &str = ">=0.153.0, <1.0.0";
