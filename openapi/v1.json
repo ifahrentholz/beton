@@ -1152,6 +1152,223 @@
         }
       }
     },
+    "/v1/policies": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Das effektive Set: User-Ebene und mit `session_id` die Projekt-Ebene der Session.",
+        "operationId": "list_policies",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Session, deren Projekt-Policies mitzählen; ohne Angabe nur die User-Ebene.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Geltende Regeln mit Ebene und Herkunft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EffectivePolicies"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/policies/evaluate": {
+      "post": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Wertet eine hypothetische Anfrage aus – ohne Events, Approvals oder Zustandsänderungen.",
+        "operationId": "evaluate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Entscheidung mit Erklärung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyEvaluation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/policies/shadow": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Treffer der Regeln im Shadow-Betrieb je Regel und Tag (POL-027 AC4).",
+        "operationId": "shadow",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Anzahl Tage bis heute (1–31, Default 7).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Treffer je Regel und Tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShadowReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/proxy/ca/rotate": {
       "post": {
         "tags": [
@@ -3604,6 +3821,87 @@
         }
       }
     },
+    "/v1/sessions/{id}/policy-decisions/{seq}": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Explain einer Entscheidung der Session (POL-027 AC1/AC2): `seq` eines `policy.decision`\noder eines `tool.call.requested`.",
+        "operationId": "explain_decision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entscheidung mit Erklärung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionExplain"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/queue": {
       "get": {
         "tags": [
@@ -5782,6 +6080,44 @@
           "answer"
         ]
       },
+      "DecisionExplain": {
+        "type": "object",
+        "description": "Explain einer gespeicherten Entscheidung.",
+        "required": [
+          "session_id",
+          "seq",
+          "decision",
+          "explanation",
+          "explain"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seq des `policy.decision`.",
+            "minimum": 0
+          },
+          "decision": {
+            "type": "object"
+          },
+          "explanation": {
+            "type": "object"
+          },
+          "explain": {
+            "type": "string"
+          },
+          "snapshot_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Warum der Snapshot nicht nutzbar war (fehlt oder beschädigt)."
+          }
+        }
+      },
       "DiffHunk": {
         "type": "object",
         "required": [
@@ -5870,6 +6206,34 @@
           "delete"
         ]
       },
+      "EffectivePolicies": {
+        "type": "object",
+        "description": "Das effektive Set (POL-027 `show --effective`).",
+        "required": [
+          "policy_set_hash",
+          "sets",
+          "invalid"
+        ],
+        "properties": {
+          "policy_set_hash": {
+            "type": "string"
+          },
+          "sets": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Sets mit Ebene, Herkunft, Version, Modus und Regeln (`id`, `phases`, `action`, `when`)."
+          },
+          "invalid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dateien, die gerade nicht laden (Pfad)."
+          }
+        }
+      },
       "EntryKind": {
         "type": "string",
         "description": "Art eines Eintrags im Dateibaum.",
@@ -5879,6 +6243,45 @@
           "symlink",
           "other"
         ]
+      },
+      "EvaluateRequest": {
+        "type": "object",
+        "description": "Anfrage für `POST /v1/policies/evaluate`.",
+        "required": [
+          "phase",
+          "input"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Phase: `session_start`, `model_request`, `tool_call`, `tool_result`, …"
+          },
+          "input": {
+            "type": "object",
+            "description": "Phasenspezifische Eingabe wie in Policy-Tests, z. B.\n`{ \"tool\": { \"name\": \"Bash\", \"args\": { \"command\": \"git push\" } } }`."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kontext dieser Session (Policies, Kosten, Zustand, Grants)."
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Harness für Normalisierung und Durchsetzung; Default: der der Session bzw. `claude`."
+          },
+          "fixtures": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Weitere Kontextwerte (wie `fixtures` in Policy-Tests); gelten vor denen der Session."
+          }
+        }
       },
       "EventPage": {
         "type": "object",
@@ -6646,6 +7049,39 @@
         "properties": {
           "pinned": {
             "type": "boolean"
+          }
+        }
+      },
+      "PolicyEvaluation": {
+        "type": "object",
+        "description": "Ergebnis einer seiteneffektfreien Auswertung.",
+        "required": [
+          "outcome",
+          "enforcement",
+          "decision",
+          "explanation",
+          "explain"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`allow`, `deny` oder `ask`."
+          },
+          "enforcement": {
+            "type": "string",
+            "description": "Durchsetzung, die der Harness in dieser Phase erreicht."
+          },
+          "decision": {
+            "type": "object",
+            "description": "Die Entscheidung in der Form von `policy.decision` (ohne `decision_id`)."
+          },
+          "explanation": {
+            "type": "object",
+            "description": "Strukturierte Erklärung samt benutzter Kontextwerte."
+          },
+          "explain": {
+            "type": "string",
+            "description": "Erklärung als Text."
           }
         }
       },
@@ -7475,6 +7911,114 @@
           "base_sha": {
             "type": "string",
             "description": "Commit der Base beim Anlegen."
+          }
+        }
+      },
+      "ShadowLastHit": {
+        "type": "object",
+        "description": "Letzter Treffer einer Shadow-Regel.",
+        "required": [
+          "session_id",
+          "session_title",
+          "seq",
+          "at"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "session_title": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kurzform der Aktion (z. B. Tool und Kommando), falls bekannt."
+          }
+        }
+      },
+      "ShadowReport": {
+        "type": "object",
+        "description": "Shadow-Treffer der letzten Tage (POL-027 AC4).",
+        "required": [
+          "days",
+          "rules"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tage (UTC, `YYYY-MM-DD`), ältester zuerst, heute zuletzt."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShadowRule"
+            }
+          }
+        }
+      },
+      "ShadowRule": {
+        "type": "object",
+        "description": "Eine Regel im Shadow-Betrieb mit Treffern je Tag.",
+        "required": [
+          "rule_id",
+          "scope",
+          "set",
+          "verdict",
+          "counts",
+          "total"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "set": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "description": "Verdikt ohne Shadow-Betrieb: `deny` (würde ablehnen), `ask`, `modify`, …"
+          },
+          "counts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Treffer je Tag in der Reihenfolge von `days`."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShadowLastHit"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
