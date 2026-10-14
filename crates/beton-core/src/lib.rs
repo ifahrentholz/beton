@@ -6,5 +6,6 @@ pub mod event;
 pub mod feature;
 pub mod id;
 pub mod network;
+pub mod pricing;
 pub mod registry;
 pub mod time;

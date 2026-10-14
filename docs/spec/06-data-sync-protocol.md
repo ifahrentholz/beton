@@ -94,7 +94,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
 | | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
-| Kosten & Kontext | `cost.delta` | D | `harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported\|estimated\|subscription, auth_source: vendor_cli\|api_key\|gateway\|none, purpose?` |
+| Kosten & Kontext | `cost.delta` | D | `harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported\|estimated\|subscription, auth_source: vendor_cli\|api_key\|gateway\|none, purpose?, cost_source?: override\|harness\|catalog\|none\|subscription, pricing_version?, equivalent_micro?` (die letzten drei setzt der Server beim Append, USE-001) |
 | | `usage.subscription` | D | `vendor, window, used_pct, resets_at` |
 | | `context.usage` | D | `used_tokens, window_tokens, source: harness\|estimated` |
 | | `compaction.started` / `compaction.completed` | D | `before_tokens, after_tokens?` |

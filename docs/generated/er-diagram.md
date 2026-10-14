@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 8. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 9. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -162,6 +162,27 @@ erDiagram
         INTEGER cost_micro
         INTEGER events
     }
+    usage_records {
+        TEXT org_id
+        TEXT session_id PK,FK
+        INTEGER seq PK
+        TEXT ts
+        TEXT day
+        TEXT project_id "nullable"
+        TEXT user_id
+        TEXT harness
+        TEXT model
+        TEXT auth_source
+        TEXT purpose "nullable"
+        INTEGER input_tokens
+        INTEGER output_tokens
+        INTEGER cache_read_tokens
+        INTEGER cache_write_tokens
+        INTEGER cost_micro "nullable"
+        TEXT cost_source
+        TEXT pricing_version "nullable"
+        INTEGER equivalent_micro "nullable"
+    }
     users {
         TEXT id PK
         TEXT org_id FK
@@ -187,5 +208,6 @@ erDiagram
     users ||--o{ sessions : "owner_id"
     sessions ||--o{ sessions : "parent_id"
     sessions ||--o{ usage_daily : "session_id"
+    sessions ||--o{ usage_records : "session_id"
     orgs ||--o{ users : "org_id"
 ```

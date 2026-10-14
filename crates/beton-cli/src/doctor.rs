@@ -503,6 +503,54 @@ pub fn features(config: &[String], env: Option<&str>) -> Check {
     c
 }
 
+/// Preis-Katalog und eigene Preise (USE-002, USE-003 AC4). Im zentralen Betrieb
+/// (`--server`) gelten nur die Overrides des Servers; lokale Einträge sind dann wirkungslos.
+pub fn pricing(settings: Option<&crate::config::Settings>, central: bool) -> Check {
+    let catalog = beton_core::pricing::Catalog::embedded();
+    let overrides = settings.map_or(0, |s| s.price_overrides().len());
+    let catalog_text = format!(
+        "Preis-Katalog {} ({} Modelle, mitgeliefert, kein Online-Abruf)",
+        catalog.version(),
+        catalog.models().len()
+    );
+    let mut c = if central && overrides > 0 {
+        check(
+            "pricing",
+            CheckStatus::Warn,
+            format!(
+                "{catalog_text}; eigene Preise der User-Konfiguration ({overrides}) werden im \
+                 zentralen Betrieb ignoriert"
+            ),
+            Some(
+                "Im zentralen Betrieb gelten nur die Preis-Overrides des Servers (Admin); \
+                 lokale Einträge unter pricing.overrides bzw. providers.*.models[].pricing \
+                 entfernen oder dort anlegen",
+            ),
+        )
+    } else if central {
+        check(
+            "pricing",
+            CheckStatus::Ok,
+            format!("{catalog_text}; zentraler Betrieb: es gelten die Preise des Servers"),
+            None,
+        )
+    } else {
+        check(
+            "pricing",
+            CheckStatus::Ok,
+            format!("{catalog_text}; eigene Preise: {overrides}"),
+            None,
+        )
+    };
+    c.details = Some(json!({
+        "catalog_version": catalog.version(),
+        "models": catalog.models().len(),
+        "overrides": overrides,
+        "central": central,
+    }));
+    c
+}
+
 /// Führt alle M0-Prüfungen aus.
 pub async fn run(ctx: &Ctx) -> DoctorReport {
     let mut checks = vec![check(
@@ -539,11 +587,12 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
             None
         }
     };
-    let configured = layers
-        .as_ref()
-        .and_then(|l| l.daemon_settings().ok())
-        .map(|s| s.features)
-        .unwrap_or_default();
+    let daemon_settings = layers.as_ref().and_then(|l| l.daemon_settings().ok());
+    checks.push(pricing(
+        daemon_settings.as_ref(),
+        ctx.global.server.is_some(),
+    ));
+    let configured = daemon_settings.map(|s| s.features).unwrap_or_default();
     checks.push(features(
         &configured,
         std::env::var(beton_core::feature::ENV_VAR).ok().as_deref(),
@@ -623,6 +672,38 @@ mod tests {
         assert_eq!(c.status, CheckStatus::Ok);
         assert_eq!(c.message, "fake_harness aktiv");
         assert_eq!(c.details.unwrap()["active"][0]["source"], "config");
+    }
+
+    #[test]
+    fn use_003_ac4_doctor_warns_that_local_overrides_are_ignored_centrally() {
+        let settings: crate::config::Settings = serde_json::from_value(json!({
+            "pricing": {"overrides": [
+                {"match": {"provider": "ollama-local"}, "free": true}
+            ]}
+        }))
+        .unwrap();
+        let local = pricing(Some(&settings), false);
+        assert_eq!(local.status, CheckStatus::Ok);
+        assert!(
+            local.message.ends_with("eigene Preise: 1"),
+            "{}",
+            local.message
+        );
+        let central = pricing(Some(&settings), true);
+        assert_eq!(central.status, CheckStatus::Warn);
+        assert!(
+            central.message.contains("im zentralen Betrieb ignoriert"),
+            "{}",
+            central.message
+        );
+        assert!(
+            central
+                .hint
+                .unwrap()
+                .contains("Preis-Overrides des Servers")
+        );
+        assert_eq!(central.details.unwrap()["overrides"], 1);
+        assert_eq!(pricing(None, true).status, CheckStatus::Ok);
     }
 
     #[test]

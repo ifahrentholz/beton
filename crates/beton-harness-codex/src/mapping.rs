@@ -366,6 +366,7 @@ fn cost(st: &MapState) -> EventPayload {
         },
         auth_source: auth,
         purpose: None,
+        ..CostDelta::default()
     })
 }
 

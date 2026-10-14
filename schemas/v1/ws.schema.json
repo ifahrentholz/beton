@@ -974,8 +974,27 @@
           ],
           "format": "int64"
         },
+        "cost_source": {
+          "description": "Preisquelle; setzt der Server beim Append (USE-001, USE-003). Fehlt sie, ist das Event\nnoch nicht bewertet (Adapter) oder stammt aus der Zeit vor M2.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PriceSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "currency": {
           "type": "string"
+        },
+        "equivalent_micro": {
+          "description": "API-Äquivalent einer Subscription-Nutzung laut Katalog; nur informativ, nie Teil von\nGeld-Summen (ADR-0034).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
         },
         "harness": {
           "type": "string"
@@ -992,6 +1011,13 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "pricing_version": {
+          "description": "`catalog_version` des Preis-Katalogs, wenn er zur Bewertung diente (USE-002 AC1).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "purpose": {
           "type": [
@@ -3579,6 +3605,17 @@
         "user_id",
         "devices",
         "typing"
+      ]
+    },
+    "PriceSource": {
+      "description": "Preisquelle eines Usage-Records (USE-001), gesetzt beim Append in der Reihenfolge der\nSpec (11-platform-features.md, „Kostenberechnung“); `subscription` bei `vendor_cli`.",
+      "type": "string",
+      "enum": [
+        "override",
+        "harness",
+        "catalog",
+        "none",
+        "subscription"
       ]
     },
     "PrincipalId": {
