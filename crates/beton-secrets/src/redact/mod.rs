@@ -305,3 +305,11 @@ fn redact_value(known: Option<&KnownSecrets>, value: &mut Value) -> Result<bool,
         Value::Null | Value::Bool(_) | Value::Number(_) => Ok(false),
     }
 }
+
+/// Die Pipeline als Redaction-Hook des Stores (Payloads, `raw`, Live-Events, Exporte).
+impl beton_store::ValueRedactor for Redactor {
+    fn redact(&self, value: &mut Value) -> Result<bool, beton_store::RedactionUnavailable> {
+        self.redact_json(value)
+            .map_err(|Unavailable| beton_store::RedactionUnavailable)
+    }
+}

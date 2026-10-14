@@ -100,6 +100,10 @@ pub struct Runtime {
     /// Backend für Secret-Werte (SEC-002/SEC-003). Default: keins (fail closed);
     /// `beton serve` wählt Keychain oder Datei.
     pub secret_backend: Arc<dyn beton_secrets::backend::Backend>,
+    /// Redaction-Pipeline (SEC-013); dieselbe wie in den `StoreOptions` und im Logging.
+    /// `beton serve` setzt sie immer; der Start lädt die bekannten Werte über die
+    /// `RedactionCap`, bevor irgendetwas geschrieben oder verteilt wird.
+    pub redactor: Option<Arc<beton_secrets::Redactor>>,
 }
 
 impl Runtime {
@@ -143,6 +147,7 @@ impl Runtime {
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
             secret_backend: Arc::new(beton_secrets::backend::NoBackend),
+            redactor: None,
         }
     }
 

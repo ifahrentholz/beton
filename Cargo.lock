@@ -755,6 +755,7 @@ dependencies = [
  "beton-policy",
  "beton-proto",
  "beton-sandbox",
+ "beton-secrets",
  "beton-server",
  "beton-store",
  "futures-util",
