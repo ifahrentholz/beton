@@ -1366,7 +1366,7 @@
   "anchor": "sbx-002--zweistufiges-modell--exec-broker",
   "summary": "Harness-Prozesse laufen in Stufe 1, jede Tool-Ausführung in einer frischen Stufe-2-Sandbox, gestartet vom Exec-Broker in Stufe 0. Das vermeidet verschachtelte Sandboxes (Seatbelt kann nicht verschachtelt werden) und stellt sicher, dass Tools die Credential-Grants der Stufe 1 nicht erben. Adapter deklarieren ihre Credential-Pfade (`credential_paths`), Keychain-Bedarf (`keychain`), Env-Familien und Passthrough-Hosts; nur diese erhält Stufe 1.",
   "acs": [
-   "Given Claude Code in Stufe 1, when das Bash-Tool `cat ~/.claude/.credentials.json` ausführt, then scheitert der Befehl (Permission denied/No such file), während der Harness selbst authentifiziert bleibt.",
+   "Given Claude Code in Stufe 1, when das Bash-Tool `cat ~/.claude/.credentials.json` ausführt, then scheitert der Befehl (Permission denied/No such file), während der Harness selbst authentifiziert bleibt (manuell mit der angemeldeten CLI, Checkliste im PR; automatisiert mit Fixture-Credentials und `bt-exec`).",
    "Ein Kommando über `bt-exec` läuft nachweislich in einer Stufe-2-Sandbox (Probe meldet `stage=tools`, Keychain-Mach-Lookup bzw. D-Bus-Zugriff scheitert).",
    "Ein Broker-Request mit `cwd=/etc` oder `env_overrides={\"LD_PRELOAD\": …}` wird mit Fehler abgelehnt.",
    "Ein Adapter mit `tool_isolation: inherited` startet nur, wenn `require_tool_isolation: false` gesetzt ist; sonst `sandbox_unavailable` mit Hinweis.",
@@ -1539,7 +1539,7 @@
   "anchor": "sbx-012--eingebaute-presets",
   "summary": "Presets liefern sinnvolle Startpunkte: `default` (Workspace rw, kein Netz außer Stufe-1-Vendor-Hosts), `dev` (zusätzlich lesender Zugriff auf gängige Paket-Registries und Toolchain-Caches), `readonly` (Workspace ro, kein Netz; z. B. für Side-Chats und Reviewer-Agents). Eigene Felder überschreiben bzw. ergänzen Presets gemäß Merge-Regeln.",
   "acs": [
-   "Mit `preset: dev` gelingt `npm install` eines öffentlichen Pakets; `npm publish` scheitert (PUT nicht erlaubt).",
+   "Mit `preset: dev` gelingt `npm install` eines öffentlichen Pakets; `npm publish` scheitert (PUT nicht erlaubt). (Test gegen eine lokale Registry-Attrappe, ADR-0033.)",
    "Mit `preset: readonly` scheitert jedes Schreiben im Workspace.",
    "`beton sandbox explain` zeigt, welche Werte aus dem Preset und welche aus eigener Konfiguration stammen."
   ]
@@ -1705,7 +1705,7 @@
   "anchor": "prx-005--passthrough-für-vendor-hosts-stufe-1",
   "summary": "Damit beton Subscription-Tokens nie sieht (HAR-015, siehe 01-harnesses.md), werden die vom Adapter deklarierten Vendor-Hosts in Stufe 1 als Passthrough behandelt: CONNECT wird ohne TLS-Terminierung getunnelt, geprüft werden nur Host, Port, private IP (PRX-007) und dass die SNI im ClientHello dem CONNECT-Host entspricht. Weitere Stufe-1-Ziele (z. B. Remote-MCP-Server aus der Agent-Konfiguration) laufen normal über Regeln und MITM.",
   "acs": [
-   "Eine Claude-Code-Session mit Subscription funktioniert in Stufe 1; ein Proxy-Debug-Dump zeigt für `api.anthropic.com` keine entschlüsselten Header.",
+   "Eine Claude-Code-Session mit Subscription funktioniert in Stufe 1; ein Proxy-Debug-Dump (`BETON_LOG=beton_proxy=trace`) zeigt für `api.anthropic.com` keine entschlüsselten Header (manuell mit der angemeldeten CLI, Checkliste im PR; automatisiert gegen einen lokalen TLS-Upstream).",
    "Ein ClientHello mit SNI `evil.test` in einem CONNECT zu `api.anthropic.com` wird getrennt.",
    "Aus Stufe 2 ist `api.anthropic.com` ohne explizite Regel nicht erreichbar."
   ]
@@ -1759,7 +1759,7 @@
   "acs": [
    "`curl`, `git`, `npm`, `pip`, `cargo` und Node-`fetch` erreichen über Regeln erlaubte Hosts in Stufe 2 ohne weitere Konfiguration (Integrationstest je Tool).",
    "Ein Tool, das Proxy-Variablen ignoriert und direkt verbindet, scheitert auf macOS und Linux (Escape-Test).",
-   "Auf Linux erreicht ein Tool einen in derselben Sandbox gestarteten Dev-Server auf `127.0.0.1:3000`, aber keinen Host-Dienst auf `127.0.0.1`."
+   "Auf Linux erreicht ein Tool mit `sandbox.dev_ports: [3000]` einen in derselben Sandbox gestarteten Dev-Server auf `127.0.0.1:3000`, aber keinen Host-Dienst auf `127.0.0.1`; ohne `dev_ports` scheitert schon `bind` (#210)."
   ]
  },
  {
