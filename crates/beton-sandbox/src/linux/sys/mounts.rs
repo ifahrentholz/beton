@@ -209,7 +209,7 @@ pub fn apply(ops: &[MountOp]) -> StepResult<()> {
     let mut mask_dirs = Vec::new();
     for op in ops {
         let path = op.path();
-        let fail = |e: io::Error| StepError::io("mount", path.display(), e);
+        let fail = |e: io::Error| StepError::io("mount", format!("{op:?}"), e);
         match op {
             MountOp::Tmpfs { mode, .. } => {
                 if !path.is_dir() {
