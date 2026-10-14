@@ -170,6 +170,7 @@ async fn load_rounds(
                 let (pki_ca, addr) = (h.pki.ca_der.clone(), up.addr);
                 tasks.spawn(async move {
                     let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    let _ = tcp.set_nodelay(true);
                     let tls = connector(&[pki_ca], &[b"http/1.1"])
                         .connect(
                             rustls::pki_types::ServerName::try_from("load.test").unwrap(),
@@ -257,11 +258,14 @@ async fn prx_001_ac3_p99_added_latency_below_20ms() {
     );
     let (mut proxied, mut direct) = (Vec::new(), Vec::new());
     for (i, (p, d)) in rounds.enumerate() {
+        let slow = |v: &[Duration]| v.iter().filter(|x| **x > Duration::from_millis(20)).count();
         println!(
-            "Runde {}: p99 mit Proxy {:?}, direkt {:?}",
+            "Runde {}: p99 mit Proxy {:?}, direkt {:?}; über 20 ms: mit Proxy {}, direkt {}",
             i + 1,
             p99(p.clone()),
-            p99(d.clone())
+            p99(d.clone()),
+            slow(&p),
+            slow(&d)
         );
         proxied.extend(p);
         direct.extend(d);
