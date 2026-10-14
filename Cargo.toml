@@ -28,8 +28,19 @@ beton-mcp = { path = "crates/beton-mcp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
 beton-git = { path = "crates/beton-git", version = "0.0.0" }
+beton-secrets = { path = "crates/beton-secrets", version = "0.0.0" }
 
 # extern
+# Secret-Store (SEC-001 … SEC-003): AEAD, KDF und Nullen von Secrets.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+hkdf = "0.12"
+zeroize = { version = "1.9", features = ["std"] }
+# OS-Keychain über das keyring-Ökosystem (SEC-002): keyring-core plus je Plattform ein Store.
+keyring-core = "1"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+windows-native-keyring-store = "1"
+zbus-secret-service-keyring-store = { version = "1", features = ["rt-async-io-crypto-rust"] }
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
@@ -90,6 +101,21 @@ unwrap_used = "warn"
 
 # SQLite ist C-Code; unoptimiert verlangsamt es jeden Store-Test deutlich.
 [profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# Argon2id mit m = 64 MiB (SEC-003) wäre unoptimiert in Tests sekundenlang.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+# AES-GCM und SHA-256 des Datei-Stores; unoptimiert dominieren sie den Kill-Test (SEC-003 AC4).
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.ghash]
+opt-level = 3
+[profile.dev.package.polyval]
+opt-level = 3
+[profile.dev.package.sha2]
 opt-level = 3
 
 [profile.dev]
