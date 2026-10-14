@@ -388,3 +388,170 @@ async fn sec_012_ac2_marked_value_appears_in_no_audit_entry() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Redaction-Capability (SEC-013, #186)
+
+/// Ein Wert ohne erkennbares Token-Format: nur der Matcher der bekannten Werte findet ihn.
+const KNOWN: &str = "Zx9-known-SECRET-value-4711";
+
+/// Nimmt die Capabilities aus der Fixture (`attach` verbraucht die Redaction-Capability).
+fn take_caps(f: &mut Fixture) -> crate::UseCapabilities {
+    std::mem::replace(&mut f.caps, crate::UseCapabilities::new())
+}
+
+/// Die Einträge der Matcher-Aufbauten, älteste zuerst.
+fn redaction_entries(entries: &[beton_store::AuditEntry]) -> Vec<&beton_store::AuditEntry> {
+    let mut out: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action == "secrets.redaction_loaded")
+        .collect();
+    out.sort_by_key(|e| e.seq);
+    out
+}
+
+#[tokio::test]
+async fn sec_013_redaction_cap_loads_known_values_as_matcher() {
+    let f = fixture().await;
+    f.secrets.put(token(&openai(), KNOWN)).await.unwrap();
+    let redactor = Arc::new(crate::Redactor::pending());
+    assert!(
+        redactor.redact_str(KNOWN).is_err(),
+        "vor dem Laden fail closed"
+    );
+    f.caps
+        .redaction
+        .attach(&f.secrets, redactor.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        redactor
+            .redact_str(&format!("Fehler mit {KNOWN} im Text"))
+            .unwrap(),
+        "Fehler mit [REDACTED:secret] im Text"
+    );
+    assert_eq!(
+        redactor.status(),
+        crate::RedactionStatus::Ready {
+            values: 1,
+            source: crate::redact::KnownSource::Store
+        }
+    );
+}
+
+#[tokio::test]
+async fn sec_001_redaction_cap_audits_each_build_once_not_per_match() {
+    let mut f = fixture().await;
+    f.secrets.put(token(&openai(), KNOWN)).await.unwrap();
+    let redactor = Arc::new(crate::Redactor::pending());
+    take_caps(&mut f)
+        .redaction
+        .attach(&f.secrets, redactor.clone())
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        redactor.redact_str(KNOWN).unwrap();
+    }
+    let entries = audit(&f).await;
+    let loaded = redaction_entries(&entries);
+    assert_eq!(loaded.len(), 1, "ein Eintrag je Aufbau, keiner je Treffer");
+    assert_eq!(loaded[0].target_kind, "secret_store");
+    assert_eq!(loaded[0].details["reason"], "attach");
+    assert_eq!(loaded[0].details["values"], 1);
+    assert!(
+        entries.iter().all(|e| e.action != "secret.used"),
+        "der Matcher ist keine Nutzung eines einzelnen Secrets"
+    );
+    let all = serde_json::to_string(&entries).unwrap();
+    assert!(!all.contains(KNOWN), "kein Wert im Audit-Log");
+}
+
+#[tokio::test]
+async fn sec_013_matcher_follows_create_rotate_and_delete() {
+    let mut f = fixture().await;
+    let redactor = Arc::new(crate::Redactor::pending());
+    take_caps(&mut f)
+        .redaction
+        .attach(&f.secrets, redactor.clone())
+        .await
+        .unwrap();
+    assert_eq!(redactor.redact_str(KNOWN).unwrap(), KNOWN);
+
+    f.secrets.put(token(&openai(), KNOWN)).await.unwrap();
+    assert_eq!(redactor.redact_str(KNOWN).unwrap(), "[REDACTED:secret]");
+
+    let rotated = "Rotated-known-SECRET-0815";
+    f.secrets
+        .rotate(&openai(), SecretValue::from(rotated))
+        .await
+        .unwrap();
+    assert_eq!(redactor.redact_str(rotated).unwrap(), "[REDACTED:secret]");
+
+    f.secrets.delete(&openai()).await.unwrap();
+    let reasons: Vec<_> = redaction_entries(&audit(&f).await)
+        .iter()
+        .map(|e| e.details["reason"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(reasons, ["attach", "created", "rotated", "deleted"]);
+    assert_eq!(
+        redactor.status(),
+        crate::RedactionStatus::Ready {
+            values: 0,
+            source: crate::redact::KnownSource::Store
+        }
+    );
+}
+
+#[tokio::test]
+async fn sec_013_locked_file_store_keeps_redaction_ready_and_loads_after_unlock() {
+    let dir = tempfile::tempdir().unwrap();
+    let params = KdfParams {
+        m_kib: 64,
+        t: 1,
+        p: 1,
+    };
+    let open = Arc::new(FileBackend::new(dir.path().join("store.v1"), params));
+    open.unlock(&SecretValue::from("pass")).unwrap();
+    let f = fixture_with(open).await;
+    f.secrets.put(token(&openai(), KNOWN)).await.unwrap();
+
+    // Neuer Dienst über denselben, noch gesperrten Store (wie nach einem Neustart).
+    let locked = Arc::new(FileBackend::new(dir.path().join("store.v1"), params));
+    let local = f.store.ensure_local().await.unwrap();
+    let (secrets, caps) = Secrets::new(f.store.clone(), local, locked);
+    let redactor = Arc::new(crate::Redactor::pending());
+    caps.redaction
+        .attach(&secrets, redactor.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        redactor.status(),
+        crate::RedactionStatus::Ready {
+            values: 0,
+            source: crate::redact::KnownSource::StoreUnavailable
+        },
+        "gesperrt: bereit mit den zuletzt bekannten Werten (keine), Store gibt auch nichts heraus"
+    );
+    secrets.unlock(SecretValue::from("pass")).await.unwrap();
+    assert_eq!(redactor.redact_str(KNOWN).unwrap(), "[REDACTED:secret]");
+    let entries = audit(&f).await;
+    let loaded = redaction_entries(&entries);
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].details["store"], "secrets_locked");
+    assert_eq!(loaded[1].details["reason"], "unlocked");
+}
+
+#[tokio::test]
+async fn sec_013_attach_fails_closed_when_the_store_breaks() {
+    let mut f = fixture().await;
+    f.store.close().await;
+    let redactor = Arc::new(crate::Redactor::pending());
+    let err = take_caps(&mut f)
+        .redaction
+        .attach(&f.secrets, redactor.clone())
+        .await
+        .unwrap_err();
+    assert_ne!(err.code(), "secrets_locked", "{err}");
+    assert_eq!(redactor.status(), crate::RedactionStatus::Failed);
+    assert!(redactor.redact_log_str("x").is_err());
+}

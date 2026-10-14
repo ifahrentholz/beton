@@ -92,8 +92,8 @@ export const group: ScreenGroup = {
       id: 'policy-approvals',
       title: 'Freigaben aus Policies',
       description:
-        'Varianten der Freigabe-Karte: mehrere Gründe in einer Karte, Ablauf und „für diese Session erlauben“, nicht merkbare Regeln, abgelaufene Freigaben, nur Lesen, Session-Start, Schleife und Kostenschwelle.',
-      features: ['POL-003', 'POL-006', 'POL-009', 'POL-010', 'POL-011', 'POL-013', 'POL-014', 'POL-018', 'AUTH-015'],
+        'Varianten der Freigabe in der Leiste über der Eingabe: mehrere Gründe in einer Karte, Ablauf und „für diese Session erlauben“, nicht merkbare Regeln, nur Lesen, Session-Start, Schleife und Kostenschwelle; abgelaufene Freigaben als Karte im Verlauf.',
+      features: ['POL-003', 'POL-006', 'POL-009', 'POL-010', 'POL-011', 'POL-013', 'POL-014', 'POL-018', 'AUTH-015', 'WEB-007'],
       states: [
         { id: 'two-reasons', title: 'Zwei Gründe, Timeout' },
         { id: 'granted', title: 'Für Session erlaubt' },

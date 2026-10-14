@@ -205,6 +205,63 @@ pub struct ForkResponse {
     pub workspace: crate::fork::ForkWorkspace,
 }
 
+/// Manuelle Nachredaktion eines Events (DATA-012).
+#[derive(Debug, Default, Deserialize, Serialize, ToSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RedactEventRequest {
+    /// JSON-Pointer in die Nutzlast (ohne `type`), z. B. `/content/0/text`. Ohne Angabe wird
+    /// die ganze Nutzlast geschwärzt; IDs, Aufzählungen und Zeitstempel bleiben lesbar.
+    #[serde(default)]
+    #[ts(optional)]
+    pub paths: Option<Vec<String>>,
+    /// Grund, z. B. „Secret-Leak“ (Pflicht, höchstens 500 Zeichen); steht im
+    /// `event.redacted` und im Audit-Log.
+    pub reason: String,
+}
+
+/// Ergebnis einer Nachredaktion.
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct RedactEventResponse {
+    /// Das geschwärzte Event in Draht-Form.
+    #[schema(value_type = Object)]
+    pub target: beton_core::event::Event,
+    /// Das neue `event.redacted`, das den Vorgang dokumentiert.
+    #[schema(value_type = Object)]
+    pub event: beton_core::event::Event,
+}
+
+/// Ein Event nachträglich schwärzen (DATA-012), z. B. nach einem entdeckten Secret-Leak.
+/// Lokal ist der Owner berechtigt; Rollen (Owner/Admin, `view` → 403) folgen mit COL-001
+/// in M4. Verbundene Clients erhalten `event.redacted`; die Aktion steht im Audit-Log.
+#[utoipa::path(post, path = "/v1/sessions/{id}/events/{seq}/redact", tag = "sessions",
+    params(("id" = String, Path), ("seq" = u64, Path)),
+    request_body = RedactEventRequest,
+    responses((status = 200, description = "Geschwärzt", body = RedactEventResponse),
+              (status = 400, description = "`validation_failed`: Grund fehlt, Pfad fehlt in der Nutzlast oder verletzt ihren Typ", body = Problem, content_type = "application/problem+json"),
+              (status = 403, description = "Nicht Owner der Session", body = Problem, content_type = "application/problem+json"),
+              (status = 404, description = "Session oder Event unbekannt", body = Problem, content_type = "application/problem+json")))]
+pub async fn redact_event(
+    State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
+    Path((id, seq)): Path<(String, u64)>,
+    ApiJson(req): ApiJson<RedactEventRequest>,
+) -> ApiResult<axum::Json<RedactEventResponse>> {
+    let outcome = state
+        .sessions()
+        .redact_event(
+            session_id(&id)?,
+            seq,
+            principal(auth).1,
+            req.paths.unwrap_or_default(),
+            req.reason,
+        )
+        .await?;
+    Ok(axum::Json(RedactEventResponse {
+        target: outcome.target,
+        event: outcome.record,
+    }))
+}
+
 /// Neue Session ab einem Event abzweigen (SES-006), optional auf einem anderen Harness
 /// (SES-007). Die Quelle bleibt unverändert und erhält nur `session.fork_created`.
 #[utoipa::path(post, path = "/v1/sessions/{id}/fork", tag = "sessions",

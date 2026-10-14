@@ -104,11 +104,16 @@ impl SessionManager<'_> {
             if !handover::is_content_type(e.type_name()) {
                 continue;
             }
-            let payload = store.resolve_payload(self.org(), e).await?;
-            let raw = store
-                .event_raw(self.org(), e.session_id, e.seq)
-                .await?
-                .map(|v| v.to_string());
+            // SES-007 AC3: Der Verlauf geht geschwärzt an den Ziel-Harness, auch wenn das Log
+            // entstand, bevor ein Wert als Secret bekannt war.
+            let payload = store.redact_payload(store.resolve_payload(self.org(), e).await?)?;
+            let raw = match store.event_raw(self.org(), e.session_id, e.seq).await? {
+                Some(mut v) => {
+                    store.redact_value(&mut v)?;
+                    Some(v.to_string())
+                }
+                None => None,
+            };
             out.push((
                 e.clone(),
                 HistoryEvent {

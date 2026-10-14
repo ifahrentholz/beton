@@ -159,6 +159,7 @@ export function ApprovalCard({
   rule,
   variant = 'full',
   resolved,
+  by,
 }: {
   tool: string
   command: string
@@ -167,19 +168,22 @@ export function ApprovalCard({
   /** `minimal` = M0-Karte (WEB-018), `full` = Approval-Bar-Variante mit Policy-Begründung (WEB-007). */
   variant?: 'minimal' | 'full'
   resolved?: 'allowed' | 'denied'
+  /** Wer entschieden hat, z. B. „Mara (Browser)“ – Inline-Darstellung im Verlauf nach der Entscheidung. */
+  by?: string
 }) {
   return (
     <div className="ml-9">
       <div
         className={cn(
-          'chamfer border-l-4 p-3',
-          resolved ? 'border-border bg-card' : 'border-signal bg-signal-soft',
+          'border-l-4 p-3',
+          resolved ? 'rounded-r-md border-border bg-card' : 'chamfer border-signal bg-signal-soft',
         )}
       >
         <div className="flex items-baseline gap-2">
           <span className="text-[13px] font-semibold">
             {resolved === 'allowed' ? 'Erlaubt' : resolved === 'denied' ? 'Abgelehnt' : 'Freigabe nötig'}: {tool}
           </span>
+          {resolved && by && <span className="text-[12px] text-muted-foreground">von {by}</span>}
           {rule && variant === 'full' && <span className="font-mono text-[11px] text-muted-foreground">Regel {rule}</span>}
         </div>
         <pre className="mt-1.5 overflow-x-auto rounded-sm bg-card px-2 py-1 font-mono text-[12px]">{command}</pre>
