@@ -565,3 +565,94 @@ async fn pol_003_tool_result_sees_adapter_kind_args_and_cwd() {
         .await;
     assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
 }
+
+// ------------------------------------------------------- Re-Review R1 (#253), POL-001
+
+#[tokio::test]
+async fn pol_001_shell_and_mcp_variants_cannot_touch_policy_files() {
+    // Angriffe aus dem Re-Review: Wörter ohne `/`, `./`, `~/` am Anfang, `$`-Expansionen,
+    // Globs, `cd` ins Policy-Verzeichnis, MCP-Datei-Tools ohne Pfad-Abbildung.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".beton/policies")).unwrap();
+    std::fs::create_dir_all(dir.path().join("user")).unwrap();
+    let (g, _rx) = gate(dir.path(), "claude");
+    for (i, command) in [
+        "sed -i 's/deny/allow/' .beton/policies/x.yaml",
+        "cp /tmp/p.yaml .beton/policies/x.yaml",
+        "mv /tmp/p.yaml .beton/policies/x.yaml",
+        "ln -sf /tmp/p.yaml .beton/policies/x.yaml",
+        "echo rules: [] | tee .beton/policies/x.yaml",
+        "git checkout HEAD~1 -- .beton",
+        "cd .beton/policies && rm x.yaml",
+        "rm $HOME/.beton/policies/defaults.yaml",
+        "rm \"$BETON_HOME/policies/defaults.yaml\"",
+        "rm -rf .b*",
+        "rm user/defaults.yaml",
+        "p=.bet; rm -rf ${p}on",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g
+            .decide(bash(&format!("r1_{i}"), command, GateOrigin::PreTool))
+            .await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{command}: {d:?}");
+    }
+    for (i, command) in [
+        "ls",
+        "cat README.md",
+        "echo $HOME",
+        "git status",
+        "rm -rf build",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g
+            .decide(bash(&format!("r1_ok_{i}"), command, GateOrigin::PreTool))
+            .await;
+        assert_eq!(d, GateDecision::Allow { updated_args: None }, "{command}");
+    }
+    let abs = dir.path().join(".beton/policies/x.yaml");
+    for (i, path) in [
+        abs.display().to_string(),
+        ".beton/policies/x.yaml".to_owned(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g
+            .decide(GateRequest {
+                call_id: format!("r1_mcp_{i}"),
+                tool: "mcp__fs__write_file".into(),
+                kind: "mcp".into(),
+                mcp_server: Some("fs".into()),
+                args: serde_json::json!({ "path": path, "content": "rules: []" }),
+                origin: GateOrigin::PreTool,
+                ..GateRequest::default()
+            })
+            .await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{path}: {d:?}");
+    }
+}
+
+#[tokio::test]
+async fn pol_001_loosening_project_change_is_not_applied_during_the_session() {
+    // Ändert jemand (z. B. ein Agent über einen Weg, den das Gate nicht erkennt) eine
+    // Projekt-Policy lockernd, gilt das erst in einer neuen Session.
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(dir.path(), Scope::Project, "rm", NO_RM);
+    let (g, _rx) = gate(dir.path(), "claude");
+    let d = g
+        .decide(bash("r1_l1", "rm -rf /x", GateOrigin::PreTool))
+        .await;
+    assert!(matches!(d, GateDecision::Deny { .. }));
+    write_policy(dir.path(), Scope::Project, "rm", "  []\n");
+    let d = g
+        .decide(bash("r1_l2", "rm -rf /x", GateOrigin::PreTool))
+        .await;
+    assert!(
+        matches!(d, GateDecision::Deny { .. }),
+        "Lockerung übernommen: {d:?}"
+    );
+}

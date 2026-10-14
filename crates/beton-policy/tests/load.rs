@@ -610,3 +610,69 @@ fn pol_001_yml_files_are_loaded_too() {
         Outcome::Deny { .. }
     ));
 }
+
+/// Re-Review R1 (#253): Während der Session übernimmt der Store Änderungen an Projekt-Policies
+/// nur, wenn sie verschärfen; lockernde (Regel entfernt oder geändert, `allow` oder `modify`
+/// neu, Default milder, `dry_run`) gelten erst in einer neuen Session.
+#[test]
+fn pol_001_loosening_project_changes_wait_for_a_new_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("guard.yaml");
+    std::fs::write(&file, DENY_SHELL).unwrap();
+    let mut store = PolicyStore::new();
+    store.add_dir(Scope::Project, dir.path());
+    store.tighten_only(Scope::Project);
+    store.refresh();
+    let denies = |store: &mut PolicyStore| {
+        matches!(
+            store
+                .effective()
+                .evaluate(&shell_call(), &EvalOptions::default())
+                .outcome,
+            Outcome::Deny { .. }
+        )
+    };
+    for loosened in [
+        "spec_version: 1\nname: guard\nrules: []\n".to_owned(),
+        DENY_SHELL.replace("action: deny", "action: ask"),
+        format!("{DENY_SHELL}  - id: ok\n    on: tool_call\n    action: allow\n"),
+        "spec_version: 1\nname: guard\nmode: dry_run\nrules: []\n".to_owned(),
+    ] {
+        std::fs::write(&file, &loosened).unwrap();
+        let events = store.refresh();
+        assert!(
+            matches!(&events[..], [StoreEvent::Invalid(i)] if i.error.contains("lockert")),
+            "{loosened}: {events:?}"
+        );
+        assert!(denies(&mut store), "{loosened}");
+    }
+    // Verschärfung: übernommen.
+    std::fs::write(
+        &file,
+        format!("{DENY_SHELL}  - id: no-write\n    on: tool_call\n    when: tool.kind == \"file_write\"\n    action: deny\n"),
+    )
+    .unwrap();
+    let events = store.refresh();
+    assert!(
+        matches!(&events[..], [StoreEvent::Changed(_)]),
+        "{events:?}"
+    );
+    // Neue Datei: nur ohne `allow`.
+    std::fs::write(
+        dir.path().join("neu.yaml"),
+        "spec_version: 1\nname: neu\nrules:\n  - id: ok\n    on: tool_call\n    action: allow\n",
+    )
+    .unwrap();
+    let events = store.refresh();
+    assert!(
+        matches!(&events[..], [StoreEvent::Invalid(_)]),
+        "{events:?}"
+    );
+    // Neue Session: der gelockerte Stand gilt.
+    std::fs::write(&file, "spec_version: 1\nname: guard\nrules: []\n").unwrap();
+    let mut fresh = PolicyStore::new();
+    fresh.add_dir(Scope::Project, dir.path());
+    fresh.tighten_only(Scope::Project);
+    fresh.refresh();
+    assert!(!denies(&mut fresh));
+}
