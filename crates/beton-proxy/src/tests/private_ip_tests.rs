@@ -28,7 +28,10 @@ async fn prx_007_ac1_metadata_endpoint_via_dns_is_rejected() {
 #[tokio::test]
 async fn prx_007_ac2_dns_rebinding_never_reaches_loopback() {
     let h = Harness::new();
-    let up = Upstream::tls(h.pki.valid(&["rebind.test"])).await;
+    // Nur HTTP/1.1, damit `Connection: close` die Upstream-Verbindung wirklich beendet.
+    let mut config = (*h.pki.valid(&["rebind.test"])).clone();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let up = Upstream::tls(std::sync::Arc::new(config)).await;
     h.resolver.set(
         "rebind.test",
         vec![vec![ip("93.184.216.34")], vec![ip("127.0.0.1")]],

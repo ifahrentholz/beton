@@ -128,9 +128,7 @@ impl TestPki {
 /// Was ein Test-Upstream gesehen hat.
 #[derive(Debug, Clone)]
 pub struct Seen {
-    pub method: String,
     pub path_and_query: String,
-    pub version: http::Version,
     pub headers: HeaderMap,
 }
 
@@ -226,9 +224,7 @@ async fn handle(
         .map(|p| p.as_str().to_owned())
         .unwrap_or_default();
     seen.lock().unwrap().push(Seen {
-        method: req.method().to_string(),
         path_and_query: path_and_query.clone(),
-        version: req.version(),
         headers: req.headers().clone(),
     });
     let path = req.uri().path().to_owned();
@@ -292,10 +288,13 @@ async fn handle(
     Ok(res.body(full(body)).unwrap())
 }
 
+/// Antworten für einen Namen und die nächste zu liefernde.
+type Script = (Vec<Vec<IpAddr>>, usize);
+
 /// Test-Resolver: liefert pro Name der Reihe nach die eingetragenen Antworten (zyklisch).
 #[derive(Default)]
 pub struct ScriptedResolver {
-    answers: Mutex<HashMap<String, (Vec<Vec<IpAddr>>, usize)>>,
+    answers: Mutex<HashMap<String, Script>>,
     pub queries: AtomicUsize,
 }
 
@@ -412,7 +411,7 @@ impl Harness {
 
     /// TLS-Client, der nur der beton-CA vertraut.
     pub fn client_tls(&self, alpn: &[&[u8]]) -> TlsConnector {
-        connector(&[self.beton_ca.clone()], alpn)
+        connector(std::slice::from_ref(&self.beton_ca), alpn)
     }
 }
 

@@ -31,7 +31,7 @@ async fn prx_002_ac1_client_in_sandbox_validates_against_beton_ca() {
     // Proxy terminiert TLS selbst.
     let (stream, raw) = connect(&a, "example.test:443", Some(&auth(&a))).await;
     assert_eq!(raw.status, 200);
-    let err = connector(&[h.pki.ca_der.clone()], &[b"http/1.1"])
+    let err = connector(std::slice::from_ref(&h.pki.ca_der), &[b"http/1.1"])
         .connect(ServerName::try_from("example.test").unwrap(), stream)
         .await;
     assert!(err.is_err());
