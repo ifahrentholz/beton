@@ -47,7 +47,10 @@ pub enum InputMode {
 }
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Standard für [`SessionsConfig::start_budget`].
+pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 
 /// Gestartete Runner dieses Knotens.
 #[derive(Default)]
@@ -88,6 +91,11 @@ impl std::fmt::Debug for Launched {
 #[derive(Clone)]
 pub struct SessionsConfig {
     pub provider: Arc<dyn RunnerProvider>,
+    /// Wie lange eine Eingabe bzw. `resume` auf die Anmeldung eines Runners wartet.
+    pub connect_timeout: Duration,
+    /// Wie lange ein gestarteter Runner als „startet gerade“ gilt; danach ersetzt ihn der
+    /// nächste Start. Deutlich über dem längsten Harness-Handshake (Codex: 30 s).
+    pub start_budget: Duration,
     pub tunnel_socket: Option<PathBuf>,
     /// Entwicklermodus: Fake-Harness erlaubt (HAR-026 AC3).
     pub dev: bool,
@@ -668,7 +676,7 @@ impl<'a> SessionManager<'a> {
     pub(crate) async fn wait_connected(&self, session: SessionId) -> Result<(), Problem> {
         let start = Instant::now();
         while !self.state.runtime.runners.connected(session) {
-            if start.elapsed() > CONNECT_TIMEOUT {
+            if start.elapsed() > self.cfg().connect_timeout {
                 // Wer sich nicht meldet, wird beendet und verliert sein Token; der nächste
                 // Versuch startet neu, statt weiter auf diesen Runner zu warten.
                 self.abandon_start(session).await;

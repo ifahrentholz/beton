@@ -634,6 +634,10 @@ struct Capture {
     tokens: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     delay: std::sync::Arc<std::sync::Mutex<Duration>>,
+    /// Der Runner läuft, findet den Tunnel aber nie (falscher Socket).
+    hang: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Der Runner findet den Tunnel erst nach dieser Zeit (langsamer Harness-Start).
+    slow: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
 }
 
 impl Capture {
@@ -643,6 +647,8 @@ impl Capture {
             tokens: std::sync::Arc::default(),
             broken: std::sync::Arc::default(),
             delay: std::sync::Arc::default(),
+            hang: std::sync::Arc::default(),
+            slow: std::sync::Arc::default(),
         }
     }
 
@@ -675,8 +681,19 @@ impl beton_host::RunnerProvider for Capture {
         tokio::time::sleep(delay).await;
         let mut boot = boot.clone();
         let broken = self.broken.load(std::sync::atomic::Ordering::SeqCst);
-        if broken {
+        if broken || self.hang.load(std::sync::atomic::Ordering::SeqCst) {
             boot.tunnel_socket = "/nicht/vorhanden.sock".into();
+        }
+        let slow = *self.slow.lock().unwrap();
+        if let Some(after) = slow {
+            // Der Runner versucht es mit Backoff weiter; der Socket erscheint erst später.
+            let real = boot.tunnel_socket.clone();
+            let late = real.with_file_name(format!("spaet-{}.sock", self.tokens().len()));
+            boot.tunnel_socket = late.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(after).await;
+                let _ = std::os::unix::fs::symlink(real, late);
+            });
         }
         let h = self.inner.start(env, &boot).await?;
         if broken {
@@ -844,6 +861,90 @@ async fn ses_003_ac3_concurrent_resumes_start_one_runner() {
         2,
         "ein Start beim Anlegen, einer fürs Fortsetzen"
     );
+    d.daemon.shutdown().await;
+}
+
+/// Re-Review zu #198 (N1): Ein Runner, der länger braucht als die Wartezeit einer Eingabe
+/// (Harness-Handshake, MCP-Server, Last), wird nicht abgebrochen. Der erste Versuch meldet
+/// 503, der Runner startet weiter, und die Session ist danach ohne neuen Start fortsetzbar.
+#[tokio::test]
+async fn ses_003_ac3_runner_slower_than_the_wait_is_not_aborted() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.sessions.connect_timeout = Duration::from_secs(1);
+        r.tunnel.idle_timeout = Duration::from_millis(300);
+        r.tunnel.idle_check = Duration::from_millis(100);
+        r
+    })
+    .await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    *capture.slow.lock().unwrap() = Some(Duration::from_millis(2500));
+    let path = format!("/v1/sessions/{id}/resume");
+    let (status, body) = d.http("POST", &path, None).await;
+    assert_eq!(status, 503, "{body}");
+    let start = Instant::now();
+    loop {
+        let (status, body) = d.http("POST", &path, None).await;
+        if status == 200 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{status} {body}");
+    }
+    assert_eq!(
+        capture.tokens().len(),
+        2,
+        "kein weiterer Start: der langsame Runner wurde nicht abgebrochen"
+    );
+    d.daemon.shutdown().await;
+}
+
+/// Re-Review zu #198 (N1/N2): Ein Runner, der sich innerhalb des Start-Budgets nie meldet, wird
+/// erst danach ersetzt; vorher startet kein zweiter neben ihm. Sein Token gilt danach nicht mehr.
+#[tokio::test]
+async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budget() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.sessions.connect_timeout = Duration::from_millis(500);
+        r.sessions.start_budget = Duration::from_secs(2);
+        r
+    })
+    .await;
+    capture
+        .hang
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let started = Instant::now();
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let path = format!("/v1/sessions/{id}/resume");
+    // Innerhalb des Budgets: warten statt einen zweiten Runner starten.
+    let (status, body) = d.http("POST", &path, None).await;
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(capture.tokens().len(), 1, "kein zweiter Start im Budget");
+    tokio::time::sleep(Duration::from_secs(2).saturating_sub(started.elapsed())).await;
+    capture
+        .hang
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, body) = d.http("POST", &path, None).await;
+    assert_eq!(status, 200, "{body}");
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 2, "nach dem Budget ersetzt");
+    assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
     d.daemon.shutdown().await;
 }
 

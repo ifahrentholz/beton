@@ -124,6 +124,8 @@ impl Runtime {
                     default_runner_command(),
                     std::env::temp_dir().join("beton-runners"),
                 )),
+                connect_timeout: crate::sessions::CONNECT_TIMEOUT,
+                start_budget: crate::sessions::START_BUDGET,
                 tunnel_socket: None,
                 dev: cfg!(debug_assertions),
                 launched: Arc::default(),
