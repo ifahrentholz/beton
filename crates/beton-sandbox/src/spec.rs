@@ -192,6 +192,46 @@ impl SandboxSpec {
 
     /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`.
     pub fn merged(layers: &[&SandboxSpec]) -> SandboxSpec {
-        todo!("SBX-003")
+        let mut out = SandboxSpec::default();
+        for layer in layers {
+            if layer.backend.is_some() {
+                out.backend = layer.backend;
+            }
+            if layer.workspace.is_some() {
+                out.workspace = layer.workspace;
+            }
+            if layer.allow_network.is_some() {
+                out.allow_network = layer.allow_network;
+            }
+            for (field, value) in [
+                (&mut out.read_paths, &layer.read_paths),
+                (&mut out.write_paths, &layer.write_paths),
+                (&mut out.allow_hidden, &layer.allow_hidden),
+                (&mut out.egress_rules, &layer.egress_rules),
+                (&mut out.egress_allow_private, &layer.egress_allow_private),
+            ] {
+                if value.is_some() {
+                    field.clone_from(value);
+                }
+            }
+            if let Some(masks) = &layer.masks {
+                let all = out.masks.get_or_insert_with(Vec::new);
+                for m in masks {
+                    if !all.contains(m) {
+                        all.push(m.clone());
+                    }
+                }
+            }
+            if let Some(env) = &layer.env {
+                let target = out.env.get_or_insert_with(SandboxEnvConfig::default);
+                if env.passthrough.is_some() {
+                    target.passthrough.clone_from(&env.passthrough);
+                }
+                for (k, v) in &env.set {
+                    target.set.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        out
     }
 }
