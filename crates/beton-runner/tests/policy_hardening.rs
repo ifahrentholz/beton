@@ -656,3 +656,62 @@ async fn pol_001_loosening_project_change_is_not_applied_during_the_session() {
         "Lockerung übernommen: {d:?}"
     );
 }
+
+// ------------------------------------------------------- Re-Review R3 (#253), HAR-027
+
+#[tokio::test]
+async fn har_027_builtin_system_tools_are_put_to_the_human() {
+    // Die Ausnahme ohne Rückfrage (#151) gilt nur für System-Tools von beton selbst, nicht für
+    // Claude-Builtins der Klasse `system` (`ExitPlanMode`, `Agent`/`Task`, `TodoWrite`).
+    let dir = tempfile::tempdir().unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let g = PolicyGate::new(
+        PolicyOptions {
+            harness: "claude".parse::<HarnessId>().unwrap(),
+            workdir: dir.path().to_path_buf(),
+            approval_timeout: std::time::Duration::from_millis(200),
+            ..PolicyOptions::default()
+        },
+        tx,
+    );
+    g.set_trusted_servers(vec!["beton".into()]);
+    for (i, tool) in ["ExitPlanMode", "Agent", "Task", "TodoWrite"]
+        .into_iter()
+        .enumerate()
+    {
+        let d = g
+            .decide(GateRequest {
+                call_id: format!("r3_{i}"),
+                tool: tool.into(),
+                kind: "system".into(),
+                args: serde_json::json!({}),
+                origin: GateOrigin::VendorAsk,
+                ..GateRequest::default()
+            })
+            .await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{tool}: {d:?}");
+        let mut cards = 0;
+        while let Ok(e) = rx.try_recv() {
+            if matches!(
+                e.payload,
+                beton_core::event::EventPayload::ApprovalRequested(_)
+            ) {
+                cards += 1;
+            }
+        }
+        assert_eq!(cards, 1, "{tool}: der Mensch entscheidet");
+    }
+}
+
+#[test]
+fn har_027_policy_forced_plan_binds_like_the_agent() {
+    use beton_harness::PermissionMode::{AcceptEdits, Default, Plan};
+    use beton_runner::settings::plan_locked;
+    // Eine User-Policy erzwingt `plan`: Die Session verlässt `plan` nicht per ExitPlanMode.
+    assert!(plan_locked(None, Some(Plan), Some(Plan)));
+    // Wie bisher: der Agent bindet.
+    assert!(plan_locked(Some(Plan), Some(Plan), None));
+    // Vom Nutzer gewähltes `plan` ohne Agent und ohne Policy bindet nicht.
+    assert!(!plan_locked(None, Some(Plan), None));
+    assert!(!plan_locked(None, Some(Default), Some(AcceptEdits)));
+}
