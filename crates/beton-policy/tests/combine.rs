@@ -692,3 +692,61 @@ fn pol_007_dry_run_modify_and_errors() {
     assert_eq!(d.would.len(), 1);
     assert_eq!(d.errors.len(), 2);
 }
+
+/// #182: Nach einem `args`-Patch in Pass 1 sieht Pass 2 auch die abgeleiteten Felder des
+/// modifizierten Aufrufs (`tool.command`, `tool.argv`, `tool.paths`), nicht die alten.
+#[test]
+fn pol_005_args_patch_recomputes_derived_fields_for_pass_two() {
+    use beton_policy::normalize::{ToolSource, normalize_source};
+    let source = Arc::new(ToolSource {
+        harness: "claude".into(),
+        native_name: "Bash".into(),
+        acp_kind: None,
+        mcp_server: None,
+        cwd: "/work/repo".into(),
+        home: None,
+    });
+    let original = json!({ "command": "rm -rf /tmp/x" });
+    let normalized = normalize_source(&source, &original).unwrap();
+    let act = Activation::new(Phase::ToolCall, json!({ "tool": normalized.to_context() }))
+        .unwrap()
+        .with_tool_source(source);
+    let user = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: safe\n    on: tool_call\n    action: modify\n    modify: { args: { command: \"echo ok > out.txt\" } }\n",
+    );
+    let project = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "rules:\n{}{}{}",
+            rule(
+                "no-rm",
+                "tool_call",
+                "shell.has_command(tool.argv, \"rm\")",
+                "deny"
+            ),
+            rule(
+                "no-rm-text",
+                "tool_call",
+                "tool.command.contains(\"rm -rf\")",
+                "deny"
+            ),
+            rule(
+                "out-path",
+                "tool_call",
+                "\"/work/repo/out.txt\" in tool.paths",
+                "ask"
+            ),
+        ),
+    );
+    let d = eval(vec![user, project], &act);
+    match &d.outcome {
+        Outcome::Ask { reasons } => {
+            assert_eq!(reasons.len(), 1);
+            assert_eq!(reasons[0].rule.rule_id, "out-path");
+        }
+        other => panic!("ask erwartet (Pass 2 auf dem neuen Kommando), war {other:?}"),
+    }
+}
