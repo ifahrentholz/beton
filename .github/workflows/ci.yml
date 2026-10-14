@@ -3,6 +3,9 @@ name: CI
 
 on:
   pull_request:
+    # `labeled`/`unlabeled`: die Label-Checks aus QA-013 (`security-review`, `no-test-needed`)
+    # sollen auf Änderungen der Labels reagieren.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -50,10 +53,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest,cargo-llvm-cov
       - name: Tests bauen (mit Netzwerk für die Paket-Registry)
         # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
         # offline aus den bereits geladenen Abhängigkeiten kompiliert.
@@ -87,6 +92,43 @@ jobs:
       # covers: DATA-002 AC3 (Durchsatz ≥ 5 000 Events/s, isoliert im Release-Build)
       - name: Benchmark Event-Log-Durchsatz
         run: cargo test -p beton-store --release --lib data_002_ac3 -- --ignored --nocapture
+
+      # covers: POL-002 AC4 (200 Regeln, Phase tool_call, p99 < 2 ms im Release-Build)
+      - name: Benchmark Policy-Auswertung
+        run: cargo test -p beton-policy --release --test bench -- --ignored --nocapture
+
+      # Coverage-Floor und Ratchet (QA-011) als Schritt dieses Jobs statt eigenem Job: jeder
+      # Job muss Required Check sein (QA-010 AC3). Die Basis ist der letzte Stand von main
+      # (Actions-Cache, geschrieben von Pushes auf main).
+      - name: Coverage-Basis von main laden
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: target/coverage/main.json
+          key: coverage-main-${{ github.event.pull_request.base.sha }}
+          restore-keys: coverage-main-
+      - name: Coverage sicherheitskritischer Crates (QA-011)
+        # covers: QA-011 AC1 (beton-policy unter 90 % schlägt fehl)
+        # covers: QA-011 AC2 (Bericht je Crate in der Job-Summary)
+        # covers: QA-011 AC3 (Ratchet gegen main, Toleranz 0,2 Punkte)
+        run: |
+          pkgs=""
+          for c in beton-policy beton-sandbox beton-proxy beton-secrets; do
+            if [ -d "crates/$c" ]; then pkgs="$pkgs -p $c"; fi
+          done
+          mkdir -p target/coverage
+          cargo llvm-cov $pkgs --json --output-path target/coverage/llvm-cov.json
+          cargo xtask coverage-gate --input target/coverage/llvm-cov.json \
+            --baseline target/coverage/main.json --out target/coverage/current.json \
+            --markdown "$GITHUB_STEP_SUMMARY"
+      - name: Coverage-Basis für PRs speichern
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp target/coverage/current.json target/coverage/main.json
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: target/coverage/main.json
+          key: coverage-main-${{ github.sha }}
 
   test-macos:
     name: test (macos)
@@ -195,6 +237,11 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # Labels und Label-Ereignisse des PRs für `security-tests-touched` (QA-013).
+      issues: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -210,6 +257,36 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: cargo xtask dco --range "origin/${BASE_REF}..HEAD"
+      # Eigener Schritt statt eigenem Job: jeder Job muss Required Check sein (QA-010 AC3).
+      - name: security-tests-touched (QA-013)
+        # covers: QA-013 AC2 (Code in sicherheitskritischen Crates nur mit Teständerung)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Das Label `no-test-needed` zählt nur, wenn es jetzt am PR hängt und zuletzt von
+          # einem Menschen (Actor-Typ `User`, kein Bot/keine App) gesetzt wurde. Labels werden
+          # zur Laufzeit gelesen, damit ein Neustart des Jobs ein später gesetztes Label sieht.
+          extra=""
+          if gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name' | grep -qx 'no-test-needed'; then
+            actor=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/events" \
+              --jq '.[] | select(.event == "labeled" and .label.name == "no-test-needed") | .actor.type' | tail -n1)
+            if [ "$actor" = "User" ]; then extra="--no-test-needed"; fi
+          fi
+          cargo xtask security-tests-touched --range "origin/${BASE_REF}..HEAD" $extra
+      - name: security-review-Label (QA-013, ADR-0036)
+        # covers: QA-013 AC1 (Übergang bis M3: sicherheitskritische Pfade nur mit Label `security-review`)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          extra=""
+          if gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name' | grep -qx 'security-review'; then
+            extra="--has-label"
+          fi
+          cargo xtask security-review-label --range "origin/${BASE_REF}..HEAD" $extra
 
   web:
     name: web (Vitest, Playwright)

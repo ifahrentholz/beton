@@ -1,0 +1,490 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "beton Policy-Set (Format v1)",
+  "description": "Ein Policy-Set (eine YAML-Datei bzw. ein Inline-Block).",
+  "type": "object",
+  "properties": {
+    "defaults": {
+      "description": "Ergebnis je Phase, wenn keine Regel dieser Ebene ausdrücklich erlaubt (Default `allow`).",
+      "type": "object",
+      "properties": {
+        "browser_action": {
+          "$ref": "#/$defs/DefaultAction"
+        },
+        "browser_navigate": {
+          "$ref": "#/$defs/DefaultAction"
+        },
+        "model_request": {
+          "$ref": "#/$defs/DefaultAction"
+        },
+        "session_start": {
+          "$ref": "#/$defs/DefaultAction"
+        },
+        "tool_call": {
+          "$ref": "#/$defs/DefaultAction"
+        },
+        "tool_result": {
+          "$ref": "#/$defs/DefaultAction"
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mode": {
+      "description": "`enforce` (Default) oder `dry_run` (Shadow-Betrieb, POL-027).",
+      "$ref": "#/$defs/Mode",
+      "default": "enforce"
+    },
+    "name": {
+      "description": "Name des Sets, `[a-z0-9-]`, höchstens 64 Zeichen.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "rules": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/RuleDoc"
+      }
+    },
+    "spec_version": {
+      "description": "Version des Formats. Unterstützt: `1`.",
+      "type": "integer",
+      "format": "uint64",
+      "const": 1,
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "name"
+  ],
+  "$defs": {
+    "Action": {
+      "description": "Aktion einer Regel (POL-006).",
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "ask",
+        "modify",
+        "notify"
+      ]
+    },
+    "ApprovalDoc": {
+      "type": "object",
+      "properties": {
+        "allow_on_timeout": {
+          "description": "`false` verhindert `allow` bei Ablauf auf niedrigeren Ebenen.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "on_timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TimeoutAction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remember": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Remember"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Dauer wie `30m`, `2h`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Channel": {
+      "type": "string",
+      "enum": [
+        "inbox",
+        "push",
+        "log"
+      ]
+    },
+    "DefaultAction": {
+      "description": "Default einer Ebene für eine Phase.",
+      "type": "string",
+      "enum": [
+        "allow",
+        "ask",
+        "deny"
+      ]
+    },
+    "EffectDoc": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/$defs/EffectOp"
+        },
+        "scope": {
+          "$ref": "#/$defs/StateScope"
+        },
+        "value": {
+          "description": "Wert (CEL), für `set` und `append`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "scope",
+        "key"
+      ]
+    },
+    "EffectOp": {
+      "type": "string",
+      "enum": [
+        "set",
+        "increment",
+        "append",
+        "delete"
+      ]
+    },
+    "Enforcement": {
+      "type": "string",
+      "enum": [
+        "required",
+        "best_effort"
+      ]
+    },
+    "Mode": {
+      "type": "string",
+      "enum": [
+        "enforce",
+        "dry_run"
+      ]
+    },
+    "ModifyDoc": {
+      "description": "Modifizierbare Felder (je Phase erlaubt laut POL-003).",
+      "type": "object",
+      "properties": {
+        "args": {
+          "description": "JSON-Merge-Patch auf die Tool-Argumente."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permission_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redact": {
+          "description": "Regex-Muster, deren Treffer geschwärzt werden.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "NotifyDoc": {
+      "type": "object",
+      "properties": {
+        "channels": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Channel"
+          }
+        },
+        "message": {
+          "description": "Text; `{{ … }}` enthält CEL-Ausdrücke.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OnUnsupported": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "ask",
+        "skip"
+      ]
+    },
+    "Phase": {
+      "description": "Hook-Phase, an der Policies entscheiden (POL-003).",
+      "type": "string",
+      "enum": [
+        "session_start",
+        "model_request",
+        "tool_call",
+        "tool_result",
+        "browser_navigate",
+        "browser_action"
+      ]
+    },
+    "Remember": {
+      "type": "string",
+      "enum": [
+        "none",
+        "session"
+      ]
+    },
+    "RuleDoc": {
+      "description": "Eine Regel: `on` + `action` (+ `when`) oder ein eingebauter Regeltyp (`type` + `params`).",
+      "type": "object",
+      "properties": {
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approval": {
+          "description": "Einstellungen der Approval-Card (nur `ask`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApprovalDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dry_run": {
+          "description": "Regel nur im Shadow-Betrieb auswerten (POL-027).",
+          "type": "boolean",
+          "default": false
+        },
+        "effects": {
+          "description": "Zustandsänderungen, wenn die Regel greift (POL-009).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EffectDoc"
+          }
+        },
+        "effects_on": {
+          "description": "Endentscheidungen, bei denen die `effects` angewendet werden (Default `[allow, deny]`).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/DefaultAction"
+          }
+        },
+        "enforcement": {
+          "description": "`required` (Default für deny/ask/modify) oder `best_effort` (POL-024).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enforcement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "Eindeutig im Set, `[a-z0-9-]`, höchstens 64 Zeichen.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+        },
+        "kinds": {
+          "description": "Betroffene Tool-Klassen, falls aus `when` nicht ableitbar (POL-024).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "modify": {
+          "description": "Modifikation (nur `modify`); Werte sind Literale.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModifyDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notify": {
+          "description": "Benachrichtigung (nur `notify`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotifyDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on": {
+          "description": "Phase, in der die Regel entscheidet (nicht bei `type`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Phase"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "on_unsupported": {
+          "description": "Wenn der Harness die Modifikation nicht anwenden kann (Default `deny`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OnUnsupported"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "params": {
+          "description": "Parameter des Regeltyps.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
+        "reason": {
+          "description": "Begründung; bei `deny` erhält das Modell diesen Text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remember_key": {
+          "description": "Fingerprint für gemerkte Freigaben (CEL, Typ `string`, POL-010).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "description": "Nur Darstellung.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Severity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "description": "Eingebauter Regeltyp; schließt `on`, `when`, `action` und deren Felder aus.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "when": {
+          "description": "Bedingung (CEL, Typ `bool`); fehlt sie, greift die Regel immer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "RuleType": {
+      "description": "Eingebaute Regeltypen (Zucker, der zu CEL-Regeln entzuckert wird).",
+      "type": "string",
+      "enum": [
+        "spend_cap",
+        "daily_budget",
+        "model_route",
+        "require_approval",
+        "tool_allowlist",
+        "path_guard",
+        "git_guard",
+        "loop_detection",
+        "pii_redaction",
+        "browser_guard"
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "StateScope": {
+      "type": "string",
+      "enum": [
+        "session",
+        "run",
+        "user_day",
+        "user"
+      ]
+    },
+    "TimeoutAction": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny",
+        "abort"
+      ]
+    }
+  }
+}

@@ -1,0 +1,84 @@
+# Abbildung nativer Tool-Calls auf kanonische Klassen (POL-005, 03-policies.md).
+#
+# Daten, kein Code (POL-005 AC3): Ein Test prüft, dass jeder in den Golden-Transcripts von
+# Claude, Codex, ACP und dem Direkt-Harness vorkommende Tool-Name (bei ACP: `kind`) hier
+# eine Abbildung hat. Unbekannte Tools werden `other`.
+#
+# Je Tool:
+#   kind:     kanonische Klasse (siehe `kinds`)
+#   command:  Argument mit dem Shell-Kommando (→ tool.command, tool.argv)
+#   paths:    Argumente mit Dateipfaden (→ tool.paths, absolut und normalisiert)
+#   patch:    Argument mit einem apply_patch-Text (Pfade aus den Kopfzeilen)
+#   changes:  Argument mit einer Liste `{ path, kind: { move_path } }` (Codex fileChange)
+#   subagent_spawn: startet einen Sub-Agent (→ tool.is_subagent_spawn)
+spec_version: 1
+
+kinds: [shell, file_read, file_write, file_edit, search, web_fetch, mcp, system, browser, other]
+
+harnesses:
+  claude:
+    # MCP-Tools heißen `mcp__<server>__<tool>`; der Server entscheidet (siehe mcp_servers).
+    mcp_prefix: "mcp__"
+    tools:
+      Bash: { kind: shell, command: command }
+      BashOutput: { kind: shell }
+      KillShell: { kind: shell }
+      Read: { kind: file_read, paths: [file_path] }
+      NotebookRead: { kind: file_read, paths: [notebook_path] }
+      Write: { kind: file_write, paths: [file_path] }
+      Edit: { kind: file_edit, paths: [file_path] }
+      MultiEdit: { kind: file_edit, paths: [file_path] }
+      NotebookEdit: { kind: file_edit, paths: [notebook_path] }
+      Glob: { kind: search, paths: [path] }
+      Grep: { kind: search, paths: [path] }
+      LS: { kind: search, paths: [path] }
+      WebFetch: { kind: web_fetch }
+      WebSearch: { kind: web_fetch }
+      Task: { kind: system, subagent_spawn: true }
+      TodoWrite: { kind: system }
+      ExitPlanMode: { kind: system }
+  codex:
+    tools:
+      # app-server-Items (aktuelles Protokoll)
+      commandExecution: { kind: shell, command: command }
+      fileChange: { kind: file_edit, changes: changes }
+      webSearch: { kind: web_fetch }
+      imageView: { kind: file_read, paths: [path] }
+      # Funktionsnamen älterer Codex-Versionen
+      exec_command: { kind: shell, command: command }
+      shell: { kind: shell, command: command }
+      apply_patch: { kind: file_edit, patch: input }
+  acp:
+    # ACP ordnet über `tool_call.kind` zu, nicht über den Namen (der ist ein Titel).
+    by_kind: true
+    tools:
+      execute: { kind: shell, command: command }
+      read: { kind: file_read, paths: [path, file_path] }
+      edit: { kind: file_edit, paths: [path, file_path] }
+      delete: { kind: file_edit, paths: [path, file_path] }
+      move: { kind: file_edit, paths: [path, file_path, destination] }
+      search: { kind: search, paths: [path] }
+      fetch: { kind: web_fetch }
+      think: { kind: other }
+      other: { kind: other }
+
+# Tools von MCP-Servern (alle Harnesses); Server ohne Eintrag ergeben `mcp`.
+mcp_servers:
+  # beton-System-Tools (AGT-007)
+  beton:
+    kind: system
+    tools:
+      session_spawn: { kind: system, subagent_spawn: true }
+  # Workspace-Tools des Direkt-Harness (HAR-010)
+  beton-workspace:
+    kind: other
+    tools:
+      fs_read: { kind: file_read, paths: [path] }
+      fs_write: { kind: file_write, paths: [path] }
+      fs_edit: { kind: file_edit, paths: [path] }
+      fs_glob: { kind: search, paths: [path] }
+      fs_grep: { kind: search, paths: [path] }
+      shell_exec: { kind: shell, command: command }
+  # Werkzeuge des eingebetteten Browsers (M3)
+  beton-browser:
+    kind: browser

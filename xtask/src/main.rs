@@ -2,17 +2,22 @@
 //!
 //! ```text
 //! cargo xtask codegen [--check]
+//! cargo xtask coverage-gate --input <llvm-cov.json> [--baseline <f>] [--out <f>] [--markdown <f>]
 //! cargo xtask commit-lint [--range <base>..<head>] [--title <text>]
 //! cargo xtask dco [--range <base>..<head>]
 //! cargo xtask golden-scan
+//! cargo xtask security-tests-touched --range <base>..<head> [--no-test-needed]
+//! cargo xtask security-review-label --range <base>..<head> [--has-label]
 //! cargo xtask spec-check
 //! cargo xtask spec-coverage --milestone <M0…M5> [--report]
 //! ```
 
 mod codegen;
 mod commits;
+mod cov_gate;
 mod coverage;
 mod golden_scan;
+mod security_tests;
 mod spec;
 
 use std::path::PathBuf;
@@ -50,13 +55,16 @@ fn run() -> Result<bool> {
     match command.as_str() {
         "codegen" => run_codegen(&root, &rest),
         "commit-lint" => commit_lint(&root, &rest),
+        "coverage-gate" => coverage_gate(&root, &rest),
         "dco" => dco(&rest),
         "golden-scan" => golden_scan(&root),
+        "security-tests-touched" => security_tests_touched(&rest),
+        "security-review-label" => security_review_label(&rest),
         "spec-check" => spec_check(&root),
         "spec-coverage" => spec_coverage(&root, &rest),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|dco|golden-scan|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
@@ -101,6 +109,114 @@ fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
         })
         .filter(|c| !c.hash.is_empty())
         .collect())
+}
+
+/// QA-011: Coverage-Floor und Ratchet aus dem Export von `cargo llvm-cov --json`.
+fn coverage_gate(root: &std::path::Path, args: &[String]) -> Result<bool> {
+    let read = |path: &str| -> Result<serde_json::Value> {
+        let text = std::fs::read_to_string(path).with_context(|| format!("{path} nicht lesbar"))?;
+        serde_json::from_str(&text).with_context(|| format!("{path} ist kein JSON"))
+    };
+    let input = flag(args, "--input").context("--input <llvm-cov.json> fehlt")?;
+    let current = cov_gate::per_crate(&read(input)?)?;
+    let baseline = match flag(args, "--baseline") {
+        Some(path) if std::path::Path::new(path).exists() => {
+            Some(cov_gate::parse_baseline(&read(path)?))
+        }
+        _ => None,
+    };
+    let present: Vec<&str> = cov_gate::CRATES
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| root.join("crates").join(k).is_dir())
+        .collect();
+    let rows = cov_gate::evaluate(&current, baseline.as_ref(), &present);
+    let mut report = cov_gate::markdown(&rows);
+    if baseline.is_none() {
+        report.push_str(
+            "
+Keine Basis von `main` gefunden: Ratchet übersprungen, Floor geprüft.\n",
+        );
+    }
+    print!("{report}");
+    if let Some(path) = flag(args, "--markdown") {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        f.write_all(report.as_bytes())?;
+    }
+    if let Some(path) = flag(args, "--out") {
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&cov_gate::summary_json(&current))?,
+        )?;
+    }
+    Ok(rows.iter().all(|r| r.problems.is_empty()))
+}
+
+/// Geänderte Dateien eines PRs (`--range <base>..<head>`, gegenüber der Merge-Basis).
+fn pr_changes(args: &[String]) -> Result<Vec<security_tests::Change>> {
+    let range = flag(args, "--range").context("--range <base>..<head> fehlt")?;
+    let (base, head) = range
+        .split_once("..")
+        .context("--range erwartet <base>..<head>")?;
+    let out = Command::new("git")
+        .args(["diff", "--name-status", &format!("{base}...{head}")])
+        .output()
+        .context("git diff fehlgeschlagen")?;
+    if !out.status.success() {
+        bail!("git diff: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(security_tests::parse_name_status(&String::from_utf8(
+        out.stdout,
+    )?))
+}
+
+/// QA-013 AC1 (ADR-0036): PRs an sicherheitskritischen Pfaden brauchen `security-review`.
+fn security_review_label(args: &[String]) -> Result<bool> {
+    let changes = pr_changes(args)?;
+    let has_label = args.iter().any(|a| a == "--has-label");
+    let missing = security_tests::missing_review_label(&changes, has_label);
+    if missing.is_empty() {
+        println!("security-review-label: ok");
+        return Ok(true);
+    }
+    eprintln!(
+        "security-review-label: PR ändert sicherheitskritische Pfade ({}), Label `security-review` fehlt (QA-013, ADR-0036).",
+        missing.join(", ")
+    );
+    Ok(false)
+}
+
+/// QA-013 AC2: Codeänderung in sicherheitskritischen Crates nur mit Teständerung.
+/// `--no-test-needed` setzt die CI, wenn ein Mensch das gleichnamige Label gesetzt hat.
+fn security_tests_touched(args: &[String]) -> Result<bool> {
+    let changes = pr_changes(args)?;
+    let missing = security_tests::violations(&changes);
+    if missing.is_empty() {
+        println!(
+            "security-tests-touched: ok ({} Dateien geprüft)",
+            changes.len()
+        );
+        return Ok(true);
+    }
+    for area in &missing {
+        eprintln!("security-tests-touched: Code in {area} geändert, aber keine Testdatei");
+    }
+    if args.iter().any(|a| a == "--no-test-needed") {
+        println!("security-tests-touched: Label `no-test-needed` (von einem Menschen gesetzt)");
+        return Ok(true);
+    }
+    eprintln!(
+        "Sicherheitskritische Crates folgen TDD (QA-013): Test ergänzen oder Label \
+         `no-test-needed` durch den Maintainer setzen lassen und den Job neu starten."
+    );
+    Ok(false)
 }
 
 fn golden_scan(root: &std::path::Path) -> Result<bool> {

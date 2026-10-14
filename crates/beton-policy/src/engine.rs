@@ -1,0 +1,891 @@
+//! Effektives Policy-Set und Kombinationsalgorithmus (POL-007, 03-policies.md „Design“).
+//!
+//! Die Auswertung ist rein: ohne IO, deterministisch und seiteneffektfrei. Regeln werden in
+//! kanonischer Reihenfolge betrachtet (Ebene `org → team → user → project → agent`, darin
+//! Set-Name alphabetisch, darin Deklarationsreihenfolge); die Lade-Reihenfolge spielt keine
+//! Rolle (AC5).
+//!
+//! 1. Pass 1 – Modifikation (erster Schreiber gewinnt; `args` je JSON-Pointer; `redact`
+//!    kumulativ; `on_unsupported`).
+//! 2. Pass 2 – Entscheidung auf dem modifizierten Subjekt.
+//! 3. Defaults je Ebene, aufgehoben nur durch `allow` derselben Ebene.
+//! 4. Fehler: `deny`/`ask`/`modify` → `deny` (fail closed), `allow` hebt nichts auf, `notify`
+//!    wird protokolliert.
+//! 5. Grants machen `ask` zu `allow`.
+//! 6. Ergebnis: `deny` > `ask` > `allow`; `notify` immer.
+//! 7. Effects werden gemeldet (Anwendung: POL-009).
+//! 8. Dry-Run-Regeln werden ausgewertet und gemeldet, fließen aber nicht ein.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde::Serialize;
+use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+
+use crate::Phase;
+use crate::cel::{Clock, EvalError, Limits, Meter, SystemClock};
+use crate::context::Activation;
+use crate::doc::{
+    Action, ApprovalDoc, Channel, DefaultAction, EffectDoc, Mode, OnUnsupported, Severity,
+};
+use crate::load::{LoadedRule, LoadedSet, RuleKind, RuleRef, Scope};
+
+/// Welche Modifikationen der Harness in dieser Phase anwenden kann (Enforcement-Matrix,
+/// POL-024; die Ableitung aus den Harness-Capabilities folgt mit WP-35).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+    pub model: bool,
+    pub reasoning_effort: bool,
+    pub permission_mode: bool,
+    pub args: bool,
+    pub redact: bool,
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            model: true,
+            reasoning_effort: true,
+            permission_mode: true,
+            args: true,
+            redact: true,
+        }
+    }
+}
+
+impl Capabilities {
+    fn supports(&self, field: &str) -> bool {
+        match field {
+            "model" => self.model,
+            "reasoning_effort" => self.reasoning_effort,
+            "permission_mode" => self.permission_mode,
+            "args" => self.args,
+            "redact" => self.redact,
+            _ => false,
+        }
+    }
+}
+
+/// Gemerkte Freigaben (POL-010). Liefert die Grant-ID, wenn für die `ask`-Regel ein
+/// gültiger Grant mit passendem Fingerprint existiert.
+pub trait Grants {
+    fn grant(&self, rule: &RuleRef, ctx: &Activation) -> Option<String>;
+}
+
+/// Optionen einer Auswertung.
+#[derive(Clone, Default)]
+pub struct EvalOptions<'a> {
+    pub capabilities: Capabilities,
+    pub grants: Option<&'a dyn Grants>,
+    pub limits: Limits,
+    /// Uhr für das Zeitbudget (Default: Systemuhr).
+    pub clock: Option<&'a dyn Clock>,
+}
+
+/// Verdikt einer Regel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Deny,
+    Ask,
+    Modify,
+    Allow,
+    Notify,
+    Error,
+}
+
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Deny => "deny",
+            Verdict::Ask => "ask",
+            Verdict::Modify => "modify",
+            Verdict::Allow => "allow",
+            Verdict::Notify => "notify",
+            Verdict::Error => "error",
+        }
+    }
+
+    fn of(action: Action) -> Self {
+        match action {
+            Action::Allow => Verdict::Allow,
+            Action::Deny => Verdict::Deny,
+            Action::Ask => Verdict::Ask,
+            Action::Modify => Verdict::Modify,
+            Action::Notify => Verdict::Notify,
+        }
+    }
+}
+
+/// Eine Regel, die gegriffen hat (bzw. bei Dry-Run gegriffen hätte).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Match {
+    pub rule: RuleRef,
+    pub verdict: Verdict,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub dry_run: bool,
+}
+
+/// Ein Grund für `deny` oder `ask`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Reason {
+    pub rule: RuleRef,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<Severity>,
+    /// Approval-Einstellungen der Regel (Kombination: POL-010).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalDoc>,
+}
+
+/// Endergebnis.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Outcome {
+    Allow,
+    /// Alle Gründe; der erste stammt von der autoritativsten Ebene.
+    Deny {
+        reasons: Vec<Reason>,
+    },
+    /// Genau eine Approval-Card mit allen `ask`-Gründen.
+    Ask {
+        reasons: Vec<Reason>,
+    },
+}
+
+/// Angewendete Modifikationen.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Modifications {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Zusammengeführter JSON-Merge-Patch auf die Tool-Argumente.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Value>,
+    /// Vereinigung aller Redact-Muster (wird zuletzt angewendet).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<String>,
+}
+
+impl Modifications {
+    pub fn is_empty(&self) -> bool {
+        *self == Modifications::default()
+    }
+}
+
+/// Verworfene Modifikation.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Conflict {
+    /// `model`, `reasoning_effort`, `permission_mode` oder `/args/<pointer>`.
+    pub field: String,
+    pub kept: Value,
+    pub kept_rule: RuleRef,
+    pub discarded: Value,
+    pub discarded_rule: RuleRef,
+}
+
+/// Default einer Ebene in dieser Phase.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DefaultApplied {
+    pub scope: Scope,
+    pub phase: Phase,
+    pub default: DefaultAction,
+    /// Durch ein `allow` derselben Ebene aufgehoben.
+    pub lifted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RuleError {
+    pub rule: RuleRef,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Notification {
+    pub rule: RuleRef,
+    pub channels: Vec<Channel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Effects einer Regel, die angewendet werden (bei `ask` erst nach Auflösung).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PendingEffects {
+    pub rule: RuleRef,
+    pub effects: Vec<EffectDoc>,
+    pub effects_on: Vec<DefaultAction>,
+}
+
+/// Ergebnis einer Auswertung mit vollständiger Spur (Explain, Audit).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Decision {
+    pub phase: Phase,
+    #[serde(flatten)]
+    pub outcome: Outcome,
+    pub modified: Modifications,
+    pub matched: Vec<Match>,
+    pub would: Vec<Match>,
+    pub defaults_applied: Vec<DefaultApplied>,
+    pub conflicts: Vec<Conflict>,
+    pub errors: Vec<RuleError>,
+    pub grants_used: Vec<String>,
+    pub notifications: Vec<Notification>,
+    pub effects: Vec<PendingEffects>,
+    pub warnings: Vec<String>,
+    pub policy_set_hash: String,
+    pub eval_us: u64,
+}
+
+/// Die für eine Session geltenden Sets aller Ebenen.
+#[derive(Debug, Clone)]
+pub struct EffectiveSet {
+    sets: Vec<Arc<LoadedSet>>,
+    hash: String,
+    invalid: Vec<String>,
+}
+
+impl EffectiveSet {
+    /// Sortiert die Sets kanonisch (Ebene, Name, Herkunft) und berechnet `policy_set_hash`.
+    pub fn new(sets: Vec<Arc<LoadedSet>>) -> Self {
+        Self::with_invalid(sets, Vec::new())
+    }
+
+    /// Wie [`EffectiveSet::new`]; `invalid` nennt Dateien, die gerade nicht geladen werden
+    /// können (ihre letzte gültige Version ist enthalten, falls es eine gab).
+    pub fn with_invalid(mut sets: Vec<Arc<LoadedSet>>, mut invalid: Vec<String>) -> Self {
+        sets.sort_by(|a, b| {
+            (a.scope, &a.name, &a.origin, &a.version)
+                .cmp(&(b.scope, &b.name, &b.origin, &b.version))
+        });
+        let mut hasher = Sha256::new();
+        for s in &sets {
+            hasher.update(s.scope.as_str());
+            hasher.update([0]);
+            hasher.update(&s.name);
+            hasher.update([0]);
+            hasher.update(&s.version);
+            hasher.update([0]);
+        }
+        invalid.sort();
+        Self {
+            sets,
+            hash: format!("sha256:{}", hex::encode(hasher.finalize())),
+            invalid,
+        }
+    }
+
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    pub fn sets(&self) -> &[Arc<LoadedSet>] {
+        &self.sets
+    }
+
+    /// Dateien mit Ladefehler (für Warnungen im Runner, z. B. beim Session-Start).
+    pub fn invalid(&self) -> &[String] {
+        &self.invalid
+    }
+
+    /// Wertet eine Phase aus. Der Kontext bestimmt die Phase.
+    pub fn evaluate(&self, ctx: &Activation, opts: &EvalOptions) -> Decision {
+        let system = SystemClock::default();
+        let clock: &dyn Clock = opts.clock.unwrap_or(&system);
+        let started = clock.now_us();
+        let mut run = Run::new(self, ctx.phase(), opts, clock);
+        let outcome = run.combine(ctx);
+        let mut decision = run.decision;
+        decision.outcome = outcome;
+        decision.eval_us = clock.now_us().saturating_sub(started);
+        decision
+    }
+}
+
+struct Run<'a> {
+    set: &'a EffectiveSet,
+    phase: Phase,
+    opts: &'a EvalOptions<'a>,
+    meter: Meter<'a>,
+    decision: Decision,
+}
+
+/// Ein Verdikt mit Herkunft (für die Kombination).
+struct Verdicts {
+    deny: Vec<Reason>,
+    ask: Vec<(Reason, bool)>,
+    /// Ebenen mit einer gegriffenen `allow`-Regel.
+    allowed_scopes: Vec<Scope>,
+}
+
+impl<'a> Run<'a> {
+    fn new(
+        set: &'a EffectiveSet,
+        phase: Phase,
+        opts: &'a EvalOptions<'a>,
+        clock: &'a dyn Clock,
+    ) -> Self {
+        Self {
+            set,
+            phase,
+            opts,
+            meter: Meter::new(&opts.limits, clock),
+            decision: Decision {
+                phase,
+                outcome: Outcome::Allow,
+                modified: Modifications::default(),
+                matched: Vec::new(),
+                would: Vec::new(),
+                defaults_applied: Vec::new(),
+                conflicts: Vec::new(),
+                errors: Vec::new(),
+                grants_used: Vec::new(),
+                notifications: Vec::new(),
+                effects: Vec::new(),
+                warnings: Vec::new(),
+                policy_set_hash: set.hash.clone(),
+                eval_us: 0,
+            },
+        }
+    }
+
+    /// Regeln dieser Phase in kanonischer Reihenfolge.
+    fn rules(&self) -> impl Iterator<Item = (&'a LoadedSet, &'a LoadedRule)> + use<'a> {
+        let phase = self.phase;
+        self.set
+            .sets
+            .iter()
+            .flat_map(|s| s.rules.iter().map(move |r| (s.as_ref(), r)))
+            .filter(move |(_, r)| r.applies_to(phase))
+    }
+
+    /// Wertet die Bedingung aus: `Ok(true)` = gegriffen.
+    fn hit(&mut self, rule: &LoadedRule, ctx: &Activation) -> Result<bool, EvalError> {
+        self.meter.begin_expr()?;
+        match &rule.kind {
+            RuleKind::Cel { when: Some(p), .. } => p.eval_bool(ctx, &mut self.meter),
+            RuleKind::Cel { when: None, .. } => Ok(true),
+            RuleKind::Builtin(t) => Err(EvalError::Error(format!(
+                "Regeltyp `{}` wird noch nicht ausgewertet",
+                t.as_str()
+            ))),
+        }
+    }
+
+    fn deadline_deny(&mut self) -> Outcome {
+        let rule = RuleRef {
+            scope: Scope::Org,
+            set: String::new(),
+            set_version: String::new(),
+            rule_id: "engine".into(),
+        };
+        let reason = "Policy-Auswertung überschritt das Zeitbudget (fail closed)".to_owned();
+        self.decision.errors.push(RuleError {
+            rule: rule.clone(),
+            error: reason.clone(),
+        });
+        Outcome::Deny {
+            reasons: vec![Reason {
+                rule,
+                reason,
+                severity: None,
+                approval: None,
+            }],
+        }
+    }
+
+    fn combine(&mut self, ctx: &Activation) -> Outcome {
+        let mut verdicts = Verdicts {
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allowed_scopes: Vec::new(),
+        };
+        // Pass 1 – Modifikation
+        let mut ctx = ctx.clone();
+        match self.pass_modify(&ctx, &mut verdicts) {
+            Ok(()) => {}
+            Err(_) => return self.deadline_deny(),
+        }
+        if let Err(e) = self.apply_modifications(&mut ctx) {
+            let rule = RuleRef {
+                scope: Scope::Org,
+                set: String::new(),
+                set_version: String::new(),
+                rule_id: "engine".into(),
+            };
+            let reason = format!("Modifikation nicht anwendbar: {e}");
+            self.decision.errors.push(RuleError {
+                rule: rule.clone(),
+                error: reason.clone(),
+            });
+            verdicts.deny.push(Reason {
+                rule,
+                reason,
+                severity: None,
+                approval: None,
+            });
+        }
+        // Pass 2 – Entscheidung
+        if self.pass_decide(&ctx, &mut verdicts).is_err() {
+            return self.deadline_deny();
+        }
+        // Defaults je Ebene
+        self.defaults(&mut verdicts);
+        // Grants und Ergebnis
+        let mut ask = Vec::new();
+        for (reason, grantable) in verdicts.ask {
+            let grant = grantable
+                .then(|| self.opts.grants.and_then(|g| g.grant(&reason.rule, &ctx)))
+                .flatten();
+            match grant {
+                Some(id) => self.decision.grants_used.push(id),
+                None => ask.push(reason),
+            }
+        }
+        let outcome = if !verdicts.deny.is_empty() {
+            Outcome::Deny {
+                reasons: verdicts.deny,
+            }
+        } else if !ask.is_empty() {
+            Outcome::Ask { reasons: ask }
+        } else {
+            Outcome::Allow
+        };
+        self.effects(&outcome);
+        outcome
+    }
+
+    fn is_dry(set: &LoadedSet, rule: &LoadedRule) -> bool {
+        set.mode == Mode::DryRun || rule.doc.dry_run
+    }
+
+    fn reason(set: &LoadedSet, rule: &LoadedRule, fallback: &str) -> Reason {
+        Reason {
+            rule: set.rule_ref(&rule.id),
+            reason: rule
+                .doc
+                .reason
+                .clone()
+                .unwrap_or_else(|| fallback.to_owned()),
+            severity: rule.doc.severity,
+            approval: rule.doc.approval.clone(),
+        }
+    }
+
+    fn record_error(&mut self, set: &LoadedSet, rule: &LoadedRule, e: &EvalError) {
+        self.decision.errors.push(RuleError {
+            rule: set.rule_ref(&rule.id),
+            error: e.to_string(),
+        });
+    }
+
+    fn pass_modify(&mut self, ctx: &Activation, verdicts: &mut Verdicts) -> Result<(), EvalError> {
+        let mut written: BTreeMap<&'static str, (Value, RuleRef)> = BTreeMap::new();
+        let mut leaves: Vec<(String, Value, RuleRef)> = Vec::new();
+        for (set, rule) in self.rules().collect::<Vec<_>>() {
+            let RuleKind::Cel {
+                action: Action::Modify,
+                ..
+            } = &rule.kind
+            else {
+                continue;
+            };
+            let dry = Self::is_dry(set, rule);
+            let hit = match self.hit(rule, ctx) {
+                Ok(h) => h,
+                Err(e) if e == EvalError::Deadline => return Err(e),
+                Err(e) => {
+                    self.record_error(set, rule, &e);
+                    if !dry {
+                        // Eine fehlerhafte Modifikation ist nicht sicher anwendbar: fail closed.
+                        verdicts.deny.push(Self::reason(
+                            set,
+                            rule,
+                            "Modifikations-Regel fehlerhaft",
+                        ));
+                    }
+                    continue;
+                }
+            };
+            if !hit {
+                continue;
+            }
+            let entry = Match {
+                rule: set.rule_ref(&rule.id),
+                verdict: Verdict::Modify,
+                reason: rule.doc.reason.clone(),
+                dry_run: dry,
+            };
+            if dry {
+                self.decision.would.push(entry);
+                continue;
+            }
+            self.decision.matched.push(entry);
+            let Some(m) = &rule.doc.modify else { continue };
+            let unsupported: Vec<&str> = m
+                .fields()
+                .into_iter()
+                .filter(|f| !self.opts.capabilities.supports(f))
+                .collect();
+            if !unsupported.is_empty() {
+                let what = format!(
+                    "Harness kann `{}` in Phase {} nicht ändern",
+                    unsupported.join("`, `"),
+                    self.phase
+                );
+                match rule.doc.on_unsupported.unwrap_or(OnUnsupported::Deny) {
+                    OnUnsupported::Deny => verdicts.deny.push(Self::reason(set, rule, &what)),
+                    OnUnsupported::Ask => verdicts.ask.push((Self::reason(set, rule, &what), true)),
+                    OnUnsupported::Skip => self
+                        .decision
+                        .warnings
+                        .push(format!("{}: {what}; Modifikation verworfen", rule.id)),
+                }
+                continue;
+            }
+            let me = set.rule_ref(&rule.id);
+            for (field, value) in [
+                ("model", &m.model),
+                ("reasoning_effort", &m.reasoning_effort),
+                ("permission_mode", &m.permission_mode),
+            ] {
+                let Some(value) = value else { continue };
+                let value = Value::String(value.clone());
+                match written.get(field) {
+                    None => {
+                        written.insert(field, (value, me.clone()));
+                    }
+                    Some((kept, _)) if *kept == value => {}
+                    Some((kept, kept_rule)) => self.decision.conflicts.push(Conflict {
+                        field: field.into(),
+                        kept: kept.clone(),
+                        kept_rule: kept_rule.clone(),
+                        discarded: value,
+                        discarded_rule: me.clone(),
+                    }),
+                }
+            }
+            if let Some(patch) = &m.args {
+                let mut mine = Vec::new();
+                flatten("", patch, &mut mine);
+                for (pointer, value) in mine {
+                    let overlap = leaves.iter().find(|(p, _, _)| overlaps(p, &pointer));
+                    match overlap {
+                        None => leaves.push((pointer, value, me.clone())),
+                        Some((p, v, _)) if *p == pointer && *v == value => {}
+                        Some((_, kept, kept_rule)) => self.decision.conflicts.push(Conflict {
+                            field: format!("/args{pointer}"),
+                            kept: kept.clone(),
+                            kept_rule: kept_rule.clone(),
+                            discarded: value,
+                            discarded_rule: me.clone(),
+                        }),
+                    }
+                }
+            }
+            for pattern in m.redact.iter().flatten() {
+                if !self.decision.modified.redact.contains(pattern) {
+                    self.decision.modified.redact.push(pattern.clone());
+                }
+            }
+        }
+        let text = |f: &str| {
+            written
+                .get(f)
+                .and_then(|(v, _)| v.as_str().map(str::to_owned))
+        };
+        self.decision.modified.model = text("model");
+        self.decision.modified.reasoning_effort = text("reasoning_effort");
+        self.decision.modified.permission_mode = text("permission_mode");
+        if !leaves.is_empty() {
+            let mut patch = Value::Object(Map::new());
+            for (pointer, value, _) in &leaves {
+                set_pointer(&mut patch, pointer, value.clone());
+            }
+            self.decision.modified.args = Some(patch);
+        }
+        Ok(())
+    }
+
+    /// Überträgt Pass-1-Ergebnisse in den Kontext (Pass 2 sieht das modifizierte Subjekt).
+    fn apply_modifications(&self, ctx: &mut Activation) -> Result<(), String> {
+        let m = &self.decision.modified;
+        let object = match self.phase {
+            Phase::SessionStart => Some("start"),
+            Phase::ModelRequest => Some("request"),
+            _ => None,
+        };
+        if let Some(object) = object {
+            for (field, value) in [
+                ("model", &m.model),
+                ("reasoning_effort", &m.reasoning_effort),
+                ("permission_mode", &m.permission_mode),
+            ] {
+                if let Some(v) = value {
+                    ctx.set_field(object, field, &Value::String(v.clone()))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        if let Some(patch) = &m.args {
+            let mut args = ctx
+                .field("tool", "args")
+                .map(|v| v.to_json())
+                .filter(Value::is_object)
+                .unwrap_or_else(|| Value::Object(Map::new()));
+            merge_patch(&mut args, patch);
+            ctx.set_field("tool", "args", &args)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn pass_decide(&mut self, ctx: &Activation, verdicts: &mut Verdicts) -> Result<(), EvalError> {
+        for (set, rule) in self.rules().collect::<Vec<_>>() {
+            let action = match &rule.kind {
+                RuleKind::Cel {
+                    action: Action::Modify,
+                    ..
+                } => continue,
+                RuleKind::Cel { action, .. } => *action,
+                // Noch nicht entzuckerte Regeltypen gelten als deny-Regel (fail closed).
+                RuleKind::Builtin(_) => Action::Deny,
+            };
+            let dry = Self::is_dry(set, rule);
+            let hit = match self.hit(rule, ctx) {
+                Ok(h) => h,
+                Err(e) if e == EvalError::Deadline => return Err(e),
+                Err(e) => {
+                    self.record_error(set, rule, &e);
+                    if dry {
+                        continue;
+                    }
+                    match action {
+                        Action::Deny | Action::Ask => verdicts.deny.push(Self::reason(
+                            set,
+                            rule,
+                            &format!("Regel `{}` fehlerhaft: {e}", rule.id),
+                        )),
+                        _ => {}
+                    }
+                    continue;
+                }
+            };
+            if !hit {
+                continue;
+            }
+            let entry = Match {
+                rule: set.rule_ref(&rule.id),
+                verdict: Verdict::of(action),
+                reason: rule.doc.reason.clone(),
+                dry_run: dry,
+            };
+            if dry {
+                self.decision.would.push(entry);
+                continue;
+            }
+            self.decision.matched.push(entry);
+            match action {
+                Action::Deny => verdicts.deny.push(Self::reason(
+                    set,
+                    rule,
+                    &format!("Regel `{}` lehnt ab", rule.id),
+                )),
+                Action::Ask => verdicts.ask.push((
+                    Self::reason(set, rule, &format!("Regel `{}` verlangt Freigabe", rule.id)),
+                    true,
+                )),
+                Action::Allow => {
+                    if !verdicts.allowed_scopes.contains(&set.scope) {
+                        verdicts.allowed_scopes.push(set.scope);
+                    }
+                }
+                Action::Notify => {
+                    let notify = rule.doc.notify.clone();
+                    self.decision.notifications.push(Notification {
+                        rule: set.rule_ref(&rule.id),
+                        channels: notify
+                            .as_ref()
+                            .map(|n| n.channels.clone())
+                            .filter(|c| !c.is_empty())
+                            .unwrap_or_else(|| vec![Channel::Inbox]),
+                        message: notify.and_then(|n| n.message),
+                    });
+                }
+                Action::Modify => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn defaults(&mut self, verdicts: &mut Verdicts) {
+        // Strengster Default je Ebene (über alle Sets der Ebene, ohne Dry-Run-Sets).
+        let mut per_scope: BTreeMap<Scope, (DefaultAction, &LoadedSet)> = BTreeMap::new();
+        for set in &self.set.sets {
+            if set.mode == Mode::DryRun {
+                continue;
+            }
+            let Some(d) = set.defaults.get(&self.phase) else {
+                continue;
+            };
+            match per_scope.get(&set.scope) {
+                Some((existing, _)) if existing >= d => {}
+                _ => {
+                    per_scope.insert(set.scope, (*d, set));
+                }
+            }
+        }
+        for (scope, (default, set)) in per_scope {
+            if default == DefaultAction::Allow {
+                continue;
+            }
+            let lifted = verdicts.allowed_scopes.contains(&scope);
+            self.decision.defaults_applied.push(DefaultApplied {
+                scope,
+                phase: self.phase,
+                default,
+                lifted,
+            });
+            if lifted {
+                continue;
+            }
+            let reason = Reason {
+                rule: set.rule_ref(&format!("defaults.{}", self.phase)),
+                reason: format!(
+                    "Default der Ebene {} für {}: {}",
+                    scope.as_str(),
+                    self.phase,
+                    if default == DefaultAction::Deny {
+                        "deny"
+                    } else {
+                        "ask"
+                    }
+                ),
+                severity: None,
+                approval: None,
+            };
+            if default == DefaultAction::Deny {
+                verdicts.deny.push(reason);
+            } else {
+                verdicts.ask.push((reason, false));
+            }
+        }
+        // Gründe kanonisch ordnen: Ebene, Set, Reihenfolge der Regeln (Defaults zuletzt).
+        let order = |r: &Reason| (r.rule.scope, r.rule.set.clone());
+        verdicts.deny.sort_by_key(order);
+        verdicts.ask.sort_by_key(|(r, _)| order(r));
+    }
+
+    fn effects(&mut self, outcome: &Outcome) {
+        let final_action = match outcome {
+            Outcome::Allow => DefaultAction::Allow,
+            Outcome::Deny { .. } => DefaultAction::Deny,
+            Outcome::Ask { .. } => DefaultAction::Ask,
+        };
+        let matched: Vec<RuleRef> = self
+            .decision
+            .matched
+            .iter()
+            .map(|m| m.rule.clone())
+            .collect();
+        for rule_ref in matched {
+            let Some(rule) = self
+                .set
+                .sets
+                .iter()
+                .filter(|s| {
+                    s.scope == rule_ref.scope
+                        && s.name == rule_ref.set
+                        && s.version == rule_ref.set_version
+                })
+                .flat_map(|s| s.rules.iter())
+                .find(|r| r.id == rule_ref.rule_id)
+            else {
+                continue;
+            };
+            if rule.doc.effects.is_empty() {
+                continue;
+            }
+            let effects_on = rule
+                .doc
+                .effects_on
+                .clone()
+                .unwrap_or_else(|| vec![DefaultAction::Allow, DefaultAction::Deny]);
+            // Bei `ask` entscheidet erst die Auflösung (POL-009).
+            if final_action == DefaultAction::Ask || effects_on.contains(&final_action) {
+                self.decision.effects.push(PendingEffects {
+                    rule: rule_ref,
+                    effects: rule.doc.effects.clone(),
+                    effects_on,
+                });
+            }
+        }
+    }
+}
+
+/// Zerlegt einen Merge-Patch in Blätter (`/a/b` → Wert); Objekte werden rekursiv zerlegt,
+/// alles andere (auch `null` = löschen, Listen) ist ein Blatt.
+fn flatten(prefix: &str, patch: &Value, out: &mut Vec<(String, Value)>) {
+    match patch {
+        Value::Object(map) if !prefix.is_empty() || !map.is_empty() => {
+            if map.is_empty() {
+                out.push((prefix.to_owned(), patch.clone()));
+            }
+            for (k, v) in map {
+                let key = k.replace('~', "~0").replace('/', "~1");
+                flatten(&format!("{prefix}/{key}"), v, out);
+            }
+        }
+        other => out.push((prefix.to_owned(), other.clone())),
+    }
+}
+
+/// Berühren sich zwei Pointer (gleich oder einer ist Präfix des anderen)?
+fn overlaps(a: &str, b: &str) -> bool {
+    a == b || b.starts_with(&format!("{a}/")) || a.starts_with(&format!("{b}/"))
+}
+
+fn set_pointer(target: &mut Value, pointer: &str, value: Value) {
+    let mut cur = target;
+    let parts: Vec<String> = pointer
+        .split('/')
+        .skip(1)
+        .map(|p| p.replace("~1", "/").replace("~0", "~"))
+        .collect();
+    for (i, part) in parts.iter().enumerate() {
+        if !cur.is_object() {
+            *cur = Value::Object(Map::new());
+        }
+        let Value::Object(map) = cur else { return };
+        if i == parts.len() - 1 {
+            map.insert(part.clone(), value);
+            return;
+        }
+        cur = map
+            .entry(part.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+    }
+}
+
+/// JSON-Merge-Patch (RFC 7396).
+pub fn merge_patch(target: &mut Value, patch: &Value) {
+    let Value::Object(patch_map) = patch else {
+        *target = patch.clone();
+        return;
+    };
+    if !target.is_object() {
+        *target = Value::Object(Map::new());
+    }
+    let Value::Object(map) = target else { return };
+    for (k, v) in patch_map {
+        if v.is_null() {
+            map.remove(k);
+        } else {
+            merge_patch(map.entry(k.clone()).or_insert(Value::Null), v);
+        }
+    }
+}
