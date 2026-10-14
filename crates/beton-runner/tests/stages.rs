@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use beton_core::event::{EventPayload, ToolCallCompleted, ToolCallRequested, ToolStatus};
 use beton_harness::ToolIsolation;
-use beton_runner::stages::{StageInput, StageOptions, compose};
+use beton_runner::stages::{ShellIntegrity, StageInput, StageOptions, compose, sandbox_vars};
 use beton_sandbox::{CommandSpec, SandboxSpec, Stage, Stdio};
 
 fn exe() -> PathBuf {
@@ -125,15 +126,155 @@ async fn prx_002_network_without_ca_fails_closed() {
     .await
     .unwrap_err();
     assert_eq!(err.code(), "sandbox_unavailable", "{err}");
-    // Ohne Netz braucht es keine CA.
-    let s = compose(
+    // Stufe 1 braucht für Vendor-Hosts immer den Proxy, auch wenn Stufe 2 kein Netz hat.
+    let err = compose(
         input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", false),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+    // Ein Harness ohne Vendor-Hosts braucht ohne Netz keine CA.
+    let s = compose(
+        input(&fx, "fake", ToolIsolation::Beton),
         opts("backend: auto\nallow_network: false\n", false),
     )
     .await
     .unwrap()
     .unwrap();
     assert!(!s.tools.policy().env.contains_key("HTTPS_PROXY"));
+    assert!(!s.harness.policy().env.contains_key("HTTPS_PROXY"));
+}
+
+/// `allow_network: false` (z. B. Preset `readonly`) gilt für die Tools; die Vendor-CLI in
+/// Stufe 1 erreicht weiter nur ihre Passthrough-Hosts (Security-Review #228).
+#[tokio::test]
+async fn sbx_012_readonly_keeps_the_vendor_hosts_for_stage_one() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\npreset: readonly\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(s.harness.policy().env.contains_key("HTTPS_PROXY"));
+    assert!(
+        s.passthrough(Stage::Harness)
+            .contains(&"api.anthropic.com:443".to_owned())
+    );
+    assert!(!s.tools.policy().env.contains_key("HTTPS_PROXY"));
+    assert!(s.passthrough(Stage::Tools).is_empty());
+}
+
+/// Stufe 1 startet Programme über ihren `PATH`: kein relativer Eintrag und nichts, was
+/// Stufe 2 schreiben kann (sonst legt ein Tool dort ein Programm ab, das Stufe 1 ausführt).
+#[tokio::test]
+async fn sbx_002_stage_one_path_has_no_relative_or_stage_two_writable_entries() {
+    let fx = fx();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    let path = format!(
+        "bin:./x::{}/node_modules/.bin:/usr/bin:/bin",
+        fx.ws.display()
+    );
+    inp.host_env.insert("PATH".into(), path);
+    let s = compose(inp, opts("backend: auto\n", true))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(s.harness.policy().env["PATH"], "/usr/bin:/bin");
+    let tools = &s.tools.policy().env["PATH"];
+    assert!(
+        tools.split(':').all(|d| d.starts_with('/')),
+        "keine relativen Einträge: {tools}"
+    );
+}
+
+/// Der Austausch ist nicht das `TMPDIR` der Stufe 2: Stufe 1 liest nur, was Claude dort
+/// erwartet.
+#[tokio::test]
+async fn sbx_002_exchange_is_separate_from_the_stage_two_tmpdir() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let tmp = PathBuf::from(&s.tools.policy().env["TMPDIR"]);
+    assert_ne!(s.env.exchange, tmp);
+    assert!(!s.harness.policy().write_roots.contains(&tmp));
+    assert!(!s.harness.policy().read_roots.contains(&tmp));
+    assert!(s.harness.policy().write_roots.contains(&s.env.exchange));
+    assert!(s.tools.policy().write_roots.contains(&s.env.exchange));
+}
+
+/// `start.sandbox.enabled` meint die Tools: Läuft ein Harness degraded (Tools in Stufe 1),
+/// ist es `false` (Policies, die eine Sandbox verlangen, greifen dann).
+#[tokio::test]
+async fn sbx_002_ac4_degraded_session_reports_no_tool_sandbox_to_policies() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "codex", ToolIsolation::Inherited),
+        opts("backend: auto\nrequire_tool_isolation: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(sandbox_vars(Some(&s)).enabled, Some(false));
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(sandbox_vars(Some(&s)).enabled, Some(true));
+    assert_eq!(sandbox_vars(None).enabled, Some(false));
+}
+
+fn requested(id: &str, tool: &str) -> EventPayload {
+    EventPayload::ToolCallRequested(ToolCallRequested {
+        call_id: id.into(),
+        tool: tool.into(),
+        ..ToolCallRequested::default()
+    })
+}
+
+fn completed(id: &str, status: ToolStatus) -> EventPayload {
+    EventPayload::ToolCallCompleted(ToolCallCompleted {
+        call_id: id.into(),
+        status,
+        ..ToolCallCompleted::default()
+    })
+}
+
+/// Fail closed, falls Claude `CLAUDE_CODE_SHELL` (künftig) ignoriert: Ein erfolgreicher
+/// Bash-Aufruf ohne Start über den Exec-Broker beendet die Session (Security-Review #228).
+#[test]
+fn sbx_002_shell_call_without_broker_start_is_an_integrity_violation() {
+    let mut i = ShellIntegrity::new(&["Bash"]);
+    i.observe(&requested("a", "Bash"), 0).unwrap();
+    assert!(i.observe(&completed("a", ToolStatus::Ok), 0).is_err());
+
+    let mut i = ShellIntegrity::new(&["Bash"]);
+    for (ev, starts) in [
+        (requested("a", "Bash"), 0),
+        (completed("a", ToolStatus::Ok), 1),
+        // Abgelehnt oder gescheitert: vielleicht nie gestartet, zählt nicht.
+        (requested("b", "Bash"), 1),
+        (completed("b", ToolStatus::Denied), 1),
+        (requested("c", "Bash"), 1),
+        (completed("c", ToolStatus::Error), 1),
+        // Andere Tools laufen in Stufe 1 und zählen nicht.
+        (requested("d", "Read"), 1),
+        (completed("d", ToolStatus::Ok), 1),
+    ] {
+        i.observe(&ev, starts).unwrap();
+    }
+    i.observe(&requested("e", "Bash"), 1).unwrap();
+    assert!(i.observe(&completed("e", ToolStatus::Ok), 1).is_err());
 }
 
 #[tokio::test]

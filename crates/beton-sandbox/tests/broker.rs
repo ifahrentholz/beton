@@ -505,3 +505,131 @@ async fn sbx_002_ac1_tool_via_bt_exec_cannot_read_the_harness_credentials() {
     );
     assert!(!stdout.contains("rc=0"), "{stdout}{stderr}");
 }
+
+/// `script` direkt in einer Sandbox der Stufe `stage` (ohne Broker), mit `X` und `WS` im
+/// Environment.
+async fn in_stage(ctx: ResolveCtx, script: &str, vars: &[(&str, &Path)]) -> (bool, String) {
+    let p = provider();
+    let policy: ResolvedPolicy = p.resolve(&SandboxSpec::default(), &ctx).unwrap();
+    let mut cmd = CommandSpec::new("/bin/sh")
+        .args(["-c", script])
+        .cwd(&ctx.workspace)
+        .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped);
+    for (k, v) in vars {
+        cmd = cmd.env(*k, v.display().to_string());
+    }
+    let out = p
+        .spawn(&policy, cmd)
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// Dasselbe ohne Sandbox (Kontrollgruppe).
+fn on_host(cwd: &Path, script: &str, vars: &[(&str, &Path)]) -> String {
+    let mut c = std::process::Command::new("/bin/sh");
+    c.args(["-c", script]).current_dir(cwd);
+    for (k, v) in vars {
+        c.env(k, v);
+    }
+    let out = c.output().unwrap();
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// Ein Tool in Stufe 2 darf die Projekt-Konfiguration nicht ändern, aus der der nächste Start
+/// Stufe 1 aufbaut (`.beton/config.yaml`, Projekt-Agents, `.claude/settings.json` mit Hooks).
+/// Sonst liefe beim nächsten Start Code des Tools in Stufe 1 (Security-Review #228).
+#[tokio::test]
+async fn sbx_002_stage_two_cannot_change_the_project_configuration() {
+    const ATTACK: &str = "echo evil >> .beton/config.yaml && echo W1; \
+        mkdir -p .claude; echo '{\"hooks\":{}}' > .claude/settings.json && echo W2; \
+        mv .beton .beton-alt && echo W3; \
+        rm -rf .beton && echo W4; \
+        mkdir -p .beton/agents; echo x > .beton/agents/evil.yaml && echo W5; \
+        ln -s /etc/hosts .claude/link && echo W6; \
+        echo ok > src/neu.rs && echo SRC_OK";
+    // Kontrollgruppe: Ohne Sandbox gelingt jeder Schritt.
+    let host = fx();
+    write(&host.ws.join(".beton/config.yaml"), "harnesses: {}\n");
+    let out = on_host(&host.ws, ATTACK, &[]);
+    for w in ["W1", "W2", "W3", "W5", "W6", "SRC_OK"] {
+        assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
+    }
+
+    let fx = fx();
+    write(&fx.ws.join(".beton/config.yaml"), "harnesses: {}\n");
+    let (_, out) = in_stage(ctx(&fx, Stage::Tools), ATTACK, &[]).await;
+    for w in ["W1", "W2", "W3", "W4", "W5", "W6"] {
+        assert!(!out.contains(w), "Stufe 2 {w}: {out}");
+    }
+    assert!(
+        out.contains("SRC_OK"),
+        "Workspace bleibt beschreibbar: {out}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fx.ws.join(".beton/config.yaml")).unwrap(),
+        "harnesses: {}\n"
+    );
+    assert!(!fx.ws.join(".claude/settings.json").exists());
+    assert!(!fx.ws.join(".beton/agents/evil.yaml").exists());
+}
+
+/// Stufe 1 liest, was Stufe 2 in den Austausch schreibt (cwd-Datei, Hintergrund-Ausgaben von
+/// Claude). Ein Symlink dort auf die Credentials der Stufe 1 ließe Claude sie lesen und ans
+/// Modell geben: In Stufe 2 entstehen im Austausch keine Symlinks, auch nicht per Umbenennen.
+#[tokio::test]
+async fn sbx_002_stage_two_cannot_plant_symlinks_in_the_exchange() {
+    const ATTACK: &str = "ln -s \"$HOME/.claude/.credentials.json\" \"$X/claude-cwd\" && echo L1; \
+        ln -s /etc/hosts \"$X/l2\" && echo L2; \
+        ln -s /etc/hosts \"$WS/link\" && echo WS_LINK; mv \"$WS/link\" \"$X/moved\" && echo L3; \
+        mkdir -p \"$X/sub\"; ln -s /etc/hosts \"$X/sub/l4\" && echo L4; \
+        printf ok > \"$X/regular\" && echo REGULAR_OK; \
+        ln -s /etc/hosts \"$TMPDIR/eigener\" && echo TMP_LINK_OK";
+    let base = tempfile::tempdir_in(beton_sandbox::session_base()).unwrap();
+    let base = base.path().canonicalize().unwrap();
+    // Kontrollgruppe ohne Sandbox.
+    let host = fx();
+    let hx = base.join("host-xchg");
+    std::fs::create_dir_all(&hx).unwrap();
+    let out = on_host(
+        &host.ws,
+        &ATTACK.replace("$TMPDIR", "$X"),
+        &[("X", &hx), ("WS", &host.ws), ("HOME", &host.home)],
+    );
+    for w in ["L1", "L2", "L3", "L4", "REGULAR_OK"] {
+        assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
+    }
+
+    let fx = fx();
+    let xchg = base.join("xchg");
+    std::fs::create_dir_all(&xchg).unwrap();
+    let mut c = ctx(&fx, Stage::Tools);
+    c.exchange = Some(xchg.clone());
+    let (_, out) = in_stage(c, ATTACK, &[("X", &xchg), ("WS", &fx.ws)]).await;
+    for w in ["L1", "L2", "L3", "L4"] {
+        assert!(!out.contains(w), "Stufe 2 {w}: {out}");
+    }
+    for w in ["WS_LINK", "REGULAR_OK", "TMP_LINK_OK"] {
+        assert!(out.contains(w), "Stufe 2 {w}: {out}");
+    }
+    assert_eq!(std::fs::read_to_string(xchg.join("regular")).unwrap(), "ok");
+    for name in ["claude-cwd", "l2", "moved", "sub/l4"] {
+        assert!(
+            std::fs::symlink_metadata(xchg.join(name)).is_err(),
+            "{name} existiert"
+        );
+    }
+}

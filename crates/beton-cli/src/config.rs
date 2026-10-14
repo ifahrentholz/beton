@@ -947,6 +947,42 @@ mod tests {
             .unwrap();
     }
 
+    /// SBX-002: Die Projektdatei ist Repo-Inhalt, den auch die Sandbox schreiben kann; sie
+    /// darf Harnesses nur verschärfen (`isolated: true`, `mcp_bridge`) und nie wählen, was in
+    /// Stufe 1 läuft.
+    #[test]
+    fn sbx_002_project_may_only_tighten_harnesses() {
+        let f = fixture();
+        let mut layers = f.load(&[]).unwrap();
+        for (key, value) in [
+            ("harnesses.claude.command", "./x"),
+            ("harnesses.claude.extra_args", "[\"--settings\", \"{}\"]"),
+            (
+                "harnesses.claude.env_passthrough",
+                "[\"AWS_SECRET_ACCESS_KEY\"]",
+            ),
+            ("harnesses.claude.isolated", "false"),
+            ("harnesses.acp.agents.gemini", "{\"command\": \"./x\"}"),
+        ] {
+            let err = layers.set(Scope::Project, key, value).unwrap_err();
+            assert!(err.to_string().contains("SBX-002"), "{key}: {err}");
+        }
+        assert!(!f.project.join(".beton/config.yaml").exists());
+        layers
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
+            .unwrap();
+        layers
+            .set(Scope::Project, "harnesses.claude.mcp_bridge", "false")
+            .unwrap();
+        // Von Hand geschrieben: Laden scheitert (fail closed).
+        f.write_project("harnesses:\n  claude:\n    command: ./x\n");
+        assert!(f.load(&[]).is_err());
+        // In der User-Datei ist alles erlaubt.
+        layers
+            .set(Scope::User, "harnesses.claude.command", "claude")
+            .unwrap();
+    }
+
     /// HAR-011: Provider (Endpunkte, an die ein Key des Daemons geht) setzt nur der
     /// Benutzer; ein Repository kann keinen Key an ein fremdes Ziel umleiten.
     #[test]

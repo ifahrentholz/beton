@@ -36,6 +36,12 @@ pub mod resolve;
 pub mod seatbelt;
 pub mod spec;
 
+/// Basis für die Verzeichnisse einer Session mit zweistufiger Sandbox (Scratch, Austausch,
+/// Broker). Noch ohne Wirkung.
+pub fn session_base() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
 pub use caps::{Cap, CapSet};
 pub use child::{Output, SandboxedChild};
 pub use command::{CommandSpec, EnvSpec, Stdio};

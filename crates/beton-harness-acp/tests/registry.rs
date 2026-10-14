@@ -50,19 +50,18 @@ async fn har_008_ac2_preset_without_binary_is_listed_but_not_startable() {
 
 #[test]
 fn har_008_ac3_invalid_entries_are_reported_with_file_and_line_and_skipped() {
+    // ACP-Agents kommen nur aus der User-Konfiguration (SBX-002: ein Repo wählt nicht, was in
+    // Stufe 1 läuft); die Projektebene lehnt `harnesses.acp` ab.
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
-    let file = dir.path().join(".beton/config.yaml");
-    std::fs::write(
-        &file,
-        "harnesses:\n  claude:\n    command: claude\n  acp:\n    agents:\n      gut:\n        command: ./agent\n        args: [acp]\n      ohne-command:\n        args: [acp]\n      Mein_Agent:\n        command: ./x\n",
-    )
-    .unwrap();
-    let project = HarnessesConfig::load_project(dir.path()).unwrap();
-    assert_eq!(project.entries["claude"].command.as_deref(), Some("claude"));
+    let file = dir.path().join("config.yaml");
+    let text = "harnesses:\n  claude:\n    command: claude\n  acp:\n    agents:\n      gut:\n        command: ./agent\n        args: [acp]\n      ohne-command:\n        args: [acp]\n      Mein_Agent:\n        command: ./x\n";
+    std::fs::write(&file, text).unwrap();
+    let user: serde_json::Value = serde_norway::from_str(text).unwrap();
+    let user: HarnessesConfig = serde_json::from_value(user["harnesses"].clone()).unwrap();
+    assert_eq!(user.entries["claude"].command.as_deref(), Some("claude"));
     let layers = HarnessLayers {
-        project,
-        project_file: Some(file.clone()),
+        user,
+        user_file: Some(file.clone()),
         ..HarnessLayers::default()
     };
     let mut registry = Registry::new(RegistryOptions::default());

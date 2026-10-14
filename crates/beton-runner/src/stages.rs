@@ -127,6 +127,49 @@ impl SessionStages {
     }
 }
 
+/// `start.sandbox` der Policy-Variablen (POL): noch ohne Unterscheidung.
+pub fn sandbox_vars(stages: Option<&SessionStages>) -> beton_policy::vars::StartSandboxVars {
+    beton_policy::vars::StartSandboxVars {
+        enabled: Some(stages.is_some()),
+        backend: Some(
+            stages
+                .map(|s| s.harness.policy().backend.as_str())
+                .unwrap_or("none")
+                .into(),
+        ),
+        profile: None,
+    }
+}
+
+impl SessionStages {
+    /// Starts des Exec-Brokers (Stufe 2); noch nicht gezählt.
+    pub fn broker_starts(&self) -> u64 {
+        0
+    }
+}
+
+/// Integritätsprüfung für `tool_isolation: shell_override`: noch ohne Wirkung.
+#[derive(Debug, Default)]
+pub struct ShellIntegrity {
+    _shell_tools: Vec<String>,
+}
+
+impl ShellIntegrity {
+    pub fn new(shell_tools: &[&str]) -> Self {
+        Self {
+            _shell_tools: shell_tools.iter().map(|s| (*s).to_owned()).collect(),
+        }
+    }
+
+    pub fn observe(
+        &mut self,
+        _payload: &beton_core::event::EventPayload,
+        _broker_starts: u64,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// Ist das Stufenmodell konfiguriert? Bis WP-49 nur mit ausdrücklichem Backend außer `none`.
 pub fn active(spec: &SandboxSpec) -> bool {
     matches!(

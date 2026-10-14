@@ -2616,19 +2616,26 @@ mod tests {
     }
 
     #[test]
-    fn har_004_isolated_from_project_overrides_user() {
+    fn har_004_project_may_isolate_but_never_lift_the_user_isolation() {
         let a = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: HarnessesConfig::default(),
             ..HarnessLayers::default()
         });
         assert!(a.isolated);
+        // SBX-002: Die Projektebene (Repo-Inhalt) verschärft nur.
         let b = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: layer(None, Some(false)),
             ..HarnessLayers::default()
         });
-        assert!(!b.isolated);
+        assert!(b.isolated);
+        let c = claude_adapter(&HarnessLayers {
+            user: layer(None, Some(false)),
+            project: layer(None, Some(true)),
+            ..HarnessLayers::default()
+        });
+        assert!(c.isolated);
     }
 
     use super::*;

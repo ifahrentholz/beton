@@ -529,6 +529,43 @@ mod tests {
         assert_eq!(err.code(), "sandbox_required");
     }
 
+    /// Die Projektebene ist Repo-Inhalt, den auch die Sandbox schreiben kann: Sie darf die
+    /// Isolation nur verschärfen und nie wählen, was in Stufe 1 läuft (SBX-002, #200).
+    #[test]
+    fn sbx_002_project_layer_may_only_tighten_harness_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
+        for (yaml, key) in [
+            ("claude:\n    command: ./x\n", "harnesses.claude.command"),
+            (
+                "claude:\n    extra_args: [\"--settings\", \"{}\"]\n",
+                "harnesses.claude.extra_args",
+            ),
+            (
+                "claude:\n    env_passthrough: [AWS_SECRET_ACCESS_KEY]\n",
+                "harnesses.claude.env_passthrough",
+            ),
+            (
+                "claude:\n    isolated: false\n",
+                "harnesses.claude.isolated",
+            ),
+            ("claude:\n    auth: api_key\n", "harnesses.claude.auth"),
+            (
+                "acp:\n    agents:\n      gemini:\n        command: ./x\n",
+                "harnesses.acp",
+            ),
+        ] {
+            std::fs::write(
+                dir.path().join(".beton/config.yaml"),
+                format!("harnesses:\n  {yaml}"),
+            )
+            .unwrap();
+            let err = HarnessesConfig::load_project(dir.path()).unwrap_err();
+            assert!(err.contains(key), "{key}: {err}");
+            assert!(err.contains("config.yaml"), "{err}");
+        }
+    }
+
     #[test]
     fn har_003_project_config_is_read_from_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
@@ -540,15 +577,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
         std::fs::write(
             dir.path().join(".beton/config.yaml"),
-            "events:\n  store_raw: false\nharnesses:\n  claude:\n    command: ./bin/claude\n    isolated: true\n",
+            "events:\n  store_raw: false\nharnesses:\n  default: codex\n  claude:\n    isolated: true\n    mcp_bridge: false\n",
         )
         .unwrap();
         let cfg = HarnessesConfig::load_project(dir.path()).unwrap();
-        assert_eq!(
-            cfg.entries["claude"].command.as_deref(),
-            Some("./bin/claude")
-        );
+        assert_eq!(cfg.default.as_deref(), Some("codex"));
         assert_eq!(cfg.entries["claude"].isolated, Some(true));
+        assert_eq!(cfg.entries["claude"].mcp_bridge, Some(false));
         assert_eq!(cfg.auth("claude"), HarnessAuth::Subscription);
         std::fs::write(
             dir.path().join(".beton/config.yaml"),
@@ -573,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn har_003_ac1_binary_precedence_env_project_user_path() {
+    fn har_003_ac1_binary_precedence_env_user_path_never_project() {
         let dir = tempfile::tempdir().unwrap();
         let (env_bin, project_bin, user_bin) = (
             exe(dir.path(), "claude-env", ""),
@@ -603,8 +638,10 @@ mod tests {
         assert_eq!(resolve(&env).program, env_bin);
         assert_eq!(resolve(&env).source, BinarySource::Env);
         env.vars.clear();
-        assert_eq!(resolve(&env).program, project_bin);
-        assert_eq!(resolve(&env).source, BinarySource::ProjectConfig);
+        // Ein Binary aus der Projektebene gilt nie (SBX-002): Das Repo wählt nicht, was in
+        // Stufe 1 läuft.
+        assert_eq!(resolve(&env).program, user_bin);
+        assert_eq!(resolve(&env).source, BinarySource::UserConfig);
         env.project.entries.clear();
         assert_eq!(resolve(&env).program, user_bin);
         assert_eq!(resolve(&env).source, BinarySource::UserConfig);

@@ -136,6 +136,24 @@ fn sbx_012_own_fields_override_or_extend_the_preset() {
     assert!(merged.egress_rules.unwrap_or_default().is_empty());
 }
 
+/// Ein Preset gilt an der Stelle seiner Ebene: `readonly` einer spezifischeren Ebene
+/// verschärft, was weniger spezifische Ebenen freigeben (Security-Review #228).
+#[test]
+fn sbx_012_readonly_of_a_more_specific_layer_tightens_the_less_specific_ones() {
+    let user = spec("allow_network: true\nworkspace: rw\nwrite_paths: [\"~/x\"]\n");
+    let agent = spec("preset: readonly\n");
+    let (merged, origins) = SandboxSpec::merged_with_origins(&[("user", &user), ("agent", &agent)]);
+    assert_eq!(merged.workspace, Some(WorkspaceAccess::Ro));
+    assert_eq!(merged.allow_network, Some(false));
+    assert!(merged.write_paths.unwrap_or_default().is_empty());
+    assert_eq!(origins["workspace"], "preset:readonly");
+    // Eigene Felder derselben Ebene stehen weiter über ihrem Preset.
+    let agent = spec("preset: readonly\nallow_network: true\n");
+    let merged = SandboxSpec::merged(&[&user, &agent]);
+    assert_eq!(merged.allow_network, Some(true));
+    assert_eq!(merged.workspace, Some(WorkspaceAccess::Ro));
+}
+
 #[test]
 fn sbx_012_ac3_explain_names_the_origin_of_each_value() {
     let user = spec("preset: dev\nmasks: [secrets/]\nworkspace: ro\n");

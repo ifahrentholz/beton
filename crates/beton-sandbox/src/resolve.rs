@@ -121,8 +121,11 @@ pub struct ResolveCtx {
     pub session_id: Option<String>,
     /// Nur Stufe 1: Zugang zum Exec-Broker.
     pub exec: Option<ExecAccess>,
-    /// Von beton verwaltete Schreib-Wurzeln, z. B. der Austausch mit Stufe 2.
+    /// Von beton verwaltete Schreib-Wurzeln der Stufe 1.
     pub shared: Vec<PathBuf>,
+    /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
+    /// beschreibbar, in Stufe 2 ohne Symlinks.
+    pub exchange: Option<PathBuf>,
     /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
     pub programs: Vec<PathBuf>,
 }
@@ -142,6 +145,7 @@ impl ResolveCtx {
             session_id: None,
             exec: None,
             shared: Vec::new(),
+            exchange: None,
             programs: Vec::new(),
         }
     }
@@ -618,6 +622,10 @@ pub fn resolve(
     // Stufe 1).
     for (i, p) in ctx.shared.iter().enumerate() {
         let p = own_grant(&format!("shared[{i}]"), p, &forbidden, true)?;
+        push_unique(&mut write_roots, p);
+    }
+    if let Some(x) = &ctx.exchange {
+        let p = own_grant("exchange", x, &forbidden, true)?;
         push_unique(&mut write_roots, p);
     }
     for (i, p) in ctx.programs.iter().enumerate() {
