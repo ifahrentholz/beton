@@ -755,6 +755,7 @@ dependencies = [
  "beton-mcp",
  "beton-policy",
  "beton-proto",
+ "beton-proxy",
  "beton-sandbox",
  "beton-server",
  "beton-store",

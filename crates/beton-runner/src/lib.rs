@@ -9,6 +9,7 @@ pub mod fork;
 pub mod mcp;
 pub mod policy;
 pub mod settings;
+pub mod stages;
 pub mod state;
 pub mod workspace;
 
