@@ -469,7 +469,15 @@ async fn sbx_008_ac3_namespaces_mount_ptrace_and_kill_fail() {
     let fx = fx();
     let me = std::process::id().to_string();
     // Kontrollgruppe ohne Sandbox.
-    let c = control(&fx, &format!("kill -0 {me} && unshare -r true && echo ok")).await;
+    // `unshare -r` gelingt ohne Sandbox nur, wo unprivilegierte User-Namespaces erlaubt sind
+    // (nicht im CI-Lauf für SBX-009 AC1 mit `unprivileged_userns_clone=0`).
+    let userns = sysctl("kernel.unprivileged_userns_clone").as_deref() != Some("0");
+    let script = if userns {
+        format!("kill -0 {me} && unshare -r true && echo ok")
+    } else {
+        format!("kill -0 {me} && echo ok")
+    };
+    let c = control(&fx, &script).await;
     assert!(c.ok, "Kontrollgruppe: {c:?}");
     for p in backends() {
         let policy = fx.policy(
