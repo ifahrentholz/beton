@@ -63,7 +63,10 @@ impl SandboxedChild {
     /// Hängt Zusatzaufgaben und die Verstoß-Liste eines Backends an.
     #[cfg_attr(
         not(any(target_os = "linux", target_os = "macos")),
-        allow(dead_code, reason = "nur Linux- und macOS-Backends erfassen Prozessbäume")
+        allow(
+            dead_code,
+            reason = "nur Linux- und macOS-Backends erfassen Prozessbäume"
+        )
     )]
     pub(crate) fn with_guard(mut self, guard: Box<dyn TreeGuard>, violations: Violations) -> Self {
         self.guard = Some(guard);
