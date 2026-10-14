@@ -557,3 +557,72 @@ fn pol_026_home_is_expanded_in_layers() {
     assert_eq!(report.error, None);
     assert!(report.cases[0].passed, "{:?}", report.cases[0].failures);
 }
+
+#[test]
+fn qa_004_tests_without_cases_or_outcome_do_not_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "git.yaml", GIT_POLICY);
+    let empty = write(
+        dir.path(),
+        "empty.policytest.yaml",
+        "spec_version: 1\nlayers: { project: [git.yaml] }\ncases: []\n",
+    );
+    let r = run(&empty);
+    assert!(
+        r.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("keine Fälle"),
+        "{r:?}"
+    );
+    assert_eq!(Summary::of(&[r]).exit_code(), 1);
+
+    let no_outcome = write(
+        dir.path(),
+        "outcome.policytest.yaml",
+        "spec_version: 1
+layers: { project: [git.yaml] }
+cases:
+  - { name: leer, phase: tool_call, input: { tool: { name: Bash, args: { command: ls } } }, expect: {} }
+  - { name: nur Regeln, phase: tool_call, input: { tool: { name: Bash, args: { command: ls } } }, expect: { rules: [] } }
+  - name: Schritt ohne outcome
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: ls } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: ls } } } }
+",
+    );
+    let r = run(&no_outcome);
+    assert_eq!(r.error, None);
+    for c in &r.cases {
+        assert!(!c.passed, "{}", c.name);
+        assert!(
+            c.failures.iter().any(|f| f.contains("expect.outcome")),
+            "{}: {:?}",
+            c.name,
+            c.failures
+        );
+    }
+}
+
+#[test]
+fn qa_004_expected_rules_of_a_test_file_are_listed() {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "git.yaml", GIT_POLICY);
+    let t = write(
+        dir.path(),
+        "r.policytest.yaml",
+        "spec_version: 1
+layers: { project: [git.yaml] }
+cases:
+  - { name: a, phase: tool_call, input: { tool: { name: Bash, args: { command: \"git push -f\" } } }, expect: { outcome: ask, rules: [confirm-push] } }
+  - name: b
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: \"git push --force\" } } }, expect: { outcome: deny, rules: [no-force-push] } }
+",
+    );
+    let rules = beton_policy::policytest::expected_rules(&t).unwrap();
+    assert_eq!(
+        rules.into_iter().collect::<Vec<_>>(),
+        vec!["confirm-push".to_owned(), "no-force-push".to_owned()]
+    );
+}

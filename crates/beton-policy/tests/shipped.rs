@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use beton_policy::doc::RuleType;
 use beton_policy::load::{RuleKind, Scope, parse_set};
-use beton_policy::policytest::{Summary, TestOptions, discover, layer_files, render, run_paths};
+use beton_policy::policytest::{
+    Summary, TestOptions, discover, expected_rules, layer_files, render, run_paths,
+};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -105,6 +107,71 @@ fn qa_004_ac2_every_shipped_policy_and_builtin_agent_has_a_test() {
         missing.is_empty(),
         "ohne Policy-Test unter policies/tests/: {missing:?}"
     );
+}
+
+/// Regel-IDs einer mitgelieferten Datei (Policy-Set bzw. `policies:` eines Agents).
+fn rule_ids(file: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(file).unwrap();
+    if file.file_name().is_some_and(|n| n == "agent.yaml") {
+        // Einfacher Leser für den `policies:`-Block: `- { id: … }` bzw. `- id: …`.
+        let block = text.split("\npolicies:").nth(1).unwrap_or_default();
+        return block
+            .lines()
+            .take_while(|l| l.is_empty() || l.starts_with(' ') || l.starts_with('-'))
+            .filter_map(|l| l.split("id:").nth(1))
+            .map(|r| {
+                r.trim()
+                    .split([',', ' ', '}'])
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .filter(|r| !r.is_empty())
+            .collect();
+    }
+    parse_set(Scope::User, &file.display().to_string(), &text)
+        .unwrap()
+        .rules
+        .iter()
+        .map(|r| r.id.clone())
+        .collect()
+}
+
+#[test]
+fn qa_004_every_shipped_rule_is_expected_by_some_test() {
+    let tests = discover(&[tests_dir()]).unwrap();
+    let mut missing = Vec::new();
+    for file in shipped_policy_files()
+        .into_iter()
+        .chain(agents_with_policies())
+    {
+        let canonical = file.canonicalize().unwrap();
+        let mut expected = BTreeSet::new();
+        for t in &tests {
+            let layers = layer_files(t, &TestOptions::default()).unwrap();
+            if layers
+                .iter()
+                .any(|l| l.canonicalize().ok().as_ref() == Some(&canonical))
+            {
+                expected.extend(expected_rules(t).unwrap());
+            }
+        }
+        for id in rule_ids(&file) {
+            if !expected.contains(&id) {
+                missing.push(format!(
+                    "{}: {id}",
+                    file.strip_prefix(root()).unwrap().display()
+                ));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "Regeln ohne `expect.rules` in einem Test: {missing:?}"
+    );
+    // Der Leser findet die Regeln der Built-in-Agents.
+    let maestra = rule_ids(&root().join("agents/maestra/agent.yaml"));
+    assert_eq!(maestra, ["maestra-no-code", "maestra-no-merge"]);
 }
 
 #[test]

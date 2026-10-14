@@ -317,6 +317,17 @@ rules:
         }
     }
 
+    /// Zahl der `policy.queried`; jedes andere Event ist ein Fehler.
+    fn queried(events: &[EventPayload]) -> usize {
+        for e in events {
+            assert!(
+                matches!(e, EventPayload::PolicyQueried(_)),
+                "unerwartetes Event: {e:?}"
+            );
+        }
+        events.len()
+    }
+
     fn drain(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> Vec<EventPayload> {
         let mut out = Vec::new();
         while let Ok(e) = rx.try_recv() {
@@ -353,9 +364,11 @@ rules:
             .query(&json!({ "action": "x", "tool": "Bash", "args": { "command": "ls" } }))
             .await;
         assert_eq!(allow["decision"], "allow", "{allow}");
-        assert!(
-            drain(&mut s.rx).is_empty(),
-            "Abfragen erzeugen keine Events"
+        // Nur das Protokoll der Abfragen (Security-Review B1), keine Entscheidung, keine Card.
+        assert_eq!(
+            queried(&drain(&mut s.rx)),
+            3,
+            "Abfragen erzeugen nur `policy.queried`"
         );
 
         // Tatsächliche Ausführung: dieselben Entscheidungen.
@@ -391,7 +404,7 @@ rules:
                 .query(&json!({ "action": "git push origin main" }))
                 .await;
         }
-        assert!(drain(&mut s.rx).is_empty());
+        assert_eq!(queried(&drain(&mut s.rx)), 3);
         // Der erste echte Call ist weiterhin Call Nr. 1, ohne gemerkten Zustand.
         let g = s.gate.clone();
         let call = tokio::spawn(async move { g.decide(bash("c1", "git push origin main")).await });
@@ -522,5 +535,155 @@ rules:
         gate.flush_snapshot();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(sink.stored.lock().unwrap().len(), 1, "nur einmal");
+    }
+
+    const PROBE: &str = "spec_version: 1
+name: probe
+rules:
+  - id: watch-secret
+    on: tool_call
+    when: 'tool.command.contains(\"geheim\")'
+    action: notify
+    notify: { channels: [inbox] }
+  - id: patch
+    on: tool_call
+    when: 'tool.kind == \"shell\"'
+    action: modify
+    modify: { args: { timeout: 5 } }
+  - id: allow-ls
+    on: tool_call
+    when: 'tool.command == \"ls\"'
+    action: allow
+  - id: no-rm
+    on: tool_call
+    when: 'tool.command.contains(\"rm\")'
+    action: deny
+    reason: Kein rm
+";
+
+    #[tokio::test]
+    async fn agt_007_ac3_query_reveals_only_deny_and_ask_reasons() {
+        let s = setup(PROBE);
+        let v = s.gate.query(&json!({ "action": "cat geheim.txt" })).await;
+        assert_eq!(v["decision"], "allow", "{v}");
+        assert_eq!(
+            v["rules"],
+            json!([]),
+            "allow/modify/notify verraten nichts: {v}"
+        );
+        assert_eq!(v["modified"], json!(true), "nur ob, nicht was: {v}");
+        assert!(v.get("policy_set_hash").is_none(), "{v}");
+        let text = v.to_string();
+        for hidden in ["watch-secret", "patch", "allow-ls", "timeout"] {
+            assert!(!text.contains(hidden), "`{hidden}` in {v}");
+        }
+        let v = s.gate.query(&json!({ "action": "rm geheim.txt" })).await;
+        assert_eq!(v["decision"], "deny");
+        assert_eq!(v["rules"], json!(["no-rm"]), "{v}");
+        assert!(!v.to_string().contains("watch-secret"), "{v}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_every_query_is_logged_without_plaintext() {
+        let mut s = setup(PROBE);
+        let _ = s.gate.query(&json!({ "action": "rm geheim-4711" })).await;
+        let events = drain(&mut s.rx);
+        assert_eq!(queried(&events), 1);
+        let EventPayload::PolicyQueried(q) = &events[0] else {
+            unreachable!()
+        };
+        assert!(q.subject_hash.starts_with("sha256:"), "{q:?}");
+        assert_eq!(q.outcome, beton_core::event::PolicyOutcome::Deny);
+        assert_eq!(q.rules, vec!["no-rm".to_owned()]);
+        assert_eq!(q.tool, "Bash");
+        assert_eq!(q.kind, "shell");
+        assert!(!q.limited);
+        let text = serde_json::to_string(q).unwrap();
+        assert!(!text.contains("geheim-4711"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_queries_are_limited_per_turn() {
+        let mut s = setup(PROBE);
+        for i in 0..super::QUERY_LIMIT {
+            let v = s.gate.query(&json!({ "action": "ls" })).await;
+            assert_eq!(v["decision"], "allow", "Abfrage {i}: {v}");
+        }
+        let limited = s.gate.query(&json!({ "action": "ls" })).await;
+        assert_eq!(limited["decision"], "deny", "{limited}");
+        assert!(
+            limited["reason"].as_str().unwrap().contains("Abfragen"),
+            "{limited}"
+        );
+        let events = drain(&mut s.rx);
+        let last = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                EventPayload::PolicyQueried(q) => Some(q),
+                _ => None,
+            })
+            .unwrap();
+        assert!(last.limited);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, EventPayload::Notice(n) if n.text.contains("policy_query"))),
+            "Hinweis für Menschen: {events:?}"
+        );
+        // Ein neuer Turn setzt das Limit zurück.
+        s.gate.note_turn();
+        let v = s.gate.query(&json!({ "action": "ls" })).await;
+        assert_eq!(v["decision"], "allow", "{v}");
+    }
+
+    fn codex(body: &str) -> Setup {
+        let mut s = setup(body);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let workdir = s._dir.path().to_path_buf();
+        s.gate = PolicyGate::new(
+            PolicyOptions {
+                harness: "codex".parse().unwrap(),
+                dirs: vec![(Scope::Project, workdir.join("policies"))],
+                workdir,
+                ..PolicyOptions::default()
+            },
+            tx,
+        );
+        s.rx = rx;
+        s
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_query_classifies_mcp_tools_like_the_real_call() {
+        let s = codex("spec_version: 1
+name: mcp
+rules:
+  - id: no-github-pr
+    on: tool_call
+    when: 'tool.kind == \"mcp\" && tool.server == \"github\" && tool.name == \"create_pull_request\"'
+    action: deny
+    reason: Keine PRs
+");
+        let real = s
+            .gate
+            .decide(GateRequest {
+                call_id: "m1".into(),
+                tool: "create_pull_request".into(),
+                mcp_server: Some("github".into()),
+                args: json!({ "title": "x" }),
+                origin: GateOrigin::PreTool,
+                ..GateRequest::default()
+            })
+            .await;
+        assert!(matches!(real, GateDecision::Deny { .. }), "{real:?}");
+        for args in [
+            json!({ "action": "PR anlegen", "tool": "create_pull_request", "server": "github", "args": { "title": "x" } }),
+            json!({ "action": "PR anlegen", "tool": "mcp__github__create_pull_request", "args": { "title": "x" } }),
+        ] {
+            let v = s.gate.query(&args).await;
+            assert_eq!(v["decision"], "deny", "{args}: {v}");
+            assert_eq!(v["rules"], json!(["no-github-pr"]), "{v}");
+        }
     }
 }
