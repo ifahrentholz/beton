@@ -1,0 +1,26 @@
+# Policy-Test (POL-026, QA-004): Built-in-Agent maestra (AGT-011) schreibt keinen Code und
+# merged bzw. pusht nie. Die Regeltypen `tool_allowlist` und `git_guard` entzuckert WP-42
+# (#165); bis dahin lehnt die Engine Tool-Calls mit diesen Regeln ab (fail closed). Die Fälle
+# hier gelten vorher wie nachher; erlaubte Klassen (`system`, `file_read`, `search`) ergänzt
+# WP-42.
+spec_version: 1
+layers:
+  agent: [../../../agents/maestra/agent.yaml]
+harness: claude
+cases:
+  - name: maestra bearbeitet keine Dateien
+    phase: tool_call
+    input: { tool: { name: Edit, args: { file_path: /repo/src/main.rs, old_string: a, new_string: b } } }
+    expect: { outcome: deny, rules: [maestra-no-code] }
+  - name: maestra schreibt keine Dateien
+    phase: tool_call
+    input: { tool: { name: Write, args: { file_path: /repo/notes.md, content: x } } }
+    expect: { outcome: deny, rules: [maestra-no-code] }
+  - name: maestra pusht nicht
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin main" } } }
+    expect: { outcome: deny, rules: [maestra-no-merge] }
+  - name: maestra merged nicht
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git merge feature/x" } } }
+    expect: { outcome: deny, rules: [maestra-no-merge] }

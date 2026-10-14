@@ -1,0 +1,23 @@
+# Policy-Test (POL-026, QA-004): destruktive Shell-Kommandos.
+spec_version: 1
+layers: { project: [fixtures/dangerous-shell.yaml] }
+cases:
+  - name: rm -rf fragt nach
+    phase: tool_call
+    given: { session: { cost_usd: 0.4 } }
+    input: { tool: { name: Bash, kind: shell, args: { command: "rm -rf build" } } }
+    expect: { outcome: ask, rules: [rm-rf], reason_contains: löschen }
+  - name: rm -fr in einer Kette fragt ebenfalls nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cd x && rm -fr target" } } }
+    expect: { outcome: ask, rules: [rm-rf] }
+  - name: rm ohne -r ist erlaubt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "rm notes.txt" } } }
+    expect: { outcome: allow }
+  - name: Freigabe für die Session gilt für denselben Befehl
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "rm -rf build" } } },
+          expect: { outcome: ask }, resolve: { decision: allow, remember: session } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "rm -rf build" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "rm -rf dist" } } }, expect: { outcome: ask } }
