@@ -176,6 +176,10 @@ fn program_roots(program: &Path, path: Option<&str>) -> Vec<PathBuf> {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = root(&exe).into_iter().collect();
+    // Der Aufrufpfad selbst, wenn er ein Symlink ist (die Auflösung gibt den Link frei).
+    if std::fs::symlink_metadata(&exe).is_ok_and(|m| m.file_type().is_symlink()) {
+        out.push(exe.clone());
+    }
     let head = std::fs::read(&exe)
         .ok()
         .map(|b| b.into_iter().take(128).collect::<Vec<u8>>())

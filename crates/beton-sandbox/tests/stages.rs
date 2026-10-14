@@ -265,6 +265,16 @@ fn sbx_002_shared_exchange_and_programs_are_granted() {
     let p = res(ProviderId::Seatbelt, "{}\n", &ctx);
     assert!(p.write_roots.contains(&shared));
     assert!(p.read_roots.contains(&program));
+    // Ein Programm hinter einem Symlink: Link und Ziel sind lesbar.
+    #[cfg(unix)]
+    {
+        let link = e.root.join("bin/link");
+        std::os::unix::fs::symlink(&program, &link).unwrap();
+        let mut ctx = e.ctx(Stage::Harness);
+        ctx.programs = vec![link.clone()];
+        let p = res(ProviderId::Seatbelt, "{}\n", &ctx);
+        assert!(p.read_roots.contains(&link) && p.read_roots.contains(&program));
+    }
     // Verbotene Wurzeln bleiben verboten, auch für beton-eigene Grants.
     let mut bad = e.ctx(Stage::Harness);
     bad.programs = vec![e.home.join(".ssh")];
@@ -291,4 +301,31 @@ fn ses_015_ac2_worktree_under_beton_home_is_the_only_unmasked_part_of_it() {
     let run = e.home.join(".beton/run");
     let ctx = ResolveCtx::new(Stage::Tools, &run, &e.home, &e.scratch);
     assert!(resolve(ProviderId::Seatbelt, &SandboxSpec::default(), &ctx).is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sbx_002_keychain_files_only_for_stage_one_with_declared_keychain() {
+    let e = env();
+    std::fs::create_dir_all(e.home.join("Library/Keychains")).unwrap();
+    let kc = e.home.join("Library/Keychains");
+    let mut ctx = e.ctx(Stage::Harness);
+    ctx.harness = beton_sandbox::masks::harness_grants("claude");
+    let p = res(ProviderId::Seatbelt, "{}\n", &ctx);
+    assert!(p.keychain);
+    // Den Login (z. B. beim Erneuern) schreibt der Client selbst in die Keychain-Datei.
+    assert!(p.write_roots.contains(&kc), "{:?}", p.write_roots);
+    // Stufe 2 und ein Harness ohne Keychain-Bedarf bekommen sie nie.
+    let tools = res(ProviderId::Seatbelt, "{}\n", &e.ctx(Stage::Tools));
+    assert!(!tools.write_roots.contains(&kc) && !tools.read_roots.contains(&kc));
+    assert!(
+        tools
+            .masks
+            .iter()
+            .any(|m| matches!(m, Mask::Path { path, .. } if path == &kc))
+    );
+    let mut codex = e.ctx(Stage::Harness);
+    codex.harness = beton_sandbox::masks::harness_grants("codex");
+    let c = res(ProviderId::Seatbelt, "{}\n", &codex);
+    assert!(!c.keychain && !c.write_roots.contains(&kc));
 }

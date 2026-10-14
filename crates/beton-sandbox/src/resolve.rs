@@ -595,6 +595,24 @@ pub fn resolve(
         }
     }
     let keychain = own.as_ref().is_some_and(|h| h.keychain);
+    // Keychain (macOS): Die Keychain-Dateien liest und aktualisiert der Client selbst (z. B.
+    // beim Erneuern eines Logins); geschützt sind einzelne Einträge nur durch ihre ACLs
+    // (Restrisiko, siehe Bedrohungsmodell). Dazu die Suchliste des Benutzers.
+    if keychain && cfg!(target_os = "macos") {
+        for (raw, write) in [
+            (KEYCHAINS, true),
+            ("~/Library/Preferences/com.apple.security.plist", false),
+        ] {
+            let field = format!("harness.keychain ({raw})");
+            if let Some(p) = grant(&field, raw, &home, &forbidden, write, &mut notes)? {
+                if write {
+                    push_unique(&mut write_roots, p);
+                } else {
+                    push_unique(&mut read_roots, p);
+                }
+            }
+        }
+    }
 
     // Von beton verwaltete Grants: Austausch mit Stufe 2, Programme, Broker-Zugang (nur
     // Stufe 1).
@@ -603,8 +621,20 @@ pub fn resolve(
         push_unique(&mut write_roots, p);
     }
     for (i, p) in ctx.programs.iter().enumerate() {
-        let p = own_grant(&format!("programs[{i}]"), p, &forbidden, false)?;
-        push_unique(&mut read_roots, p);
+        let field = format!("programs[{i}]");
+        let canon = own_grant(&field, p, &forbidden, false)?;
+        push_unique(&mut read_roots, canon);
+        // Ein Programm, das über einen Symlink aufgerufen wird (z. B. `~/.local/bin/claude`),
+        // braucht auch den Link selbst (sonst scheitert `execve` unter Seatbelt).
+        if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
+            if let Some(reason) = forbidden.reason(p, false) {
+                return Err(SandboxError::escape(
+                    field,
+                    format!("{} {reason}", p.display()),
+                ));
+            }
+            push_unique(&mut read_roots, p.clone());
+        }
     }
     let mut unix_sockets = Vec::new();
     if let Some(exec) = &ctx.exec {
