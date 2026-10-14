@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use beton_core::event::{
     Actor, BlobRef, Event, EventBody, EventPayload, EventType, OffloadedPayload,
-    PAYLOAD_INLINE_LIMIT, Persistence,
+    PAYLOAD_INLINE_LIMIT, Persistence, RawJson,
 };
 use beton_core::id::{OrgId, SessionId};
 use beton_core::time::Timestamp;
@@ -96,7 +96,10 @@ impl Store {
                         payload.type_name()
                     )));
                 }
-                let json = payload_json(&payload)?;
+                // SEC-013: geschwärzt wird vor Persistenz, Auslagerung und Verteilung.
+                let (payload, value) = self.redacted(payload)?;
+                event.body = EventBody::Inline(payload.clone());
+                let json = value.to_string();
                 let (payload_json, payload_ref) = if json.len() > PAYLOAD_INLINE_LIMIT {
                     let blob = self.blobs.put(json.as_bytes())?;
                     event.body = EventBody::Offloaded(OffloadedPayload {
@@ -125,16 +128,64 @@ impl Store {
     /// Schickt `raw` durch den Redaction-Hook. Ändert er nichts, bleiben die Original-Bytes
     /// erhalten (HAR-001 AC3); sonst wird der redigierte Wert kompakt serialisiert.
     pub(crate) fn redact_raw(&self, raw: &beton_core::event::RawJson) -> Result<String> {
-        let original: Value = raw
+        let mut value: Value = raw
             .to_value()
             .map_err(|e| Error::InvalidEvent(format!("raw ist kein JSON: {e}")))?;
-        let mut redacted = original.clone();
-        self.options.redactor.redact(&mut redacted);
-        Ok(if redacted == original {
-            raw.get().to_owned()
+        Ok(if self.options.redactor.redact(&mut value)? {
+            value.to_string()
         } else {
-            redacted.to_string()
+            raw.get().to_owned()
         })
+    }
+
+    /// Schwärzt einen beliebigen JSON-Wert mit der Pipeline des Stores (SEC-013), z. B. den
+    /// Handover-Kontext eines Forks.
+    pub fn redact_value(&self, value: &mut Value) -> Result<bool> {
+        Ok(self.options.redactor.redact(value)?)
+    }
+
+    /// Schwärzt eine Nutzlast (SEC-013).
+    pub fn redact_payload(&self, payload: EventPayload) -> Result<EventPayload> {
+        Ok(self.redacted(payload)?.0)
+    }
+
+    /// Nutzlast geschwärzt, dazu ihr JSON (ohne `type`). Lässt sich die geschwärzte Fassung
+    /// nicht mehr als dieser Typ lesen, wird nichts geschrieben (fail closed).
+    fn redacted(&self, payload: EventPayload) -> Result<(EventPayload, Value)> {
+        let event_type = payload.event_type();
+        let mut value = payload_value(&payload)?;
+        if !self.options.redactor.redact(&mut value)? {
+            return Ok((payload, value));
+        }
+        let redacted = serde_json::from_value(serde_json::json!({
+            "type": event_type.as_str(),
+            "payload": value,
+        }))
+        .map_err(|e| {
+            Error::InvalidEvent(format!(
+                "{} nach der Redaction nicht mehr lesbar: {e}",
+                event_type.as_str()
+            ))
+        })?;
+        let value = payload_value(&redacted)?;
+        Ok((redacted, value))
+    }
+
+    /// Schwärzt ein Live-Event vor der Verteilung (transiente Deltas, SEC-013 AC1): Nutzlast
+    /// und `raw`. `Err` heißt: nicht senden (fail closed).
+    pub fn redact_live(&self, mut event: Event) -> Result<Event> {
+        match event.body {
+            EventBody::Inline(payload) => {
+                event.body = EventBody::Inline(self.redacted(payload)?.0);
+            }
+            // Ausgelagerte Nutzlasten sind beim Schreiben geschwärzt worden.
+            EventBody::Offloaded(_) => {}
+        }
+        if let Some(raw) = event.raw.take() {
+            let redacted = self.redact_raw(&raw)?;
+            event.raw = Some(RawJson::from_string(redacted).map_err(Error::corrupt)?);
+        }
+        Ok(event)
     }
 
     /// Schreibt vorbereitete Events in einer bestehenden Transaktion.
@@ -457,18 +508,17 @@ fn actor_columns(actor: &Actor) -> (&'static str, Option<String>) {
     }
 }
 
-fn event_type(name: &str) -> Result<EventType> {
+pub(crate) fn event_type(name: &str) -> Result<EventType> {
     EventType::parse(name).ok_or_else(|| Error::corrupt(format!("unbekannter Event-Typ `{name}`")))
 }
 
-/// Nur die Nutzlast als JSON (ohne `type`).
-fn payload_json(payload: &EventPayload) -> Result<String> {
+/// Nur die Nutzlast als JSON-Wert (ohne `type`).
+fn payload_value(payload: &EventPayload) -> Result<Value> {
     let mut tagged = serde_json::to_value(payload)?;
-    let inner = tagged
+    Ok(tagged
         .get_mut("payload")
         .map(Value::take)
-        .unwrap_or(Value::Null);
-    Ok(inner.to_string())
+        .unwrap_or(Value::Null))
 }
 
 pub(crate) fn payload_from_json(event_type: EventType, json: &str) -> Result<EventPayload> {

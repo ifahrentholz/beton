@@ -26,7 +26,7 @@ pub fn run(ctx: &Ctx, cmd: SandboxCommand) -> CliResult {
 fn probe(ctx: &Ctx) -> CliResult {
     let registry = Registry::platform();
     let reports = registry.probe_all();
-    let auto = beton_sandbox::auto_backend(registry.os()).map(|p| p.as_str());
+    let auto = registry.auto_choice().map(|p| p.as_str());
     if ctx.global.json {
         return print_json(&json!({ "auto": auto, "providers": reports }));
     }

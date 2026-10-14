@@ -551,11 +551,15 @@ async fn data_010_ac3_raw_is_only_exported_with_the_flag() {
 #[tokio::test]
 async fn data_010_ac3_exported_raw_passes_the_redaction_hook() {
     struct Redact;
-    impl crate::RawRedactor for Redact {
-        fn redact(&self, raw: &mut Value) {
-            if let Some(o) = raw.as_object_mut() {
+    impl crate::ValueRedactor for Redact {
+        fn redact(&self, raw: &mut Value) -> Result<bool, crate::RedactionUnavailable> {
+            if let Some(o) = raw.as_object_mut()
+                && o.contains_key("original")
+            {
                 o.insert("original".into(), json!("[REDACTED:test]"));
+                return Ok(true);
             }
+            Ok(false)
         }
     }
     let t = store().await;

@@ -294,39 +294,50 @@ impl Store {
             }
         };
         for id in &ids {
-            let session: SessionId = parse(id)?;
-            sqlx::query(
-                "UPDATE sessions SET title = '', title_source = '', status = ?, archived = 0, cost_micro = 0, \
-                 last_activity_at = created_at, worktree_path = NULL, worktree_branch = NULL, \
-                 worktree_base = NULL, worktree_base_sha = NULL WHERE org_id = ? AND id = ?",
-            )
-            .bind(enum_to_str(&SessionStatus::default()))
-            .bind(org.to_string())
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-            crate::listing::purge_docs(&mut tx, org, id).await?;
-            for sql in [
-                "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
-                "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
-                "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
-            ] {
-                sqlx::query(sql)
-                    .bind(org.to_string())
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
-            for (seq, ts, payload) in self.full_events(&mut tx, org, session).await? {
-                apply(&mut tx, org, session, seq, ts, &payload).await?;
-            }
-            if crate::export::is_file_import(&mut tx, org, id).await? {
-                crate::export::seal_imported(&mut tx, org, session).await?;
-            }
+            self.rebuild_session(&mut tx, org, parse(id)?).await?;
         }
         tx.commit().await?;
         tracing::info!(sessions = ids.len(), "Projektionen neu aufgebaut");
         Ok(ids.len() as u64)
+    }
+
+    /// Baut die Projektionen einer Session in einer laufenden Transaktion neu auf.
+    pub(crate) async fn rebuild_session(
+        &self,
+        tx: &mut SqliteConnection,
+        org: OrgId,
+        session: SessionId,
+    ) -> Result<()> {
+        let id = &session.to_string();
+        sqlx::query(
+            "UPDATE sessions SET title = '', title_source = '', status = ?, archived = 0, cost_micro = 0, \
+             last_activity_at = created_at, worktree_path = NULL, worktree_branch = NULL, \
+             worktree_base = NULL, worktree_base_sha = NULL WHERE org_id = ? AND id = ?",
+        )
+        .bind(enum_to_str(&SessionStatus::default()))
+        .bind(org.to_string())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        crate::listing::purge_docs(&mut *tx, org, id).await?;
+        for sql in [
+            "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+        ] {
+            sqlx::query(sql)
+                .bind(org.to_string())
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        for (seq, ts, payload) in self.full_events(&mut *tx, org, session).await? {
+            apply(&mut *tx, org, session, seq, ts, &payload).await?;
+        }
+        if crate::export::is_file_import(&mut *tx, org, id).await? {
+            crate::export::seal_imported(&mut *tx, org, session).await?;
+        }
+        Ok(())
     }
 
     /// Offene Approvals der Org, älteste zuerst.

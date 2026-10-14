@@ -15,7 +15,10 @@ use beton_core::time::Timestamp;
 use serde_json::{Value, json};
 
 use crate::testutil::{TestStore, org, store, store_with};
-use crate::{DeleteAuthority, Error, NewSession, RawRedactor, SessionRecord, Store, StoreOptions};
+use crate::{
+    DeleteAuthority, Error, NewSession, RedactionUnavailable, SessionRecord, Store, StoreOptions,
+    ValueRedactor,
+};
 
 fn new_session(t: &TestStore) -> NewSession {
     NewSession {
@@ -273,12 +276,17 @@ async fn data_002_ac3_batch_append_throughput() {
 #[derive(Default)]
 struct CountingRedactor(AtomicUsize);
 
-impl RawRedactor for CountingRedactor {
-    fn redact(&self, raw: &mut Value) {
-        self.0.fetch_add(1, Ordering::Relaxed);
-        if let Some(obj) = raw.as_object_mut() {
+impl ValueRedactor for CountingRedactor {
+    fn redact(&self, raw: &mut Value) -> Result<bool, RedactionUnavailable> {
+        // Zählt nur `raw`-Objekte mit `token`; Nutzlasten laufen ebenfalls hier durch.
+        if let Some(obj) = raw.as_object_mut()
+            && obj.contains_key("token")
+        {
+            self.0.fetch_add(1, Ordering::Relaxed);
             obj.insert("token".into(), "[REDACTED]".into());
+            return Ok(true);
         }
+        Ok(false)
     }
 }
 
@@ -309,6 +317,173 @@ async fn proto_001_ac3_raw_passes_redaction_hook_before_persistence() {
         .unwrap()
         .unwrap();
     assert_eq!(raw, json!({"type": "assistant", "token": "[REDACTED]"}));
+}
+
+// ---------------------------------------------------------------------------
+// SEC-013: Redaction vor Persistenz und Verteilung
+// ---------------------------------------------------------------------------
+
+const LEAK: &str = "GEHEIM-0815-wert";
+
+/// Ersetzt [`LEAK`] in allen Strings, wie die Pipeline aus `beton-secrets`.
+struct LeakRedactor;
+
+impl ValueRedactor for LeakRedactor {
+    fn redact(&self, value: &mut Value) -> Result<bool, RedactionUnavailable> {
+        Ok(match value {
+            Value::String(s) if s.contains(LEAK) => {
+                *s = s.replace(LEAK, "[REDACTED:secret]");
+                true
+            }
+            Value::Array(items) => items
+                .iter_mut()
+                .fold(false, |acc, v| self.redact(v).unwrap_or(false) | acc),
+            Value::Object(map) => map
+                .values_mut()
+                .fold(false, |acc, v| self.redact(v).unwrap_or(false) | acc),
+            _ => false,
+        })
+    }
+}
+
+/// Pipeline nicht bereit (fail closed).
+struct Unready;
+
+impl ValueRedactor for Unready {
+    fn redact(&self, _value: &mut Value) -> Result<bool, RedactionUnavailable> {
+        Err(RedactionUnavailable)
+    }
+}
+
+fn completed(session: SessionId, text: &str) -> Event {
+    ev(
+        session,
+        EventPayload::ToolCallCompleted(ToolCallCompleted {
+            call_id: "c1".into(),
+            status: ToolStatus::Ok,
+            result: Some(json!({ "stdout": text })),
+            result_ref: None,
+            duration_ms: 3,
+        }),
+    )
+}
+
+fn db_contains(t: &TestStore, needle: &str) -> bool {
+    let db = std::fs::read(t.dir.path().join("beton.db")).unwrap();
+    let wal = std::fs::read(t.dir.path().join("beton.db-wal")).unwrap_or_default();
+    [db, wal]
+        .iter()
+        .any(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
+}
+
+#[tokio::test]
+async fn sec_013_ac1_payload_is_redacted_before_persistence_and_on_the_wire() {
+    let t = store_with(StoreOptions {
+        redactor: Arc::new(LeakRedactor),
+        ..StoreOptions::default()
+    })
+    .await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let mut e = completed(s.id, &format!("export TOKEN={LEAK}"));
+    e.raw = Some(RawJson::from_value(&json!({ "out": LEAK })));
+    let written = append_one(&t.store, &s, e).await;
+    // Die Fassung für Live-Clients ist bereits geschwärzt.
+    let EventPayload::ToolCallCompleted(c) = written.payload().unwrap() else {
+        panic!("{written:?}");
+    };
+    assert_eq!(
+        c.result,
+        Some(json!({ "stdout": "export TOKEN=[REDACTED:secret]" }))
+    );
+    let stored = t.store.events(s.org_id, s.id, 1, 10).await.unwrap();
+    assert_eq!(stored[0].payload(), written.payload());
+    let raw = t.store.event_raw(s.org_id, s.id, 2).await.unwrap().unwrap();
+    assert_eq!(raw, json!({ "out": "[REDACTED:secret]" }));
+    assert!(!db_contains(&t, LEAK), "Wert steht in der Datenbank");
+}
+
+#[tokio::test]
+async fn sec_013_large_payload_is_redacted_before_offloading() {
+    let t = store_with(StoreOptions {
+        redactor: Arc::new(LeakRedactor),
+        ..StoreOptions::default()
+    })
+    .await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let big = format!("{}{LEAK}{}", "x".repeat(70_000), "y".repeat(10));
+    let written = append_one(&t.store, &s, completed(s.id, &big)).await;
+    let EventBody::Offloaded(o) = &written.body else {
+        panic!("nicht ausgelagert");
+    };
+    let blob = t
+        .store
+        .session_blob(s.org_id, s.id, &o.payload_ref)
+        .await
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&blob).contains(LEAK));
+    assert!(String::from_utf8_lossy(&blob).contains("[REDACTED:secret]"));
+}
+
+#[tokio::test]
+async fn sec_013_unready_redaction_writes_and_sends_nothing() {
+    let t = store_with(StoreOptions {
+        redactor: Arc::new(Unready),
+        ..StoreOptions::default()
+    })
+    .await;
+    let s = t.store.create_session(org(&t), new_session(&t)).await;
+    // Schon `session.created` wird nicht geschrieben.
+    let err = s.unwrap_err();
+    assert_eq!(err.code(), "redaction_unavailable", "{err}");
+    let live = t
+        .store
+        .redact_live(notice(SessionId::new(), "x"))
+        .unwrap_err();
+    assert_eq!(live.code(), "redaction_unavailable");
+    assert!(t.store.redact_value(&mut json!("x")).is_err());
+}
+
+#[tokio::test]
+async fn sec_013_ac1_live_events_are_redacted_before_distribution() {
+    let t = store_with(StoreOptions {
+        redactor: Arc::new(LeakRedactor),
+        ..StoreOptions::default()
+    })
+    .await;
+    let session = SessionId::new();
+    let mut delta = ev(
+        session,
+        EventPayload::ToolCallOutputDelta(beton_core::event::ToolCallOutputDelta {
+            call_id: "c1".into(),
+            stream: beton_core::event::OutputStream::Stdout,
+            text: format!("{LEAK}\n"),
+            snapshot: false,
+        }),
+    );
+    delta.transient = true;
+    delta.raw = Some(RawJson::from_value(&json!([LEAK])));
+    let out = t.store.redact_live(delta).unwrap();
+    let EventPayload::ToolCallOutputDelta(d) = out.payload().unwrap() else {
+        panic!("{out:?}");
+    };
+    assert_eq!(d.text, "[REDACTED:secret]\n");
+    assert_eq!(out.raw.unwrap().get(), r#"["[REDACTED:secret]"]"#);
+    let p = t
+        .store
+        .redact_payload(EventPayload::Notice(Notice {
+            text: LEAK.into(),
+            ..Notice::default()
+        }))
+        .unwrap();
+    assert!(!serde_json::to_string(&p).unwrap().contains(LEAK));
 }
 
 #[tokio::test]

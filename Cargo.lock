@@ -742,6 +742,7 @@ name = "beton-runner"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "beton-agents",
  "beton-core",
  "beton-git",
@@ -755,6 +756,7 @@ dependencies = [
  "beton-policy",
  "beton-proto",
  "beton-sandbox",
+ "beton-secrets",
  "beton-server",
  "beton-store",
  "futures-util",
@@ -776,6 +778,7 @@ version = "0.0.0"
 dependencies = [
  "beton-core",
  "beton-proxy",
+ "landlock",
  "libc",
  "process-wrap",
  "proptest",
@@ -783,6 +786,7 @@ dependencies = [
  "regex",
  "rustls",
  "schemars",
+ "seccompiler",
  "serde",
  "serde_json",
  "serde_norway",
@@ -818,13 +822,17 @@ name = "beton-secrets"
 version = "0.0.0"
 dependencies = [
  "aes-gcm",
+ "aho-corasick",
  "apple-native-keyring-store",
  "argon2",
+ "base64 0.23.1",
  "beton-core",
  "beton-store",
  "getrandom 0.4.3",
  "hkdf 0.12.4",
  "keyring-core",
+ "proptest",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
@@ -867,6 +875,7 @@ dependencies = [
  "ignore",
  "proptest",
  "regex",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -2158,6 +2167,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3035,6 +3055,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "secret-service"
 version = "5.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3483,7 +3512,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

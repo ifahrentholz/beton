@@ -1469,7 +1469,7 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-008--linux-backend-landlock--seccomp--namespaces",
-  "summary": "Nativ in Rust (Crates `landlock`, `seccompiler`/libseccomp, `nix`), ohne externes Binary. Der Launcher (`beton __sandbox-exec`) erzeugt unprivilegiert User-, Mount-, PID-, Net-, IPC- und UTS-Namespaces, richtet Masken und privates `/tmp` ein, startet im Net-NS einen Relay (`127.0.0.1:<R>` → Unix-Socket des Proxys), setzt `PR_SET_NO_NEW_PRIVS`, wendet Landlock-Regeln an, lädt den seccomp-Filter und führt das Ziel als Kind von PID 1 (Reaper) aus. `PR_SET_PDEATHSIG` beendet alles mit dem Runner.",
+  "summary": "Nativ in Rust (Crates `landlock`, `seccompiler`, `libc`), ohne externes Binary. Der Launcher (`beton __sandbox-exec`) erzeugt unprivilegiert User-, Mount-, PID-, Net-, IPC- und UTS-Namespaces, richtet Masken und privates `/tmp` ein, startet im Net-NS einen Relay (`127.0.0.1:<Proxy-Port>` → Proxy), setzt `PR_SET_NO_NEW_PRIVS`, wendet Landlock-Regeln an, lädt den seccomp-Filter und führt das Ziel als Kind von PID 1 (Reaper) aus. Stirbt der Runner, beendet der Launcher die Sandbox.",
   "acs": [
    "Auf Kernel ≥ 6.2: `cat /etc/shadow`, `echo x > /etc/beton-test`, `cat ~/.ssh/id_ed25519` scheitern in Stufe 2; Schreiben im Workspace gelingt.",
    "In Stufe 2 scheitert jede TCP-/UDP-Verbindung außer zum Relay (z. B. `nc 1.1.1.1 53`, `curl --noproxy '*' https://example.com`); der Net-NS enthält nur `lo`.",
@@ -2104,7 +2104,7 @@
   "chapter": "05-security-identity.md",
   "chapterTitle": "05 — Security & Identity",
   "anchor": "sec-001--secret-store-abstraktion--secretrefs",
-  "summary": "`beton-secrets` definiert einen `SecretStore`-Trait (`put`, `get_for_use`, `delete`, `list_meta`) mit Backends Keychain, verschlüsselte Datei (lokal) und Envelope-DB (zentral). Secrets werden überall per SecretRef adressiert; Metadaten (Typ, Provider, Account, Zeitstempel, zuletzt genutzt) liegen in der DB, Werte nur im Backend. Der Wert ist nur über `get_for_use(ref, purpose)` erhältlich, das ausschließlich Proxy, Direkt-API-Harness und Git-Provider-Client aufrufen dürfen und das jeden Abruf auditiert.",
+  "summary": "`beton-secrets` definiert einen `SecretStore`-Trait (`put`, `get_for_use`, `delete`, `list_meta`) mit Backends Keychain, verschlüsselte Datei (lokal) und Envelope-DB (zentral). Secrets werden überall per SecretRef adressiert; Metadaten (Typ, Provider, Account, Zeitstempel, zuletzt genutzt) liegen in der DB, Werte nur im Backend. Der Wert ist nur über `get_for_use(ref, purpose)` erhältlich, das ausschließlich Proxy, Direkt-API-Harness und Git-Provider-Client aufrufen dürfen und das jeden Abruf auditiert. Vierter Konsument ist die Redaction-Pipeline (SEC-013): Sie bekommt keinen einzelnen Wert, sondern nur einen Matcher über alle bekannten Werte (#186).",
   "acs": [
    "`list_meta` liefert nie Werte; ein Unit-Test stellt sicher, dass `SecretValue` weder `Debug` noch `Serialize` mit Klartext implementiert (Ausgabe `*`).",
    "Ein Aufruf von `get_for_use` aus einem nicht freigegebenen Modul wird durch Sichtbarkeit (`pub(crate)`-Fassade + Capability-Typ) zur Compile-Zeit verhindert.",
@@ -2307,8 +2307,8 @@
   "acs": [
    "Gibt ein Tool einen per `env.passthrough` durchgereichten echten Token-Wert aus, enthält das persistierte `tool.call.completed` nur `[REDACTED:…]`; Live-Clients erhalten ebenfalls die redigierte Fassung.",
    "Ein PEM-Private-Key in einer Agent-Nachricht wird vollständig (BEGIN bis END) ersetzt.",
-   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl).",
-   "`beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle)."
+   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der zuletzt auf `main` gemessene Wert im Actions-Cache des Jobs „test (linux)“.)*",
+   "(ab M3, mit OBS-006) `beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle). *(`beton diagnose` entsteht erst mit OBS-006 in M3; die Pipeline steht dafür bereit.)*"
   ]
  },
  {
@@ -2759,8 +2759,9 @@
   "summary": "Die einzige erlaubte Änderung bestehender Events: Owner oder Admin ersetzen einen Payload (ganz oder per JSON-Pointer-Pfade) durch `[REDACTED:manual]`, z. B. nach einem entdeckten Secret-Leak. `seq`, `type`, `actor`, `ts` bleiben; `redacted=true`; `raw` und ausgelagerte Blobs werden gelöscht; ein dauerhaftes `event.redacted` dokumentiert den Vorgang und repliziert ihn. Abgrenzung: Die automatische Redaction vor Persistenz ist SEC-013; DATA-012 ist die manuelle Nachredaktion.",
   "acs": [
    "`POST /v1/sessions/{id}/events/{seq}/redact` ersetzt den Inhalt; neue Attaches und Exporte zeigen die redigierte Fassung.",
-   "Verbundene Clients erhalten `event.redacted` und ersetzen die Anzeige ohne Reload.",
-   "Die Aktion erzeugt einen Audit-Eintrag (SEC-012, siehe 05-security-identity.md); ein `view`-User erhält 403."
+   "Verbundene Clients erhalten `event.redacted` und ersetzen die Anzeige ohne Reload. *(M2: Server und Protokoll; die Anzeige im Web-Client folgt mit #215.)*",
+   "Die Aktion erzeugt einen Audit-Eintrag (SEC-012, siehe 05-security-identity.md); lokal ist der Owner berechtigt.",
+   "(ab M4) Ein `view`-User erhält 403. *(Rollen kommen mit COL-001/AUTH-014.)*"
   ]
  },
  {
@@ -5749,7 +5750,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "obs-002--secret-redaction",
-  "summary": "Secrets werden typseitig als `SecretValue` (SEC-001; Debug/Display → `*`) geführt. Zusätzlich filtert ein Redaction-Layer Logs, Traces, Fehlermeldungen und Diagnose-Bundles: bekannte Muster (Bearer-/Basic-Header, `sk-…`, `ghp_…`/`glpat-…`, JWTs, PEM-Private-Keys) sowie exakte Werte, die `beton-secrets` bekannt sind (Abgleich über Hash-Set). `bt_cred_*`-Platzhalter bleiben sichtbar. Implementierung der Pipeline (Detektoren, exakter Abgleich, Ersetzung `[REDACTED:<kind>]`): Owner SEC-013; OBS-002 bindet sie als `tracing`-Layer ein.",
+  "summary": "Secrets werden typseitig als `SecretValue` (SEC-001; Debug/Display → `*`) geführt. Zusätzlich filtert ein Redaction-Layer Logs, Traces, Fehlermeldungen und Diagnose-Bundles: bekannte Muster (Bearer-/Basic-Header, `sk-…`, `ghp_…`/`glpat-…`, JWTs, PEM-Private-Keys) sowie exakte Werte, die `beton-secrets` bekannt sind (Abgleich über den Aho-Corasick-Matcher aus SEC-013, geladen über die `RedactionCap`). `bt_cred_*`-Platzhalter bleiben sichtbar. Implementierung der Pipeline (Detektoren, exakter Abgleich, Ersetzung `[REDACTED:<kind>]`): Owner SEC-013; OBS-002 bindet sie als `tracing`-Layer ein.",
   "acs": [
    "Ein in der Keychain hinterlegter Test-Key, der in einer Fehlermeldung auftaucht, erscheint im Log als `[REDACTED:<kind>]` (SEC-013).",
    "Property-Test: für zufällig generierte Strings mit eingebetteten Mustern enthält die Ausgabe keines der Muster.",
@@ -5765,9 +5766,9 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "obs-003--opentelemetry-traces-trace-pro-session",
-  "summary": "Export über `tracing-opentelemetry` + OTLP (gRPC/HTTP), aktiviert durch `observability.otlp.endpoint` oder `OTEL_EXPORTER_OTLP_ENDPOINT`; ohne Endpoint kein Export. Jede Session hat eine stabile Trace-ID; Spans: `turn` → `policy.evaluate` (Hook, Entscheidung, Regel-ID) → `model.request` (`gen_ai.request.model`, `gen_ai.usage.*`) → `tool.call` (Name, Status, Dauer) → `approval.wait` → `cost` (USD, Tokens). Inhalte (Prompts, Tool-Args) nur mit `observability.capture_content: true`.",
+  "summary": "Export per OTLP/HTTP mit JSON-Kodierung, aktiviert durch `observability.otlp.endpoint` oder `OTEL_EXPORTER_OTLP_ENDPOINT`; ohne Endpoint kein Export. Jede Session hat eine stabile Trace-ID; Spans: `turn` → `policy.evaluate` (Hook, Entscheidung, Regel-ID) → `model.request` (`gen_ai.request.model`, `gen_ai.usage.*`) → `tool.call` (Name, Status, Dauer) → `approval.wait` → `cost` (USD, Tokens). Inhalte (Prompts, Tool-Args) nur mit `observability.capture_content: true`.",
   "acs": [
-   "Mit einem lokalen OTLP-Collector (Testcontainer) erscheint für eine Fake-Harness-Session ein Trace mit `turn`-, `policy.evaluate`- und `tool.call`-Spans in korrekter Hierarchie.",
+   "Mit einem OTLP-Empfänger im Testprozess auf Loopback (die Linux-CI hat kein Netzwerk, daher kein Collector-Testcontainer) erscheint für eine Fake-Harness-Session ein Trace mit `turn`-, `policy.evaluate`- und `tool.call`-Spans in korrekter Hierarchie.",
    "Alle Turns derselben Session teilen die Trace-ID.",
    "Ohne `capture_content` enthält kein Span-Attribut den Marker-Prompt."
   ]

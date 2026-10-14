@@ -130,7 +130,7 @@ fn obs_005_ac1_missing_claude_is_a_warning_with_install_hint() {
     let home = tempfile::tempdir().unwrap();
     let empty = tempfile::tempdir().unwrap();
     let (code, report, _) = doctor(&mut isolated(home.path(), empty.path(), false));
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(1), "{report:#?}");
     let claude = report
         .checks
         .iter()

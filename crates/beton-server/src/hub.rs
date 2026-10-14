@@ -83,6 +83,8 @@ impl Hub {
 pub struct EventService {
     pub store: Store,
     pub hub: Arc<Hub>,
+    /// Session-Traces aus den gespeicherten Events (OBS-003), falls konfiguriert.
+    pub tracer: Option<Arc<crate::otel::SessionTracer>>,
 }
 
 impl EventService {
@@ -99,6 +101,19 @@ impl EventService {
             .append(org, session, expected_head, epoch, events)
             .await?;
         self.hub.publish_durable(session, &written);
+        if let Some(tracer) = &self.tracer {
+            tracer.observe(&self.store, org, session, &written).await;
+        }
         Ok(written)
+    }
+
+    /// Verteilt ein transientes Event, geschwärzt wie dauerhafte (SEC-013 AC1). Ist die
+    /// Pipeline nicht bereit, wird es verworfen (fail closed); der dauerhafte Abschluss
+    /// (z. B. `message.completed`) folgt ohnehin über das Log.
+    pub fn publish_transient(&self, event: Event) -> beton_store::Result<Event> {
+        let event = self.store.redact_live(event)?;
+        self.hub
+            .publish_transient(event)
+            .map_err(|e| beton_store::Error::InvalidEvent(e.to_string()))
     }
 }

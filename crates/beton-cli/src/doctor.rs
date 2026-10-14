@@ -2,7 +2,8 @@
 //!
 //! M0-Prüfungen: Version, Daemon, Konfiguration, Rechte von `~/.beton` und Token-Datei,
 //! SQLite-Integrität, Harness-CLIs (Pfad, Version, Bereich, Quelle) und Login-Status über
-//! das Statuskommando der CLI. Ab M1: verwaiste Worktrees ohne Session (SES-016 AC3). `doctor` schreibt nichts und kontaktiert nur den lokalen
+//! das Statuskommando der CLI. Ab M1: verwaiste Worktrees ohne Session (SES-016 AC3). Ab M2:
+//! Sandbox-Fähigkeiten (`sandbox.linux`, `sandbox.macos`). `doctor` schreibt nichts und kontaktiert nur den lokalen
 //! Daemon über Loopback (ADR-0033). Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler).
 
 use std::path::Path;
@@ -600,6 +601,100 @@ pub fn pricing(settings: Option<&crate::config::Settings>, central: bool) -> Che
     c
 }
 
+/// Sandbox-Fähigkeiten (OBS-005, ab M2; SBX-008, SBX-009): Linux braucht Landlock (Kernel
+/// ≥ 5.19, ABI ≥ 2) und dazu unprivilegierte User-Namespaces oder bwrap; macOS `sandbox-exec`.
+pub fn sandbox_check(
+    os: beton_sandbox::Os,
+    reports: &[beton_sandbox::ProbeReport],
+    landlock_abi: Option<u32>,
+) -> Check {
+    use beton_sandbox::{Os, ProviderId};
+    let find = |id: ProviderId| reports.iter().find(|r| r.id == id);
+    let reason = |id: ProviderId| {
+        find(id)
+            .and_then(|r| r.unavailable_reason.clone())
+            .unwrap_or_else(|| "nicht registriert".into())
+    };
+    let ok = |id: ProviderId| find(id).filter(|r| r.available);
+    match os {
+        Os::Linux => {
+            let id = "sandbox.linux";
+            if landlock_abi.unwrap_or(0) < 2 {
+                let abi = landlock_abi.map_or_else(|| "fehlt".to_owned(), |a| format!("ABI {a}"));
+                return check(
+                    id,
+                    CheckStatus::Fail,
+                    format!(
+                        "Landlock {abi}: Die Linux-Sandbox (landlock, bwrap) ist nicht verfügbar"
+                    ),
+                    Some(
+                        "Kernel ≥ 5.19 mit aktivem Landlock (Boot-Parameter `lsm=` muss landlock \
+                         enthalten) oder ab M5 backend: docker",
+                    ),
+                );
+            }
+            if let Some(r) = ok(ProviderId::Landlock) {
+                return check(
+                    id,
+                    CheckStatus::Ok,
+                    format!("landlock ({})", r.version),
+                    None,
+                );
+            }
+            if let Some(r) = ok(ProviderId::Bwrap) {
+                return check(
+                    id,
+                    CheckStatus::Ok,
+                    format!(
+                        "bwrap ({}); landlock nicht nutzbar: {}",
+                        r.version,
+                        reason(ProviderId::Landlock)
+                    ),
+                    None,
+                );
+            }
+            check(
+                id,
+                CheckStatus::Fail,
+                format!(
+                    "keine Linux-Sandbox nutzbar: {}",
+                    reason(ProviderId::Landlock)
+                ),
+                Some(
+                    "unprivilegierte User-Namespaces erlauben (AppArmor-Profil deploy/apparmor/beton) \
+                     oder bubblewrap ≥ 0.8 installieren",
+                ),
+            )
+        }
+        Os::MacOs => match ok(ProviderId::Seatbelt) {
+            Some(r) => check(
+                "sandbox.macos",
+                CheckStatus::Ok,
+                format!("seatbelt ({})", r.version),
+                None,
+            ),
+            None => check(
+                "sandbox.macos",
+                CheckStatus::Fail,
+                format!("Seatbelt nicht nutzbar: {}", reason(ProviderId::Seatbelt)),
+                Some("beton nicht innerhalb einer anderen Sandbox starten"),
+            ),
+        },
+        Os::Windows => check(
+            "sandbox.windows",
+            CheckStatus::Warn,
+            "Die Windows-Sandbox (Beta) folgt mit M5 (SBX-016)",
+            Some("bis dahin backend: none oder WSL2"),
+        ),
+        Os::Other => check(
+            "sandbox",
+            CheckStatus::Warn,
+            "für dieses Betriebssystem gibt es kein Sandbox-Backend",
+            None,
+        ),
+    }
+}
+
 /// Führt alle M0-Prüfungen aus.
 pub async fn run(ctx: &Ctx) -> DoctorReport {
     let mut checks = vec![check(
@@ -653,6 +748,15 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
     checks.push(permissions(&ctx.home));
     checks.push(database(&ctx.home).await);
     checks.push(worktrees(&ctx.home).await);
+    let sandboxes = beton_sandbox::Registry::platform();
+    let reports = tokio::task::spawn_blocking(move || sandboxes.probe_all())
+        .await
+        .unwrap_or_default();
+    checks.push(sandbox_check(
+        beton_sandbox::Os::current(),
+        &reports,
+        beton_sandbox::linux::kernel_landlock_abi(),
+    ));
     checks.push(secrets_store(
         secrets_choice,
         &beton_secrets::backend::KeychainBackend::availability(),
@@ -783,6 +887,54 @@ mod tests {
         );
         assert_eq!(central.details.unwrap()["overrides"], 1);
         assert_eq!(pricing(None, true).status, CheckStatus::Ok);
+    }
+
+    #[test]
+    fn obs_005_ac3_linux_without_landlock_fails_with_kernel_hint() {
+        use beton_sandbox::{Os, ProbeReport, ProviderId};
+        let reports = [
+            ProbeReport::unavailable(ProviderId::Landlock, "Landlock ist nicht aktiv"),
+            ProbeReport::unavailable(ProviderId::Bwrap, "bwrap fehlt"),
+        ];
+        for abi in [None, Some(1)] {
+            let c = sandbox_check(Os::Linux, &reports, abi);
+            assert_eq!(c.id, "sandbox.linux");
+            assert_eq!(c.status, CheckStatus::Fail, "{c:?}");
+            let hint = c.hint.unwrap();
+            assert!(hint.contains("Kernel") && hint.contains("5.19"), "{hint}");
+            assert!(hint.contains("lsm="), "{hint}");
+        }
+        // Landlock vorhanden, aber User-Namespaces gesperrt und kein bwrap: ebenfalls Fehler,
+        // mit dem Grund der Probe.
+        let c = sandbox_check(Os::Linux, &reports, Some(4));
+        assert_eq!(c.status, CheckStatus::Fail);
+        assert!(c.message.contains("Landlock ist nicht aktiv"), "{c:?}");
+        // Mit einem verfügbaren Backend ist alles in Ordnung, Fallback inklusive.
+        let mut ok = reports.clone();
+        ok[1].available = true;
+        ok[1].unavailable_reason = None;
+        let c = sandbox_check(Os::Linux, &ok, Some(4));
+        assert_eq!(c.status, CheckStatus::Ok, "{c:?}");
+        assert!(c.message.contains("bwrap"), "{c:?}");
+        ok[0].available = true;
+        ok[0].unavailable_reason = None;
+        let c = sandbox_check(Os::Linux, &ok, Some(4));
+        assert!(c.message.contains("landlock"), "{c:?}");
+        // macOS: Seatbelt; Windows: Beta erst mit M5.
+        let seatbelt = [ProbeReport::unavailable(
+            ProviderId::Seatbelt,
+            "sandbox-exec fehlt",
+        )];
+        let c = sandbox_check(Os::MacOs, &seatbelt, None);
+        assert_eq!(
+            (c.id.as_str(), c.status),
+            ("sandbox.macos", CheckStatus::Fail)
+        );
+        let c = sandbox_check(Os::Windows, &[], None);
+        assert_eq!(
+            (c.id.as_str(), c.status),
+            ("sandbox.windows", CheckStatus::Warn)
+        );
     }
 
     #[test]

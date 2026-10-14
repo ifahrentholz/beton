@@ -55,6 +55,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tower-service = "0.3"
+aho-corasick = "1"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
@@ -69,6 +70,10 @@ hex = "0.4"
 http-body-util = "0.1"
 # Dateiauswahl mit ripgrep-Semantik (`.gitignore`) für die Workspace-Suche (SES-017).
 ignore = "0.4"
+# Linux-Sandbox (SBX-008, SBX-009, SBX-013): Landlock, seccomp-BPF, Namespaces und rlimits.
+landlock = "0.4.4"
+libc = "0.2"
+seccompiler = "0.5"
 process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
 proptest = "1"
 regex = "1"

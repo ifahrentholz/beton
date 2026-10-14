@@ -1,0 +1,24 @@
+# AppArmor-Profil für beton (SBX-008 AC5).
+#
+# Ubuntu ab 23.10 schränkt unprivilegierte User-Namespaces per AppArmor ein
+# (kernel.apparmor_restrict_unprivileged_userns=1). Die Linux-Sandbox von beton
+# (`beton __sandbox-exec`) braucht sie für Mount-, PID- und Net-Namespaces. Dieses Profil
+# erlaubt beton genau das (`userns`) und schränkt sonst nichts ein (unconfined), wie die
+# Profile, die Ubuntu für Browser und Container-Werkzeuge mitliefert. Die eigentliche
+# Isolation erzwingt beton selbst mit Landlock, seccomp und Namespaces.
+#
+# Installation (die deb/rpm-Pakete ab M3 tun das selbst):
+#   sudo install -m 644 deploy/apparmor/beton /etc/apparmor.d/beton
+#   sudo apparmor_parser -r /etc/apparmor.d/beton
+# Ohne Profil meldet `beton sandbox probe` den Grund und nutzt, falls installiert,
+# bubblewrap als Fallback (SBX-009).
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile beton /usr/bin/beton flags=(unconfined) {
+  userns,
+
+  # Lokale Ergänzungen, siehe /etc/apparmor.d/local/README.
+  include if exists <local/beton>
+}
