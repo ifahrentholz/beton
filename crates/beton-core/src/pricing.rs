@@ -967,7 +967,7 @@ valid_from = ""
     #[test]
     fn har_006_ac3_codex_with_api_key_is_priced_from_the_catalog() {
         // Codex meldet nur Tokens (cost_micro leer); mit API-Key kommt der Preis aus dem Katalog,
-        // mit Subscription nur das informative Äquivalent (USE-004 folgt mit WP-44).
+        // mit Subscription nur das informative Äquivalent (USE-004).
         let pricer = Pricer::default();
         let mut api = delta("codex", "gpt-5.3-codex", AuthSource::ApiKey);
         api.source = crate::event::CostSource::Estimated;

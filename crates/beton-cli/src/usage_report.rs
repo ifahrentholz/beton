@@ -351,7 +351,7 @@ pub fn grouped(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push('.');
         }
         out.push(c);
@@ -459,9 +459,12 @@ fn auth_label(a: &str) -> &str {
     }
 }
 
+/// Spalte einer Dimension: Überschrift und Wert je Eintrag.
+type DimColumn = (&'static str, fn(&UsageItem) -> String);
+
 /// Spalten der gruppierten Dimensionen.
-fn dim_columns(view: &UsageReportView) -> Vec<(&'static str, fn(&UsageItem) -> String)> {
-    let mut cols: Vec<(&'static str, fn(&UsageItem) -> String)> = Vec::new();
+fn dim_columns(view: &UsageReportView) -> Vec<DimColumn> {
+    let mut cols: Vec<DimColumn> = Vec::new();
     for d in &view.group_by {
         match d.as_str() {
             "day" => cols.push(("TAG", |i| i.day.clone().unwrap_or_default())),

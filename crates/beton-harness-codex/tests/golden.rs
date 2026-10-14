@@ -93,7 +93,7 @@ fn har_025_ac4_recorded_versions_match_catalog() {
 }
 
 /// USE-004 gegen die echte CLI (0.161.0, Subscription): beide Abo-Fenster aus
-/// `account/rateLimits/updated`, Tokens ohne Geldbetrag.
+/// `account/rateLimits/updated`, Tokens ohne Geldbetrag (Subscription-Teil von HAR-006 AC3).
 #[tokio::test]
 async fn use_004_ac2_subscription_usage_from_the_real_cli() {
     let events = case("subscription-usage").await;

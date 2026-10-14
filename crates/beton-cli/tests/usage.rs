@@ -64,8 +64,11 @@ fn stable(mut v: Value) -> Value {
     v
 }
 
+/// Ganzer Ablauf mit echtem Daemon und Fake-CLIs, danach ohne Daemon. Deckt USE-007 AC1,
+/// USE-007 AC2, USE-007 AC3, CLI-010 AC1, CLI-010 AC2, USE-004 AC1, USE-004 AC2 und
+/// USE-004 AC3 ab.
 #[tokio::test]
-async fn use_007_usage_with_and_without_daemon() {
+async fn use_007_ac3_usage_with_and_without_daemon() {
     let vendor = tempfile::tempdir().unwrap();
     let claude_s = vendor.path().join("claude.yaml");
     let codex_s = vendor.path().join("codex.yaml");
