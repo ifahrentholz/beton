@@ -15,6 +15,8 @@ test('WEB-018 AC1 WEB-007 AC1: ⌘⏎ in der Leiste erlaubt und setzt fort, „A
   await expect(page.getByTestId('approval-card')).toHaveAttribute('data-decided', 'false')
   await expect(page.getByTestId('approval-card').getByRole('button', { name: 'Erlauben' })).toHaveCount(0)
   await page.getByLabel('Nachricht').focus()
+  // Eine gerade erschienene Card ist erst nach kurzer Sichtzeit per Taste entscheidbar.
+  await page.waitForTimeout(500)
   await page.keyboard.press('ControlOrMeta+Enter')
   await expect(page.getByText('Push erledigt.')).toBeVisible()
   await expect(page.getByTestId('tool-card')).toHaveAttribute('data-status', 'completed')

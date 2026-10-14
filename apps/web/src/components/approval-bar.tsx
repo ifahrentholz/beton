@@ -94,6 +94,9 @@ export function ApprovalReasons({ item }: { item: ApprovalItem }) {
   )
 }
 
+/** Sichtzeit, bevor eine neu oben stehende Card per Taste entscheidbar ist (Security-Review M1). */
+export const KEY_DELAY_MS = 400
+
 /** In einem Textfeld? Dann gehören Tasten wie `⌘⌫` dem Feld. */
 function typingIn(target: EventTarget | null): HTMLInputElement | HTMLTextAreaElement | undefined {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : undefined
@@ -133,9 +136,11 @@ export function ApprovalBar({ sessionId, approvals }: { sessionId: string; appro
     }
   }, [approvals])
 
-  // Neuer oberster Eintrag: eingeklappt, ohne offenes Ablehnen.
+  // Neuer oberster Eintrag: eingeklappt, ohne offenes Ablehnen, per Taste erst nach Sichtzeit.
   const topId = top?.approvalId
+  const armedAt = useRef(0)
   useEffect(() => {
+    armedAt.current = Date.now() + KEY_DELAY_MS
     setExpanded(false)
     setDenying(false)
     setReason('')
@@ -188,10 +193,21 @@ export function ApprovalBar({ sessionId, approvals }: { sessionId: string; appro
       const mod = e.metaKey || e.ctrlKey
       if (!mod) return
       const field = typingIn(e.target)
+      const decide = e.key === 'Enter' || (e.key === 'Backspace' && top.approvalKind !== 'question')
+      if (decide) {
+        // Gehaltene Tasten und eine gerade erst erschienene Card entscheiden nichts.
+        if (e.repeat || Date.now() < armedAt.current) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
       if (e.key === 'Enter') {
         e.preventDefault()
         e.stopPropagation()
         if (top.approvalKind === 'question') sendAnswer()
+        // Im Grund-Feld bestätigt ⌘⏎ das Ablehnen, nie das Erlauben.
+        else if (denying && field === reasonRef.current) deny()
         else allow(e.shiftKey)
       } else if (e.key === 'Backspace' && top.approvalKind !== 'question') {
         if (field && field !== reasonRef.current && field.value) return

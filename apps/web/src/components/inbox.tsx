@@ -247,7 +247,8 @@ function InboxRow({
 
 export function InboxView() {
   const [filter, setFilter] = useState<InboxFilter>('all')
-  const [selected, setSelected] = useState(0)
+  // Auswahl per Eintrags-ID: neue Einträge verschieben sie nicht (Security-Review M2).
+  const [selectedId, setSelectedId] = useState<string | undefined>()
   const [denying, setDenying] = useState<string | undefined>()
   const [error, setError] = useState<string | undefined>()
   const toggleList = useLayout((s) => s.toggleList)
@@ -263,7 +264,12 @@ export function InboxView() {
   const waiting = items.filter((i) => i.status === 'open')
   const others = items.filter((i) => i.status !== 'open')
   const ordered = [...waiting, ...others]
-  const current = ordered[Math.min(selected, Math.max(0, ordered.length - 1))]
+  // Ohne Wahl: der erste Eintrag, sobald es einen gibt; die Wahl bleibt dann an ihm.
+  useEffect(() => {
+    if (selectedId === undefined && ordered[0]) setSelectedId(ordered[0].id)
+  }, [selectedId, ordered])
+  const index = ordered.findIndex((i) => i.id === selectedId)
+  const current = index >= 0 ? ordered[index] : undefined
 
   const resolve = async (item: InboxItemView, req: ResolveApprovalRequest) => {
     setError(undefined)
@@ -280,8 +286,13 @@ export function InboxView() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (typing(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === 'j') setSelected((s) => Math.min(s + 1, ordered.length - 1))
-      else if (e.key === 'k') setSelected((s) => Math.max(s - 1, 0))
+      if (e.key === 'j') {
+        const next = ordered[Math.min(index + 1, ordered.length - 1)]
+        if (next) setSelectedId(next.id)
+      } else if (e.key === 'k') {
+        const prev = ordered[Math.max(index - 1, 0)]
+        if (prev) setSelectedId(prev.id)
+      }
       else if (e.key === 'a' && current?.status === 'open' && current.kind === 'approval') void resolve(current, { decision: 'allow' })
       else if (e.key === 'd' && current?.status === 'open' && current.kind === 'approval') {
         e.preventDefault()
@@ -308,7 +319,7 @@ export function InboxView() {
               aria-selected={f.id === filter}
               onClick={() => {
                 setFilter(f.id)
-                setSelected(0)
+                setSelectedId(undefined)
               }}
               className={cn('rounded-md px-2.5 py-1 text-[13px]', f.id === filter ? 'bg-accent font-medium' : 'text-muted-foreground hover:text-foreground')}
             >
@@ -336,16 +347,16 @@ export function InboxView() {
           <div className="mx-auto flex max-w-3xl flex-col gap-2 px-3 py-4 sm:px-6">
             {waiting.length > 0 && <h2 className="text-[12px] font-medium text-muted-foreground">Du bist dran · {waiting.length}</h2>}
             <ul className="flex flex-col gap-2" aria-label="Wartet auf dich">
-              {waiting.map((it, i) => (
+              {waiting.map((it) => (
                 <InboxRow
                   key={it.id}
                   item={it}
-                  selected={i === selected}
+                  selected={it.id === selectedId}
                   denying={denying === it.id}
                   onDenying={(v) => setDenying(v ? it.id : undefined)}
                   onResolve={(req) => void resolve(it, req)}
                   onOpen={() => open(it)}
-                  onSelect={() => setSelected(i)}
+                  onSelect={() => setSelectedId(it.id)}
                 />
               ))}
             </ul>
@@ -353,16 +364,16 @@ export function InboxView() {
               <>
                 <h2 className="mt-4 text-[12px] font-medium text-muted-foreground">{filter === 'done' ? 'Erledigt' : 'Zur Info'} · {others.length}</h2>
                 <ul className="divide-y divide-border rounded-md border border-border" aria-label="Zur Info">
-                  {others.map((it, i) => (
+                  {others.map((it) => (
                     <InboxRow
                       key={it.id}
                       item={it}
-                      selected={waiting.length + i === selected}
+                      selected={it.id === selectedId}
                       denying={false}
                       onDenying={() => undefined}
                       onResolve={() => undefined}
                       onOpen={() => open(it)}
-                      onSelect={() => setSelected(waiting.length + i)}
+                      onSelect={() => setSelectedId(it.id)}
                     />
                   ))}
                 </ul>
