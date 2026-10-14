@@ -22,6 +22,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 beton-proxy.workspace = true
+libc = "0.2"
 proptest.workspace = true
 rcgen.workspace = true
 regex.workspace = true

@@ -378,6 +378,100 @@ async fn sbx_007_signals_only_reach_the_own_tree() {
     assert!(c.ok, "{c:?}");
 }
 
+/// Probe für den folgenden Test: liest argv und Environment eines fremden Prozesses über
+/// `sysctl(KERN_PROCARGS2)` (das macOS-Gegenstück zu `/proc/<pid>/environ`). Tut nur etwas,
+/// wenn der Test dieses Binary mit `BETON_SBX_PROBE_PID` in der Sandbox startet.
+#[test]
+#[allow(unsafe_code, reason = "sysctl(2) gibt es nur über libc")]
+fn procargs_probe() {
+    let Ok(pid) = std::env::var("BETON_SBX_PROBE_PID") else {
+        return;
+    };
+    let marker = std::env::var("BETON_SBX_PROBE_MARKER").unwrap();
+    let pid: libc::c_int = pid.parse().unwrap();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut len = buf.len();
+    // SAFETY: mib und buf sind gültig, len enthält die Puffergröße.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+        return;
+    }
+    let found = buf[..len]
+        .windows(marker.len())
+        .any(|w| w == marker.as_bytes());
+    println!("PROBE-READ {}", if found { "LEAK" } else { "ohne Marker" });
+}
+
+/// Zielprozess für die Probe: ein Nicht-Plattform-Binary (wie Runner oder Vendor-CLI); bei
+/// Plattform-Binaries wie `/bin/sh` blendet macOS das Environment ohnehin aus.
+#[test]
+fn procargs_host() {
+    if std::env::var_os("BETON_SBX_HOST").is_some() {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+#[tokio::test]
+async fn sbx_007_foreign_processes_arguments_and_environment_are_invisible() {
+    let fx = fx();
+    let marker = format!("FIXTURE-PROCARGS-{}", std::process::id());
+    // Ein Prozess des Benutzers außerhalb der Sandbox (z. B. Runner oder Harness) mit einem
+    // Secret im Environment.
+    let exe = std::env::current_exe().unwrap();
+    let mut host = std::process::Command::new(&exe)
+        .args(["--exact", "procargs_host", "--test-threads=1"])
+        .env("BETON_SBX_HOST", "1")
+        .env("BETON_FIXTURE_SECRET", &marker)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let probe = |policy: &ResolvedPolicy| {
+        CommandSpec::new(&exe)
+            .args([
+                "--exact",
+                "procargs_probe",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BETON_SBX_PROBE_PID", host.id().to_string())
+            .env("BETON_SBX_PROBE_MARKER", &marker)
+            .cwd(&policy.workspace)
+    };
+    // Kontrollgruppe: ohne Sandbox ist das Environment lesbar.
+    let none = ResolvedPolicy::unsandboxed(Stage::Tools);
+    let mut cmd = probe(&fx.policy("{}\n", Stage::Tools));
+    cmd.cwd = Some(fx.ws.clone());
+    let c = run_with(&NoneProvider, &none, cmd).await;
+    assert!(
+        c.stdout.contains("PROBE-READ LEAK"),
+        "Kontrollgruppe: {c:?}"
+    );
+    let grant = format!("read_paths: [\"{}\"]\n", exe.parent().unwrap().display());
+    for stage in [Stage::Harness, Stage::Tools] {
+        let policy = fx.policy(&grant, stage);
+        let out = run_with(seatbelt().as_ref(), &policy, probe(&policy)).await;
+        assert!(
+            out.stdout.contains("PROBE-"),
+            "{stage:?}: Probe lief nicht: {out:?}"
+        );
+        assert!(!out.stdout.contains("LEAK"), "{stage:?}: {out:?}");
+    }
+    let _ = host.kill();
+    let _ = host.wait();
+}
+
 /// Git-Binary für die Tests (Xcode bzw. Homebrew) und die Lese-Wurzel seines Präfixes.
 fn git_binary() -> (PathBuf, PathBuf) {
     let found = std::process::Command::new("/usr/bin/xcrun")
