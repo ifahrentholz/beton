@@ -108,6 +108,8 @@ pub fn default_capabilities() -> Capabilities {
         efforts: vec!["low".into(), "medium".into(), "high".into()],
         permission_modes: PermissionMode::ALL.to_vec(),
         context_window: Some(crate::capabilities::DEFAULT_CONTEXT_WINDOW),
+        // Führt keine echten Tools aus; Szenarien können `inherited` setzen (SBX-002 AC4).
+        tool_isolation: crate::capabilities::ToolIsolation::Beton,
         native_project_files: Vec::new(),
     }
 }
@@ -1155,6 +1157,7 @@ turns:
         std::fs::write(&path, PUSH_ASK).unwrap();
         let registry = Registry::new(RegistryOptions { dev: true });
         let ctx = AdapterContext {
+            stage: None,
             gate: Arc::new(AllowAll),
             launcher: Arc::new(crate::process::RealLauncher),
             env: HostEnv::default(),

@@ -77,6 +77,7 @@ async fn run(mode: Option<PermissionMode>, deny: bool) -> (Vec<GateRequest>, Vec
         ..Policy::default()
     });
     let ctx = AdapterContext {
+        stage: None,
         gate: gate.clone(),
         launcher: Arc::new(RealLauncher),
         env,

@@ -35,6 +35,7 @@ async fn env_child() {
     env.vars
         .insert("BETON_CLAUDE_PATH".into(), script.display().to_string());
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env,

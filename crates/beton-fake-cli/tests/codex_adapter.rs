@@ -51,6 +51,7 @@ async fn try_start(
     gate: Arc<dyn Gate>,
 ) -> Result<Box<dyn HarnessSession>, HarnessError> {
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env: env_for(scenario, extra),
@@ -324,6 +325,7 @@ async fn har_006_resume_continues_the_thread() {
     until_turn_end(&mut rx).await;
     s.shutdown(Shutdown::default()).await.unwrap();
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env: env_for(&push_ask(), ""),

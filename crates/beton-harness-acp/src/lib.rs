@@ -242,6 +242,9 @@ impl HarnessAdapter for AcpAdapter {
             // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
             permission_modes: vec![PermissionMode::Default],
             context_window: None,
+            // Solange beton `terminal/*` nicht anbietet, führt der Agent seine Tools selbst aus
+            // (SBX-002): kein Stufe-2-Zwang.
+            tool_isolation: beton_harness::ToolIsolation::Inherited,
             native_project_files: Vec::new(),
         }
     }

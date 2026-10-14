@@ -25,13 +25,14 @@ pub use crate::adapter::{
     GateRequest, HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment,
     InvalidPermissionMode, McpInjection, McpLaunch, Mode, ModelGateDecision, ModelGateRequest,
     NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, RebuildRequest,
-    ResultGateRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
-    prefix_instructions,
+    ResultGateRequest, SessionSpec, Shutdown, StageEnv, SwitchOutcome, Transport, UserInput,
+    VENDOR_DIR_VARS, prefix_instructions,
 };
 pub use crate::capabilities::{
     Action, ApprovalMechanism, Capabilities, CapabilityUnsupported, CompactionSupport,
     DEFAULT_CONTEXT_WINDOW, EFFORT_LEVELS, ForkHistory, InstructionsDelivery, ModelRequestGate,
-    ResumeSupport, Subagents, SwitchSupport, ToolCallGate, UsageReporting, map_effort,
+    ResumeSupport, Subagents, SwitchSupport, ToolCallGate, ToolIsolation, UsageReporting,
+    map_effort,
 };
 pub use crate::id::{HarnessId, InvalidHarnessId};
 pub use crate::permission::{SandboxStatus, check_permission_mode};

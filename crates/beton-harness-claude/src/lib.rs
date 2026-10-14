@@ -29,8 +29,8 @@ use beton_harness::{
     ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
     HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, ModelRequestGate,
     NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport,
-    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport,
-    UsageReporting, UserInput,
+    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, ToolIsolation,
+    Transport, UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -144,6 +144,9 @@ pub fn capabilities() -> Capabilities {
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
         // Claude Code liest `CLAUDE.md` selbst, `AGENTS.md` nicht (AGT-005).
+        // Bash-Tool über `CLAUDE_CODE_SHELL=<bt-exec-zsh>` in Stufe 2 (SBX-002, gegen 2.1.296
+        // verifiziert; nicht `CLAUDE_CODE_SHELL_PREFIX`, der auch Hooks und MCP-Server umhüllt).
+        tool_isolation: ToolIsolation::ShellOverride,
         native_project_files: vec!["CLAUDE.md".into()],
     }
 }

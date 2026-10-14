@@ -515,6 +515,7 @@ mod tests {
         registry.register(std::sync::Arc::new(crate::fake::FakeAdapter));
         let id: HarnessId = HarnessId::FAKE.parse().unwrap();
         let ctx = crate::AdapterContext {
+            stage: None,
             gate: std::sync::Arc::new(crate::AllowAll),
             launcher: std::sync::Arc::new(crate::process::RealLauncher),
             env: crate::HostEnv::default(),

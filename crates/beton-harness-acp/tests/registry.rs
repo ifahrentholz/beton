@@ -28,6 +28,7 @@ async fn har_008_ac2_preset_without_binary_is_listed_but_not_startable() {
     }
     let id: HarnessId = "acp:gemini".parse().unwrap();
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env,

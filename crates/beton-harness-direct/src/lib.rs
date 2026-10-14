@@ -309,6 +309,8 @@ impl HarnessAdapter for DirectAdapter {
                 .filter_map(|m| m.context_window)
                 .min(),
             // Der Loop liest keine Projektdateien; beton liefert sie mit (AGT-005).
+            // Tools führt beton selbst aus (beton-workspace, MCP-stdio-Server): Stufe 2.
+            tool_isolation: beton_harness::ToolIsolation::Beton,
             native_project_files: Vec::new(),
         }
     }

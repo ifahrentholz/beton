@@ -104,6 +104,7 @@ async fn start(yaml: &str, gate: Arc<dyn Gate>, adapter: ClaudeAdapter, hook: bo
         ),
     );
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env,

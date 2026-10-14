@@ -565,6 +565,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     )
     .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(gate.clone()),
         launcher: Arc::new(SandboxLauncher::new(sandbox)),
         env,

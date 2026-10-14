@@ -499,6 +499,19 @@ pub struct AdapterContext {
     /// Startet Harness-Prozesse; in Golden-Tests ein simulierter Prozess.
     pub launcher: Arc<dyn ProcessLauncher>,
     pub env: HostEnv,
+    /// Zweistufige Sandbox der Session (SBX-002), falls aktiv: Der Harness läuft in Stufe 1,
+    /// seine Tools sollen über `bt-exec` in Stufe 2 laufen.
+    pub stage: Option<StageEnv>,
+}
+
+/// Was ein Adapter für die zweistufige Sandbox braucht (SBX-002).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageEnv {
+    /// Verzeichnis mit `bt-exec`, `bt-exec-zsh`, `bt-exec-bash` und `bt-exec-sh`.
+    pub shim_dir: std::path::PathBuf,
+    /// Austausch zwischen Stufe 1 und Stufe 2 (Stufe-2-Scratch), z. B. für
+    /// `CLAUDE_CODE_TMPDIR`.
+    pub exchange: std::path::PathBuf,
 }
 
 impl std::fmt::Debug for AdapterContext {
