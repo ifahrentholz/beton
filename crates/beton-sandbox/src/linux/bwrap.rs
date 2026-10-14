@@ -90,6 +90,7 @@ pub fn args(plan: &LaunchPlan, launcher: &Path) -> Result<Vec<String>, SandboxEr
     }
     sort_ops(&mut ops);
     let mask_file = plan.mask_file.as_deref();
+    let mut remount = Vec::new();
     for op in &ops {
         match op {
             // `--dev` bringt ein eigenes `/dev/shm` mit.
@@ -103,15 +104,11 @@ pub fn args(plan: &LaunchPlan, launcher: &Path) -> Result<Vec<String>, SandboxEr
                 ]);
             }
             MountOp::MaskDir { path } => {
+                // Erst beschreibbar, damit Wiedereinbindungen darunter Mountpunkte bekommen;
+                // read-only am Ende.
                 let p = path_arg(path)?;
-                a.extend([
-                    "--perms".into(),
-                    "0000".into(),
-                    "--tmpfs".into(),
-                    p.clone(),
-                    "--remount-ro".into(),
-                    p,
-                ]);
+                a.extend(["--perms".into(), "0000".into(), "--tmpfs".into(), p.clone()]);
+                remount.push(p);
             }
             MountOp::MaskFile { path } => {
                 let src = mask_file.ok_or_else(|| {
@@ -133,6 +130,9 @@ pub fn args(plan: &LaunchPlan, launcher: &Path) -> Result<Vec<String>, SandboxEr
                 a.extend(["--bind".into(), p.clone(), p]);
             }
         }
+    }
+    for p in remount {
+        a.extend(["--remount-ro".into(), p]);
     }
     a.push("--".into());
     a.push(path_arg(launcher)?);
