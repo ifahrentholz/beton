@@ -823,6 +823,28 @@ mod tests {
     }
 
     #[test]
+    fn use_004_ac3_rate_limit_notice_is_on_by_default_and_can_be_switched_off() {
+        let f = fixture();
+        let on = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert!(on.usage.rate_limit_notice);
+        let off = f
+            .load(&[("BETON_CFG_USAGE__RATE_LIMIT_NOTICE", "false")])
+            .unwrap()
+            .daemon_settings()
+            .unwrap();
+        assert!(!off.usage.rate_limit_notice);
+        f.write_user("usage:\n  rate_limit_notice: false\n");
+        assert!(
+            !f.load(&[])
+                .unwrap()
+                .daemon_settings()
+                .unwrap()
+                .usage
+                .rate_limit_notice
+        );
+    }
+
+    #[test]
     fn cli_008_ac1_list_shows_the_source_per_key() {
         let f = fixture();
         f.write_user("server:\n  allowed_hosts: [beton.local]\nharnesses:\n  claude:\n    command: /opt/claude\n");
