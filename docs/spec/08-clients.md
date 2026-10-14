@@ -81,7 +81,7 @@ beton
 ├── export   <SESSION> [-o FILE] [--with-blobs] [--with-raw]
 ├── config   get|set|unset|list|edit [--global|--project]
 ├── usage    [--by day|session|project|harness|model|user|team] [--since DATE|DUR] [--from DATE --to DATE]
-│           [--session ID] [--json|--csv] | pricing explain --model M
+│           [--session ID] [--json|--csv] | pricing explain --model M [--provider P]
 ├── agent    list|show|validate|new|schema
 ├── mcp      list|add|remove|test [--global|--project]  # UX-010, AGT-006
 ├── policy   test|explain|eval|show                    # POL-026, POL-027
