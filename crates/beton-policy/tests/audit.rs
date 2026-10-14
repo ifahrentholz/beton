@@ -97,3 +97,21 @@ fn pol_025_allow_without_match_and_errors_are_audited() {
     assert!(event.matched.is_empty());
     assert_eq!(event.enforcement, "observe_only");
 }
+
+/// Minor aus #234 (POL-025 AC2): Fehlertexte in `policy.decision.errors` nennen keine Werte aus
+/// den Tool-Argumenten; `subject_hash` ist unabhängig von der Reihenfolge der Schlüssel.
+#[test]
+fn pol_025_ac2_errors_carry_no_argument_values() {
+    let effective = EffectiveSet::new(vec![set(
+        "  - id: as-int\n    on: tool_call\n    when: 'int(tool.args.command) > 1'\n    action: deny\n  - id: as-url\n    on: tool_call\n    when: 'url.host(tool.args.command) == \"x\"'\n    action: deny\n  - id: as-key\n    on: tool_call\n    when: 'tool.args[tool.command] == 1'\n    action: deny\n",
+    )]);
+    let decision = effective.evaluate(&shell(SECRET_ARG), &EvalOptions::default());
+    let event = decision_event(&decision, DecisionMeta::new(Level::Full));
+    assert_eq!(event.errors.len(), 3, "{:?}", event.errors);
+    let text = serde_json::to_string(&event).unwrap();
+    assert!(!text.contains("geheimes-verzeichnis"), "{text}");
+    assert_eq!(
+        subject_hash(&json!({ "tool": "Bash", "args": { "b": 1, "a": { "y": 2, "x": 1 } } })),
+        subject_hash(&json!({ "args": { "a": { "x": 1, "y": 2 }, "b": 1 }, "tool": "Bash" }))
+    );
+}

@@ -591,3 +591,22 @@ fn pol_007_modify_args_below_user_is_a_load_error() {
     let ok = "spec_version: 1\nname: x\nrules:\n  - id: r\n    on: tool_result\n    action: modify\n    modify: { redact: [\"secret\"] }\n";
     parse_set(Scope::Project, "x.yaml", ok).unwrap();
 }
+
+/// Minor aus #234: `*.yml` wird geladen wie `*.yaml`, statt still ignoriert zu werden.
+#[test]
+fn pol_001_yml_files_are_loaded_too() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("guard.yml"), DENY_SHELL).unwrap();
+    std::fs::write(dir.path().join("x.policytest.yml"), "kein: set").unwrap();
+    let mut store = PolicyStore::new();
+    store.add_dir(Scope::User, dir.path());
+    let events = store.refresh();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(matches!(
+        store
+            .effective()
+            .evaluate(&shell_call(), &EvalOptions::default())
+            .outcome,
+        Outcome::Deny { .. }
+    ));
+}

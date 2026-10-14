@@ -461,3 +461,101 @@ async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
     .expect("Start verweigert");
     assert!(err.contains("policies") && err.contains("WP-49"), "{err}");
 }
+
+// ------------------------------------------------------------- Minor (#234)
+
+#[tokio::test]
+async fn pol_025_ac2_vendor_raw_line_is_not_attached_to_the_decision() {
+    // Die Original-Zeile einer Rückfrage enthält die Argumente im Klartext.
+    let dir = tempfile::tempdir().unwrap();
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let mut req = bash("toolu_20", "echo geheim-4711", GateOrigin::AutoApproval);
+    req.raw = Some(beton_core::event::RawJson::from_value(&serde_json::json!({
+        "request": { "input": { "command": "echo geheim-4711" } }
+    })));
+    let _ = g.decide(req).await;
+    while let Ok(e) = rx.try_recv() {
+        if let beton_core::event::EventPayload::PolicyDecision(_) = e.payload {
+            assert!(e.raw.is_none(), "raw am policy.decision");
+        }
+    }
+}
+
+#[tokio::test]
+async fn har_005_empty_call_id_is_denied() {
+    // Leere Call-IDs teilten sich gespeicherte Entscheide.
+    let dir = tempfile::tempdir().unwrap();
+    let (g, _rx) = gate(dir.path(), "claude");
+    for origin in [GateOrigin::PreTool, GateOrigin::AutoApproval] {
+        let d = g.decide(bash("", "echo hi", origin)).await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{origin:?}: {d:?}");
+    }
+}
+
+#[tokio::test]
+async fn pol_010_human_changed_args_are_checked_again() {
+    // Ein Mensch gibt `git push` frei, ändert dabei aber die Argumente in etwas, das eine
+    // `deny`-Regel trifft: Die geänderten Argumente prüft die Policy erneut.
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(
+        dir.path(),
+        Scope::Project,
+        "push",
+        &format!(
+            "  - id: confirm-push\n    on: tool_call\n    when: 'tool.command.contains(\"git push\")'\n    action: ask\n{NO_RM}"
+        ),
+    );
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let g2 = g.clone();
+    let task = tokio::spawn(async move {
+        g2.decide(bash("toolu_21", "git push", GateOrigin::PreTool))
+            .await
+    });
+    loop {
+        let e = rx.recv().await.unwrap();
+        if matches!(e.payload, beton_core::event::EventPayload::ApprovalRequested(_)) {
+            break;
+        }
+    }
+    assert!(g.resolve(
+        "toolu_21",
+        beton_runner::policy::Human {
+            allow: true,
+            reason: None,
+            updated_args: Some(serde_json::json!({ "command": "rm -rf ~" })),
+        }
+    ));
+    let d = task.await.unwrap();
+    assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
+}
+
+#[tokio::test]
+async fn pol_003_tool_result_sees_adapter_kind_args_and_cwd() {
+    // `tool_result` hatte weder die Klasse des Adapters noch `args` und `cwd`.
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().display().to_string();
+    write_policy(
+        dir.path(),
+        Scope::Project,
+        "result",
+        &format!(
+            "  - id: hide\n    on: tool_result\n    when: 'tool.kind == \"shell\" && tool.args.command == \"cat x\" && tool.cwd == \"{cwd}\"'\n    action: deny\n"
+        ),
+    );
+    let (g, _rx) = gate(dir.path(), "fake");
+    let mut call = bash("toolu_22", "cat x", GateOrigin::PreTool);
+    call.tool = "Shell".into();
+    let d = g
+        .tool_result(beton_harness::ResultGateRequest {
+            call,
+            ok: true,
+            exit_code: Some(0),
+            error: None,
+            text: "inhalt".into(),
+            bytes: 6,
+            duration_ms: 1,
+            truncated: false,
+        })
+        .await;
+    assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
+}
