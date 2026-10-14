@@ -490,7 +490,7 @@ fn read_file(path: &Path) -> Result<Value, ConfigError> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
     }
-    let value: Value = serde_yaml_ng::from_str(&text).map_err(|e| ConfigError::Parse {
+    let value: Value = serde_norway::from_str(&text).map_err(|e| ConfigError::Parse {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
@@ -513,7 +513,7 @@ fn write_file(path: &Path, value: &Value) -> Result<(), ConfigError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
-    let text = serde_yaml_ng::to_string(value).map_err(|e| ConfigError::Parse {
+    let text = serde_norway::to_string(value).map_err(|e| ConfigError::Parse {
         path: path.display().to_string(),
         message: e.to_string(),
     })?;
@@ -544,7 +544,7 @@ fn env_layer(env: impl IntoIterator<Item = (String, String)>) -> Value {
 
 /// Wert als YAML; was kein YAML ist, bleibt Text.
 fn parse_scalar(raw: &str) -> Value {
-    serde_yaml_ng::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
+    serde_norway::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_owned()))
 }
 
 fn split_key(key: &str) -> Result<Vec<String>, ConfigError> {

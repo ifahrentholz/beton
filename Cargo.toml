@@ -54,7 +54,7 @@ semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_path_to_error = "0.1"
-serde_yaml_ng = "0.10"
+serde_norway = "0.9"
 sha2 = "0.10"
 subtle = "2"
 # Session-Export mit Blobs als `.tar.zst` (DATA-010); ohne xattr, ohne Legacy-Formate.

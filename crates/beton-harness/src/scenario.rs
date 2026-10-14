@@ -449,7 +449,7 @@ impl Step {
 impl Scenario {
     pub fn from_yaml(text: &str) -> Result<Self, ScenarioError> {
         let scenario: Self =
-            serde_yaml_ng::from_str(text).map_err(|e| ScenarioError::Invalid(e.to_string()))?;
+            serde_norway::from_str(text).map_err(|e| ScenarioError::Invalid(e.to_string()))?;
         scenario.validate()?;
         Ok(scenario)
     }
