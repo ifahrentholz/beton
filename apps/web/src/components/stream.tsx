@@ -176,12 +176,20 @@ export function ErrorCard({ title, detail }: { title: string; detail?: string | 
   )
 }
 
-export function SystemNote({ text, tone }: { text: string; tone: 'neutral' | 'deny' | 'ok' }) {
-  return (
+export function SystemNote({ text, tone, detail }: { text: string; tone: 'neutral' | 'deny' | 'ok'; detail?: string | undefined }) {
+  const note = (
     <div className="flex items-center gap-3 text-[12px] text-muted-foreground">
       <span className="h-px flex-1 bg-border" />
       <span className={cn(tone === 'deny' && 'text-deny', tone === 'ok' && 'text-ok')}>{text}</span>
       <span className="h-px flex-1 bg-border" />
+    </div>
+  )
+  if (!detail) return note
+  // Erklärung unter dem Hinweis, z. B. nach einer Compaction (USE-009, Entwurf `usage-context`).
+  return (
+    <div className="flex flex-col gap-2">
+      {note}
+      <p className="ml-9 text-[12px] text-muted-foreground">{detail}</p>
     </div>
   )
 }
