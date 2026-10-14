@@ -110,6 +110,11 @@ pub fn args(plan: &LaunchPlan, launcher: &Path) -> Result<Vec<String>, SandboxEr
                 a.extend(["--perms".into(), "0000".into(), "--tmpfs".into(), p.clone()]);
                 remount.push(p);
             }
+            MountOp::Anchor { path } => {
+                let p = path_arg(path)?;
+                a.extend(["--perms".into(), "0755".into(), "--tmpfs".into(), p.clone()]);
+                remount.push(p);
+            }
             MountOp::MaskFile { path } => {
                 let src = mask_file.ok_or_else(|| {
                     SandboxError::spawn("bwrap: keine Maskendatei für Datei-Masken")

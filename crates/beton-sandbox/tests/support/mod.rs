@@ -257,6 +257,8 @@ mod probes {
                         Err(_) => failed += 1,
                     }
                 }
+                // Wie eine echte Fork-Bombe: Die Prozesse bleiben eine Weile bestehen.
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 for mut c in children {
                     let _ = c.kill();
                     let _ = c.wait();

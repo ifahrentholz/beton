@@ -493,8 +493,10 @@ fn p1_run(
     util::stdio_to_null();
     let watch_pids = plan.cgroup.is_none().then_some(plan.limits.pids).flatten();
     let mut reported = false;
+    // Mit `pids`-Limit ohne cgroup kurz takten, damit auch kurze Spitzen auffallen.
+    let tick = if watch_pids.is_some() { 20 } else { 250 };
     loop {
-        let _ = util::poll(&[sigfd], 100);
+        let _ = util::poll(&[sigfd], tick);
         util::drain_signalfd(sigfd);
         loop {
             match util::waitpid(-1, true) {

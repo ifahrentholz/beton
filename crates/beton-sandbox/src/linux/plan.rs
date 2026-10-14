@@ -317,6 +317,10 @@ pub enum MountOp {
     Tmpfs { path: PathBuf, mode: u32 },
     /// Maskiertes Verzeichnis: leeres, schreibgeschütztes tmpfs mit Modus 0000.
     MaskDir { path: PathBuf },
+    /// Zwischenebene unter einem privaten tmpfs für Wiedereinbindungen (z. B. `/tmp/x` für die
+    /// Wurzel `/tmp/x/ws`): eigenes tmpfs, am Ende read-only. Sonst ließen sich neben den
+    /// wieder eingebundenen Wurzeln Dateien anlegen, die wie Teile des Hosts aussehen.
+    Anchor { path: PathBuf },
     /// Maskierte Datei: leere Datei mit Modus 0000, schreibgeschützt darübergebunden.
     MaskFile { path: PathBuf },
     /// Eine Wurzel, die unter einem tmpfs oder einer Maske liegt, aus der ursprünglichen Sicht
@@ -333,6 +337,7 @@ impl MountOp {
         match self {
             MountOp::Tmpfs { path, .. }
             | MountOp::MaskDir { path }
+            | MountOp::Anchor { path }
             | MountOp::MaskFile { path }
             | MountOp::Rebind { path, .. }
             | MountOp::ReadOnly { path }
@@ -343,7 +348,7 @@ impl MountOp {
     fn order(&self) -> u8 {
         match self {
             MountOp::Tmpfs { .. } => 0,
-            MountOp::MaskDir { .. } | MountOp::MaskFile { .. } => 1,
+            MountOp::MaskDir { .. } | MountOp::MaskFile { .. } | MountOp::Anchor { .. } => 1,
             MountOp::Rebind { .. } => 2,
             MountOp::Pin { .. } => 3,
             MountOp::ReadOnly { .. } => 4,
@@ -382,6 +387,20 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             .iter()
             .map(|p| MountOp::MaskFile { path: p.clone() }),
     );
+    let mut anchors = BTreeSet::new();
+    for r in &targets.rebind {
+        for s in ["/tmp", "/run"] {
+            let Ok(rel) = r.strip_prefix(s) else { continue };
+            let Some(first) = rel.components().next() else {
+                continue;
+            };
+            let anchor = Path::new(s).join(first);
+            if anchor != *r && !targets.rebind.contains(&anchor) {
+                anchors.insert(anchor);
+            }
+        }
+    }
+    ops.extend(anchors.into_iter().map(|path| MountOp::Anchor { path }));
     for r in &targets.rebind {
         ops.push(MountOp::Rebind {
             path: r.clone(),

@@ -143,9 +143,11 @@ pub fn base() -> StepResult<()> {
     Ok(())
 }
 
-/// Leere Datei mit Modus 0000 in einem losgelösten tmpfs als Quelle für Datei-Masken; der
-/// Deskriptor (O_PATH) hält sie am Leben, in der Sandbox ist sie nirgends sichtbar.
-fn mask_source() -> io::Result<RawFd> {
+/// Leere Datei mit Modus 0000 in einem kleinen tmpfs als Quelle für Datei-Masken. Das tmpfs
+/// liegt auf `/run` und wird danach vom privaten `/run` überdeckt; nach den Masken wird es
+/// gelöst. Bind-Mounts verlangen eine Quelle im eigenen Mount-Namespace, deshalb erst danach.
+/// Liefert (Datei, Wurzel des tmpfs) als O_PATH-Deskriptoren.
+fn mask_source() -> io::Result<(RawFd, RawFd)> {
     let dir = Path::new("/run");
     mount(
         Some(Path::new("tmpfs")),
@@ -154,6 +156,7 @@ fn mask_source() -> io::Result<RawFd> {
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
         Some("mode=000,size=4k,nr_inodes=4"),
     )?;
+    let root = open_path(dir)?;
     let file = dir.join("beton-mask");
     let c = cstr(&file)?;
     // SAFETY: open/close auf einen gültigen C-String.
@@ -165,11 +168,18 @@ fn mask_source() -> io::Result<RawFd> {
         )
     })?;
     close(fd);
-    let fd = open_path(&file)?;
-    let d = cstr(dir)?;
-    // SAFETY: umount2 eines eben angelegten Mounts.
-    cvt(unsafe { libc::umount2(d.as_ptr(), libc::MNT_DETACH) })?;
-    Ok(fd)
+    Ok((open_path(&file)?, root))
+}
+
+/// Löst das Quell-tmpfs der Datei-Masken (überdeckt, deshalb über seinen Deskriptor).
+fn drop_mask_source(root: RawFd) {
+    if let Ok(p) = cstr(&fd_path(root)) {
+        // SAFETY: umount2 eines eigenen Mounts über den Pfad seines Deskriptors.
+        unsafe {
+            libc::umount2(p.as_ptr(), libc::MNT_DETACH);
+        }
+    }
+    close(root);
 }
 
 /// Führt die Mount-Schritte aus.
@@ -183,10 +193,11 @@ pub fn apply(ops: &[MountOp]) -> StepResult<()> {
         }
     }
     let needs_file = ops.iter().any(|o| matches!(o, MountOp::MaskFile { .. }));
-    let mask_fd = if needs_file {
-        Some(mask_source().map_err(|e| StepError::io("mount", "Maskendatei", e))?)
+    let (mask_fd, mask_root) = if needs_file {
+        let (f, r) = mask_source().map_err(|e| StepError::io("mount", "Maskendatei", e))?;
+        (Some(f), Some(r))
     } else {
-        None
+        (None, None)
     };
     let mut mask_dirs = Vec::new();
     for op in ops {
@@ -205,6 +216,18 @@ pub fn apply(ops: &[MountOp]) -> StepResult<()> {
                     Some(&format!("mode={mode:o}")),
                 )
                 .map_err(fail)?;
+            }
+            MountOp::Anchor { .. } => {
+                std::fs::create_dir_all(path).map_err(fail)?;
+                mount(
+                    Some(Path::new("tmpfs")),
+                    path,
+                    Some("tmpfs"),
+                    libc::MS_NOSUID | libc::MS_NODEV,
+                    Some("mode=755,size=64k"),
+                )
+                .map_err(fail)?;
+                mask_dirs.push(path.to_path_buf());
             }
             MountOp::MaskDir { .. } => {
                 // Erst beschreibbar (für Wiedereinbindungen darunter), am Ende read-only.
@@ -255,6 +278,9 @@ pub fn apply(ops: &[MountOp]) -> StepResult<()> {
     }
     if let Some(fd) = mask_fd {
         close(fd);
+    }
+    if let Some(root) = mask_root {
+        drop_mask_source(root);
     }
     Ok(())
 }
