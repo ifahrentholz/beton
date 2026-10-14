@@ -1,0 +1,241 @@
+# Preis-Katalog von beton (USE-002): Listenpreise in USD je 1 Mio. Tokens.
+#
+# Eingebettet per include_str! (beton_core::pricing); Updates kommen ausschließlich mit
+# beton-Releases, nie per Netzabruf (ADR-0033). Jede Änderung an Preisen oder Einträgen erhöht
+# `catalog_version`; jeder bewertete Usage-Record speichert die verwendete Version, alte Records
+# werden nie neu bewertet.
+#
+# Felder je Modell: `id` (kanonisch), `aliases` (z. B. datierte IDs), `provider`,
+# `context_window` (Tokens, wenn der Anbieter es nennt), `input_per_mtok`, `output_per_mtok`,
+# `cache_read_per_mtok`, `cache_write_per_mtok` (fehlen sie: 0,1 × bzw. 1,25 × input),
+# `valid_from` (ab wann der Preis gilt bzw. Stand der Preisliste des Anbieters).
+#
+# Quellen (Stand 2026-10-14): platform.claude.com/docs/en/about-claude/pricing und
+# …/models/overview (Cache-Write = 5-Minuten-Cache), developers.openai.com/api/docs/pricing
+# (Standard-Tier, Kontext ≤ 272k; OpenAI berechnet Cache-Writes wie normale Eingabe).
+# Modelle mit gestaffelten Preisen je Kontextlänge (z. B. Claude Haiku 5.5, gpt-5.4, gpt-5.5)
+# fehlen bewusst: Der Katalog kennt nur einen Preis je Modell; dafür einen Preis-Override
+# anlegen (USE-003).
+#
+# CI prüft den Katalog (USE-002 AC3): Schema, keine doppelten IDs/Aliase, Preise ≥ 0,
+# `valid_from` gesetzt.
+
+catalog_version = "2026-10-14"
+currency = "USD"
+
+# ---------------------------------------------------------------- Anthropic
+
+[[model]]
+id = "claude-fable-5-1"
+provider = "anthropic"
+context_window = 1000000
+input_per_mtok = 10.00
+output_per_mtok = 50.00
+cache_read_per_mtok = 0.25
+cache_write_per_mtok = 12.50
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-5-5"
+provider = "anthropic"
+context_window = 1000000
+input_per_mtok = 4.00
+output_per_mtok = 20.00
+cache_read_per_mtok = 0.20
+cache_write_per_mtok = 5.00
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-sonnet-5-5"
+provider = "anthropic"
+context_window = 1000000
+input_per_mtok = 2.00
+output_per_mtok = 10.00
+cache_read_per_mtok = 0.10
+cache_write_per_mtok = 2.50
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-5"
+provider = "anthropic"
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+cache_read_per_mtok = 0.50
+cache_write_per_mtok = 6.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-sonnet-5"
+provider = "anthropic"
+input_per_mtok = 2.00
+output_per_mtok = 10.00
+cache_read_per_mtok = 0.20
+cache_write_per_mtok = 2.50
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-4-8"
+provider = "anthropic"
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+cache_read_per_mtok = 0.50
+cache_write_per_mtok = 6.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-4-7"
+provider = "anthropic"
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+cache_read_per_mtok = 0.50
+cache_write_per_mtok = 6.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-4-6"
+provider = "anthropic"
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+cache_read_per_mtok = 0.50
+cache_write_per_mtok = 6.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-sonnet-4-6"
+provider = "anthropic"
+input_per_mtok = 3.00
+output_per_mtok = 15.00
+cache_read_per_mtok = 0.30
+cache_write_per_mtok = 3.75
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-opus-4-5"
+aliases = ["claude-opus-4-5-20251101"]
+provider = "anthropic"
+context_window = 200000
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+cache_read_per_mtok = 0.50
+cache_write_per_mtok = 6.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-sonnet-4-5"
+aliases = ["claude-sonnet-4-5-20250929"]
+provider = "anthropic"
+context_window = 200000
+input_per_mtok = 3.00
+output_per_mtok = 15.00
+cache_read_per_mtok = 0.30
+cache_write_per_mtok = 3.75
+valid_from = "2026-10-14"
+
+[[model]]
+id = "claude-haiku-4-5"
+aliases = ["claude-haiku-4-5-20251001"]
+provider = "anthropic"
+context_window = 200000
+input_per_mtok = 1.00
+output_per_mtok = 5.00
+cache_read_per_mtok = 0.10
+cache_write_per_mtok = 1.25
+valid_from = "2026-10-14"
+
+# ---------------------------------------------------------------- OpenAI
+
+[[model]]
+id = "gpt-5.6-sol"
+provider = "openai"
+input_per_mtok = 4.00
+output_per_mtok = 20.00
+cache_read_per_mtok = 0.40
+cache_write_per_mtok = 4.00
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.6-terra"
+provider = "openai"
+input_per_mtok = 2.00
+output_per_mtok = 12.00
+cache_read_per_mtok = 0.20
+cache_write_per_mtok = 2.00
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.6-luna"
+provider = "openai"
+input_per_mtok = 0.20
+output_per_mtok = 1.20
+cache_read_per_mtok = 0.02
+cache_write_per_mtok = 0.20
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.4-mini"
+provider = "openai"
+input_per_mtok = 0.75
+output_per_mtok = 4.50
+cache_read_per_mtok = 0.075
+cache_write_per_mtok = 0.75
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.3-codex"
+provider = "openai"
+input_per_mtok = 1.75
+output_per_mtok = 14.00
+cache_read_per_mtok = 0.175
+cache_write_per_mtok = 1.75
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.2"
+provider = "openai"
+input_per_mtok = 1.75
+output_per_mtok = 14.00
+cache_read_per_mtok = 0.175
+cache_write_per_mtok = 1.75
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5.1"
+provider = "openai"
+context_window = 400000
+input_per_mtok = 1.25
+output_per_mtok = 10.00
+cache_read_per_mtok = 0.125
+cache_write_per_mtok = 1.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5"
+aliases = ["gpt-5-2025-08-07"]
+provider = "openai"
+context_window = 400000
+input_per_mtok = 1.25
+output_per_mtok = 10.00
+cache_read_per_mtok = 0.125
+cache_write_per_mtok = 1.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5-codex"
+provider = "openai"
+context_window = 400000
+input_per_mtok = 1.25
+output_per_mtok = 10.00
+cache_read_per_mtok = 0.125
+cache_write_per_mtok = 1.25
+valid_from = "2026-10-14"
+
+[[model]]
+id = "gpt-5-mini"
+aliases = ["gpt-5-mini-2025-08-07"]
+provider = "openai"
+context_window = 400000
+input_per_mtok = 0.25
+output_per_mtok = 2.00
+cache_read_per_mtok = 0.025
+cache_write_per_mtok = 0.25
+valid_from = "2026-10-14"

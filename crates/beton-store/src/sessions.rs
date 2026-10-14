@@ -653,6 +653,7 @@ async fn delete_tree(
             "DELETE FROM event_raw WHERE org_id = ? AND session_id = ?",
             "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
             "DELETE FROM blob_refs WHERE org_id = ? AND session_id = ?",
             "DELETE FROM events WHERE org_id = ? AND session_id = ?",
             "DELETE FROM sessions WHERE org_id = ? AND id = ?",

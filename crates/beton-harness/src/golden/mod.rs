@@ -134,9 +134,9 @@ impl Case {
             std::fs::read_to_string(&path).map_err(|e| load_err(&path, e))
         };
         let optional = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
-        let meta: Meta = serde_yaml_ng::from_str(&read("meta.yaml")?)
+        let meta: Meta = serde_norway::from_str(&read("meta.yaml")?)
             .map_err(|e| load_err(&dir.join("meta.yaml"), e))?;
-        let script: Script = serde_yaml_ng::from_str(&read("script.yaml")?)
+        let script: Script = serde_norway::from_str(&read("script.yaml")?)
             .map_err(|e| load_err(&dir.join("script.yaml"), e))?;
         let raw = read("raw.jsonl")?
             .lines()
@@ -474,15 +474,15 @@ pub fn write_recording(
     raw: &[RawLine],
     known_secrets: &[String],
 ) -> Result<(), GoldenError> {
-    let yaml_err = |e: serde_yaml_ng::Error| load_err(dir, e);
+    let yaml_err = |e: serde_norway::Error| load_err(dir, e);
     let files = [
         (
             "meta.yaml",
-            serde_yaml_ng::to_string(meta).map_err(yaml_err)?,
+            serde_norway::to_string(meta).map_err(yaml_err)?,
         ),
         (
             "script.yaml",
-            serde_yaml_ng::to_string(script).map_err(yaml_err)?,
+            serde_norway::to_string(script).map_err(yaml_err)?,
         ),
         (
             "raw.jsonl",

@@ -15,6 +15,7 @@ Commands:
   export      Session als JSONL exportieren (mit `--with-blobs` als .tar.zst mit Anhängen)
   doctor      Umgebung prüfen (ändert nichts); Exit 0 ok, 1 Warnungen, 2 Fehler
   config      Konfiguration lesen und schreiben
+  usage       Verbrauch und Preise
   agent       Agent-Definitionen auflisten, anzeigen, prüfen und anlegen
   auth        Lokale Anmeldung verwalten
   secrets     Secrets verwalten (API-Keys, Tokens); Werte werden nie angezeigt

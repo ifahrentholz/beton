@@ -107,6 +107,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Export(args) => crate::transfer::export(&ctx, args).await,
         Command::Doctor => doctor(&ctx).await,
         Command::Config(cmd) => config(&ctx, cmd),
+        Command::Usage(cmd) => crate::usage::run(&ctx, cmd),
         Command::Agent(cmd) => crate::agent::run(&ctx, cmd),
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
@@ -140,6 +141,7 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Mcp(_)
             | Command::Doctor
             | Command::Config(_)
+            | Command::Usage(_)
             | Command::Agent(_)
             | Command::Completion(_)
             | Command::Version

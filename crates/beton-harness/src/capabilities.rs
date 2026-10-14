@@ -269,7 +269,7 @@ mcp_injection: true
 images: true
 transcript_import: true
 "#;
-        let caps: Capabilities = serde_yaml_ng::from_str(yaml).unwrap();
+        let caps: Capabilities = serde_norway::from_str(yaml).unwrap();
         assert_eq!(caps.approval, ApprovalMechanism::NativeRequest);
         assert_eq!(caps.usage_reporting, UsageReporting::TokensAndCost);
     }

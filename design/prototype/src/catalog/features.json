@@ -2612,7 +2612,7 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "data-003--sqlite-backend--migrationen",
-  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version. Nummern sind eindeutig und aufsteigend; eine Lücke ist erlaubt, wenn ein paralleles Arbeitspaket die Nummer reserviert hat. Der Migrator wendet jede noch fehlende Version an, auch unterhalb des aktuellen Stands; Migrationen mit Lücke dürfen daher nicht voneinander abhängen.",
+  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.",
   "acs": [
    "Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.",
    "Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.",
@@ -6400,7 +6400,7 @@
   "anchor": "qa-013--tdd---review-pflicht-für-sicherheitskritische-crates",
   "summary": "Änderungen an sicherheitskritischen Crates folgen TDD (zuerst fehlschlagender Test, dann Implementierung) und benötigen ein menschliches Review: `CODEOWNERS` weist diese Pfade dem Projektinhaber zu; Branch-Protection verlangt dessen Approval, Agents können nicht freigeben. Ein CI-Check verlangt bei Codeänderungen in diesen Crates mindestens eine geänderte oder neue Testdatei, sonst ist das Label `no-test-needed` nötig, das nur Menschen setzen dürfen.",
   "acs": [
-   "Ein PR, der `crates/beton-sandbox/src/` ändert, ist ohne Approval des Code-Owners nicht mergebar.",
+   "Ein PR, der `crates/beton-sandbox/src/` ändert, ist ohne Approval des Code-Owners nicht mergebar. *Übergang bis M3 (ADR-0036):* Solange Agents den GitHub-Account des Maintainers nutzen, scheitert ein solcher PR ohne Label `security-review` in einem Required Check, und die Freigabe ist die ausdrückliche Zustimmung des Maintainers im Chat oder als PR-Kommentar; das Code-Owner-Approval in der Branch-Protection folgt mit der eigenen Agent-Identität (#177).",
    "Ein solcher PR ohne Teständerung schlägt im Check `security-tests-touched` fehl.",
    "Die PR-Vorlage enthält für diese Pfade die Checkliste „Test zuerst (rot) — Implementierung (grün) — Escape-/Policy-Suite grün“."
   ]

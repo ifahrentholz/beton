@@ -20,6 +20,7 @@ pub mod serve;
 pub mod sessionref;
 pub mod setup;
 pub mod transfer;
+pub mod usage;
 
 /// Version des Binaries, wie sie in Logs und `beton --version` erscheint.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

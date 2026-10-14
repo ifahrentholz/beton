@@ -48,6 +48,7 @@ impl Store {
         if events.is_empty() {
             return Ok(Vec::new());
         }
+        let events = self.price(events);
         let prepared = self.prepare(session, events)?;
         let mut tx = self.write_tx().await?;
         let written = self
@@ -55,6 +56,18 @@ impl Store {
             .await?;
         tx.commit().await?;
         Ok(written)
+    }
+
+    /// Bewertet `cost.delta`-Events (USE-001, USE-003). Nur neue Events aus dem laufenden
+    /// Betrieb; importierte Logs behalten ihre Werte (historische Kosten werden nie neu
+    /// bewertet, USE-002 AC1).
+    fn price(&self, mut events: Vec<Event>) -> Vec<Event> {
+        for event in &mut events {
+            if let EventBody::Inline(EventPayload::CostDelta(c)) = &mut event.body {
+                self.options.pricer.price(c);
+            }
+        }
+        events
     }
 
     /// Prüft Events, serialisiert Payloads, lagert große aus und redigiert `raw`.

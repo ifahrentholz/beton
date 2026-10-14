@@ -410,6 +410,16 @@ string_enum!(CostSource {
     Estimated,
     Subscription
 });
+string_enum!(
+    /// Preisquelle eines Usage-Records (USE-001), gesetzt beim Append in der Reihenfolge der
+    /// Spec (11-platform-features.md, „Kostenberechnung“); `subscription` bei `vendor_cli`.
+    PriceSource {
+    Override,
+    Harness,
+    Catalog,
+    None,
+    Subscription
+});
 string_enum!(AuthSource {
     VendorCli,
     ApiKey,
@@ -762,6 +772,14 @@ payload!(CostDelta {
     source: CostSource,
     auth_source: AuthSource,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] purpose: Option<String>,
+    /// Preisquelle; setzt der Server beim Append (USE-001, USE-003). Fehlt sie, ist das Event
+    /// noch nicht bewertet (Adapter) oder stammt aus der Zeit vor M2.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] cost_source: Option<PriceSource>,
+    /// `catalog_version` des Preis-Katalogs, wenn er zur Bewertung diente (USE-002 AC1).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] pricing_version: Option<String>,
+    /// API-Äquivalent einer Subscription-Nutzung laut Katalog; nur informativ, nie Teil von
+    /// Geld-Summen (ADR-0034).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] equivalent_micro: Option<i64>,
 });
 payload!(UsageSubscription {
     vendor: String,

@@ -28,6 +28,8 @@ mod secrets_meta_tests;
 mod sessions;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod usage_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -51,7 +53,7 @@ pub use crate::idempotency::{IDEMPOTENCY_TTL, StoredResponse};
 pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
-pub use crate::projections::{ApprovalRecord, UsageRecord};
+pub use crate::projections::{ApprovalRecord, UsageDaily, UsageRecord, UsageScope, UsageTotals};
 pub use crate::secrets_meta::SecretMetaRecord;
 pub use crate::sessions::{
     DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree, Tombstone,
@@ -81,6 +83,8 @@ pub struct StoreOptions {
     pub redactor: Arc<dyn RawRedactor>,
     /// Maximale Blob-Größe (DATA-006, Default 512 MiB).
     pub max_blob_bytes: u64,
+    /// Bewertet jedes `cost.delta` beim Append (USE-001, USE-003): Katalog und Preis-Overrides.
+    pub pricer: Arc<beton_core::pricing::Pricer>,
 }
 
 impl Default for StoreOptions {
@@ -89,6 +93,7 @@ impl Default for StoreOptions {
             store_raw: true,
             redactor: Arc::new(NoRedaction),
             max_blob_bytes: DEFAULT_MAX_BLOB_BYTES,
+            pricer: Arc::new(beton_core::pricing::Pricer::default()),
         }
     }
 }
@@ -98,6 +103,8 @@ impl std::fmt::Debug for StoreOptions {
         f.debug_struct("StoreOptions")
             .field("store_raw", &self.store_raw)
             .field("max_blob_bytes", &self.max_blob_bytes)
+            .field("pricing_version", &self.pricer.catalog().version())
+            .field("price_overrides", &self.pricer.overrides().len())
             .finish_non_exhaustive()
     }
 }

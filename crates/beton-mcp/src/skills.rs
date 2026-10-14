@@ -176,7 +176,7 @@ fn parse_skill(dir: &Path, root: &SkillRoot) -> Result<Skill, String> {
     let fm: Frontmatter = if front.trim().is_empty() {
         Frontmatter::default()
     } else {
-        serde_yaml_ng::from_str(front)
+        serde_norway::from_str(front)
             .map_err(|e| format!("{}: Frontmatter ungültig: {e}", file.display()))?
     };
     let name = fm

@@ -288,6 +288,7 @@ fn cost_delta(v: &Value, st: &MapState, purpose: Option<&str>) -> (EventPayload,
         },
         auth_source: auth,
         purpose: purpose.map(str::to_owned),
+        ..CostDelta::default()
     });
     (cost, model)
 }

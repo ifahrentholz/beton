@@ -107,6 +107,7 @@ async fn sample(t: &TestStore) -> SessionRecord {
             input_tokens: 10,
             output_tokens: 5,
             cost_micro: Some(1200),
+            auth_source: beton_core::event::AuthSource::ApiKey,
             currency: "USD".into(),
             ..CostDelta::default()
         }),

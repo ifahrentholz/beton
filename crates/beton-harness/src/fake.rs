@@ -213,6 +213,7 @@ impl HarnessAdapter for FakeAdapter {
                 source: CostSource::Reported,
                 auth_source: AuthSource::None,
                 purpose: None,
+                ..CostDelta::default()
             }),
             text,
             model,
@@ -782,6 +783,7 @@ impl Player {
                 source: CostSource::Reported,
                 auth_source: AuthSource::None,
                 purpose: None,
+                ..CostDelta::default()
             }))
             .await;
         } else if let Some(message) = step.error {

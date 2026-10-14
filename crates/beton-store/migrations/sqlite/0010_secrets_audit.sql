@@ -1,5 +1,5 @@
 -- 0010_secrets_audit: Secret-Metadaten (SEC-001) und hash-verkettetes Audit-Log (SEC-012).
--- Die Nummer 0009 ist für WP-34 (Usage) reserviert; der Migrator zieht fehlende Nummern nach.
+-- Folgt auf 0009_usage_records (WP-34).
 -- Gegenstück: migrations/postgres/0010_secrets_audit.sql.
 
 -- Hash-Kette je Org: hash = SHA-256(prev_hash ‖ Eintrag), seq lückenlos ab 1. Bestehende
