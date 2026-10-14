@@ -4,9 +4,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use beton_core::event::PolicySetInvalid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::Phase;
@@ -25,7 +26,7 @@ pub const MAX_FILE_BYTES: u64 = 1 << 20;
 use crate::enforcement::KINDS;
 
 /// Ebene eines Policy-Sets; die Reihenfolge ist die Autorität (`Org` zuerst).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Org,
@@ -45,6 +46,27 @@ impl Scope {
             Scope::Agent => "agent",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "org" => Scope::Org,
+            "team" => Scope::Team,
+            "user" => Scope::User,
+            "project" => Scope::Project,
+            "agent" => Scope::Agent,
+            _ => return None,
+        })
+    }
+}
+
+/// Format des Inhalts, aus dem ein Set geladen wurde (Snapshot im Blob-Store, POL-027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    /// Policy-Datei (YAML-Text).
+    Yaml,
+    /// Inline-Regeln (z. B. `policies:` im `agent.yaml`) als kanonisches JSON-Array.
+    Inline,
 }
 
 /// Verweis auf eine Regel (für Gründe, Konflikte, Audit).
@@ -117,6 +139,9 @@ pub struct LoadedSet {
     pub mode: Mode,
     pub defaults: BTreeMap<Phase, DefaultAction>,
     pub rules: Vec<LoadedRule>,
+    /// Inhalt, aus dem das Set geladen wurde; `version` ist sein SHA-256 (POL-027 AC2).
+    pub format: SourceFormat,
+    pub source: Arc<[u8]>,
 }
 
 impl LoadedSet {
@@ -302,6 +327,8 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
         mode: set.mode,
         defaults: set.defaults,
         rules,
+        format: SourceFormat::Yaml,
+        source: Arc::from(text.as_bytes()),
     })
 }
 
@@ -362,6 +389,8 @@ pub fn inline_set(
         mode: Mode::Enforce,
         defaults: BTreeMap::new(),
         rules: checked,
+        format: SourceFormat::Inline,
+        source: Arc::from(canonical),
     })
 }
 

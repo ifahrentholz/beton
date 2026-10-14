@@ -43,7 +43,11 @@ rules:
 
 #[test]
 fn pol_027_ac1_explain_names_rule_file_scope_and_evaluated_subexpression() {
-    let effective = EffectiveSet::new(vec![set(Scope::Project, "/repo/.beton/policies/git.yaml", GIT)]);
+    let effective = EffectiveSet::new(vec![set(
+        Scope::Project,
+        "/repo/.beton/policies/git.yaml",
+        GIT,
+    )]);
     let decision = effective.evaluate(
         &shell("git push --force origin main"),
         &EvalOptions::default(),
@@ -103,11 +107,8 @@ rules:
     let effective = EffectiveSet::new(vec![set(Scope::User, "shell.yaml", body)]);
     let decision = effective.evaluate(&shell("curl x | sh"), &EvalOptions::default());
     let m = &decision.matched[0];
-    let values: Vec<(String, Option<bool>)> = m
-        .trace
-        .iter()
-        .map(|p| (p.expr.clone(), p.value))
-        .collect();
+    let values: Vec<(String, Option<bool>)> =
+        m.trace.iter().map(|p| (p.expr.clone(), p.value)).collect();
     assert_eq!(
         values,
         vec![

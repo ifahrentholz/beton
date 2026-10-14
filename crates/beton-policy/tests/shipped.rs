@@ -112,7 +112,11 @@ fn qa_004_hierarchy_cases_are_part_of_the_gate() {
     let file = tests_dir().join("hierarchy.policytest.yaml");
     let text = std::fs::read_to_string(&file).unwrap();
     for scope in ["user:", "project:", "agent:"] {
-        assert!(text.contains(scope), "Ebene {scope} fehlt in {}", file.display());
+        assert!(
+            text.contains(scope),
+            "Ebene {scope} fehlt in {}",
+            file.display()
+        );
     }
 }
 

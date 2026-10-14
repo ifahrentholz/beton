@@ -34,7 +34,12 @@ const CONDITIONS: [&str; 7] = [
 
 const ACTIONS: [&str; 5] = ["allow", "deny", "ask", "notify", "modify"];
 const DEFAULTS: [&str; 3] = ["allow", "ask", "deny"];
-const COMMANDS: [&str; 4] = ["ls", "git push origin main", "rm -rf build", "cd x && git push"];
+const COMMANDS: [&str; 4] = [
+    "ls",
+    "git push origin main",
+    "rm -rf build",
+    "cd x && git push",
+];
 
 #[derive(Debug, Clone)]
 struct RuleGen {
@@ -53,14 +58,18 @@ struct World {
 }
 
 fn rule_gen() -> impl Strategy<Value = RuleGen> {
-    (0..SCOPES.len(), 0..CONDITIONS.len(), 0..ACTIONS.len(), any::<bool>()).prop_map(
-        |(scope, condition, action, dry)| RuleGen {
+    (
+        0..SCOPES.len(),
+        0..CONDITIONS.len(),
+        0..ACTIONS.len(),
+        any::<bool>(),
+    )
+        .prop_map(|(scope, condition, action, dry)| RuleGen {
             scope,
             condition,
             action,
             dry_run: dry && action != 0,
-        },
-    )
+        })
 }
 
 fn world() -> impl Strategy<Value = World> {
@@ -120,7 +129,8 @@ fn sets(w: &World, extra: Option<&RuleGen>) -> Vec<Arc<LoadedSet>> {
             text.push_str(&rules);
         }
         out.push(Arc::new(
-            parse_set(*scope, &format!("s{si}.yaml"), &text).unwrap_or_else(|e| panic!("{e}\n{text}")),
+            parse_set(*scope, &format!("s{si}.yaml"), &text)
+                .unwrap_or_else(|e| panic!("{e}\n{text}")),
         ));
     }
     out

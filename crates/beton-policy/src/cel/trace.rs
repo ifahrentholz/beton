@@ -1,0 +1,155 @@
+//! Spur einer Bedingung für Explain (POL-027 AC1): Eine Bedingung der Form `a && b && c` bzw.
+//! `a || b` wird in ihre Teilausdrücke der obersten Ebene zerlegt; jeder Teil wird einzeln
+//! ausgewertet. So zeigt Explain, welcher Teil eine Regel greifen ließ.
+//!
+//! Die Spur enthält nur den Quelltext der Policy und Wahrheitswerte, nie Werte aus dem
+//! Kontext (POL-025 AC2: keine Tool-Argumente im Audit).
+
+use serde::{Deserialize, Serialize};
+
+use super::check::Node;
+use super::{Meter, eval};
+use crate::context::Activation;
+use crate::value::Value;
+
+/// Ein Teilausdruck einer Bedingung und sein Ergebnis (`None`: Fehler oder kein `bool`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TracePart {
+    pub expr: String,
+    pub value: Option<bool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op {
+    And,
+    Or,
+}
+
+impl Op {
+    fn token(self) -> &'static str {
+        match self {
+            Op::And => "&&",
+            Op::Or => "||",
+        }
+    }
+}
+
+/// Teilknoten derselben Verknüpfung in Quelltext-Reihenfolge.
+fn flatten<'a>(node: &'a Node, op: Op, out: &mut Vec<&'a Node>) {
+    match (node, op) {
+        (Node::And(a, b), Op::And) | (Node::Or(a, b), Op::Or) => {
+            flatten(a, op, out);
+            flatten(b, op, out);
+        }
+        _ => out.push(node),
+    }
+}
+
+/// Zerlegt `src` an `token` außerhalb von Klammern und Zeichenketten.
+fn split_top_level<'a>(src: &'a str, token: &str) -> Vec<&'a str> {
+    let bytes = src.as_bytes();
+    let mut parts = Vec::new();
+    let (mut depth, mut start, mut i) = (0usize, 0usize, 0usize);
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'"' | b'\'' => quote = Some(c),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && bytes[i..].starts_with(token.as_bytes()) => {
+                parts.push(src[start..i].trim());
+                i += token.len();
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(src[start..].trim());
+    parts
+}
+
+fn value_of(r: Result<Value, super::EvalError>) -> Option<bool> {
+    match r {
+        Ok(Value::Bool(b)) => Some(b),
+        _ => None,
+    }
+}
+
+/// Spur von `node` (Quelltext `src`).
+pub(crate) fn trace(src: &str, node: &Node, act: &Activation, meter: &mut Meter) -> Vec<TracePart> {
+    let op = match node {
+        Node::And(..) => Some(Op::And),
+        Node::Or(..) => Some(Op::Or),
+        _ => None,
+    };
+    let mut nodes = Vec::new();
+    let texts = match op {
+        Some(op) => {
+            flatten(node, op, &mut nodes);
+            split_top_level(src, op.token())
+        }
+        None => Vec::new(),
+    };
+    if nodes.len() < 2 || texts.len() != nodes.len() {
+        // Keine Verknüpfung auf oberster Ebene (oder nicht eindeutig zuzuordnen): der ganze
+        // Ausdruck ist der Teilausdruck.
+        if meter.begin_expr().is_err() {
+            return vec![TracePart {
+                expr: src.trim().to_owned(),
+                value: None,
+            }];
+        }
+        return vec![TracePart {
+            expr: src.trim().to_owned(),
+            value: value_of(eval::eval(node, act, meter)),
+        }];
+    }
+    let mut out = Vec::with_capacity(nodes.len());
+    for (part, text) in nodes.into_iter().zip(texts) {
+        let value = match meter.begin_expr() {
+            Ok(()) => value_of(eval::eval(part, act, meter)),
+            Err(_) => None,
+        };
+        out.push(TracePart {
+            expr: text.to_owned(),
+            value,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_top_level;
+
+    #[test]
+    fn pol_027_split_respects_strings_and_brackets() {
+        assert_eq!(
+            split_top_level(r#"a && (b && c) && d.matches("x && y") && e['&&']"#, "&&"),
+            vec!["a", "(b && c)", r#"d.matches("x && y")"#, "e['&&']"]
+        );
+        assert_eq!(
+            split_top_level(r#"s == "a\"&&" || t"#, "||"),
+            vec![r#"s == "a\"&&""#, "t"]
+        );
+        assert_eq!(split_top_level("x", "&&"), vec!["x"]);
+        assert_eq!(
+            split_top_level("ä == \"ö\" && ü", "&&"),
+            vec!["ä == \"ö\"", "ü"]
+        );
+    }
+}

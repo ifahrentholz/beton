@@ -145,7 +145,11 @@ cases:
     expect: { outcome: deny }
 ",
     );
-    let broken = write(dir.path(), "b.policytest.yaml", "spec_version: 1\ncases: 3\n");
+    let broken = write(
+        dir.path(),
+        "b.policytest.yaml",
+        "spec_version: 1\ncases: 3\n",
+    );
     let reports = vec![run(&ok), run(&broken)];
     let xml = junit(&reports);
     let mut reader = quick_xml::Reader::from_str(&xml);
@@ -189,12 +193,13 @@ cases:
     assert_eq!(failures, 1, "{xml}");
     assert_eq!(errors, 1, "{xml}");
     assert!(
-        root_attrs
-            .iter()
-            .any(|(k, v)| k == "tests" && v == "3"),
+        root_attrs.iter().any(|(k, v)| k == "tests" && v == "3"),
         "{root_attrs:?}"
     );
-    assert!(xml.contains("ls &lt;erlaubt&gt; &amp; &quot;gut&quot;"), "{xml}");
+    assert!(
+        xml.contains("ls &lt;erlaubt&gt; &amp; &quot;gut&quot;"),
+        "{xml}"
+    );
 }
 
 #[test]
@@ -502,7 +507,11 @@ fn pol_026_invalid_test_files_are_errors_with_position() {
     let err = run(&missing_layer).error.unwrap();
     assert!(err.contains("fehlt.yaml"), "{err}");
 
-    let bad_policy = write(dir.path(), "bad.yaml", "spec_version: 1\nname: bad\nrules:\n  - { id: x, on: tool_call, when: 'session.cost_usd > \"5\"', action: deny }\n");
+    let bad_policy = write(
+        dir.path(),
+        "bad.yaml",
+        "spec_version: 1\nname: bad\nrules:\n  - { id: x, on: tool_call, when: 'session.cost_usd > \"5\"', action: deny }\n",
+    );
     let _ = bad_policy;
     let err = run(&write(
         dir.path(),

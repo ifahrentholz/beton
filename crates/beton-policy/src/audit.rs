@@ -60,6 +60,10 @@ fn matched(m: &Match) -> Value {
     if let Some(reason) = &m.reason {
         v["reason"] = Value::String(reason.clone());
     }
+    // Teilausdrücke mit Wahrheitswerten (Explain, POL-027 AC1); keine Kontextwerte.
+    if !m.trace.is_empty() {
+        v["trace"] = serde_json::to_value(&m.trace).unwrap_or(Value::Null);
+    }
     v
 }
 
