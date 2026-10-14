@@ -84,7 +84,7 @@ jobs:
               echo "Netzwerk ist erreichbar, die Isolation greift nicht" >&2
               exit 1
             fi
-            cargo nextest run --workspace --offline
+            cargo nextest run --workspace --offline --no-fail-fast
             cargo test --workspace --doc --offline
           '
       # Sandbox-Fälle, die Einstellungen des Hosts brauchen; jeder Lauf prüft, dass die
