@@ -186,13 +186,20 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
         break
       }
       case 'approval.requested': {
-        const subject = (e.payload.subject ?? {}) as { tool?: string; args?: unknown }
+        // Seit POL-010 ist `subject.tool` ein Objekt `{name, kind, args}`; ältere Logs nennen
+        // nur den Namen.
+        const subject = (e.payload.subject ?? {}) as {
+          tool?: string | { name?: string; args?: unknown }
+          args?: unknown
+          title?: string
+        }
+        const tool = typeof subject.tool === 'object' ? subject.tool : undefined
         const item: Extract<Item, { kind: 'approval' }> = {
           kind: 'approval',
           key,
           approvalId: e.payload.approval_id,
-          tool: subject.tool ?? e.payload.kind,
-          args: subject.args ?? e.payload.subject,
+          tool: (typeof subject.tool === 'string' ? subject.tool : tool?.name) ?? subject.title ?? e.payload.kind,
+          args: tool?.args ?? subject.args ?? e.payload.subject,
         }
         approvals.set(e.payload.approval_id, item)
         items.push(item)

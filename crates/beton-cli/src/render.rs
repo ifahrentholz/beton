@@ -78,12 +78,23 @@ pub fn tool_summary(tool: &str, args: &Value) -> String {
     }
 }
 
-/// Kurzform einer Freigabe-Anfrage.
+/// Kurzform einer Freigabe-Anfrage: Tool und Argumente, bei Fragen die Frage (POL-010).
 pub fn approval_summary(payload: &Value) -> String {
     let subject = &payload["subject"];
-    match subject["tool"].as_str() {
-        Some(tool) => tool_summary(tool, &subject["args"]),
-        None => payload["kind"].as_str().unwrap_or("Freigabe").to_owned(),
+    if payload["kind"] == "question" {
+        return format!(
+            "Frage: {}",
+            subject["question"].as_str().unwrap_or_default()
+        );
+    }
+    match (subject["tool"]["name"].as_str(), subject["tool"].as_str()) {
+        (Some(tool), _) => tool_summary(tool, &subject["tool"]["args"]),
+        (None, Some(tool)) => tool_summary(tool, &subject["args"]),
+        _ => subject["summary"]
+            .as_str()
+            .or_else(|| payload["kind"].as_str())
+            .unwrap_or("Freigabe")
+            .to_owned(),
     }
 }
 
@@ -261,6 +272,22 @@ mod tests {
                 &json!({"kind": "tool", "subject": {"tool": "Bash", "args": {"command": "ls"}}})
             ),
             "Bash: ls"
+        );
+        assert_eq!(
+            approval_summary(
+                &json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "git push"}}}})
+            ),
+            "Bash: git push"
+        );
+        assert_eq!(
+            approval_summary(
+                &json!({"kind": "policy", "subject": {"phase": "session_start", "summary": "Harness fake"}})
+            ),
+            "Harness fake"
+        );
+        assert_eq!(
+            approval_summary(&json!({"kind": "question", "subject": {"question": "Pro IP?"}})),
+            "Frage: Pro IP?"
         );
     }
 }
