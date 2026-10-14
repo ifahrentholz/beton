@@ -1,5 +1,9 @@
 //! Echter Daemon über TCP und Unix-Socket (AUTH-001).
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 use std::net::SocketAddr;

@@ -5,6 +5,10 @@
 //! „test (macos)“); `BETON_TEST_KEYCHAIN_PATH` nennt seine Datei. Lokal bleibt der Test aus,
 //! damit er nie den Keychain des Entwicklers liest oder verändert.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)] // Testcode: Panics sind hier die Fehlermeldung.
 
 use beton_secrets::backend::{Backend, KeychainBackend};

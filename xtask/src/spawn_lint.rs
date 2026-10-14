@@ -32,14 +32,26 @@ pub const SPAWN_CRATES: [&str; 2] = ["crates/beton-sandbox/", "crates/beton-pty/
 
 /// Beton-eigene Prozesse (Stufe 0) außerhalb der Sandbox, jeweils mit Grund.
 pub const STAGE0_EXCEPTIONS: [(&str, &str); 6] = [
-    ("crates/beton-cli/src/commands.rs", "Browser und Editor des Benutzers"),
-    ("crates/beton-cli/src/daemon.rs", "Start des eigenen Daemons"),
+    (
+        "crates/beton-cli/src/commands.rs",
+        "Browser und Editor des Benutzers",
+    ),
+    (
+        "crates/beton-cli/src/daemon.rs",
+        "Start des eigenen Daemons",
+    ),
     (
         "crates/beton-cli/src/setup.rs",
         "Installation und Login einer Vendor-CLI im Vordergrund auf Wunsch des Benutzers",
     ),
-    ("crates/beton-git/src/cmd.rs", "git als Stufe-0-Werkzeug von beton"),
-    ("crates/beton-server/src/workspace.rs", "git der Workspace-API (Stufe 0)"),
+    (
+        "crates/beton-git/src/cmd.rs",
+        "git als Stufe-0-Werkzeug von beton",
+    ),
+    (
+        "crates/beton-server/src/workspace.rs",
+        "git der Workspace-API (Stufe 0)",
+    ),
     (
         "crates/beton-fake-cli/src/mcp.rs",
         "Fake-Harness für Tests startet seine MCP-Server wie eine Vendor-CLI",
@@ -115,7 +127,12 @@ pub fn check(root: &Path) -> Vec<String> {
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
-        for blanket in ["allow(clippy::all", "allow(clippy::style", "expect(clippy::all", "expect(clippy::style"] {
+        for blanket in [
+            "allow(clippy::all",
+            "allow(clippy::style",
+            "expect(clippy::all",
+            "expect(clippy::style",
+        ] {
             if text.contains(blanket) {
                 errors.push(format!("{rel}: `{blanket})` schaltet den Spawn-Lint ab"));
             }
@@ -140,7 +157,10 @@ pub fn check(root: &Path) -> Vec<String> {
             }
             continue;
         }
-        if has_exception && !rel.starts_with("xtask/") && !STAGE0_EXCEPTIONS.iter().any(|(f, _)| *f == rel) {
+        if has_exception
+            && !rel.starts_with("xtask/")
+            && !STAGE0_EXCEPTIONS.iter().any(|(f, _)| *f == rel)
+        {
             errors.push(format!(
                 "{rel}: neue Ausnahme vom Spawn-Lint; nur Stufe-0-Prozesse in xtask/src/spawn_lint.rs::STAGE0_EXCEPTIONS"
             ));
@@ -149,7 +169,9 @@ pub fn check(root: &Path) -> Vec<String> {
     for (file, _) in STAGE0_EXCEPTIONS {
         let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
         if !text.contains("clippy::disallowed_methods") {
-            errors.push(format!("{file}: als Ausnahme gelistet, nutzt aber keine (Liste veraltet)"));
+            errors.push(format!(
+                "{file}: als Ausnahme gelistet, nutzt aber keine (Liste veraltet)"
+            ));
         } else if !text.contains("reason =") {
             errors.push(format!("{file}: Ausnahme ohne `reason`"));
         }
@@ -189,8 +211,15 @@ mod tests {
     fn with(extra: &[(&str, &str)]) -> Vec<String> {
         let mut files: Vec<(String, String)> = exceptions();
         files.push(("clippy.toml".into(), CLIPPY.into()));
-        files.extend(extra.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())));
-        let refs: Vec<(&str, &str)> = files.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        files.extend(
+            extra
+                .iter()
+                .map(|(a, b)| ((*a).to_owned(), (*b).to_owned())),
+        );
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
         let dir = tree(&refs);
         check(dir.path())
     }
@@ -208,24 +237,44 @@ mod tests {
             "crates/beton-harness-codex/src/lib.rs",
             "fn f() { let _ = tokio::process::Command::new(\"codex\"); }\n",
         )]);
-        assert!(errors.iter().any(|e| e.contains("beton-harness-codex") && e.contains("Command::new")), "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("beton-harness-codex") && e.contains("Command::new")),
+            "{errors:?}"
+        );
         let errors = with(&[(
             "crates/beton-runner/src/lib.rs",
             "#[allow(clippy::disallowed_methods)]\nfn f() {}\n",
         )]);
-        assert!(errors.iter().any(|e| e.contains("beton-runner")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("beton-runner")),
+            "{errors:?}"
+        );
         let errors = with(&[("crates/beton-store/src/lib.rs", "#![allow(clippy::all)]\n")]);
-        assert!(errors.iter().any(|e| e.contains("clippy::all")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("clippy::all")),
+            "{errors:?}"
+        );
         let errors = with(&[(
             "crates/beton-server/src/neu.rs",
             "#[expect(clippy::disallowed_methods, reason = \"x\")]\nfn f() {}\n",
         )]);
-        assert!(errors.iter().any(|e| e.contains("neue Ausnahme")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("neue Ausnahme")),
+            "{errors:?}"
+        );
         // Tests und beton-sandbox dürfen.
         assert!(
             with(&[
-                ("crates/beton-runner/tests/e2e.rs", "#![allow(clippy::disallowed_methods)]\n"),
-                ("crates/beton-sandbox/src/child.rs", "fn f() { std::process::Command::new(\"x\"); }\n"),
+                (
+                    "crates/beton-runner/tests/e2e.rs",
+                    "#![allow(clippy::disallowed_methods)]\n"
+                ),
+                (
+                    "crates/beton-sandbox/src/child.rs",
+                    "fn f() { std::process::Command::new(\"x\"); }\n"
+                ),
             ])
             .is_empty()
         );

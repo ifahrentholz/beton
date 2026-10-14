@@ -100,6 +100,7 @@ fn load_spec(root: &std::path::Path) -> Result<Spec> {
 }
 
 /// Commits eines Bereichs (ohne Merge-Commits), standardmäßig nur `HEAD`.
+#[expect(clippy::disallowed_methods, reason = "xtask: git log")]
 fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
     let mut cmd = Command::new("git");
     cmd.args(["log", "--no-merges", "--format=%H%x1f%an%x1f%ae%x1f%B%x1e"]);
@@ -176,6 +177,7 @@ Keine Basis von `main` gefunden: Ratchet übersprungen, Floor geprüft.\n",
 }
 
 /// Geänderte Dateien eines PRs (`--range <base>..<head>`, gegenüber der Merge-Basis).
+#[expect(clippy::disallowed_methods, reason = "xtask: git diff")]
 fn pr_changes(args: &[String]) -> Result<Vec<security_tests::Change>> {
     let range = flag(args, "--range").context("--range <base>..<head> fehlt")?;
     let (base, head) = range
