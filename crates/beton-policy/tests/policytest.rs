@@ -152,50 +152,25 @@ cases:
     );
     let reports = vec![run(&ok), run(&broken)];
     let xml = junit(&reports);
-    let mut reader = quick_xml::Reader::from_str(&xml);
-    let mut stack: Vec<String> = Vec::new();
-    let mut testcases = 0;
-    let mut failures = 0;
-    let mut errors = 0;
-    let mut root_attrs = Vec::new();
-    loop {
-        match reader.read_event().unwrap() {
-            quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e) => {
-                let name = String::from_utf8(e.name().as_ref().to_vec()).unwrap();
-                match name.as_str() {
-                    "testcase" => testcases += 1,
-                    "failure" => failures += 1,
-                    "error" => errors += 1,
-                    "testsuites" => {
-                        root_attrs = e
-                            .attributes()
-                            .map(|a| {
-                                let a = a.unwrap();
-                                (
-                                    String::from_utf8(a.key.as_ref().to_vec()).unwrap(),
-                                    a.unescape_value().unwrap().into_owned(),
-                                )
-                            })
-                            .collect();
-                    }
-                    _ => {}
-                }
-                stack.push(name);
-            }
-            quick_xml::events::Event::Eof => break,
-            _ => {}
-        }
-    }
-    assert!(!stack.is_empty());
-    assert_eq!(stack[0], "testsuites", "{xml}");
+    let doc = roxmltree::Document::parse(&xml)
+        .unwrap_or_else(|e| panic!("kein gültiges XML: {e}\n{xml}"));
     assert!(xml.starts_with("<?xml"), "{xml}");
-    assert_eq!(testcases, 3, "{xml}");
-    assert_eq!(failures, 1, "{xml}");
-    assert_eq!(errors, 1, "{xml}");
-    assert!(
-        root_attrs.iter().any(|(k, v)| k == "tests" && v == "3"),
-        "{root_attrs:?}"
-    );
+    let root = doc.root_element();
+    assert_eq!(root.tag_name().name(), "testsuites", "{xml}");
+    assert_eq!(root.attribute("tests"), Some("3"));
+    assert_eq!(root.attribute("failures"), Some("1"));
+    assert_eq!(root.attribute("errors"), Some("1"));
+    let count = |n: &str| doc.descendants().filter(|d| d.has_tag_name(n)).count();
+    assert_eq!(count("testsuite"), 2, "{xml}");
+    assert_eq!(count("testcase"), 3, "{xml}");
+    assert_eq!(count("failure"), 1, "{xml}");
+    assert_eq!(count("error"), 1, "{xml}");
+    let names: Vec<&str> = doc
+        .descendants()
+        .filter(|d| d.has_tag_name("testcase"))
+        .filter_map(|d| d.attribute("name"))
+        .collect();
+    assert!(names.contains(&"ls <erlaubt> & \"gut\""), "{names:?}");
     assert!(
         xml.contains("ls &lt;erlaubt&gt; &amp; &quot;gut&quot;"),
         "{xml}"
