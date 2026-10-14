@@ -1156,6 +1156,19 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         }
                     }
                     let mut batch = Vec::with_capacity(incoming.len() + 4);
+                    // Meldungen des MCP-Hubs, die vor diesen Harness-Events entstanden sind (etwa
+                    // `mcp.server_failed` beim MCP-Start des Harness), stehen auch im Log davor;
+                    // `biased` würde sie sonst hinter das Turn-Ende schieben (#193).
+                    if let Some(rx) = hub_events.as_mut() {
+                        while let Ok(payload) = rx.try_recv() {
+                            if let EventPayload::McpServerFailed(f) = &payload
+                                && !reported_failures.insert(f.name.clone())
+                            {
+                                continue;
+                            }
+                            batch.push(system_event(&boot, payload));
+                        }
+                    }
                     let mut exited = None;
                     let mut run_over = false;
                     for mut ev in incoming {
