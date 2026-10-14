@@ -208,6 +208,10 @@ impl Clients {
     }
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Fake-Harness für Tests: startet MCP-Server wie eine Vendor-CLI"
+)]
 fn connect_one(c: &ServerConfig) -> Result<Conn, String> {
     let mut child = Command::new(&c.command)
         .args(&c.args)

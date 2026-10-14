@@ -300,6 +300,18 @@ async fn har_009_ac4_server_exiting_before_initialize_is_reported() {
         .await;
     let r = c.recv().await.unwrap();
     assert_eq!(r["error"]["code"], codes::SERVER_UNAVAILABLE, "{r}");
+    // SBX-001 AC4: Der Start des Servers meldet genau ein `sandbox.started` (Stufe 2, bis
+    // SBX-006 ausdrücklich `backend: none`), danach folgt der Fehler.
+    let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let EventPayload::SandboxStarted(started) = ev else {
+        panic!("{ev:?}")
+    };
+    assert_eq!(started.stage, beton_core::event::SandboxStage::Tools);
+    assert_eq!(started.backend, "none");
+    assert!(started.degraded);
     let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .unwrap()

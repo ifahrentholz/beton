@@ -260,25 +260,37 @@ pub async fn run_status(
     remove_env: &[&str],
     timeout: Duration,
 ) -> Result<StatusOutput, String> {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args)
-        .stdin(std::process::Stdio::null())
-        .kill_on_drop(true);
-    for k in remove_env {
-        cmd.env_remove(k);
-    }
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Err(_) => Err(format!(
+    let mut cmd = beton_sandbox::CommandSpec::new(program)
+        .args(args.iter().copied())
+        .stdio(
+            beton_sandbox::Stdio::Null,
+            beton_sandbox::Stdio::Piped,
+            beton_sandbox::Stdio::Piped,
+        );
+    cmd.env.remove = remove_env.iter().map(|k| (*k).to_owned()).collect();
+    match run_output(cmd, timeout).await {
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Err(format!(
             "`{}` antwortet nicht innerhalb von {timeout:?}",
             program.display()
         )),
-        Ok(Err(e)) => Err(format!("`{}`: {e}", program.display())),
-        Ok(Ok(out)) => Ok(StatusOutput {
+        Err(e) => Err(format!("`{}`: {e}", program.display())),
+        Ok(out) => Ok(StatusOutput {
             success: out.status.success(),
             stdout: out.stdout,
             stderr: out.stderr,
         }),
     }
+}
+
+/// Startet ein Kommando der Vendor-CLI (ohne Isolation, `backend: none` bis SBX-006) und
+/// sammelt die Ausgabe; nach `timeout` endet der Prozessbaum.
+async fn run_output(
+    cmd: beton_sandbox::CommandSpec,
+    timeout: Duration,
+) -> std::io::Result<beton_sandbox::Output> {
+    let child =
+        beton_sandbox::Sandbox::unsandboxed(beton_sandbox::Stage::Harness, None).spawn(cmd)?;
+    child.output(timeout).await
 }
 
 /// Cache-Schlüssel: Pfad und Änderungszeit des Binaries.
@@ -320,20 +332,23 @@ impl VersionProbe {
     }
 
     async fn run(&self, program: &Path) -> Result<String, String> {
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.arg("--version")
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        let output = match tokio::time::timeout(self.timeout, cmd.output()).await {
-            Err(_) => {
+        let cmd = beton_sandbox::CommandSpec::new(program)
+            .arg("--version")
+            .stdio(
+                beton_sandbox::Stdio::Null,
+                beton_sandbox::Stdio::Piped,
+                beton_sandbox::Stdio::Null,
+            );
+        let output = match run_output(cmd, self.timeout).await {
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 return Err(format!(
                     "`{} --version` antwortet nicht innerhalb von {:?}",
                     program.display(),
                     self.timeout
                 ));
             }
-            Ok(Err(e)) => return Err(format!("`{} --version`: {e}", program.display())),
-            Ok(Ok(o)) => o,
+            Err(e) => return Err(format!("`{} --version`: {e}", program.display())),
+            Ok(o) => o,
         };
         let text = String::from_utf8_lossy(&output.stdout);
         extract_version(&text)

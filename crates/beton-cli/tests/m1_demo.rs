@@ -10,6 +10,10 @@
 //! und `codex`. Alle Vendor-Verzeichnisse (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) sind
 //! temporär und enthalten nur synthetische Fixtures; kein API-Key, kein Netz außer Loopback.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

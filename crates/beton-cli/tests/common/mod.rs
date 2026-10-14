@@ -1,6 +1,10 @@
 //! Gemeinsame Helfer der CLI-Integrationstests: Binary aufrufen, Daemon im Vordergrund
 //! starten, Fake-CLI finden.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(dead_code, clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};

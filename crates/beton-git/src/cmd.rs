@@ -117,6 +117,10 @@ impl Git {
         &self.dir
     }
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Stufe 0: git als Werkzeug von beton selbst"
+    )]
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.dir);

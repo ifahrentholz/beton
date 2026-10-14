@@ -2,6 +2,10 @@
 //! Fake-Harness (SES-015, SES-016, SES-017, SES-018). Git-Repositories sind temporär, Remotes
 //! lokale Pfade: kein Netzwerk.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

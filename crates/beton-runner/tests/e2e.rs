@@ -1,6 +1,10 @@
 //! Runner gegen einen echten Daemon über den Tunnel-Socket (PROTO-015, RUN-002, RUN-003,
 //! HAR-001 AC1). Der Runner ist das echte `beton-runner`-Binary mit dem Fake-Harness.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

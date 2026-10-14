@@ -490,6 +490,10 @@ async fn open(ctx: &Ctx, args: OpenArgs) -> CliResult {
 }
 
 /// Öffnet die URL mit `$BROWSER` oder dem Standard der Plattform.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Stufe 0: Browser des Benutzers öffnen"
+)]
 fn open_browser(url: &str) -> anyhow::Result<()> {
     let mut cmd = if let Some(browser) = std::env::var_os("BROWSER").filter(|b| !b.is_empty()) {
         let mut c = std::process::Command::new(browser);
@@ -610,6 +614,10 @@ fn render(value: &Value) -> String {
 
 /// Öffnet die Datei in `$VISUAL`/`$EDITOR`; ist das Ergebnis ungültig, wird der vorige Stand
 /// wiederhergestellt.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Stufe 0: Editor des Benutzers für die eigene Konfiguration"
+)]
 fn config_edit(ctx: &Ctx, scope: Scope) -> CliResult {
     let paths = ctx.paths();
     let path = paths.of(scope).to_path_buf();

@@ -8,16 +8,20 @@
 //!
 //! [`ProcessLauncher`] ist die Naht für Tests: Golden-Transcripts ersetzen den echten
 //! Prozess durch einen simulierten (HAR-025).
+//!
+//! Gestartet wird ausschließlich über `beton_sandbox` (SBX-001): [`RealLauncher`] nutzt den
+//! ausdrücklichen Provider `none` (bis SBX-006 scharf ist, WP-49), [`SandboxLauncher`] eine
+//! aufgelöste Sandbox einer Stufe und meldet jeden Start als `sandbox.started`.
 
 use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
-use std::process::{ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
+use beton_sandbox::{CommandSpec, EnvSpec, Sandbox, SandboxedChild, Stage, Stdio as SbStdio};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::task::JoinHandle;
 
@@ -94,74 +98,91 @@ pub trait ProcessLauncher: Send + Sync {
     async fn launch(&self, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>>;
 }
 
-/// Startet echte Prozesse mit Prozessgruppe bzw. Job-Object.
+/// Startet echte Prozesse mit Prozessgruppe bzw. Job-Object, ohne Isolation (`backend: none`,
+/// ausdrücklich) und ohne Event.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealLauncher;
 
 #[async_trait]
 impl ProcessLauncher for RealLauncher {
     async fn launch(&self, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>> {
-        let mut cmd = tokio::process::Command::new(&spec.program);
-        if spec.clear_env {
-            cmd.env_clear();
-        }
-        for key in &spec.env_remove {
-            cmd.env_remove(key);
-        }
-        cmd.args(&spec.args)
-            .envs(spec.env.iter().map(|(k, v)| (k, v)))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(cwd) = &spec.cwd {
-            cmd.current_dir(cwd);
-        }
-        let mut wrap = CommandWrap::from(cmd);
-        #[cfg(unix)]
-        wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
-        #[cfg(windows)]
-        wrap.wrap(process_wrap::tokio::JobObject);
-        wrap.wrap(KillOnDrop);
-        let mut child = wrap.spawn()?;
-        let stdin = child.stdin().take();
-        let stdout = child.stdout().take();
-        let stderr = child.stderr().take();
-        let tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_BYTES)));
-        let stderr_task = stderr.map(|mut stderr| {
-            let tail = tail.clone();
-            tokio::spawn(async move {
-                let mut buf = [0u8; 4096];
-                while let Ok(n) = stderr.read(&mut buf).await {
-                    if n == 0 {
-                        break;
-                    }
-                    if let Ok(mut t) = tail.lock() {
-                        t.extend(&buf[..n]);
-                        let excess = t.len().saturating_sub(STDERR_TAIL_BYTES);
-                        t.drain(..excess);
-                    }
-                }
-            })
-        });
-        let io = match (stdin, stdout) {
-            (Some(stdin), Some(stdout)) => Some(ProcessIo {
-                stdin: Box::new(stdin),
-                stdout: Box::new(stdout),
-            }),
-            _ => None,
-        };
-        Ok(Box::new(RealProcess {
-            child,
-            io,
-            tail,
-            stderr_task,
-            exit: None,
-        }))
+        launch_in(&Sandbox::unsandboxed(Stage::Harness, None), spec)
     }
 }
 
+/// Startet Prozesse in einer aufgelösten Sandbox; jeder Start meldet `sandbox.started`
+/// (SBX-001 AC4).
+#[derive(Debug, Clone)]
+pub struct SandboxLauncher {
+    sandbox: Sandbox,
+}
+
+impl SandboxLauncher {
+    pub fn new(sandbox: Sandbox) -> Self {
+        Self { sandbox }
+    }
+}
+
+#[async_trait]
+impl ProcessLauncher for SandboxLauncher {
+    async fn launch(&self, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>> {
+        launch_in(&self.sandbox, spec)
+    }
+}
+
+fn launch_in(sandbox: &Sandbox, spec: LaunchSpec) -> io::Result<Box<dyn ProcessHandle>> {
+    let cmd = CommandSpec {
+        program: spec.program,
+        args: spec.args,
+        env: EnvSpec {
+            clear: spec.clear_env,
+            set: spec.env,
+            remove: spec.env_remove,
+        },
+        cwd: spec.cwd,
+        stdin: SbStdio::Piped,
+        stdout: SbStdio::Piped,
+        stderr: SbStdio::Piped,
+    };
+    let mut child = sandbox.spawn(cmd)?;
+    let stdin = child.take_stdin();
+    let stdout = child.take_stdout();
+    let stderr = child.take_stderr();
+    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_BYTES)));
+    let stderr_task = stderr.map(|mut stderr| {
+        let tail = tail.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut t) = tail.lock() {
+                    t.extend(&buf[..n]);
+                    let excess = t.len().saturating_sub(STDERR_TAIL_BYTES);
+                    t.drain(..excess);
+                }
+            }
+        })
+    });
+    let io = match (stdin, stdout) {
+        (Some(stdin), Some(stdout)) => Some(ProcessIo {
+            stdin: Box::new(stdin),
+            stdout: Box::new(stdout),
+        }),
+        _ => None,
+    };
+    Ok(Box::new(RealProcess {
+        child,
+        io,
+        tail,
+        stderr_task,
+        exit: None,
+    }))
+}
+
 struct RealProcess {
-    child: Box<dyn ChildWrapper>,
+    child: SandboxedChild,
     io: Option<ProcessIo>,
     tail: Arc<Mutex<VecDeque<u8>>>,
     stderr_task: Option<JoinHandle<()>>,
@@ -192,7 +213,7 @@ impl RealProcess {
     fn signal_group(&self, signal: Signal) {
         #[cfg(unix)]
         {
-            let _ = self.child.signal(match signal {
+            let _ = self.child.signal_tree(match signal {
                 Signal::Term => 15,
                 Signal::Kill => 9,
             });
@@ -309,12 +330,10 @@ mod tests {
 
     /// Lebt noch irgendein Prozess der Gruppe?
     fn group_alive(pgid: u32) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", "--", &format!("-{pgid}")])
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        let Some(pid) = rustix::process::Pid::from_raw(pgid as i32) else {
+            return false;
+        };
+        rustix::process::test_kill_process_group(pid).is_ok()
     }
 
     async fn wait_until_gone(pgid: u32) -> bool {
