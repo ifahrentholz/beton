@@ -107,3 +107,40 @@ pub fn is_setuid(p: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
     std::fs::metadata(p).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o4000 != 0)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sbx_008_probe_reasons_name_kernel_and_sysctls() {
+        assert!(landlock_missing(None).unwrap().contains("5.19"));
+        assert!(landlock_missing(Some(1)).unwrap().contains("ABI 1"));
+        assert!(landlock_missing(Some(2)).is_none());
+        assert!(
+            landlock_abi().is_some_and(|a| a >= 2),
+            "CI-Kernel mit Landlock"
+        );
+        // Je nach Rechner mit oder ohne Restriktion; der Text nennt immer den sysctl.
+        if let Some(r) = userns_restriction(Path::new("/usr/bin/beton")) {
+            assert!(r.contains('='), "{r}");
+        }
+        assert!(sysctl("kernel.ostype").is_some_and(|s| s == "Linux"));
+        assert!(sysctl("gibt.es.nicht").is_none());
+    }
+
+    #[test]
+    fn sbx_009_bwrap_lookup_and_version() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = tmp.path().join("bwrap");
+        std::fs::write(&fake, "#!/bin/sh\necho 'bubblewrap 0.9.0'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(find_bwrap(Some(&fake)).unwrap(), fake);
+        assert!(find_bwrap(Some(&tmp.path().join("fehlt"))).is_err());
+        assert!(bwrap_version(&fake).unwrap().contains("0.9.0"));
+        assert!(bwrap_version(&tmp.path().join("fehlt")).is_err());
+        assert!(!is_setuid(&fake));
+    }
+}

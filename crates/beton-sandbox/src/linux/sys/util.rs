@@ -422,3 +422,63 @@ pub fn kernel_release() -> String {
             .into_owned()
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sbx_008_status_roundtrip_and_pipes() {
+        for st in [Status::Exited(0), Status::Exited(125), Status::Signaled(9)] {
+            assert_eq!(Status::decode(&st.encode()), Some(st));
+        }
+        assert_eq!(Status::decode(&[1, 2]), None);
+        let (r, w) = pipe().unwrap();
+        write_all(w, b"hallo").unwrap();
+        close(w);
+        assert_eq!(poll(&[r], 1000).unwrap()[0] & libc::POLLIN, libc::POLLIN);
+        assert_eq!(read_to_end(r, 100).unwrap(), b"hallo");
+        close(r);
+        let (r, w) = pipe().unwrap();
+        write_all(w, &[0u8; 64]).unwrap();
+        close(w);
+        assert!(read_to_end(r, 10).is_err());
+        let high = dup_above(r, 100).unwrap();
+        assert!(high >= 100);
+        set_cloexec(high).unwrap();
+        close(high);
+        close(r);
+        assert!(!kernel_release().is_empty());
+        let e = StepError::io("mount", "/x", io::Error::from_raw_os_error(libc::ENOENT));
+        assert_eq!(e.errno, Some(libc::ENOENT));
+        assert!(e.to_string().starts_with("mount: /x"));
+    }
+
+    #[test]
+    fn sbx_008_waitpid_reports_exit_and_signal() {
+        let child = |code: i32| {
+            let pid = fork().unwrap();
+            if pid == 0 {
+                // SAFETY: Im Kind nur _exit.
+                unsafe { libc::_exit(code) };
+            }
+            pid
+        };
+        let pid = child(7);
+        assert_eq!(waitpid(pid, false).unwrap(), Some((pid, Status::Exited(7))));
+        let pid = fork().unwrap();
+        if pid == 0 {
+            // SAFETY: Im Kind nur pause/_exit.
+            unsafe {
+                libc::pause();
+                libc::_exit(0);
+            }
+        }
+        kill(pid, libc::SIGKILL);
+        assert_eq!(
+            waitpid(pid, false).unwrap(),
+            Some((pid, Status::Signaled(libc::SIGKILL)))
+        );
+    }
+}

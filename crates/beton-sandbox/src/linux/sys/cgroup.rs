@@ -127,11 +127,44 @@ impl Cgroup {
     /// Beendet alles darin und entfernt die cgroup.
     pub fn remove(&self) {
         let _ = std::fs::write(self.path.join("cgroup.kill"), "1");
-        for _ in 0..100 {
+        for _ in 0..50 {
             if std::fs::remove_dir(&self.path).is_ok() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sbx_013_cgroup_files_and_events() {
+        // Gleiche Dateien wie in cgroupfs, hier in einem normalen Verzeichnis.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cg = Cgroup::create(tmp.path(), Some(64), Some(32)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(cg.path.join("pids.max")).unwrap(),
+            "32"
+        );
+        assert_eq!(
+            std::fs::read_to_string(cg.path.join("memory.max")).unwrap(),
+            (64 * 1024 * 1024).to_string()
+        );
+        cg.add(4711).unwrap();
+        assert!(cg.new_events().is_empty());
+        std::fs::write(cg.path.join("pids.events"), "max 3\n").unwrap();
+        std::fs::write(cg.path.join("memory.events"), "low 0\noom_kill 1\n").unwrap();
+        assert_eq!(cg.new_events(), vec!["pids", "memory"]);
+        assert!(cg.new_events().is_empty(), "nur neue Ereignisse");
+        assert_eq!(counter(&cg.path.join("fehlt"), "max"), 0);
+        // Ohne Delegation (CI im User-Namespace) oder mit: discover liefert einen Pfad unter
+        // der cgroup-Wurzel oder nichts.
+        if let Some(base) = discover() {
+            assert!(base.starts_with(ROOT));
         }
     }
 }

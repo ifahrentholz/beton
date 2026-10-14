@@ -67,3 +67,45 @@ pub fn recv(fd: RawFd) -> io::Result<Option<Ctl>> {
         return Ok(Some(msg));
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sbx_008_messages_keep_their_boundaries() {
+        let (a, b) = super::super::util::seqpacket_pair().unwrap();
+        send(a, &Ctl::Ready).unwrap();
+        send(
+            a,
+            &Ctl::Failed {
+                step: "mount".into(),
+                message: "x".into(),
+                errno: Some(2),
+            },
+        )
+        .unwrap();
+        send(
+            a,
+            &Ctl::Limit {
+                target: "pids".into(),
+            },
+        )
+        .unwrap();
+        super::super::util::close(a);
+        assert_eq!(recv(b).unwrap(), Some(Ctl::Ready));
+        assert!(matches!(
+            recv(b).unwrap(),
+            Some(Ctl::Failed { errno: Some(2), .. })
+        ));
+        assert_eq!(
+            recv(b).unwrap(),
+            Some(Ctl::Limit {
+                target: "pids".into()
+            })
+        );
+        assert_eq!(recv(b).unwrap(), None);
+        super::super::util::close(b);
+    }
+}

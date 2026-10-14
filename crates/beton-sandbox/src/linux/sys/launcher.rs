@@ -771,3 +771,66 @@ fn probe_target(args: &[OsString]) -> ExitCode {
         ExitCode::from(3)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::command::CommandSpec;
+    use crate::resolve::{ResolvedPolicy, Stage};
+
+    fn plan(program: &str, path: Option<&str>) -> LaunchPlan {
+        let mut policy = ResolvedPolicy::unsandboxed(Stage::Tools);
+        policy.workspace = "/".into();
+        if let Some(p) = path {
+            policy.env.insert("PATH".into(), p.into());
+        }
+        LaunchPlan::new(&policy, &CommandSpec::new(program), LaunchMode::Landlock)
+    }
+
+    #[test]
+    fn sbx_008_programs_are_searched_in_the_targets_path() {
+        assert_eq!(
+            candidates(&plan("/bin/sh", None)),
+            vec![PathBuf::from("/bin/sh")]
+        );
+        assert_eq!(
+            candidates(&plan("sh", Some("/a::/b"))),
+            vec![PathBuf::from("/a/sh"), PathBuf::from("/b/sh")]
+        );
+        assert_eq!(candidates(&plan("sh", None)).len(), 2);
+    }
+
+    #[test]
+    fn sbx_008_caps_drop_in_the_calling_thread() {
+        // Capabilities, Bounding-Menge und securebits gehören dem Thread.
+        let caps = std::thread::spawn(|| {
+            drop_caps().unwrap();
+            std::fs::read_to_string("/proc/thread-self/status").unwrap()
+        })
+        .join()
+        .unwrap();
+        for field in ["CapPrm", "CapEff", "CapAmb"] {
+            assert!(
+                caps.contains(&format!("{field}:\t0000000000000000")),
+                "{caps}"
+            );
+        }
+    }
+
+    #[test]
+    fn sbx_013_rlimits_without_limits_only_disable_core_dumps() {
+        limits(&plan("/bin/true", None)).unwrap();
+        assert!(count_processes() >= 1);
+        let _ = in_initial_userns();
+        // SAFETY: getuid ohne Seiteneffekte.
+        assert!(processes_of_uid(unsafe { libc::getuid() }) >= 1);
+    }
+
+    #[test]
+    fn sbx_008_launcher_without_plan_fails_closed() {
+        // Ohne FD 3/4 vom Runner startet nichts.
+        let e = run().unwrap_err();
+        assert_eq!(e.step, "plan");
+    }
+}

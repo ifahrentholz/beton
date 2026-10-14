@@ -246,4 +246,32 @@ mod tests {
         // ABI 2 sperrt zusätzlich truncate.
         assert!(filters(2).unwrap()[0].len() > filters(3).unwrap()[0].len());
     }
+
+    #[test]
+    #[allow(unsafe_code, reason = "Syscalls ohne Wrapper prüfen")]
+    fn sbx_008_seccomp_filters_the_calling_thread() {
+        assert!(available());
+        // seccomp gilt nur für den Thread, der den Filter lädt (ohne TSYNC).
+        let r = std::thread::spawn(|| {
+            apply(2).unwrap();
+            let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            // SAFETY: Die Aufrufe scheitern am Filter; kein Speicher wird übergeben.
+            unsafe {
+                let unshare = (libc::unshare(libc::CLONE_NEWUSER), errno());
+                let netlink = (libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, 0), errno());
+                let clone3 = (
+                    libc::syscall(libc::SYS_clone3, std::ptr::null::<u8>(), 0usize) as i32,
+                    errno(),
+                );
+                let truncate = (libc::truncate(c"/nonexistent-beton".as_ptr(), 0), errno());
+                (unshare, netlink, clone3, truncate)
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(r.0, (-1, libc::EPERM));
+        assert_eq!(r.1, (-1, libc::EPERM));
+        assert_eq!(r.2, (-1, libc::ENOSYS));
+        assert_eq!(r.3, (-1, libc::EPERM));
+    }
 }

@@ -122,19 +122,21 @@ pub fn connector(sock: RawFd, port: u16, abi: u32) -> ! {
     if confine(abi, Some(port)).is_err() {
         std::process::exit(1);
     }
+    connector_loop(sock, port);
+    std::process::exit(0)
+}
+
+/// Beantwortet Anfragen des Relays, bis er den Socket schließt.
+pub fn connector_loop(sock: RawFd, port: u16) {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    loop {
-        match recv_fd(sock) {
-            Ok(Some(_)) => match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
-                Ok(s) => {
-                    let fd = s.as_raw_fd();
-                    let _ = send_fd(sock, 0, Some(fd));
-                }
-                Err(_) => {
-                    let _ = send_fd(sock, 1, None);
-                }
-            },
-            Ok(None) | Err(_) => std::process::exit(0),
+    while let Ok(Some(_)) = recv_fd(sock) {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+            Ok(s) => {
+                let _ = send_fd(sock, 0, Some(s.as_raw_fd()));
+            }
+            Err(_) => {
+                let _ = send_fd(sock, 1, None);
+            }
         }
     }
 }
@@ -157,6 +159,12 @@ pub fn relay(listener: TcpListener, connector: RawFd, abi: u32) -> ! {
     if confine(abi, None).is_err() {
         std::process::exit(1);
     }
+    relay_loop(&listener, connector);
+    std::process::exit(0)
+}
+
+/// Nimmt Verbindungen an und hängt jede über den Connector an den Proxy.
+pub fn relay_loop(listener: &TcpListener, connector: RawFd) {
     let lock = Arc::new(Mutex::new(connector));
     for conn in listener.incoming() {
         let Ok(client) = conn else { continue };
@@ -186,10 +194,62 @@ pub fn relay(listener: TcpListener, connector: RawFd, abi: u32) -> ! {
             let _ = t.join();
         });
     }
-    std::process::exit(0)
 }
 
 /// Bindet den Relay-Port im Net-Namespace der Sandbox.
 pub fn relay_listener(port: u16) -> io::Result<TcpListener> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::{Read as _, Write as _};
+
+    use super::*;
+
+    #[test]
+    fn sbx_008_relay_reaches_the_proxy_only_through_the_connector() {
+        // „Proxy“: ein Echo-Dienst.
+        let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = proxy.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for c in proxy.incoming() {
+                let mut c = c.unwrap();
+                let mut b = [0u8; 5];
+                c.read_exact(&mut b).unwrap();
+                c.write_all(&b).unwrap();
+            }
+        });
+        let (relay_end, conn_end) = util::seqpacket_pair().unwrap();
+        std::thread::spawn(move || connector_loop(conn_end, port));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay_addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || relay_loop(&listener, relay_end));
+        let mut c = TcpStream::connect(relay_addr).unwrap();
+        c.write_all(b"hallo").unwrap();
+        let mut b = [0u8; 5];
+        c.read_exact(&mut b).unwrap();
+        assert_eq!(&b, b"hallo");
+    }
+
+    #[test]
+    fn sbx_008_connector_reports_a_missing_proxy() {
+        let free = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let (a, b) = util::seqpacket_pair().unwrap();
+        let t = std::thread::spawn(move || connector_loop(b, port));
+        send_fd(a, 0, None).unwrap();
+        assert_eq!(recv_fd(a).unwrap(), Some((1, None)));
+        util::close(a);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn sbx_008_loopback_up_needs_a_namespace() {
+        // Im Host-Netz ist `lo` schon oben; ohne CAP_NET_ADMIN scheitert das Setzen, mit gelingt
+        // es. Beides darf den Test nicht stören.
+        let _ = loopback_up();
+    }
 }
