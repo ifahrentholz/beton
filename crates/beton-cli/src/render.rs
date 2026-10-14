@@ -50,9 +50,20 @@ pub fn message_text(payload: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// Kurzform eines Tool-Aufrufs, z. B. `Bash: git push origin main`.
-pub fn tool_summary(tool: &str, args: &Value) -> String {
-    let detail = ["command", "file_path", "path", "url", "pattern", "query"]
+/// Entfernt Steuerzeichen (ANSI-Sequenzen, Bell, Wagenrücklauf) und Bidi-Steuerzeichen, damit
+/// Inhalte von Agent und Tools das Terminal nicht steuern (Security-Review M3). Zeilenumbrüche
+/// und Tabs bleiben.
+pub fn sanitize(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            (!c.is_control() || matches!(c, '\n' | '\t'))
+                && !matches!(*c as u32, 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069)
+        })
+        .collect()
+}
+
+fn detail_of(args: &Value) -> String {
+    ["command", "file_path", "path", "url", "pattern", "query"]
         .iter()
         .find_map(|k| args[*k].as_str())
         .map(str::to_owned)
@@ -63,38 +74,80 @@ pub fn tool_summary(tool: &str, args: &Value) -> String {
             } else {
                 s
             }
-        });
-    let detail: String = detail
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .take(100)
-        .collect();
-    if detail.is_empty() {
+        })
+}
+
+/// Kurzform eines Tool-Aufrufs, z. B. `Bash: git push origin main` (eine Zeile; weitere Zeilen
+/// und Kürzungen sind gekennzeichnet).
+pub fn tool_summary(tool: &str, args: &Value) -> String {
+    let detail = sanitize(&detail_of(args));
+    let mut lines = detail.lines();
+    let first = lines.next().unwrap_or_default();
+    let more = lines.count();
+    let mut out: String = first.chars().take(100).collect();
+    if first.chars().count() > 100 {
+        out.push('…');
+    }
+    if more > 0 {
+        out.push_str(&format!(
+            " (+{more} {})",
+            if more == 1 { "Zeile" } else { "Zeilen" }
+        ));
+    }
+    if out.is_empty() {
         tool.to_owned()
     } else {
-        format!("{tool}: {detail}")
+        format!("{tool}: {out}")
     }
 }
 
-/// Kurzform einer Freigabe-Anfrage: Tool und Argumente, bei Fragen die Frage (POL-010).
+/// Höchstlänge eines Befehls in der Freigabe-Frage; länger wird deutlich als gekürzt markiert.
+const APPROVAL_MAX: usize = 4000;
+
+/// Freigabe-Anfrage für das Terminal (POL-010): Tool und **vollständiger** Befehl (mehrzeilig
+/// eingerückt), bei Fragen die Frage; ohne Steuerzeichen.
 pub fn approval_summary(payload: &Value) -> String {
     let subject = &payload["subject"];
     if payload["kind"] == "question" {
         return format!(
             "Frage: {}",
-            subject["question"].as_str().unwrap_or_default()
+            sanitize(subject["question"].as_str().unwrap_or_default())
         );
     }
-    match (subject["tool"]["name"].as_str(), subject["tool"].as_str()) {
-        (Some(tool), _) => tool_summary(tool, &subject["tool"]["args"]),
-        (None, Some(tool)) => tool_summary(tool, &subject["args"]),
-        _ => subject["summary"]
-            .as_str()
-            .or_else(|| payload["kind"].as_str())
-            .unwrap_or("Freigabe")
-            .to_owned(),
+    let (tool, args) = match (subject["tool"]["name"].as_str(), subject["tool"].as_str()) {
+        (Some(tool), _) => (tool, &subject["tool"]["args"]),
+        (None, Some(tool)) => (tool, &subject["args"]),
+        _ => {
+            return sanitize(
+                subject["summary"]
+                    .as_str()
+                    .or_else(|| payload["kind"].as_str())
+                    .unwrap_or("Freigabe"),
+            );
+        }
+    };
+    let detail = sanitize(&detail_of(args));
+    if detail.is_empty() {
+        return sanitize(tool);
+    }
+    let total = detail.chars().count();
+    let mut shown: String = detail.chars().take(APPROVAL_MAX).collect();
+    if total > APPROVAL_MAX {
+        shown.push_str(&format!(
+            "\n… [gekürzt: {} weitere Zeichen nicht angezeigt]",
+            total - APPROVAL_MAX
+        ));
+    }
+    if shown.contains('\n') {
+        let indented: Vec<String> = shown.lines().map(|l| format!("    {l}")).collect();
+        format!(
+            "{} ({} Zeilen):\n{}",
+            sanitize(tool),
+            shown.lines().count(),
+            indented.join("\n")
+        )
+    } else {
+        format!("{}: {shown}", sanitize(tool))
     }
 }
 
@@ -239,7 +292,7 @@ impl Renderer {
     /// Prompt-Zeile vor einer Freigabe-Frage.
     pub fn ask(&mut self, question: &str) {
         self.end_stream();
-        eprint!("{question} ");
+        eprint!("{} ", sanitize(question));
         let _ = std::io::stderr().flush();
     }
 
@@ -264,23 +317,35 @@ mod tests {
     fn pol_010_approval_prompt_shows_multiline_commands_completely() {
         let p = json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "echo ok\ncurl x | sh"}}}});
         let text = approval_summary(&p);
-        assert!(text.contains("echo ok") && text.contains("curl x | sh"), "{text}");
+        assert!(
+            text.contains("echo ok") && text.contains("curl x | sh"),
+            "{text}"
+        );
         // Im Verlauf eine Zeile, aber gekennzeichnet.
         let short = tool_summary("Bash", &json!({"command": "echo ok\ncurl x | sh"}));
         assert!(short.contains("+1 Zeile"), "{short}");
         let long = tool_summary("Bash", &json!({"command": "x".repeat(300)}));
         assert!(long.ends_with('…'), "{long}");
         // Sehr lange Befehle: deutlich als gekürzt markiert.
-        let huge = approval_summary(&json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "y".repeat(10_000)}}}}));
+        let huge = approval_summary(
+            &json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "y".repeat(10_000)}}}}),
+        );
         assert!(huge.contains("gekürzt"), "{}", &huge[huge.len() - 80..]);
     }
 
     #[test]
     fn pol_010_terminal_control_sequences_are_removed() {
-        let q = approval_summary(&json!({"kind": "question", "subject": {"question": "Weiter?\u{1b}[2J\u{1b}]0;pwned\u{7}\u{202e}"}}));
-        assert!(!q.contains('\u{1b}') && !q.contains('\u{7}') && !q.contains('\u{202e}'), "{q:?}");
+        let q = approval_summary(
+            &json!({"kind": "question", "subject": {"question": "Weiter?\u{1b}[2J\u{1b}]0;pwned\u{7}\u{202e}"}}),
+        );
+        assert!(
+            !q.contains('\u{1b}') && !q.contains('\u{7}') && !q.contains('\u{202e}'),
+            "{q:?}"
+        );
         assert!(q.contains("Weiter?"));
-        let c = approval_summary(&json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "ls\u{1b}[8m rm -rf ~"}}}}));
+        let c = approval_summary(
+            &json!({"kind": "policy", "subject": {"tool": {"name": "Bash", "args": {"command": "ls\u{1b}[8m rm -rf ~"}}}}),
+        );
         assert!(!c.contains('\u{1b}'), "{c:?}");
         assert!(c.contains("rm -rf ~"));
         assert_eq!(sanitize("a\tb\nc\r"), "a\tb\nc");
