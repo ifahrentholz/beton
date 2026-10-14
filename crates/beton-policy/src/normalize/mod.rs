@@ -327,9 +327,7 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         Some(l)
             if l.server != "builtin"
                 && reserved_server(&l.server)
-                && raw
-                    .trusted_servers
-                    .is_some_and(|t| !t.iter().any(|s| *s == l.server)) =>
+                && raw.trusted_servers.is_some_and(|t| !t.contains(&l.server)) =>
         {
             (
                 ToolSpec {
