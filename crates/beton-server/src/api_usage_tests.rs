@@ -27,6 +27,8 @@ use crate::local_auth::{BrowserLogins, LocalToken};
 use crate::tunnel::EventObserver as _;
 
 const HOST: &str = "127.0.0.1:7420";
+/// Nur im Test: ruft den Beobachter wie der Tunnel (nicht Teil der API, daher ohne OpenAPI).
+const OBSERVE: &str = "/test/observe";
 
 struct TestApp {
     router: Router,
@@ -378,7 +380,7 @@ async fn notices(t: &TestApp) -> Vec<Value> {
 
 async fn rate_limit_case(enabled: bool) -> TestApp {
     let t = app_full(
-        |r| r.route("/test/observe", axum::routing::post(observe)),
+        |r| r.route(OBSERVE, axum::routing::post(observe)),
         move |mut r| {
             r.usage.rate_limit_notice = enabled;
             r
@@ -400,7 +402,7 @@ async fn rate_limit_case(enabled: bool) -> TestApp {
         let e = event(&s, "2026-10-01T10:00:00.000Z", window(used));
         let res = t
             .send(
-                t.authed("POST", "/test/observe")
+                t.authed("POST", OBSERVE)
                     .body(Body::from(serde_json::to_string(&(s.id, vec![e])).unwrap()))
                     .unwrap(),
             )
