@@ -51,6 +51,7 @@ impl AppState {
         EventService {
             store: self.store.clone(),
             hub: self.runtime.hub.clone(),
+            tracer: self.runtime.tracer.clone(),
         }
     }
 
@@ -100,6 +101,12 @@ pub struct Runtime {
     /// Backend für Secret-Werte (SEC-002/SEC-003). Default: keins (fail closed);
     /// `beton serve` wählt Keychain oder Datei.
     pub secret_backend: Arc<dyn beton_secrets::backend::Backend>,
+    /// Redaction-Pipeline (SEC-013); dieselbe wie in den `StoreOptions` und im Logging.
+    /// `beton serve` setzt sie immer; der Start lädt die bekannten Werte über die
+    /// `RedactionCap`, bevor irgendetwas geschrieben oder verteilt wird.
+    pub redactor: Option<Arc<beton_secrets::Redactor>>,
+    /// Session-Traces (OBS-003); nur mit konfiguriertem OTLP-Endpoint.
+    pub tracer: Option<Arc<crate::otel::SessionTracer>>,
 }
 
 impl Runtime {
@@ -143,6 +150,8 @@ impl Runtime {
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
             secret_backend: Arc::new(beton_secrets::backend::NoBackend),
+            redactor: None,
+            tracer: None,
         }
     }
 
@@ -332,6 +341,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::put_read_state))
         .routes(routes!(crate::api_sessions::put_pin))
         .routes(routes!(crate::api_sessions::list_events))
+        .routes(routes!(crate::api_sessions::redact_event))
         .routes(routes!(crate::sse::stream_events))
         .routes(routes!(crate::api_sessions::list_approvals))
         .routes(routes!(crate::api_sessions::resolve_approval))
@@ -392,6 +402,9 @@ pub struct AppParts {
     pub primary_host: String,
     pub runtime: Runtime,
     pub web_dir: Option<std::path::PathBuf>,
+    /// Secret-Dienst samt angebundener Redaction (`serve::start_with`); ohne Angabe entsteht
+    /// ein eigener (Tests).
+    pub secrets: Option<beton_secrets::Secrets>,
 }
 
 /// Die vollständige App mit allen Schichten.
@@ -407,11 +420,14 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
     // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
     // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
     // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
-    let (secrets, _no_api_caps) = beton_secrets::Secrets::new(
-        parts.store.clone(),
-        parts.local,
-        parts.runtime.secret_backend.clone(),
-    );
+    let secrets = parts.secrets.unwrap_or_else(|| {
+        beton_secrets::Secrets::new(
+            parts.store.clone(),
+            parts.local,
+            parts.runtime.secret_backend.clone(),
+        )
+        .0
+    });
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

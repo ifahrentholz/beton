@@ -40,6 +40,7 @@ impl Fixture {
         EventService {
             store: self.store.clone(),
             hub: self.daemon.runtime.hub.clone(),
+            tracer: None,
         }
     }
 

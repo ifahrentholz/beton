@@ -118,7 +118,8 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         use beton_server::api_sessions::{
             ApprovalPage, CreateSessionRequest, EventPage, ForkRequest, ForkResponse,
             InputAccepted, InputRequest, PinRequest, QueueEditRequest, QueueMoveRequest, QueueView,
-            ReadStateRequest, ResolveApprovalRequest, SessionSettings,
+            ReadStateRequest, RedactEventRequest, RedactEventResponse, ResolveApprovalRequest,
+            SessionSettings,
         };
         ForkRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ForkResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
@@ -137,6 +138,8 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         InputAccepted::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         InputRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         ResolveApprovalRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        RedactEventRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        RedactEventResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Inbox (UX-001).
         use beton_server::api_inbox::{InboxItemView, InboxPage};

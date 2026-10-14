@@ -26,6 +26,9 @@ pub enum StartError {
     Store(#[from] beton_store::Error),
     #[error("{addr} konnte nicht gebunden werden: {source}")]
     Bind { addr: String, source: io::Error },
+    /// Die Redaction-Pipeline ließ sich nicht laden (SEC-013); der Daemon startet nicht.
+    #[error("Redaction-Pipeline nicht bereit: {0}")]
+    Redaction(#[from] beton_secrets::Error),
 }
 
 /// Ein laufender Daemon.
@@ -116,6 +119,14 @@ pub async fn start_with(
     let runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
+    // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
+    // Werte, bevor irgendein Task schreibt oder verteilt (SEC-013); die übrigen Capabilities
+    // bleiben hier ungenutzt (die REST-API gibt nie Werte heraus).
+    let (secrets, caps) =
+        beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone());
+    if let Some(redactor) = &runtime.redactor {
+        caps.redaction.attach(&secrets, redactor.clone()).await?;
+    }
     let store_for_tunnel = store.clone();
     let janitor = tokio::spawn(crate::sessions::worktree_janitor(
         store.clone(),
@@ -132,8 +143,7 @@ pub async fn start_with(
         openapi_json: Arc::default(),
         runtime: runtime.clone(),
         web_dir: None,
-        secrets: beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone())
-            .0,
+        secrets: secrets.clone(),
     };
     let router = app::build(AppParts {
         store,
@@ -145,6 +155,7 @@ pub async fn start_with(
         primary_host,
         runtime: runtime.clone(),
         web_dir: config.web_dir.clone(),
+        secrets: Some(secrets),
     });
 
     let mut tasks = vec![janitor];
@@ -178,6 +189,7 @@ pub async fn start_with(
             events: crate::hub::EventService {
                 store: store_for_tunnel.clone(),
                 hub: runtime.hub.clone(),
+                tracer: runtime.tracer.clone(),
             },
             local,
             runners: runtime.runners.clone(),

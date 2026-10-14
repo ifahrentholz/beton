@@ -486,10 +486,12 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 ### DATA-012 — Payload-Redaktion
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Die einzige erlaubte Änderung bestehender Events: Owner oder Admin ersetzen einen Payload (ganz oder per JSON-Pointer-Pfade) durch `[REDACTED:manual]`, z. B. nach einem entdeckten Secret-Leak. `seq`, `type`, `actor`, `ts` bleiben; `redacted=true`; `raw` und ausgelagerte Blobs werden gelöscht; ein dauerhaftes `event.redacted` dokumentiert den Vorgang und repliziert ihn. Abgrenzung: Die automatische Redaction vor Persistenz ist SEC-013; DATA-012 ist die manuelle Nachredaktion.
+- **Details:** `POST /v1/sessions/{id}/events/{seq}/redact` mit `{paths?: [JSON-Pointer in die Nutzlast], reason}` → `200 {target, event}` (das geschwärzte Event und das neue `event.redacted`). Ohne `paths` wird die ganze Nutzlast geschwärzt: jeder String außer IDs (`id`, `*_id`) und Werten, deren Typ eine Ersetzung nicht zulässt (Aufzählungen, Zeitstempel), damit das Event lesbar bleibt. Ein Pfad muss existieren und darf den Typ nicht verletzen, sonst `400 validation_failed` und nichts ändert sich; `reason` ist Pflicht (1–500 Zeichen). In einer Transaktion: Nutzlast ersetzen (`redacted = 1`), `raw` löschen, ausgelagerte Nutzlast und Blobs, auf die geschwärzte Teile verweisen, aus der Session entfernen (Datei, wenn keine Org sie mehr kennt), `event.redacted {target_seq, by, reason}` anhängen, Audit-Eintrag `event.redacted` (Ziel `<session>/<seq>`, Pfade, Grund – auch er geschwärzt) schreiben und die Projektionen der Session (Suche, Approvals, Usage) neu aufbauen. Physisch: `secure_delete` für die Transaktion, danach WAL-Checkpoint (`TRUNCATE`) und FTS-`optimize`. Berechtigt ist lokal der Owner der Session (`usr_local`); Rollen (Owner/Admin, `view`) kommen mit COL-001/AUTH-014 in M4. Die Anzeige im Event-Log (Screens `secret-redaction`, `diag-events`) folgt mit #215.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `POST /v1/sessions/{id}/events/{seq}/redact` ersetzt den Inhalt; neue Attaches und Exporte zeigen die redigierte Fassung.
-  - [ ] AC2 — Verbundene Clients erhalten `event.redacted` und ersetzen die Anzeige ohne Reload.
-  - [ ] AC3 — Die Aktion erzeugt einen Audit-Eintrag (SEC-012, siehe 05-security-identity.md); ein `view`-User erhält 403.
+  - [ ] AC2 — Verbundene Clients erhalten `event.redacted` und ersetzen die Anzeige ohne Reload. *(M2: Server und Protokoll; die Anzeige im Web-Client folgt mit #215.)*
+  - [ ] AC3 — Die Aktion erzeugt einen Audit-Eintrag (SEC-012, siehe 05-security-identity.md); lokal ist der Owner berechtigt.
+  - [ ] AC4 — (ab M4) Ein `view`-User erhält 403. *(Rollen kommen mit COL-001/AUTH-014.)*
 - **Abhängigkeiten:** DATA-002, SEC-012, SEC-013 (siehe 05-security-identity.md)
 
 ### SYNC-001 — Home-Knoten & Single-Writer mit Epochen

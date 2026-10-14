@@ -43,8 +43,53 @@
 //! let _copy = caps.proxy.clone();
 //! # }
 //! ```
+//!
+//! ## Vierter Konsument: die Redaction-Pipeline (SEC-013, #186)
+//!
+//! [`RedactionCap`] erlaubt genau eines: alle bekannten Werte in einen Matcher der
+//! [`Redactor`]-Pipeline zu laden. Sie liefert nie einen Wert, weder einzeln noch als Liste;
+//! der Matcher hat keine Methode, die Werte herausgibt. `attach` verbraucht die Capability
+//! (eine Pipeline je Dienst), auditiert jeden Aufbau genau einmal (`secrets.redaction_loaded`,
+//! nicht je Treffer) und hält den Matcher bei Anlegen, Rotieren, Löschen und Entsperren
+//! aktuell.
+//!
+//! ```
+//! # async fn demo(secrets: &beton_secrets::Secrets, caps: beton_secrets::UseCapabilities) {
+//! use std::sync::Arc;
+//! let redactor = Arc::new(beton_secrets::Redactor::pending());
+//! caps.redaction.attach(secrets, redactor.clone()).await.unwrap();
+//! # }
+//! ```
+//!
+//! Auch sie lässt sich weder bauen …
+//!
+//! ```compile_fail,E0451
+//! let _cap = beton_secrets::RedactionCap { _private: () };
+//! ```
+//!
+//! … noch kopieren …
+//!
+//! ```compile_fail,E0599
+//! # fn demo(caps: &beton_secrets::UseCapabilities) {
+//! let _copy = caps.redaction.clone();
+//! # }
+//! ```
+//!
+//! … noch für `get_for_use` nutzen.
+//!
+//! ```compile_fail,E0599
+//! # async fn demo(secrets: &beton_secrets::Secrets, caps: &beton_secrets::UseCapabilities) {
+//! use beton_secrets::{SecretRef, UseContext};
+//! let r = SecretRef::user("openai", "default", None).unwrap();
+//! let ctx = UseContext { session_id: None, host_id: "hst_local".into() };
+//! let _ = caps.redaction.get_for_use(secrets, &r, ctx).await;
+//! # }
+//! ```
+
+use std::sync::Arc;
 
 use crate::error::Result;
+use crate::redact::Redactor;
 use crate::service::{Purpose, Secrets, UseContext};
 use crate::{SecretRef, SecretValue};
 
@@ -86,12 +131,30 @@ capability!(
     Purpose::GitProvider
 );
 
-/// Die drei Capabilities; entstehen nur zusammen mit einem [`Secrets`]-Dienst.
+/// Recht der Redaction-Pipeline, alle bekannten Werte als Matcher zu laden (SEC-013, #186).
+#[derive(Debug)]
+pub struct RedactionCap {
+    _private: (),
+}
+
+impl RedactionCap {
+    /// Verbindet die Pipeline mit dem Dienst: lädt alle Werte, baut den Matcher, auditiert
+    /// den Aufbau und hält ihn bei Änderungen aktuell. Ist der Store gesperrt, gilt die
+    /// Pipeline mit den zuletzt bekannten Werten (anfangs keinen) als bereit; gibt er auch
+    /// keinen Wert heraus. Scheitert der Aufbau oder das Audit, bleibt die Pipeline
+    /// blockiert (fail closed) und der Fehler kommt zurück.
+    pub async fn attach(self, secrets: &Secrets, redactor: Arc<Redactor>) -> Result<()> {
+        secrets.attach_redaction(redactor).await
+    }
+}
+
+/// Die Capabilities; entstehen nur zusammen mit einem [`Secrets`]-Dienst.
 #[derive(Debug)]
 pub struct UseCapabilities {
     pub proxy: ProxyCap,
     pub direct_api: DirectApiCap,
     pub git_provider: GitProviderCap,
+    pub redaction: RedactionCap,
 }
 
 impl UseCapabilities {
@@ -100,6 +163,7 @@ impl UseCapabilities {
             proxy: ProxyCap { _private: () },
             direct_api: DirectApiCap { _private: () },
             git_provider: GitProviderCap { _private: () },
+            redaction: RedactionCap { _private: () },
         }
     }
 }

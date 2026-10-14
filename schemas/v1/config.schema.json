@@ -37,6 +37,17 @@
       "$ref": "#/$defs/HarnessesConfig",
       "default": {}
     },
+    "observability": {
+      "description": "Betreiber-Observability (OBS-003); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/ObservabilitySettings",
+      "default": {
+        "capture_content": false,
+        "otlp": {
+          "endpoint": null,
+          "headers": {}
+        }
+      }
+    },
     "pricing": {
       "description": "Eigene Preise (USE-003); nur in der User-Konfiguration.",
       "$ref": "#/$defs/PricingSettings",
@@ -360,6 +371,48 @@
       "required": [
         "id"
       ]
+    },
+    "ObservabilitySettings": {
+      "description": "Traces je Session (OBS-003). Ohne Endpoint gibt es keinen Export (ADR-0025, ADR-0033).",
+      "type": "object",
+      "properties": {
+        "capture_content": {
+          "description": "Prompts und Tool-Argumente als Span-Attribute (geschwärzt); Default `false`.",
+          "type": "boolean",
+          "default": false
+        },
+        "otlp": {
+          "$ref": "#/$defs/OtlpSettings",
+          "default": {
+            "endpoint": null,
+            "headers": {}
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "OtlpSettings": {
+      "description": "OTLP-Export (OBS-003): OTLP/HTTP mit JSON-Kodierung.",
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "description": "Basis-URL des Collectors, z. B. `http://127.0.0.1:4318`; Traces gehen an\n`<endpoint>/v1/traces`. Ohne Angabe gilt `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` bzw.\n`OTEL_EXPORTER_OTLP_ENDPOINT`; fehlt auch das, wird nichts exportiert.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "headers": {
+          "description": "Zusätzliche HTTP-Header, z. B. für die Anmeldung beim Collector.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "additionalProperties": false
     },
     "OverrideMatch": {
       "description": "Worauf ein Override passt: Glob (`*`, `?`) auf Provider und/oder Modell.",

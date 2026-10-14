@@ -732,7 +732,9 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
         TunnelUp::TransientPush { events, .. } => {
             for mut e in events {
                 e.transient = true;
-                let _ = state.events.hub.publish_transient(e);
+                if let Err(err) = state.events.publish_transient(e) {
+                    tracing::warn!(%session, code = err.code(), "Transientes Event verworfen");
+                }
             }
             None
         }
