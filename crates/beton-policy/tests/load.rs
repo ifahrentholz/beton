@@ -505,8 +505,10 @@ fn har_027_pol_007_modify_permission_mode_below_user_is_a_load_error() {
             && err.message.contains("User-Ebene"),
         "{err}"
     );
-    let rules = vec![json!({ "id": "yolo", "on": "session_start", "action": "modify",
-                             "modify": { "permission_mode": "yolo" } })];
+    let rules = vec![
+        json!({ "id": "yolo", "on": "session_start", "action": "modify",
+                             "modify": { "permission_mode": "yolo" } }),
+    ];
     let err = inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap_err();
     assert!(
         err.message.contains("policies[0].modify.permission_mode"),

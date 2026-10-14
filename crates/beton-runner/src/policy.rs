@@ -325,16 +325,6 @@ fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
     }
 }
 
-/// Wie streng ein Permission-Mode ist (für `modify` in `session_start`: nur strenger).
-fn strictness(mode: PermissionMode) -> u8 {
-    match mode {
-        PermissionMode::Plan => 0,
-        PermissionMode::Default => 1,
-        PermissionMode::AcceptEdits => 2,
-        PermissionMode::Yolo => 3,
-    }
-}
-
 /// Ergebnis einer Auswertung mit ID des Freigabe-Vorgangs bei `ask`.
 struct Evaluated {
     decision: Decision,
@@ -1050,15 +1040,17 @@ impl PolicyGate {
             )
             .await;
         let mut modified = ev.decision.modified.clone();
-        if let (Some(new), Some(old)) = (
-            modified
-                .permission_mode
-                .as_deref()
-                .and_then(|m| m.parse::<PermissionMode>().ok()),
-            requested_mode,
-        ) && strictness(new) > strictness(old)
-        {
-            // Lockern ist nicht erlaubt: Änderung verwerfen.
+        // Nur strenger (HAR-027, #231): ohne angefragten Modus ist `default` die Basis; ein
+        // lockernder oder unbekannter Wert wird verworfen.
+        let base = requested_mode.unwrap_or(PermissionMode::Default);
+        let tighter = modified
+            .permission_mode
+            .as_deref()
+            .and_then(|m| m.parse::<PermissionMode>().ok())
+            .is_some_and(|new| {
+                crate::settings::strictness(new) <= crate::settings::strictness(base)
+            });
+        if !tighter {
             modified.permission_mode = None;
         }
         match ev.decision.outcome {

@@ -20,6 +20,10 @@ use crate::yaml::{self, Document, Style};
 /// Größte Policy-Datei (1 MiB).
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
+/// Modifikationen, die nur Policies ab der User-Ebene vornehmen dürfen: Ein Repo bzw. ein Agent
+/// kann damit sonst Schutz lockern (#231: Permission-Mode).
+pub const USER_ONLY_MODIFY: [&str; 1] = ["permission_mode"];
+
 /// Kanonische Tool-Klassen (POL-005), gültig in `kinds:`.
 use crate::enforcement::KINDS;
 
@@ -278,7 +282,7 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
             format!("name `{}` muss [a-z0-9-] sein (max. 64)", set.name),
         ));
     }
-    let rules = check_rules(&set.rules, &loc)?;
+    let rules = check_rules(scope, &set.rules, &loc)?;
     Ok(LoadedSet {
         scope,
         name: set.name,
@@ -337,7 +341,7 @@ pub fn inline_set(
             })
         })
         .collect::<Result<_, _>>()?;
-    let checked = check_rules_with(&docs, &loc, |i| format!("[{i}]"))?;
+    let checked = check_rules_with(scope, &docs, &loc, |i| format!("[{i}]"))?;
     let canonical = serde_json::to_vec(rules).unwrap_or_default();
     Ok(LoadedSet {
         scope,
@@ -350,11 +354,16 @@ pub fn inline_set(
     })
 }
 
-fn check_rules(rules: &[RuleDoc], loc: &Locator) -> Result<Vec<LoadedRule>, LoadError> {
-    check_rules_with(rules, loc, |i| format!("rules[{i}]"))
+fn check_rules(
+    scope: Scope,
+    rules: &[RuleDoc],
+    loc: &Locator,
+) -> Result<Vec<LoadedRule>, LoadError> {
+    check_rules_with(scope, rules, loc, |i| format!("rules[{i}]"))
 }
 
 fn check_rules_with(
+    scope: Scope,
     rules: &[RuleDoc],
     loc: &Locator,
     base: impl Fn(usize) -> String,
@@ -373,12 +382,17 @@ fn check_rules_with(
         if !seen.insert(rule.id.as_str()) {
             return Err(loc.at(&field("id"), format!("Regel-ID `{}` ist doppelt", rule.id)));
         }
-        out.push(check_rule(rule, loc, &at)?);
+        out.push(check_rule(scope, rule, loc, &at)?);
     }
     Ok(out)
 }
 
-fn check_rule(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, LoadError> {
+fn check_rule(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<LoadedRule, LoadError> {
     let field = |f: &str| format!("{at}.{f}");
     if let Some(rule_type) = rule.rule_type {
         let forbidden = [
@@ -437,6 +451,15 @@ fn check_rule(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, Loa
                     return Err(loc.at(
                         &field(&format!("modify.{f}")),
                         format!("`{f}` ist in Phase {phase} nicht modifizierbar"),
+                    ));
+                }
+                if scope > Scope::User && USER_ONLY_MODIFY.contains(&f) {
+                    return Err(loc.at(
+                        &field(&format!("modify.{f}")),
+                        format!(
+                            "`{f}` darf nur eine Policy ab der User-Ebene ändern, nicht die Ebene {}",
+                            scope.as_str()
+                        ),
                     ));
                 }
             }

@@ -746,16 +746,21 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             .await;
         match checked {
             policy::Checked::Allow(m) => {
-                apply_start_modifications(
+                match apply_start_modifications(
                     &mut start_settings,
                     &m,
                     caps.as_ref().unwrap_or(&fallback_caps),
-                );
-                gate.set_settings(
-                    start_settings.model.clone(),
-                    start_settings.effort.clone(),
-                    start_settings.permission_mode,
-                );
+                ) {
+                    Ok(()) => gate.set_settings(
+                        start_settings.model.clone(),
+                        start_settings.effort.clone(),
+                        start_settings.permission_mode,
+                    ),
+                    // Fail closed (#231): z. B. `yolo` ohne Sandbox.
+                    Err(r) => {
+                        refusal = Some((vec![format!("{}: {}", r.code, r.detail)], Vec::new()))
+                    }
+                }
             }
             policy::Checked::Deny { reason, rules } => refusal = Some((vec![reason], rules)),
             policy::Checked::AskNeeded => {
@@ -1580,13 +1585,19 @@ fn predicted_caps(
     predicted
 }
 
-/// `modify` in `session_start` (POL-003): Modell, Effort (gemappt) und Permission-Mode
-/// (nur strenger, schon geprüft) für den Start.
+/// `modify` in `session_start` (POL-003): Modell, Effort (gemappt) und Permission-Mode (nur
+/// strenger als der angefragte, danach erneut gegen die Sandbox geprüft, #231) für den Start.
 fn apply_start_modifications(
     start: &mut settings::Change,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
-) {
+) -> Result<(), settings::Rejected> {
+    let mode = settings::policy_start_mode(
+        start.permission_mode,
+        m.permission_mode.as_deref(),
+        caps,
+        beton_harness::SandboxStatus::current(),
+    )?;
     if let Some(model) = &m.model {
         start.model = Some(model.clone());
     }
@@ -1595,14 +1606,10 @@ fn apply_start_modifications(
     {
         start.effort = Some(mapped);
     }
-    if let Some(mode) = m
-        .permission_mode
-        .as_deref()
-        .and_then(|p| p.parse::<beton_harness::PermissionMode>().ok())
-        && caps.permission_modes.contains(&mode)
-    {
+    if let Some(mode) = mode {
         start.permission_mode = Some(mode);
     }
+    Ok(())
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
