@@ -142,6 +142,13 @@ mod tests {
     }
 
     #[test]
+    fn obs_002_ac3_debug_of_a_secret_prints_stars() {
+        let secret = SecretValue::from("ghp_0123456789abcdefghijABCDEFGHIJ012345");
+        assert_eq!(format!("{:?}", secret), "***");
+        assert_eq!(format!("{secret}"), "***");
+    }
+
+    #[test]
     fn sec_001_ac4_value_is_zeroed_on_drop() {
         drop_hook::reset();
         let v = SecretValue::from("ghp_marker_value_0123456789");

@@ -662,6 +662,12 @@ impl Store {
                         payload_from_json(o.event_type, &String::from_utf8_lossy(&bytes))?;
                     event.body = EventBody::Inline(payload);
                 }
+                // SES-009 AC2: mit der aktuellen Pipeline erneut schwärzen; das Log kann
+                // entstanden sein, bevor ein Wert als Secret bekannt war. Ausgelagerte
+                // Nutzlasten in Exporten mit Blobs bleiben so, wie sie geschrieben wurden.
+                if let EventBody::Inline(payload) = &event.body {
+                    event.body = EventBody::Inline(self.redact_payload(payload.clone())?);
+                }
                 if opts.with_raw
                     && let Some(raw) = row.try_get::<Option<String>, _>("raw")?
                 {

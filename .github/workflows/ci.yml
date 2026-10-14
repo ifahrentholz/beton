@@ -155,6 +155,30 @@ jobs:
       - name: Benchmark Egress-Proxy
         run: cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored --nocapture
 
+      # covers: SEC-013 AC3 (≥ 50 MB/s pro Kern bei 1 000 bekannten Werten im Release-Build;
+      # Regression > 20 % gegenüber main schlägt fehl). Basis wie bei der Coverage: der letzte
+      # Stand von main im Actions-Cache, geschrieben von Pushes auf main.
+      - name: Benchmark-Basis der Redaction von main laden
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: target/bench/redaction-main.json
+          key: bench-redaction-main-${{ github.event.pull_request.base.sha }}
+          restore-keys: bench-redaction-main-
+      - name: Benchmark Redaction
+        env:
+          BETON_BENCH_BASELINE: ${{ github.workspace }}/target/bench/redaction-main.json
+          BETON_BENCH_OUT: ${{ github.workspace }}/target/bench/redaction.json
+        run: cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
+      - name: Benchmark-Basis der Redaction für PRs speichern
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp target/bench/redaction.json target/bench/redaction-main.json
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: target/bench/redaction-main.json
+          key: bench-redaction-main-${{ github.sha }}
+
       # Coverage-Floor und Ratchet (QA-011) als Schritt dieses Jobs statt eigenem Job: jeder
       # Job muss Required Check sein (QA-010 AC3). Die Basis ist der letzte Stand von main
       # (Actions-Cache, geschrieben von Pushes auf main).

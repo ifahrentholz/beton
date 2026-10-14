@@ -133,9 +133,15 @@ pub fn titles_config(t: &crate::config::TitlesSettings) -> beton_server::titles:
 
 /// Store-Einstellungen: `events.store_raw` (PROTO-001 AC3) und die Preisbewertung mit
 /// eingebettetem Katalog und Preis-Overrides der User-Konfiguration (USE-002, USE-003).
-pub fn store_options(settings: &crate::config::Settings) -> beton_store::StoreOptions {
+/// Store-Optionen aus der Konfiguration; `redactor` ist die Redaction-Pipeline des Prozesses
+/// (SEC-013).
+pub fn store_options(
+    settings: &crate::config::Settings,
+    redactor: std::sync::Arc<dyn beton_store::ValueRedactor>,
+) -> beton_store::StoreOptions {
     beton_store::StoreOptions {
         store_raw: settings.events.store_raw,
+        redactor,
         pricer: std::sync::Arc::new(beton_core::pricing::Pricer::new(
             beton_core::pricing::Catalog::embedded(),
             settings.price_overrides(),
@@ -259,8 +265,12 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     }
     let dev = args.dev || cfg!(debug_assertions);
 
+    // Eine Redaction-Pipeline für Logs, Store, Live-Events und Traces (SEC-013, OBS-002). Die
+    // bekannten Werte lädt der Serverstart über die `RedactionCap`; bis dahin blockiert sie.
+    let redactor = Arc::new(beton_secrets::Redactor::pending());
     let _log = crate::logging::init(crate::logging::LogConfig {
         stderr_human: !ctx.global.quiet,
+        redactor: redactor.clone(),
         ..crate::logging::LogConfig::for_component(crate::logging::Component::Daemon)
     })
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))
@@ -285,7 +295,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let active: Vec<String> = features.active_ids();
 
     let lock = DaemonLock::acquire(&ctx.home)?;
-    let store = beton_store::Store::open(&ctx.home, store_options(&settings))
+    let store = beton_store::Store::open(&ctx.home, store_options(&settings, redactor.clone()))
         .await
         .context("Datenbank öffnen")?;
 
@@ -362,6 +372,31 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
             .context("Audit-Eintrag")?;
     }
     let secret_backend = secrets.backend.clone();
+    // OBS-003: Traces nur mit konfiguriertem Endpoint (ADR-0025, ADR-0033).
+    let tracer = match beton_server::otel::OtelConfig::resolve(
+        settings.observability.otlp.endpoint.as_deref(),
+        &settings.observability.otlp.headers,
+        settings.observability.capture_content,
+        &|k| std::env::var(k).ok(),
+    ) {
+        Ok(Some(config)) => {
+            tracing::info!(
+                capture_content = config.capture_content,
+                "OTLP-Export aktiv"
+            );
+            Some(beton_server::otel::SessionTracer::start(
+                config,
+                redactor.clone(),
+            ))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            return Err(CliError::new(
+                Exit::General,
+                anyhow::anyhow!("observability: {e}"),
+            ));
+        }
+    };
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
@@ -372,6 +407,8 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.titles = titles;
         r.attachments = attachments;
         r.secret_backend = secret_backend;
+        r.redactor = Some(redactor);
+        r.tracer = tracer;
         r
     })
     .await
@@ -456,12 +493,63 @@ mod tests {
         assert_eq!(ok.listen, vec!["127.0.0.1:0".parse().unwrap()]);
     }
 
+    fn none() -> Arc<dyn beton_store::ValueRedactor> {
+        Arc::new(beton_store::NoRedaction)
+    }
+
     #[test]
     fn proto_001_ac3_store_raw_setting_reaches_the_store() {
-        assert!(store_options(&Settings::default()).store_raw);
+        assert!(store_options(&Settings::default(), none()).store_raw);
         let mut settings = Settings::default();
         settings.events.store_raw = false;
-        assert!(!store_options(&settings).store_raw);
+        assert!(!store_options(&settings, none()).store_raw);
+    }
+
+    #[test]
+    fn obs_003_observability_settings_resolve_to_an_exporter_config() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "observability": {
+                "otlp": { "endpoint": "http://127.0.0.1:4318", "headers": { "x-k": "v" } },
+                "capture_content": true
+            }
+        }))
+        .unwrap();
+        let c = beton_server::otel::OtelConfig::resolve(
+            settings.observability.otlp.endpoint.as_deref(),
+            &settings.observability.otlp.headers,
+            settings.observability.capture_content,
+            &|_| None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.endpoint, "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(c.headers, vec![("x-k".to_owned(), "v".to_owned())]);
+        assert!(c.capture_content);
+        // Default: kein Endpoint, kein Export.
+        let d = Settings::default();
+        assert!(!d.observability.capture_content);
+        assert_eq!(
+            beton_server::otel::OtelConfig::resolve(
+                d.observability.otlp.endpoint.as_deref(),
+                &d.observability.otlp.headers,
+                false,
+                &|_| None,
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn sec_013_the_pipeline_reaches_the_store() {
+        let redactor = Arc::new(beton_secrets::Redactor::pending());
+        let options = store_options(&Settings::default(), redactor);
+        // Die Pipeline des Daemons blockiert, bis die bekannten Werte geladen sind.
+        assert!(
+            options
+                .redactor
+                .redact(&mut serde_json::json!("x"))
+                .is_err()
+        );
     }
 
     #[test]
@@ -476,7 +564,7 @@ mod tests {
             }}
         }))
         .unwrap();
-        let options = store_options(&settings);
+        let options = store_options(&settings, none());
         let labels: Vec<String> = options
             .pricer
             .overrides()

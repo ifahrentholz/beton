@@ -742,6 +742,7 @@ name = "beton-runner"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "axum",
  "beton-agents",
  "beton-core",
  "beton-git",
@@ -755,6 +756,7 @@ dependencies = [
  "beton-policy",
  "beton-proto",
  "beton-sandbox",
+ "beton-secrets",
  "beton-server",
  "beton-store",
  "futures-util",
@@ -820,13 +822,17 @@ name = "beton-secrets"
 version = "0.0.0"
 dependencies = [
  "aes-gcm",
+ "aho-corasick",
  "apple-native-keyring-store",
  "argon2",
+ "base64 0.23.1",
  "beton-core",
  "beton-store",
  "getrandom 0.4.3",
  "hkdf 0.12.4",
  "keyring-core",
+ "proptest",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
@@ -869,6 +875,7 @@ dependencies = [
  "ignore",
  "proptest",
  "regex",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
