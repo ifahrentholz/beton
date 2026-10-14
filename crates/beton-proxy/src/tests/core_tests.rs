@@ -147,43 +147,57 @@ async fn prx_001_dropped_instance_stops_listening() {
 /// Lastprofil aus PRX-001 AC3: `conns` parallele HTTPS-Verbindungen durch eine Instanz, je
 /// Verbindung ein Aufwärm-Request und `requests` gemessene Requests.
 async fn load(conns: usize, requests: usize) -> (Vec<Duration>, Vec<Duration>) {
+    load_rounds(conns, requests, 1).await.remove(0)
+}
+
+/// Wie [`load`], `rounds` Runden hintereinander gegen dieselbe Instanz; je Runde erst direkt,
+/// dann durch den Proxy, damit beide Messungen dieselben Bedingungen des Hosts sehen.
+async fn load_rounds(
+    conns: usize,
+    requests: usize,
+    rounds: usize,
+) -> Vec<(Vec<Duration>, Vec<Duration>)> {
     let h = std::sync::Arc::new(Harness::new());
     let up = Upstream::tls(h.pki.valid(&["load.test"])).await;
     h.route("load.test", PUBLIC, 443, &up);
     let instance = std::sync::Arc::new(h.instance(&["GET load.test/**"]).await);
+    let mut out = Vec::with_capacity(rounds);
+    for round in 1..=rounds {
+        // Referenz: dieselbe Last direkt gegen den Upstream (ohne Proxy).
+        let direct = {
+            let mut tasks = tokio::task::JoinSet::new();
+            for _ in 0..conns {
+                let (pki_ca, addr) = (h.pki.ca_der.clone(), up.addr);
+                tasks.spawn(async move {
+                    let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    let _ = tcp.set_nodelay(true);
+                    let tls = connector(&[pki_ca], &[b"http/1.1"])
+                        .connect(
+                            rustls::pki_types::ServerName::try_from("load.test").unwrap(),
+                            tcp,
+                        )
+                        .await
+                        .unwrap();
+                    let mut s = h1(tls).await;
+                    timed(&mut s, requests).await
+                });
+            }
+            tasks.join_all().await.concat()
+        };
 
-    // Referenz: dieselbe Last direkt gegen den Upstream (ohne Proxy).
-    let direct = {
         let mut tasks = tokio::task::JoinSet::new();
         for _ in 0..conns {
-            let (pki_ca, addr) = (h.pki.ca_der.clone(), up.addr);
+            let (h, instance) = (h.clone(), instance.clone());
             tasks.spawn(async move {
-                let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
-                let tls = connector(&[pki_ca], &[b"http/1.1"])
-                    .connect(
-                        rustls::pki_types::ServerName::try_from("load.test").unwrap(),
-                        tcp,
-                    )
-                    .await
-                    .unwrap();
-                let mut s = h1(tls).await;
+                let mut s = h1(tunnel(&h, &instance, "load.test", 443, &[b"http/1.1"]).await).await;
                 timed(&mut s, requests).await
             });
         }
-        tasks.join_all().await.concat()
-    };
-
-    let mut tasks = tokio::task::JoinSet::new();
-    for _ in 0..conns {
-        let (h, instance) = (h.clone(), instance.clone());
-        tasks.spawn(async move {
-            let mut s = h1(tunnel(&h, &instance, "load.test", 443, &[b"http/1.1"]).await).await;
-            timed(&mut s, requests).await
-        });
+        let proxied = tasks.join_all().await.concat();
+        assert_eq!(up.count(), round * 2 * conns * (requests + 1));
+        out.push((proxied, direct));
     }
-    let proxied = tasks.join_all().await.concat();
-    assert_eq!(up.count(), 2 * conns * (requests + 1));
-    (proxied, direct)
+    out
 }
 
 async fn timed(
@@ -225,16 +239,44 @@ async fn prx_001_ac3_200_parallel_https_connections_without_errors() {
 
 /// PRX-001 AC3 (Latenz): p99-Zusatzlatenz < 20 ms. Läuft im Release-Build als eigener
 /// CI-Schritt (`cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored`).
+///
+/// Eine erste Runde wärmt auf und zählt nicht (#221: in der CI lag genau sie bei über 40 ms,
+/// die übrigen bei wenigen Millisekunden). Gewertet wird das p99 über alle Requests der
+/// folgenden fünf Runden zusammen (5 × 4 000), mit Proxy gegen direkt. So zählt jede
+/// gemessene Request; ein kurzer Stillstand des geteilten Runners trifft weniger als 1 % von
+/// ihnen, eine echte Verlangsamung des Proxys alle. Der Grenzwert bleibt 20 ms.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "Benchmark; im Release-Build ausführen"]
 async fn prx_001_ac3_p99_added_latency_below_20ms() {
-    let (proxied, direct) = load(200, 20).await;
+    const ROUNDS: usize = 5;
+    let mut rounds = load_rounds(200, 20, ROUNDS + 1).await.into_iter();
+    let (warm_p, warm_d) = rounds.next().unwrap();
+    println!(
+        "Aufwärmen (nicht gewertet): p99 mit Proxy {:?}, direkt {:?}",
+        p99(warm_p),
+        p99(warm_d)
+    );
+    let (mut proxied, mut direct) = (Vec::new(), Vec::new());
+    for (i, (p, d)) in rounds.enumerate() {
+        let slow = |v: &[Duration]| v.iter().filter(|x| **x > Duration::from_millis(20)).count();
+        println!(
+            "Runde {}: p99 mit Proxy {:?}, direkt {:?}; über 20 ms: mit Proxy {}, direkt {}",
+            i + 1,
+            p99(p.clone()),
+            p99(d.clone()),
+            slow(&p),
+            slow(&d)
+        );
+        proxied.extend(p);
+        direct.extend(d);
+    }
+    assert_eq!(proxied.len(), ROUNDS * 200 * 20);
     let (p, d) = (p99(proxied), p99(direct));
     let added = p.saturating_sub(d);
-    println!("p99 mit Proxy {p:?}, direkt {d:?}, Zusatz {added:?}");
+    println!("p99 über {ROUNDS} Runden: mit Proxy {p:?}, direkt {d:?}, Zusatz {added:?}");
     assert!(
         added < Duration::from_millis(20),
-        "p99-Zusatzlatenz {added:?}"
+        "p99-Zusatzlatenz über {ROUNDS} Runden {added:?} (mit Proxy {p:?}, direkt {d:?})"
     );
 }
 

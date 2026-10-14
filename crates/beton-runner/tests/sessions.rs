@@ -536,6 +536,425 @@ async fn ses_003_ac3_input_to_stopped_session_resumes_it() {
     d.daemon.shutdown().await;
 }
 
+/// Runner-Provider, dessen Prozesse nach dem Trennen noch als `running` gelten: so wie ein
+/// geordnet gestoppter Runner, der unter Last noch Sekunden bis zum Exit braucht (#198).
+struct Lingering(LocalProvider);
+
+#[async_trait::async_trait]
+impl beton_host::RunnerProvider for Lingering {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn capabilities(&self) -> beton_host::RunnerCapabilities {
+        self.0.capabilities()
+    }
+    async fn provision(
+        &self,
+        spec: &beton_host::RunnerSpec,
+    ) -> Result<beton_host::Provisioned, beton_host::RunnerError> {
+        self.0.provision(spec).await
+    }
+    async fn start(
+        &self,
+        env: &beton_host::Provisioned,
+        boot: &beton_host::RunnerBoot,
+    ) -> Result<beton_host::RunnerHandle, beton_host::RunnerError> {
+        self.0.start(env, boot).await
+    }
+    async fn exec(
+        &self,
+        h: &beton_host::RunnerHandle,
+        req: beton_host::ExecRequest,
+    ) -> Result<beton_host::ExecOutput, beton_host::RunnerError> {
+        self.0.exec(h, req).await
+    }
+    async fn status(
+        &self,
+        _h: &beton_host::RunnerHandle,
+    ) -> Result<beton_host::RunnerStatus, beton_host::RunnerError> {
+        Ok(beton_host::RunnerStatus::Running)
+    }
+    async fn terminate(
+        &self,
+        h: &beton_host::RunnerHandle,
+        mode: beton_host::TerminateMode,
+    ) -> Result<(), beton_host::RunnerError> {
+        self.0.terminate(h, mode).await
+    }
+    async fn list_managed(
+        &self,
+    ) -> Result<Vec<beton_host::ManagedResource>, beton_host::RunnerError> {
+        self.0.list_managed().await
+    }
+}
+
+/// #198: Die Eingabe kommt, solange der im Leerlauf gestoppte Runner noch nicht beendet ist.
+/// Sein Prozess darf nicht als „startet gerade“ gelten; die Session wird mit einem neuen
+/// Runner fortgesetzt.
+#[tokio::test]
+async fn ses_003_ac3_input_resumes_while_the_stopped_runner_is_still_exiting() {
+    let dir = tmp();
+    let runners = dir.path().join("runners");
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(Lingering(LocalProvider::new(
+            vec![runner_bin().into()],
+            runners,
+        )));
+        r.tunnel.idle_timeout = Duration::from_millis(300);
+        r.tunnel.idle_check = Duration::from_millis(100);
+        r
+    })
+    .await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    let start = Instant::now();
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "hallo"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body} nach {:?}", start.elapsed());
+    d.wait_for(&id, is("turn.completed")).await;
+    d.daemon.shutdown().await;
+}
+
+/// Runner-Provider, der die Tunnel-Tokens der Starts mitschreibt. Mit `broken` scheitert der
+/// Start, nachdem das Token vergeben ist (falscher Tunnel-Socket, Prozess gleich beendet); mit
+/// `delay` dauert der Start länger.
+#[derive(Clone)]
+struct Capture {
+    inner: std::sync::Arc<LocalProvider>,
+    tokens: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    delay: std::sync::Arc<std::sync::Mutex<Duration>>,
+    /// Der Runner läuft, findet den Tunnel aber nie (falscher Socket).
+    hang: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Der Runner findet den Tunnel erst nach dieser Zeit (langsamer Harness-Start).
+    slow: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
+}
+
+impl Capture {
+    fn new(runners: PathBuf) -> Self {
+        Self {
+            inner: std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners)),
+            tokens: std::sync::Arc::default(),
+            broken: std::sync::Arc::default(),
+            delay: std::sync::Arc::default(),
+            hang: std::sync::Arc::default(),
+            slow: std::sync::Arc::default(),
+        }
+    }
+
+    fn tokens(&self) -> Vec<String> {
+        self.tokens.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl beton_host::RunnerProvider for Capture {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn capabilities(&self) -> beton_host::RunnerCapabilities {
+        self.inner.capabilities()
+    }
+    async fn provision(
+        &self,
+        spec: &beton_host::RunnerSpec,
+    ) -> Result<beton_host::Provisioned, beton_host::RunnerError> {
+        self.inner.provision(spec).await
+    }
+    async fn start(
+        &self,
+        env: &beton_host::Provisioned,
+        boot: &beton_host::RunnerBoot,
+    ) -> Result<beton_host::RunnerHandle, beton_host::RunnerError> {
+        self.tokens.lock().unwrap().push(boot.token.clone());
+        let delay = *self.delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        let mut boot = boot.clone();
+        let broken = self.broken.load(std::sync::atomic::Ordering::SeqCst);
+        if broken || self.hang.load(std::sync::atomic::Ordering::SeqCst) {
+            boot.tunnel_socket = "/nicht/vorhanden.sock".into();
+        }
+        let slow = *self.slow.lock().unwrap();
+        if let Some(after) = slow {
+            // Der Runner versucht es mit Backoff weiter; der Socket erscheint erst später.
+            let real = boot.tunnel_socket.clone();
+            let late = real.with_file_name(format!("spaet-{}.sock", self.tokens().len()));
+            boot.tunnel_socket = late.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(after).await;
+                let _ = std::os::unix::fs::symlink(real, late);
+            });
+        }
+        let h = self.inner.start(env, &boot).await?;
+        if broken {
+            self.inner
+                .terminate(&h, beton_host::TerminateMode::Force)
+                .await?;
+        }
+        Ok(h)
+    }
+    async fn exec(
+        &self,
+        h: &beton_host::RunnerHandle,
+        req: beton_host::ExecRequest,
+    ) -> Result<beton_host::ExecOutput, beton_host::RunnerError> {
+        self.inner.exec(h, req).await
+    }
+    async fn status(
+        &self,
+        h: &beton_host::RunnerHandle,
+    ) -> Result<beton_host::RunnerStatus, beton_host::RunnerError> {
+        self.inner.status(h).await
+    }
+    async fn terminate(
+        &self,
+        h: &beton_host::RunnerHandle,
+        mode: beton_host::TerminateMode,
+    ) -> Result<(), beton_host::RunnerError> {
+        self.inner.terminate(h, mode).await
+    }
+    async fn list_managed(
+        &self,
+    ) -> Result<Vec<beton_host::ManagedResource>, beton_host::RunnerError> {
+        self.inner.list_managed().await
+    }
+}
+
+/// HTTP-Status des Tunnel-Upgrades mit `token`: 101 angenommen, 401 abgelehnt.
+async fn tunnel_status(dir: &Path, token: &str) -> u16 {
+    let mut s = tokio::net::UnixStream::connect(dir.join("run/tunnel.sock"))
+        .await
+        .unwrap();
+    let req = format!(
+        "GET /v1/tunnel HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {}\r\n\r\n",
+        beton_proto::tunnel::SUBPROTOCOL
+    );
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 64];
+    let n = s.read(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf[..n])
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
+}
+
+async fn daemon_capturing(dir: &Path, idle: Option<Duration>) -> (Daemonized, Capture) {
+    let capture = Capture::new(dir.join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir, move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(provider);
+        if let Some(idle) = idle {
+            r.tunnel.idle_timeout = idle;
+            r.tunnel.idle_check = Duration::from_millis(100);
+        }
+        r
+    })
+    .await;
+    (d, capture)
+}
+
+/// Security-Review zu #198: Das Token eines geordnet gestoppten Runners öffnet den Tunnel nicht
+/// mehr.
+#[tokio::test]
+async fn ses_003_ac3_token_of_an_orderly_stopped_runner_is_rejected() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), Some(Duration::from_millis(300))).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
+    d.daemon.shutdown().await;
+}
+
+/// Security-Review zu #198: Nur das Token des zuletzt gestarteten Runners gilt. Ein Runner, der
+/// sich nie gemeldet hat (fehlgeschlagener Start), kommt nach dem nächsten Start nicht mehr
+/// in den Tunnel.
+#[tokio::test]
+async fn ses_003_ac3_token_of_a_runner_that_never_connected_expires_with_the_next_start() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), None).await;
+    capture
+        .broken
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    capture
+        .broken
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let (status, body) = d
+        .http("POST", &format!("/v1/sessions/{id}/resume"), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 2, "zwei Starts");
+    assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
+    d.daemon.shutdown().await;
+}
+
+/// Security-Review zu #198: Stoppen (hier über Archivieren) sperrt auch das Token eines Runners,
+/// der sich noch nicht gemeldet hat.
+#[tokio::test]
+async fn ses_003_ac3_stopping_revokes_the_token_of_a_starting_runner() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), None).await;
+    capture
+        .broken
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let (status, body) = d
+        .http("POST", &format!("/v1/sessions/{id}/archive"), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
+    d.daemon.shutdown().await;
+}
+
+/// Security-Review zu #198 (m3): Zwei gleichzeitige `resume` einer gestoppten Session starten
+/// genau einen Runner; ein zweiter, verwaister Runner könnte sich sonst später verbinden.
+#[tokio::test]
+async fn ses_003_ac3_concurrent_resumes_start_one_runner() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), Some(Duration::from_millis(300))).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    // Der Start dauert, damit beide Aufrufe ihn sicher überlappen.
+    *capture.delay.lock().unwrap() = Duration::from_millis(500);
+    let path = format!("/v1/sessions/{id}/resume");
+    let (a, b) = tokio::join!(d.http("POST", &path, None), d.http("POST", &path, None));
+    assert_eq!(a.0, 200, "{}", a.1);
+    assert_eq!(b.0, 200, "{}", b.1);
+    assert_eq!(
+        capture.tokens().len(),
+        2,
+        "ein Start beim Anlegen, einer fürs Fortsetzen"
+    );
+    d.daemon.shutdown().await;
+}
+
+/// Re-Review zu #198 (N1): Ein Runner, der länger braucht als die Wartezeit einer Eingabe
+/// (Harness-Handshake, MCP-Server, Last), wird nicht abgebrochen. Der erste Versuch meldet
+/// 503, der Runner startet weiter, und die Session ist danach ohne neuen Start fortsetzbar.
+#[tokio::test]
+async fn ses_003_ac3_runner_slower_than_the_wait_is_not_aborted() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.sessions.connect_timeout = Duration::from_secs(1);
+        r.tunnel.idle_timeout = Duration::from_millis(300);
+        r.tunnel.idle_check = Duration::from_millis(100);
+        r
+    })
+    .await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    *capture.slow.lock().unwrap() = Some(Duration::from_millis(2500));
+    let path = format!("/v1/sessions/{id}/resume");
+    let (status, body) = d.http("POST", &path, None).await;
+    assert_eq!(status, 503, "{body}");
+    let start = Instant::now();
+    loop {
+        let (status, body) = d.http("POST", &path, None).await;
+        if status == 200 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{status} {body}");
+    }
+    assert_eq!(
+        capture.tokens().len(),
+        2,
+        "kein weiterer Start: der langsame Runner wurde nicht abgebrochen"
+    );
+    d.daemon.shutdown().await;
+}
+
+/// Re-Review zu #198 (N1/N2): Ein Runner, der sich innerhalb des Start-Budgets nie meldet, wird
+/// erst danach ersetzt; vorher startet kein zweiter neben ihm. Sein Token gilt danach nicht mehr.
+#[tokio::test]
+async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budget() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.sessions.connect_timeout = Duration::from_millis(500);
+        r.sessions.start_budget = Duration::from_secs(3);
+        r
+    })
+    .await;
+    capture
+        .hang
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let started = Instant::now();
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let path = format!("/v1/sessions/{id}/resume");
+    // Innerhalb des Budgets: warten statt einen zweiten Runner starten.
+    let (status, body) = d.http("POST", &path, None).await;
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(capture.tokens().len(), 1, "kein zweiter Start im Budget");
+    // Budget sicher abgelaufen (die Startzeit zählt ab dem Ende des Starts, nach `started`).
+    tokio::time::sleep(Duration::from_millis(3500).saturating_sub(started.elapsed())).await;
+    capture
+        .hang
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let start = Instant::now();
+    loop {
+        let (status, body) = d.http("POST", &path, None).await;
+        if status == 200 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{status} {body}");
+    }
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 2, "nach dem Budget ersetzt");
+    assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
+    d.daemon.shutdown().await;
+}
+
 #[tokio::test]
 async fn ses_005_ac1_ac3_interrupt_during_tool_call_and_idempotent() {
     let dir = tmp();
@@ -565,7 +984,19 @@ async fn ses_005_ac1_ac3_interrupt_during_tool_call_and_idempotent() {
         start.elapsed()
     );
     d.wait_status(&id, "idle").await;
-    let before = d.events(&id).await.len();
+    // Alle Events des abgebrochenen Turns stehen vor seinem Ende, auch Funde des
+    // Workspace-Beobachters (#189); danach kommt nichts mehr nach.
+    let events = d.events(&id).await;
+    let end = events
+        .iter()
+        .position(|e| e["type"] == "turn.interrupted")
+        .unwrap();
+    let late: Vec<&Value> = events[end..]
+        .iter()
+        .filter(|e| e["type"] == "fs.changed")
+        .collect();
+    assert!(late.is_empty(), "fs.changed nach dem Turn-Ende: {late:?}");
+    let before = events.len();
     assert_eq!(
         d.http("POST", &format!("/v1/sessions/{id}/interrupt"), None)
             .await
