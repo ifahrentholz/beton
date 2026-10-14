@@ -10,8 +10,11 @@ use beton_policy::value::Value;
 use serde_json::json;
 
 fn tool_ctx(tool: serde_json::Value) -> Activation {
-    Activation::new(Phase::ToolCall, json!({ "tool": tool, "session": { "cost_usd": 3.5 } }))
-        .unwrap()
+    Activation::new(
+        Phase::ToolCall,
+        json!({ "tool": tool, "session": { "cost_usd": 3.5 } }),
+    )
+    .expect("gültiger Kontext")
 }
 
 fn eval(src: &str, act: &Activation) -> Result<Value, EvalError> {
@@ -34,7 +37,10 @@ fn empty() -> Activation {
 fn pol_002_ac1_type_error_is_rejected_at_load_with_position() {
     let err = compile_bool(r#"session.cost_usd > "5""#, Phase::ToolCall).unwrap_err();
     assert_eq!((err.line, err.column), (1, 18), "{err}");
-    assert!(err.message.contains("double") && err.message.contains("string"), "{err}");
+    assert!(
+        err.message.contains("double") && err.message.contains("string"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -103,7 +109,10 @@ fn pol_002_ac2_matching_command_is_true() {
 fn pol_002_ac3_under() {
     let act = empty();
     assert!(!eval_bool(r#"under("/repo/../etc/passwd", "/repo")"#, &act));
-    assert!(eval_bool(r#"under("/repo/src/../lib/a.rs", "/repo")"#, &act));
+    assert!(eval_bool(
+        r#"under("/repo/src/../lib/a.rs", "/repo")"#,
+        &act
+    ));
     assert!(eval_bool(r#"under("/repo", "/repo/")"#, &act));
     assert!(!eval_bool(r#"under("/repository/x", "/repo")"#, &act));
     assert!(!eval_bool(r#"under("/../../etc", "/repo")"#, &act));
@@ -115,11 +124,17 @@ fn pol_002_ac3_under() {
 #[test]
 fn pol_002_ac3_glob() {
     let act = empty();
-    assert!(eval_bool(r#"glob("a.b.example.com", "*.example.com")"#, &act));
+    assert!(eval_bool(
+        r#"glob("a.b.example.com", "*.example.com")"#,
+        &act
+    ));
     assert!(!eval_bool(r#"glob("example.com", "*.example.com")"#, &act));
     assert!(eval_bool(r#"glob("/repo/src/a.rs", "/repo/**")"#, &act));
     assert!(eval_bool(r#"glob("/repo/src/a.rs", "/repo/*/a.rs")"#, &act));
-    assert!(!eval_bool(r#"glob("/repo/src/x/a.rs", "/repo/*/a.rs")"#, &act));
+    assert!(!eval_bool(
+        r#"glob("/repo/src/x/a.rs", "/repo/*/a.rs")"#,
+        &act
+    ));
     assert!(eval_bool(r#"glob("/home/u/.env.local", "**/.env*")"#, &act));
     assert!(eval_bool(r#"glob("a+b(c)", "a+b(?)")"#, &act));
     assert!(!eval_bool(r#"glob("ab", "a")"#, &act));
@@ -128,11 +143,26 @@ fn pol_002_ac3_glob() {
 #[test]
 fn pol_002_ac3_domain_matches() {
     let act = empty();
-    assert!(eval_bool(r#"domain_matches("a.b.example.com", "*.example.com")"#, &act));
-    assert!(eval_bool(r#"domain_matches("Docs.Example.COM.", "*.example.com")"#, &act));
-    assert!(!eval_bool(r#"domain_matches("example.com", "*.example.com")"#, &act));
-    assert!(!eval_bool(r#"domain_matches("evilexample.com", "*.example.com")"#, &act));
-    assert!(eval_bool(r#"domain_matches("example.com", "example.com")"#, &act));
+    assert!(eval_bool(
+        r#"domain_matches("a.b.example.com", "*.example.com")"#,
+        &act
+    ));
+    assert!(eval_bool(
+        r#"domain_matches("Docs.Example.COM.", "*.example.com")"#,
+        &act
+    ));
+    assert!(!eval_bool(
+        r#"domain_matches("example.com", "*.example.com")"#,
+        &act
+    ));
+    assert!(!eval_bool(
+        r#"domain_matches("evilexample.com", "*.example.com")"#,
+        &act
+    ));
+    assert!(eval_bool(
+        r#"domain_matches("example.com", "example.com")"#,
+        &act
+    ));
 }
 
 #[test]
@@ -142,8 +172,14 @@ fn pol_002_ac3_shell_functions() {
         "argv": [["cd", "repo"], ["git", "-C", ".", "push", "-f", "origin", "main"]],
     }));
     assert!(eval_bool(r#"shell.has_command(tool.argv, "git")"#, &act));
-    assert!(eval_bool(r#"shell.has_command(tool.argv, "git", "push")"#, &act));
-    assert!(!eval_bool(r#"shell.has_command(tool.argv, "git", "pull")"#, &act));
+    assert!(eval_bool(
+        r#"shell.has_command(tool.argv, "git", "push")"#,
+        &act
+    ));
+    assert!(!eval_bool(
+        r#"shell.has_command(tool.argv, "git", "pull")"#,
+        &act
+    ));
     assert!(eval_bool(r#"shell.has_flag(tool.argv, "-f")"#, &act));
     assert!(!eval_bool(r#"shell.has_flag(tool.argv, "--force")"#, &act));
 }
@@ -151,9 +187,18 @@ fn pol_002_ac3_shell_functions() {
 #[test]
 fn pol_002_ac3_url_functions() {
     let act = empty();
-    assert!(eval_bool(r#"url.host("https://User@Docs.rs:443/a/b?q=1") == "docs.rs""#, &act));
-    assert!(eval_bool(r#"url.path("https://docs.rs/a/b?q=1") == "/a/b""#, &act));
-    assert!(eval_bool(r#"url.host("http://evil.com\\@good.com/") == "evil.com""#, &act));
+    assert!(eval_bool(
+        r#"url.host("https://User@Docs.rs:443/a/b?q=1") == "docs.rs""#,
+        &act
+    ));
+    assert!(eval_bool(
+        r#"url.path("https://docs.rs/a/b?q=1") == "/a/b""#,
+        &act
+    ));
+    assert!(eval_bool(
+        r#"url.host("http://evil.com\\@good.com/") == "evil.com""#,
+        &act
+    ));
     let program = compile_bool(r#"url.host("kein url") == """#, Phase::ToolCall).unwrap();
     assert!(program.eval_bool(&act, &mut Meter::unlimited()).is_err());
 }
@@ -161,9 +206,18 @@ fn pol_002_ac3_url_functions() {
 #[test]
 fn pol_002_ac3_bytes_human() {
     let act = empty();
-    assert_eq!(eval("bytes_human(512)", &act).unwrap(), Value::from("512 B"));
-    assert_eq!(eval("bytes_human(1536)", &act).unwrap(), Value::from("1.5 KiB"));
-    assert_eq!(eval("bytes_human(5242880)", &act).unwrap(), Value::from("5.0 MiB"));
+    assert_eq!(
+        eval("bytes_human(512)", &act).unwrap(),
+        Value::from("512 B")
+    );
+    assert_eq!(
+        eval("bytes_human(1536)", &act).unwrap(),
+        Value::from("1.5 KiB")
+    );
+    assert_eq!(
+        eval("bytes_human(5242880)", &act).unwrap(),
+        Value::from("5.0 MiB")
+    );
 }
 
 #[test]
@@ -265,5 +319,8 @@ fn pol_002_time_budget_exceeded_is_an_error() {
         ..Limits::default()
     };
     let mut meter = Meter::new(&limits, &clock);
-    assert_eq!(program.eval_bool(&act, &mut meter), Err(EvalError::Deadline));
+    assert_eq!(
+        program.eval_bool(&act, &mut meter),
+        Err(EvalError::Deadline)
+    );
 }

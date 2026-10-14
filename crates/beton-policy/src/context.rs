@@ -49,9 +49,9 @@ impl Activation {
         };
         let mut vars = BTreeMap::new();
         for (name, value) in map {
-            let ty = DECLS.var(&name, phase).map_err(|_| {
-                err(&name, &format!("in Phase {phase} nicht deklariert"))
-            })?;
+            let ty = DECLS
+                .var(&name, phase)
+                .map_err(|_| err(&name, &format!("in Phase {phase} nicht deklariert")))?;
             vars.insert(name.clone(), convert(&value, ty, &name)?);
         }
         Ok(Self {
@@ -113,7 +113,8 @@ impl Activation {
             _ => BTreeMap::new(),
         };
         map.insert(Key::String(field.into()), converted);
-        self.vars.insert(object.to_owned(), Value::Map(Arc::new(map)));
+        self.vars
+            .insert(object.to_owned(), Value::Map(Arc::new(map)));
         Ok(())
     }
 }
@@ -152,9 +153,9 @@ pub(crate) fn convert(v: &serde_json::Value, ty: &Ty, path: &str) -> Result<Valu
             J::Number(n) => Value::Duration(time::Duration::seconds_f64(
                 n.as_f64().ok_or_else(mismatch)?,
             )),
-            J::String(s) => Value::Duration(
-                crate::cel::ext::parse_duration(s).map_err(|e| err(path, &e))?,
-            ),
+            J::String(s) => {
+                Value::Duration(crate::cel::ext::parse_duration(s).map_err(|e| err(path, &e))?)
+            }
             _ => return Err(mismatch()),
         },
         Ty::List(elem) => {
@@ -188,7 +189,10 @@ pub(crate) fn convert(v: &serde_json::Value, ty: &Ty, path: &str) -> Result<Valu
                 let fty = DECLS
                     .field(name, k)
                     .ok_or_else(|| err(&field_path, "unbekanntes Feld"))?;
-                out.insert(Key::String(k.as_str().into()), convert(x, fty, &field_path)?);
+                out.insert(
+                    Key::String(k.as_str().into()),
+                    convert(x, fty, &field_path)?,
+                );
             }
             Value::Map(Arc::new(out))
         }

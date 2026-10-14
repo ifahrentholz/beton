@@ -2,6 +2,7 @@
 
 pub mod cel;
 pub mod context;
+pub mod normalize;
 pub mod types;
 pub mod value;
 
@@ -9,7 +10,17 @@ use serde::{Deserialize, Serialize};
 
 /// Hook-Phase, an der Policies entscheiden (POL-003).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
