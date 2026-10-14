@@ -56,9 +56,10 @@ pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
-    /// Tunnel-Token des zuletzt gestarteten Runners je Session. Ist es gesperrt (geordneter
-    /// Stopp), startet dieser Runner nicht mehr, auch wenn sein Prozess noch läuft (#198).
-    tokens: Mutex<HashMap<SessionId, String>>,
+    /// Tunnel-Token und Startzeit des zuletzt gestarteten Runners je Session. Ist das Token
+    /// gesperrt (geordneter Stopp) oder das Start-Budget abgelaufen, startet dieser Runner nicht
+    /// mehr, auch wenn sein Prozess noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, (String, Instant)>>,
     /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
     /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
     starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
@@ -669,7 +670,11 @@ impl<'a> SessionManager<'a> {
             .await
             .map_err(|e| Problem::new(ProblemCode::Unavailable).detail(e.to_string()))?;
         cfg.launched.handles.lock().await.insert(session.id, handle);
-        cfg.launched.tokens.lock().await.insert(session.id, token);
+        cfg.launched
+            .tokens
+            .lock()
+            .await
+            .insert(session.id, (token, Instant::now()));
         Ok(())
     }
 
@@ -677,9 +682,8 @@ impl<'a> SessionManager<'a> {
         let start = Instant::now();
         while !self.state.runtime.runners.connected(session) {
             if start.elapsed() > self.cfg().connect_timeout {
-                // Wer sich nicht meldet, wird beendet und verliert sein Token; der nächste
-                // Versuch startet neu, statt weiter auf diesen Runner zu warten.
-                self.abandon_start(session).await;
+                // Der Runner startet weiter (Harness-Handshake, MCP-Server); der nächste
+                // Versuch wartet auf ihn, ersetzt wird er erst nach dem Start-Budget.
                 return Err(
                     Problem::new(ProblemCode::Unavailable).detail("Runner meldet sich nicht")
                 );
@@ -689,12 +693,11 @@ impl<'a> SessionManager<'a> {
         Ok(())
     }
 
-    /// Beendet einen Runner, der sich nicht gemeldet hat, und sperrt sein Token.
-    async fn abandon_start(&self, session: SessionId) {
-        if self.state.runtime.runners.connected(session) {
-            return;
-        }
-        if let Some(token) = self.cfg().launched.tokens.lock().await.remove(&session) {
+    /// Räumt den vorigen Start vor einem neuen ab: Token sperren, Prozess beenden (falls er nach
+    /// dem Start-Budget noch läuft). Nur unter der Start-Sperre der Session aufrufen; dann gehört
+    /// der Eintrag sicher zur Generation vor dem neuen Start.
+    async fn replace_start(&self, session: SessionId) {
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
             self.state.runtime.runners.revoke_token(&token);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
@@ -713,6 +716,7 @@ impl<'a> SessionManager<'a> {
             let starts = self.cfg().launched.start_lock(session);
             let _start = starts.lock().await;
             if !self.await_adopted(session).await && !self.runner_starting(session).await {
+                self.replace_start(session).await;
                 let reference = self.last_native_ref(session).await?;
                 self.launch(&record, reference).await?;
             }
@@ -741,11 +745,12 @@ impl<'a> SessionManager<'a> {
         self.await_adopted(session).await || self.runner_starting(session).await
     }
 
-    /// Ist der zuletzt gestartete Runner noch auf dem Weg zum Tunnel? Sein Prozess läuft und
-    /// sein Token gilt. Nach einem geordneten Stopp ist das Token gesperrt: Ein Prozess, der
-    /// sich nur noch beendet, meldet sich nicht wieder (#198).
+    /// Ist der zuletzt gestartete Runner noch auf dem Weg zum Tunnel? Sein Prozess läuft, sein
+    /// Token gilt, und das Start-Budget ist nicht abgelaufen. Nach einem geordneten Stopp ist
+    /// das Token gesperrt: Ein Prozess, der sich nur noch beendet, meldet sich nicht wieder
+    /// (#198).
     async fn runner_starting(&self, session: SessionId) -> bool {
-        let token = self
+        let launched = self
             .cfg()
             .launched
             .tokens
@@ -753,7 +758,10 @@ impl<'a> SessionManager<'a> {
             .await
             .get(&session)
             .cloned();
-        if !token.is_some_and(|t| self.state.runtime.runners.token_valid(&t)) {
+        let budget = self.cfg().start_budget;
+        if !launched.is_some_and(|(t, at)| {
+            at.elapsed() < budget && self.state.runtime.runners.token_valid(&t)
+        }) {
             return false;
         }
         let handle = self
@@ -778,13 +786,9 @@ impl<'a> SessionManager<'a> {
         if self.await_adopted(session).await {
             return Ok(());
         }
-        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter oder geordnet
-        // gestoppter wird ersetzt.
-        if !self.runner_starting(session).await {
-            self.cfg().launched.handles.lock().await.remove(&session);
-            self.resume(session).await?;
-        }
-        self.wait_connected(session).await
+        // Ein startender Runner verbindet sich gleich; ein beendeter, geordnet gestoppter oder
+        // über das Start-Budget hängender wird unter der Start-Sperre ersetzt.
+        self.resume(session).await.map(|_| ())
     }
 
     /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
@@ -1234,7 +1238,7 @@ impl<'a> SessionManager<'a> {
         }
         // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
         // Tunnel (Security-Review zu #198).
-        if let Some(token) = self.cfg().launched.tokens.lock().await.remove(&session) {
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
             runners.revoke_token(&token);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {

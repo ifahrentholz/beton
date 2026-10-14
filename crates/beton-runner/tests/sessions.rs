@@ -917,7 +917,7 @@ async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budg
     let d = daemon(dir.path(), move |mut r| {
         r.sessions.provider = std::sync::Arc::new(provider);
         r.sessions.connect_timeout = Duration::from_millis(500);
-        r.sessions.start_budget = Duration::from_secs(2);
+        r.sessions.start_budget = Duration::from_secs(3);
         r
     })
     .await;
@@ -936,12 +936,19 @@ async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budg
     let (status, body) = d.http("POST", &path, None).await;
     assert_eq!(status, 503, "{body}");
     assert_eq!(capture.tokens().len(), 1, "kein zweiter Start im Budget");
-    tokio::time::sleep(Duration::from_secs(2).saturating_sub(started.elapsed())).await;
+    // Budget sicher abgelaufen (die Startzeit zählt ab dem Ende des Starts, nach `started`).
+    tokio::time::sleep(Duration::from_millis(3500).saturating_sub(started.elapsed())).await;
     capture
         .hang
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    let (status, body) = d.http("POST", &path, None).await;
-    assert_eq!(status, 200, "{body}");
+    let start = Instant::now();
+    loop {
+        let (status, body) = d.http("POST", &path, None).await;
+        if status == 200 {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{status} {body}");
+    }
     let tokens = capture.tokens();
     assert_eq!(tokens.len(), 2, "nach dem Budget ersetzt");
     assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
