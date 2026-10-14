@@ -76,6 +76,12 @@ pub struct LaunchPlan {
     pub hidden: Vec<HiddenDotfiles>,
     pub git: Option<GitProtection>,
     pub net: NetMode,
+    /// Unix-Sockets, mit denen sich das Ziel verbinden darf (Stufe 1: Exec-Broker).
+    #[serde(default)]
+    pub unix_sockets: Vec<PathBuf>,
+    /// Loopback-Ports für Dev-Server (PRX-008 AC3).
+    #[serde(default)]
+    pub dev_ports: Vec<u16>,
     pub limits: Limits,
     /// Höchste genutzte Landlock-ABI (Tests).
     pub abi_cap: Option<u8>,
@@ -117,6 +123,8 @@ impl LaunchPlan {
             hidden: policy.hidden.clone(),
             git: policy.git.clone(),
             net: policy.net,
+            unix_sockets: policy.unix_sockets.clone(),
+            dev_ports: policy.dev_ports.clone(),
             limits: policy.limits,
             abi_cap: None,
             cgroup: None,

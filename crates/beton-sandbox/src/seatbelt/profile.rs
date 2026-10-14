@@ -14,10 +14,10 @@ use crate::error::SandboxError;
 use crate::resolve::{Mask, NetMode, ResolvedPolicy, Stage};
 
 /// Version des Templates (erscheint in Probe und `explain`).
-pub const PROFILE_VERSION: u32 = 1;
+pub const PROFILE_VERSION: u32 = 2;
 
 /// Das Template.
-pub const TEMPLATE: &str = include_str!("profile.v1.sbpl");
+pub const TEMPLATE: &str = include_str!("profile.v2.sbpl");
 
 /// Höchstgröße von Profil plus Parametern (SBX-007).
 pub const MAX_PROFILE_BYTES: usize = 256 * 1024;
@@ -174,6 +174,27 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
                 mask_lines.push(format!(
                     "(deny file-read* file-write* (subpath (param \"{key}\")))"
                 ));
+                // Eine von beton verwaltete Wurzel unter einer Maske (Worktree unter
+                // `~/.beton/worktrees`, SES-015) bleibt freigegeben, samt den Metadaten ihrer
+                // Vorfahren innerhalb der Maske; sonst nichts von der Maske.
+                for (roots, ops, prefix) in [
+                    (&policy.read_roots, "file-read*", "READ"),
+                    (&policy.write_roots, "file-read* file-write*", "WRITE"),
+                ] {
+                    for root in roots.iter().filter(|r| r.starts_with(path) && *r != path) {
+                        let key = b.path(prefix, root)?;
+                        mask_lines.push(format!("(allow {ops} (subpath (param \"{key}\")))"));
+                        for a in root.ancestors().skip(1) {
+                            if !a.starts_with(path) {
+                                break;
+                            }
+                            let key = b.path("ANC", a)?;
+                            mask_lines.push(format!(
+                                "(allow file-read-metadata (literal (param \"{key}\")))"
+                            ));
+                        }
+                    }
+                }
                 for a in path.ancestors().skip(1) {
                     if within_any(a, &policy.write_roots) {
                         keep.insert(a.to_path_buf());
@@ -272,7 +293,23 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         ));
     }
 
-    let sections: [(&str, &Vec<String>); 10] = [
+    let mut unix_lines = Vec::new();
+    for sock in &policy.unix_sockets {
+        let key = b.path("SOCK", sock)?;
+        unix_lines.push(format!(
+            "(allow network-outbound (remote unix-socket (path-literal (param \"{key}\"))))"
+        ));
+    }
+    let mut dev_lines = Vec::new();
+    for port in &policy.dev_ports {
+        let key = b.param("DEV_PORT", port.to_string());
+        let ip = format!("(string-append \"localhost:\" (param \"{key}\"))");
+        dev_lines.push(format!("(allow network-bind (local ip {ip}))"));
+        dev_lines.push(format!("(allow network-inbound (local ip {ip}))"));
+        dev_lines.push(format!("(allow network-outbound (remote ip {ip}))"));
+    }
+
+    let sections: [(&str, &Vec<String>); 12] = [
         ("GRANT_ROOTS", &grant_lines),
         ("HIDDEN", &hidden_lines),
         ("ROOTS", &root_lines),
@@ -282,6 +319,8 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         ("GIT", &git_lines),
         ("KEYCHAIN", &keychain_lines),
         ("NETWORK", &net_lines),
+        ("UNIX_SOCKETS", &unix_lines),
+        ("DEV_PORTS", &dev_lines),
         ("", &Vec::new()),
     ];
     let mut text = String::with_capacity(TEMPLATE.len() + 4096);

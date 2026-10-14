@@ -148,6 +148,12 @@ fn check_env_name(field: &str, name: &str, allow_prefix: bool) -> Result<(), San
             format!("`{name}` gelangt nie in eine Sandbox (SBX-005)"),
         ));
     }
+    if !name.ends_with('*') && crate::resolve::controlled_env(name) {
+        return Err(SandboxError::invalid(
+            field,
+            format!("`{name}` setzt beton je Stufe selbst (Scratch, Proxy, CA, Session)"),
+        ));
+    }
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 (version 1)
-;; beton Seatbelt-Profil v1 (SBX-007).
+;; beton Seatbelt-Profil v2 (SBX-007; v2: Unix-Socket des Exec-Brokers, Dev-Ports, SBX-002/PRX-008).
 ;; Dieser Text ist fest. Pfade, Muster und der Proxy-Port kommen ausschließlich als Parameter
 ;; (`sandbox-exec -D KEY=VALUE`) und werden nur über `(param "KEY")` referenziert; die
 ;; generierten Zeilen an den Markierungen `;;@…` enthalten nur feste Bausteine und Schlüssel.
@@ -79,3 +79,7 @@
 ;;@KEYCHAIN
 ;; Netz: ausschließlich zur Proxy-Instanz dieser Stufe.
 ;;@NETWORK
+;; Unix-Sockets: nur die ausdrücklich freigegebenen (Stufe 1: Exec-Broker, SBX-002).
+;;@UNIX_SOCKETS
+;; Dev-Server: bind/listen und Verbindungen nur auf `dev_ports` (Loopback des Hosts, PRX-008).
+;;@DEV_PORTS

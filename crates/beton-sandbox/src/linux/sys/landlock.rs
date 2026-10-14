@@ -4,7 +4,7 @@
 //!
 //! Gehandhabt werden alle Dateisystem-Rechte der erkannten ABI außer `IOCTL_DEV` (Terminals
 //! und Geräte; `TIOCSTI` sperrt seccomp). Ab ABI 4 zusätzlich TCP: `connect` nur zum
-//! Relay-Port, kein `bind`. Ab ABI 6 sind Signale und abstrakte Unix-Sockets auf die eigene
+//! Relay-Port und zu den `dev_ports`, `bind` nur auf den `dev_ports` (PRX-008 AC3, #210). Ab ABI 6 sind Signale und abstrakte Unix-Sockets auf die eigene
 //! Domain begrenzt. Ab ABI 9 sind Verbindungen zu Unix-Sockets mit Pfad nur im privaten `/tmp`
 //! und im Scratch erlaubt. `CompatLevel::HardRequirement`: Fehlt etwas, scheitert der Start.
 
@@ -30,12 +30,29 @@ fn file_rights() -> BitFlags<AccessFs> {
         | AccessFs::IoctlDev
 }
 
-/// Baut den Ruleset (ohne ihn zu erzwingen). `proxy_port`: einzige erlaubte TCP-Verbindung
-/// (ABI ≥ 4).
+/// Erlaubte TCP-Ports (ABI ≥ 4): `connect` zum Relay-Port und zu den Dev-Ports, `bind` nur
+/// auf den Dev-Ports. Im leeren Net-Namespace erreichen beide nur Dienste der Sandbox selbst.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Tcp {
+    pub connect: Vec<u16>,
+    pub bind: Vec<u16>,
+}
+
+impl Tcp {
+    /// Nur eine Verbindung zu `port` (oder gar keine).
+    pub fn connect_only(port: Option<u16>) -> Self {
+        Self {
+            connect: port.into_iter().collect(),
+            bind: Vec::new(),
+        }
+    }
+}
+
+/// Baut den Ruleset (ohne ihn zu erzwingen).
 pub fn ruleset(
     abi: u32,
     rules: &[(PathBuf, Acc)],
-    proxy_port: Option<u16>,
+    tcp: &Tcp,
     unix_dirs: &[&Path],
 ) -> Result<RulesetCreated, String> {
     let lab = ABI::from(abi as i32);
@@ -95,12 +112,17 @@ pub fn ruleset(
             }
         }
     }
-    if abi >= 4
-        && let Some(port) = proxy_port
-    {
-        created = created
-            .add_rule(NetPort::new(port, AccessNet::ConnectTcp))
-            .map_err(err)?;
+    if abi >= 4 {
+        for port in &tcp.connect {
+            created = created
+                .add_rule(NetPort::new(*port, AccessNet::ConnectTcp))
+                .map_err(err)?;
+        }
+        for port in &tcp.bind {
+            created = created
+                .add_rule(NetPort::new(*port, AccessNet::BindTcp))
+                .map_err(err)?;
+        }
     }
     Ok(created)
 }
@@ -122,16 +144,16 @@ pub fn enforce(created: RulesetCreated) -> Result<(), String> {
 pub fn apply(
     abi: u32,
     rules: &[(PathBuf, Acc)],
-    proxy_port: Option<u16>,
+    tcp: &Tcp,
     unix_dirs: &[&Path],
 ) -> Result<(), String> {
-    enforce(ruleset(abi, rules, proxy_port, unix_dirs)?)
+    enforce(ruleset(abi, rules, tcp, unix_dirs)?)
 }
 
 /// Sperrt jeden Dateizugriff (für Hilfsprozesse wie Relay und Connector) und erlaubt höchstens
 /// eine TCP-Verbindung zu `connect_port`.
 pub fn deny_all(abi: u32, connect_port: Option<u16>) -> Result<(), String> {
-    enforce(ruleset(abi, &[], connect_port, &[])?)
+    enforce(ruleset(abi, &[], &Tcp::connect_only(connect_port), &[])?)
 }
 
 #[cfg(test)]
@@ -156,7 +178,11 @@ mod tests {
             (tmp.path().join("fehlt"), Acc::ReadExec),
         ];
         for abi in [2, effective_abi(kernel_abi(), None)] {
-            ruleset(abi, &rules, Some(8080), &[tmp.path()]).unwrap();
+            let tcp = Tcp {
+                connect: vec![8080, 3000],
+                bind: vec![3000],
+            };
+            ruleset(abi, &rules, &tcp, &[tmp.path()]).unwrap();
         }
         assert_eq!(effective_abi(6, Some(2)), 2);
         assert_eq!(effective_abi(3, Some(5)), 3);
@@ -174,7 +200,13 @@ mod tests {
         let (inside2, outside2) = (inside.clone(), outside.path().to_path_buf());
         // Landlock gilt nur für den Thread, der es anwendet (ohne TSYNC).
         let r = std::thread::spawn(move || {
-            apply(abi, &[(inside2.clone(), Acc::ReadExec)], None, &[]).unwrap();
+            apply(
+                abi,
+                &[(inside2.clone(), Acc::ReadExec)],
+                &Tcp::default(),
+                &[],
+            )
+            .unwrap();
             (
                 std::fs::read(inside2.join("a")).is_ok(),
                 std::fs::read(outside2.join("b")).is_err(),

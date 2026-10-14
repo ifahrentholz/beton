@@ -717,7 +717,7 @@ async fn ses_015_ac2_worktree_under_beton_home_writes_only_itself() {
     for attack in [
         // Aus dem Worktree heraus ins Haupt-Checkout schreiben (SES-015 AC2).
         format!("echo x > {}/main.txt", repo.display()),
-        format!("echo x > ../../../../../repo/main.txt"),
+        "echo x > ../../../../../repo/main.txt".to_owned(),
         // Der Rest von `~/.beton` bleibt maskiert.
         "cat \"$HOME/.beton/run/token\"".to_owned(),
         "ls \"$HOME/.beton\"".to_owned(),

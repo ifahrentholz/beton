@@ -47,23 +47,45 @@ pub struct HarnessGrants {
     pub passthrough: Vec<String>,
 }
 
-/// Bekannte Vendor-CLIs. *(Annahme, mit SBX-002 pro Adapter zu verifizieren und in die
-/// Adapter-Capabilities zu verschieben.)*
+/// Bekannte Vendor-CLIs, verifiziert gegen claude 2.1.296 und codex-cli 0.161.0 (WP-45, ohne
+/// Dateien der CLIs zu lesen: Doku, `--help`, Verhalten, Netzverbindungen über einen lokalen
+/// CONNECT-Mitschnitt).
+///
+/// - Claude Code: Login unter macOS im Keychain (`Claude Code-credentials`), unter Linux in
+///   `~/.claude/.credentials.json`; State in `~/.claude` und `~/.claude.json`. Modell-API
+///   `api.anthropic.com`, Token-Erneuerung `platform.claude.com`, Konto `claude.ai`,
+///   claude.ai-Connectoren `mcp-proxy.anthropic.com` (Telemetrie und Auto-Update nicht).
+/// - Codex: `cli_auth_credentials_store = "file"` (Default) → `~/.codex/auth.json`; ChatGPT-Login
+///   über `chatgpt.com` und `ab.chatgpt.com`, Token-Erneuerung `auth.openai.com`, API-Key
+///   `api.openai.com`.
 pub fn builtin_harness_grants() -> Vec<HarnessGrants> {
+    let list = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
     vec![
         HarnessGrants {
             harness: "claude".into(),
-            credential_paths: vec!["~/.claude/.credentials.json".into()],
-            state_paths: vec!["~/.claude".into(), "~/.claude.json".into()],
-            keychain: true,
-            ..HarnessGrants::default()
+            credential_paths: list(&["~/.claude/.credentials.json"]),
+            state_paths: list(&["~/.claude", "~/.claude.json"]),
+            keychain: cfg!(target_os = "macos"),
+            env_families: list(&["CLAUDE", "ANTHROPIC_"]),
+            passthrough: list(&[
+                "api.anthropic.com",
+                "platform.claude.com",
+                "claude.ai",
+                "mcp-proxy.anthropic.com",
+            ]),
         },
         HarnessGrants {
             harness: "codex".into(),
-            credential_paths: vec!["~/.codex/auth.json".into()],
-            state_paths: vec!["~/.codex".into()],
+            credential_paths: list(&["~/.codex/auth.json"]),
+            state_paths: list(&["~/.codex"]),
             keychain: false,
-            ..HarnessGrants::default()
+            env_families: list(&["CODEX_", "OPENAI_"]),
+            passthrough: list(&[
+                "chatgpt.com",
+                "ab.chatgpt.com",
+                "auth.openai.com",
+                "api.openai.com",
+            ]),
         },
     ]
 }
