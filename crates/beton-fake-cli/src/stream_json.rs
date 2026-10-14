@@ -124,6 +124,61 @@ pub struct Sim<R, W> {
     context: u64,
     window: Option<u64>,
     settings: Settings,
+    /// Kommando des `PreToolUse`-Hooks aus `--settings` (HAR-005), per Shell aufgerufen.
+    pre_tool_hook: Option<String>,
+}
+
+/// Was der `PreToolUse`-Hook entschieden hat.
+enum HookOutcome {
+    /// Keine Entscheidung (ggf. mit geänderten Argumenten): normale Prüfung der CLI.
+    Pass(Option<Value>),
+    /// Erlaubt ohne Rückfrage (ggf. mit geänderten Argumenten).
+    Allow(Option<Value>),
+    /// Blockiert mit Begründung (Ablehnung oder Exit-Code 2).
+    Block(String),
+}
+
+/// Ruft den Hook wie Claude Code per Shell auf: Hook-JSON auf stdin, Antwort auf stdout,
+/// Exit-Code 2 blockiert mit stderr als Begründung.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Fake-Harness für Tests: ruft den PreToolUse-Hook wie Claude Code per Shell auf"
+)]
+fn run_hook(command: &str, input: &Value) -> HookOutcome {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+    let child = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let Ok(mut child) = child else {
+        return HookOutcome::Block("Hook nicht startbar".into());
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.to_string().as_bytes());
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return HookOutcome::Block("Hook ohne Ergebnis".into());
+    };
+    if out.status.code() == Some(2) {
+        return HookOutcome::Block(String::from_utf8_lossy(&out.stderr).trim().to_owned());
+    }
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    let specific = &v["hookSpecificOutput"];
+    let updated = specific.get("updatedInput").cloned();
+    match specific["permissionDecision"].as_str() {
+        Some("deny") => HookOutcome::Block(
+            specific["permissionDecisionReason"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        ),
+        Some("allow") => HookOutcome::Allow(updated),
+        _ => HookOutcome::Pass(updated),
+    }
 }
 
 impl<R: BufRead, W: Write> Sim<R, W> {
@@ -182,7 +237,14 @@ impl<R: BufRead, W: Write> Sim<R, W> {
             context: 0,
             window: None,
             settings,
+            pre_tool_hook: None,
         }
+    }
+
+    /// `PreToolUse`-Hook aus `--settings` (HAR-005).
+    pub fn with_pre_tool_hook(mut self, command: Option<String>) -> Self {
+        self.pre_tool_hook = command;
+        self
     }
 
     fn next_id(&mut self, prefix: &str) -> String {
@@ -429,13 +491,47 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 json!({"type": "tool_use", "id": id, "name": call.name, "input": call.args}),
             )?;
             state.allowed = true;
-            if step.gate {
+            // Wie 2.1.296: Der `PreToolUse`-Hook läuft vor der eigenen Prüfung der CLI.
+            let mut input = call.args.clone();
+            let mut ask = step.gate;
+            if let Some(command) = self.pre_tool_hook.clone() {
+                let payload = json!({
+                    "session_id": self.session_id,
+                    "cwd": std::env::current_dir().unwrap_or_default(),
+                    "permission_mode": self.settings.mode,
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": call.name,
+                    "tool_input": input,
+                    "tool_use_id": id,
+                });
+                match run_hook(&command, &payload) {
+                    HookOutcome::Pass(updated) => {
+                        if let Some(u) = updated {
+                            input = u;
+                        }
+                    }
+                    HookOutcome::Allow(updated) => {
+                        if let Some(u) = updated {
+                            input = u;
+                        }
+                        ask = false;
+                    }
+                    HookOutcome::Block(reason) => {
+                        state.allowed = false;
+                        ask = false;
+                        let text = format!("PreToolUse:{} hook error: {reason}", call.name);
+                        crate::io::record_context("tool_result", &text);
+                        self.tool_result(&id, &json!(text), true)?;
+                    }
+                }
+            }
+            if ask {
                 let request_id = self.next_id("req");
                 self.emit(json!({
                     "type": "control_request",
                     "request_id": request_id,
                     "request": {"subtype": "can_use_tool", "tool_name": call.name,
-                                "input": call.args, "tool_use_id": id},
+                                "input": input, "tool_use_id": id},
                 }))?;
                 let denial = loop {
                     let msg = self.read()?;

@@ -3468,6 +3468,16 @@
         },
         "policy_set_hash": {
           "type": "string"
+        },
+        "subject_hash": {
+          "description": "`sha256:<hex>` über das kanonische JSON des Subjekts (z. B. Tool-Name und Argumente).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject_ref": {
+          "description": "Bezug auf das ausgewertete Subjekt (`call_id` des Tool-Calls, `event_id` des\n`tool.call.requested`, `turn_id` bzw. `approval_id`); die Eingabe selbst steht nicht\nim Event (POL-025)."
         }
       },
       "required": [
@@ -4699,6 +4709,13 @@
         "args": true,
         "call_id": {
           "type": "string"
+        },
+        "kind": {
+          "description": "Kanonische Klasse (POL-005: `shell`, `file_read`, `file_edit`, `mcp`, …), abgeleitet aus\nder Abbildungstabelle in `beton-policy`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "mcp_server": {
           "type": [

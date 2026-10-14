@@ -43,6 +43,13 @@
         "approval": {
           "$ref": "#/$defs/ApprovalMechanism"
         },
+        "approval_kinds": {
+          "description": "Tool-Klassen (POL-005), für die der Vendor bei `tool_call_gate: approval_only` um\nFreigabe fragt; die übrigen sind nur beobachtbar (POL-024).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "auth_sources": {
           "type": "array",
           "items": {
@@ -89,6 +96,11 @@
         "mode": {
           "$ref": "#/$defs/Mode"
         },
+        "model_request_gate": {
+          "description": "Phase `model_request` (POL-024).",
+          "$ref": "#/$defs/ModelRequestGate",
+          "default": "observe_only"
+        },
         "model_switch": {
           "$ref": "#/$defs/SwitchSupport"
         },
@@ -128,6 +140,11 @@
         },
         "tool_call_gate": {
           "$ref": "#/$defs/ToolCallGate"
+        },
+        "tool_result_gate": {
+          "description": "Phase `tool_result`: `full` heißt, das Ergebnis lässt sich vor dem Modell ersetzen.",
+          "$ref": "#/$defs/ToolCallGate",
+          "default": "observe_only"
         },
         "transcript_import": {
           "type": "boolean"
@@ -242,6 +259,15 @@
       "enum": [
         "native",
         "tui"
+      ]
+    },
+    "ModelRequestGate": {
+      "description": "Wo die Phase `model_request` geprüft wird (POL-003, POL-024): `turn` – der Runner vor\njedem Turn bzw. jeder Eingabe; `call` – der Adapter vor jedem Model-Request\n(Direkt-API); `observe_only` – gar nicht durchsetzbar.",
+      "type": "string",
+      "enum": [
+        "observe_only",
+        "turn",
+        "call"
       ]
     },
     "PermissionMode": {

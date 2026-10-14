@@ -448,3 +448,45 @@ fn pol_001_rule_types_and_modify_fields() {
         assert!(!s.as_str().is_empty());
     }
 }
+
+/// #182: Eine Datei, die noch nie gültig war, führt das effektive Set mit Pfad und Ladefehler;
+/// eine später fehlerhafte Fassung einer gültigen Datei behält die letzte gültige Version und
+/// zählt nicht als „nie geladen“.
+#[test]
+fn pol_001_never_valid_files_are_listed_with_their_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let broken = dir.path().join("kaputt.yaml");
+    std::fs::write(&broken, "spec_version: 1\nname: x\nrules:\n  - id: r\n    on: tool_call\n    when: tool.kind > 5\n    action: deny\n").unwrap();
+    let good = dir.path().join("guard.yaml");
+    std::fs::write(&good, DENY_SHELL).unwrap();
+    let mut store = PolicyStore::new();
+    store.add_dir(Scope::Project, dir.path());
+    store.refresh();
+    let effective = store.effective();
+    let never = effective.never_valid();
+    assert_eq!(never.len(), 1, "{never:?}");
+    assert_eq!(never[0].file, broken.display().to_string());
+    assert_eq!(never[0].line, 6);
+    assert!(
+        never[0].error.contains("rules[0].when"),
+        "{}",
+        never[0].error
+    );
+
+    // Gültige Datei kaputt machen: alte Version bleibt, sie gilt nicht als „nie geladen“.
+    std::fs::write(
+        &good,
+        DENY_SHELL.replace("tool.kind == \"shell\"", "tool.kind > 5"),
+    )
+    .unwrap();
+    store.refresh();
+    let effective = store.effective();
+    assert_eq!(effective.never_valid().len(), 1);
+    assert_eq!(effective.invalid().len(), 2);
+    assert!(matches!(
+        effective
+            .evaluate(&shell_call(), &EvalOptions::default())
+            .outcome,
+        Outcome::Deny { .. }
+    ));
+}

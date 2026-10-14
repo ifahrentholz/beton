@@ -21,18 +21,7 @@ use crate::yaml::{self, Document, Style};
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
 /// Kanonische Tool-Klassen (POL-005), gültig in `kinds:`.
-const KINDS: [&str; 10] = [
-    "shell",
-    "file_read",
-    "file_write",
-    "file_edit",
-    "search",
-    "web_fetch",
-    "mcp",
-    "system",
-    "browser",
-    "other",
-];
+use crate::enforcement::KINDS;
 
 /// Ebene eines Policy-Sets; die Reihenfolge ist die Autorität (`Org` zuerst).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

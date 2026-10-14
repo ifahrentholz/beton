@@ -72,6 +72,9 @@ pub enum CallError {
     Exhausted { attempts: u32, last: Box<CallError> },
     #[error("abgebrochen")]
     Cancelled,
+    /// Die Policy hat den Model-Request abgelehnt (Phase `model_request`, HAR-010 AC5).
+    #[error("von der Policy abgelehnt: {0}")]
+    PolicyDenied(String),
 }
 
 impl CallError {
@@ -95,6 +98,7 @@ impl CallError {
             Self::Stream(_) => "provider_stream",
             Self::Exhausted { .. } => "provider_retries_exhausted",
             Self::Cancelled => "cancelled",
+            Self::PolicyDenied(_) => "policy_denied",
         }
     }
 

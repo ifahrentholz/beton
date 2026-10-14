@@ -1,0 +1,2 @@
+{"request":{"subtype":"initialize"},"request_id":"beton_init","type":"control_request"}
+{"message":{"content":[{"text":"Führe mit dem Bash-Tool genau `echo beton-hook` aus. Wenn das abgelehnt wird, antworte nur mit: abgelehnt.","type":"text"}],"role":"user"},"type":"user"}

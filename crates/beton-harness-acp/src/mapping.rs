@@ -23,17 +23,10 @@ pub const IGNORED: [&str; 4] = [
     "config_option_update",
 ];
 
-/// Kanonische Tool-Klasse (POL-005) eines ACP-`kind`.
-pub fn tool_kind(acp_kind: &str) -> &'static str {
-    match acp_kind {
-        "read" => "file_read",
-        "edit" => "file_edit",
-        "delete" | "move" => "file_write",
-        "search" => "search",
-        "execute" => "shell",
-        "fetch" => "web_fetch",
-        _ => "other",
-    }
+/// Kanonische Tool-Klasse (POL-005) eines ACP-`kind` aus der Abbildungstabelle von
+/// `beton-policy` (#182; `delete`/`move` → `file_edit`).
+pub fn tool_kind(acp_kind: Option<&str>) -> String {
+    beton_harness::tool_kind("acp", "", acp_kind, None)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -105,6 +98,7 @@ impl MapState {
         Some(EventPayload::ToolCallRequested(ToolCallRequested {
             call_id: id,
             tool: tool["title"].as_str().unwrap_or("tool").to_owned(),
+            kind: Some(tool_kind(tool["kind"].as_str())),
             mcp_server: None,
             args: match &tool["rawInput"] {
                 Value::Null => json!({}),
@@ -303,11 +297,12 @@ mod tests {
 
     #[test]
     fn har_007_acp_kinds_map_to_tool_kinds() {
-        assert_eq!(tool_kind("execute"), "shell");
-        assert_eq!(tool_kind("edit"), "file_edit");
-        assert_eq!(tool_kind("read"), "file_read");
-        assert_eq!(tool_kind("fetch"), "web_fetch");
-        assert_eq!(tool_kind("think"), "other");
+        assert_eq!(tool_kind(Some("execute")), "shell");
+        assert_eq!(tool_kind(Some("edit")), "file_edit");
+        assert_eq!(tool_kind(Some("read")), "file_read");
+        assert_eq!(tool_kind(Some("fetch")), "web_fetch");
+        assert_eq!(tool_kind(Some("think")), "other");
+        assert_eq!(tool_kind(None), "other");
     }
 
     #[test]

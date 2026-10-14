@@ -124,6 +124,11 @@ pub enum Command {
     /// der Runner trägt es in die MCP-Konfiguration des Harness ein (HAR-009).
     #[command(name = "mcp", hide = true)]
     Mcp(McpArgs),
+    /// Hook-Kommando für Vendor-Hooks: `hook claude --event PreToolUse --socket … --token-file …`
+    /// (HAR-005, HAR-013). Der Adapter trägt es in die Hook-Settings des Harness ein; jeder
+    /// Fehler blockiert den Tool-Call (Exit-Code 2).
+    #[command(name = "hook", hide = true)]
+    Hook(McpArgs),
 }
 
 /// Argumente des MCP-Relays (`serve|proxy …`, siehe `beton_mcp::relay`).

@@ -1,0 +1,1 @@
+{"cwd":"/beton-golden/workdir","hook_event_name":"PreToolUse","permission_mode":"default","session_id":"3e39afd5-2047-4ebb-8f3d-5d645d13a8e8","tool_input":{"command":"echo beton-hook","description":"Print the string beton-hook"},"tool_name":"Bash","tool_use_id":"toolu_0194CQFo3dtA7Mm55goKJkz6"}

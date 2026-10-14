@@ -107,6 +107,7 @@ impl HarnessAdapter for EchoAdapter {
                                 payload: EventPayload::ToolCallRequested(ToolCallRequested {
                                     call_id: call_id.clone(),
                                     tool: v["tool"].as_str().unwrap_or_default().into(),
+                                    kind: None,
                                     mcp_server: None,
                                     args: v["args"].clone(),
                                     source: ToolSource::Harness,
@@ -123,6 +124,7 @@ impl HarnessAdapter for EchoAdapter {
                                 tool: v["tool"].as_str().unwrap_or_default().into(),
                                 kind: "file_read".into(),
                                 args: v["args"].clone(),
+                                ..GateRequest::default()
                             })
                             .await;
                         let allow = matches!(decision, GateDecision::Allow { .. });

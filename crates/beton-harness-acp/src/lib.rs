@@ -22,12 +22,10 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    EventPayload, HarnessAuthRequired, HarnessExited, HarnessReady, RawJson, ResolvedVia,
-    TimeoutAction, TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
+    AuthSource, EventPayload, HarnessAuthRequired, HarnessExited, HarnessReady, RawJson,
+    TurnCompleted, TurnFailed, TurnInterrupted, TurnStarted,
 };
-use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
-use beton_core::time::Timestamp;
+use beton_core::id::{PrincipalId, TurnId, UserId};
 use beton_harness::jsonrpc::{Incoming, RpcClient, RpcError, codes};
 use beton_harness::process::{
     LaunchSpec, ProcessHandle, ProcessLauncher, RealLauncher, ShutdownTimeouts,
@@ -35,8 +33,8 @@ use beton_harness::process::{
 use beton_harness::registry::{AcpAgentConfig, HarnessLayers, Registry, resolve_binary};
 use beton_harness::{
     Action, AdapterContext, ApprovalMechanism, AuthStatus, Capabilities, CompactionSupport,
-    ExitInfo, ForkHistory, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError,
-    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
+    ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
+    HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
     PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents, SwitchOutcome,
     SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
 };
@@ -44,7 +42,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
 
 pub use crate::config::{AcpAgent, ConfigProblem, Origin, PRESETS, agents};
-use crate::mapping::{MapState, map_update, tool_kind, unmapped};
+use crate::mapping::{MapState, map_update, unmapped};
 
 /// Unterstützte ACP-Protokollversion.
 pub const PROTOCOL_VERSION: u64 = 1;
@@ -210,6 +208,12 @@ impl HarnessAdapter for AcpAdapter {
             auth_sources: vec![AuthSource::VendorCli],
             approval: ApprovalMechanism::AcpPermission,
             tool_call_gate: ToolCallGate::ApprovalOnly,
+            // Erfahrungsgemäß fragen ACP-Agents vor Shell-Befehlen und Datei-Änderungen; was ohne
+            // Rückfrage läuft, ist nur beobachtbar (POL-024). `fs/*`/`terminal/*` führt beton
+            // erst mit der Tool-Sandbox selbst aus (HAR-007).
+            approval_kinds: vec!["shell".into(), "file_write".into(), "file_edit".into()],
+            model_request_gate: beton_harness::ModelRequestGate::Turn,
+            tool_result_gate: ToolCallGate::ObserveOnly,
             // `session/set_model` erst nach `session/new` bekannt; die Session meldet `live`,
             // wenn der Agent Modelle anbietet (HAR-017). ACP kennt keinen Start-Parameter für
             // das Modell, ein Neustart hilft daher nicht.
@@ -752,48 +756,34 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
         Value::Null => json!({}),
         v => v.clone(),
     };
-    let approval_id = ApprovalId::new();
-    let expires = time::OffsetDateTime::now_utc() + d.gate_timeout;
-    let mut events = pre;
-    events.push(EventPayload::ApprovalRequested(ApprovalRequested {
-        approval_id,
-        kind: ApprovalKind::Tool,
-        subject: json!({"tool": name, "args": args, "call_id": call_id}),
-        options: vec!["allow".into(), "deny".into()],
-        expires_at: Timestamp::from(expires),
-        on_timeout: TimeoutAction::Deny,
-    }));
-    send_all(&d.tx, events, raw, turn).await;
+    send_all(&d.tx, pre, None, turn).await;
     let request = GateRequest {
         turn_id: turn,
         call_id: call_id.clone(),
         tool: name,
-        kind: tool_kind(tool["kind"].as_str().unwrap_or("other")).into(),
+        kind: mapping::tool_kind(tool["kind"].as_str()),
         args: args.clone(),
+        mcp_server: None,
+        acp_kind: tool["kind"].as_str().map(str::to_owned),
+        origin: GateOrigin::VendorAsk,
+        raw,
     };
     let cancelled = d.cancel.notified();
     let outcome = tokio::select! {
         r = tokio::time::timeout(d.gate_timeout, d.gate.decide(request)) => Some(r),
         () = cancelled => None,
     };
-    let (decision, via, comment) = match outcome {
-        None => (ApprovalDecision::Deny, ResolvedVia::System, None),
+    let (allow, cancelled) = match outcome {
+        None => (false, true),
         Some(Ok(GateDecision::Allow { updated_args })) => match updated_args {
             // ACP kann geänderte Argumente nicht übergeben: fail closed.
-            Some(changed) if changed != args => (
-                ApprovalDecision::Deny,
-                ResolvedVia::Policy,
-                Some("Der Agent kann geänderte Argumente nicht ausführen".to_owned()),
-            ),
-            _ => (ApprovalDecision::Allow, ResolvedVia::User, None),
+            Some(changed) if changed != args => (false, false),
+            _ => (true, false),
         },
-        Some(Ok(GateDecision::Deny { reason })) => {
-            (ApprovalDecision::Deny, ResolvedVia::User, reason)
-        }
-        Some(Err(_)) => (ApprovalDecision::Deny, ResolvedVia::Timeout, None),
+        Some(Ok(GateDecision::Deny { .. })) | Some(Err(_)) => (false, false),
     };
-    let allow = decision == ApprovalDecision::Allow;
-    let option = if outcome_cancelled(via) {
+    // Nie automatisch „immer erlauben“, wenn „einmal“ geht (POL-023).
+    let option = if cancelled {
         None
     } else {
         option_for(&params["options"], allow)
@@ -814,35 +804,7 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
         }
     };
     let _ = d.rpc.respond(id, response).await;
-    let mut events = vec![EventPayload::ApprovalResolved(ApprovalResolved {
-        approval_id,
-        decision: if allow {
-            ApprovalDecision::Allow
-        } else {
-            ApprovalDecision::Deny
-        },
-        answer: None,
-        actor: if via == ResolvedVia::User {
-            Actor::User {
-                id: PrincipalId::User(UserId::LOCAL),
-                device_id: None,
-            }
-        } else {
-            Actor::System {
-                component: beton_core::event::SystemComponent::Runner,
-            }
-        },
-        via,
-        remember: None,
-        comment,
-        on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
-    })];
-    events.extend(started);
-    send_all(&d.tx, events, None, turn).await;
-}
-
-fn outcome_cancelled(via: ResolvedVia) -> bool {
-    via == ResolvedVia::System
+    send_all(&d.tx, started.into_iter().collect(), None, turn).await;
 }
 
 /// Eine laufende ACP-Session.

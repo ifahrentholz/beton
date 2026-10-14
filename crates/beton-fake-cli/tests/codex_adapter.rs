@@ -120,6 +120,20 @@ impl Gate for Recording {
             }
         }
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: beton_harness::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 #[tokio::test]
@@ -152,8 +166,6 @@ turns:
         "message.delta",
         "message.completed",
         "tool.call.requested",
-        "approval.requested",
-        "approval.resolved",
         "tool.call.started",
         "tool.call.output.delta",
         "tool.call.completed",
@@ -435,6 +447,20 @@ impl Gate for DenySilently {
     async fn decide(&self, _request: GateRequest) -> GateDecision {
         GateDecision::Deny { reason: None }
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: beton_harness::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 #[tokio::test]
@@ -463,14 +489,6 @@ async fn har_006_denial_reason_reaches_the_model_via_steer() {
         })
         .unwrap();
     assert_eq!(completed.status, ToolStatus::Denied);
-    let resolved = events
-        .iter()
-        .find_map(|e| match e {
-            EventPayload::ApprovalResolved(r) => Some(r),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(resolved.comment.as_deref(), Some("nicht erlaubt"));
     // Die Begründung kam beim Modell an, im selben Turn, zusammen mit dem Befehl.
     let steered: Vec<String> = recorded(&record)
         .into_iter()

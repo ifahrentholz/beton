@@ -281,3 +281,11 @@ fn pol_005_context_shape_matches_declaration() {
     let ctx = tool.to_context();
     Activation::new(Phase::ToolCall, json!({ "tool": ctx })).expect("passt zur Deklaration");
 }
+
+#[test]
+fn pol_005_harness_family_groups_acp_and_direct() {
+    use beton_policy::normalize::harness_family;
+    assert_eq!(harness_family("acp:gemini"), "acp");
+    assert_eq!(harness_family("direct:anthropic"), "direct");
+    assert_eq!(harness_family("claude"), "claude");
+}

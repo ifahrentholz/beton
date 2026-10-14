@@ -1,0 +1,11 @@
+{"has_raw":false,"payload":{"author":"usr_local","turn_id":"<id:2>"},"turn_id":"<id:2>","type":"turn.started"}
+{"has_raw":true,"payload":{"harness_session_ref":"<id:3>","mcp_servers":[],"tools":["Task","Artifact","ArtifactComments","ArtifactData","AskUserQuestion","Bash","CronCreate","CronDelete","CronList","DesignSync","Edit","EnterPlanMode","EnterWorktree","ExitPlanMode","ExitWorktree","ListAgents","Monitor","NotebookEdit","PushNotification","Read","RemoteTrigger","ReportFindings","ScheduleWakeup","SendMessage","ShareOnboardingGuide","Skill","TaskStop","ToolSearch","WebFetch","WebSearch","Workflow","Write"]},"turn_id":"<id:2>","type":"harness.ready"}
+{"has_raw":true,"payload":{"args":{"command":"mkdir beton-ordner","description":"Create directory beton-ordner"},"call_id":"<id:4>","kind":"shell","source":"harness","tool":"Bash"},"turn_id":"<id:2>","type":"tool.call.requested"}
+{"has_raw":true,"payload":{"resets_at":"<ts>","used_pct":28.0,"vendor":"anthropic","window":"five_hour"},"turn_id":"<id:2>","type":"usage.subscription"}
+{"has_raw":false,"payload":{"call_id":"<id:4>"},"turn_id":"<id:2>","type":"tool.call.started"}
+{"has_raw":true,"payload":{"call_id":"<id:4>","duration_ms":0,"result":"(Bash completed with no output)","status":"ok"},"turn_id":"<id:2>","type":"tool.call.completed"}
+{"has_raw":true,"payload":{"message_id":"<id:5>","text":"erledigt"},"turn_id":"<id:2>","type":"message.delta"}
+{"has_raw":true,"payload":{"content":[{"text":"erledigt","type":"text"}],"message_id":"<id:5>","role":"assistant"},"turn_id":"<id:2>","type":"message.completed"}
+{"has_raw":true,"payload":{"auth_source":"vendor_cli","cache_read_tokens":55876,"cache_write_tokens":7399,"currency":"USD","harness":"claude","input_tokens":4,"model":"claude-haiku-5-5","output_tokens":92,"source":"subscription"},"turn_id":"<id:2>","type":"cost.delta"}
+{"has_raw":false,"payload":{"source":"harness","used_tokens":63279,"window_tokens":1000000},"turn_id":"<id:2>","type":"context.usage"}
+{"has_raw":false,"payload":{"stop_reason":"end_turn","turn_id":"<id:2>","usage_summary":{"duration_ms":5492,"input_tokens":4,"num_turns":2,"output_tokens":92}},"turn_id":"<id:2>","type":"turn.completed"}

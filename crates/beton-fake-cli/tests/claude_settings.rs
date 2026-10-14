@@ -291,6 +291,23 @@ impl beton_harness::Gate for CountingGate {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         beton_harness::GateDecision::Allow { updated_args: None }
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(
+        &self,
+        _request: beton_harness::ResultGateRequest,
+    ) -> beton_harness::GateDecision {
+        beton_harness::GateDecision::Allow { updated_args: None }
+    }
 }
 
 #[tokio::test]

@@ -32,8 +32,8 @@ use crate::doc::{
 use crate::load::{LoadedRule, LoadedSet, RuleKind, RuleRef, Scope};
 
 /// Welche Modifikationen der Harness in dieser Phase anwenden kann (Enforcement-Matrix,
-/// POL-024; die Ableitung aus den Harness-Capabilities folgt mit WP-35).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// POL-024, [`crate::enforcement::Matrix::capabilities`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Capabilities {
     pub model: bool,
     pub reasoning_effort: bool,
@@ -55,6 +55,17 @@ impl Default for Capabilities {
 }
 
 impl Capabilities {
+    /// Keine Modifikation anwendbar.
+    pub fn none() -> Self {
+        Self {
+            model: false,
+            reasoning_effort: false,
+            permission_mode: false,
+            args: false,
+            redact: false,
+        }
+    }
+
     fn supports(&self, field: &str) -> bool {
         match field {
             "model" => self.model,
@@ -247,6 +258,7 @@ pub struct EffectiveSet {
     sets: Vec<Arc<LoadedSet>>,
     hash: String,
     invalid: Vec<String>,
+    never_valid: Vec<beton_core::event::PolicySetInvalid>,
 }
 
 impl EffectiveSet {
@@ -276,7 +288,46 @@ impl EffectiveSet {
             sets,
             hash: format!("sha256:{}", hex::encode(hasher.finalize())),
             invalid,
+            never_valid: Vec::new(),
         }
+    }
+
+    /// Dateien, die noch nie gültig waren, mit Ladefehler (#182: der Runner verweigert dann
+    /// den Start, statt ohne diese Datei weiterzulaufen).
+    pub fn with_never_valid(mut self, mut files: Vec<beton_core::event::PolicySetInvalid>) -> Self {
+        files.sort_by(|a, b| a.file.cmp(&b.file));
+        self.never_valid = files;
+        self
+    }
+
+    /// Dateien ohne je gültige Fassung; sie tragen nichts zum Set bei.
+    pub fn never_valid(&self) -> &[beton_core::event::PolicySetInvalid] {
+        &self.never_valid
+    }
+
+    /// Alle Ausdrücke der Regeln in `phase` (`when` und Hilfsausdrücke, auch Dry-Run).
+    pub fn programs(&self, phase: Phase) -> impl Iterator<Item = &crate::cel::Program> {
+        self.sets
+            .iter()
+            .flat_map(|s| s.rules.iter())
+            .filter(move |r| r.applies_to(phase))
+            .flat_map(|r| {
+                let when = match &r.kind {
+                    RuleKind::Cel { when: Some(p), .. } => Some(p),
+                    _ => None,
+                };
+                when.into_iter().chain(r.aux.iter())
+            })
+    }
+
+    /// Gibt es Regeln oder Defaults (≠ `allow`) für `phase`?
+    pub fn has_phase(&self, phase: Phase) -> bool {
+        self.sets.iter().any(|s| {
+            s.rules.iter().any(|r| r.applies_to(phase))
+                || s.defaults
+                    .get(&phase)
+                    .is_some_and(|d| *d != DefaultAction::Allow)
+        })
     }
 
     pub fn hash(&self) -> &str {
@@ -640,6 +691,23 @@ impl<'a> Run<'a> {
             merge_patch(&mut args, patch);
             ctx.set_field("tool", "args", &args)
                 .map_err(|e| e.to_string())?;
+            // Abgeleitete Felder aus den neuen Argumenten (#182); ohne Herkunft (z. B. in
+            // Policy-Tests) bleiben sie, wie sie sind.
+            if let Some(source) = ctx.tool_source().cloned() {
+                let tool = crate::normalize::normalize_source(&source, &args)
+                    .map_err(|e| e.to_string())?;
+                for (field, value) in [
+                    ("command", serde_json::json!(tool.command)),
+                    ("argv", serde_json::json!(tool.argv)),
+                    ("cwd", serde_json::json!(tool.cwd)),
+                    ("paths", serde_json::json!(tool.paths)),
+                    ("urls", serde_json::json!(tool.urls)),
+                    ("parse_uncertain", serde_json::json!(tool.parse_uncertain)),
+                ] {
+                    ctx.set_field("tool", field, &value)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
         }
         Ok(())
     }

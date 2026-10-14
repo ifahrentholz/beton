@@ -61,6 +61,16 @@ async fn hub(
     servers: Vec<ConfiguredServer>,
     system: Option<Arc<SystemServer>>,
 ) -> (Hub, mpsc::UnboundedReceiver<EventPayload>) {
+    hub_with_gate(dir, session, servers, system, None).await
+}
+
+async fn hub_with_gate(
+    dir: &Path,
+    session: SessionId,
+    servers: Vec<ConfiguredServer>,
+    system: Option<Arc<SystemServer>>,
+    gate: Option<Arc<dyn McpGate>>,
+) -> (Hub, mpsc::UnboundedReceiver<EventPayload>) {
     Hub::start(HubOptions {
         session_id: session,
         run_dir: dir.to_owned(),
@@ -71,6 +81,7 @@ async fn hub(
             program: PathBuf::from("/opt/beton/bin/beton"),
             prefix: Vec::new(),
         },
+        gate,
     })
     .await
     .unwrap()
@@ -240,6 +251,7 @@ async fn har_009_run_dir_must_be_private() {
             program: "beton".into(),
             prefix: Vec::new(),
         },
+        gate: None,
     })
     .await
     .unwrap_err();
@@ -480,4 +492,63 @@ async fn har_009_ac3_relay_uses_the_token_file_and_is_bound_to_its_session() {
     drop(harness_w);
     drop(hub_a);
     let _ = tokio::time::timeout(Duration::from_secs(5), relay).await;
+}
+
+/// Policy für System-Tools: lehnt `policy_query` ab und zählt die Prüfungen.
+struct DenyQuery(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl McpGate for DenyQuery {
+    async fn check(
+        &self,
+        server: &str,
+        tool: &str,
+        _args: &Value,
+    ) -> Result<Option<Value>, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(server, "beton");
+        if tool == "policy_query" {
+            Err("System-Tool laut Policy gesperrt".into())
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[tokio::test]
+async fn pol_024_system_tools_pass_the_policy_in_the_hub() {
+    let dir = private_dir();
+    let session = SessionId::new();
+    let gate = Arc::new(DenyQuery(Default::default()));
+    let (h, _e) = hub_with_gate(
+        dir.path(),
+        session,
+        Vec::new(),
+        Some(system()),
+        Some(gate.clone()),
+    )
+    .await;
+    let (mut c, reply) =
+        Client::connect(h.socket(), &session.to_string(), &token(&h), "beton").await;
+    assert!(reply.ok);
+    c.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "policy_query", "arguments": {"action": "x"}}}))
+        .await;
+    let answer = c.recv().await.unwrap();
+    assert_eq!(answer["id"], 1);
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("policy_denied: System-Tool laut Policy gesperrt"),
+        "{text}"
+    );
+    assert!(
+        !answer.to_string().contains("runner"),
+        "Backend nicht aufgerufen: {answer}"
+    );
+    // Andere Methoden laufen ohne Prüfung durch.
+    c.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
+        .await;
+    let list = c.recv().await.unwrap();
+    assert!(list["result"]["tools"].is_array());
+    assert_eq!(gate.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

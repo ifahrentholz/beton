@@ -21,26 +21,24 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, AuthSource,
-    EventPayload, HarnessExited, HarnessReady, RawJson, ResolvedVia, TimeoutAction, TurnFailed,
-    TurnStarted,
+    AuthSource, EventPayload, HarnessExited, HarnessReady, RawJson, TurnFailed, TurnStarted,
 };
-use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
-use beton_core::time::Timestamp;
+use beton_core::id::{PrincipalId, TurnId, UserId};
 use beton_harness::jsonrpc::{Incoming, RpcClient, RpcError, codes};
 use beton_harness::process::{LaunchSpec, ProcessHandle, ShutdownTimeouts};
 use beton_harness::registry::{VersionProbe, resolve_binary};
 use beton_harness::{
     Action, AdapterContext, ApprovalMechanism, AuthStatus, Capabilities, CompactionSupport,
-    ExitInfo, ForkHistory, Gate, GateDecision, GateRequest, HarnessAdapter, HarnessError,
-    HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent, OneShotReply,
-    OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec, Shutdown, Subagents,
-    SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting, UserInput,
+    ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
+    HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
+    OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec,
+    Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting,
+    UserInput,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
 
-use crate::mapping::{MapState, item_kind, map_notification, requested, started, unmapped};
+use crate::mapping::{MapState, map_notification, requested, started, unmapped};
 
 /// Getestete CLI-Versionen (Golden-Transcripts unter `tests/golden/`).
 pub const TESTED_VERSIONS: [&str; 1] = ["0.153.2"];
@@ -61,10 +59,12 @@ pub const APPROVAL_POLICY: &str = "untrusted";
 /// Codex-eigene Sandbox, solange die beton-Sandbox Stufe 2 fehlt (ab M2 `danger-full-access`).
 pub const SANDBOX_MODE: &str = "workspace-write";
 
-/// Sandbox beim Start je Permission-Mode: `plan` liest nur (HAR-027).
+/// Sandbox beim Start je Permission-Mode: `plan` liest nur (HAR-027); `yolo` läuft nur mit
+/// beton-Sandbox Stufe 2, daher ohne zweite Codex-Sandbox.
 pub fn sandbox_mode(mode: Option<PermissionMode>) -> &'static str {
     match mode {
         Some(PermissionMode::Plan) => "read-only",
+        Some(PermissionMode::Yolo) => "danger-full-access",
         _ => SANDBOX_MODE,
     }
 }
@@ -73,6 +73,7 @@ pub fn sandbox_mode(mode: Option<PermissionMode>) -> &'static str {
 pub fn sandbox_policy(mode: PermissionMode) -> Value {
     match mode {
         PermissionMode::Plan => json!({"type": "readOnly"}),
+        PermissionMode::Yolo => json!({"type": "dangerFullAccess"}),
         _ => json!({"type": "workspaceWrite"}),
     }
 }
@@ -126,8 +127,12 @@ pub fn capabilities() -> Capabilities {
         version_range: Some(VERSION_RANGE.into()),
         auth_sources: vec![AuthSource::VendorCli, AuthSource::ApiKey],
         approval: ApprovalMechanism::NativeRequest,
-        // Lesende Aktionen führt Codex ohne Rückfrage aus.
+        // Lesende Aktionen führt Codex ohne Rückfrage aus (POL-024): Rückfragen gibt es nur
+        // für Shell-Befehle und Datei-Änderungen.
         tool_call_gate: ToolCallGate::ApprovalOnly,
+        approval_kinds: vec!["shell".into(), "file_edit".into()],
+        model_request_gate: beton_harness::ModelRequestGate::Turn,
+        tool_result_gate: ToolCallGate::ObserveOnly,
         // `turn/start` nimmt Modell und Effort je Turn.
         model_switch: SwitchSupport::Live,
         effort_switch: SwitchSupport::Live,
@@ -149,14 +154,10 @@ pub fn capabilities() -> Capabilities {
         models: Vec::new(),
         models_stale: false,
         efforts: vec!["low".into(), "medium".into(), "high".into()],
-        // `plan`: Sandbox `read-only`; `accept_edits`: Datei-Änderungen im Workspace beantwortet
-        // der Adapter selbst. `yolo` (Rückfragen automatisch laut Policy) kommt mit der
-        // Policy-Engine (HAR-027 AC2, M2).
-        permission_modes: vec![
-            PermissionMode::Plan,
-            PermissionMode::Default,
-            PermissionMode::AcceptEdits,
-        ],
+        // `plan`: Sandbox `read-only`; `accept_edits`: Datei-Änderungen im Workspace ohne
+        // menschliche Rückfrage; `yolo`: alle Rückfragen laut Policy ohne Menschen (HAR-027).
+        // Startbar ist `yolo` erst mit Sandbox und Egress-Proxy (WP-49).
+        permission_modes: PermissionMode::ALL.to_vec(),
         // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
         context_window: Some(272_000),
         // Codex liest `AGENTS.md` selbst, `CLAUDE.md` nicht (AGT-005).
@@ -298,6 +299,9 @@ impl HarnessAdapter for CodexAdapter {
         let accept_edits = Arc::new(AtomicBool::new(
             spec.permission_mode == Some(PermissionMode::AcceptEdits),
         ));
+        let yolo = Arc::new(AtomicBool::new(
+            spec.permission_mode == Some(PermissionMode::Yolo),
+        ));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
         match handshake(&rpc, &spec, self.handshake_timeout).await {
             Ok(thread) => {
@@ -333,6 +337,7 @@ impl HarnessAdapter for CodexAdapter {
                         closing: closing.clone(),
                         cancel: cancel.clone(),
                         accept_edits: accept_edits.clone(),
+                        yolo: yolo.clone(),
                     },
                 ));
                 Ok(Box::new(CodexSession {
@@ -350,6 +355,7 @@ impl HarnessAdapter for CodexAdapter {
                         ..NextTurn::default()
                     },
                     accept_edits,
+                    yolo,
                 }))
             }
             Err(e) => {
@@ -502,6 +508,8 @@ struct Dispatcher {
     cancel: Arc<Notify>,
     /// Permission-Mode `accept_edits`: Datei-Änderungen im Workspace ohne Rückfrage (HAR-027).
     accept_edits: Arc<AtomicBool>,
+    /// Permission-Mode `yolo`: alle Rückfragen laut Policy ohne Menschen (HAR-027).
+    yolo: Arc<AtomicBool>,
 }
 
 async fn send(
@@ -656,25 +664,15 @@ pub fn auto_accepts(accept_edits: bool, method: &str, params: &Value) -> bool {
 async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw: Option<RawJson>) {
     let call_id = params["itemId"].as_str().unwrap_or_default().to_owned();
     let command = method == "item/commandExecution/requestApproval";
-    if auto_accepts(d.accept_edits.load(Ordering::SeqCst), method, params) {
-        let (turn, pre) = {
-            let mut st = d.state.lock().await;
-            let pre = requested(
-                &json!({"type": "fileChange", "id": call_id, "changes": params["changes"]}),
-                &mut st,
-            );
-            (st.turn, pre)
-        };
-        if let Some(e) = pre {
-            send(&d.tx, e, raw, turn).await;
-        }
-        let _ = d.rpc.respond(id, json!({"decision": "accept"})).await;
-        let started = started(&call_id, &mut *d.state.lock().await);
-        if let Some(e) = started {
-            send(&d.tx, e, None, turn).await;
-        }
-        return;
-    }
+    // Rückfragen, die der Permission-Mode ohne Menschen beantwortet, entscheidet trotzdem die
+    // Policy (HAR-027).
+    let origin = if d.yolo.load(Ordering::SeqCst)
+        || auto_accepts(d.accept_edits.load(Ordering::SeqCst), method, params)
+    {
+        GateOrigin::AutoApproval
+    } else {
+        GateOrigin::VendorAsk
+    };
     let item_type = if command {
         "commandExecution"
     } else {
@@ -689,103 +687,58 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
         );
         (st.turn, pre)
     };
-    let mut raw = raw;
     if let Some(e) = pre {
-        send(&d.tx, e, raw.take(), turn).await;
+        send(&d.tx, e, None, turn).await;
     }
     let args = if command {
         json!({"command": params["command"], "cwd": params["cwd"], "reason": params["reason"]})
     } else {
-        json!({"reason": params["reason"], "grant_root": params["grantRoot"]})
+        json!({"changes": params["changes"], "reason": params["reason"], "grant_root": params["grantRoot"]})
     };
-    let approval_id = ApprovalId::new();
-    let expires = time::OffsetDateTime::now_utc() + d.gate_timeout;
-    send(
-        &d.tx,
-        EventPayload::ApprovalRequested(ApprovalRequested {
-            approval_id,
-            kind: ApprovalKind::Tool,
-            subject: json!({"tool": item_type, "args": args, "call_id": call_id}),
-            options: vec!["allow".into(), "deny".into()],
-            expires_at: Timestamp::from(expires),
-            on_timeout: TimeoutAction::Deny,
-        }),
-        raw,
-        turn,
-    )
-    .await;
     let request = GateRequest {
         turn_id: turn,
         call_id: call_id.clone(),
         tool: item_type.into(),
-        kind: item_kind(item_type).into(),
+        kind: mapping::kind_of(item_type, None),
         args: args.clone(),
+        mcp_server: None,
+        acp_kind: None,
+        origin,
+        raw,
     };
     let cancelled = d.cancel.notified();
     let outcome = tokio::select! {
         r = tokio::time::timeout(d.gate_timeout, d.gate.decide(request)) => Some(r),
         () = cancelled => None,
     };
-    let (decision, via, comment, answer) = match outcome {
+    let (allowed, reason, answer) = match outcome {
         // Interrupt während der Rückfrage: Codex bricht den Turn mit `cancel` ab.
-        None => (ApprovalDecision::Deny, ResolvedVia::System, None, "cancel"),
+        None => (false, None, "cancel"),
         Some(Ok(GateDecision::Allow { updated_args })) => match updated_args {
             // Codex kann geänderte Argumente nicht ausführen: fail closed.
             Some(changed) if changed != args => (
-                ApprovalDecision::Deny,
-                ResolvedVia::Policy,
+                false,
                 Some("Codex kann geänderte Argumente nicht ausführen".to_owned()),
                 "decline",
             ),
-            _ => (ApprovalDecision::Allow, ResolvedVia::User, None, "accept"),
+            _ => (true, None, "accept"),
         },
-        Some(Ok(GateDecision::Deny { reason })) => {
-            (ApprovalDecision::Deny, ResolvedVia::User, reason, "decline")
-        }
-        Some(Err(_)) => (
-            ApprovalDecision::Deny,
-            ResolvedVia::Timeout,
-            None,
-            "decline",
-        ),
+        Some(Ok(GateDecision::Deny { reason })) => (false, reason, "decline"),
+        // Fail closed (HAR-005 AC4 sinngemäß).
+        Some(Err(_)) => (false, None, "decline"),
     };
-    if decision == ApprovalDecision::Deny {
+    if !allowed {
         d.state.lock().await.denied.insert(call_id.clone());
     }
     // Die Antwort kennt nur `decline` ohne Text (Schema 0.153.2); die Begründung geht vorher
     // als `turn/steer` in den laufenden Turn, damit das Modell sie mit der Ablehnung sieht.
     if answer == "decline"
-        && let Some(reason) = comment.as_deref()
+        && let Some(reason) = reason.as_deref()
     {
         steer_reason(d, params, reason).await;
     }
     let _ = d.rpc.respond(id, json!({"decision": answer})).await;
-    send(
-        &d.tx,
-        EventPayload::ApprovalResolved(ApprovalResolved {
-            approval_id,
-            decision,
-            answer: None,
-            actor: if via == ResolvedVia::User {
-                Actor::User {
-                    id: PrincipalId::User(UserId::LOCAL),
-                    device_id: None,
-                }
-            } else {
-                Actor::System {
-                    component: beton_core::event::SystemComponent::Runner,
-                }
-            },
-            via,
-            remember: None,
-            comment,
-            on_timeout_applied: (via == ResolvedVia::Timeout).then_some(TimeoutAction::Deny),
-        }),
-        None,
-        turn,
-    )
-    .await;
-    if decision == ApprovalDecision::Allow {
+    if allowed {
         let started = started(&call_id, &mut *d.state.lock().await);
         if let Some(e) = started {
             send(&d.tx, e, None, turn).await;
@@ -886,6 +839,7 @@ pub struct CodexSession {
     thread_id: String,
     next: NextTurn,
     accept_edits: Arc<AtomicBool>,
+    yolo: Arc<AtomicBool>,
 }
 
 impl CodexSession {
@@ -1014,6 +968,8 @@ impl HarnessSession for CodexSession {
         self.next.sandbox_policy = Some(sandbox_policy(mode));
         self.accept_edits
             .store(mode == PermissionMode::AcceptEdits, Ordering::SeqCst);
+        self.yolo
+            .store(mode == PermissionMode::Yolo, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1076,11 +1032,10 @@ mod tests {
             SANDBOX_MODE
         );
         assert_eq!(sandbox_policy(PermissionMode::Plan)["type"], "readOnly");
-        // `yolo` bildet der Codex-Adapter (noch) nicht ab.
-        assert!(
-            !capabilities()
-                .permission_modes
-                .contains(&PermissionMode::Yolo)
+        // `yolo` ohne zweite Sandbox (die beton-Sandbox ist Voraussetzung, HAR-027).
+        assert_eq!(
+            sandbox_mode(Some(PermissionMode::Yolo)),
+            "danger-full-access"
         );
     }
 

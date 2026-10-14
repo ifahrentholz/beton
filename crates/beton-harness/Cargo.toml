@@ -11,16 +11,20 @@ authors.workspace = true
 [dependencies]
 async-trait.workspace = true
 beton-core.workspace = true
+beton-policy.workspace = true
 beton-sandbox.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 regex.workspace = true
 schemars.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_norway.workspace = true
+subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 tracing.workspace = true
 ts-rs.workspace = true
 ulid.workspace = true

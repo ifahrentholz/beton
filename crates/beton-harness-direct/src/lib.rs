@@ -272,6 +272,11 @@ impl HarnessAdapter for DirectAdapter {
             // beton fragt vor jedem Tool-Call selbst das Gate (kein Vendor-Mechanismus).
             approval: ApprovalMechanism::NativeRequest,
             tool_call_gate: ToolCallGate::Full,
+            approval_kinds: Vec::new(),
+            // Jeder Model-Request passiert die Phase `model_request` (HAR-010 AC5).
+            model_request_gate: beton_harness::ModelRequestGate::Call,
+            // Ergebnisse gehen erst nach der Phase `tool_result` an das Modell.
+            tool_result_gate: ToolCallGate::Full,
             model_switch: SwitchSupport::Live,
             effort_switch: SwitchSupport::None,
             resume: ResumeSupport::None,

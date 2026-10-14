@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use beton_core::event::{ApprovalDecision, EventPayload, ToolStatus};
+use beton_core::event::{EventPayload, ToolStatus};
 use beton_harness::process::RealLauncher;
 use beton_harness::registry::AcpAgentConfig;
 use beton_harness::{
@@ -138,8 +138,6 @@ async fn har_007_ac1_prompt_streaming_and_permission_roundtrip() {
             "message.delta",
             "message.completed",
             "tool.call.requested",
-            "approval.requested",
-            "approval.resolved",
             "tool.call.started",
             "tool.call.completed",
             "message.delta",
@@ -168,14 +166,8 @@ async fn har_007_ac1_denied_permission_is_not_executed() {
     let (mut s, mut rx) = start(&path, Arc::new(DenyAll)).await;
     s.send("Was liegt hier?".into()).await.unwrap();
     let events = until_turn_end(&mut rx).await;
-    let resolved = events
-        .iter()
-        .find_map(|e| match e {
-            EventPayload::ApprovalResolved(r) => Some(r),
-            _ => None,
-        })
-        .unwrap();
-    assert_eq!(resolved.decision, ApprovalDecision::Deny);
+    // Freigabe-Events schreibt ab M2 das Gate des Runners, nicht der Adapter.
+    assert_eq!(count(&events, "approval.requested"), 0);
     assert_eq!(count(&events, "tool.call.started"), 0);
     let done = events
         .iter()
@@ -217,14 +209,33 @@ async fn har_007_ac1_cancel_during_permission_request_answers_cancelled() {
         async fn decide(&self, _r: beton_harness::GateRequest) -> beton_harness::GateDecision {
             std::future::pending().await
         }
+
+        async fn model_request(
+            &self,
+            _request: beton_harness::ModelGateRequest,
+        ) -> beton_harness::ModelGateDecision {
+            beton_harness::ModelGateDecision::Allow {
+                model: None,
+                reasoning_effort: None,
+            }
+        }
+
+        async fn tool_result(
+            &self,
+            _request: beton_harness::ResultGateRequest,
+        ) -> beton_harness::GateDecision {
+            beton_harness::GateDecision::Allow { updated_args: None }
+        }
     }
     let (mut s, mut rx) = start(&path, Arc::new(Never)).await;
     s.send("los".into()).await.unwrap();
     while let Some(e) = rx.recv().await {
-        if matches!(e.payload, EventPayload::ApprovalRequested(_)) {
+        if matches!(e.payload, EventPayload::ToolCallRequested(_)) {
             break;
         }
     }
+    // Die Rückfrage hängt jetzt am Gate.
+    tokio::time::sleep(Duration::from_millis(100)).await;
     s.interrupt().await.unwrap();
     let events = until_turn_end(&mut rx).await;
     assert_eq!(count(&events, "tool.call.started"), 0);

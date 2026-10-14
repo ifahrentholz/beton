@@ -31,7 +31,7 @@ pub const NO_EXCEPTIONS: [&str; 4] = [
 pub const SPAWN_CRATES: [&str; 2] = ["crates/beton-sandbox/", "crates/beton-pty/"];
 
 /// Beton-eigene Prozesse (Stufe 0) außerhalb der Sandbox, jeweils mit Grund.
-pub const STAGE0_EXCEPTIONS: [(&str, &str); 6] = [
+pub const STAGE0_EXCEPTIONS: [(&str, &str); 7] = [
     (
         "crates/beton-cli/src/commands.rs",
         "Browser und Editor des Benutzers",
@@ -55,6 +55,10 @@ pub const STAGE0_EXCEPTIONS: [(&str, &str); 6] = [
     (
         "crates/beton-fake-cli/src/mcp.rs",
         "Fake-Harness für Tests startet seine MCP-Server wie eine Vendor-CLI",
+    ),
+    (
+        "crates/beton-fake-cli/src/stream_json.rs",
+        "Fake-Harness für Tests ruft den PreToolUse-Hook wie Claude Code per Shell auf (HAR-005)",
     ),
 ];
 

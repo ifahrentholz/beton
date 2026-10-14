@@ -207,6 +207,23 @@ impl ToolMap {
         }
     }
 
+    /// Klassen aller Tools mit diesem Namen (über alle Harnesses und MCP-Server; POL-024,
+    /// statische Analyse von `tool.name == …`). Leer, wenn der Name unbekannt ist.
+    pub fn kinds_of_name(&self, name: &str) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for table in self.harnesses.values().filter(|t| !t.by_kind) {
+            if let Some(spec) = table.tools.get(name) {
+                out.insert(spec.kind.clone());
+            }
+        }
+        for server in self.mcp_servers.values() {
+            if let Some(spec) = server.tools.get(name) {
+                out.insert(spec.kind.clone());
+            }
+        }
+        out
+    }
+
     /// Kanonische Klasse oder `None`, wenn das Tool nicht abgebildet ist.
     pub fn kind_of(
         &self,
@@ -232,6 +249,45 @@ pub fn tool_map() -> Result<&'static ToolMap, NormalizeError> {
     TOOL_MAP
         .as_ref()
         .map_err(|e| NormalizeError(format!("data/tool-map.yaml: {e}")))
+}
+
+/// Herkunft eines Tool-Calls ohne seine Argumente: damit lässt sich ein Call nach einer
+/// Änderung der Argumente (`modify` mit `args`, Pass 1) neu normalisieren (#182).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolSource {
+    pub harness: String,
+    pub native_name: String,
+    pub acp_kind: Option<String>,
+    pub mcp_server: Option<String>,
+    pub cwd: String,
+    pub home: Option<String>,
+}
+
+impl ToolSource {
+    pub fn raw<'a>(&'a self, args: &'a Value) -> RawToolCall<'a> {
+        RawToolCall {
+            harness: &self.harness,
+            native_name: &self.native_name,
+            acp_kind: self.acp_kind.as_deref(),
+            mcp_server: self.mcp_server.as_deref(),
+            args,
+            cwd: &self.cwd,
+            home: self.home.as_deref(),
+        }
+    }
+}
+
+/// Normalisiert einen Tool-Call aus seiner Herkunft und den Argumenten.
+pub fn normalize_source(
+    source: &ToolSource,
+    args: &Value,
+) -> Result<NormalizedTool, NormalizeError> {
+    normalize(&source.raw(args))
+}
+
+/// Harness-Familie für die Abbildungstabelle: `acp:gemini` → `acp`, `direct:x` → `direct`.
+pub fn harness_family(harness: &str) -> &str {
+    harness.split(':').next().unwrap_or(harness)
 }
 
 /// Normalisiert einen Tool-Call.

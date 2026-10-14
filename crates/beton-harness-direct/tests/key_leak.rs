@@ -35,6 +35,20 @@ impl Gate for Allow {
     async fn decide(&self, _request: GateRequest) -> GateDecision {
         GateDecision::Allow { updated_args: None }
     }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: beton_harness::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 async fn until_end(rx: &mut mpsc::Receiver<NormalizedEvent>) -> Vec<EventPayload> {

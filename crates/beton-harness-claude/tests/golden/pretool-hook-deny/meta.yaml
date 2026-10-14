@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.296
+recorded_at: 2026-10-14T13:17:09.434Z
+scenario: PreToolUse-Hook lehnt ein vom Vendor ohne Rückfrage erlaubtes echo ab (HAR-005)
+platform: macos-aarch64
+exit_code: 0

@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.296
+recorded_at: 2026-10-14T13:17:23.220Z
+scenario: PreToolUse-Hook erlaubt mkdir, danach Rückfrage per can_use_tool (HAR-005)
+platform: macos-aarch64
+exit_code: 0

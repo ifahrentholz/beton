@@ -31,7 +31,7 @@ async fn har_006_ac1_text_turn() {
 #[tokio::test]
 async fn har_006_ac1_command_tool_turn() {
     let events = case("command-tool").await;
-    assert!(events.contains("\"decision\":\"allow\""));
+    assert!(events.contains("\"kind\":\"shell\""));
     assert!(events.contains("\"type\":\"tool.call.started\""));
 }
 
@@ -39,7 +39,6 @@ async fn har_006_ac1_command_tool_turn() {
 async fn har_006_ac2_denied_git_push_is_not_executed() {
     let events = case("command-deny").await;
     assert!(events.contains("git push origin main"));
-    assert!(events.contains("\"decision\":\"deny\""));
     assert!(events.contains("\"status\":\"denied\""));
     assert!(
         !events.contains("\"type\":\"tool.call.started\""),

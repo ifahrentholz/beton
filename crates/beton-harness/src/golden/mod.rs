@@ -198,6 +198,20 @@ impl Gate for ScriptGate {
             },
         }
     }
+
+    async fn model_request(
+        &self,
+        _request: crate::adapter::ModelGateRequest,
+    ) -> crate::adapter::ModelGateDecision {
+        crate::adapter::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: crate::adapter::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 /// Ergebnis eines Durchlaufs, normalisiert.
@@ -251,6 +265,20 @@ pub async fn drive(
     workdir: std::path::PathBuf,
     step_timeout: Duration,
 ) -> Result<Vec<NormalizedEvent>, String> {
+    drive_with_hook(adapter, script, launcher, env, workdir, step_timeout, None).await
+}
+
+/// Wie [`drive`], mit Vendor-Hook über die Hook-Brücke (Aufnahme des `PreToolUse`-Hooks,
+/// HAR-005); das Gate des Skripts beantwortet auch die Hook-Anfragen.
+pub async fn drive_with_hook(
+    adapter: &dyn HarnessAdapter,
+    script: &Script,
+    launcher: Arc<dyn crate::process::ProcessLauncher>,
+    env: HostEnv,
+    workdir: std::path::PathBuf,
+    step_timeout: Duration,
+    hook: Option<crate::hook::HookSetup>,
+) -> Result<Vec<NormalizedEvent>, String> {
     let gate = Arc::new(ScriptGate {
         decisions: Mutex::new(script.gate.iter().copied().collect()),
         requests: Mutex::default(),
@@ -263,6 +291,7 @@ pub async fn drive(
     let spec = SessionSpec {
         workdir,
         model: script.model.clone(),
+        hook,
         ..SessionSpec::default()
     };
     let mut session = adapter.start(spec, ctx).await.map_err(|e| e.to_string())?;

@@ -11,7 +11,8 @@
 //! Änderungen und Zustellungen nacheinander laufen. Der Tunnel nimmt nie die
 //! Operationssperre, sonst käme ein `cmd.result` nicht mehr an, auf das eine Zustellung wartet.
 //!
-//! Den Policy-Hook „vor Model-Request“ beim Dequeue bringt die Policy-Engine (POL, M2).
+//! Den Policy-Hook „vor Model-Request“ prüft der Runner bei der Zustellung, also beim
+//! Abarbeiten und nicht beim Einreihen (SES-004, #101).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -541,46 +542,60 @@ impl Guard {
                 Ok(true)
             }
             // Der Turn startet gerade erst oder ist eben zu Ende: Das Turn-Ende in den
-            // Events entscheidet, nicht diese Antwort.
-            Err(p) if p.code == ProblemCode::NoActiveTurn => Ok(false),
+            // Events entscheidet, nicht diese Antwort. Braucht die Eingabe laut Policy eine
+            // Freigabe (`ask`), wird sie eingereiht und beim Abarbeiten freigegeben (SES-004).
+            Err(p)
+                if p.code == ProblemCode::NoActiveTurn
+                    || p.code == ProblemCode::ApprovalRequired =>
+            {
+                Ok(false)
+            }
             Err(p) => Err(p),
         }
     }
 
     /// Führt den nächsten Eintrag aus, wenn kein Turn läuft und die Queue nicht pausiert.
+    /// Lehnt die Policy einen Eintrag beim Abarbeiten ab (Phase `model_request`, SES-004), ist
+    /// er entfernt – `policy.decision` steht im Verlauf – und der nächste folgt; bei `ask`
+    /// wartet die Queue, bis die Freigabe entschieden ist.
     pub async fn drain(&mut self) -> Result<(), Problem> {
-        let next = {
-            let st = self.state();
-            if st.busy || st.paused || st.items.is_empty() {
-                return Ok(());
+        loop {
+            let next = {
+                let st = self.state();
+                if st.busy || st.paused || st.items.is_empty() {
+                    return Ok(());
+                }
+                st.items[0].clone()
+            };
+            self.state().items.remove(0);
+            self.publish(system()).await?;
+            let input_id: InputId = next.id.parse().unwrap_or_else(|_| InputId::new());
+            match self
+                .start_turn(
+                    input_id,
+                    next.text,
+                    next.attachments,
+                    next.author,
+                    user_actor(next.author),
+                )
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(p) if p.code == ProblemCode::PolicyDenied => continue,
+                Err(p) => {
+                    // Niemand wartet auf diese Antwort: als Fehler im Verlauf sichtbar machen.
+                    let problem = serde_json::to_value(&p).unwrap_or(Value::Null);
+                    append(
+                        &self.ctx.events,
+                        self.ctx.org,
+                        self.session,
+                        system(),
+                        EventPayload::Error(ErrorEvent { problem }),
+                    )
+                    .await?;
+                    return Err(p);
+                }
             }
-            st.items[0].clone()
-        };
-        self.state().items.remove(0);
-        self.publish(system()).await?;
-        let input_id: InputId = next.id.parse().unwrap_or_else(|_| InputId::new());
-        if let Err(p) = self
-            .start_turn(
-                input_id,
-                next.text,
-                next.attachments,
-                next.author,
-                user_actor(next.author),
-            )
-            .await
-        {
-            // Niemand wartet auf diese Antwort: als Fehler im Verlauf sichtbar machen.
-            let problem = serde_json::to_value(&p).unwrap_or(Value::Null);
-            append(
-                &self.ctx.events,
-                self.ctx.org,
-                self.session,
-                system(),
-                EventPayload::Error(ErrorEvent { problem }),
-            )
-            .await?;
-            return Err(p);
         }
-        Ok(())
     }
 }

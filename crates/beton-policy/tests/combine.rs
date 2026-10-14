@@ -692,3 +692,147 @@ fn pol_007_dry_run_modify_and_errors() {
     assert_eq!(d.would.len(), 1);
     assert_eq!(d.errors.len(), 2);
 }
+
+/// #182: Nach einem `args`-Patch in Pass 1 sieht Pass 2 auch die abgeleiteten Felder des
+/// modifizierten Aufrufs (`tool.command`, `tool.argv`, `tool.paths`), nicht die alten.
+#[test]
+fn pol_005_args_patch_recomputes_derived_fields_for_pass_two() {
+    use beton_policy::normalize::{ToolSource, normalize_source};
+    let source = Arc::new(ToolSource {
+        harness: "claude".into(),
+        native_name: "Bash".into(),
+        acp_kind: None,
+        mcp_server: None,
+        cwd: "/work/repo".into(),
+        home: None,
+    });
+    let original = json!({ "command": "rm -rf /tmp/x" });
+    let normalized = normalize_source(&source, &original).unwrap();
+    let act = Activation::new(Phase::ToolCall, json!({ "tool": normalized.to_context() }))
+        .unwrap()
+        .with_tool_source(source);
+    let user = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: safe\n    on: tool_call\n    action: modify\n    modify: { args: { command: \"echo ok > out.txt\" } }\n",
+    );
+    let project = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "rules:\n{}{}{}",
+            rule(
+                "no-rm",
+                "tool_call",
+                "shell.has_command(tool.argv, \"rm\")",
+                "deny"
+            ),
+            rule(
+                "no-rm-text",
+                "tool_call",
+                "tool.command.contains(\"rm -rf\")",
+                "deny"
+            ),
+            rule(
+                "out-path",
+                "tool_call",
+                "\"/work/repo/out.txt\" in tool.paths",
+                "ask"
+            ),
+        ),
+    );
+    let d = eval(vec![user, project], &act);
+    match &d.outcome {
+        Outcome::Ask { reasons } => {
+            assert_eq!(reasons.len(), 1);
+            assert_eq!(reasons[0].rule.rule_id, "out-path");
+        }
+        other => panic!("ask erwartet (Pass 2 auf dem neuen Kommando), war {other:?}"),
+    }
+}
+
+/// #182, fail closed: Lässt sich der modifizierte Aufruf nicht neu normalisieren, lehnt die
+/// Engine ab, statt mit veralteten abgeleiteten Feldern weiterzuprüfen.
+#[test]
+fn pol_005_failed_renormalization_after_args_patch_denies() {
+    use beton_policy::normalize::ToolSource;
+    let source = Arc::new(ToolSource {
+        harness: "claude".into(),
+        native_name: "Bash".into(),
+        acp_kind: None,
+        mcp_server: None,
+        cwd: "relativ/kein/pfad".into(),
+        home: None,
+    });
+    let act = tool("shell", json!({ "command": "ls" })).with_tool_source(source);
+    let user = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: patch\n    on: tool_call\n    action: modify\n    modify: { args: { command: \"echo\" } }\n",
+    );
+    let d = eval(vec![user], &act);
+    assert_eq!(deny_reasons(&d), ["engine"]);
+    assert!(
+        d.errors
+            .iter()
+            .any(|e| e.error.contains("Modifikation nicht anwendbar")),
+        "{:?}",
+        d.errors
+    );
+}
+
+#[test]
+fn pol_004_effective_set_lists_programs_and_phases() {
+    let s = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "defaults:\n  browser_navigate: deny\nrules:\n{}{}",
+            rule("a", "tool_call", "tool.kind == \"shell\"", "deny"),
+            rule("b", "model_request", "session.cost_usd > 1.0", "deny"),
+        ),
+    );
+    let effective = EffectiveSet::new(vec![s]);
+    assert!(effective.has_phase(Phase::ToolCall));
+    assert!(effective.has_phase(Phase::ModelRequest));
+    assert!(effective.has_phase(Phase::BrowserNavigate), "Default deny");
+    assert!(!effective.has_phase(Phase::ToolResult));
+    assert!(!effective.has_phase(Phase::SessionStart));
+    let fields: Vec<_> = effective
+        .programs(Phase::ModelRequest)
+        .flat_map(|p| p.fields())
+        .collect();
+    assert!(
+        fields.contains(&"session.cost_usd".to_owned()),
+        "{fields:?}"
+    );
+    assert_eq!(effective.programs(Phase::ToolResult).count(), 0);
+}
+
+#[test]
+fn pol_006_no_capabilities_means_every_modification_is_unsupported() {
+    let s = set(
+        Scope::User,
+        "u",
+        "rules:\n  - id: route\n    on: model_request\n    action: modify\n    modify: { model: cheap }\n    on_unsupported: deny\n",
+    );
+    let opts = EvalOptions {
+        capabilities: Capabilities::none(),
+        ..EvalOptions::default()
+    };
+    let d = EffectiveSet::new(vec![s]).evaluate(&model_request("opus"), &opts);
+    assert_eq!(deny_reasons(&d), ["route"]);
+    use beton_policy::engine::Verdict;
+    let names: Vec<_> = [
+        Verdict::Deny,
+        Verdict::Ask,
+        Verdict::Modify,
+        Verdict::Allow,
+        Verdict::Notify,
+        Verdict::Error,
+    ]
+    .iter()
+    .map(|v| v.as_str())
+    .collect();
+    assert_eq!(names, ["deny", "ask", "modify", "allow", "notify", "error"]);
+}

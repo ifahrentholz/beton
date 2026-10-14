@@ -49,6 +49,8 @@ problem_codes! {
     Unauthorized = "unauthorized", 401, "Anmeldung erforderlich";
     InvalidCode = "invalid_code", 401, "Einmal-Code ungültig oder abgelaufen";
     Forbidden = "forbidden", 403, "Keine Berechtigung";
+    /// Die Policy hat die Aktion abgelehnt (POL-003, POL-006); `detail` nennt den Grund.
+    PolicyDenied = "policy_denied", 403, "Von der Policy abgelehnt";
     HostNotAllowed = "host_not_allowed", 403, "Host nicht erlaubt";
     OriginNotAllowed = "origin_not_allowed", 403, "Origin nicht erlaubt";
     LoopbackOnly = "loopback_only", 403, "Nur über Loopback erreichbar";
@@ -64,6 +66,8 @@ problem_codes! {
     CapabilityUnsupported = "capability_unsupported", 409, "Vom Harness nicht unterstützt";
     /// Steer ohne laufenden Turn (SES-004).
     NoActiveTurn = "no_active_turn", 409, "Kein laufender Turn";
+    /// Die Eingabe braucht eine Freigabe laut Policy (`ask`, SES-004); als Steer nicht möglich.
+    ApprovalRequired = "approval_required", 409, "Freigabe erforderlich";
     SeqConflict = "seq_conflict", 409, "Sequenzkonflikt";
     StaleEpoch = "stale_epoch", 409, "Veraltete Epoch";
     SeqAhead = "seq_ahead", 409, "from_seq liegt hinter head_seq";

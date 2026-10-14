@@ -151,6 +151,9 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             "session.status" => m.child_status(session, &args).await,
             "session.list" => m.list_children(session).await,
             "session.cancel" => m.cancel_child(session, &args).await,
+            // Verbrauchswerte für Policies (POL-004 AC3/AC4): `session.cost_usd`,
+            // `user.daily_cost_usd` aus der Usage-Projektion.
+            "policy.usage" => crate::usage_policy::policy_usage(&self.0, session).await,
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),

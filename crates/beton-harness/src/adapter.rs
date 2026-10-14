@@ -133,6 +133,9 @@ pub struct SessionSpec {
     /// Session darf den Plan-Modus nicht selbst verlassen; Claude: `ExitPlanMode` wird ohne
     /// Rückfrage abgelehnt (AGT-011, HAR-027). Ein Moduswechsel durch den Nutzer bleibt möglich.
     pub plan_locked: bool,
+    /// Vendor-Hooks über die Hook-Brücke (HAR-005 ab M2): Kommando und Laufzeitverzeichnis.
+    /// Ohne Angabe installiert der Adapter keinen Hook (Durchsetzung nur an Rückfragen).
+    pub hook: Option<crate::hook::HookSetup>,
 }
 
 /// Erste Nachricht mit vorangestellten Instructions (`instructions_delivery:
@@ -352,15 +355,40 @@ impl NormalizedEvent {
     }
 }
 
-/// Anfrage an das Gate vor einem Tool-Call (Policy und Approvals, POL bzw. WEB-018).
-#[derive(Debug, Clone, PartialEq)]
+/// Woher eine Tool-Call-Anfrage an das Gate kommt (POL-024).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GateOrigin {
+    /// Vor jedem Tool-Call, unabhängig vom Vendor (Claude `PreToolUse`-Hook, Direkt-API,
+    /// Fake-Harness): volle Durchsetzung.
+    PreTool,
+    /// Der Vendor fragt um Freigabe (Claude `can_use_tool`, Codex-Approval, ACP
+    /// `session/request_permission`): Durchsetzung nur an dieser Stelle.
+    #[default]
+    VendorAsk,
+    /// Rückfrage des Vendors, die der Permission-Mode ohne Menschen beantwortet (Codex
+    /// `accept_edits` für Datei-Änderungen im Workspace, `yolo` für alle, HAR-027): Die Policy
+    /// entscheidet trotzdem, nur die menschliche Rückfrage entfällt.
+    AutoApproval,
+}
+
+/// Anfrage an das Gate vor einem Tool-Call (Phase `tool_call`, POL-003).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct GateRequest {
     pub turn_id: Option<TurnId>,
     pub call_id: String,
+    /// Nativer Tool-Name (z. B. `Bash`, `commandExecution`, `mcp__github__get`).
     pub tool: String,
-    /// Kanonische Klasse, z. B. `shell` (POL-005).
+    /// Kanonische Klasse aus `beton_policy::normalize` (POL-005).
     pub kind: String,
     pub args: Value,
+    /// MCP-Server, wenn der Harness ihn getrennt meldet (Codex, Direkt-API).
+    pub mcp_server: Option<String>,
+    /// ACP `tool_call.kind`.
+    pub acp_kind: Option<String>,
+    pub origin: GateOrigin,
+    /// Original-Zeile der Rückfrage (z. B. `can_use_tool`), damit kein `raw` verloren geht:
+    /// Der Runner hängt sie an sein `policy.decision` (HAR-001 AC3).
+    pub raw: Option<RawJson>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,10 +397,58 @@ pub enum GateDecision {
     Deny { reason: Option<String> },
 }
 
-/// Vom Runner bereitgestellte Entscheidungsstelle für Tool-Calls.
+/// Anfrage vor einem Model-Request (Phase `model_request`, Granularität `call`; HAR-010 AC5).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModelGateRequest {
+    pub turn_id: Option<TurnId>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub reasoning_effort: Option<String>,
+    /// Letzte User-Nachricht (höchstens 64 KiB).
+    pub prompt: Option<String>,
+    /// Nachrichten des Requests (nur Direkt-API).
+    pub messages: Option<Vec<Value>>,
+    /// Namen der angebotenen Tools.
+    pub tools: Vec<String>,
+    pub estimated_input_tokens: Option<u64>,
+}
+
+/// Entscheidung für einen Model-Request; `Allow` mit geänderten Werten (Pass 1).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelGateDecision {
+    Allow {
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+    },
+    Deny {
+        reason: Option<String>,
+    },
+}
+
+/// Anfrage nach einem Tool-Call, bevor das Ergebnis zum Modell geht (Phase `tool_result`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ResultGateRequest {
+    pub call: GateRequest,
+    pub ok: bool,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
+    /// Text des Ergebnisses (höchstens 64 KiB).
+    pub text: String,
+    pub bytes: u64,
+    pub duration_ms: u64,
+    pub truncated: bool,
+}
+
+/// Vom Runner bereitgestellte Entscheidungsstelle (POL-003). Fail closed: Wer eine Phase
+/// nicht entscheiden kann, lehnt ab.
 #[async_trait]
 pub trait Gate: Send + Sync {
+    /// Phase `tool_call`.
     async fn decide(&self, request: GateRequest) -> GateDecision;
+    /// Phase `model_request` je Model-Request (Granularität `call`).
+    async fn model_request(&self, request: ModelGateRequest) -> ModelGateDecision;
+    /// Phase `tool_result`; `Deny` ersetzt das Ergebnis durch die Begründung.
+    async fn tool_result(&self, request: ResultGateRequest) -> GateDecision;
 }
 
 /// Erlaubt alles (Tests).
@@ -384,6 +460,17 @@ impl Gate for AllowAll {
     async fn decide(&self, _request: GateRequest) -> GateDecision {
         GateDecision::Allow { updated_args: None }
     }
+
+    async fn model_request(&self, _request: ModelGateRequest) -> ModelGateDecision {
+        ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
+    }
 }
 
 /// Verbietet alles (Tests, Fail-closed-Default).
@@ -393,6 +480,14 @@ pub struct DenyAll;
 #[async_trait]
 impl Gate for DenyAll {
     async fn decide(&self, _request: GateRequest) -> GateDecision {
+        GateDecision::Deny { reason: None }
+    }
+
+    async fn model_request(&self, _request: ModelGateRequest) -> ModelGateDecision {
+        ModelGateDecision::Deny { reason: None }
+    }
+
+    async fn tool_result(&self, _request: ResultGateRequest) -> GateDecision {
         GateDecision::Deny { reason: None }
     }
 }

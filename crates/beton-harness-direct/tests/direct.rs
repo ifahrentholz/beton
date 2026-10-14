@@ -13,8 +13,9 @@ use beton_core::event::EventPayload;
 use beton_harness::golden::{BLESS_ENV, Normalizer, line_diff};
 use beton_harness::process::RealLauncher;
 use beton_harness::{
-    AdapterContext, Gate, GateDecision, GateRequest, HarnessAdapter, HostEnv, Mode,
-    NormalizedEvent, ProbeReport, SessionSpec, Shutdown, UserInput,
+    AdapterContext, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter, HostEnv, Mode,
+    ModelGateDecision, ModelGateRequest, NormalizedEvent, ProbeReport, ResultGateRequest,
+    SessionSpec, Shutdown, UserInput,
 };
 use beton_harness_direct::config::{KeyRef, ModelConfig, Provider, WireKind};
 use beton_harness_direct::http::HttpOptions;
@@ -66,7 +67,14 @@ fn adapter(p: Provider) -> DirectAdapter {
 #[derive(Default)]
 struct Recorder {
     deny: bool,
+    /// Phase `model_request` ablehnen bzw. das Modell ersetzen.
+    deny_model: bool,
+    route_model: Option<String>,
+    /// Phase `tool_result` ablehnen.
+    deny_result: bool,
     seen: Mutex<Vec<GateRequest>>,
+    models: Mutex<Vec<ModelGateRequest>>,
+    results: Mutex<Vec<ResultGateRequest>>,
 }
 
 #[async_trait]
@@ -76,6 +84,31 @@ impl Gate for Recorder {
         if self.deny {
             GateDecision::Deny {
                 reason: Some("nein".into()),
+            }
+        } else {
+            GateDecision::Allow { updated_args: None }
+        }
+    }
+
+    async fn model_request(&self, request: ModelGateRequest) -> ModelGateDecision {
+        self.models.lock().unwrap().push(request);
+        if self.deny_model {
+            ModelGateDecision::Deny {
+                reason: Some("Budget erschöpft".into()),
+            }
+        } else {
+            ModelGateDecision::Allow {
+                model: self.route_model.clone(),
+                reasoning_effort: None,
+            }
+        }
+    }
+
+    async fn tool_result(&self, request: ResultGateRequest) -> GateDecision {
+        self.results.lock().unwrap().push(request);
+        if self.deny_result {
+            GateDecision::Deny {
+                reason: Some("Ergebnis enthält Geheimnisse".into()),
             }
         } else {
             GateDecision::Allow { updated_args: None }
@@ -985,4 +1018,137 @@ async fn agt_005_ac1_direct_api_gets_the_instructions_once_in_the_system_prompt(
         }
         s.shutdown(Shutdown::Kill).await.unwrap();
     }
+}
+
+// ---------------------------------------------------------------------------- HAR-010 AC5
+
+#[tokio::test]
+async fn har_010_ac5_model_request_deny_prevents_the_http_request() {
+    let server = MockServer::start().await.unwrap();
+    let wire = WireKind::Anthropic;
+    let path = mock::messages_path(wire);
+    server.push(
+        path,
+        mock::anthropic("msg_mock000000000001", &[Say::Text("nie".into(), 1)]),
+    );
+    let work = tempfile::tempdir().unwrap();
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
+    let gate = Arc::new(Recorder {
+        deny_model: true,
+        ..Recorder::default()
+    });
+    let mut s = a.start(spec(work.path()), ctx(gate.clone())).await.unwrap();
+    let mut rx = s.events().unwrap();
+    s.send(UserInput::from("Hallo")).await.unwrap();
+    let events = until_end(&mut rx).await;
+    let failed = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::TurnFailed(f) => Some(f.problem.clone()),
+            _ => None,
+        })
+        .expect("turn.failed");
+    assert_eq!(failed["code"], "policy_denied");
+    assert!(failed["detail"].as_str().unwrap().contains("Budget"));
+    assert!(server.requests_to(path).is_empty(), "kein HTTP-Request");
+    let models = gate.models.lock().unwrap().clone();
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].prompt.as_deref(), Some("Hallo"));
+    assert_eq!(models[0].model.as_deref(), Some("mock-model"));
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+#[tokio::test]
+async fn pol_003_direct_model_request_modify_sets_the_model_of_the_request() {
+    let server = MockServer::start().await.unwrap();
+    let wire = WireKind::Anthropic;
+    let path = mock::messages_path(wire);
+    server.push(
+        path,
+        mock::anthropic("msg_mock000000000001", &[Say::Text("ok".into(), 1)]),
+    );
+    let work = tempfile::tempdir().unwrap();
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
+    let gate = Arc::new(Recorder {
+        route_model: Some("mock-billig".into()),
+        ..Recorder::default()
+    });
+    let mut s = a.start(spec(work.path()), ctx(gate)).await.unwrap();
+    let mut rx = s.events().unwrap();
+    s.send(UserInput::from("Hallo")).await.unwrap();
+    until_end(&mut rx).await;
+    let reqs = server.requests_to(path);
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].body["model"], "mock-billig");
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+#[tokio::test]
+async fn pol_003_direct_tool_call_passes_pre_tool_and_result_deny_replaces_the_result() {
+    let server = MockServer::start().await.unwrap();
+    let wire = WireKind::Anthropic;
+    let path = mock::messages_path(wire);
+    server.push(
+        path,
+        mock::anthropic(
+            "msg_mock000000000001",
+            &[tool(
+                "toolu_mock000000000001",
+                "fs_read",
+                json!({"path": "geheim.txt"}),
+            )],
+        ),
+    );
+    server.push(
+        path,
+        mock::anthropic("msg_mock000000000002", &[Say::Text("ok".into(), 1)]),
+    );
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("geheim.txt"), "PASSWORT-4711").unwrap();
+    let a = adapter(provider(
+        "mock",
+        wire,
+        &server.base_url(""),
+        KeyRef::None,
+        None,
+    ));
+    let gate = Arc::new(Recorder {
+        deny_result: true,
+        ..Recorder::default()
+    });
+    let mut s = a.start(spec(work.path()), ctx(gate.clone())).await.unwrap();
+    let mut rx = s.events().unwrap();
+    s.send(UserInput::from("Lies geheim.txt")).await.unwrap();
+    let events = until_end(&mut rx).await;
+    assert_eq!(gate.seen.lock().unwrap()[0].origin, GateOrigin::PreTool);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, EventPayload::ApprovalRequested(_))),
+        "Freigabe-Events schreibt ab M2 der Runner"
+    );
+    let results = gate.results.lock().unwrap().clone();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].text.contains("PASSWORT-4711"));
+    let reqs = server.requests_to(path);
+    assert_eq!(reqs.len(), 2);
+    let second = reqs[1].body.to_string();
+    assert!(
+        !second.contains("PASSWORT-4711"),
+        "Ergebnis ersetzt: {second}"
+    );
+    assert!(second.contains("Geheimnisse"), "{second}");
+    s.shutdown(Shutdown::Kill).await.unwrap();
 }

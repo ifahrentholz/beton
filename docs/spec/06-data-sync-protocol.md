@@ -88,7 +88,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `tool.call.completed` | D | `call_id, status: ok\|error\|denied\|cancelled, result?\|result_ref?, duration_ms` |
 | Kontrolle | `approval.requested` | D | `approval_id, kind: tool\|policy\|browser\|budget\|question, subject, options, expires_at, on_timeout: deny\|allow\|abort` |
 | | `approval.resolved` | D | `approval_id, decision: allow\|deny\|abort\|answer, answer?, actor, via: user\|timeout\|policy\|system, remember?: none\|session, comment?, on_timeout_applied?` |
-| | `policy.decision` | D | `decision_id, phase, outcome: allow\|deny\|ask, modified?, approval_id?, matched[], defaults_applied[], conflicts[], errors[], grants_used[], enforcement, policy_set_hash, eval_us` (Details POL-025) |
+| | `policy.decision` | D | `decision_id, phase, subject_ref?, subject_hash?, outcome: allow\|deny\|ask, modified?, approval_id?, matched[], defaults_applied[], conflicts[], errors[], grants_used[], enforcement, policy_set_hash, eval_us` (Details POL-025) |
 | | `policy.set_changed` / `policy.set_invalid` | D | `scope, set, version` bzw. `file, line, error` (POL-001) |
 | | `policy.state_changed` | D | `scope, key, op, value` (POL-009) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |

@@ -1,14 +1,17 @@
 //! Policy-Engine von beton (03-policies.md).
 
+pub mod audit;
 pub mod cel;
 pub mod context;
 pub mod doc;
+pub mod enforcement;
 pub mod engine;
 pub mod load;
 pub mod normalize;
 pub mod store;
 pub mod types;
 pub mod value;
+pub mod vars;
 mod yaml;
 
 use serde::{Deserialize, Serialize};

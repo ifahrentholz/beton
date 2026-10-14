@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use beton_core::event::{ApprovalDecision, EventPayload, ToolStatus};
+use beton_core::event::{EventPayload, ToolStatus};
 use tokio::sync::mpsc;
 
 use crate::adapter::{
@@ -240,8 +240,11 @@ impl FixedGate {
         })
     }
 
-    fn count(&self) -> usize {
-        self.requests.lock().map(|r| r.len()).unwrap_or(0)
+    fn origins(&self) -> Vec<crate::adapter::GateOrigin> {
+        self.requests
+            .lock()
+            .map(|r| r.iter().map(|q| q.origin).collect())
+            .unwrap_or_default()
     }
 }
 
@@ -258,6 +261,20 @@ impl Gate for FixedGate {
                 reason: Some("Contract-Suite: abgelehnt".into()),
             }
         }
+    }
+
+    async fn model_request(
+        &self,
+        _request: crate::adapter::ModelGateRequest,
+    ) -> crate::adapter::ModelGateDecision {
+        crate::adapter::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(&self, _request: crate::adapter::ResultGateRequest) -> GateDecision {
+        GateDecision::Allow { updated_args: None }
     }
 }
 
@@ -540,26 +557,25 @@ async fn check_approval(
     stop(s).await;
     outcome((|| {
         let events = result?;
-        if gate.count() != 1 {
-            return Err(format!("Gate {} mal gefragt, erwartet 1", gate.count()));
-        }
-        if count(&events, "approval.requested") != 1 {
+        // Höchstens eine Anfrage je Herkunft und Tool-Call: vor dem Call (voller Gate:
+        // `PreToolUse`-Hook, Direkt-API, Fake) und/oder als Rückfrage des Vendors (HAR-005).
+        let asks = gate.origins();
+        let vendor = asks
+            .iter()
+            .filter(|o| **o != crate::adapter::GateOrigin::PreTool)
+            .count();
+        let pre = asks.len() - vendor;
+        if vendor > 1 || pre > 1 || asks.is_empty() {
             return Err(format!(
-                "erwartet genau ein approval.requested: {:?}",
-                names(&events)
+                "Gate-Anfragen {asks:?}, erwartet höchstens eine je Herkunft"
             ));
         }
-        let resolved = events.iter().find_map(|e| match e {
-            EventPayload::ApprovalResolved(r) => Some(r),
-            _ => None,
-        });
-        let want = if allow {
-            ApprovalDecision::Allow
-        } else {
-            ApprovalDecision::Deny
-        };
-        if resolved.map(|r| r.decision) != Some(want) {
-            return Err(format!("approval.resolved fehlt oder ist nicht {want:?}"));
+        // Freigabe-Events schreibt ab M2 das Gate des Runners, nicht der Adapter.
+        if count(&events, "approval.requested") != 0 {
+            return Err(format!(
+                "Adapter schreibt approval.requested: {:?}",
+                names(&events)
+            ));
         }
         let call = events
             .iter()

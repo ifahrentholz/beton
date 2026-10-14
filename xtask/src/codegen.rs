@@ -15,6 +15,7 @@
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
 //! - `docs/generated/problem-codes.md` (Fehlercodes, PROTO-011)
+//! - `docs/generated/policy-context.md` (CEL-Variablen der Policies, POL-004)
 //!
 //! `cargo xtask codegen --check` erzeugt alles in ein temporäres Verzeichnis und vergleicht
 //! mit dem eingecheckten Stand; jede Abweichung lässt die CI fehlschlagen.
@@ -206,6 +207,11 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     files.insert(
         PathBuf::from("docs/generated/problem-codes.md"),
         problem_codes(),
+    );
+    // Kontext-Variablen der Policies aus den Rust-Typen (POL-004 AC1).
+    files.insert(
+        PathBuf::from("docs/generated/policy-context.md"),
+        beton_policy::vars::reference_markdown(),
     );
     Ok(files)
 }
