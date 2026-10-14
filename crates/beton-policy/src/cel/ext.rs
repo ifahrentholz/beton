@@ -14,7 +14,12 @@ pub fn regex(pattern: &str) -> Result<Regex, String> {
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()
-        .map_err(|e| format!("ungültiger Regex `{pattern}`: {e}"))
+        // Ohne Muster und ohne die Meldung des `regex`-Crates (sie zitiert das Muster): es kann
+        // aus den Tool-Argumenten stammen (POL-025 AC2).
+        .map_err(|e| match e {
+            regex::Error::CompiledTooBig(_) => "Regex zu groß".to_owned(),
+            _ => "ungültiger Regex (Syntaxfehler)".to_owned(),
+        })
 }
 
 /// Glob → verankertes Regex. `*` passt auf alles außer `/`, `**` auch über `/` hinweg
@@ -98,7 +103,7 @@ pub struct LexicalResolver;
 
 impl PathResolver for LexicalResolver {
     fn resolve(&self, path: &str) -> Result<String, String> {
-        normalize_path(path).ok_or_else(|| format!("Pfad `{path}` ist nicht absolut"))
+        normalize_path(path).ok_or_else(|| "Pfad ist nicht absolut".to_owned())
     }
 }
 
@@ -146,7 +151,7 @@ pub fn url_path(u: &str) -> Result<String, String> {
 
 /// Dauer im CEL-Format: `1h30m`, `90s`, `1.5h`, `250ms`, `-5m`.
 pub fn parse_duration(s: &str) -> Result<time::Duration, String> {
-    let bad = || format!("ungültige Dauer `{s}` (z. B. `30m`, `1h30m`, `250ms`)");
+    let bad = || "ungültige Dauer (z. B. `30m`, `1h30m`, `250ms`)".to_owned();
     let (neg, mut rest) = match s.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
