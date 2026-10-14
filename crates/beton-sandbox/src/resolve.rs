@@ -298,7 +298,12 @@ pub fn controlled_env(name: &str) -> bool {
         || CA_ENV.contains(&name)
         || matches!(
             name,
-            "HOME" | "TMPDIR" | "XDG_RUNTIME_DIR" | "SSL_CERT_DIR" | "NODE_USE_ENV_PROXY"
+            "HOME"
+                | "TMPDIR"
+                | "XDG_RUNTIME_DIR"
+                | "SSL_CERT_DIR"
+                | "NODE_USE_ENV_PROXY"
+                | "PIP_USE_DEPRECATED"
         )
 }
 
@@ -799,6 +804,9 @@ pub fn resolve(
             for k in CA_ENV {
                 env.insert(k.into(), bundle.to_string_lossy().into_owned());
             }
+            // pip ≥ 24.2 prüft sonst mit `truststore` gegen den Trust-Store des Systems (unter
+            // macOS ohne beton-CA) statt gegen `PIP_CERT`.
+            env.insert("PIP_USE_DEPRECATED".into(), "legacy-certs".into());
             push_unique(&mut read_roots, bundle);
         }
     }
