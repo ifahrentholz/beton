@@ -283,8 +283,14 @@ async fn prx_002_ac4_rotation_creates_a_new_ca_and_is_audited() {
         rotated[0].1["fingerprint_sha256"],
         serde_json::json!(info.fingerprint_sha256)
     );
+    // Die Historie der CAs steht im Audit-Log: erst angelegt, dann rotiert.
+    let created: Vec<_> = audit
+        .iter()
+        .filter(|(a, _)| a == "proxy.ca_created")
+        .collect();
+    assert_eq!(created.len(), 1, "{audit:?}");
     assert_eq!(
-        rotated[0].1["previous_fingerprint_sha256"],
+        created[0].1["fingerprint_sha256"],
         serde_json::json!(old.info().fingerprint_sha256)
     );
     // Laufende Proxys behalten ihre CA: Leafs der alten CA bleiben gültig gegen die alte.
