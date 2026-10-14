@@ -654,7 +654,19 @@ async fn ses_005_ac1_ac3_interrupt_during_tool_call_and_idempotent() {
         start.elapsed()
     );
     d.wait_status(&id, "idle").await;
-    let before = d.events(&id).await.len();
+    // Alle Events des abgebrochenen Turns stehen vor seinem Ende, auch Funde des
+    // Workspace-Beobachters (#189); danach kommt nichts mehr nach.
+    let events = d.events(&id).await;
+    let end = events
+        .iter()
+        .position(|e| e["type"] == "turn.interrupted")
+        .unwrap();
+    let late: Vec<&Value> = events[end..]
+        .iter()
+        .filter(|e| e["type"] == "fs.changed")
+        .collect();
+    assert!(late.is_empty(), "fs.changed nach dem Turn-Ende: {late:?}");
+    let before = events.len();
     assert_eq!(
         d.http("POST", &format!("/v1/sessions/{id}/interrupt"), None)
             .await

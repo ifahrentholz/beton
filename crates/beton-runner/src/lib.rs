@@ -917,7 +917,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         ));
     }
     let (turn_tx, turn_rx) = watch::channel::<Option<TurnId>>(None);
-    let (fs_tx, mut fs_rx) = mpsc::channel::<(TurnId, Vec<FsChange>)>(64);
+    // Ungebunden: Der Beobachter meldet unter der Sperre des Trackers und darf dort nicht
+    // warten (höchstens eine Meldung je Snapshot-Abstand).
+    let (fs_tx, mut fs_rx) = mpsc::unbounded_channel::<(TurnId, Vec<FsChange>)>();
     if let Some(t) = &files {
         tokio::spawn(watch_workspace(t.clone(), turn_rx, fs_tx.clone()));
     }
@@ -1204,6 +1206,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 if let Some(turn) = turn
                                     && let Some((changes, tree)) = workspace::poll(t).await
                                 {
+                                    // Was der Beobachter vor diesem Snapshot gefunden hat, steht
+                                    // ebenfalls vor dem Turn-Ende im Log (#189).
+                                    while let Ok((seen, found)) = fs_rx.try_recv() {
+                                        batch.push(fs_changed(&boot, &actor, seen, found));
+                                    }
                                     if !changes.is_empty() {
                                         batch.push(fs_changed(&boot, &actor, turn, changes));
                                     }
@@ -1997,11 +2004,12 @@ async fn open_tracker(boot: &RunnerBoot) -> (Option<workspace::Shared>, Option<S
 
 /// Vergleicht den Workspace während eines Turns laufend mit dem letzten Snapshot und meldet
 /// Änderungen (SES-017 AC3: ≤ 1 s). Der Abstand wächst mit der Dauer eines Snapshots, damit
-/// große Repositories nicht dauerhaft Last erzeugen.
+/// große Repositories nicht dauerhaft Last erzeugen. Meldungen gehen unter der Sperre des
+/// Trackers raus; das Turn-Ende übernimmt sie vor seinem eigenen Snapshot (#189).
 async fn watch_workspace(
     tracker: workspace::Shared,
     mut turn: watch::Receiver<Option<TurnId>>,
-    out: mpsc::Sender<(TurnId, Vec<FsChange>)>,
+    out: mpsc::UnboundedSender<(TurnId, Vec<FsChange>)>,
 ) {
     // Basis-Snapshot vorab: füllt den Index, damit spätere Snapshots schnell sind.
     let _ = workspace::poll(&tracker).await;
@@ -2013,11 +2021,18 @@ async fn watch_workspace(
             }
             continue;
         };
-        let started = std::time::Instant::now();
-        if let Some((changes, _)) = workspace::poll(&tracker).await
-            && !changes.is_empty()
-            && out.send((t, changes)).await.is_err()
-        {
+        let started = tokio::time::Instant::now();
+        let still = turn.clone();
+        let tx = out.clone();
+        workspace::poll_and_deliver(
+            &tracker,
+            move || *still.borrow() == Some(t),
+            move |changes| {
+                let _ = tx.send((t, changes));
+            },
+        )
+        .await;
+        if out.is_closed() {
             return;
         }
         let pause = workspace::POLL_MIN.max(started.elapsed() * 2);
