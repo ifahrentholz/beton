@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    AuditCommand, AuditExportArgs, AuditListArgs, SecretKindArg, SecretsAddArgs, SecretsCommand,
-    SecretsRotateArgs, SecretsUnlockArgs, ValueSource,
+    AuditCommand, AuditExportArgs, AuditListArgs, ProxyCaCommand, ProxyCommand, SecretKindArg,
+    SecretsAddArgs, SecretsCommand, SecretsRotateArgs, SecretsUnlockArgs, ValueSource,
 };
 use crate::commands::{Ctx, print_json};
 use crate::exit::{CliError, CliResult, Exit};
@@ -294,6 +294,22 @@ fn print_table(header: &[&str], rows: &[Vec<String>]) -> CliResult {
         line(r.iter().map(String::as_str).collect()).context("stdout")?;
     }
     Ok(())
+}
+
+/// `beton proxy ca rotate` (PRX-002 AC4): neue beton-CA über den Daemon; zeigt nur Subject
+/// und Fingerabdruck.
+pub async fn proxy(ctx: &Ctx, cmd: ProxyCommand) -> CliResult {
+    let ProxyCommand::Ca(ProxyCaCommand::Rotate) = cmd;
+    let client = crate::daemon::ensure_running(ctx).await?;
+    let info = client.rotate_proxy_ca().await?;
+    let text = format!(
+        "Neue {} (SHA-256 {}, gültig bis {}); neue Sessions nutzen sie, laufende behalten \
+         ihre bis zum Neustart",
+        info["subject"].as_str().unwrap_or("?"),
+        info["fingerprint_sha256"].as_str().unwrap_or("?"),
+        info["not_after"].as_str().unwrap_or("?"),
+    );
+    done(ctx, info, &text)
 }
 
 pub async fn audit(ctx: &Ctx, cmd: AuditCommand) -> CliResult {

@@ -818,6 +818,7 @@ dependencies = [
  "beton-host",
  "beton-mcp",
  "beton-proto",
+ "beton-proxy",
  "beton-secrets",
  "beton-store",
  "futures-util",

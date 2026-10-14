@@ -358,6 +358,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_secrets::unlock_secrets))
         .routes(routes!(crate::api_secrets::list_audit))
         .routes(routes!(crate::api_secrets::verify_audit))
+        .routes(routes!(crate::api_proxy::rotate_ca))
         .split_for_parts();
     // Der Router braucht ein Wildcard-Segment für Dateipfade, OpenAPI einen Parameter `{path}`.
     let wildcard = crate::api_workspace::FILE_PATH_ROUTE;
