@@ -56,6 +56,62 @@ impl Net {
     }
 }
 
+/// Test-Zugang (Feature `test-net`): Namen lösen auf virtuelle, öffentlich wirkende Adressen
+/// auf, der Dialer bildet nur diese auf lokale Test-Upstreams ab.
+#[cfg(any(test, feature = "test-net"))]
+struct TestHosts {
+    names: std::collections::HashMap<String, IpAddr>,
+    real: std::collections::HashMap<IpAddr, SocketAddr>,
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Net {
+    pub(crate) fn test_hosts(hosts: &[(&str, SocketAddr)]) -> Self {
+        let mut names = std::collections::HashMap::new();
+        let mut real = std::collections::HashMap::new();
+        for (i, (name, addr)) in hosts.iter().enumerate() {
+            // 93.184.216.0/24: global, nie privat; erreicht wird nur der eingetragene Upstream.
+            let n = u8::try_from(i + 1).unwrap_or_else(|_| panic!("höchstens 254 Test-Hosts"));
+            let ip = IpAddr::from([93, 184, 216, n]);
+            names.insert(name.to_ascii_lowercase(), ip);
+            real.insert(ip, *addr);
+        }
+        let hosts = Arc::new(TestHosts { names, real });
+        Self {
+            resolver: hosts.clone(),
+            dialer: hosts,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Resolve for TestHosts {
+    fn resolve<'a>(&'a self, host: &'a str) -> BoxFuture<'a, io::Result<Vec<IpAddr>>> {
+        let r = self
+            .names
+            .get(host)
+            .map(|ip| vec![*ip])
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "NXDOMAIN (Test-Hosts)"));
+        Box::pin(async move { r })
+    }
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Dial for TestHosts {
+    fn dial(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<TcpStream>> {
+        let real = self.real.get(&addr.ip()).copied();
+        Box::pin(async move {
+            match real {
+                Some(real) => TcpStream::connect(real).await,
+                None => Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "kein Test-Upstream eingetragen",
+                )),
+            }
+        })
+    }
+}
+
 struct SystemResolver;
 
 impl Resolve for SystemResolver {

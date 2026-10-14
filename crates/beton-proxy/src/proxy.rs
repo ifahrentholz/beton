@@ -204,7 +204,11 @@ impl EgressProxy {
     /// der Sandbox sehen sonst nur Leafs der beton-CA; die System-Roots braucht der Harness für
     /// seine Passthrough-Verbindungen (PRX-005).
     pub fn ca_bundle_pem(&self) -> String {
-        self.ca_pem()
+        let mut pem = self.ca_pem();
+        for root in native_roots() {
+            pem.push_str(&crate::ca::pem_certificate(root.as_ref()));
+        }
+        pem
     }
 
     /// Nur für Tests anderer Crates (Feature `test-net`, nie in Produktionsbuilds): Jeder Name
@@ -218,12 +222,12 @@ impl EgressProxy {
         upstream_roots: Vec<CertificateDer<'static>>,
         hosts: &[(&str, std::net::SocketAddr)],
     ) -> Self {
-        let _ = hosts;
         let mut roots = RootCertStore::empty();
         for r in upstream_roots {
             roots.add(r).unwrap_or_else(|e| panic!("Test-CA: {e}"));
         }
-        Self::build(ca, &roots, Net::system()).unwrap_or_else(|e| panic!("Test-Proxy: {e}"))
+        Self::build(ca, &roots, crate::net::Net::test_hosts(hosts))
+            .unwrap_or_else(|e| panic!("Test-Proxy: {e}"))
     }
 
     /// Startet eine Instanz auf `127.0.0.1:<zufälliger Port>` mit eigenem Token, eigenem
