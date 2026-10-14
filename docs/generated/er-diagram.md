@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 8. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 10. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -29,6 +29,28 @@ erDiagram
         TEXT target_kind
         TEXT target_id
         TEXT details
+        INTEGER seq "nullable"
+        TEXT session_id "nullable"
+        TEXT host_id "nullable"
+        INTEGER count
+        TEXT prev_hash "nullable"
+        TEXT hash "nullable"
+    }
+    audit_heads {
+        TEXT org_id PK
+        INTEGER seq
+        TEXT hash
+    }
+    audit_usage_windows {
+        TEXT org_id PK
+        TEXT secret_ref PK
+        TEXT session_id PK
+        TEXT host_id PK
+        TEXT actor_id
+        TEXT purpose
+        TEXT window_start
+        TEXT last_at
+        INTEGER count
     }
     blob_refs {
         TEXT org_id FK
@@ -92,6 +114,19 @@ erDiagram
         TEXT session_id FK
         TEXT doc
         TEXT body
+    }
+    secrets {
+        TEXT org_id PK
+        TEXT secret_ref PK
+        TEXT scope
+        TEXT provider
+        TEXT account
+        TEXT name
+        TEXT kind
+        TEXT backend
+        TEXT created_at
+        TEXT updated_at
+        TEXT last_used_at "nullable"
     }
     session_file_imports {
         TEXT session_id PK,FK

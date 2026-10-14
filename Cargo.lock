@@ -400,6 +400,7 @@ dependencies = [
  "beton-mcp",
  "beton-runner",
  "beton-sdk",
+ "beton-secrets",
  "beton-server",
  "beton-store",
  "clap",
@@ -419,6 +420,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
@@ -669,6 +671,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hkdf 0.12.4",
  "keyring-core",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -700,6 +703,7 @@ dependencies = [
  "beton-host",
  "beton-mcp",
  "beton-proto",
+ "beton-secrets",
  "beton-store",
  "futures-util",
  "getrandom 0.4.3",
@@ -725,6 +729,7 @@ dependencies = [
  "ts-rs",
  "utoipa",
  "utoipa-axum",
+ "zeroize",
 ]
 
 [[package]]

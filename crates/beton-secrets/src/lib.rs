@@ -14,6 +14,7 @@ pub mod backend;
 pub mod capability;
 pub mod error;
 pub mod secret_ref;
+pub mod select;
 mod service;
 #[cfg(test)]
 mod service_tests;

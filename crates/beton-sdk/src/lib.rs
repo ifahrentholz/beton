@@ -403,6 +403,125 @@ impl Client {
         .await
     }
 
+    /// `GET /v1/secrets` über alle Seiten: `{"items": [...], "store": {...}}`. Enthält nie Werte.
+    pub async fn list_secrets(&self) -> Result<Value> {
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut query = vec![("limit", "200".to_owned())];
+            if let Some(c) = &cursor {
+                query.push(("cursor", c.clone()));
+            }
+            let page: Value = self
+                .send(self.http.get(self.url("/v1/secrets")).query(&query))
+                .await?;
+            items.extend(page["items"].as_array().cloned().unwrap_or_default());
+            match page["next_cursor"].as_str() {
+                Some(c) => cursor = Some(c.to_owned()),
+                None => {
+                    return Ok(serde_json::json!({ "items": items, "store": page["store"] }));
+                }
+            }
+        }
+    }
+
+    /// `POST /v1/secrets` (SEC-004). Der Wert geht nur in den Request-Body.
+    pub async fn create_secret(&self, secret_ref: &str, kind: &str, value: &str) -> Result<Value> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            secret_ref: &'a str,
+            kind: &'a str,
+            value: &'a str,
+        }
+        let body = secret_body(&Body {
+            secret_ref,
+            kind,
+            value,
+        })?;
+        self.send(
+            self.http
+                .post(self.url("/v1/secrets"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body),
+        )
+        .await
+    }
+
+    /// `PUT /v1/secrets`: neuer Wert für eine vorhandene Ref.
+    pub async fn rotate_secret(&self, secret_ref: &str, value: &str) -> Result<Value> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            secret_ref: &'a str,
+            value: &'a str,
+        }
+        let body = secret_body(&Body { secret_ref, value })?;
+        self.send(
+            self.http
+                .put(self.url("/v1/secrets"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body),
+        )
+        .await
+    }
+
+    /// `DELETE /v1/secrets?secret_ref=…`.
+    pub async fn delete_secret(&self, secret_ref: &str) -> Result<()> {
+        self.send_empty(
+            self.http
+                .delete(self.url("/v1/secrets"))
+                .query(&[("secret_ref", secret_ref)]),
+        )
+        .await
+    }
+
+    /// `POST /v1/secrets/unlock`: entsperrt den Datei-Store bzw. wechselt die Passphrase.
+    pub async fn unlock_secrets(
+        &self,
+        passphrase: &str,
+        new_passphrase: Option<&str>,
+    ) -> Result<()> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            passphrase: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            new_passphrase: Option<&'a str>,
+        }
+        let body = secret_body(&Body {
+            passphrase,
+            new_passphrase,
+        })?;
+        self.send_empty(
+            self.http
+                .post(self.url("/v1/secrets/unlock"))
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body),
+        )
+        .await
+    }
+
+    /// `GET /v1/audit`: eine Seite des Audit-Logs, neueste zuerst (SEC-012).
+    pub async fn audit_page(
+        &self,
+        cursor: Option<&str>,
+        limit: u32,
+        action: Option<&str>,
+    ) -> Result<Page<Value>> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(c) = cursor {
+            query.push(("cursor", c.to_owned()));
+        }
+        if let Some(a) = action {
+            query.push(("action", a.to_owned()));
+        }
+        self.send(self.http.get(self.url("/v1/audit")).query(&query))
+            .await
+    }
+
+    /// `GET /v1/audit/verify`: Prüfung der Hash-Kette.
+    pub async fn audit_verify(&self) -> Result<Value> {
+        self.get("/v1/audit/verify").await
+    }
+
     /// WebSocket-Verbindung (`/v1/ws`, Subprotokoll `beton.v1`) mit Begrüßung.
     pub async fn connect_ws(&self) -> Result<ws::Connection> {
         ws::Connection::open(self).await
@@ -474,6 +593,12 @@ impl Client {
         }
         serde_json::from_slice(&bytes).map_err(|e| Error::Decode(e.to_string()))
     }
+}
+
+/// Request-Body mit einem Secret-Wert. reqwest übernimmt die Bytes; danach gibt es im SDK
+/// keine Kopie mehr.
+fn secret_body<T: Serialize>(body: &T) -> Result<Vec<u8>> {
+    serde_json::to_vec(body).map_err(|e| Error::Decode(e.to_string()))
 }
 
 /// Fehlerantwort als [`Error::Problem`].
