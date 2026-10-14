@@ -4,7 +4,7 @@
 //! im `regex`-Crate). Kontextabhängige Detektoren (AWS-Secret-Key, `Authorization`-Header)
 //! ersetzen nur die Gruppe `secret`, der Kontext bleibt lesbar. `bt_cred_`-Platzhalter sind
 //! harmlos und bleiben stehen. Eine Entropie-Heuristik gibt es nicht (Spec: standardmäßig
-//! aus; folgt mit ISSUE_ENTROPY).
+//! aus; folgt mit #214).
 
 use std::sync::LazyLock;
 
