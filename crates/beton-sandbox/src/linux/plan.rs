@@ -432,6 +432,11 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             path: e.to_path_buf(),
         });
         for c in std::fs::read_dir(e).into_iter().flatten().flatten() {
+            // Symlinks nicht binden (der Mount landete auf dem Ziel); umbenennen oder löschen
+            // lassen sie sich im read-only Vorfahren ohnehin nicht.
+            if c.file_type().is_ok_and(|t| t.is_symlink()) {
+                continue;
+            }
             let c = c.path();
             if !masked.contains(&&c) {
                 ops.push(MountOp::Pin {
@@ -441,6 +446,31 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             }
         }
     }
+    // Vorfahren einer Maske innerhalb einer Schreib-Wurzel lassen sich nicht umbenennen
+    // (Mountpunkte): Sonst verschöbe die Sandbox die maskierte Datei, und der nächste Start
+    // fände sie unter neuem Pfad unmaskiert (SBX-004 AC4, Gegenstück zu den KEEP-Regeln unter
+    // macOS). Muster werden bei jedem Start neu gesucht und brauchen das nicht, schaden aber
+    // auch nicht.
+    let mut keep = BTreeSet::new();
+    for t in &masked {
+        let Some(w) = plan
+            .write_roots
+            .iter()
+            .find(|w| t.starts_with(w) && t.as_path() != w.as_path())
+        else {
+            continue;
+        };
+        for a in t.ancestors().skip(1) {
+            if a == w.as_path() || !a.starts_with(w) {
+                break;
+            }
+            keep.insert(a.to_path_buf());
+        }
+    }
+    ops.extend(keep.into_iter().map(|path| MountOp::Pin {
+        path,
+        writable: false,
+    }));
     let git = git_mounts(plan);
     ops.extend(git.pinned.into_iter().map(|path| MountOp::Pin {
         path,
@@ -668,6 +698,15 @@ mod tests {
         assert!(t.files.contains(&root.join("ws/.env")), "{t:?}");
         assert!(t.files.contains(&root.join("ws/a/.env.local")), "{t:?}");
         assert!(!t.files.iter().any(|f| f.ends_with("main.rs")), "{t:?}");
+        // Vorfahren von Masken in Schreib-Wurzeln sind Mountpunkte (nicht umbenennbar).
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::Pin {
+                path: root.join("ws/a"),
+                writable: false
+            }),
+            "{ops:?}"
+        );
         // Wurzeln unter `/tmp` (Fixtures unter Linux) kommen wieder hinein.
         for r in plan.roots() {
             assert_eq!(

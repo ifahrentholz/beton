@@ -279,6 +279,15 @@ async fn sbx_004_ac4_masks_survive_rename_hardlink_and_symlink_attempts() {
                 p.id()
             );
         }
+        // Auch über zwei Starts hinweg: Die maskierte Datei bleibt, wo sie war (sonst fände der
+        // nächste Start sie unter neuem Pfad unmaskiert).
+        assert!(
+            fx.ws.join("a/b/geheim.txt").is_file(),
+            "{}: Maske verschoben",
+            p.id()
+        );
+        let out = sh(p.as_ref(), &policy, "cat z/b/geheim.txt a/c/geheim.txt x").await;
+        assert!(!out.stdout.contains("FIXTURE"), "{}: {out:?}", p.id());
         let out = sh(
             p.as_ref(),
             &policy,
