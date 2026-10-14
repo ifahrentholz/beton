@@ -96,6 +96,9 @@ jobs:
       # covers: SBX-008 AC5 (AppArmor-Restriktion: mit Paketprofil nutzbar, ohne Grund und Fallback)
       - name: Sandbox mit AppArmor-Userns-Restriktion und Profil (SBX-008 AC5)
         run: |
+          # Kernel, Landlock-ABI und bwrap dieses Runners im Log (QA-005 AC3 folgt mit WP-48).
+          uname -r
+          target/debug/beton sandbox probe
           launcher="$PWD/target/debug/beton-sandbox-exec"
           sed -e "s#/usr/bin/beton#$launcher#" -e 's#profile beton #profile beton-ci #' \
             deploy/apparmor/beton | sudo tee /etc/apparmor.d/beton-ci >/dev/null
