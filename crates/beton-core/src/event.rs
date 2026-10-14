@@ -761,6 +761,15 @@ payload!(PolicyStateChanged {
     value: Value
 });
 payload!(PolicyRuleIssue { rule_ids: Vec<String>, reason: String });
+/// Zustellung einer `notify`-Regel (POL-006, UX-001): Kanal `inbox` (und bis Web-Push bzw.
+/// Desktop-Notifications `push`) wird zum Inbox-Eintrag, `log` steht nur im Verlauf.
+payload!(PolicyNotified {
+    rule_id: String,
+    scope: String,
+    set: String,
+    channels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] message: Option<String>,
+});
 payload!(BudgetExhausted {
     scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] lease_id: Option<String>,
@@ -1128,6 +1137,7 @@ catalog! {
     PolicySetChanged = "policy.set_changed", Durable, PolicySetChanged;
     PolicySetInvalid = "policy.set_invalid", Durable, PolicySetInvalid;
     PolicyStateChanged = "policy.state_changed", Durable, PolicyStateChanged;
+    PolicyNotified = "policy.notified", Durable, PolicyNotified;
     PolicyEnforcementDegraded = "policy.enforcement_degraded", Durable, PolicyRuleIssue;
     PolicyRuleInapplicable = "policy.rule_inapplicable", Durable, PolicyRuleIssue;
     BudgetExhausted = "budget.exhausted", Durable, BudgetExhausted;

@@ -1325,6 +1325,7 @@ pub fn policy_dirs(beton_home: &Path, workdir: &Path) -> Vec<(Scope, PathBuf)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use beton_core::event::RememberScope;
 
     fn gate() -> (PolicyGate, mpsc::UnboundedReceiver<GateEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -1415,6 +1416,422 @@ mod tests {
                 .any(|e| matches!(e, EventPayload::ApprovalRequested(_))),
             "{seen:?}"
         );
+    }
+
+    // ------------------------------------------------------------------ WP-37 (POL-009/010)
+
+    struct Policy {
+        gate: PolicyGate,
+        rx: mpsc::UnboundedReceiver<GateEvent>,
+        _dir: tempfile::TempDir,
+    }
+
+    fn with_policy(body: &str) -> Policy {
+        let dir = tempfile::tempdir().unwrap();
+        let pdir = dir.path().join("policies");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("p.yaml"),
+            format!("spec_version: 1\nname: p\n{body}"),
+        )
+        .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let opts = PolicyOptions {
+            dirs: vec![(Scope::Project, pdir)],
+            workdir: dir.path().to_path_buf(),
+            ..PolicyOptions::default()
+        };
+        Policy {
+            gate: PolicyGate::new(opts, tx),
+            rx,
+            _dir: dir,
+        }
+    }
+
+    fn pre(call: &str, command: &str) -> GateRequest {
+        GateRequest {
+            call_id: call.into(),
+            tool: "Bash".into(),
+            kind: "shell".into(),
+            args: json!({ "command": command }),
+            origin: GateOrigin::PreTool,
+            ..GateRequest::default()
+        }
+    }
+
+    async fn next_request(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> ApprovalRequested {
+        loop {
+            let e = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+                .await
+                .expect("approval.requested kommt")
+                .expect("Kanal offen");
+            if let EventPayload::ApprovalRequested(r) = e.payload {
+                return r;
+            }
+        }
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> Vec<EventPayload> {
+        let mut out = Vec::new();
+        while let Ok(e) = rx.try_recv() {
+            out.push(e.payload);
+        }
+        out
+    }
+
+    fn allow() -> Human {
+        Human {
+            allow: true,
+            ..Human::default()
+        }
+    }
+
+    const TWO_ASKS: &str = "rules:\n  - id: confirm-destructive-shell\n    on: tool_call\n    when: 'tool.kind == \"shell\"'\n    action: ask\n    severity: high\n    reason: \"Destruktives Kommando\"\n    approval: { timeout: 30m, on_timeout: deny }\n  - id: git-guard\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: ask\n    reason: \"Push verlässt den Rechner\"\n    approval: { timeout: 2h, on_timeout: abort }\n";
+
+    #[tokio::test]
+    async fn pol_010_ac1_one_card_with_all_reasons_and_the_combined_plan() {
+        let mut p = with_policy(TWO_ASKS);
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c1", "git push origin feature/x")).await });
+        let req = next_request(&mut p.rx).await;
+        assert_eq!(req.kind, ApprovalKind::Policy);
+        let reasons = req.subject["reasons"].as_array().unwrap();
+        assert_eq!(reasons.len(), 2, "{}", req.subject);
+        assert_eq!(reasons[0]["rule_id"], "confirm-destructive-shell");
+        assert_eq!(reasons[0]["scope"], "project");
+        assert_eq!(reasons[0]["set"], "p");
+        assert_eq!(reasons[0]["severity"], "high");
+        assert_eq!(req.subject["tool"]["name"], "Bash");
+        assert_eq!(req.subject["tool"]["kind"], "shell");
+        assert_eq!(req.subject["tool"]["args"]["command"], "git push origin feature/x");
+        assert_eq!(req.subject["summary"], "git push origin feature/x");
+        assert_eq!(req.subject["call_id"], "c1");
+        assert_eq!(req.options, ["approve", "approve_session", "deny"]);
+        // Kürzeste Frist (30 min), strengstes on_timeout (abort).
+        assert_eq!(req.on_timeout, TimeoutAction::Abort);
+        let left = time::OffsetDateTime::from(req.expires_at) - time::OffsetDateTime::now_utc();
+        assert!(
+            left > time::Duration::minutes(29) && left <= time::Duration::minutes(30),
+            "{left}"
+        );
+        assert!(p.gate.resolve("c1", allow()));
+        assert_eq!(
+            call.await.unwrap(),
+            GateDecision::Allow { updated_args: None }
+        );
+        let rest = drain(&mut p.rx);
+        assert_eq!(
+            rest.iter()
+                .filter(|e| matches!(e, EventPayload::ApprovalRequested(_)))
+                .count(),
+            0,
+            "genau eine Card: {rest:?}"
+        );
+    }
+
+    const ASK_PUSH: &str = "rules:\n  - id: confirm\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: ask\n    reason: \"Push bestätigen\"\n    approval: { remember: session }\n";
+
+    #[tokio::test]
+    async fn pol_010_ac2_approve_session_creates_a_grant_for_the_same_command() {
+        let mut p = with_policy(ASK_PUSH);
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c1", "git push origin x")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.resolve(
+            "c1",
+            Human {
+                allow: true,
+                remember: true,
+                ..Human::default()
+            }
+        ));
+        assert!(matches!(call.await.unwrap(), GateDecision::Allow { .. }));
+        let resolved = drain(&mut p.rx)
+            .into_iter()
+            .find_map(|e| match e {
+                EventPayload::ApprovalResolved(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(resolved.remember, Some(RememberScope::Session));
+
+        // Derselbe Befehl: ohne Card erlaubt, das policy.decision nennt den Grant.
+        let d = tokio::time::timeout(Duration::from_secs(5), p.gate.decide(pre("c2", "git push origin x")))
+            .await
+            .expect("ohne Rückfrage");
+        assert!(matches!(d, GateDecision::Allow { .. }));
+        let events = drain(&mut p.rx);
+        assert!(!events.iter().any(|e| matches!(e, EventPayload::ApprovalRequested(_))));
+        let decision = events
+            .iter()
+            .find_map(|e| match e {
+                EventPayload::PolicyDecision(d) => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(decision.outcome, beton_core::event::PolicyOutcome::Allow);
+        assert_eq!(decision.grants_used.len(), 1, "{decision:?}");
+
+        // Ein anderer Befehl erzeugt wieder eine Card.
+        let g = p.gate.clone();
+        let other = tokio::spawn(async move { g.decide(pre("c3", "git push --tags origin")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.resolve("c3", Human::default()));
+        assert!(matches!(other.await.unwrap(), GateDecision::Deny { .. }));
+    }
+
+    #[tokio::test]
+    async fn pol_010_remember_without_the_option_creates_no_grant() {
+        let mut p = with_policy(
+            "rules:\n  - id: confirm\n    on: tool_call\n    action: ask\n    approval: { remember: none }\n",
+        );
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c1", "ls")).await });
+        let req = next_request(&mut p.rx).await;
+        assert_eq!(req.options, ["approve", "deny"]);
+        assert!(p.gate.resolve(
+            "c1",
+            Human {
+                allow: true,
+                remember: true,
+                ..Human::default()
+            }
+        ));
+        assert!(matches!(call.await.unwrap(), GateDecision::Allow { .. }));
+        // Wieder eine Card für denselben Befehl.
+        let g = p.gate.clone();
+        let again = tokio::spawn(async move { g.decide(pre("c2", "ls")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.resolve("c2", allow()));
+        assert!(matches!(again.await.unwrap(), GateDecision::Allow { .. }));
+    }
+
+    #[tokio::test]
+    async fn pol_010_ac5_timeout_applies_the_strictest_action() {
+        let mut p = with_policy(
+            "rules:\n  - id: a\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s, on_timeout: deny }\n  - id: b\n    on: tool_call\n    action: ask\n    approval: { timeout: 1h, on_timeout: abort }\n",
+        );
+        let started = std::time::Instant::now();
+        let d = p.gate.decide(pre("c1", "rm -rf dist")).await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{d:?}");
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(900) && waited < Duration::from_secs(10), "{waited:?}");
+        let resolved = drain(&mut p.rx)
+            .into_iter()
+            .find_map(|e| match e {
+                EventPayload::ApprovalResolved(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(resolved.via, ResolvedVia::Timeout);
+        assert_eq!(resolved.decision, ApprovalDecision::Abort);
+        assert_eq!(resolved.on_timeout_applied, Some(TimeoutAction::Abort));
+    }
+
+    #[tokio::test]
+    async fn pol_010_on_timeout_allow_lets_the_call_through() {
+        let mut p = with_policy(
+            "rules:\n  - id: a\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s, on_timeout: allow }\n",
+        );
+        let d = p.gate.decide(pre("c1", "npm test")).await;
+        assert!(matches!(d, GateDecision::Allow { .. }), "{d:?}");
+        let resolved = drain(&mut p.rx)
+            .into_iter()
+            .find_map(|e| match e {
+                EventPayload::ApprovalResolved(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(resolved.decision, ApprovalDecision::Allow);
+        assert_eq!(resolved.via, ResolvedVia::Timeout);
+        assert_eq!(resolved.on_timeout_applied, Some(TimeoutAction::Allow));
+    }
+
+    const COUNT_ASKED: &str = "rules:\n  - id: count\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s, on_timeout: deny }\n    effects:\n      - { op: increment, scope: session, key: asked }\n";
+
+    fn state_changes(events: &[EventPayload]) -> Vec<(String, Value)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                EventPayload::PolicyStateChanged(c) => Some((c.key.clone(), c.value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn pol_009_ac2_effects_follow_the_resolution() {
+        let mut p = with_policy(COUNT_ASKED);
+        // Freigabe: angewendet.
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c1", "ls")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.resolve("c1", allow()));
+        call.await.unwrap();
+        assert_eq!(state_changes(&drain(&mut p.rx)), [("asked".to_owned(), json!(1))]);
+        // Ablehnung (Default effects_on): angewendet.
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c2", "ls")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.resolve("c2", Human::default()));
+        call.await.unwrap();
+        assert_eq!(state_changes(&drain(&mut p.rx)), [("asked".to_owned(), json!(2))]);
+        // Ablauf: nicht angewendet.
+        p.gate.decide(pre("c3", "ls")).await;
+        assert_eq!(state_changes(&drain(&mut p.rx)), []);
+    }
+
+    #[derive(Default)]
+    struct FakeState {
+        loaded: LoadedState,
+        applied: Mutex<Vec<beton_policy::state::StateOp>>,
+    }
+
+    #[async_trait]
+    impl StateSource for FakeState {
+        async fn load(&self) -> Result<LoadedState, String> {
+            Ok(self.loaded.clone())
+        }
+        async fn apply(&self, op: &beton_policy::state::StateOp) -> Result<(), String> {
+            self.applied.lock().unwrap().push(op.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn pol_009_state_comes_from_the_server_and_user_scopes_go_back() {
+        let mut p = with_policy(
+            "rules:\n  - id: count-pushes\n    on: tool_call\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }} heute {{ state.user_day.pushes }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: increment, scope: user_day, key: pushes }\n",
+        );
+        let source = Arc::new(FakeState {
+            loaded: LoadedState {
+                session: [("pushes".to_owned(), json!(2))].into(),
+                user_day: [("pushes".to_owned(), json!(7))].into(),
+                ..LoadedState::default()
+            },
+            ..FakeState::default()
+        });
+        let gate = p.gate.clone().with_state(source.clone());
+        let d = gate.decide(pre("c1", "git push")).await;
+        assert!(matches!(d, GateDecision::Allow { .. }));
+        let events = drain(&mut p.rx);
+        let notified = events
+            .iter()
+            .find_map(|e| match e {
+                EventPayload::PolicyNotified(n) => Some(n),
+                _ => None,
+            })
+            .expect("policy.notified");
+        assert_eq!(notified.message.as_deref(), Some("Push Nr. 3 heute 7"));
+        assert_eq!(notified.channels, ["inbox"]);
+        assert_eq!(notified.rule_id, "count-pushes");
+        assert_eq!(state_changes(&events), [("pushes".to_owned(), json!(3))]);
+        let applied = source.applied.lock().unwrap().clone();
+        assert_eq!(applied.len(), 1);
+        assert_eq!(applied[0].scope, beton_policy::doc::StateScope::UserDay);
+    }
+
+    #[tokio::test]
+    async fn pol_009_without_state_effects_are_not_applied() {
+        struct Broken;
+        #[async_trait]
+        impl StateSource for Broken {
+            async fn load(&self) -> Result<LoadedState, String> {
+                Err("weg".into())
+            }
+            async fn apply(&self, _: &beton_policy::state::StateOp) -> Result<(), String> {
+                Err("weg".into())
+            }
+        }
+        let mut p = with_policy(
+            "rules:\n  - id: count\n    on: tool_call\n    action: allow\n    effects:\n      - { op: increment, scope: session, key: n }\n",
+        );
+        let gate = p.gate.clone().with_state(Arc::new(Broken));
+        assert!(matches!(gate.decide(pre("c1", "ls")).await, GateDecision::Allow { .. }));
+        let events = drain(&mut p.rx);
+        assert_eq!(state_changes(&events), []);
+        assert!(
+            events.iter().any(|e| matches!(e, EventPayload::Notice(n) if n.level == NoticeLevel::Warn)),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn pol_006_notify_log_stays_in_the_stream() {
+        let mut p = with_policy(
+            "rules:\n  - id: note\n    on: tool_call\n    action: notify\n    notify: { channels: [log], message: 'nur Verlauf' }\n",
+        );
+        p.gate.decide(pre("c1", "ls")).await;
+        let events = drain(&mut p.rx);
+        assert!(!events.iter().any(|e| matches!(e, EventPayload::PolicyNotified(_))));
+        assert!(events.iter().any(|e| matches!(e, EventPayload::Notice(n) if n.text.contains("nur Verlauf"))));
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac4_ask_user_waits_for_the_answer() {
+        let (g, mut rx) = gate();
+        let g2 = g.clone();
+        let asked = tokio::spawn(async move {
+            g2.ask_question(
+                "q1",
+                "Pro IP oder pro Account?".into(),
+                vec!["Pro IP".into(), "Pro Account".into()],
+                Duration::from_secs(30),
+                None,
+            )
+            .await
+        });
+        let req = next_request(&mut rx).await;
+        assert_eq!(req.kind, ApprovalKind::Question);
+        assert_eq!(req.subject["question"], "Pro IP oder pro Account?");
+        assert_eq!(req.subject["choices"], json!(["Pro IP", "Pro Account"]));
+        assert_eq!(req.options, ["answer"]);
+        assert!(g.resolve(
+            "q1",
+            Human {
+                answer: Some("Pro IP".into()),
+                ..Human::default()
+            }
+        ));
+        assert_eq!(asked.await.unwrap(), Some("Pro IP".to_owned()));
+        let resolved = drain(&mut rx)
+            .into_iter()
+            .find_map(|e| match e {
+                EventPayload::ApprovalResolved(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(resolved.decision, ApprovalDecision::Answer);
+        assert_eq!(resolved.answer.as_deref(), Some("Pro IP"));
+        // Ohne Antwort binnen Frist: keine Antwort.
+        let none = g
+            .ask_question("q2", "Noch da?".into(), Vec::new(), Duration::from_millis(200), None)
+            .await;
+        assert_eq!(none, None);
+    }
+
+    #[tokio::test]
+    async fn web_007_vendor_ask_card_names_tool_and_options() {
+        let (g, mut rx) = gate();
+        let g2 = g.clone();
+        let call = tokio::spawn(async move { g2.decide(ask("c1")).await });
+        let req = next_request(&mut rx).await;
+        assert_eq!(req.kind, ApprovalKind::Tool);
+        assert_eq!(req.subject["tool"]["name"], "Bash");
+        assert_eq!(req.subject["tool"]["args"]["command"], "git push");
+        assert_eq!(req.options, ["approve", "deny"]);
+        assert!(g.resolve(
+            "c1",
+            Human {
+                allow: true,
+                actor: Some(Actor::User {
+                    id: PrincipalId::User(UserId::LOCAL),
+                    device_id: None,
+                }),
+                ..Human::default()
+            }
+        ));
+        call.await.unwrap();
     }
 
     #[test]
