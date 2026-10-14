@@ -51,6 +51,8 @@ pub struct InboxQuery {
     pub kind: Option<String>,
     pub session: Option<SessionId>,
     pub limit: u32,
+    /// Nur Einträge vor diesem (`created_at`, `id`) – Cursor der vorigen Seite.
+    pub before: Option<(String, String)>,
 }
 
 fn item_id(session: SessionId, seq: u64) -> String {
@@ -234,6 +236,9 @@ impl Store {
         if q.session.is_some() {
             sql.push_str(" AND i.session_id = ?");
         }
+        if q.before.is_some() {
+            sql.push_str(" AND (i.created_at < ? OR (i.created_at = ? AND i.id < ?))");
+        }
         sql.push_str(" ORDER BY i.created_at DESC, i.id DESC LIMIT ?");
         let mut query = sqlx::query(&sql).bind(org.to_string());
         if let Some(s) = &q.status {
@@ -244,6 +249,9 @@ impl Store {
         }
         if let Some(s) = q.session {
             query = query.bind(s.to_string());
+        }
+        if let Some((at, id)) = &q.before {
+            query = query.bind(at).bind(at).bind(id);
         }
         let limit = if q.limit == 0 { 100 } else { q.limit.min(500) };
         query = query.bind(i64::from(limit));

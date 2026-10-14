@@ -721,6 +721,26 @@
         "operationId": "list_inbox",
         "parameters": [
           {
+            "name": "limit",
+            "in": "query",
+            "description": "Anzahl der Einträge, 1 bis 200 (Default 50).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Opaker Cursor aus `next_cursor` der vorigen Seite.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "status",
             "in": "query",
             "description": "`open`, `done` oder `info`; ohne Angabe alle.",
@@ -741,15 +761,6 @@
           {
             "name": "session_id",
             "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "1 bis 500 (Default 100).",
             "required": false,
             "schema": {
               "type": "string"
@@ -6348,6 +6359,12 @@
             "items": {
               "$ref": "#/components/schemas/InboxItemView"
             }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "open_count": {
             "type": "integer",

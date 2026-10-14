@@ -15,7 +15,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::api_sessions::ResolveApprovalRequest;
 use crate::app::AppState;
-use crate::extract::{ApiJson, ApiQuery};
+use crate::extract::{ApiJson, ApiQuery, PageQuery, encode_cursor};
 use crate::problem::{ApiResult, Problem, ProblemCode};
 use crate::security::Authenticated;
 
@@ -72,6 +72,7 @@ impl From<InboxRecord> for InboxItemView {
 #[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
 pub struct InboxPage {
     pub items: Vec<InboxItemView>,
+    pub next_cursor: Option<String>,
     /// Zähler der Inbox: offene Freigaben und Fragen (UX-001 AC3).
     pub open_count: u64,
 }
@@ -84,8 +85,6 @@ pub struct InboxParams {
     /// `approval`, `question` oder `notice`.
     pub kind: Option<String>,
     pub session_id: Option<String>,
-    /// 1 bis 500 (Default 100).
-    pub limit: Option<String>,
 }
 
 fn invalid(detail: String) -> Problem {
@@ -94,10 +93,11 @@ fn invalid(detail: String) -> Problem {
 
 /// Inbox, neueste Einträge zuerst (UX-001).
 #[utoipa::path(get, path = "/v1/inbox", tag = "inbox",
-    params(InboxParams),
+    params(PageQuery, InboxParams),
     responses((status = 200, description = "Einträge und Zähler", body = InboxPage)))]
 pub async fn list_inbox(
     State(state): State<AppState>,
+    ApiQuery(page): ApiQuery<PageQuery>,
     ApiQuery(p): ApiQuery<InboxParams>,
 ) -> ApiResult<axum::Json<InboxPage>> {
     if let Some(s) = &p.status
@@ -121,18 +121,10 @@ pub async fn list_inbox(
         ),
         None => None,
     };
-    let limit = match &p.limit {
-        None => 100,
-        Some(raw) => raw
-            .parse::<u32>()
-            .ok()
-            .filter(|l| (1..=500).contains(l))
-            .ok_or_else(|| {
-                Problem::new(ProblemCode::InvalidLimit).detail("limit muss 1 bis 500 sein")
-            })?,
-    };
+    let limit = page.limit()?;
+    let before: Option<(String, String)> = page.cursor()?;
     let org = state.local.org;
-    let items = state
+    let mut records = state
         .store
         .inbox(
             org,
@@ -140,15 +132,20 @@ pub async fn list_inbox(
                 status: p.status,
                 kind: p.kind,
                 session,
-                limit,
+                limit: limit + 1,
+                before,
             },
         )
-        .await?
-        .into_iter()
-        .map(InboxItemView::from)
-        .collect();
+        .await?;
+    let next_cursor = (records.len() > limit as usize).then(|| {
+        records.truncate(limit as usize);
+        let last = &records[records.len() - 1];
+        encode_cursor(&(last.created_at.to_string(), last.id.clone()))
+    });
+    let items = records.into_iter().map(InboxItemView::from).collect();
     Ok(axum::Json(InboxPage {
         items,
+        next_cursor,
         open_count: state.store.inbox_open_count(org).await?,
     }))
 }

@@ -277,3 +277,42 @@ async fn pol_009_ac3_user_day_starts_empty_on_a_new_day() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn ux_001_inbox_pages_with_a_cursor() {
+    let t = store().await;
+    let s = session(&t).await;
+    let events: Vec<Event> = (0..5)
+        .map(|_| ev(s.id, requested(ApprovalId::new(), ApprovalKind::Policy)))
+        .collect();
+    append(&t, &s, events).await;
+    let first = t
+        .store
+        .inbox(
+            org(&t),
+            &InboxQuery {
+                limit: 3,
+                ..InboxQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 3);
+    let last = first.last().unwrap();
+    let rest = t
+        .store
+        .inbox(
+            org(&t),
+            &InboxQuery {
+                limit: 3,
+                before: Some((last.created_at.to_string(), last.id.clone())),
+                ..InboxQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(rest.len(), 2);
+    let mut all: Vec<_> = first.iter().chain(&rest).map(|i| i.id.clone()).collect();
+    all.dedup();
+    assert_eq!(all.len(), 5, "jeder Eintrag genau einmal");
+}
