@@ -65,6 +65,40 @@ describe('Timeline', () => {
     expect(a.kind === 'approval' && [a.decision, a.comment]).toEqual(['deny', 'Erst testen'])
   })
 
+  it('WEB-007: Policy-Card mit Gründen, Optionen, Ablauf und wer entschieden hat', () => {
+    const req = ev('approval.requested', {
+      approval_id: 'apr_2',
+      kind: 'policy',
+      subject: {
+        phase: 'tool_call',
+        title: 'Shell-Kommando bestätigen',
+        summary: 'git push origin main',
+        tool: { name: 'Bash', kind: 'shell', args: { command: 'git push origin main' }, args_modified: null },
+        reasons: [{ rule_id: 'git-guard', scope: 'user', set: 'defaults', reason: 'Push', severity: 'high' }],
+        requested_by: { actor: 'agent', harness: 'claude', agent: 'pr-fixer' },
+      },
+      options: ['approve', 'approve_session', 'deny'],
+      expires_at: '2026-10-04T00:30:00Z',
+      on_timeout: 'abort',
+    })
+    const res = ev('approval.resolved', { approval_id: 'apr_2', decision: 'allow', actor: { kind: 'user', id: 'usr_local' }, via: 'user', remember: 'session' })
+    const [a] = timeline({ ...empty, events: [req, res] })
+    expect(a).toMatchObject({
+      kind: 'approval',
+      approvalKind: 'policy',
+      title: 'Shell-Kommando bestätigen',
+      summary: 'git push origin main',
+      tool: 'Bash',
+      toolKind: 'shell',
+      options: ['approve', 'approve_session', 'deny'],
+      onTimeout: 'abort',
+      reasons: [{ ruleId: 'git-guard', scope: 'user', set: 'defaults', reason: 'Push', severity: 'high' }],
+      requestedBy: 'Claude Code · Agent pr-fixer',
+      decision: 'allow',
+      resolution: { decision: 'allow', via: 'user', remember: 'session' },
+    })
+  })
+
   it('Eingaben, Antworten und laufende Deltas in Reihenfolge', () => {
     const events = [
       ev('message.completed', { message_id: 'u', role: 'user', content: [{ type: 'text', text: 'Hallo' }], author: 'usr_local' }),

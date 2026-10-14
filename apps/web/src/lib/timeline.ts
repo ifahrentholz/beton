@@ -3,6 +3,53 @@ import { harnessName } from '@/components/harness'
 import { effortLabel } from '@/components/settings-picker'
 import type { SessionLog } from '@/store/events'
 import { isInline, isOffloaded, textOf } from './events'
+import { argSummary } from './format'
+
+/** Ein Grund einer Approval-Card (POL-010). */
+export interface ApprovalReason {
+  ruleId: string
+  scope: string
+  set: string
+  reason: string
+  severity?: string
+}
+
+/** Wie eine Freigabe entschieden wurde (`approval.resolved`). */
+export interface ApprovalResolution {
+  decision: string
+  via: string
+  actor: unknown
+  comment?: string
+  answer?: string
+  remember?: string
+  onTimeoutApplied?: string
+}
+
+/** Freigabe bzw. Frage des Agents (WEB-007, WEB-018, AGT-007). */
+export interface ApprovalItem {
+  kind: 'approval'
+  key: string
+  approvalId: string
+  /** `tool`, `policy`, `question` … */
+  approvalKind: string
+  title: string
+  summary: string
+  tool: string
+  toolKind?: string
+  args: unknown
+  argsModified?: unknown
+  reasons: ApprovalReason[]
+  options: string[]
+  expiresAt?: string
+  onTimeout?: string
+  question?: string
+  choices: string[]
+  /** Wer fragt (Harness, Agent). */
+  requestedBy?: string
+  decision?: string
+  comment?: string
+  resolution?: ApprovalResolution
+}
 
 /** Status einer Tool-Card (WEB-002 AC2). */
 export type ToolState = 'requested' | 'running' | 'completed' | 'failed' | 'denied'
@@ -22,15 +69,7 @@ export type Item =
       output?: string
       result?: unknown
     }
-  | {
-      kind: 'approval'
-      key: string
-      approvalId: string
-      tool: string
-      args: unknown
-      decision?: string
-      comment?: string
-    }
+  | ApprovalItem
   | { kind: 'policy'; key: string; rule: string; reason: string }
   | { kind: 'error'; key: string; title: string; detail?: string }
   | { kind: 'note'; key: string; text: string; tone: 'neutral' | 'deny' | 'ok' }
@@ -186,21 +225,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
         break
       }
       case 'approval.requested': {
-        // Seit POL-010 ist `subject.tool` ein Objekt `{name, kind, args}`; ältere Logs nennen
-        // nur den Namen.
-        const subject = (e.payload.subject ?? {}) as {
-          tool?: string | { name?: string; args?: unknown }
-          args?: unknown
-          title?: string
-        }
-        const tool = typeof subject.tool === 'object' ? subject.tool : undefined
-        const item: Extract<Item, { kind: 'approval' }> = {
-          kind: 'approval',
-          key,
-          approvalId: e.payload.approval_id,
-          tool: (typeof subject.tool === 'string' ? subject.tool : tool?.name) ?? subject.title ?? e.payload.kind,
-          args: tool?.args ?? subject.args ?? e.payload.subject,
-        }
+        const item = approvalItem(key, e.payload)
         approvals.set(e.payload.approval_id, item)
         items.push(item)
         break
@@ -210,6 +235,15 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
         if (a) {
           a.decision = e.payload.decision
           if (e.payload.comment) a.comment = e.payload.comment
+          a.resolution = {
+            decision: e.payload.decision,
+            via: e.payload.via,
+            actor: e.payload.actor,
+            ...(e.payload.comment ? { comment: e.payload.comment } : {}),
+            ...(e.payload.answer ? { answer: e.payload.answer } : {}),
+            ...(e.payload.remember ? { remember: e.payload.remember } : {}),
+            ...(e.payload.on_timeout_applied ? { onTimeoutApplied: e.payload.on_timeout_applied } : {}),
+          }
         }
         break
       }
@@ -274,7 +308,60 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
   return items
 }
 
-/** Offene Freigaben (für Status und Tastenkürzel). */
-export function openApprovals(items: Item[]): Extract<Item, { kind: 'approval' }>[] {
-  return items.filter((i): i is Extract<Item, { kind: 'approval' }> => i.kind === 'approval' && !i.decision)
+/** Offene Freigaben (für Status und Tastenkürzel), älteste zuerst. */
+export function openApprovals(items: Item[]): ApprovalItem[] {
+  return items.filter((i): i is ApprovalItem => i.kind === 'approval' && !i.decision)
+}
+
+const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
+
+/**
+ * Approval-Card aus `approval.requested` (POL-010). Seit WP-37 ist `subject.tool` ein Objekt
+ * `{name, kind, args, args_modified}`; ältere Logs nennen nur den Namen und `subject.args`.
+ */
+export function approvalItem(
+  key: string,
+  p: { approval_id: string; kind: string; subject: unknown; options: string[]; expires_at?: string; on_timeout?: string },
+): ApprovalItem {
+  const subject = (p.subject ?? {}) as Record<string, unknown>
+  const toolObj = subject.tool && typeof subject.tool === 'object' ? (subject.tool as Record<string, unknown>) : undefined
+  const tool = str(subject.tool) ?? str(toolObj?.name) ?? str(subject.title) ?? p.kind
+  const args = toolObj ? toolObj.args : (subject.args ?? subject)
+  const reasons: ApprovalReason[] = Array.isArray(subject.reasons)
+    ? (subject.reasons as unknown[]).map((r) => {
+        if (typeof r === 'string') return { ruleId: '', scope: '', set: '', reason: r }
+        const o = (r ?? {}) as Record<string, unknown>
+        return {
+          ruleId: str(o.rule_id) ?? '',
+          scope: str(o.scope) ?? '',
+          set: str(o.set) ?? '',
+          reason: str(o.reason) ?? '',
+          ...(str(o.severity) ? { severity: str(o.severity) } : {}),
+        }
+      })
+    : []
+  const requested = (subject.requested_by ?? {}) as Record<string, unknown>
+  const by = [str(requested.harness) ? harnessName(str(requested.harness)!) : undefined, str(requested.agent) ? `Agent ${str(requested.agent)}` : undefined]
+    .filter(Boolean)
+    .join(' · ')
+  const question = p.kind === 'question' ? str(subject.question) : undefined
+  return {
+    kind: 'approval',
+    key,
+    approvalId: p.approval_id,
+    approvalKind: p.kind,
+    title: question ? 'Frage des Agents' : (str(subject.title) ?? 'Freigabe nötig'),
+    summary: question ?? str(subject.summary) ?? (argSummary(args) || tool),
+    tool,
+    ...(str(toolObj?.kind) ? { toolKind: str(toolObj?.kind) } : {}),
+    args,
+    ...(toolObj?.args_modified ? { argsModified: toolObj.args_modified } : {}),
+    reasons,
+    options: p.options ?? [],
+    ...(p.expires_at ? { expiresAt: p.expires_at } : {}),
+    ...(p.on_timeout ? { onTimeout: p.on_timeout } : {}),
+    ...(question ? { question } : {}),
+    choices: Array.isArray(subject.choices) ? (subject.choices as unknown[]).filter((c): c is string => typeof c === 'string') : [],
+    ...(by ? { requestedBy: by } : {}),
+  }
 }
