@@ -1,23 +1,120 @@
-//! Usage-API (USE-005, USE-004, USE-007 AC2) und Inbox-Hinweis zu Abo-Fenstern (USE-004 AC3).
+//! HTTP-Tests der Usage-API (USE-005, USE-004, USE-007 AC2) und des Inbox-Hinweises zu
+//! Abo-Fenstern (USE-004 AC3), mit echtem Store und der vollständigen App im Prozess.
 
 #![allow(clippy::unwrap_used)]
 
-mod common;
-
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
+use axum::extract::connect_info::MockConnectInfo;
+use axum::http::{Request, header};
 use beton_core::event::{
     Actor, AuthSource, CostDelta, CostSource, Event, EventPayload, SessionKind, SessionTrigger,
     UsageSubscription,
 };
 use beton_core::id::{OrgId, SessionId, UserId};
-use beton_server::app::AppState;
-use beton_server::tunnel::EventObserver as _;
-use beton_store::{NewSession, SessionRecord};
-use common::{TestApp, app, app_full};
+use beton_store::{NewSession, SessionRecord, Store, StoreOptions};
+use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
+use tower::ServiceExt as _;
+
+use crate::app::{self, AppParts, AppState};
+use crate::local_auth::{BrowserLogins, LocalToken};
+use crate::tunnel::EventObserver as _;
+
+const HOST: &str = "127.0.0.1:7420";
+
+struct TestApp {
+    router: Router,
+    token: String,
+    store: Store,
+    _dir: tempfile::TempDir,
+}
+
+struct Res {
+    status: u16,
+    body: Vec<u8>,
+}
+
+impl Res {
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap_or(Value::Null)
+    }
+}
+
+impl TestApp {
+    fn authed(&self, method: &str, path: &str) -> axum::http::request::Builder {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::AUTHORIZATION, format!("Bearer {}", self.token))
+    }
+
+    async fn send(&self, req: Request<Body>) -> Res {
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let body = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+        Res { status, body }
+    }
+}
+
+async fn app_full(
+    extra: impl FnOnce(Router<AppState>) -> Router<AppState>,
+    customize: impl FnOnce(app::Runtime) -> app::Runtime,
+) -> TestApp {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path(), StoreOptions::default())
+        .await
+        .unwrap();
+    let local = store.ensure_local().await.unwrap();
+    let token = LocalToken::load_or_create(dir.path()).unwrap();
+    let token_text = std::fs::read_to_string(token.path())
+        .unwrap()
+        .trim()
+        .to_owned();
+    let (router, doc) = app::routes();
+    let router = app::layered(
+        extra(router),
+        &doc,
+        AppParts {
+            store: store.clone(),
+            local,
+            token: Arc::new(token),
+            logins: Arc::new(BrowserLogins::default()),
+            hosts: vec![HOST.into()],
+            origins: vec![format!("http://{HOST}")],
+            primary_host: HOST.into(),
+            runtime: customize(
+                app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands(),
+            ),
+            web_dir: None,
+            secrets: None,
+        },
+    )
+    .layer(MockConnectInfo(
+        "127.0.0.1:50000".parse::<SocketAddr>().unwrap(),
+    ));
+    TestApp {
+        router,
+        token: token_text,
+        store,
+        _dir: dir,
+    }
+}
+
+async fn app() -> TestApp {
+    app_full(|r| r, |r| r).await
+}
+
+fn assert_problem(res: &Res, code: &str) {
+    let p: crate::Problem = serde_json::from_slice(&res.body).unwrap();
+    assert_eq!(p.code.as_str(), code, "{p:?}");
+}
 
 async fn session(t: &TestApp, harness: &str) -> SessionRecord {
     let local = t.store.ensure_local().await.unwrap();
@@ -86,7 +183,7 @@ async fn append(t: &TestApp, s: &SessionRecord, ts: &str, payloads: Vec<EventPay
         .unwrap();
 }
 
-async fn get(t: &TestApp, path: &str) -> common::Res {
+async fn get(t: &TestApp, path: &str) -> Res {
     t.send(t.authed("GET", path).body(Body::empty()).unwrap())
         .await
 }
@@ -174,7 +271,7 @@ async fn use_005_invalid_parameters_and_m4_dimensions_are_rejected() {
     ] {
         let res = get(&t, &format!("/v1/usage?{q}")).await;
         assert_eq!(res.status, 400, "{q}");
-        res.assert_problem("validation_failed");
+        assert_problem(&res, "validation_failed");
     }
     let res = get(&t, "/v1/usage?group_by=user").await;
     assert!(
@@ -270,7 +367,7 @@ async fn use_004_ac2_and_ac4_windows_and_reporting() {
 /// Ruft den Beobachter wie der Tunnel nach dem Speichern auf.
 async fn observe(State(state): State<AppState>, body: String) -> &'static str {
     let (session, events): (SessionId, Vec<Event>) = serde_json::from_str(&body).unwrap();
-    beton_server::usage_notice::UsageNoticeObserver(state).observe(session, &events);
+    crate::usage_notice::UsageNoticeObserver(state).observe(session, &events);
     "ok"
 }
 
@@ -282,7 +379,6 @@ async fn notices(t: &TestApp) -> Vec<Value> {
 async fn rate_limit_case(enabled: bool) -> TestApp {
     let t = app_full(
         |r| r.route("/test/observe", axum::routing::post(observe)),
-        "127.0.0.1:50000",
         move |mut r| {
             r.usage.rate_limit_notice = enabled;
             r

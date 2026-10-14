@@ -558,6 +558,10 @@ pub async fn get_session_usage(
 }
 
 #[cfg(test)]
+#[path = "api_usage_tests.rs"]
+mod http_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use time::macros::datetime;
