@@ -999,6 +999,73 @@ impl<'a> SessionManager<'a> {
     }
 
     /// Archivieren: Runner beenden, Session ausblenden (SES-001 AC2).
+    /// Manuelle Nachredaktion (DATA-012): nur der Owner (lokal immer; Rollen ab M4). Das
+    /// `event.redacted` geht an verbundene Clients, der Audit-Eintrag nennt Pfade und Grund.
+    pub async fn redact_event(
+        &self,
+        session: SessionId,
+        seq: u64,
+        by: PrincipalId,
+        paths: Vec<String>,
+        reason: String,
+    ) -> Result<beton_store::ManualRedactionOutcome, Problem> {
+        let record = self.state().store.session(self.org(), session).await?;
+        if PrincipalId::User(record.owner) != by {
+            return Err(Problem::new(ProblemCode::Forbidden)
+                .detail("Nur der Owner der Session darf Events schwärzen"));
+        }
+        let reason = reason.trim().to_owned();
+        if reason.is_empty() || reason.chars().count() > 500 {
+            return Err(Problem::new(ProblemCode::ValidationFailed)
+                .detail("`reason` ist Pflicht (1 bis 500 Zeichen)"));
+        }
+        let mut details = serde_json::json!({
+            "paths": paths,
+            "whole_payload": paths.is_empty(),
+            "reason": reason,
+        });
+        // Auch der Grund läuft durch die Pipeline, bevor er ins Audit-Log geht.
+        self.state().store.redact_value(&mut details)?;
+        let event = Event::new(
+            session,
+            0,
+            user_actor(by),
+            EventPayload::EventRedacted(beton_core::event::EventRedacted {
+                target_seq: seq,
+                by,
+                reason,
+            }),
+        );
+        let outcome = self
+            .state()
+            .store
+            .redact_event(
+                self.org(),
+                session,
+                beton_store::ManualRedaction {
+                    seq,
+                    paths,
+                    record: event,
+                    audit: beton_store::NewAuditEntry {
+                        at: beton_core::time::Timestamp::now(),
+                        actor: by,
+                        action: "event.redacted".into(),
+                        target_kind: "event".into(),
+                        target_id: format!("{session}/{seq}"),
+                        session_id: Some(session),
+                        host_id: None,
+                        details,
+                    },
+                },
+            )
+            .await?;
+        self.state()
+            .runtime
+            .hub
+            .publish_durable(session, std::slice::from_ref(&outcome.record));
+        Ok(outcome)
+    }
+
     pub async fn archive(&self, session: SessionId, by: PrincipalId) -> Result<(), Problem> {
         self.append(
             session,

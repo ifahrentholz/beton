@@ -508,7 +508,7 @@ fn actor_columns(actor: &Actor) -> (&'static str, Option<String>) {
     }
 }
 
-fn event_type(name: &str) -> Result<EventType> {
+pub(crate) fn event_type(name: &str) -> Result<EventType> {
     EventType::parse(name).ok_or_else(|| Error::corrupt(format!("unbekannter Event-Typ `{name}`")))
 }
 

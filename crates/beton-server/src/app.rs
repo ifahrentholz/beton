@@ -337,6 +337,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_sessions::put_read_state))
         .routes(routes!(crate::api_sessions::put_pin))
         .routes(routes!(crate::api_sessions::list_events))
+        .routes(routes!(crate::api_sessions::redact_event))
         .routes(routes!(crate::sse::stream_events))
         .routes(routes!(crate::api_sessions::list_approvals))
         .routes(routes!(crate::api_sessions::resolve_approval))

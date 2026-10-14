@@ -21,6 +21,7 @@ mod listing;
 mod listing_tests;
 mod migrate;
 mod projections;
+mod redaction;
 pub mod schema;
 mod secrets_meta;
 #[cfg(test)]
@@ -54,6 +55,7 @@ pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
 pub use crate::projections::{ApprovalRecord, UsageDaily, UsageRecord, UsageScope, UsageTotals};
+pub use crate::redaction::{MANUAL_MARKER, ManualRedaction, ManualRedactionOutcome};
 pub use crate::secrets_meta::SecretMetaRecord;
 pub use crate::sessions::{
     DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree, Tombstone,
