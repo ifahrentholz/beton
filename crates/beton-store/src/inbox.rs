@@ -186,7 +186,7 @@ pub(crate) async fn index_event(
                     .await?;
             let who = harness.unwrap_or_else(|| u.vendor.clone());
             let title = format!(
-                "Abo-Kontingent fast aufgebraucht: {who}, Fenster {window} zu {} %",
+                "Subscription-Kontingent fast aufgebraucht: {who}, Fenster {window} zu {} %",
                 pct(u.used_pct)
             );
             let summary = format!(

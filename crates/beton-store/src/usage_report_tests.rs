@@ -404,7 +404,7 @@ async fn use_004_ac3_rate_limit_notice_lands_in_the_inbox_once() {
     );
     assert_eq!(
         item.title,
-        "Abo-Kontingent fast aufgebraucht: claude, Fenster 5h zu 92 %"
+        "Subscription-Kontingent fast aufgebraucht: claude, Fenster 5h zu 92 %"
     );
     assert_eq!(item.detail["notification"], "rate_limit_high");
     assert_eq!(item.detail["resets_at"], "2026-10-01T12:00:00.000Z");
