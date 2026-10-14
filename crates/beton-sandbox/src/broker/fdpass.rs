@@ -9,7 +9,7 @@ pub(crate) const STDIO: usize = 3;
 /// Sendet ein Byte mit den Deskriptoren `fds`.
 #[allow(unsafe_code, reason = "sendmsg mit SCM_RIGHTS gibt es nur über libc")]
 pub(crate) fn send_fds(sock: RawFd, fds: &[RawFd; STDIO]) -> io::Result<()> {
-    let mut data = [b'S'];
+    let mut data = *b"S";
     let mut iov = libc::iovec {
         iov_base: data.as_mut_ptr().cast(),
         iov_len: 1,
