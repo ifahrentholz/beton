@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! cargo xtask codegen [--check]
+//! cargo xtask coverage-gate --input <llvm-cov.json> [--baseline <f>] [--out <f>] [--markdown <f>]
 //! cargo xtask commit-lint [--range <base>..<head>] [--title <text>]
 //! cargo xtask dco [--range <base>..<head>]
 //! cargo xtask golden-scan
@@ -13,6 +14,7 @@
 
 mod codegen;
 mod commits;
+mod cov_gate;
 mod coverage;
 mod golden_scan;
 mod security_tests;
@@ -53,6 +55,7 @@ fn run() -> Result<bool> {
     match command.as_str() {
         "codegen" => run_codegen(&root, &rest),
         "commit-lint" => commit_lint(&root, &rest),
+        "coverage-gate" => coverage_gate(&root, &rest),
         "dco" => dco(&rest),
         "golden-scan" => golden_scan(&root),
         "security-tests-touched" => security_tests_touched(&rest),
@@ -61,7 +64,7 @@ fn run() -> Result<bool> {
         "spec-coverage" => spec_coverage(&root, &rest),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|dco|golden-scan|security-tests-touched|security-review-label|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
@@ -106,6 +109,54 @@ fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
         })
         .filter(|c| !c.hash.is_empty())
         .collect())
+}
+
+/// QA-011: Coverage-Floor und Ratchet aus dem Export von `cargo llvm-cov --json`.
+fn coverage_gate(root: &std::path::Path, args: &[String]) -> Result<bool> {
+    let read = |path: &str| -> Result<serde_json::Value> {
+        let text = std::fs::read_to_string(path).with_context(|| format!("{path} nicht lesbar"))?;
+        serde_json::from_str(&text).with_context(|| format!("{path} ist kein JSON"))
+    };
+    let input = flag(args, "--input").context("--input <llvm-cov.json> fehlt")?;
+    let current = cov_gate::per_crate(&read(input)?)?;
+    let baseline = match flag(args, "--baseline") {
+        Some(path) if std::path::Path::new(path).exists() => {
+            Some(cov_gate::parse_baseline(&read(path)?))
+        }
+        _ => None,
+    };
+    let present: Vec<&str> = cov_gate::CRATES
+        .iter()
+        .map(|(k, _)| *k)
+        .filter(|k| root.join("crates").join(k).is_dir())
+        .collect();
+    let rows = cov_gate::evaluate(&current, baseline.as_ref(), &present);
+    let mut report = cov_gate::markdown(&rows);
+    if baseline.is_none() {
+        report.push_str(
+            "
+Keine Basis von `main` gefunden: Ratchet übersprungen, Floor geprüft.\n",
+        );
+    }
+    print!("{report}");
+    if let Some(path) = flag(args, "--markdown") {
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        f.write_all(report.as_bytes())?;
+    }
+    if let Some(path) = flag(args, "--out") {
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&cov_gate::summary_json(&current))?,
+        )?;
+    }
+    Ok(rows.iter().all(|r| r.problems.is_empty()))
 }
 
 /// Geänderte Dateien eines PRs (`--range <base>..<head>`, gegenüber der Merge-Basis).
