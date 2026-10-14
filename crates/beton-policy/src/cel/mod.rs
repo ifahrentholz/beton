@@ -12,10 +12,12 @@
 //!   [`EvalError::CostExceeded`] ab, über das Zeitbudget pro `evaluate` (10 ms) mit
 //!   [`EvalError::Deadline`]. Beides ist nicht absorbierbar und gilt als `error` (fail closed).
 
+mod analyze;
 mod check;
 mod eval;
 pub mod ext;
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::Phase;
@@ -192,6 +194,20 @@ impl Program {
     /// er mehrere Ausdrücke mit einem Meter auswertet.
     pub fn eval(&self, act: &Activation, meter: &mut Meter) -> Result<Value, EvalError> {
         eval::eval(&self.node, act, meter)
+    }
+
+    /// Tool-Klassen, auf die der Ausdruck beschränkt ist (`tool.kind == …`, `tool.kind in
+    /// […]`, `tool.name == …`, verknüpft mit `&&`/`||`); `None`, wenn nicht bestimmbar
+    /// (POL-024).
+    pub fn tool_kinds(&self) -> Option<BTreeSet<String>> {
+        analyze::tool_kinds(&self.node)
+    }
+
+    /// Benutzte Variablen (`session`) und Felder (`session.cost_usd`).
+    pub fn fields(&self) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        analyze::fields(&self.node, &mut out);
+        out
     }
 
     /// Wie [`Program::eval`], erwartet aber `bool`.

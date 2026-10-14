@@ -721,6 +721,14 @@ payload!(ApprovalResolved {
 payload!(PolicyDecision {
     decision_id: String,
     phase: String,
+    /// Bezug auf das ausgewertete Subjekt (`call_id` des Tool-Calls, `event_id` des
+    /// `tool.call.requested`, `turn_id` bzw. `approval_id`); die Eingabe selbst steht nicht
+    /// im Event (POL-025).
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[ts(as = "Option<Value>", optional)]
+    subject_ref: Value,
+    /// `sha256:<hex>` über das kanonische JSON des Subjekts (z. B. Tool-Name und Argumente).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] subject_hash: Option<String>,
     outcome: PolicyOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] modified: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] approval_id: Option<ApprovalId>,

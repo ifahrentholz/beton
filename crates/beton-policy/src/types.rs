@@ -2,7 +2,8 @@
 //!
 //! Die Deklaration ist die Grundlage der Typprüfung beim Laden (POL-002 AC1): Jede Variable
 //! und jedes Feld hat einen Typ; phasenspezifische Variablen sind nur in ihren Phasen
-//! sichtbar. Die Befüllung zur Laufzeit folgt mit der Runner-Anbindung (WP-35).
+//! sichtbar. Quelle sind die Rust-Typen in [`crate::vars`] (POL-004 AC1); der Runner füllt
+//! sie zur Laufzeit.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -92,13 +93,25 @@ pub struct VarDecl {
     pub ty: Ty,
     /// Phasen, in denen die Variable sichtbar ist; leer = alle Phasen.
     pub phases: Vec<Phase>,
+    pub doc: String,
+}
+
+/// Eine Zeile der Referenztabelle: Pfad, Typ, Phasen, Beschreibung.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclRow {
+    pub path: String,
+    pub ty: String,
+    pub phases: Vec<Phase>,
+    pub doc: String,
 }
 
 /// Alle Deklarationen: Variablen und Objekttypen.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Decls {
     pub vars: Vec<VarDecl>,
     pub objects: BTreeMap<&'static str, Vec<(&'static str, Ty)>>,
+    /// Beschreibung je `objekt.feld`.
+    docs: BTreeMap<String, String>,
 }
 
 impl Decls {
@@ -122,244 +135,172 @@ impl Decls {
             .find(|(n, _)| *n == field)
             .map(|(_, t)| t)
     }
+
+    /// Alle Blätter (`session.cost_usd`, `start.sandbox.enabled`, `now`) in Deklarations-
+    /// reihenfolge der Variablen, Felder alphabetisch (POL-004 AC1, Referenztabelle).
+    pub fn rows(&self) -> Vec<DeclRow> {
+        let mut out = Vec::new();
+        for v in &self.vars {
+            self.rows_of(v.name, &v.ty, &v.phases, &v.doc, &mut out, 0);
+        }
+        out
+    }
+
+    fn rows_of(
+        &self,
+        path: &str,
+        ty: &Ty,
+        phases: &[Phase],
+        doc: &str,
+        out: &mut Vec<DeclRow>,
+        depth: usize,
+    ) {
+        if let Ty::Object(name) = ty
+            && depth < 8
+            && let Some(fields) = self.objects.get(name)
+        {
+            for (field, fty) in fields {
+                let doc = self
+                    .docs
+                    .get(&format!("{name}.{field}"))
+                    .cloned()
+                    .unwrap_or_default();
+                self.rows_of(
+                    &format!("{path}.{field}"),
+                    fty,
+                    phases,
+                    &doc,
+                    out,
+                    depth + 1,
+                );
+            }
+            return;
+        }
+        out.push(DeclRow {
+            path: path.to_owned(),
+            ty: ty.to_string(),
+            phases: phases.to_vec(),
+            doc: doc.to_owned(),
+        });
+    }
+
+    /// Leitet die Deklaration aus den Rust-Typen in [`crate::vars`] ab (über deren
+    /// JSON-Schema): `string` mit `format: date-time` → `timestamp`, `number` → `double`,
+    /// `integer` → `int`, Listen und Maps rekursiv, Strukturen → Objekte, `serde_json::Value`
+    /// → `dyn`. `Option` (`null` im Schema) wird ignoriert: fehlende Felder sind `null`.
+    pub fn from_vars(defs: &[crate::vars::VarDef]) -> Self {
+        let mut generator = schemars::SchemaGenerator::default();
+        let schemas: Vec<serde_json::Value> = defs
+            .iter()
+            .map(|d| (d.schema)(&mut generator).as_value().clone())
+            .collect();
+        let definitions = generator.definitions().clone();
+        let mut decls = Decls::default();
+        for (def, schema) in defs.iter().zip(&schemas) {
+            let ty = decls.convert(schema, &definitions);
+            decls.vars.push(VarDecl {
+                name: def.name,
+                ty,
+                phases: def.phases.to_vec(),
+                doc: def.doc.to_owned(),
+            });
+        }
+        decls
+    }
+
+    fn convert(
+        &mut self,
+        schema: &serde_json::Value,
+        definitions: &serde_json::Map<String, serde_json::Value>,
+    ) -> Ty {
+        use serde_json::Value as J;
+        let J::Object(map) = schema else {
+            return Ty::Dyn; // `true`: beliebiger Wert
+        };
+        if let Some(J::String(r)) = map.get("$ref") {
+            let name = r.rsplit('/').next().unwrap_or_default();
+            return match definitions.get(name) {
+                Some(def) => self.object(name, def, definitions),
+                None => Ty::Dyn,
+            };
+        }
+        for key in ["anyOf", "oneOf"] {
+            if let Some(J::Array(options)) = map.get(key) {
+                let real: Vec<&J> = options
+                    .iter()
+                    .filter(|o| o.get("type") != Some(&J::String("null".into())))
+                    .collect();
+                return match real.as_slice() {
+                    [one] => self.convert(one, definitions),
+                    _ => Ty::Dyn,
+                };
+            }
+        }
+        let ty = match map.get("type") {
+            Some(J::String(t)) => t.as_str(),
+            Some(J::Array(types)) => types
+                .iter()
+                .filter_map(J::as_str)
+                .find(|t| *t != "null")
+                .unwrap_or("null"),
+            _ => return Ty::Dyn,
+        };
+        match ty {
+            "string" if map.get("format") == Some(&J::String("date-time".into())) => Ty::Timestamp,
+            "string" => Ty::String,
+            "number" => Ty::Double,
+            "integer" => Ty::Int,
+            "boolean" => Ty::Bool,
+            "array" => Ty::list(
+                map.get("items")
+                    .map_or(Ty::Dyn, |i| self.convert(i, definitions)),
+            ),
+            "object" if map.contains_key("properties") => {
+                // Inline-Objekt ohne Namen: als Map behandeln wäre ungenau; nicht vorgesehen.
+                Ty::Dyn
+            }
+            "object" => Ty::map(
+                Ty::String,
+                map.get("additionalProperties")
+                    .map_or(Ty::Dyn, |v| self.convert(v, definitions)),
+            ),
+            _ => Ty::Dyn,
+        }
+    }
+
+    fn object(
+        &mut self,
+        name: &str,
+        def: &serde_json::Value,
+        definitions: &serde_json::Map<String, serde_json::Value>,
+    ) -> Ty {
+        // Objektnamen leben so lange wie das Programm (einmalig beim Aufbau von DECLS).
+        let key: &'static str = match self.objects.keys().find(|k| **k == name) {
+            Some(k) => k,
+            None => Box::leak(name.to_owned().into_boxed_str()),
+        };
+        if self.objects.contains_key(key) {
+            return Ty::Object(key);
+        }
+        self.objects.insert(key, Vec::new());
+        let mut fields = Vec::new();
+        if let Some(props) = def.get("properties").and_then(serde_json::Value::as_object) {
+            for (field, schema) in props {
+                let fname: &'static str = Box::leak(field.clone().into_boxed_str());
+                let ty = self.convert(schema, definitions);
+                if let Some(doc) = schema
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    self.docs.insert(format!("{key}.{field}"), doc.to_owned());
+                }
+                fields.push((fname, ty));
+            }
+        }
+        self.objects.insert(key, fields);
+        Ty::Object(key)
+    }
 }
 
-fn s() -> Ty {
-    Ty::String
-}
-fn d() -> Ty {
-    Ty::Double
-}
-fn i() -> Ty {
-    Ty::Int
-}
-fn b() -> Ty {
-    Ty::Bool
-}
-fn ts() -> Ty {
-    Ty::Timestamp
-}
-fn strings() -> Ty {
-    Ty::list(Ty::String)
-}
-
-/// Die Deklarationen aus POL-004 (03-policies.md).
-pub static DECLS: LazyLock<Decls> = LazyLock::new(|| {
-    use Phase::*;
-    let mut objects = BTreeMap::new();
-    objects.insert(
-        "session",
-        vec![
-            ("id", s()),
-            ("title", s()),
-            ("harness", s()),
-            ("mode", s()),
-            ("model", s()),
-            ("reasoning_effort", s()),
-            ("permission_mode", s()),
-            ("cost_usd", d()),
-            ("tokens_in", i()),
-            ("tokens_out", i()),
-            ("turns", i()),
-            ("tool_calls", i()),
-            ("started_at", ts()),
-            ("duration_s", d()),
-            ("is_async", b()),
-            ("attached_clients", i()),
-            ("depth", i()),
-            ("parent_id", s()),
-            ("project", s()),
-            ("worktree", s()),
-            ("branch", s()),
-            ("labels", strings()),
-        ],
-    );
-    objects.insert(
-        "run",
-        vec![
-            ("id", s()),
-            ("trigger", s()),
-            ("cost_usd", d()),
-            ("subtree_cost_usd", d()),
-            ("duration_s", d()),
-            ("turns", i()),
-            ("budget_usd", d()),
-        ],
-    );
-    objects.insert(
-        "user",
-        vec![
-            ("id", s()),
-            ("email", s()),
-            ("roles", strings()),
-            ("teams", strings()),
-            ("timezone", s()),
-            ("daily_cost_usd", d()),
-            ("monthly_cost_usd", d()),
-        ],
-    );
-    objects.insert("org", vec![("id", s())]);
-    objects.insert("team", vec![("ids", strings())]);
-    objects.insert(
-        "agent",
-        vec![
-            ("name", s()),
-            ("version", s()),
-            ("source", s()),
-            ("hash", s()),
-        ],
-    );
-    objects.insert(
-        "host",
-        vec![
-            ("id", s()),
-            ("os", s()),
-            ("arch", s()),
-            ("labels", strings()),
-            ("local", b()),
-        ],
-    );
-    objects.insert("actor", vec![("kind", s()), ("id", s())]);
-    objects.insert(
-        "budget",
-        vec![
-            ("online", b()),
-            ("lease_remaining_usd", d()),
-            ("lease_expires_at", ts()),
-        ],
-    );
-    let state = Ty::map(Ty::String, Ty::Dyn);
-    objects.insert(
-        "state",
-        vec![
-            ("session", state.clone()),
-            ("run", state.clone()),
-            ("user_day", state.clone()),
-            ("user", state),
-        ],
-    );
-    objects.insert(
-        "approvals",
-        vec![("granted_in_session", i()), ("denied_in_session", i())],
-    );
-    objects.insert(
-        "start",
-        vec![
-            ("trigger", s()),
-            ("harness", s()),
-            ("model", s()),
-            ("reasoning_effort", s()),
-            ("permission_mode", s()),
-            ("sandbox", Ty::Object("start_sandbox")),
-            ("network", Ty::Object("start_network")),
-            ("worktree", s()),
-            ("fork_of", s()),
-            ("agent_ref", s()),
-        ],
-    );
-    objects.insert(
-        "start_sandbox",
-        vec![("enabled", b()), ("backend", s()), ("profile", s())],
-    );
-    objects.insert("start_network", vec![("proxy_enabled", b())]);
-    objects.insert(
-        "request",
-        vec![
-            ("model", s()),
-            ("provider", s()),
-            ("reasoning_effort", s()),
-            ("granularity", s()),
-            ("prompt", s()),
-            ("messages", Ty::list(Ty::Dyn)),
-            ("tools", strings()),
-            ("estimated_input_tokens", i()),
-            ("context_used_pct", d()),
-        ],
-    );
-    objects.insert(
-        "tool",
-        vec![
-            ("name", s()),
-            ("native_name", s()),
-            ("server", s()),
-            ("kind", s()),
-            ("args", Ty::map(Ty::String, Ty::Dyn)),
-            ("command", s()),
-            ("argv", Ty::list(strings())),
-            ("cwd", s()),
-            ("paths", strings()),
-            ("urls", strings()),
-            ("call_index", i()),
-            ("repeat_count", i()),
-            ("consecutive_errors", i()),
-            ("is_subagent_spawn", b()),
-            ("parse_uncertain", b()),
-        ],
-    );
-    objects.insert(
-        "result",
-        vec![
-            ("ok", b()),
-            ("exit_code", i()),
-            ("error", s()),
-            ("text", s()),
-            ("bytes", i()),
-            ("duration_ms", i()),
-            ("truncated", b()),
-        ],
-    );
-    objects.insert(
-        "browser_navigate",
-        vec![
-            ("url", s()),
-            ("scheme", s()),
-            ("host", s()),
-            ("path", s()),
-            ("initiator", s()),
-            ("tab_id", s()),
-            ("profile", s()),
-        ],
-    );
-    objects.insert(
-        "browser_action",
-        vec![
-            ("action", s()),
-            ("url", s()),
-            ("host", s()),
-            ("selector", s()),
-            ("element_role", s()),
-            ("is_form_submit", b()),
-            ("is_password_field", b()),
-            ("text_len", i()),
-            ("file_name", s()),
-        ],
-    );
-
-    let all = Vec::new;
-    let var = |name, ty, phases| VarDecl { name, ty, phases };
-    let vars = vec![
-        var("now", ts(), all()),
-        var("session", Ty::Object("session"), all()),
-        var("run", Ty::Object("run"), all()),
-        var("user", Ty::Object("user"), all()),
-        var("org", Ty::Object("org"), all()),
-        var("team", Ty::Object("team"), all()),
-        var("agent", Ty::Object("agent"), all()),
-        var("host", Ty::Object("host"), all()),
-        var("actor", Ty::Object("actor"), all()),
-        var("budget", Ty::Object("budget"), all()),
-        var("state", Ty::Object("state"), all()),
-        var("approvals", Ty::Object("approvals"), all()),
-        var("start", Ty::Object("start"), vec![SessionStart]),
-        var("request", Ty::Object("request"), vec![ModelRequest]),
-        var("tool", Ty::Object("tool"), vec![ToolCall, ToolResult]),
-        var("result", Ty::Object("result"), vec![ToolResult]),
-        var(
-            "browser",
-            Ty::Object("browser_navigate"),
-            vec![BrowserNavigate],
-        ),
-        var("browser", Ty::Object("browser_action"), vec![BrowserAction]),
-    ];
-    Decls { vars, objects }
-});
+/// Die Deklarationen aus POL-004 (03-policies.md), abgeleitet aus [`crate::vars`].
+pub static DECLS: LazyLock<Decls> = LazyLock::new(|| Decls::from_vars(&crate::vars::var_defs()));

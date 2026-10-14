@@ -40,6 +40,8 @@ struct FileEntry {
     valid: Option<Arc<LoadedSet>>,
     /// Ist der aktuelle Inhalt fehlerhaft?
     invalid: bool,
+    /// Letzter Ladefehler (für Dateien ohne gültige Fassung, #182).
+    error: Option<PolicySetInvalid>,
 }
 
 /// Policy-Sets aller lokalen Ebenen mit Hot-Reload.
@@ -140,6 +142,7 @@ impl PolicyStore {
                 seen: hash,
                 valid: None,
                 invalid: false,
+                error: None,
             });
             entry.seen = hash;
             entry.scope = scope;
@@ -152,10 +155,13 @@ impl PolicyStore {
                     }));
                     entry.valid = Some(Arc::new(set));
                     entry.invalid = false;
+                    entry.error = None;
                 }
                 Err(e) => {
-                    events.push(StoreEvent::Invalid(e.to_event()));
+                    let event = e.to_event();
+                    events.push(StoreEvent::Invalid(event.clone()));
                     entry.invalid = true;
+                    entry.error = Some(event);
                 }
             }
         }
@@ -179,7 +185,14 @@ impl PolicyStore {
             .filter(|(_, f)| f.invalid)
             .map(|(p, _)| p.display().to_string())
             .collect();
-        let effective = Arc::new(EffectiveSet::with_invalid(sets, invalid));
+        let never_valid: Vec<PolicySetInvalid> = self
+            .files
+            .values()
+            .filter(|f| f.invalid && f.valid.is_none())
+            .filter_map(|f| f.error.clone())
+            .collect();
+        let effective =
+            Arc::new(EffectiveSet::with_invalid(sets, invalid).with_never_valid(never_valid));
         self.effective = Some(effective.clone());
         effective
     }

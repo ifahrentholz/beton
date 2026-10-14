@@ -13,6 +13,7 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::Phase;
 use crate::cel::ext::{LexicalResolver, PathResolver};
+use crate::normalize::ToolSource;
 use crate::types::{DECLS, Ty};
 use crate::value::{Key, Value};
 
@@ -30,6 +31,8 @@ pub struct Activation {
     phase: Phase,
     vars: BTreeMap<String, Value>,
     resolver: Arc<dyn PathResolver>,
+    /// Herkunft des Tool-Calls, um ihn nach einem `args`-Patch neu zu normalisieren (#182).
+    tool_source: Option<Arc<ToolSource>>,
 }
 
 impl std::fmt::Debug for Activation {
@@ -58,6 +61,7 @@ impl Activation {
             phase,
             vars,
             resolver: Arc::new(LexicalResolver),
+            tool_source: None,
         })
     }
 
@@ -65,6 +69,17 @@ impl Activation {
     pub fn with_resolver(mut self, resolver: Arc<dyn PathResolver>) -> Self {
         self.resolver = resolver;
         self
+    }
+
+    /// Herkunft des Tool-Calls: Nach einem `args`-Patch berechnet die Engine `tool.command`,
+    /// `tool.argv`, `tool.paths`, `tool.urls` und `tool.parse_uncertain` daraus neu (#182).
+    pub fn with_tool_source(mut self, source: Arc<ToolSource>) -> Self {
+        self.tool_source = Some(source);
+        self
+    }
+
+    pub fn tool_source(&self) -> Option<&ToolSource> {
+        self.tool_source.as_deref()
     }
 
     pub fn phase(&self) -> Phase {
