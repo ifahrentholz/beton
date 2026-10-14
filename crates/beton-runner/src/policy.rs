@@ -1046,7 +1046,7 @@ impl PolicyGate {
         raw: Option<RawJson>,
     ) -> Evaluated {
         let set = self.refresh(turn);
-        self.ensure_snapshot(&set).await;
+        self.ensure_snapshot(&set, phase);
         self.with_usage_values(&set, phase, &mut vars).await;
         self.with_state_values(&set, phase, &mut vars).await;
         let decision = self.run_engine(&set, phase, vars, source).await;

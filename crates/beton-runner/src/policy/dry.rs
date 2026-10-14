@@ -35,7 +35,10 @@ pub trait SnapshotSink: Send + Sync {
 #[derive(Default)]
 pub(super) struct Snapshots {
     sink: Option<Arc<dyn SnapshotSink>>,
-    stored: Mutex<HashSet<String>>,
+    /// Gespeicherte oder gerade unterwegs befindliche Set-Hashes.
+    stored: Arc<Mutex<HashSet<String>>>,
+    /// Set aus `session_start`, gesendet erst nach dem Start ([`PolicyGate::flush_snapshot`]).
+    deferred: Mutex<Option<Arc<EffectiveSet>>>,
 }
 
 /// Shell-Tool des Harness für eine Aktion ohne `tool`: (Name, MCP-Server, ACP-Klasse).
@@ -72,32 +75,67 @@ impl PolicyGate {
     }
 
     /// Hinterlegt das Set, falls diese Version noch nicht gespeichert ist.
-    pub(super) async fn ensure_snapshot(&self, set: &EffectiveSet) {
-        let Some(sink) = &self.inner.snapshots.sink else {
+    pub(super) fn ensure_snapshot(&self, set: &Arc<EffectiveSet>, phase: Phase) {
+        if self.inner.snapshots.sink.is_none() {
             return;
-        };
-        let known = self
+        }
+        // Vor dem Start ist der Tunnel noch nicht verbunden; ein System-Call würde ihn vorab
+        // öffnen (#218). Das Set geht deshalb erst nach dem Start an den Server.
+        if phase == Phase::SessionStart {
+            if let Ok(mut d) = self.inner.snapshots.deferred.lock() {
+                *d = Some(set.clone());
+            }
+            return;
+        }
+        self.send_snapshot(set);
+    }
+
+    /// Sendet das beim Start vorgemerkte Set (aufzurufen, sobald der Runner den Tunnel bedient).
+    pub fn flush_snapshot(&self) {
+        let deferred = self
             .inner
             .snapshots
-            .stored
+            .deferred
             .lock()
-            .map(|s| s.contains(set.hash()))
+            .ok()
+            .and_then(|mut d| d.take());
+        if let Some(set) = deferred {
+            self.send_snapshot(&set);
+        }
+    }
+
+    fn send_snapshot(&self, set: &EffectiveSet) {
+        let Some(sink) = self.inner.snapshots.sink.clone() else {
+            return;
+        };
+        let stored = self.inner.snapshots.stored.clone();
+        let hash = set.hash().to_owned();
+        // Neu: als unterwegs vormerken, damit parallele Auswertungen nicht doppelt senden.
+        let fresh = stored
+            .lock()
+            .map(|mut s| s.insert(hash.clone()))
             .unwrap_or(false);
-        if known {
+        if !fresh {
             return;
         }
         let manifest = set.manifest();
         let sources = set.sources();
-        match tokio::time::timeout(USAGE_TIMEOUT, sink.store(&manifest, &sources)).await {
-            Ok(Ok(())) => {
-                if let Ok(mut s) = self.inner.snapshots.stored.lock() {
-                    s.insert(set.hash().to_owned());
+        // Im Hintergrund: Die Auswertung wartet nie auf den Server (der Runner bedient den
+        // Tunnel womöglich erst nach dem Start).
+        tokio::spawn(async move {
+            let ok = matches!(
+                tokio::time::timeout(USAGE_TIMEOUT, sink.store(&manifest, &sources)).await,
+                Ok(Ok(()))
+            );
+            if !ok {
+                tracing::warn!(
+                    "Policy: Set-Snapshot nicht gespeichert, nächster Versuch bei der nächsten Auswertung"
+                );
+                if let Ok(mut s) = stored.lock() {
+                    s.remove(&hash);
                 }
             }
-            _ => tracing::warn!(
-                "Policy: Set-Snapshot nicht gespeichert, nächster Versuch bei der nächsten Auswertung"
-            ),
-        }
+        });
     }
 
     /// Effektives Set mit dem aktuellen Stand der Dateien, ohne Ereignisse (die meldet die
@@ -441,19 +479,48 @@ rules:
         } = setup(PUSH);
         let sink = Arc::new(Sink::default());
         let gate = gate.with_snapshots(sink.clone());
+        let settle = || tokio::time::sleep(std::time::Duration::from_millis(200));
         sink.fail.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = gate.decide(bash("c0", "ls")).await;
+        settle().await;
         assert!(sink.stored.lock().unwrap().is_empty());
         // Nach einem Fehler versucht es das Gate bei der nächsten Auswertung erneut.
         sink.fail.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = gate.decide(bash("c1", "ls")).await;
         let _ = gate.decide(bash("c2", "ls -l")).await;
+        settle().await;
         assert_eq!(sink.stored.lock().unwrap().len(), 1);
         std::fs::write(&file, PUSH.replace("Kein Force-Push", "Niemals Force-Push")).unwrap();
         let _ = gate.decide(bash("c3", "ls")).await;
+        settle().await;
         let stored = sink.stored.lock().unwrap();
         assert_eq!(stored.len(), 2);
         assert_ne!(stored[0].policy_set_hash, stored[1].policy_set_hash);
         assert_eq!(stored[1].sets[0].origin, file.display().to_string());
+    }
+
+    #[tokio::test]
+    async fn pol_027_ac2_snapshot_from_session_start_waits_for_the_runner_loop() {
+        let Setup {
+            gate,
+            rx: _rx,
+            _dir,
+            ..
+        } = setup(PUSH);
+        let sink = Arc::new(Sink::default());
+        let gate = gate.with_snapshots(sink.clone());
+        let set = gate.refresh(None);
+        gate.ensure_snapshot(&set, beton_policy::Phase::SessionStart);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            sink.stored.lock().unwrap().is_empty(),
+            "vor dem Start kein System-Call"
+        );
+        gate.flush_snapshot();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(sink.stored.lock().unwrap().len(), 1);
+        gate.flush_snapshot();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(sink.stored.lock().unwrap().len(), 1, "nur einmal");
     }
 }

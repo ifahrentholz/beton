@@ -868,6 +868,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
     }
     let mut pre_events = pre.finish(&boot, &mut gate_rx, &mut unacked).await;
+    // Set-Snapshot aus `session_start` jetzt über den Tunnel (POL-027 AC2).
+    gate.flush_snapshot();
     let mut spec = SessionSpec {
         workdir: boot.workdir.clone(),
         model: start_settings.model.clone(),
