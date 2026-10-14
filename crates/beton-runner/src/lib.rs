@@ -479,11 +479,31 @@ async fn send(ws: &mut Ws, msg: &TunnelUp) -> bool {
     ws.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
+const DETACH_MAX: Duration = Duration::from_secs(3600);
+
+/// Signal der geordneten Abkopplung im Close-Frame des Daemons (POL-010 AC4).
+fn is_detach_signal(code: u16, reason: &str) -> bool {
+    code == 4503 && reason == "detached"
+}
+
+/// Weiterleben ohne Daemon nur nach geordneter Abkopplung, mit offener Policy-Freigabe und
+/// höchstens [`DETACH_MAX`] lang (POL-010 AC4). Ein abgestürzter Daemon sendet kein Signal: dann
+/// endet der Runner, und der neue Daemon setzt die Session nach HAR-020 fort.
+fn detached_keep(
+    detached_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+    pending_policy: bool,
+) -> bool {
+    pending_policy && detached_at.is_some_and(|t| now.saturating_duration_since(t) <= DETACH_MAX)
+}
+
 /// Endet ein Runner ohne Verbindung zum Daemon? Ist der Daemon weg (Elternprozess tot) oder
-/// hat ein späterer Daemon den Runner übernommen, wartet er nur, solange eine Freigabe offen ist
-/// – dann verbindet ihn der nächste Daemon neu (POL-010 AC4). Sonst endet er (RUN-002 AC2).
-fn orphan_exit(parent_alive: bool, adopted: bool, pending: bool) -> bool {
-    (!parent_alive || adopted) && !pending
+/// hat ein späterer Daemon den Runner übernommen, wartet er nur, wenn `keep` gilt
+/// ([`detached_keep`]) – dann verbindet ihn der nächste Daemon neu (POL-010 AC4). Sonst endet
+/// er (RUN-002 AC2).
+fn orphan_exit(parent_alive: bool, adopted: bool, keep: bool) -> bool {
+    (!parent_alive || adopted) && !keep
 }
 
 /// Lebt der Elternprozess noch? (RUN-002 AC2)
@@ -1011,8 +1031,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
-    // Von einem späteren Daemon übernommen (POL-010 AC4).
+    // Von einem späteren Daemon übernommen bzw. geordnet abgekoppelt (POL-010 AC4).
     let mut adopted = false;
+    let mut detached_at: Option<std::time::Instant> = None;
 
     loop {
         // (Wieder-)Verbinden.
@@ -1020,7 +1041,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             Ok(ws) => ws,
             Err(e) => {
                 tracing::warn!("Tunnel nicht erreichbar: {e}");
-                if orphan_exit(parent_alive(boot.parent_pid), adopted, gate.has_pending()) {
+                let keep = detached_keep(
+                    detached_at,
+                    std::time::Instant::now(),
+                    gate.has_pending_policy(),
+                );
+                if orphan_exit(parent_alive(boot.parent_pid), adopted, keep) {
                     return finish(session, Exit::ParentGone).await;
                 }
                 tokio::time::sleep(backoff.next_delay()).await;
@@ -1030,6 +1056,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         // Verbunden, obwohl der Elternprozess weg ist: ein neuer Daemon hat den Runner
         // übernommen (POL-010 AC4); ab jetzt zählt die Verbindung, nicht der Elternprozess.
         adopted |= !parent_alive(boot.parent_pid);
+        detached_at = None;
         backoff.reset();
         let hello = TunnelUp::Hello {
             kind: PeerKind::Runner,
@@ -1414,6 +1441,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 }
                 msg = ws.next() => {
                     let Some(Ok(msg)) = msg else { break None };
+                    if let Message::Close(Some(frame)) = &msg
+                        && is_detach_signal(u16::from(frame.code), &frame.reason)
+                    {
+                        detached_at = Some(std::time::Instant::now());
+                    }
                     let Message::Text(text) = msg else { continue };
                     let Ok(down) = serde_json::from_str::<TunnelDown>(&text) else { continue };
                     match down {
@@ -1574,7 +1606,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 _ = parent_check.tick() => {
                     // Mit offener Freigabe auf den nächsten Daemon warten (POL-010 AC4);
                     // ein übernommener Runner folgt der Verbindung, nicht dem Elternprozess.
-                    if !adopted && !parent_alive(boot.parent_pid) && !gate.has_pending() {
+                    let keep = detached_keep(detached_at, std::time::Instant::now(), gate.has_pending_policy());
+                    if !adopted && !parent_alive(boot.parent_pid) && !keep {
                         return finish(session, Exit::ParentGone).await;
                     }
                 }

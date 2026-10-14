@@ -356,7 +356,11 @@ impl Store {
         let current = current
             .map(|s| serde_json::from_str(&s).map_err(|e| Error::Corrupt(e.to_string())))
             .transpose()?;
-        let next = f(current).map_err(Error::InvalidEvent)?;
+        let mut next = f(current).map_err(Error::InvalidEvent)?;
+        // Werte können Daten aus Tool-Calls enthalten: dieselbe Redaction wie das Log (SEC-013).
+        if let Some(v) = next.as_mut() {
+            self.options.redactor.redact(v)?;
+        }
         match &next {
             Some(v) => {
                 sqlx::query(

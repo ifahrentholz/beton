@@ -37,8 +37,10 @@ pub fn save(path: &Path, runners: &[DetachedRunner]) -> std::io::Result<()> {
         return Ok(());
     }
     let tmp = path.with_extension("json.tmp");
+    // Nie einem vorhandenen Eintrag (Symlink, fremde Datei) folgen.
+    let _ = std::fs::remove_file(&tmp);
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -54,10 +56,31 @@ pub fn save(path: &Path, runners: &[DetachedRunner]) -> std::io::Result<()> {
 /// Liest die Datei einmal und löscht sie; abgelaufene Einträge und eine unlesbare Datei
 /// ergeben nichts (fail closed).
 pub fn take(path: &Path) -> Vec<DetachedRunner> {
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
         return Vec::new();
     };
+    // Nur eine private, reguläre Datei (0600); sonst nichts übernehmen (fail closed).
+    let private = meta.file_type().is_file() && {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            meta.permissions().mode() & 0o077 == 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    };
+    let bytes = if private {
+        std::fs::read(path).ok()
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(path);
+    let Some(bytes) = bytes else {
+        tracing::warn!("Abgekoppelte Runner: Datei nicht privat oder nicht lesbar, ignoriert");
+        return Vec::new();
+    };
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     match serde_json::from_slice::<Vec<DetachedRunner>>(&bytes) {
         Ok(list) => list.into_iter().filter(|d| d.until > now).collect(),

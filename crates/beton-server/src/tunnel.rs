@@ -88,6 +88,9 @@ async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     }
 }
 
+/// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
+pub const DETACH_MAX: Duration = Duration::from_secs(3600);
+
 /// Verbundene Runner und ihre Tokens.
 #[derive(Default)]
 pub struct RunnerRegistry {
@@ -100,10 +103,17 @@ pub struct RunnerRegistry {
     /// Test-Haken: Sessions, deren Verbindungen bis zum Zeitpunkt abgelehnt werden.
     refuse_until: Mutex<HashMap<SessionId, Instant>>,
     /// Offene Freigaben je Session mit Ablauf (Unix-Sekunden) aus dem Event-Strom des Runners.
-    approvals: Mutex<HashMap<SessionId, HashMap<beton_core::id::ApprovalId, i64>>>,
+    approvals: Mutex<
+        HashMap<
+            SessionId,
+            HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>,
+        >,
+    >,
     /// Abgekoppelte Runner eines vorigen Daemons, die sich bis zur Frist neu verbinden dürfen
     /// (POL-010 AC4).
-    expected: Mutex<HashMap<SessionId, Instant>>,
+    expected: Mutex<HashMap<SessionId, (Instant, [u8; 32])>>,
+    /// Beim Herunterfahren abgekoppelte Sessions: Close-Frame mit Grund `detached`.
+    detached: Mutex<std::collections::HashSet<SessionId>>,
     next_conn: AtomicU64,
     next_cmd: AtomicU64,
 }
@@ -162,7 +172,7 @@ impl RunnerRegistry {
                 Some(EventPayload::ApprovalRequested(r)) => {
                     open.insert(
                         r.approval_id,
-                        r.expires_at.as_offset_date_time().unix_timestamp(),
+                        (r.expires_at.as_offset_date_time().unix_timestamp(), r.kind),
                     );
                 }
                 Some(EventPayload::ApprovalResolved(r)) => {
@@ -183,25 +193,54 @@ impl RunnerRegistry {
             .is_some_and(|m| !m.is_empty())
     }
 
-    /// Koppelt die Runner mit offener Freigabe ab (POL-010 AC4): Session, Hash des Tokens und
-    /// Ablauf der letzten offenen Freigabe. Runner ohne offene Freigabe fehlen.
+    /// Offene Freigaben eines (übernommenen) Runners aus der Projektion: ID, Ablauf, Art.
+    pub fn restore_open(
+        &self,
+        session: SessionId,
+        items: impl IntoIterator<
+            Item = (
+                beton_core::id::ApprovalId,
+                i64,
+                beton_core::event::ApprovalKind,
+            ),
+        >,
+    ) {
+        let mut all = lock(&self.approvals);
+        let open = all.entry(session).or_default();
+        for (id, until, kind) in items {
+            open.insert(id, (until, kind));
+        }
+        if open.is_empty() {
+            all.remove(&session);
+        }
+    }
+
+    /// Koppelt Runner mit offener **Policy-Freigabe** ab (POL-010 AC4): Session, Hash des
+    /// Tokens und Frist = Ablauf der letzten Policy-Freigabe, höchstens [`DETACH_MAX`]. Fragen
+    /// (`ask_user`) halten keinen Runner über den Daemon hinaus.
     pub fn detach(&self, sessions: &[SessionId]) -> Vec<crate::detached::DetachedRunner> {
         let approvals = lock(&self.approvals);
         let tokens = lock(&self.tokens);
+        let mut detached = lock(&self.detached);
+        let cap = time::OffsetDateTime::now_utc().unix_timestamp()
+            + i64::try_from(DETACH_MAX.as_secs()).unwrap_or(3600);
         let mut out = Vec::new();
         for session in sessions {
-            let Some(until) = approvals
-                .get(session)
-                .and_then(|m| m.values().max().copied())
-            else {
+            let Some(until) = approvals.get(session).and_then(|m| {
+                m.values()
+                    .filter(|(_, k)| *k == beton_core::event::ApprovalKind::Policy)
+                    .map(|(u, _)| *u)
+                    .max()
+            }) else {
                 continue;
             };
             for (hash, s) in tokens.iter() {
                 if s == session {
+                    detached.insert(*session);
                     out.push(crate::detached::DetachedRunner {
                         session_id: *session,
                         token_sha256: hex::encode(hash),
-                        until,
+                        until: until.min(cap),
                     });
                 }
             }
@@ -209,7 +248,13 @@ impl RunnerRegistry {
         out
     }
 
-    /// Nimmt einen abgekoppelten Runner eines vorigen Daemons an (POL-010 AC4).
+    /// Wurde die Session beim Herunterfahren abgekoppelt?
+    pub fn is_detached(&self, session: SessionId) -> bool {
+        lock(&self.detached).contains(&session)
+    }
+
+    /// Nimmt einen abgekoppelten Runner eines vorigen Daemons an (POL-010 AC4): sein Token gilt
+    /// nur bis zur Frist bzw. bis er sich verbunden hat.
     pub fn adopt(&self, d: &crate::detached::DetachedRunner) {
         let Ok(bytes) = hex::decode(&d.token_sha256) else {
             return;
@@ -221,29 +266,36 @@ impl RunnerRegistry {
         if left <= 0 {
             return;
         }
+        let left = Duration::from_secs(left.unsigned_abs()).min(DETACH_MAX);
         lock(&self.tokens).insert(hash, d.session_id);
-        lock(&self.expected).insert(
-            d.session_id,
-            Instant::now() + Duration::from_secs(left.unsigned_abs()),
-        );
+        lock(&self.expected).insert(d.session_id, (Instant::now() + left, hash));
     }
 
-    /// Wird ein abgekoppelter Runner für die Session noch erwartet?
+    /// Wird ein abgekoppelter Runner für die Session noch erwartet? Nach der Frist verfällt
+    /// sein Token.
     pub fn expected(&self, session: SessionId) -> bool {
-        let mut expected = lock(&self.expected);
-        match expected.get(&session) {
-            Some(until) if *until > Instant::now() && !self.connected(session) => true,
+        if self.connected(session) {
+            lock(&self.expected).remove(&session);
+            return false;
+        }
+        let entry = lock(&self.expected).get(&session).copied();
+        match entry {
+            Some((until, _)) if until > Instant::now() => true,
             Some(_) => {
-                expected.remove(&session);
+                self.forget_expected(session);
                 false
             }
             None => false,
         }
     }
 
-    /// Ein erwarteter Runner kommt nicht zurück (z. B. Wartezeit abgelaufen).
+    /// Ein erwarteter Runner kommt nicht zurück: Erwartung und Token verfallen.
     pub fn forget_expected(&self, session: SessionId) {
-        lock(&self.expected).remove(&session);
+        if let Some((_, hash)) = lock(&self.expected).remove(&session)
+            && !self.connected(session)
+        {
+            lock(&self.tokens).remove(&hash);
+        }
     }
 
     /// Verbundene Sessions.
@@ -503,6 +555,22 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
     let conn_id = state.runners.next_conn.fetch_add(1, Ordering::Relaxed);
     lock(&state.runners.expected).remove(&session_id);
+    // Offene Freigaben aus der Projektion: ein übernommener Runner meldet sie nicht erneut
+    // (POL-010 AC4, Leerlauf).
+    if let Ok(open) = state.events.store.open_approvals(org).await {
+        state.runners.restore_open(
+            session_id,
+            open.into_iter()
+                .filter(|a| a.session_id == session_id)
+                .map(|a| {
+                    (
+                        a.id,
+                        a.expires_at.as_offset_date_time().unix_timestamp(),
+                        a.kind,
+                    )
+                }),
+        );
+    }
     lock(&state.runners.conns).insert(
         session_id,
         RunnerConn {
@@ -521,9 +589,14 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     loop {
         tokio::select! {
             () = shutting_down(&mut shutdown) => {
-                let _ = sink
-                    .send(close_msg(close::SHUTTING_DOWN, "Daemon fährt herunter"))
-                    .await;
+                // Abgekoppelte Runner warten auf den nächsten Daemon (POL-010 AC4), alle anderen
+                // enden mit dem Daemon.
+                let reason = if state.runners.is_detached(session_id) {
+                    "detached"
+                } else {
+                    "Daemon fährt herunter"
+                };
+                let _ = sink.send(close_msg(close::SHUTTING_DOWN, reason)).await;
                 break;
             }
             down = rx.recv() => {
@@ -828,6 +901,7 @@ mod tests {
             beton_core::event::Actor::default(),
             EventPayload::ApprovalRequested(beton_core::event::ApprovalRequested {
                 approval_id: id,
+                kind: beton_core::event::ApprovalKind::Policy,
                 expires_at: (time::OffsetDateTime::now_utc() + time::Duration::seconds(secs))
                     .into(),
                 ..beton_core::event::ApprovalRequested::default()

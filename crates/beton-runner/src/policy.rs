@@ -262,7 +262,8 @@ struct Inner {
     matrix: Mutex<Matrix>,
     settings: Mutex<Settings>,
     events: mpsc::UnboundedSender<GateEvent>,
-    pending: Mutex<HashMap<String, oneshot::Sender<Human>>>,
+    /// Offene menschliche Freigaben: Antwortkanal und Art (Policy, Rückfrage, Frage).
+    pending: Mutex<HashMap<String, (oneshot::Sender<Human>, ApprovalKind)>>,
     decided: Mutex<HashMap<String, Verdict>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
     requested: Mutex<Vec<(String, Option<String>, String)>>,
@@ -447,7 +448,13 @@ fn tool_card(
     modified: Option<&Value>,
     reasons: &[Reason],
 ) -> Value {
-    let summary: String = summary.unwrap_or(tool).chars().take(500).collect();
+    let full = summary.unwrap_or(tool);
+    // Gekürzt nur mit Kennzeichnung; die vollständigen Argumente stehen in `tool.args`.
+    let summary: String = if full.chars().count() > 500 {
+        full.chars().take(500).chain(std::iter::once('…')).collect()
+    } else {
+        full.to_owned()
+    };
     json!({
         "phase": phase,
         "title": tool_title(kind),
@@ -1093,7 +1100,7 @@ impl PolicyGate {
         }
         let (tx, rx) = oneshot::channel();
         if let Ok(mut p) = self.inner.pending.lock() {
-            p.insert(key.clone(), tx);
+            p.insert(key.clone(), (tx, kind));
         }
         let expires = time::OffsetDateTime::now_utc()
             + time::Duration::try_from(timeout).unwrap_or(time::Duration::HOUR);
@@ -1247,6 +1254,16 @@ impl PolicyGate {
             .unwrap_or(true)
     }
 
+    /// Wartet eine **Policy-Freigabe**? Nur sie hält den Runner über einen geordnet
+    /// abgekoppelten Daemon hinaus am Leben (POL-010 AC4); Fragen (`ask_user`) nicht.
+    pub fn has_pending_policy(&self) -> bool {
+        self.inner
+            .pending
+            .lock()
+            .map(|p| p.values().any(|(_, k)| *k == ApprovalKind::Policy))
+            .unwrap_or(false)
+    }
+
     /// Entscheidung aus `approval.resolve` (Schlüssel: `subject.call_id`). `false`, wenn
     /// nichts offen ist.
     pub fn resolve(&self, key: &str, human: Human) -> bool {
@@ -1255,7 +1272,7 @@ impl PolicyGate {
             .lock()
             .ok()
             .and_then(|mut p| p.remove(key))
-            .is_some_and(|tx| tx.send(human).is_ok())
+            .is_some_and(|(tx, _)| tx.send(human).is_ok())
     }
 
     fn tool_source(&self, req: &GateRequest) -> Arc<ToolSource> {
