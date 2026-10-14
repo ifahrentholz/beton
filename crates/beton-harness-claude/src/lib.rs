@@ -143,8 +143,9 @@ pub fn capabilities() -> Capabilities {
         permission_modes: PermissionMode::ALL.to_vec(),
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
-        // Claude Code liest `CLAUDE.md` selbst, `AGENTS.md` nicht (AGT-005).
-        native_project_files: vec!["CLAUDE.md".into()],
+        // Mit `--setting-sources user` liest Claude Code weder `CLAUDE.md` noch Skills des
+        // Projekts (gegen 2.1.296 geprüft, #233); beton liefert beide (AGT-005, AGT-008).
+        native_project_files: Vec::new(),
     }
 }
 
@@ -160,12 +161,22 @@ pub fn kind_of(tool: &str) -> String {
 
 /// Settings mit dem `PreToolUse`-Hook (HAR-005): `command` ist die shell-gequotete
 /// Kommandozeile von `beton hook claude …`, `timeout_s` die Frist der CLI für den Hook.
+/// `disableAllHooks: false` hat Vorrang vor `disableAllHooks: true` aus anderen Quellen (gegen
+/// 2.1.296 geprüft, #233).
 pub fn hook_settings(command: &str, timeout_s: u64) -> String {
-    json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
+    json!({"disableAllHooks": false, "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
         {"type": "command", "command": command, "timeout": timeout_s}
     ]}]}})
     .to_string()
 }
+
+/// Einstellungsquellen der CLI (#233): nur die des Nutzers. `.claude/settings.json` und
+/// `.claude/settings.local.json` liegen im Repository und damit in der Hand des Agents bzw.
+/// eines fremden Repos; sie könnten den beton-Hook abschalten (`disableAllHooks`), eigene
+/// Hooks mit `updatedInput` nach der Prüfung einschleusen oder per `apiKeyHelper`/
+/// `statusLine`/Hooks Code außerhalb des Gates ausführen (gegen 2.1.296 geprüft). Damit lädt
+/// die CLI auch `CLAUDE.md`, Skills, Agents, Kommandos und `.mcp.json` des Projekts nicht.
+pub const SETTING_SOURCES: &str = "user";
 
 /// Name der Instructions-Datei im privaten Verzeichnis der Session.
 pub const INSTRUCTIONS_FILE: &str = "instructions.md";
@@ -237,6 +248,8 @@ pub fn command_args_with(
         "--include-partial-messages",
         "--permission-prompt-tool",
         "stdio",
+        "--setting-sources",
+        SETTING_SOURCES,
     ]
     .iter()
     .map(|s| (*s).to_owned())
@@ -304,6 +317,9 @@ pub fn one_shot_args(req: &OneShotRequest, isolated: bool) -> Vec<String> {
         // `--tools`), und der Modus ausdrücklich, damit `.claude/settings.json` ihn nicht lockert:
         // `dontAsk` lehnt alles ab, was nicht vorab erlaubt ist (HAR-027).
         "--strict-mcp-config",
+        // Keine Projekt-Einstellungen (`apiKeyHelper`, Hooks; #233).
+        "--setting-sources",
+        SETTING_SOURCES,
         "--permission-mode",
         "dontAsk",
         "--model",
@@ -400,14 +416,9 @@ impl HarnessAdapter for ClaudeAdapter {
             } else {
                 ToolCallGate::Full
             },
-            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009), und Claude liest
-            // auch `CLAUDE.md` nicht (laut `claude --help` 2.1.285).
+            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009). `CLAUDE.md` liest
+            // Claude in keinem Modus selbst (`--safe-mode` bzw. `--setting-sources user`).
             mcp_injection: !self.isolated,
-            native_project_files: if self.isolated {
-                Vec::new()
-            } else {
-                caps.native_project_files.clone()
-            },
             ..caps
         }
     }

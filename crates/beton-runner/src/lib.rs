@@ -283,6 +283,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         Ok(Exit::HarnessExited { code }) => {
             ExitCode::from(u8::try_from(code.unwrap_or(1)).unwrap_or(1))
         }
+        Ok(Exit::PolicyViolation) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("beton runner: {e}");
             ExitCode::FAILURE
@@ -388,6 +389,8 @@ pub enum Exit {
     ParentGone,
     /// `executor.timeout` des Agents abgelaufen (AGT-004 AC3).
     TimedOut,
+    /// Integritätsverletzung des Policy-Gates (HAR-005, #233): Session beendet.
+    PolicyViolation,
 }
 
 #[cfg(unix)]
@@ -580,6 +583,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Enforcement-Matrix (POL-024) schon vor dem Start.
     let predicted = predicted_caps(&boot, caps.as_ref(), hook.is_some());
     gate.set_matrix(predicted.enforcement());
+    let harness_gates_all = predicted.tool_call_gate == beton_harness::ToolCallGate::Full;
     let source = match (&snapshot, &boot.agent_ref) {
         (Some(s), _) => mcp::AgentSource::Snapshot(s),
         (None, Some(r)) => mcp::AgentSource::Ref(r),
@@ -1219,12 +1223,33 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if done && let Some(context) = held_context.take() {
                             batch.push(to_event(&boot, &actor, context));
                         }
+                        // Integrität (HAR-005, #233): Ein ausgeführter Call ohne Gate-Entscheidung
+                        // bei Matrix `full` heißt, dass der Hook umgangen wurde.
+                        // Nur, wenn der Harness selbst jeden Call durch das Gate schickt (Hook,
+                        // Direkt-API); MCP-Aufrufe über den Relay-Hub prüft der Hub synchron.
+                        let violation = match &ev.payload {
+                            EventPayload::ToolCallCompleted(c) if harness_gates_all && c.status == beton_core::event::ToolStatus::Ok => unobserved
+                                .get(&c.call_id)
+                                .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
+                            _ => None,
+                        };
                         let observe = track_tool_calls(&gate, &ev, &mut unobserved, done);
                         let event = to_event(&boot, &actor, ev);
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
                         }
                         batch.push(event);
+                        if let Some((req, why)) = violation {
+                            // Audit (genau ein `policy.decision`, POL-025 AC1), dann Ende mit
+                            // Fehler (fail closed).
+                            gate.observe(req).await;
+                            batch.extend(drain_gate(&boot, &mut gate_rx, &call_events));
+                            end_integrity_violation(&boot, &mut lifecycle, &why, &mut batch);
+                            let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                            drain_acks(&mut ws, &mut unacked).await;
+                            let _ = session.shutdown(Shutdown::Kill).await;
+                            return Ok(Exit::PolicyViolation);
+                        }
                         for req in observe {
                             // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
                             let g = gate.clone();
@@ -1937,6 +1962,37 @@ async fn sleep_until_opt(at: Option<tokio::time::Instant>) {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
+}
+
+/// Events bei einer Integritätsverletzung des Policy-Gates (HAR-005, #233): `error` mit
+/// Problem `policy_integrity_violation`, Runner `failed`, Session `failed`.
+fn end_integrity_violation(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    why: &str,
+    out: &mut Vec<Event>,
+) {
+    out.push(system_event(
+        boot,
+        EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({
+                "type": "urn:beton:problem:policy_integrity_violation",
+                "code": "policy_integrity_violation",
+                "title": "Tool-Call ohne Policy-Prüfung; Session aus Sicherheitsgründen beendet",
+                "detail": why,
+            }),
+        }),
+    ));
+    if let Ok(s) = lifecycle.go(RunnerState::Failed, Some(why.to_owned())) {
+        out.push(system_event(boot, EventPayload::RunnerStatus(s)));
+    }
+    out.push(system_event(
+        boot,
+        EventPayload::SessionStatus(SessionStatusChanged {
+            status: SessionStatus::Failed,
+            reason: Some("policy_integrity_violation".into()),
+        }),
+    ));
 }
 
 /// Events am Ende eines Runs mit Zeitüberschreitung: Session `stopped` mit Grund `timed_out`,

@@ -572,8 +572,31 @@ impl<R: BufRead, W: Write> Sim<R, W> {
         } else if let Some(call) = &step.mcp_call {
             let id = self.next_id("toolu");
             let name = format!("mcp__{}__{}", call.server, call.tool);
-            let args = self.mcp.resolve(&call.args);
+            let mut args = self.mcp.resolve(&call.args);
             self.assistant(json!({"type": "tool_use", "id": id, "name": name, "input": args}))?;
+            // Wie 2.1.296: Der `PreToolUse`-Hook (`matcher: "*"`) läuft auch für MCP-Tools.
+            if let Some(command) = self.pre_tool_hook.clone() {
+                let payload = json!({
+                    "session_id": self.session_id,
+                    "cwd": std::env::current_dir().unwrap_or_default(),
+                    "permission_mode": self.settings.mode,
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": name,
+                    "tool_input": args,
+                    "tool_use_id": id,
+                });
+                match run_hook(&command, &payload) {
+                    HookOutcome::Pass(Some(u)) | HookOutcome::Allow(Some(u)) => args = u,
+                    HookOutcome::Pass(None) | HookOutcome::Allow(None) => {}
+                    HookOutcome::Block(reason) => {
+                        let text = format!("PreToolUse:{name} hook error: {reason}");
+                        crate::io::record_context("tool_result", &text);
+                        return self
+                            .tool_result(&id, &json!(text), true)
+                            .map(|()| TurnEnd::Done);
+                    }
+                }
+            }
             match self.mcp.call(&call.server, &call.tool, &args) {
                 Ok(result) => {
                     let is_error = result["isError"] == true;

@@ -203,6 +203,19 @@ pub fn native_skills(harness: &HarnessId) -> Option<Option<VendorDir>> {
     }
 }
 
+/// Liest der Harness diesen Skill selbst? Claude Code lädt mit `--setting-sources user` nur
+/// noch `~/.claude/skills`, nicht `.claude/skills` des Projekts (gegen 2.1.296 geprüft, #233);
+/// Codex liest `.agents/skills` in Projekt und Home.
+pub fn reads_skill_itself(harness: &HarnessId, skill: &skills::Skill) -> bool {
+    match native_skills(harness) {
+        Some(Some(VendorDir::Claude)) => {
+            skill.vendor == Some(VendorDir::Claude) && skill.origin == skills::Origin::User
+        }
+        Some(Some(dir)) => skill.vendor == Some(dir),
+        _ => false,
+    }
+}
+
 fn random_suffix() -> String {
     let mut b = [0u8; 4];
     let _ = getrandom::fill(&mut b);
@@ -317,6 +330,21 @@ pub async fn prepare(
             .as_ref()
             .and_then(beton_agents::spec::DurationText::to_duration);
     }
+    if loaded.is_none() {
+        // Ohne Agent wie `project_files: auto` (AGT-005): Was der Harness nicht selbst liest,
+        // kommt über die Instructions (Claude seit #233 auch `CLAUDE.md`).
+        let composed =
+            beton_agents::instructions::compose_project_files(workdir, &caps.native_project_files);
+        setup.instructions = composed.text;
+        setup
+            .initial
+            .extend(composed.notices.into_iter().map(|text| {
+                EventPayload::Notice(Notice {
+                    level: NoticeLevel::Warn,
+                    text,
+                })
+            }));
+    }
     let agent: Option<LoadedAgent> = loaded.map(|(a, _)| a);
     setup.max_turns = agent.as_ref().and_then(|a| a.spec.executor.max_turns);
     setup.agent_permission_mode = agent.as_ref().and_then(|a| a.spec.executor.permission_mode);
@@ -418,8 +446,13 @@ pub async fn prepare(
     }
 
     // Native Skills (AGT-008): Session-Skill-Verzeichnis für Claude bzw. Codex.
-    if let Some(reads_itself) = native_skills(harness) {
-        let native = plan.native_skills(reads_itself);
+    if native_skills(harness).is_some() {
+        let native: Vec<skills::Skill> = plan
+            .skills
+            .iter()
+            .filter(|s| !reads_skill_itself(harness, s))
+            .cloned()
+            .collect();
         if !native.is_empty() {
             let dir = paths.run_dir.join(format!("mcp-{suffix}.skills"));
             match skills::materialize(&native, &dir) {

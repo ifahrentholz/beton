@@ -25,9 +25,8 @@ pub struct Scenario {
     gate: Vec<ScriptDecision>,
     files: &'static [(&'static str, &'static str)],
     extra_args: &'static str,
-    /// Mit `PreToolUse`-Hook (HAR-005): nicht isoliert, ohne Einstellungen und MCP-Server des
-    /// Nutzers (`--setting-sources project --strict-mcp-config`); die Hook-Eingaben landen
-    /// bereinigt in `hooks.jsonl`.
+    /// Mit `PreToolUse`-Hook (HAR-005): nicht isoliert, ohne MCP-Server des Nutzers
+    /// (`--strict-mcp-config`); die Hook-Eingaben landen bereinigt in `hooks.jsonl`.
     hook: bool,
 }
 
@@ -157,8 +156,9 @@ pub fn scenarios() -> Vec<Scenario> {
 }
 
 /// Isolation der Hook-Aufnahmen: `--safe-mode` schaltet auch Hooks aus `--settings` ab
-/// (gegen 2.1.296 geprüft); stattdessen ohne Einstellungen und MCP-Server des Nutzers.
-const HOOK_ISOLATION: &str = "--setting-sources project --strict-mcp-config";
+/// (gegen 2.1.296 geprüft); stattdessen ohne MCP-Server des Nutzers. Die Einstellungsquellen
+/// setzt der Adapter selbst (`--setting-sources user`, #233), ein Wert hier würde überschrieben.
+const HOOK_ISOLATION: &str = "--strict-mcp-config";
 
 /// Felder der Hook-Eingabe, die lokale Pfade bzw. Laufzeitdaten tragen.
 const HOOK_DROP: [&str; 4] = ["transcript_path", "scratchpad_dir", "prompt_id", "effort"];

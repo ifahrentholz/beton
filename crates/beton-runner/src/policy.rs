@@ -60,6 +60,8 @@ pub const EVAL_TIMEOUT: Duration = Duration::from_millis(250);
 pub const USAGE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Wartezeit auf eine menschliche Freigabe (wie das Gate der Adapter, HAR-005 AC4).
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Begründung, wenn eine Rückfrage andere Argumente trägt als der geprüfte Call (#233).
+pub const CHANGED_AFTER_CHECK: &str = "Abgelehnt von beton: Die Argumente wurden nach der Policy-Prüfung verändert (z. B. durch einen weiteren Hook).";
 /// Präfix eigener Call-IDs des Relay-Hubs (Aufruf ohne zugeordnetes `tool.call.requested`).
 const SYNTHETIC: &str = "mcp_unmatched_";
 /// Höchstgröße von `request.prompt` und `result.text` (POL-004).
@@ -177,6 +179,14 @@ struct Verdict {
     reason: Option<String>,
     /// Vollständige, geänderte Argumente.
     updated_args: Option<Value>,
+    /// Hash des freigegebenen Subjekts (Tool und tatsächlich auszuführende Argumente). Eine
+    /// Rückfrage des Vendors zum selben Call nutzt den Entscheid nur bei gleichem Hash (#233).
+    subject: String,
+}
+
+/// Hash des Subjekts eines Tool-Calls (`tool` und `args`), wie in `policy.decision`.
+fn tool_subject(tool: &str, args: &Value) -> String {
+    subject_hash(&json!({"tool": tool, "args": args}))
 }
 
 /// Ergebnis einer Prüfung von `model_request` bzw. `session_start`.
@@ -839,6 +849,7 @@ impl PolicyGate {
                     human: false,
                     reason: Some(format!("Tool-Call nicht prüfbar: {e}")),
                     updated_args: None,
+                    subject: tool_subject(&req.tool, &req.args),
                 }
             }
             Ok(mut n) => {
@@ -891,6 +902,7 @@ impl PolicyGate {
                         allowed: true,
                         human: false,
                         reason: None,
+                        subject: tool_subject(&req.tool, updated.as_ref().unwrap_or(&req.args)),
                         updated_args: updated,
                     },
                     (Outcome::Deny { reasons }, _) => Verdict {
@@ -898,6 +910,7 @@ impl PolicyGate {
                         human: false,
                         reason: Some(reason_text(reasons)),
                         updated_args: None,
+                        subject: tool_subject(&req.tool, &req.args),
                     },
                     (Outcome::Ask { reasons }, _) => {
                         let human = self
@@ -911,11 +924,16 @@ impl PolicyGate {
                                 req.turn_id,
                             )
                             .await;
+                        let updated_args = human.updated_args.or(updated);
                         Verdict {
                             allowed: human.allow,
                             human: true,
                             reason: human.reason.or_else(|| Some(reason_text(reasons))),
-                            updated_args: human.updated_args.or(updated),
+                            subject: tool_subject(
+                                &req.tool,
+                                updated_args.as_ref().unwrap_or(&req.args),
+                            ),
+                            updated_args,
                         }
                     }
                 }
@@ -925,6 +943,37 @@ impl PolicyGate {
             d.insert(req.call_id.clone(), verdict.clone());
         }
         verdict
+    }
+
+    /// Integritätsprüfung (HAR-005, #233): Meldet die Matrix für die Klasse des Calls `full`,
+    /// muss er vor der Ausführung das Gate passiert haben. Ein ausgeführter Call ohne
+    /// Entscheidung heißt, dass der Hook umgangen wurde; die Begründung nennt nur Tool und
+    /// Klasse, keine Argumente.
+    pub fn integrity_violation(&self, req: &GateRequest) -> Option<String> {
+        if self.decided(&req.call_id) {
+            return None;
+        }
+        let kind = self.kind_of(req);
+        (self.matrix().level(Phase::ToolCall, Some(&kind)) == Level::Full).then(|| {
+            format!(
+                "Tool-Call `{}` ({kind}) lief ohne Prüfung durch das Policy-Gate, obwohl der Harness volle Durchsetzung meldet; Session aus Sicherheitsgründen beendet",
+                req.tool
+            )
+        })
+    }
+
+    /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle.
+    fn kind_of(&self, req: &GateRequest) -> String {
+        if req.kind.is_empty() {
+            beton_harness::tool_kind(
+                self.inner.opts.harness.as_str(),
+                &req.tool,
+                req.acp_kind.as_deref(),
+                req.mcp_server.as_deref(),
+            )
+        } else {
+            req.kind.clone()
+        }
     }
 
     /// Tool-Call ohne Gate-Anfrage des Harness (nur beobachtbar, POL-025 AC1): genau ein
@@ -1102,16 +1151,7 @@ impl PolicyGate {
 #[async_trait]
 impl Gate for PolicyGate {
     async fn decide(&self, req: GateRequest) -> GateDecision {
-        let kind = if req.kind.is_empty() {
-            beton_harness::tool_kind(
-                self.inner.opts.harness.as_str(),
-                &req.tool,
-                req.acp_kind.as_deref(),
-                req.mcp_server.as_deref(),
-            )
-        } else {
-            req.kind.clone()
-        };
+        let kind = self.kind_of(&req);
         match req.origin {
             GateOrigin::PreTool => {
                 let v = self.tool_verdict(&req, Level::Full).await;
@@ -1132,6 +1172,18 @@ impl Gate for PolicyGate {
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
                 let v = match prior {
+                    // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
+                    // Argumente nach der Prüfung geändert (z. B. ein weiterer Hook mit
+                    // `updatedInput`), gilt er nicht (fail closed).
+                    Some(v) if v.subject != tool_subject(&req.tool, &req.args) => {
+                        tracing::warn!(
+                            call_id = %req.call_id,
+                            "Policy: Rückfrage mit anderen Argumenten als geprüft; abgelehnt"
+                        );
+                        return GateDecision::Deny {
+                            reason: Some(CHANGED_AFTER_CHECK.into()),
+                        };
+                    }
                     Some(v) => v,
                     None => self.tool_verdict(&req, Level::ApprovalOnly).await,
                 };
