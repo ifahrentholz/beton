@@ -474,6 +474,7 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         spawned: Mutex<Vec<(String, Value)>>,
+        asked: Mutex<Vec<(String, Vec<String>, std::time::Duration)>>,
     }
 
     #[async_trait]
@@ -498,6 +499,21 @@ mod tests {
                 .unwrap()
                 .push((tool_name(tool), args.clone()));
             Ok(json!({"tool": tool_name(tool), "children": []}))
+        }
+        async fn ask_user(
+            &self,
+            question: &str,
+            choices: &[String],
+            timeout: std::time::Duration,
+        ) -> Result<Option<String>, ToolFailure> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((question.to_owned(), choices.to_vec(), timeout));
+            Ok(choices.first().cloned())
+        }
+        async fn inbox_read(&self, _args: &Value) -> Result<Value, ToolFailure> {
+            Ok(json!({"messages": []}))
         }
     }
 
@@ -709,23 +725,104 @@ mod tests {
             "{BASE}tools: {{ system: [ask_user, inbox_read, timer_set, policy_query] }}\n"
         ));
         let s = server(Some(&spec), Arc::new(Recorder::default()));
-        assert_eq!(list(&s).await, ["policy_query"]);
-        let reply = call(&s, "ask_user", json!({})).await;
+        assert_eq!(list(&s).await, ["policy_query", "inbox_read", "ask_user"]);
+        let reply = call(&s, "timer_set", json!({})).await;
         assert_eq!(reply["error"]["data"]["code"], "tool_not_enabled");
         // Ein Agent, der policy_query nicht auswählt, bekommt es nicht.
         let spec = agent(&format!("{BASE}tools: {{ system: [ask_user] }}\n"));
         let s = server(Some(&spec), Arc::new(Recorder::default()));
-        assert!(list(&s).await.is_empty());
+        assert_eq!(list(&s).await, ["ask_user"]);
     }
 
     #[test]
     fn agt_007_skill_tools_follow_active_skills() {
         let names = |v: Vec<SystemTool>| v.into_iter().map(tool_name).collect::<Vec<_>>();
-        assert_eq!(names(enabled_tools(None, false)), ["policy_query"]);
+        // Ohne Agent: policy_query, inbox_read, ask_user (ab M2, UX-001).
+        assert_eq!(
+            names(enabled_tools(None, false)),
+            ["policy_query", "inbox_read", "ask_user"]
+        );
         assert_eq!(
             names(enabled_tools(None, true)),
-            ["policy_query", "skill_load", "skill_read_file"]
+            ["policy_query", "inbox_read", "ask_user", "skill_load", "skill_read_file"]
         );
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac4_ask_user_passes_question_choices_and_timeout() {
+        let backend = Arc::new(Recorder::default());
+        let s = server(None, backend.clone());
+        let r = call(
+            &s,
+            "ask_user",
+            json!({"question": "Pro IP oder pro Account?", "options": ["Pro IP", "Pro Account"], "timeout": "5m"}),
+        )
+        .await;
+        let content = &r["result"]["structuredContent"];
+        assert_eq!(content["answered"], true, "{r}");
+        assert_eq!(content["answer"], "Pro IP");
+        let asked = backend.asked.lock().unwrap().clone();
+        assert_eq!(asked[0].0, "Pro IP oder pro Account?");
+        assert_eq!(asked[0].1, ["Pro IP", "Pro Account"]);
+        assert_eq!(asked[0].2, std::time::Duration::from_secs(300));
+        // Default 30 Minuten, höchstens 24 Stunden.
+        call(&s, "ask_user", json!({"question": "a"})).await;
+        call(&s, "ask_user", json!({"question": "b", "timeout": "3d"})).await;
+        let asked = backend.asked.lock().unwrap().clone();
+        assert_eq!(asked[1].2, std::time::Duration::from_secs(30 * 60));
+        assert_eq!(asked[2].2, std::time::Duration::from_secs(24 * 3600));
+        // Ohne Frage: Fehler für das Modell, keine Inbox-Frage.
+        let r = call(&s, "ask_user", json!({"question": " "})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        let r = call(&s, "ask_user", json!({"question": "x", "options": [1]})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert_eq!(backend.asked.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn agt_007_ask_user_without_answer_says_so() {
+        #[derive(Default)]
+        struct Silent;
+        #[async_trait]
+        impl SystemBackend for Silent {
+            async fn policy_query(&self, _: &Value) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn session_spawn(&self, _: &SpawnTarget, _: &Value) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn session_tool(&self, _: SystemTool, _: &Value) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn ask_user(
+                &self,
+                _: &str,
+                _: &[String],
+                _: std::time::Duration,
+            ) -> Result<Option<String>, ToolFailure> {
+                Ok(None)
+            }
+        }
+        let s = SystemServer::new(
+            enabled_tools(None, false),
+            SkillSet::default(),
+            Vec::new(),
+            Arc::new(Silent),
+        );
+        let r = call(&s, "ask_user", json!({"question": "Noch da?"})).await;
+        let content = &r["result"]["structuredContent"];
+        assert_eq!(content["answered"], false, "{r}");
+        assert_eq!(content["answer"], Value::Null);
+        // inbox_read ohne eigene Implementierung: leer statt Fehler? Nein – fail closed.
+        let r = call(&s, "inbox_read", json!({})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_inbox_read_comes_from_the_backend() {
+        let s = server(None, Arc::new(Recorder::default()));
+        let r = call(&s, "inbox_read", json!({})).await;
+        assert_eq!(r["result"]["structuredContent"]["messages"], json!([]));
     }
 
     #[tokio::test]
