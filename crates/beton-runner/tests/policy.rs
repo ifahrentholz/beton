@@ -737,3 +737,28 @@ async fn ses_004_queued_input_is_checked_on_dequeue() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+// ------------------------------------------------------------------ HAR-005, #233 (K3)
+
+#[tokio::test]
+async fn har_005_tool_call_without_gate_decision_ends_the_session() {
+    // Der Harness meldet vollen Gate, führt aber einen Tool-Call ohne Gate-Anfrage aus (wie
+    // Claude mit ausgehebeltem `PreToolUse`-Hook): Integritätsverletzung, Session endet.
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo hi\" } }, skip_gate: true }\n      - { tool_result: \"hi\" }\n      - { message: \"fertig\" }\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let (status, body) = env.input(&id, "los").await;
+    assert_eq!(status, 202, "{body}");
+    let events = env
+        .wait_for(&id, |e| {
+            e["type"] == "error" && e["payload"]["problem"]["code"] == "policy_integrity_violation"
+        })
+        .await;
+    env.wait_status(&id, "failed").await;
+    let error = events.iter().find(|e| e["type"] == "error").unwrap();
+    // Keine Argumente im Klartext.
+    assert!(!error.to_string().contains("echo hi"), "{error}");
+}

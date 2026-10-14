@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use beton_harness::{Gate, GateDecision, HarnessId};
+use beton_harness::{Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter, HarnessId};
 use beton_policy::load::Scope;
 use beton_policy::vars::StartVars;
 use beton_runner::policy::{Checked, GateEvent, PolicyGate, PolicyOptions};
@@ -143,5 +143,135 @@ async fn pol_005_claude_hook_mcp_rule_on_server_and_name_denies() {
     assert!(
         matches!(decision, GateDecision::Deny { .. }),
         "{decision:?}"
+    );
+}
+
+// ------------------------------------------------------------- K3 (#233), HAR-005
+
+fn bash(call: &str, command: &str, origin: GateOrigin) -> GateRequest {
+    GateRequest {
+        call_id: call.into(),
+        tool: "Bash".into(),
+        kind: "shell".into(),
+        args: serde_json::json!({ "command": command }),
+        origin,
+        ..GateRequest::default()
+    }
+}
+
+const NO_RM: &str = "  - id: no-rm\n    on: tool_call\n    when: 'tool.command.contains(\"rm -rf\")'\n    action: deny\n";
+
+#[tokio::test]
+async fn har_005_vendor_ask_with_changed_args_does_not_reuse_the_hook_decision() {
+    // Angriff: Ein weiterer `PreToolUse`-Hook ändert die Argumente nach der beton-Prüfung
+    // (`updatedInput`); die Rückfrage des Vendors kommt mit denselben Call-ID, aber anderen
+    // Argumenten. Der gespeicherte Entscheid gilt nur für dasselbe Subjekt (`subject_hash`).
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(dir.path(), Scope::Project, "rm", NO_RM);
+    let (g, _rx) = gate(dir.path(), "claude");
+    let pre = g
+        .decide(bash("toolu_1", "echo hi", GateOrigin::PreTool))
+        .await;
+    assert_eq!(pre, GateDecision::Allow { updated_args: None });
+    for origin in [GateOrigin::AutoApproval, GateOrigin::VendorAsk] {
+        let ask = g.decide(bash("toolu_1", "rm -rf ~", origin)).await;
+        assert!(
+            matches!(ask, GateDecision::Deny { .. }),
+            "{origin:?}: {ask:?}"
+        );
+    }
+    // Dieselben Argumente: der Hook-Entscheid gilt weiter (ohne zweite Auswertung).
+    let pre = g
+        .decide(bash("toolu_2", "echo ok", GateOrigin::PreTool))
+        .await;
+    assert_eq!(pre, GateDecision::Allow { updated_args: None });
+    let same = g
+        .decide(bash("toolu_2", "echo ok", GateOrigin::AutoApproval))
+        .await;
+    assert_eq!(same, GateDecision::Allow { updated_args: None });
+}
+
+#[tokio::test]
+async fn har_005_completed_call_without_hook_decision_is_an_integrity_violation() {
+    // Bei Matrix `full` muss jeder Tool-Call vorher das Gate passiert haben. Fehlt die
+    // Hook-Anfrage, wurde der Hook ausgehebelt: Integritätsverletzung statt `observe_only`.
+    let dir = tempfile::tempdir().unwrap();
+    let (g, _rx) = gate(dir.path(), "claude");
+    let req = bash("toolu_3", "echo hi", GateOrigin::PreTool);
+    assert!(g.integrity_violation(&req).is_some());
+    let _ = g.decide(req.clone()).await;
+    assert!(g.integrity_violation(&req).is_none(), "geprüft");
+    // Ohne Hook (isoliert, nur Rückfragen) ist ein Call ohne Anfrage erwartbar: beobachtet.
+    let isolated = beton_harness_claude::ClaudeAdapter {
+        isolated: true,
+        ..beton_harness_claude::ClaudeAdapter::default()
+    };
+    g.set_matrix(
+        isolated
+            .capabilities(
+                beton_harness::Mode::Native,
+                &beton_harness::ProbeReport::default(),
+            )
+            .enforcement(),
+    );
+    assert!(
+        g.integrity_violation(&bash("toolu_4", "echo hi", GateOrigin::PreTool))
+            .is_none()
+    );
+}
+
+/// Folge von K3 (#233): Mit `--setting-sources user` liest Claude Code `CLAUDE.md` und
+/// `.claude/skills` des Projekts nicht mehr selbst (gegen 2.1.296 geprüft). beton liefert beides:
+/// `CLAUDE.md` über die Instructions (AGT-005, auch ohne Agent), Projekt-Skills über das
+/// Session-Skill-Verzeichnis (AGT-008).
+#[cfg(unix)]
+#[tokio::test]
+async fn agt_005_agt_008_claude_gets_project_claude_md_and_skills_from_beton() {
+    let tmp = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let work = tmp.path().join("work");
+    let skill = work.join(".claude/skills/projtest");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(work.join("CLAUDE.md"), "Regeln aus CLAUDE.md").unwrap();
+    std::fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: projtest\ndescription: Testskill\n---\nTu nichts.\n",
+    )
+    .unwrap();
+    let run_dir = tmp.path().join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let paths = beton_runner::mcp::Paths {
+        beton_home: tmp.path().join("home/.beton"),
+        home: Some(tmp.path().join("home")),
+        run_dir,
+        relay: std::path::PathBuf::from("/bin/false"),
+    };
+    let claude: HarnessId = "claude".parse().unwrap();
+    let caps = beton_harness_claude::ClaudeAdapter::default().capabilities(
+        beton_harness::Mode::Native,
+        &beton_harness::ProbeReport::default(),
+    );
+    let setup = beton_runner::mcp::prepare(
+        beton_core::id::SessionId::new(),
+        &claude,
+        &caps,
+        &work,
+        beton_runner::mcp::AgentSource::None,
+        &beton_harness::registry::HarnessLayers::default(),
+        &paths,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let text = setup.instructions.expect("Instructions mit CLAUDE.md");
+    assert!(text.contains("Regeln aus CLAUDE.md"), "{text}");
+    let skills = setup.injection.skills_dir.expect("Session-Skills");
+    assert!(
+        skills.join("skills/projtest/SKILL.md").is_file(),
+        "{}",
+        skills.display()
     );
 }

@@ -1390,6 +1390,36 @@ mod mcp_tests {
         );
     }
 
+    /// K3 (#233, gegen 2.1.296 geprüft): `.claude/settings.json` bzw. `settings.local.json` des
+    /// Repositorys kann mit `disableAllHooks: true` den beton-Hook abschalten und eigene
+    /// `PreToolUse`-Hooks mit `updatedInput` nach der beton-Prüfung einschleusen. beton lädt
+    /// daher nur die User-Einstellungen und setzt `disableAllHooks: false` im `--settings`-JSON.
+    #[test]
+    fn har_005_project_settings_cannot_disable_or_add_hooks() {
+        let settings = hook_settings("/bin/beton hook claude", 60);
+        let v: Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(v["disableAllHooks"], false, "{settings}");
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "*");
+        for isolated in [false, true] {
+            let args = command_args_with(&spec(), isolated, None, Some(&settings));
+            assert_eq!(
+                arg_after(&args, "--setting-sources"),
+                Some("user"),
+                "isolated={isolated}: {args:?}"
+            );
+        }
+        let one_shot = one_shot_args(&OneShotRequest::default(), false);
+        assert_eq!(arg_after(&one_shot, "--setting-sources"), Some("user"));
+        // Ohne Projekt-Einstellungen liest die CLI auch `CLAUDE.md` des Projekts nicht (gegen
+        // 2.1.296 geprüft); beton liefert sie über die Instructions (AGT-005).
+        assert!(
+            ClaudeAdapter::default()
+                .capabilities(Mode::Native, &ProbeReport::default())
+                .native_project_files
+                .is_empty()
+        );
+    }
+
     #[test]
     fn agt_007_system_tools_are_classified_as_system() {
         assert_eq!(kind_of("mcp__beton__policy_query"), "system");

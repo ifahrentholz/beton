@@ -193,6 +193,10 @@ pub struct Step {
     /// Vor der Ausführung eine Entscheidung einholen.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gate: bool,
+    /// Den Tool-Call trotz vollem Gate ohne Gate-Anfrage ausführen – wie ein Vendor, dessen
+    /// Hook ausgehebelt wurde (Integritätsprüfung, HAR-005, #233).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_gate: bool,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,
