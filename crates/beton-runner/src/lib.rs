@@ -2525,6 +2525,19 @@ mod tests {
     }
 
     #[test]
+    fn pol_010_ac4_runner_outlives_the_daemon_only_while_approvals_are_open() {
+        // Elternprozess lebt: weiter verbinden wie bisher.
+        assert!(!orphan_exit(true, false, false));
+        // Daemon weg, keine offene Freigabe: Runner endet.
+        assert!(orphan_exit(false, false, false));
+        // Daemon weg, Freigabe offen: auf den neuen Daemon warten.
+        assert!(!orphan_exit(false, false, true));
+        // Vom neuen Daemon übernommen: ohne Verbindung und ohne Freigabe endet er.
+        assert!(orphan_exit(true, true, false));
+        assert!(!orphan_exit(true, true, true));
+    }
+
+    #[test]
     fn web_007_status_stays_waiting_while_stacked_approvals_are_open() {
         use beton_core::event::{
             ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, ResolvedVia,

@@ -678,4 +678,82 @@ mod tests {
         c.last_activity = Instant::now();
         assert!(!c.idle(timeout));
     }
+
+    fn approval(session: SessionId, id: beton_core::id::ApprovalId, secs: i64) -> beton_core::event::Event {
+        beton_core::event::Event::new(
+            session,
+            0,
+            beton_core::event::Actor::default(),
+            EventPayload::ApprovalRequested(beton_core::event::ApprovalRequested {
+                approval_id: id,
+                expires_at: (time::OffsetDateTime::now_utc() + time::Duration::seconds(secs)).into(),
+                ..beton_core::event::ApprovalRequested::default()
+            }),
+        )
+    }
+
+    #[test]
+    fn pol_010_ac4_runner_with_open_approval_is_detached_and_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let (s1, s2) = (SessionId::new(), SessionId::new());
+        let old = RunnerRegistry::default();
+        let t1 = old.mint_token(s1).unwrap();
+        let _t2 = old.mint_token(s2).unwrap();
+        let a = beton_core::id::ApprovalId::new();
+        old.note_events(s1, [&approval(s1, a, 600)]);
+        assert!(old.has_open_approvals(s1));
+        assert!(!old.has_open_approvals(s2));
+        // Nur Runner mit offener Freigabe überdauern den Daemon.
+        let detached = old.detach(&[s1, s2]);
+        assert_eq!(detached.len(), 1);
+        assert_eq!(detached[0].session_id, s1);
+        crate::detached::save(&file, &detached).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // Die Datei enthält nur den Hash des Tokens.
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains(&t1));
+
+        let new = RunnerRegistry::default();
+        for d in crate::detached::take(&file) {
+            new.adopt(&d);
+        }
+        assert!(!file.exists(), "einmal gelesen, dann gelöscht");
+        assert_eq!(new.session_for(&t1), Some(s1));
+        assert!(new.expected(s1));
+        assert!(!new.expected(s2));
+        // Aufgelöst: nicht mehr offen.
+        let resolved = beton_core::event::Event::new(
+            s1,
+            0,
+            beton_core::event::Actor::default(),
+            EventPayload::ApprovalResolved(beton_core::event::ApprovalResolved {
+                approval_id: a,
+                ..beton_core::event::ApprovalResolved::default()
+            }),
+        );
+        old.note_events(s1, [&resolved]);
+        assert!(!old.has_open_approvals(s1));
+    }
+
+    #[test]
+    fn pol_010_ac4_expired_detached_runners_are_not_adopted() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        old.mint_token(s).unwrap();
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), -5)]);
+        let detached = old.detach(&[s]);
+        crate::detached::save(&file, &detached).unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+        // Kaputte Datei: nichts übernehmen, fail closed.
+        std::fs::write(&file, "kein json").unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+    }
 }

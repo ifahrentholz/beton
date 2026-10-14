@@ -24,7 +24,7 @@ fn runner_bin() -> &'static str {
 
 struct Env {
     dir: tempfile::TempDir,
-    _daemon: Daemon,
+    daemon: Option<Daemon>,
     token: String,
     addr: SocketAddr,
 }
@@ -38,10 +38,30 @@ impl Env {
         let home = dir.path().join("home");
         std::fs::create_dir_all(home.join(".beton")).unwrap();
         std::fs::create_dir_all(dir.path().join("work/.beton/policies")).unwrap();
-        let store = Store::open(dir.path(), StoreOptions::default())
-            .await
-            .unwrap();
-        let mut cfg = ServerConfig::local(dir.path().to_path_buf());
+        let (daemon, token, addr) = Self::boot(dir.path()).await;
+        Self {
+            dir,
+            daemon: Some(daemon),
+            token,
+            addr,
+        }
+    }
+
+    /// Daemon geordnet beenden und auf demselben Datenverzeichnis neu starten.
+    async fn restart(&mut self) {
+        if let Some(d) = self.daemon.take() {
+            d.shutdown().await;
+        }
+        let (daemon, token, addr) = Self::boot(self.dir.path()).await;
+        self.daemon = Some(daemon);
+        self.token = token;
+        self.addr = addr;
+    }
+
+    async fn boot(dir: &Path) -> (Daemon, String, SocketAddr) {
+        let home = dir.join("home");
+        let store = Store::open(dir, StoreOptions::default()).await.unwrap();
+        let mut cfg = ServerConfig::local(dir.to_path_buf());
         cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
         cfg.socket = None;
         let mut inherit: BTreeMap<String, String> = std::env::vars()
@@ -54,7 +74,7 @@ impl Env {
             "BETON_HOME".into(),
             home.join(".beton").display().to_string(),
         );
-        let runners = dir.path().join("runners");
+        let runners = dir.join("runners");
         let daemon = start_with(cfg, store, move |mut r| {
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
@@ -64,17 +84,12 @@ impl Env {
         })
         .await
         .unwrap();
-        let token = std::fs::read_to_string(dir.path().join("auth/local.token"))
+        let token = std::fs::read_to_string(dir.join("auth/local.token"))
             .unwrap()
             .trim()
             .to_owned();
         let addr = daemon.addrs[0];
-        Self {
-            dir,
-            _daemon: daemon,
-            token,
-            addr,
-        }
+        (daemon, token, addr)
     }
 
     fn work(&self) -> PathBuf {
@@ -482,6 +497,56 @@ async fn pol_010_ac5_timeout_applies_abort_and_ends_the_turn() {
         "{turn:#?}"
     );
     env.wait_status(&id, "idle").await;
+}
+
+#[tokio::test]
+async fn pol_010_ac4_open_approval_survives_a_daemon_restart() {
+    let mut env = Env::start().await;
+    env.project_policy("push", ASK_PUSH_SESSION);
+    let id = env.create(&env.scenario(&pushes(1, "git push origin main"))).await;
+    env.wait_status(&id, "idle").await;
+    let before = env.start_turn(&id, "los").await;
+    let card = env.open_approval(&id).await;
+    env.wait_status(&id, "waiting_approval").await;
+
+    env.restart().await;
+
+    // Weiterhin sichtbar: in der Session und in der Inbox.
+    let again = env.open_approval(&id).await;
+    assert_eq!(again["id"], card["id"]);
+    let (_, inbox) = env.http("GET", "/v1/inbox?status=open", None).await;
+    assert_eq!(inbox["open_count"], 1, "{inbox}");
+    // Und entscheidbar: der Tool-Call läuft, der Turn endet.
+    let (status, body) = env.resolve_with(&id, json!({"decision": "allow"})).await;
+    assert_eq!(status, 200, "{body}");
+    let turn = env.turn_end(&id, before).await;
+    assert!(
+        of_type(&turn, "tool.call.completed")
+            .iter()
+            .any(|c| c["payload"]["status"] == "ok"),
+        "{turn:#?}"
+    );
+    assert_eq!(of_type(&turn, "turn.completed").len(), 1, "{turn:#?}");
+    assert!(
+        !of_type(&turn, "turn.failed")
+            .iter()
+            .any(|t| t["payload"]["problem"]["code"] == "runner_restarted"),
+        "{turn:#?}"
+    );
+}
+
+#[tokio::test]
+async fn pol_010_ac4_idle_runner_ends_with_the_daemon() {
+    // Ohne offene Freigabe bleibt nichts zurück: der Runner endet mit dem Daemon.
+    let mut env = Env::start().await;
+    let id = env.create(&env.scenario(&pushes(1, "ls"))).await;
+    env.wait_status(&id, "idle").await;
+    env.restart().await;
+    let (status, body) = env.input(&id, "los").await;
+    assert_eq!(status, 202, "{body}");
+    let events = env.wait_for(&id, is("turn.completed")).await;
+    // Ein neuer Runner hat die Session fortgesetzt.
+    assert_eq!(of_type(&events, "session.started").len(), 2, "{events:#?}");
 }
 
 // --------------------------------------------------------------------------------- POL-014
