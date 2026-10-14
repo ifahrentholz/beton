@@ -151,6 +151,36 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+/// Variablen der zweistufigen Sandbox (SBX-002, verifiziert gegen 2.1.296): Das Bash-Tool
+/// startet `CLAUDE_CODE_SHELL -c <kommando>`, also `bt-exec-<shell>` und damit Stufe 2; die
+/// cwd-Datei (`claude-<id>-cwd`) und Hintergrund-Ausgaben legt Claude in
+/// `CLAUDE_CODE_TMPDIR` ab, dem Austausch mit Stufe 2. Der Pfad der Shell muss `zsh` bzw.
+/// `bash` enthalten; gewählt wird die Familie aus `SHELL`.
+pub fn stage_env(stage: Option<&beton_harness::StageEnv>) -> Vec<(String, String)> {
+    let Some(stage) = stage else {
+        return Vec::new();
+    };
+    let flavor = if std::env::var("SHELL").is_ok_and(|s| s.contains("zsh")) {
+        "zsh"
+    } else {
+        "bash"
+    };
+    vec![
+        (
+            "CLAUDE_CODE_SHELL".into(),
+            stage
+                .shim_dir
+                .join(format!("bt-exec-{flavor}"))
+                .display()
+                .to_string(),
+        ),
+        (
+            "CLAUDE_CODE_TMPDIR".into(),
+            stage.exchange.display().to_string(),
+        ),
+    ]
+}
+
 /// Tool-Klassen, für die Claude Code im Modus `default` selbst um Freigabe fragt
 /// (`can_use_tool`); Lesen, Suchen und sichere Shell-Kommandos wie `echo` erlaubt die CLI ohne
 /// Rückfrage. Gilt, wenn kein `PreToolUse`-Hook installiert ist (POL-024).
@@ -487,7 +517,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_env(ctx.stage.as_ref()),
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(request.workdir.clone()),
@@ -581,7 +611,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_env(ctx.stage.as_ref()),
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),
