@@ -299,6 +299,9 @@ impl SessionManager<'_> {
         // Verlauf übernehmen: Inhalts-Events bis zum Fork-Punkt, neu nummeriert (SES-006 AC1).
         let history = self.history(&events, effective).await?;
         self.copy_history(session.id, &history).await?;
+        // Policy-Zustand bis zum Fork-Punkt (POL-009 AC1); Grants gelten nur in ihrer Session.
+        self.copy_policy_state(session.id, &events, effective)
+            .await?;
 
         // Plan für den Runner: Er wählt native, rebuild oder preamble (HAR-018, HAR-019).
         let tail_empty = !events
@@ -453,6 +456,36 @@ impl SessionManager<'_> {
                 .append(self.org(), session, record.head_seq, record.epoch, batch)
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Übernimmt `policy.state_changed` bis `upto` in die neue Session (POL-009 AC1).
+    async fn copy_policy_state(
+        &self,
+        session: SessionId,
+        events: &[Event],
+        upto: u64,
+    ) -> Result<(), Problem> {
+        let batch: Vec<Event> = events
+            .iter()
+            .take_while(|e| e.seq <= upto)
+            .filter_map(|e| match e.payload() {
+                Some(p @ beton_core::event::EventPayload::PolicyStateChanged(_)) => {
+                    let mut copy = Event::new(session, 0, e.actor.clone(), p.clone());
+                    copy.ts = e.ts;
+                    Some(copy)
+                }
+                _ => None,
+            })
+            .collect();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let record = self.state().store.session(self.org(), session).await?;
+        self.state()
+            .events()
+            .append(self.org(), session, record.head_seq, record.epoch, batch)
+            .await?;
         Ok(())
     }
 

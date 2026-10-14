@@ -154,6 +154,13 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             // Verbrauchswerte für Policies (POL-004 AC3/AC4): `session.cost_usd`,
             // `user.daily_cost_usd` aus der Usage-Projektion.
             "policy.usage" => crate::usage_policy::policy_usage(&self.0, session).await,
+            // Zustand und Grants (POL-009, POL-010), Änderungen in `user_day`/`user`.
+            "policy.state" => crate::policy_state::policy_state(&self.0, session).await,
+            "policy.state.apply" => {
+                crate::policy_state::policy_state_apply(&self.0, session, &args).await
+            }
+            // Agent-Inbox (`inbox_read`, AGT-007).
+            "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
@@ -965,12 +972,17 @@ impl<'a> SessionManager<'a> {
             .await
     }
 
-    /// Entscheidung für eine offene Freigabe an den Runner (WEB-018, HAR-005).
+    /// Entscheidung für eine offene Freigabe an den Runner (WEB-007, WEB-018, HAR-005).
+    ///
+    /// Geprüft wird gegen die offene Card (POL-010): `allow`/`deny` für Freigaben,
+    /// `answer` (mit Text) oder `deny` für Fragen (`ask_user`); `remember: session` nur, wenn die
+    /// Card `approve_session` anbietet. Der Runner erfährt, wer entschieden hat (`actor`).
     pub async fn resolve_approval(
         &self,
         session: SessionId,
         approval: &str,
         args: Value,
+        by: PrincipalId,
     ) -> Result<(), Problem> {
         let open = self.state.store.open_approvals(self.org()).await?;
         let found = open
@@ -979,12 +991,45 @@ impl<'a> SessionManager<'a> {
             .ok_or_else(|| {
                 Problem::new(ProblemCode::NotFound).detail(format!("Freigabe {approval}"))
             })?;
+        let invalid = |m: &str| Problem::new(ProblemCode::ValidationFailed).detail(m.to_owned());
+        let question = found.kind == beton_core::event::ApprovalKind::Question;
+        let decision = args["decision"].as_str().unwrap_or_default();
+        match (decision, question) {
+            ("allow" | "deny", false) | ("answer" | "deny", true) => {}
+            ("answer", false) => return Err(invalid("`answer` gibt es nur für Fragen")),
+            ("allow", true) => return Err(invalid("Fragen beantwortest du mit `answer`")),
+            _ => return Err(invalid("`decision` muss allow, deny oder answer sein")),
+        }
+        if decision == "answer" {
+            let answer = args["answer"].as_str().map(str::trim).unwrap_or_default();
+            if answer.is_empty() {
+                return Err(invalid("`answer` fehlt"));
+            }
+            if answer.chars().count() > 4096 {
+                return Err(invalid("`answer` ist länger als 4096 Zeichen"));
+            }
+        }
+        match args.get("remember").and_then(Value::as_str) {
+            None | Some("none") => {}
+            Some("session") if decision != "allow" => {
+                return Err(invalid("`remember: session` gibt es nur mit `allow`"));
+            }
+            Some("session") => {
+                if !found.options.iter().any(|o| o == "approve_session") {
+                    return Err(Problem::new(ProblemCode::Conflict).detail(
+                        "„Für diese Session erlauben“ bietet diese Freigabe nicht an".to_owned(),
+                    ));
+                }
+            }
+            Some(_) => return Err(invalid("`remember` muss none oder session sein")),
+        }
         let call_id = found.subject["call_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
         let mut payload = args;
         payload["call_id"] = Value::String(call_id);
+        payload["actor"] = serde_json::to_value(user_actor(by)).unwrap_or(Value::Null);
         self.state
             .runtime
             .runners

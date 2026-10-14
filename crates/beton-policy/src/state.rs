@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 
 use beton_core::event::PolicyStateChanged;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -30,7 +30,7 @@ pub const APPEND_MAX: usize = 100;
 pub const VALUE_MAX_BYTES: usize = 4 * 1024;
 
 /// Eine ausgewertete Zustandsänderung einer Regel (Wert aus `effects[].value` berechnet).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateOp {
     pub scope: StateScope,
     pub key: String,

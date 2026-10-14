@@ -11,6 +11,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod api_inbox;
 pub mod api_proxy;
 pub mod api_secrets;
 pub mod api_sessions;
@@ -27,6 +28,7 @@ pub mod hub;
 pub mod idempotency;
 pub mod imports;
 pub mod local_auth;
+pub mod policy_state;
 pub mod problem;
 pub mod queue;
 pub mod security;
