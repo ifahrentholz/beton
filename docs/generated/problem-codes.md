@@ -47,7 +47,11 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unsupported_format_version` | 422 | Exportformat zu neu |
 | `import_seq_gap` | 422 | Import abgelehnt: Lücke im Verlauf |
 | `import_invalid` | 422 | Import abgelehnt: Datei ungültig |
+| `invalid_secret_ref` | 400 | Ungültige SecretRef |
+| `secrets_locked` | 423 | Secret-Store gesperrt |
 | `rate_limited` | 429 | Zu viele Anfragen |
 | `internal` | 500 | Interner Fehler |
 | `blob_corrupt` | 500 | Blob beschädigt |
+| `secrets_corrupt` | 500 | Secret-Datei beschädigt |
 | `unavailable` | 503 | Vorübergehend nicht verfügbar |
+| `secrets_unavailable` | 503 | Secret-Store nicht verfügbar |

@@ -26,7 +26,13 @@ pub struct Idempotency {
 }
 
 pub async fn layer(State(state): State<Idempotency>, req: Request, next: Next) -> Response {
-    if req.method() != Method::POST {
+    // Secret-Requests tragen Werte im Body: weder Hash noch Antwort werden gespeichert (SEC-004).
+    if req.method() != Method::POST
+        || req
+            .uri()
+            .path()
+            .starts_with(crate::api_secrets::SECRETS_PREFIX)
+    {
         return next.run(req).await;
     }
     let Some(key) = req

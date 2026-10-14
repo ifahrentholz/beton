@@ -38,6 +38,8 @@ pub struct AppState {
     pub runtime: Runtime,
     /// Build der Web-UI (WEB-001); `None` = Hinweisseite.
     pub web_dir: Option<Arc<std::path::PathBuf>>,
+    /// Secret-Store (SEC-001); Werte nur über Capabilities, die dieser Zustand nicht hält.
+    pub secrets: beton_secrets::Secrets,
 }
 
 impl AppState {
@@ -95,6 +97,9 @@ pub struct Runtime {
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
     pub file_index: Arc<crate::file_index::FileIndexCache>,
+    /// Backend für Secret-Werte (SEC-002/SEC-003). Default: keins (fail closed);
+    /// `beton serve` wählt Keychain oder Datei.
+    pub secret_backend: Arc<dyn beton_secrets::backend::Backend>,
 }
 
 impl Runtime {
@@ -137,6 +142,7 @@ impl Runtime {
             title_jobs: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
+            secret_backend: Arc::new(beton_secrets::backend::NoBackend),
         }
     }
 
@@ -343,6 +349,15 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_workspace::search))
         .routes(routes!(crate::api_workspace::changes))
         .routes(routes!(crate::api_workspace::diff))
+        .routes(routes!(
+            crate::api_secrets::list_secrets,
+            crate::api_secrets::create_secret,
+            crate::api_secrets::rotate_secret,
+            crate::api_secrets::delete_secret
+        ))
+        .routes(routes!(crate::api_secrets::unlock_secrets))
+        .routes(routes!(crate::api_secrets::list_audit))
+        .routes(routes!(crate::api_secrets::verify_audit))
         .split_for_parts();
     // Der Router braucht ein Wildcard-Segment für Dateipfade, OpenAPI einen Parameter `{path}`.
     let wildcard = crate::api_workspace::FILE_PATH_ROUTE;
@@ -385,6 +400,14 @@ pub fn build(parts: AppParts) -> Router {
 /// zusätzlichen Routen).
 pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Router {
     let openapi_json = Arc::new(doc.to_pretty_json().unwrap_or_default().into_bytes());
+    // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
+    // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
+    // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
+    let (secrets, _no_api_caps) = beton_secrets::Secrets::new(
+        parts.store.clone(),
+        parts.local,
+        parts.runtime.secret_backend.clone(),
+    );
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,
@@ -393,6 +416,7 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
         openapi_json,
         runtime: parts.runtime,
         web_dir: parts.web_dir.map(Arc::new),
+        secrets,
     };
     let guard = Guard {
         hosts: Arc::new(parts.hosts),

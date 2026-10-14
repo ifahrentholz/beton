@@ -52,6 +52,13 @@
       },
       "default": {}
     },
+    "secrets": {
+      "description": "Secret-Store (SEC-002, SEC-003); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/SecretsSettings",
+      "default": {
+        "backend": "auto"
+      }
+    },
     "server": {
       "$ref": "#/$defs/ServerSettings",
       "default": {
@@ -163,6 +170,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "BackendChoice": {
+      "description": "Konfiguration `secrets.backend`.",
+      "oneOf": [
+        {
+          "description": "OS-Keychain, sonst verschlüsselte Datei.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Nur der OS-Keychain; ohne Keychain sind Secrets nicht verfügbar (fail closed).",
+          "type": "string",
+          "const": "keychain"
+        },
+        {
+          "description": "Nur die verschlüsselte Datei `~/.beton/secrets/store.v1`.",
+          "type": "string",
+          "const": "file"
+        }
+      ]
     },
     "EventsSettings": {
       "type": "object",
@@ -440,6 +467,17 @@
         "kind",
         "base_url"
       ]
+    },
+    "SecretsSettings": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "`auto` (Default): OS-Keychain, sonst verschlüsselte Datei `~/.beton/secrets/store.v1`;\n`keychain` oder `file` erzwingen ein Backend. Die Passphrase der Datei kommt von\n`beton secrets unlock` oder aus `BETON_SECRETS_PASSPHRASE_FILE`.",
+          "$ref": "#/$defs/BackendChoice",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
     },
     "ServerSettings": {
       "type": "object",

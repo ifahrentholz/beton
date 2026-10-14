@@ -69,10 +69,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "usage_records",
         sql: include_str!("../migrations/sqlite/0009_usage_records.sql"),
     },
+    Migration {
+        version: 10,
+        name: "secrets_audit",
+        sql: include_str!("../migrations/sqlite/0010_secrets_audit.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
@@ -132,7 +137,8 @@ async fn migrate(
         tx.commit().await?;
         version = m.version;
     }
-    Ok(())
+    // Audit-Einträge von vor der Hash-Kette (Migration 0010) nachverketten (SEC-012).
+    crate::audit::backfill(conn).await
 }
 
 /// Konsistente Kopie der Datenbank vor einer Migration: `<db>.bak-<version>`.

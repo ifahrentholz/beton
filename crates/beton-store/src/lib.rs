@@ -7,6 +7,9 @@
 //! Jede Abfrage ist auf eine Org beschränkt (DATA-001 AC2): Alle Methoden nehmen die
 //! `OrgId` als ersten Parameter, und jedes SQL filtert nach `org_id`.
 
+pub mod audit;
+#[cfg(test)]
+mod audit_tests;
 mod blobs;
 mod error;
 mod events;
@@ -19,6 +22,9 @@ mod listing_tests;
 mod migrate;
 mod projections;
 pub mod schema;
+mod secrets_meta;
+#[cfg(test)]
+mod secrets_meta_tests;
 mod sessions;
 #[cfg(test)]
 mod tests;
@@ -33,6 +39,10 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
+pub use crate::audit::{
+    AUDIT_USAGE_WINDOW, AuditEntry, AuditPage, AuditQuery, AuditVerification, NewAuditEntry,
+    UsageKey,
+};
 pub use crate::blobs::{BlobStore, DEFAULT_MAX_BLOB_BYTES, GC_GRACE, GcReport};
 pub use crate::error::{Error, Result};
 pub use crate::export::{
@@ -44,9 +54,10 @@ pub use crate::imports::ImportKey;
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
 pub use crate::projections::{ApprovalRecord, UsageDaily, UsageRecord, UsageScope, UsageTotals};
+pub use crate::secrets_meta::SecretMetaRecord;
 pub use crate::sessions::{
-    AuditEntry, DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree,
-    Tombstone, TreeEntry,
+    DeleteAuthority, LocalIdentity, NewSession, SessionRecord, SessionWorktree, Tombstone,
+    TreeEntry,
 };
 
 /// Hook, der `raw` vor der Persistenz redigiert (PROTO-001 AC3).

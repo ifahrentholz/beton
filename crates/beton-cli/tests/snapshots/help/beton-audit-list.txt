@@ -1,0 +1,38 @@
+Einträge anzeigen, neueste zuerst
+
+Usage: beton audit list [OPTIONS]
+
+Options:
+      --limit <LIMIT>
+          Anzahl der Einträge (1 bis 200)
+          
+          [default: 50]
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --action <ACTION>
+          Nur diese Aktion, z. B. `secret.used`
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version
