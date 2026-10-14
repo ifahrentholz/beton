@@ -250,31 +250,41 @@ fn completed(id: &str, status: ToolStatus) -> EventPayload {
     })
 }
 
-/// Fail closed, falls Claude `CLAUDE_CODE_SHELL` (künftig) ignoriert: Ein erfolgreicher
+/// Fail closed, falls Claude `CLAUDE_CODE_SHELL` (künftig) ignoriert: Ein abgeschlossener
 /// Bash-Aufruf ohne Start über den Exec-Broker beendet die Session (Security-Review #228).
+/// Gezählt wird jeder Abschluss außer `denied` (auch gescheiterte Kommandos sind gelaufen).
 #[test]
 fn sbx_002_shell_call_without_broker_start_is_an_integrity_violation() {
     let mut i = ShellIntegrity::new(&["Bash"]);
     i.observe(&requested("a", "Bash"), 0).unwrap();
     assert!(i.observe(&completed("a", ToolStatus::Ok), 0).is_err());
 
+    for status in [ToolStatus::Error, ToolStatus::Cancelled] {
+        let mut i = ShellIntegrity::new(&["Bash"]);
+        i.observe(&requested("x", "Bash"), 0).unwrap();
+        assert!(
+            i.observe(&completed("x", status.clone()), 0).is_err(),
+            "{status:?} ohne Broker-Start"
+        );
+    }
+
     let mut i = ShellIntegrity::new(&["Bash"]);
     for (ev, starts) in [
         (requested("a", "Bash"), 0),
         (completed("a", ToolStatus::Ok), 1),
-        // Abgelehnt oder gescheitert: vielleicht nie gestartet, zählt nicht.
+        // Abgelehnt: nie gestartet, zählt nicht.
         (requested("b", "Bash"), 1),
         (completed("b", ToolStatus::Denied), 1),
         (requested("c", "Bash"), 1),
-        (completed("c", ToolStatus::Error), 1),
+        (completed("c", ToolStatus::Error), 2),
         // Andere Tools laufen in Stufe 1 und zählen nicht.
-        (requested("d", "Read"), 1),
-        (completed("d", ToolStatus::Ok), 1),
+        (requested("d", "Read"), 2),
+        (completed("d", ToolStatus::Ok), 2),
     ] {
         i.observe(&ev, starts).unwrap();
     }
-    i.observe(&requested("e", "Bash"), 1).unwrap();
-    assert!(i.observe(&completed("e", ToolStatus::Ok), 1).is_err());
+    i.observe(&requested("e", "Bash"), 2).unwrap();
+    assert!(i.observe(&completed("e", ToolStatus::Error), 2).is_err());
 }
 
 #[tokio::test]

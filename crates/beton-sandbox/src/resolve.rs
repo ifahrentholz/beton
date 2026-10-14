@@ -126,6 +126,9 @@ pub struct ResolveCtx {
     /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
     /// beschreibbar, in Stufe 2 ohne Symlinks.
     pub exchange: Option<PathBuf>,
+    /// Verzeichnis der Session (Stufenmodell): In Stufe 2 bis auf die eigenen Wurzeln
+    /// verdeckt. Noch ohne Wirkung.
+    pub session_dir: Option<PathBuf>,
     /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
     /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
     pub untrusted_path: Vec<PathBuf>,
@@ -149,6 +152,7 @@ impl ResolveCtx {
             exec: None,
             shared: Vec::new(),
             exchange: None,
+            session_dir: None,
             untrusted_path: Vec::new(),
             programs: Vec::new(),
         }
