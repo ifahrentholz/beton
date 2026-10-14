@@ -218,7 +218,11 @@ fn pol_024_gaps_describe_themselves_without_file_contents() {
     let check = check_start(&EffectiveSet::new(vec![set(&body)]), &m);
     assert!(!check.is_clean());
     assert_eq!(check.refused_rules(), vec!["no-opus".to_owned()]);
-    assert_eq!(check.degraded_rules(), vec!["soft-model".to_owned()]);
+    // `no-push` auf `shell` (approval_only) ist eingeschränkt durchsetzbar (#234).
+    assert_eq!(
+        check.degraded_rules(),
+        vec!["no-push".to_owned(), "soft-model".to_owned()]
+    );
     let text = check.refused[0].describe();
     assert!(
         text.contains("no-opus") && text.contains("observe_only"),
@@ -272,5 +276,9 @@ fn pol_024_approval_only_is_reported_as_degraded() {
     assert_eq!(gap.rule.rule_id, "no-push");
     assert_eq!(gap.kinds, vec!["shell".to_owned()]);
     assert_eq!(gap.level, Level::ApprovalOnly);
-    assert!(gap.describe().contains("approval_only"), "{}", gap.describe());
+    assert!(
+        gap.describe().contains("approval_only"),
+        "{}",
+        gap.describe()
+    );
 }
