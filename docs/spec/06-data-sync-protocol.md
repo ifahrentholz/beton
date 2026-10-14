@@ -92,6 +92,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `policy.set_changed` / `policy.set_invalid` | D | `scope, set, version` bzw. `file, line, error` (POL-001) |
 | | `policy.state_changed` | D | `scope, key, op, value` (POL-009; `value` nach der Operation) |
 | | `policy.notified` | D | `rule_id, scope, set, channels, message?` (Zustellung von `notify`, POL-006, UX-001) |
+| | `policy.queried` | D | `subject_hash, tool, kind, outcome: allow\|deny\|ask, rules[], limited` (Abfrage per `policy_query` ohne Klartext; `rules` nur aus den Gründen von `deny`/`ask`; AGT-007, POL-027) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
 | | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |

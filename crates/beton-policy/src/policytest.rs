@@ -384,6 +384,25 @@ pub fn layer_files(test: &Path, opts: &TestOptions) -> Result<Vec<PathBuf>, Stri
     Ok(out)
 }
 
+/// Regel-IDs, die eine Testdatei in `expect.rules` erwartet (alle Fälle und Schritte); für
+/// die Prüfung, dass jede mitgelieferte Regel getestet ist (QA-004 AC2).
+pub fn expected_rules(test: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let parsed = parse(test)?;
+    let mut out = std::collections::BTreeSet::new();
+    for case in &parsed.file.cases {
+        let expects = case.expect.iter().chain(
+            case.steps
+                .iter()
+                .flatten()
+                .filter_map(|s| s.expect.as_ref()),
+        );
+        for e in expects {
+            out.extend(e.rules.iter().flatten().cloned());
+        }
+    }
+    Ok(out)
+}
+
 /// Lädt die `policies:` eines `agent.yaml` als Inline-Set der Ebene (AGT-014).
 fn load_agent(scope: Scope, path: &Path) -> Result<Option<LoadedSet>, String> {
     let text = read_text(path)?;
@@ -941,6 +960,10 @@ fn step(ctx: &Ctx, st: &mut CaseState, e: &Eval, harness: &str, matrix: &Matrix)
         "enforcement": enforcement,
     });
     let mut failures = check(&e.expect, &actual, reasons);
+    // Ohne erwartetes Ergebnis prüft ein Schritt nichts (QA-004).
+    if e.expect.outcome.is_none() {
+        failures.insert(0, "`expect.outcome` fehlt (allow, deny oder ask)".into());
+    }
 
     // Endentscheidung, Effects, Grants und Zähler.
     let final_outcome = match (&decision.outcome, e.resolve) {
@@ -1288,6 +1311,13 @@ pub fn run_file(path: &Path, opts: &TestOptions) -> FileReport {
             .clone()
             .unwrap_or_else(|| DEFAULT_HARNESS.to_owned());
         let matrix = matrix_for(&harness, opts)?;
+        // Eine Datei ohne Fälle prüft nichts und besteht nicht (QA-004).
+        if parsed.file.cases.is_empty() {
+            return Err(format!(
+                "{}: keine Fälle (`cases` ist leer)",
+                path.display()
+            ));
+        }
         let mut fixtures = Value::Object(parsed.file.fixtures.clone());
         if fixtures["session"]["harness"].is_null() && parsed.file.harness.is_some() {
             fixtures["session"]["harness"] = Value::String(harness.clone());

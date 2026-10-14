@@ -770,6 +770,17 @@ payload!(PolicyNotified {
     channels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] message: Option<String>,
 });
+// Eine Abfrage per `policy_query` (AGT-007 AC3, POL-027): ohne Klartext der Aktion, nur
+// `subject_hash`, Ergebnis und die Regeln der Gründe (`deny`/`ask`); `limited` bei
+// überschrittenem Abfragelimit des Turns.
+payload!(PolicyQueried {
+    subject_hash: String,
+    tool: String,
+    kind: String,
+    outcome: PolicyOutcome,
+    rules: Vec<String>,
+    #[serde(default)] limited: bool,
+});
 payload!(BudgetExhausted {
     scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] lease_id: Option<String>,
@@ -1147,6 +1158,7 @@ catalog! {
     PolicySetInvalid = "policy.set_invalid", Durable, PolicySetInvalid;
     PolicyStateChanged = "policy.state_changed", Durable, PolicyStateChanged;
     PolicyNotified = "policy.notified", Durable, PolicyNotified;
+    PolicyQueried = "policy.queried", Durable, PolicyQueried;
     PolicyEnforcementDegraded = "policy.enforcement_degraded", Durable, PolicyRuleIssue;
     PolicyRuleInapplicable = "policy.rule_inapplicable", Durable, PolicyRuleIssue;
     BudgetExhausted = "budget.exhausted", Durable, BudgetExhausted;

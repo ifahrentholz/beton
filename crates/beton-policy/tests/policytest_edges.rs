@@ -164,7 +164,7 @@ fn pol_026_malformed_cases_fail_with_a_reason() {
             "ungültige Dauer",
         ),
         (
-            "  - { name: a, steps: [{ phase: tool_call, input: { tool: { name: Bash } } }], expect_state: { kunde: { x: 1 } } }\n",
+            "  - { name: a, steps: [{ phase: tool_call, input: { tool: { name: Bash } }, expect: { outcome: allow } }], expect_state: { kunde: { x: 1 } } }\n",
             "unbekannter Scope",
         ),
         (

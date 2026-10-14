@@ -290,6 +290,8 @@ struct Inner {
     started_at: CelTimestamp,
     /// Set-Snapshots je Version für Explain (POL-027 AC2).
     snapshots: dry::Snapshots,
+    /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
+    queries: Mutex<dry::QueryBudget>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -553,6 +555,7 @@ impl PolicyGate {
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
+                queries: Mutex::new(dry::QueryBudget::default()),
             }),
         }
     }

@@ -14,14 +14,26 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use beton_core::event::{EventPayload, Notice, NoticeLevel, PolicyOutcome, PolicyQueried};
 use beton_harness::{GateOrigin, GateRequest};
 use beton_policy::Phase;
+use beton_policy::audit::subject_hash;
 use beton_policy::engine::{EffectiveSet, Outcome};
 use beton_policy::normalize::{harness_family, normalize_source};
 use beton_policy::snapshot::Manifest;
 use serde_json::{Value, json};
 
 use super::{PolicyGate, USAGE_TIMEOUT, tool_vars};
+
+/// Höchstzahl der `policy_query`-Abfragen je Turn (Security-Review B1).
+pub(super) const QUERY_LIMIT: u32 = 20;
+
+/// Abfragen im laufenden Turn.
+#[derive(Debug, Default)]
+pub(super) struct QueryBudget {
+    turn: i64,
+    used: u32,
+}
 
 /// Ablage der Set-Snapshots (im Runner: System-Call `policy.snapshot` über den Tunnel).
 #[async_trait]
@@ -146,30 +158,108 @@ impl PolicyGate {
         Some(copy.effective())
     }
 
-    /// `policy_query` (AGT-007 AC3, POL-027 AC3): `{action, tool?, args?}` → Entscheidung wie
-    /// bei tatsächlicher Ausführung, ohne Seiteneffekte. Fehler lehnen ab (fail closed).
+    /// Zählt eine Abfrage im laufenden Turn; `false`, wenn das Limit erreicht ist.
+    fn count_query(&self) -> (bool, bool) {
+        let turn = self.inner.settings.lock().map(|s| s.turns).unwrap_or(-1);
+        let Ok(mut q) = self.inner.queries.lock() else {
+            return (false, false);
+        };
+        if q.turn != turn {
+            *q = QueryBudget { turn, used: 0 };
+        }
+        q.used = q.used.saturating_add(1);
+        (q.used <= QUERY_LIMIT, q.used == QUERY_LIMIT + 1)
+    }
+
+    /// Protokolliert eine Abfrage ohne Klartext (`policy.queried`, Security-Review B1).
+    fn log_query(
+        &self,
+        subject: &Value,
+        tool: &str,
+        kind: &str,
+        outcome: PolicyOutcome,
+        rules: Vec<String>,
+        limited: bool,
+    ) {
+        self.emit(
+            EventPayload::PolicyQueried(PolicyQueried {
+                subject_hash: subject_hash(subject),
+                tool: tool.to_owned(),
+                kind: kind.to_owned(),
+                outcome,
+                rules,
+                limited,
+            }),
+            None,
+            None,
+        );
+    }
+
+    /// `policy_query` (AGT-007 AC3, POL-027 AC3): `{action, tool?, server?, args?}` →
+    /// Entscheidung wie bei tatsächlicher Ausführung, ohne Seiteneffekte auf Policies. Jede
+    /// Abfrage steht als `policy.queried` im Log; je Turn sind höchstens [`QUERY_LIMIT`]
+    /// erlaubt. Die Antwort nennt nur `deny`/`ask`-Gründe, damit das Modell Regeln nicht
+    /// ausforschen kann. Fehler lehnen ab (fail closed).
     pub async fn query(&self, args: &Value) -> Value {
         let action = args.get("action").and_then(Value::as_str).unwrap_or("");
+        let harness = self.inner.opts.harness.as_str().to_owned();
         let (tool, tool_args, mcp_server, acp_kind) = match args.get("tool").and_then(Value::as_str)
         {
-            Some(t) => (
-                t.to_owned(),
-                args.get("args").cloned().unwrap_or_else(|| json!({})),
-                None,
-                None,
-            ),
+            Some(t) => {
+                let explicit = args
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty() && *s != "builtin")
+                    .map(str::to_owned);
+                let (name, server) = match explicit {
+                    Some(server) => (t.to_owned(), Some(server)),
+                    None => split_mcp(&harness, t),
+                };
+                (
+                    name,
+                    args.get("args").cloned().unwrap_or_else(|| json!({})),
+                    server,
+                    None,
+                )
+            }
             None if !action.is_empty() => {
-                let (name, server, acp) = shell_tool(self.inner.opts.harness.as_str(), action);
+                let (name, server, acp) = shell_tool(&harness, action);
                 (name, json!({ "command": action }), server, acp)
             }
-            None => return denied("`action` fehlt"),
+            None => {
+                self.log_query(args, "", "", PolicyOutcome::Deny, Vec::new(), false);
+                return denied("`action` fehlt");
+            }
         };
-        let kind = beton_harness::tool_kind(
-            self.inner.opts.harness.as_str(),
-            &tool,
-            acp_kind.as_deref(),
-            mcp_server.as_deref(),
-        );
+        let subject = json!({ "tool": tool, "server": mcp_server, "args": tool_args });
+        let kind =
+            beton_harness::tool_kind(&harness, &tool, acp_kind.as_deref(), mcp_server.as_deref());
+        let (allowed, crossed) = self.count_query();
+        if !allowed {
+            if crossed {
+                self.emit(
+                    EventPayload::Notice(Notice {
+                        level: NoticeLevel::Warn,
+                        text: format!(
+                            "policy_query: mehr als {QUERY_LIMIT} Abfragen in diesem Turn; weitere werden abgelehnt"
+                        ),
+                    }),
+                    None,
+                    None,
+                );
+            }
+            self.log_query(
+                &subject,
+                &tool,
+                &kind,
+                PolicyOutcome::Deny,
+                Vec::new(),
+                true,
+            );
+            return denied(&format!(
+                "Zu viele Abfragen in diesem Turn (höchstens {QUERY_LIMIT})"
+            ));
+        }
         let req = GateRequest {
             call_id: "policy_query".into(),
             tool,
@@ -181,12 +271,30 @@ impl PolicyGate {
             ..GateRequest::default()
         };
         let Some(set) = self.quiet_set() else {
+            self.log_query(
+                &subject,
+                &req.tool,
+                &req.kind,
+                PolicyOutcome::Deny,
+                Vec::new(),
+                false,
+            );
             return denied("Policy-Zustand nicht lesbar");
         };
         let source = self.tool_source(&req);
         let mut n = match normalize_source(&source, &req.args) {
             Ok(n) => n,
-            Err(e) => return denied(&format!("Tool-Call nicht prüfbar: {e}")),
+            Err(e) => {
+                self.log_query(
+                    &subject,
+                    &req.tool,
+                    &req.kind,
+                    PolicyOutcome::Deny,
+                    Vec::new(),
+                    false,
+                );
+                return denied(&format!("Tool-Call nicht prüfbar: {e}"));
+            }
         };
         // Wie beim echten Call: dieser wäre der nächste.
         let call_index = self.inner.calls.load(std::sync::atomic::Ordering::SeqCst) + 1;
@@ -202,17 +310,20 @@ impl PolicyGate {
         let decision = self
             .run_engine(&set, Phase::ToolCall, vars, Some(source))
             .await;
-        let (verdict, reasons) = match &decision.outcome {
-            Outcome::Allow => ("allow", &[][..]),
-            Outcome::Deny { reasons } => ("deny", reasons.as_slice()),
-            Outcome::Ask { reasons } => ("ask", reasons.as_slice()),
+        let (verdict, outcome, reasons) = match &decision.outcome {
+            Outcome::Allow => ("allow", PolicyOutcome::Allow, &[][..]),
+            Outcome::Deny { reasons } => ("deny", PolicyOutcome::Deny, reasons.as_slice()),
+            Outcome::Ask { reasons } => ("ask", PolicyOutcome::Ask, reasons.as_slice()),
         };
-        let mut rules: Vec<String> = reasons.iter().map(|r| r.rule.rule_id.clone()).collect();
-        for m in &decision.matched {
-            if !rules.contains(&m.rule.rule_id) {
-                rules.push(m.rule.rule_id.clone());
+        // Nur die Regeln der Gründe von deny/ask; gegriffene allow-, modify- und
+        // notify-Regeln bleiben verborgen.
+        let mut rules: Vec<String> = Vec::new();
+        for r in reasons {
+            if !rules.contains(&r.rule.rule_id) {
+                rules.push(r.rule.rule_id.clone());
             }
         }
+        self.log_query(&subject, &req.tool, &n.kind, outcome, rules.clone(), false);
         let reason = reasons
             .iter()
             .map(|r| format!("{} ({})", r.reason, r.rule.rule_id))
@@ -223,21 +334,33 @@ impl PolicyGate {
         } else {
             format!("Entscheidung: {verdict} – {reason}")
         };
-        let mut out = json!({
+        json!({
             "decision": verdict,
             "engine": "beton-policy",
             "action": action,
             "tool": { "name": n.name, "kind": n.kind },
             "rules": rules,
             "reason": reason,
-            "policy_set_hash": decision.policy_set_hash,
+            // Nur ob, nicht wie geändert würde.
+            "modified": !decision.modified.is_empty(),
             "explain": explain,
-        });
-        if !decision.modified.is_empty() {
-            out["modified"] = serde_json::to_value(&decision.modified).unwrap_or(Value::Null);
-        }
-        out
+        })
     }
+}
+
+/// MCP-Tool im Claude-Format (`mcp__<server>__<tool>`) für Harnesses, die den Server getrennt
+/// melden (Codex, Direkt-API, ACP): Name und Server wie beim echten Call.
+fn split_mcp(harness: &str, tool: &str) -> (String, Option<String>) {
+    if harness_family(harness) != "claude"
+        && harness_family(harness) != "fake"
+        && let Some(rest) = tool.strip_prefix("mcp__")
+        && let Some((server, name)) = rest.split_once("__")
+        && !server.is_empty()
+        && !name.is_empty()
+    {
+        return (name.to_owned(), Some(server.to_owned()));
+    }
+    (tool.to_owned(), None)
 }
 
 #[cfg(test)]
