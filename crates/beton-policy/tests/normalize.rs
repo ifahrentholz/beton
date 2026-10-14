@@ -1,5 +1,7 @@
 //! POL-005: Tool-Normalisierung.
 
+#![allow(clippy::unwrap_used, clippy::type_complexity)]
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

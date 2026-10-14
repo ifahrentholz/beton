@@ -62,7 +62,7 @@ pub fn parse_name_status(text: &str) -> Vec<Change> {
         .filter_map(|line| {
             let mut parts = line.split('\t');
             let status = parts.next()?.trim().to_owned();
-            let path = parts.last()?.trim().to_owned();
+            let path = parts.next_back()?.trim().to_owned();
             (!status.is_empty() && !path.is_empty()).then_some(Change { status, path })
         })
         .collect()

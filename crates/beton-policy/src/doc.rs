@@ -17,8 +17,7 @@ pub const SCHEMA_PATH: &str = "schemas/v1/policy.schema.json";
 
 /// Kopfzeile für Policy-Dateien unter `<beton-dir>/policies/`: zeigt auf die lokale
 /// Schema-Datei, nie auf eine URL (ADR-0033).
-pub const SCHEMA_COMMENT: &str =
-    "# yaml-language-server: $schema=../schemas/v1/policy.schema.json";
+pub const SCHEMA_COMMENT: &str = "# yaml-language-server: $schema=../schemas/v1/policy.schema.json";
 
 /// Muster für Regel-IDs und Set-Namen: `[a-z0-9-]`, höchstens 64 Zeichen.
 pub const ID_PATTERN: &str = "^[a-z0-9][a-z0-9-]{0,63}$";
@@ -54,7 +53,9 @@ pub enum Mode {
 }
 
 /// Default einer Ebene für eine Phase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum DefaultAction {
     Allow,

@@ -2,7 +2,11 @@
 
 pub mod cel;
 pub mod context;
+pub mod doc;
+pub mod engine;
+pub mod load;
 pub mod normalize;
+pub mod store;
 pub mod types;
 pub mod value;
 mod yaml;

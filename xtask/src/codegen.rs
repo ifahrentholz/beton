@@ -7,6 +7,7 @@
 //! - `schemas/v1/config.schema.json` (`config.yaml`, CLI-008)
 //! - `schemas/v1/agent.schema.json` (`agent.yaml`, Agent-Format v1, AGT-002)
 //! - `schemas/v1/mcp.schema.json` (`mcp.yaml` der User- und Projektebene, AGT-006)
+//! - `schemas/v1/policy.schema.json` (Policy-Sets, Format v1, POL-001)
 //! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
 //! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
 //! - `schemas/v1/export-header.schema.json` (Kopfzeile des Session-Exports, DATA-010)
@@ -74,6 +75,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
     files.insert(
         PathBuf::from("schemas/v1/agent.schema.json"),
         beton_agents::schema_json(),
+    );
+    files.insert(
+        PathBuf::from("schemas/v1/policy.schema.json"),
+        beton_policy::doc::schema_json(),
     );
     for (path, schema) in [
         (

@@ -7,7 +7,6 @@
 //! Stil festgehalten (für die Position von CEL-Fehlern innerhalb eines Werts).
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 
 use serde_json::{Map, Number, Value};
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser};
@@ -44,32 +43,6 @@ pub enum Style {
     Quoted,
     /// `|` oder `>`: der Wert beginnt in der nächsten Zeile
     Block,
-}
-
-/// Feldpfad wie `rules[2].when`.
-pub fn path_string(segments: &[Seg]) -> String {
-    let mut out = String::new();
-    for seg in segments {
-        match seg {
-            Seg::Key(k) => {
-                if !out.is_empty() {
-                    out.push('.');
-                }
-                out.push_str(k);
-            }
-            Seg::Index(i) => {
-                let _ = write!(out, "[{i}]");
-            }
-        }
-    }
-    out
-}
-
-/// Ein Segment eines Feldpfads.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Seg {
-    Key(String),
-    Index(usize),
 }
 
 /// Ein gelesenes Dokument mit Positionsindex.
