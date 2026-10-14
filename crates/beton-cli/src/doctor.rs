@@ -786,6 +786,54 @@ mod tests {
     }
 
     #[test]
+    fn obs_005_ac3_linux_without_landlock_fails_with_kernel_hint() {
+        use beton_sandbox::{Os, ProbeReport, ProviderId};
+        let reports = [
+            ProbeReport::unavailable(ProviderId::Landlock, "Landlock ist nicht aktiv"),
+            ProbeReport::unavailable(ProviderId::Bwrap, "bwrap fehlt"),
+        ];
+        for abi in [None, Some(1)] {
+            let c = sandbox_check(Os::Linux, &reports, abi);
+            assert_eq!(c.id, "sandbox.linux");
+            assert_eq!(c.status, CheckStatus::Fail, "{c:?}");
+            let hint = c.hint.unwrap();
+            assert!(hint.contains("Kernel") && hint.contains("5.19"), "{hint}");
+            assert!(hint.contains("lsm="), "{hint}");
+        }
+        // Landlock vorhanden, aber User-Namespaces gesperrt und kein bwrap: ebenfalls Fehler,
+        // mit dem Grund der Probe.
+        let c = sandbox_check(Os::Linux, &reports, Some(4));
+        assert_eq!(c.status, CheckStatus::Fail);
+        assert!(c.message.contains("Landlock ist nicht aktiv"), "{c:?}");
+        // Mit einem verfügbaren Backend ist alles in Ordnung, Fallback inklusive.
+        let mut ok = reports.clone();
+        ok[1].available = true;
+        ok[1].unavailable_reason = None;
+        let c = sandbox_check(Os::Linux, &ok, Some(4));
+        assert_eq!(c.status, CheckStatus::Ok, "{c:?}");
+        assert!(c.message.contains("bwrap"), "{c:?}");
+        ok[0].available = true;
+        ok[0].unavailable_reason = None;
+        let c = sandbox_check(Os::Linux, &ok, Some(4));
+        assert!(c.message.contains("landlock"), "{c:?}");
+        // macOS: Seatbelt; Windows: Beta erst mit M5.
+        let seatbelt = [ProbeReport::unavailable(
+            ProviderId::Seatbelt,
+            "sandbox-exec fehlt",
+        )];
+        let c = sandbox_check(Os::MacOs, &seatbelt, None);
+        assert_eq!(
+            (c.id.as_str(), c.status),
+            ("sandbox.macos", CheckStatus::Fail)
+        );
+        let c = sandbox_check(Os::Windows, &[], None);
+        assert_eq!(
+            (c.id.as_str(), c.status),
+            ("sandbox.windows", CheckStatus::Warn)
+        );
+    }
+
+    #[test]
     fn human_sizes() {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1536), "1,5 KiB");
