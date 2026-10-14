@@ -2,7 +2,12 @@
 import type { ToolSource } from "./ToolSource";
 import type { JsonValue } from "./serde_json/JsonValue";
 
-export type ToolCallRequested = { call_id: string, tool: string, mcp_server?: string, args: JsonValue, source: ToolSource, 
+export type ToolCallRequested = { call_id: string, tool: string, 
+/**
+ * Kanonische Klasse (POL-005: `shell`, `file_read`, `file_edit`, `mcp`, …), abgeleitet aus
+ * der Abbildungstabelle in `beton-policy`.
+ */
+kind?: string, mcp_server?: string, args: JsonValue, source: ToolSource, 
 /**
  * Tool-Call eines Vendor-Sub-Agents: der auslösende Tool-Call (z. B. Claude `Task`), unter
  * dem dieser verschachtelt ist (HAR-023).

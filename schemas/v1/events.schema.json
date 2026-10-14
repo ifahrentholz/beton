@@ -4377,6 +4377,13 @@
         "call_id": {
           "type": "string"
         },
+        "kind": {
+          "description": "Kanonische Klasse (POL-005: `shell`, `file_read`, `file_edit`, `mcp`, …), abgeleitet aus\nder Abbildungstabelle in `beton-policy`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mcp_server": {
           "type": [
             "string",

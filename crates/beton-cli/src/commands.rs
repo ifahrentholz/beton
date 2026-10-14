@@ -129,6 +129,8 @@ pub async fn run(cli: Cli) -> CliResult {
         }
         // stdout gehört dem MCP-Protokoll: kein Log, keine weiteren Ausgaben.
         Command::Mcp(args) => runner_exit(beton_mcp::relay::main(&args.args).await),
+        // stdout gehört dem Hook-Protokoll des Vendors; der Exit-Code ist die Entscheidung.
+        Command::Hook(args) => hook(&args.args),
     }
 }
 
@@ -140,6 +142,7 @@ fn cli_logs(command: &Command) -> bool {
         Command::Serve(_)
             | Command::Runner
             | Command::Mcp(_)
+            | Command::Hook(_)
             | Command::Doctor
             | Command::Config(_)
             | Command::Usage(_)
@@ -148,6 +151,21 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Version
             | Command::Auth(_)
     )
+}
+
+/// `beton hook <harness> …`: Hook-JSON von stdin an den Runner, Antwort auf stdout und
+/// stderr; der Exit-Code (2 = blockiert) geht unverändert an den Vendor (fail closed).
+fn hook(args: &[String]) -> CliResult {
+    use std::io::{Read as _, Write as _};
+    // `<harness>` steht vor den Optionen; die Hook-Brücke ist für alle Harnesses gleich.
+    let rest = args.get(1..).unwrap_or_default();
+    let mut input = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut input);
+    let out = beton_harness::hook::client(rest, &input);
+    let _ = std::io::stdout().write_all(out.stdout.as_bytes());
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().write_all(out.stderr.as_bytes());
+    std::process::exit(out.exit)
 }
 
 fn runner_exit(code: std::process::ExitCode) -> CliResult {

@@ -1440,7 +1440,7 @@ mod tests {
             let ts = Timestamp::from(time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).unwrap());
             for body in [
                 EventPayload::MessageDelta(TextDelta { message_id: "msg_1".into(), text: text.clone(), snapshot: false }),
-                EventPayload::ToolCallRequested(ToolCallRequested { call_id: "c".into(), tool: "bash".into(), mcp_server: None, args: args.clone(), source: ToolSource::Harness, parent_call_id: None }),
+                EventPayload::ToolCallRequested(ToolCallRequested { call_id: "c".into(), tool: "bash".into(), kind: None, mcp_server: None, args: args.clone(), source: ToolSource::Harness, parent_call_id: None }),
                 EventPayload::Notice(Notice { level: NoticeLevel::Warn, text: text.clone() }),
             ] {
                 let mut e = envelope(body);

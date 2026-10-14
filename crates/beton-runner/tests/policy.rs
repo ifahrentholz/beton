@@ -24,7 +24,7 @@ fn runner_bin() -> &'static str {
 
 struct Env {
     dir: tempfile::TempDir,
-    daemon: Daemon,
+    _daemon: Daemon,
     token: String,
     addr: SocketAddr,
 }
@@ -71,7 +71,7 @@ impl Env {
         let addr = daemon.addrs[0];
         Self {
             dir,
-            daemon,
+            _daemon: daemon,
             token,
             addr,
         }
@@ -229,6 +229,34 @@ impl Env {
                 "Turn endet nicht: {}",
                 serde_json::to_string_pretty(&events).unwrap()
             );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wie [`Env::turn`], gibt aber jede offene Freigabe frei.
+    async fn turn_approving(&self, id: &str, text: &str) -> Vec<Value> {
+        let before = self.events(id).await.len();
+        let (status, body) = self.input(id, text).await;
+        assert_eq!(status, 202, "{body}");
+        let start = Instant::now();
+        loop {
+            let events = self.events(id).await;
+            let new = events[before.min(events.len())..].to_vec();
+            if new.iter().any(|e| e["type"] == "turn.completed") {
+                return new;
+            }
+            let (_, approvals) = self
+                .http("GET", &format!("/v1/sessions/{id}/approvals"), None)
+                .await;
+            if let Some(aid) = approvals["items"][0]["id"].as_str() {
+                self.http(
+                    "POST",
+                    &format!("/v1/sessions/{id}/approvals/{aid}/resolve"),
+                    Some(json!({"decision": "allow"})),
+                )
+                .await;
+            }
+            assert!(start.elapsed() < Duration::from_secs(30), "{events:#?}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -551,7 +579,8 @@ async fn pol_025_ac1_every_tool_call_has_exactly_one_decision() {
     ] {
         let id = env.create(&env.scenario(&format!("{caps}{yaml}"))).await;
         env.wait_status(&id, "idle").await;
-        let turn = env.turn(&id, "los").await;
+        // Die Rückfrage des Vendors (`gate: true`) legt beton dem Menschen vor.
+        let turn = env.turn_approving(&id, "los").await;
         let calls: Vec<String> = of_type(&turn, "tool.call.requested")
             .iter()
             .map(|e| e["payload"]["call_id"].as_str().unwrap().to_owned())
@@ -631,7 +660,7 @@ async fn pol_001_never_valid_policy_file_refuses_the_start() {
     let env = Env::start().await;
     env.project_policy(
         "kaputt",
-        "rules:\n  - id: r\n    on: tool_call\n    when: 'GEHEIMER-INHALT > 5'\n    action: deny\n",
+        "rules:\n  - id: r\n    on: tool_call\n    when: 'tool.kind > 5'\n    action: deny\n    reason: GEHEIMER-INHALT-4711\n",
     );
     let id = env.create(&env.scenario(PUSH)).await;
     let events = env.wait_for(&id, is("session.start_denied")).await;

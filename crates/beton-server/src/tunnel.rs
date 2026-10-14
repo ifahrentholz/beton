@@ -190,6 +190,8 @@ fn runner_code(problem: &Value) -> ProblemCode {
         "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
         "not_found" => ProblemCode::NotFound,
         "no_active_turn" => ProblemCode::NoActiveTurn,
+        "policy_denied" => ProblemCode::PolicyDenied,
+        "approval_required" => ProblemCode::ApprovalRequired,
         "unknown_command" => ProblemCode::UnknownCommand,
         "session_closed" => ProblemCode::Unavailable,
         _ => ProblemCode::Conflict,

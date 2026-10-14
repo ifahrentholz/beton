@@ -295,6 +295,7 @@ pub async fn prepare(
     layers: &HarnessLayers,
     paths: &Paths,
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
+    gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
     let loaded = load(source, workdir, paths)?;
@@ -393,6 +394,7 @@ pub async fn prepare(
             program: paths.relay.clone(),
             prefix: Vec::new(),
         },
+        gate,
     })
     .await;
     #[cfg(not(unix))]

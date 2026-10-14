@@ -230,7 +230,10 @@ async fn ses_001_ac1_created_then_started_and_idle() {
         .await;
     assert_eq!(events[0]["type"], "session.created");
     assert_eq!(events[0]["seq"], 1);
-    assert_eq!(events[1]["type"], "session.started");
+    // Ab M2 steht davor die Entscheidung der Phase `session_start` (POL-003).
+    assert_eq!(events[1]["type"], "policy.decision");
+    assert_eq!(events[1]["payload"]["phase"], "session_start");
+    assert_eq!(events[2]["type"], "session.started");
     d.wait_status(&id, "idle").await;
     d.daemon.shutdown().await;
 }

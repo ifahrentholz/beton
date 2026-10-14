@@ -703,10 +703,14 @@ impl Player {
             };
             let mut allowed = true;
             let mut updated = None;
+            let mut denial = None;
             if self.tool_call_gate == ToolCallGate::Full {
                 match self.gate.decide(request.clone()).await {
                     GateDecision::Allow { updated_args } => updated = updated_args,
-                    GateDecision::Deny { .. } => allowed = false,
+                    GateDecision::Deny { reason } => {
+                        allowed = false;
+                        denial = reason;
+                    }
                 }
             }
             if allowed && step.gate {
@@ -721,16 +725,20 @@ impl Player {
                             updated = updated_args;
                         }
                     }
-                    GateDecision::Deny { .. } => allowed = false,
+                    GateDecision::Deny { reason } => {
+                        allowed = false;
+                        denial = reason;
+                    }
                 }
             }
             self.last_request = Some(request);
             self.last_updated_args = updated;
             if !allowed {
+                // Wie die Vendor-CLIs: die Begründung ist das Tool-Ergebnis für das Modell.
                 self.send(EventPayload::ToolCallCompleted(ToolCallCompleted {
                     call_id: call_id.clone(),
                     status: ToolStatus::Denied,
-                    result: None,
+                    result: denial.map(Value::String),
                     result_ref: None,
                     duration_ms: 0,
                 }))

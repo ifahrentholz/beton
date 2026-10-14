@@ -7,6 +7,7 @@
 
 pub mod fork;
 pub mod mcp;
+pub mod policy;
 pub mod settings;
 pub mod state;
 pub mod workspace;
@@ -24,8 +25,8 @@ use beton_core::id::{RunnerId, SessionId, TurnId};
 use beton_harness::process::RealLauncher;
 use beton_harness::registry::{HarnessLayers, Registry, RegistryOptions};
 use beton_harness::{
-    AdapterContext, Gate, GateDecision, GateRequest, HarnessId, HarnessSession, HostEnv,
-    NormalizedEvent, SessionSpec, Shutdown, UserInput,
+    AdapterContext, GateRequest, HarnessId, HarnessSession, HostEnv, NormalizedEvent, SessionSpec,
+    Shutdown, UserInput,
 };
 use beton_proto::tunnel::{PROTOCOL, PeerKind, RseqEvent, SUBPROTOCOL, TunnelDown, TunnelUp};
 use beton_proto::ws::Backoff;
@@ -289,33 +290,27 @@ pub async fn main_from_env() -> std::process::ExitCode {
     }
 }
 
-/// Gate, das Freigaben über `approval.resolve`-Kommandos vom Server erhält.
-#[derive(Default)]
-pub struct RunnerGate {
-    pending: Mutex<HashMap<String, oneshot::Sender<GateDecision>>>,
+/// Verbrauchswerte für Policies über den Tunnel (System-Call `policy.usage`, POL-004).
+struct TunnelUsage {
+    calls: mpsc::UnboundedSender<mcp::SystemRequest>,
 }
 
 #[async_trait]
-impl Gate for RunnerGate {
-    async fn decide(&self, request: GateRequest) -> GateDecision {
-        let (tx, rx) = oneshot::channel();
-        if let Ok(mut p) = self.pending.lock() {
-            p.insert(request.call_id.clone(), tx);
+impl policy::UsageSource for TunnelUsage {
+    async fn usage(&self) -> Result<policy::Usage, String> {
+        let (reply, rx) = oneshot::channel();
+        self.calls
+            .send(mcp::SystemRequest {
+                tool: "policy.usage".into(),
+                args: json!({}),
+                reply,
+            })
+            .map_err(|_| "Runner beendet".to_owned())?;
+        match rx.await {
+            Ok(Ok(v)) => serde_json::from_value(v).map_err(|e| e.to_string()),
+            Ok(Err(p)) => Err(p["code"].as_str().unwrap_or("failed").to_owned()),
+            Err(_) => Err("keine Antwort".into()),
         }
-        // Ohne Entscheidung (Runner endet) gilt fail closed.
-        rx.await.unwrap_or(GateDecision::Deny {
-            reason: Some("Runner beendet".into()),
-        })
-    }
-}
-
-impl RunnerGate {
-    pub fn resolve(&self, call_id: &str, decision: GateDecision) -> bool {
-        self.pending
-            .lock()
-            .ok()
-            .and_then(|mut p| p.remove(call_id))
-            .is_some_and(|tx| tx.send(decision).is_ok())
     }
 }
 
@@ -467,16 +462,10 @@ fn parent_alive(pid: Option<u32>) -> bool {
 
 /// Führt die Session aus, bis der Server stoppt, der Harness endet oder der Daemon stirbt.
 pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerError> {
-    let gate = Arc::new(RunnerGate::default());
     let mut env = HostEnv::from_process();
     env.user = boot.harnesses.user.clone();
     env.project = boot.harnesses.project.clone();
     env.vars.remove("BETON_RUNNER_TOKEN");
-    let ctx = AdapterContext {
-        gate: gate.clone(),
-        launcher: Arc::new(RealLauncher),
-        env,
-    };
     let actor = Actor::Agent {
         id: None,
         harness: boot.harness.to_string(),
@@ -511,7 +500,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     );
 
     let probe = match registry.get(&boot.harness) {
-        Some(adapter) => adapter.probe(&ctx.env).await,
+        Some(adapter) => adapter.probe(&env).await,
         None => beton_harness::ProbeReport::default(),
     };
     let caps = registry
@@ -542,6 +531,45 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         },
         None => None,
     };
+    // Policy-Gate der Session (POL-003): Ereignisse über `gate_rx`, Verbrauchswerte über den
+    // Tunnel (`usage_rx`).
+    let paths = mcp::Paths::from_process(run_dir.clone());
+    let (gate_tx, mut gate_rx) = mpsc::unbounded_channel::<policy::GateEvent>();
+    let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<mcp::SystemRequest>();
+    let gate = policy::PolicyGate::new(
+        policy::PolicyOptions {
+            session_id: Some(boot.session_id.to_string()),
+            harness: boot.harness.clone(),
+            workdir: boot.workdir.clone(),
+            home: paths.home.clone(),
+            dirs: policy::policy_dirs(&paths.beton_home, &boot.workdir),
+            approval_timeout: policy::APPROVAL_TIMEOUT,
+            agent: snapshot.as_ref().map(|s| beton_policy::vars::AgentVars {
+                name: Some(s.name.clone()),
+                version: Some(s.version.clone()),
+                source: Some(s.source.clone()),
+                hash: Some(s.hash.clone()),
+            }),
+        },
+        gate_tx,
+    )
+    .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
+    let ctx = AdapterContext {
+        gate: Arc::new(gate.clone()),
+        launcher: Arc::new(RealLauncher),
+        env,
+    };
+    // `PreToolUse`-Hook (HAR-005): `beton hook claude …` aus dem eigenen Binary.
+    let hook = beton_harness::hook::HookCommand::current_exe().map(|command| {
+        beton_harness::hook::HookSetup {
+            command,
+            run_dir: run_dir.clone(),
+        }
+    });
+    // Capabilities, mit denen der Harness laufen wird (Fake: samt Szenario), für die
+    // Enforcement-Matrix (POL-024) schon vor dem Start.
+    let predicted = predicted_caps(&boot, caps.as_ref(), hook.is_some());
+    gate.set_matrix(predicted.enforcement());
     let source = match (&snapshot, &boot.agent_ref) {
         (Some(s), _) => mcp::AgentSource::Snapshot(s),
         (None, Some(r)) => mcp::AgentSource::Ref(r),
@@ -556,8 +584,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 &boot.workdir,
                 source,
                 &boot.harnesses,
-                &mcp::Paths::from_process(run_dir),
+                &paths,
                 Some((&registry, &ctx.env)),
+                // MCP- und System-Tools im Relay-Hub prüfen, wenn der Harness nicht jeden
+                // Tool-Call selbst durch das Gate schickt (POL-024).
+                (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
+                    .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
             )
             .await
         }
@@ -610,7 +642,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         beton_harness::Mode::Native,
         beton_harness::Transport::Native,
     );
-    let (start_settings, mapped_effort) = match settings::at_start(
+    let (mut start_settings, mapped_effort) = match settings::at_start(
         boot.model.clone(),
         boot.effort.as_deref(),
         boot.permission_mode.as_deref(),
@@ -624,6 +656,109 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    // Vor dem Start (POL-001, POL-024, POL-003 `session_start`): nie gültige Policy-Dateien,
+    // nicht durchsetzbare Pflichtregeln und ein `deny` verhindern den Harness-Start.
+    let mut unacked = Unacked::default();
+    gate.set_settings(
+        start_settings.model.clone(),
+        start_settings.effort.clone(),
+        start_settings.permission_mode,
+    );
+    let set = gate.refresh(None);
+    let mut refusal: Option<(Vec<String>, Vec<String>)> = None;
+    if !set.never_valid().is_empty() {
+        // #182: fail closed – Pfad und Ladefehler, nie Inhalte der Datei.
+        let reasons = set
+            .never_valid()
+            .iter()
+            .map(|f| {
+                format!(
+                    "policy_invalid: Policy-Datei {} ist ungültig (Zeile {}): {}",
+                    f.file, f.line, f.error
+                )
+            })
+            .collect();
+        refusal = Some((reasons, Vec::new()));
+    }
+    if refusal.is_none() {
+        let check = gate.start_check(&set);
+        if !check.refused.is_empty() {
+            refusal = Some((
+                check
+                    .refused
+                    .iter()
+                    .map(|g| format!("enforcement_unavailable: {}", g.describe()))
+                    .collect(),
+                check.refused_rules(),
+            ));
+        }
+    }
+    let mut pre = PreStart::default();
+    if refusal.is_none() {
+        let start = beton_policy::vars::StartVars {
+            trigger: Some(
+                if boot.fork.is_some() {
+                    "fork"
+                } else if boot.resume.is_some() {
+                    "resume"
+                } else {
+                    "interactive"
+                }
+                .into(),
+            ),
+            harness: Some(boot.harness.to_string()),
+            model: start_settings.model.clone(),
+            reasoning_effort: start_settings.effort.clone(),
+            permission_mode: start_settings
+                .permission_mode
+                .map(|m| m.as_str().to_owned()),
+            sandbox: Some(beton_policy::vars::StartSandboxVars {
+                enabled: Some(beton_harness::SandboxStatus::current().tool_sandbox),
+                backend: Some("none".into()),
+                profile: None,
+            }),
+            network: Some(beton_policy::vars::StartNetworkVars {
+                proxy_enabled: Some(beton_harness::SandboxStatus::current().egress_proxy),
+            }),
+            worktree: Some(boot.workdir.display().to_string()),
+            fork_of: None,
+            agent_ref: boot.agent_ref.clone(),
+        };
+        let checked = pre
+            .check_start(
+                &boot,
+                &gate,
+                start,
+                &mut gate_rx,
+                &mut usage_rx,
+                &mut unacked,
+            )
+            .await;
+        match checked {
+            policy::Checked::Allow(m) => {
+                apply_start_modifications(
+                    &mut start_settings,
+                    &m,
+                    caps.as_ref().unwrap_or(&fallback_caps),
+                );
+                gate.set_settings(
+                    start_settings.model.clone(),
+                    start_settings.effort.clone(),
+                    start_settings.permission_mode,
+                );
+            }
+            policy::Checked::Deny { reason, rules } => refusal = Some((vec![reason], rules)),
+            policy::Checked::AskNeeded => {
+                refusal = Some((vec!["Start ohne Freigabe nicht möglich".into()], Vec::new()));
+            }
+        }
+    }
+    if let Some((reasons, rules)) = refusal {
+        pre.deny_start(&boot, &mut gate_rx, &mut unacked, reasons.clone(), rules)
+            .await;
+        return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
+    }
+    let mut pre_events = pre.finish(&boot, &mut gate_rx, &mut unacked).await;
     let mut spec = SessionSpec {
         workdir: boot.workdir.clone(),
         model: start_settings.model.clone(),
@@ -640,6 +775,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             setup.agent_permission_mode,
             start_settings.permission_mode,
         ),
+        hook: hook.clone(),
         ..SessionSpec::default()
     };
     // Für einen Neustart mit Resume (Capability `restart`, HAR-017 AC2).
@@ -658,6 +794,32 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         .capabilities()
         .or_else(|| caps.clone())
         .unwrap_or_else(|| fallback_caps.clone());
+    // Die Matrix der laufenden Session; weicht sie ab, erneut prüfen (POL-024, fail closed).
+    if session_caps != predicted {
+        gate.set_matrix(session_caps.enforcement());
+        let check = beton_policy::enforcement::check_start(
+            &gate.refresh(None),
+            &session_caps.enforcement(),
+        );
+        if !check.refused.is_empty() {
+            let _ = session.shutdown(Shutdown::Kill).await;
+            let reasons: Vec<String> = check
+                .refused
+                .iter()
+                .map(|g| format!("enforcement_unavailable: {}", g.describe()))
+                .collect();
+            let mut pre = PreStart::default();
+            pre.deny_start(
+                &boot,
+                &mut gate_rx,
+                &mut unacked,
+                reasons.clone(),
+                check.refused_rules(),
+            )
+            .await;
+            return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
+        }
+    }
     let capabilities = session
         .capabilities()
         .and_then(|c| serde_json::to_value(c).ok())
@@ -752,11 +914,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut pending_before: Option<String> = None;
     let mut pending_attachments: HashMap<String, beton_harness::InputAttachment> = HashMap::new();
 
-    let mut unacked = Unacked::default();
     let mut tracker = StatusTracker::default();
     let mut turn_running = false;
     // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
     let mut held_context: Option<NormalizedEvent> = None;
+    // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
+    pre_events.extend(drain_gate(&boot, &mut gate_rx, &HashMap::new()));
+    pending_status.splice(0..0, pre_events);
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
@@ -775,6 +939,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut timed_out = false;
     // Reagiert der Harness nicht auf den Interrupt, endet der Run nach dieser Frist trotzdem.
     let mut force_end: Option<tokio::time::Instant> = None;
+    // Policy (POL-025): Event-ID je `tool.call.requested` für `subject_ref`, Tool-Calls ohne
+    // Gate-Anfrage (beobachtet), Ergebnisse geprüfter Eingaben (SES-004, #101).
+    let mut call_events: HashMap<String, beton_core::id::EventId> = HashMap::new();
+    let mut unobserved: HashMap<String, GateRequest> = HashMap::new();
+    let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
+    gate.order_after_requests();
+    let mut answered: std::collections::HashSet<String> = Default::default();
 
     loop {
         // (Wieder-)Verbinden.
@@ -934,6 +1105,31 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             }
             let paused = unacked.bytes > MAX_UNACKED_BYTES;
             tokio::select! {
+                // Gate-Events zuerst: was das Gate vor einer Antwort an den Harness meldet,
+                // steht im Log vor den Folge-Events des Harness; ein `policy.decision` wartet
+                // seinerseits auf sein `tool.call.requested` (POL-025).
+                biased;
+                ge = gate_rx.recv() => {
+                    let Some(first) = ge else { continue };
+                    let mut events = vec![gate_event(&boot, first, &call_events)];
+                    events.extend(drain_gate(&boot, &mut gate_rx, &call_events));
+                    let mut batch = Vec::with_capacity(events.len() + 1);
+                    for e in events {
+                        let next = match e.payload() {
+                            Some(EventPayload::ApprovalRequested(_)) => Some(SessionStatus::WaitingApproval),
+                            Some(EventPayload::ApprovalResolved(_)) if turn_running => Some(SessionStatus::Running),
+                            Some(EventPayload::ApprovalResolved(_)) => Some(SessionStatus::Idle),
+                            _ => None,
+                        };
+                        batch.push(e);
+                        if let Some(st) = next {
+                            tracker.set(&boot, st, &mut batch);
+                        }
+                    }
+                    if !push(&mut ws, &boot, &mut unacked, batch).await {
+                        break None;
+                    }
+                }
                 ev = harness_rx.recv(), if !paused => {
                     let Some(first) = ev else { break Some(Exit::HarnessExited { code: None }) };
                     // Bereits anstehende Events bündeln: ein Push, eine Transaktion beim Server.
@@ -1005,7 +1201,17 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if done && let Some(context) = held_context.take() {
                             batch.push(to_event(&boot, &actor, context));
                         }
-                        batch.push(to_event(&boot, &actor, ev));
+                        let observe = track_tool_calls(&gate, &ev, &mut unobserved, done);
+                        let event = to_event(&boot, &actor, ev);
+                        if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
+                            call_events.insert(r.call_id.clone(), event.id);
+                        }
+                        batch.push(event);
+                        for req in observe {
+                            // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
+                            let g = gate.clone();
+                            tokio::spawn(async move { g.observe(req).await });
+                        }
                         if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; held_context = None; }
                         if done {
                             status(&mut lifecycle, RunnerState::Idle, None, &mut batch);
@@ -1058,6 +1264,64 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         break None;
                     }
                 }
+                call = usage_rx.recv() => {
+                    let Some(call) = call else { continue };
+                    next_call += 1;
+                    let call_id = format!("sys_{next_call}");
+                    let up = TunnelUp::SystemCall { call_id: call_id.clone(), tool: call.tool, args: call.args };
+                    pending_calls.insert(call_id, call.reply);
+                    if !send(&mut ws, &up).await { break None; }
+                }
+                tg = turn_gate_rx.recv() => {
+                    let Some(tg) = tg else { continue };
+                    match tg {
+                        TurnGate::Waiting { cmd_id, turn } => {
+                            // `ask`: Antwort sofort, der Turn startet nach der Freigabe.
+                            answered.insert(cmd_id.clone());
+                            let msg = TunnelUp::CmdResult { cmd_id, result: Some(json!({"turn_id": turn, "status": "waiting_approval"})), problem: None };
+                            if !send(&mut ws, &msg).await { break None; }
+                        }
+                        TurnGate::Done { cmd_id, name, args, turn, checked } => {
+                            let waited = answered.remove(&cmd_id);
+                            let reply = match checked {
+                                policy::Checked::Allow(m) => {
+                                    if let Err(problem) = apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
+                                        Err(problem)
+                                    } else {
+                                        gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
+                                        deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                    }
+                                }
+                                policy::Checked::Deny { reason, .. } => Err(json!({"code": "policy_denied", "detail": reason})),
+                                policy::Checked::AskNeeded => Err(json!({"code": "approval_required", "detail": "Die Eingabe braucht eine Freigabe; sie wird als eigener Turn eingereiht"})),
+                            };
+                            if name == "input.submit" {
+                                turn_running = reply.is_ok();
+                                if reply.is_err() {
+                                    next_turn = None;
+                                }
+                            }
+                            if waited {
+                                // Der Client wartet nicht mehr: als Turn-Ende im Verlauf (die Queue
+                                // arbeitet danach weiter).
+                                if let (Err(problem), Some(turn)) = (&reply, turn) {
+                                    let mut batch = vec![system_event(&boot, EventPayload::TurnFailed(beton_core::event::TurnFailed {
+                                        turn_id: turn,
+                                        problem: json!({"type": format!("urn:beton:problem:{}", problem["code"].as_str().unwrap_or("policy_denied")), "code": problem["code"], "title": "Eingabe nicht freigegeben", "detail": problem["detail"]}),
+                                    }))];
+                                    tracker.set(&boot, SessionStatus::Idle, &mut batch);
+                                    if !push(&mut ws, &boot, &mut unacked, batch).await { break None; }
+                                }
+                            } else {
+                                let msg = match reply {
+                                    Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
+                                    Err(problem) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(problem) },
+                                };
+                                if !send(&mut ws, &msg).await { break None; }
+                            }
+                        }
+                    }
+                }
                 call = recv_opt(&mut system_calls) => {
                     let Some(call) = call else { system_calls = None; continue };
                     next_call += 1;
@@ -1091,6 +1355,39 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 && let Some(t) = &files
                             {
                                 pending_before = workspace::poll(t).await.map(|(_, tree)| tree);
+                            }
+                            // Phase `model_request` je Turn (POL-003, SES-004 #101): Eingabe und
+                            // Steer prüft das Gate, bevor der Harness sie sieht.
+                            if (name == "input.submit" || (name == "input.steer" && turn_running))
+                                && session_caps.model_request_gate == beton_harness::ModelRequestGate::Turn
+                            {
+                                let submit = name == "input.submit";
+                                let turn = submit.then(|| *next_turn.get_or_insert_with(TurnId::new));
+                                if submit {
+                                    turn_running = true;
+                                }
+                                let request = beton_harness::ModelGateRequest {
+                                    turn_id: turn,
+                                    model: spec.model.clone(),
+                                    reasoning_effort: spec.effort.clone(),
+                                    prompt: args["text"].as_str().map(str::to_owned),
+                                    ..beton_harness::ModelGateRequest::default()
+                                };
+                                let (g, tx) = (gate.clone(), turn_gate_tx.clone());
+                                tokio::spawn(async move {
+                                    let (wait_tx, wait_rx) = oneshot::channel();
+                                    let waiting_cmd = cmd_id.clone();
+                                    let notify = tx.clone();
+                                    tokio::spawn(async move {
+                                        if wait_rx.await.is_ok() {
+                                            let _ = notify.send(TurnGate::Waiting { cmd_id: waiting_cmd, turn });
+                                        }
+                                    });
+                                    // Steer wartet nicht auf Menschen: `ask` reiht ein (Server).
+                                    let checked = g.check_model_request(request, "turn", submit, submit.then_some(wait_tx)).await;
+                                    let _ = tx.send(TurnGate::Done { cmd_id, name, args, turn, checked });
+                                });
+                                continue;
                             }
                             if name == "session.set" {
                                 // HAR-017, HAR-027: prüfen, dann sofort bzw. nach dem Turn anwenden.
@@ -1216,6 +1513,390 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             tracing::warn!("Tunnel getrennt, verbinde neu");
         }
         tokio::time::sleep(backoff.next_delay()).await;
+    }
+}
+
+/// Ergebnis der Phase `model_request` für eine Eingabe (SES-004).
+enum TurnGate {
+    /// Eine Approval-Card ist offen; die Eingabe wartet.
+    Waiting {
+        cmd_id: String,
+        turn: Option<TurnId>,
+    },
+    Done {
+        cmd_id: String,
+        name: String,
+        args: Value,
+        turn: Option<TurnId>,
+        checked: policy::Checked,
+    },
+}
+
+/// Capabilities, mit denen der Harness laufen wird: beim Fake samt Szenario, bei Claude ohne
+/// Hook-Brücke nur die Rückfragen (POL-024).
+fn predicted_caps(
+    boot: &RunnerBoot,
+    caps: Option<&beton_harness::Capabilities>,
+    hook: bool,
+) -> beton_harness::Capabilities {
+    let mut predicted = caps.cloned().unwrap_or_else(|| {
+        beton_harness::Capabilities::minimal(
+            beton_harness::Mode::Native,
+            beton_harness::Transport::Native,
+        )
+    });
+    if boot.harness.as_str() == HarnessId::FAKE
+        && let Some(path) = &boot.scenario
+        && let Ok(scenario) = beton_harness::scenario::Scenario::load(path)
+        && let Ok(c) = beton_harness::fake::scenario_capabilities(&scenario)
+    {
+        predicted = c;
+    }
+    if boot.harness.as_str() == HarnessId::CLAUDE
+        && !hook
+        && predicted.tool_call_gate == beton_harness::ToolCallGate::Full
+    {
+        predicted.tool_call_gate = beton_harness::ToolCallGate::ApprovalOnly;
+    }
+    predicted
+}
+
+/// `modify` in `session_start` (POL-003): Modell, Effort (gemappt) und Permission-Mode
+/// (nur strenger, schon geprüft) für den Start.
+fn apply_start_modifications(
+    start: &mut settings::Change,
+    m: &beton_policy::engine::Modifications,
+    caps: &beton_harness::Capabilities,
+) {
+    if let Some(model) = &m.model {
+        start.model = Some(model.clone());
+    }
+    if let Some(effort) = &m.reasoning_effort
+        && let Some(mapped) = beton_harness::map_effort(effort, &caps.efforts)
+    {
+        start.effort = Some(mapped);
+    }
+    if let Some(mode) = m
+        .permission_mode
+        .as_deref()
+        .and_then(|p| p.parse::<beton_harness::PermissionMode>().ok())
+        && caps.permission_modes.contains(&mode)
+    {
+        start.permission_mode = Some(mode);
+    }
+}
+
+/// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
+/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet).
+async fn apply_turn_modifications(
+    session: &mut dyn HarnessSession,
+    m: &beton_policy::engine::Modifications,
+    caps: &beton_harness::Capabilities,
+    spec: &mut SessionSpec,
+) -> Result<(), Value> {
+    let effort = m
+        .reasoning_effort
+        .as_deref()
+        .and_then(|e| beton_harness::map_effort(e, &caps.efforts));
+    let model = m.model.clone().filter(|v| spec.model.as_ref() != Some(v));
+    let effort = effort.filter(|v| spec.effort.as_ref() != Some(v));
+    if model.is_none() && effort.is_none() {
+        return Ok(());
+    }
+    session
+        .set_model(model.clone(), effort.clone())
+        .await
+        .map_err(|e| json!({"code": e.code(), "detail": e.to_string()}))?;
+    if model.is_some() {
+        spec.model = model;
+    }
+    if effort.is_some() {
+        spec.effort = effort;
+    }
+    Ok(())
+}
+
+/// Buchführung für POL-025 AC1: Tool-Calls ohne Gate-Anfrage bis zum Ende merken; liefert die,
+/// die jetzt nur noch beobachtet werden können (abgeschlossen bzw. Turn-Ende).
+fn track_tool_calls(
+    gate: &policy::PolicyGate,
+    ev: &NormalizedEvent,
+    unobserved: &mut HashMap<String, GateRequest>,
+    turn_done: bool,
+) -> Vec<GateRequest> {
+    let mut out = Vec::new();
+    match &ev.payload {
+        EventPayload::ToolCallRequested(r) => {
+            gate.note_requested(&r.call_id, r.mcp_server.as_deref(), &r.tool);
+            unobserved.insert(
+                r.call_id.clone(),
+                GateRequest {
+                    turn_id: ev.turn_id,
+                    call_id: r.call_id.clone(),
+                    tool: r.tool.clone(),
+                    kind: r.kind.clone().unwrap_or_default(),
+                    args: r.args.clone(),
+                    mcp_server: r.mcp_server.clone(),
+                    ..GateRequest::default()
+                },
+            );
+        }
+        EventPayload::ToolCallCompleted(c) => {
+            if let Some(req) = unobserved.remove(&c.call_id)
+                && !gate.decided(&c.call_id)
+            {
+                out.push(req);
+            }
+        }
+        EventPayload::TurnStarted(_) => gate.note_turn(),
+        _ => {}
+    }
+    if turn_done {
+        out.extend(
+            unobserved
+                .drain()
+                .map(|(_, r)| r)
+                .filter(|r| !gate.decided(&r.call_id)),
+        );
+    }
+    out
+}
+
+/// Ein Gate-Ereignis als Event der Session; `policy.decision` erhält die Event-ID des
+/// zugehörigen `tool.call.requested` in `subject_ref` (POL-025).
+fn gate_event(
+    boot: &RunnerBoot,
+    ge: policy::GateEvent,
+    call_events: &HashMap<String, beton_core::id::EventId>,
+) -> Event {
+    let mut payload = ge.payload;
+    if let EventPayload::PolicyDecision(d) = &mut payload
+        && let Some(call) = d.subject_ref["call_id"].as_str()
+        && let Some(id) = call_events.get(call)
+    {
+        d.subject_ref["event_id"] = Value::String(id.to_string());
+    }
+    let mut e = Event::new(
+        boot.session_id,
+        0,
+        Actor::System {
+            component: beton_core::event::SystemComponent::Policy,
+        },
+        payload,
+    );
+    e.raw = ge.raw;
+    e.turn_id = ge.turn;
+    e
+}
+
+/// Alle anstehenden Gate-Ereignisse.
+fn drain_gate(
+    boot: &RunnerBoot,
+    rx: &mut mpsc::UnboundedReceiver<policy::GateEvent>,
+    call_events: &HashMap<String, beton_core::id::EventId>,
+) -> Vec<Event> {
+    let mut out = Vec::new();
+    while let Ok(ge) = rx.try_recv() {
+        out.push(gate_event(boot, ge, call_events));
+    }
+    out
+}
+
+/// Verbindung vor dem Start des Harness: nur, wenn das Gate dafür den Server braucht
+/// (Verbrauchswerte, Freigabe für `session_start` mit `ask`) bzw. eine Ablehnung zu melden ist.
+#[derive(Default)]
+struct PreStart {
+    ws: Option<Ws>,
+    pending: HashMap<String, oneshot::Sender<Result<Value, Value>>>,
+    next: u64,
+}
+
+impl PreStart {
+    async fn connect(&mut self, boot: &RunnerBoot, unacked: &mut Unacked) -> bool {
+        if self.ws.is_some() {
+            return true;
+        }
+        let Ok(mut ws) = connect(boot).await else {
+            return false;
+        };
+        let hello = TunnelUp::Hello {
+            kind: PeerKind::Runner,
+            version: env!("CARGO_PKG_VERSION").into(),
+            protocol: PROTOCOL.into(),
+            harnesses: vec![boot.harness.to_string()],
+        };
+        let bind = TunnelUp::SessionBind {
+            session_id: boot.session_id,
+            epoch: boot.epoch,
+            last_acked_rseq: unacked.acked(),
+        };
+        if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
+            return false;
+        }
+        self.ws = Some(ws);
+        true
+    }
+
+    async fn push_gate(
+        &mut self,
+        boot: &RunnerBoot,
+        rx: &mut mpsc::UnboundedReceiver<policy::GateEvent>,
+        unacked: &mut Unacked,
+    ) {
+        let events = drain_gate(boot, rx, &HashMap::new());
+        if let Some(ws) = self.ws.as_mut()
+            && !events.is_empty()
+        {
+            let _ = push(ws, boot, unacked, events).await;
+        }
+    }
+
+    /// `session_start` auswerten; bedient dabei Verbrauchswerte und Freigaben über den Tunnel.
+    async fn check_start(
+        &mut self,
+        boot: &RunnerBoot,
+        gate: &policy::PolicyGate,
+        start: beton_policy::vars::StartVars,
+        gate_rx: &mut mpsc::UnboundedReceiver<policy::GateEvent>,
+        usage_rx: &mut mpsc::UnboundedReceiver<mcp::SystemRequest>,
+        unacked: &mut Unacked,
+    ) -> policy::Checked {
+        let (wait_tx, mut wait_rx) = oneshot::channel();
+        let g = gate.clone();
+        let mut task = tokio::spawn(async move { g.check_start(start, Some(wait_tx)).await });
+        let mut waiting = false;
+        loop {
+            tokio::select! {
+                done = &mut task => {
+                    return done.unwrap_or(policy::Checked::Deny {
+                        reason: "Policy-Prüfung abgebrochen".into(),
+                        rules: Vec::new(),
+                    });
+                }
+                w = &mut wait_rx, if !waiting => {
+                    waiting = true;
+                    if w.is_ok() && self.connect(boot, unacked).await {
+                        self.push_gate(boot, gate_rx, unacked).await;
+                    }
+                }
+                ge = gate_rx.recv(), if self.ws.is_some() => {
+                    if let Some(ge) = ge {
+                        let e = gate_event(boot, ge, &HashMap::new());
+                        if let Some(ws) = self.ws.as_mut() {
+                            let _ = push(ws, boot, unacked, vec![e]).await;
+                        }
+                    }
+                }
+                call = usage_rx.recv() => {
+                    let Some(call) = call else { continue };
+                    if !self.connect(boot, unacked).await {
+                        let _ = call.reply.send(Err(json!({"code": "unavailable"})));
+                        continue;
+                    }
+                    self.next += 1;
+                    let id = format!("pre_{}", self.next);
+                    let up = TunnelUp::SystemCall { call_id: id.clone(), tool: call.tool, args: call.args };
+                    self.pending.insert(id, call.reply);
+                    if let Some(ws) = self.ws.as_mut() {
+                        let _ = send(ws, &up).await;
+                    }
+                }
+                msg = async { match self.ws.as_mut() { Some(ws) => ws.next().await, None => std::future::pending().await } } => {
+                    let Some(Ok(Message::Text(text))) = msg else {
+                        self.ws = None;
+                        continue;
+                    };
+                    let Ok(down) = serde_json::from_str::<TunnelDown>(&text) else { continue };
+                    match down {
+                        TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
+                        TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
+                        TunnelDown::SystemResult { call_id, result, problem } => {
+                            if let Some(reply) = self.pending.remove(&call_id) {
+                                let _ = reply.send(match (result, problem) {
+                                    (Some(r), None) => Ok(r),
+                                    (_, p) => Err(p.unwrap_or_else(|| json!({"code": "internal"}))),
+                                });
+                            }
+                        }
+                        TunnelDown::CmdDeliver { cmd_id, name, args } => {
+                            let (result, problem) = if name == "approval.resolve" {
+                                let key = args["call_id"].as_str().unwrap_or_default();
+                                if gate.resolve(key, gate_decision(&args)) {
+                                    (Some(Value::Null), None)
+                                } else {
+                                    (None, Some(json!({"code": "not_found", "detail": "keine offene Freigabe"})))
+                                }
+                            } else {
+                                (None, Some(json!({"code": "session_closed", "detail": "Die Session startet noch (Freigabe offen)"})))
+                            };
+                            if let Some(ws) = self.ws.as_mut() {
+                                let _ = send(ws, &TunnelUp::CmdResult { cmd_id, result, problem }).await;
+                            }
+                        }
+                        TunnelDown::Problem { problem } => {
+                            tracing::warn!(?problem, "Tunnel-Problem vor dem Start");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start verweigert (POL-003, POL-024, #182): Policy-Ereignisse, `session.start_denied`
+    /// und Status `failed` melden.
+    async fn deny_start(
+        &mut self,
+        boot: &RunnerBoot,
+        gate_rx: &mut mpsc::UnboundedReceiver<policy::GateEvent>,
+        unacked: &mut Unacked,
+        reasons: Vec<String>,
+        rules: Vec<String>,
+    ) {
+        if !self.connect(boot, unacked).await {
+            return;
+        }
+        let mut events = drain_gate(boot, gate_rx, &HashMap::new());
+        events.push(system_event(
+            boot,
+            EventPayload::SessionStartDenied(beton_core::event::SessionStartDenied {
+                reasons: reasons.clone(),
+                rules: (!rules.is_empty()).then_some(rules),
+            }),
+        ));
+        events.push(system_event(
+            boot,
+            EventPayload::SessionStatus(SessionStatusChanged {
+                status: SessionStatus::Failed,
+                reason: Some(format!("Start verweigert: {}", reasons.join("; "))),
+            }),
+        ));
+        if let Some(mut ws) = self.ws.take()
+            && push(&mut ws, boot, unacked, events).await
+        {
+            drain_acks(&mut ws, unacked).await;
+        }
+    }
+
+    /// Nach erlaubtem Start: über die Vorab-Verbindung Gesendetes ist bestätigt; der Rest geht
+    /// mit den ersten Events der Session.
+    async fn finish(
+        mut self,
+        boot: &RunnerBoot,
+        gate_rx: &mut mpsc::UnboundedReceiver<policy::GateEvent>,
+        unacked: &mut Unacked,
+    ) -> Vec<Event> {
+        match self.ws.take() {
+            Some(mut ws) => {
+                let events = drain_gate(boot, gate_rx, &HashMap::new());
+                if !events.is_empty() {
+                    let _ = push(&mut ws, boot, unacked, events).await;
+                }
+                drain_acks(&mut ws, unacked).await;
+                Vec::new()
+            }
+            None => drain_gate(boot, gate_rx, &HashMap::new()),
+        }
     }
 }
 
@@ -1493,15 +2174,15 @@ async fn run_one_shot(
 
 /// Entscheidung aus `approval.resolve`. `updated_args: null` (so serialisiert die REST-API
 /// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“.
-fn gate_decision(args: &Value) -> GateDecision {
-    if args["decision"] == "allow" {
-        GateDecision::Allow {
-            updated_args: args.get("updated_args").filter(|a| !a.is_null()).cloned(),
-        }
-    } else {
-        GateDecision::Deny {
-            reason: args["reason"].as_str().map(str::to_owned),
-        }
+fn gate_decision(args: &Value) -> policy::Human {
+    policy::Human {
+        allow: args["decision"] == "allow",
+        reason: args["reason"].as_str().map(str::to_owned),
+        updated_args: if args["decision"] == "allow" {
+            args.get("updated_args").filter(|a| !a.is_null()).cloned()
+        } else {
+            None
+        },
     }
 }
 
@@ -1526,7 +2207,7 @@ async fn apply_live(
 #[allow(clippy::too_many_arguments)]
 async fn deliver(
     session: &mut dyn HarnessSession,
-    gate: &RunnerGate,
+    gate: &policy::PolicyGate,
     name: &str,
     args: Value,
     turn_running: bool,
@@ -1717,57 +2398,23 @@ mod tests {
     fn web_018_null_updated_args_mean_unchanged() {
         assert_eq!(
             gate_decision(&json!({"decision": "allow", "updated_args": null})),
-            GateDecision::Allow { updated_args: None }
+            policy::Human {
+                allow: true,
+                reason: None,
+                updated_args: None
+            }
         );
         assert_eq!(
-            gate_decision(&json!({"decision": "allow", "updated_args": {"a": 1}})),
-            GateDecision::Allow {
-                updated_args: Some(json!({"a": 1}))
-            }
+            gate_decision(&json!({"decision": "allow", "updated_args": {"a": 1}})).updated_args,
+            Some(json!({"a": 1}))
         );
         assert_eq!(
             gate_decision(&json!({"decision": "deny", "reason": "nein"})),
-            GateDecision::Deny {
-                reason: Some("nein".into())
+            policy::Human {
+                allow: false,
+                reason: Some("nein".into()),
+                updated_args: None
             }
         );
-    }
-
-    #[tokio::test]
-    async fn gate_waits_for_resolution_and_fails_closed() {
-        let gate = Arc::new(RunnerGate::default());
-        let g = gate.clone();
-        let waiting = tokio::spawn(async move {
-            g.decide(GateRequest {
-                turn_id: None,
-                call_id: "c1".into(),
-                tool: "Bash".into(),
-                kind: "shell".into(),
-                args: Value::Null,
-            })
-            .await
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(gate.resolve("c1", GateDecision::Allow { updated_args: None }));
-        assert_eq!(
-            waiting.await.unwrap(),
-            GateDecision::Allow { updated_args: None }
-        );
-        assert!(!gate.resolve("c1", GateDecision::Deny { reason: None }));
-
-        let g = gate.clone();
-        let waiting = tokio::spawn(async move {
-            g.decide(GateRequest {
-                turn_id: None,
-                call_id: "c2".into(),
-                tool: "Bash".into(),
-                kind: "shell".into(),
-                args: Value::Null,
-            })
-            .await
-        });
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        gate.pending.lock().unwrap().clear();
-        assert!(matches!(waiting.await.unwrap(), GateDecision::Deny { .. }));
     }
 }

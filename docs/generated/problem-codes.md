@@ -14,6 +14,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unauthorized` | 401 | Anmeldung erforderlich |
 | `invalid_code` | 401 | Einmal-Code ungültig oder abgelaufen |
 | `forbidden` | 403 | Keine Berechtigung |
+| `policy_denied` | 403 | Von der Policy abgelehnt |
 | `host_not_allowed` | 403 | Host nicht erlaubt |
 | `origin_not_allowed` | 403 | Origin nicht erlaubt |
 | `loopback_only` | 403 | Nur über Loopback erreichbar |
@@ -25,6 +26,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `conflict` | 409 | Konflikt |
 | `capability_unsupported` | 409 | Vom Harness nicht unterstützt |
 | `no_active_turn` | 409 | Kein laufender Turn |
+| `approval_required` | 409 | Freigabe erforderlich |
 | `seq_conflict` | 409 | Sequenzkonflikt |
 | `stale_epoch` | 409 | Veraltete Epoch |
 | `seq_ahead` | 409 | from_seq liegt hinter head_seq |

@@ -274,6 +274,8 @@ fn normalized(events: &[Value], session: &str) -> String {
             Value::Object(map) => {
                 map.remove("ts");
                 map.remove("id");
+                // Laufzeit der Policy-Auswertung (POL-025).
+                map.remove("eval_us");
                 for (_, child) in map.iter_mut() {
                     walk(child, session);
                 }
@@ -284,6 +286,8 @@ fn normalized(events: &[Value], session: &str) -> String {
                     *s = "<session>".into();
                 } else if s.starts_with("run_")
                     || s.starts_with("evt_")
+                    || s.starts_with("pd_")
+                    || s.starts_with("apr_")
                     || s.starts_with("msg_user_")
                 {
                     *s = "<id>".into();
