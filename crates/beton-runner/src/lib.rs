@@ -1344,7 +1344,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         // Nur, wenn der Harness selbst jeden Call durch das Gate schickt (Hook,
                         // Direkt-API); MCP-Aufrufe über den Relay-Hub prüft der Hub synchron.
                         let violation = match &ev.payload {
-                            EventPayload::ToolCallCompleted(c) if harness_gates_all && c.status == beton_core::event::ToolStatus::Ok => unobserved
+                            EventPayload::ToolCallCompleted(c) if harness_gates_all && executed(c.status) => unobserved
                                 .get(&c.call_id)
                                 .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
                             _ => None,
@@ -2134,6 +2134,18 @@ fn end_integrity_violation(
         }),
     ));
     end_policy_failure(boot, lifecycle, "policy_integrity_violation", out);
+}
+
+/// Wurde ein Tool-Call (womöglich) ausgeführt? Auch ein Fehler (`…; exit 1`, Claude
+/// `is_error`) kann Wirkung gehabt haben (Re-Review R2 zu #253). Nicht ausgeführt sind nur
+/// abgelehnte Calls und solche, die vor der Ausführung abgebrochen wurden: Ein Call ohne
+/// Gate-Entscheidung mit `cancelled` wartete noch auf den Hook (z. B. Interrupt während einer
+/// offenen Freigabe).
+fn executed(status: beton_core::event::ToolStatus) -> bool {
+    !matches!(
+        status,
+        beton_core::event::ToolStatus::Denied | beton_core::event::ToolStatus::Cancelled
+    )
 }
 
 /// Grund eines `fatal`-Gate-Events: der Problem-Code des `error`.
