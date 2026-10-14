@@ -65,6 +65,15 @@ struct RunnerConn {
     pending: HashMap<String, oneshot::Sender<CmdReply>>,
 }
 
+impl RunnerConn {
+    /// Ohne Turn, ohne offenes Kommando und seit `timeout` ohne Aktivität (RUN-003 AC2). Ein
+    /// offenes Kommando zählt als Aktivität: `input.submit` antwortet erst nach der Phase
+    /// `model_request` (POL-003), die je nach Last länger dauern kann.
+    fn idle(&self, timeout: Duration) -> bool {
+        !self.busy && self.pending.is_empty() && self.last_activity.elapsed() >= timeout
+    }
+}
+
 /// Verbundene Runner und ihre Tokens.
 #[derive(Default)]
 pub struct RunnerRegistry {
@@ -629,11 +638,7 @@ pub async fn idle_reaper(
         }
         let idle: Vec<SessionId> = lock(&state.runners.conns)
             .iter()
-            .filter(|(s, c)| {
-                !c.busy
-                    && c.last_activity.elapsed() >= state.config.idle_timeout
-                    && hub.subscribers(**s) == 0
-            })
+            .filter(|(s, c)| c.idle(state.config.idle_timeout) && hub.subscribers(**s) == 0)
             .map(|(s, _)| *s)
             .collect();
         for session in idle {
@@ -642,5 +647,35 @@ pub async fn idle_reaper(
                 state.runners.stop(session, 10);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn conn() -> RunnerConn {
+        RunnerConn {
+            id: 1,
+            tx: mpsc::unbounded_channel().0,
+            last_activity: Instant::now() - Duration::from_secs(10),
+            busy: false,
+            pending: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn run_003_ac2_runner_with_an_open_command_is_not_idle() {
+        let timeout = Duration::from_secs(1);
+        let mut c = conn();
+        assert!(c.idle(timeout));
+        c.pending.insert("cmd_1".into(), oneshot::channel().0);
+        assert!(!c.idle(timeout), "wartet noch auf cmd.result");
+        c.pending.clear();
+        c.busy = true;
+        assert!(!c.idle(timeout));
+        c.busy = false;
+        c.last_activity = Instant::now();
+        assert!(!c.idle(timeout));
     }
 }
