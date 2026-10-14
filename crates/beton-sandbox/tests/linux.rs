@@ -533,15 +533,22 @@ async fn sbx_008_ac4_abi2_truncate_is_blocked_by_seccomp() {
     let c = run_with(&beton_sandbox::NoneProvider, &none, cmd).await;
     assert_eq!(probe_result(&c), "ok", "Kontrollgruppe: {c:?}");
     // Landlock-ABI 2 (Kernel 5.19 – 6.1, z. B. Debian 12) emuliert: Die Truncate-Kontrolle von
-    // Landlock fehlt, seccomp sperrt `truncate(2)` und `open(O_RDONLY|O_TRUNC)`.
-    let mut cfg = config();
-    cfg.abi_cap = Some(2);
-    let abi2 = landlock_provider(cfg);
-    let probe = abi2.probe();
-    assert!(probe.available, "{probe:?}");
-    assert!(probe.version.contains("ABI 2"), "{}", probe.version);
-    let mut providers = vec![abi2];
-    providers.extend(backends());
+    // Landlock fehlt, seccomp sperrt `truncate(2)` und `open(O_RDONLY|O_TRUNC)`. Jedes Backend
+    // läuft einmal mit ABI 2 und einmal mit der ABI des Kernels.
+    let mut providers = Vec::new();
+    for p in backends() {
+        let mut cfg = config();
+        cfg.abi_cap = Some(2);
+        let abi2 = match p.id() {
+            ProviderId::Bwrap => bwrap_provider(cfg),
+            _ => landlock_provider(cfg),
+        };
+        let probe = abi2.probe();
+        assert!(probe.available, "{probe:?}");
+        assert!(probe.version.contains("ABI 2"), "{}", probe.version);
+        providers.push(abi2);
+        providers.push(p);
+    }
     for p in providers {
         let yaml = format!("read_paths: [{}, \"{}\"]\n", exe_grant(), ro.display());
         let policy = fx.policy(p.as_ref(), &yaml, Stage::Tools);
@@ -558,9 +565,24 @@ async fn sbx_008_ac4_abi2_truncate_is_blocked_by_seccomp() {
             );
         }
         assert_eq!(
-            std::fs::read_to_string(&ro.join("datei.txt")).unwrap(),
+            std::fs::read_to_string(ro.join("datei.txt")).unwrap(),
             "FIXTURE-INHALT"
         );
+        // seccomp wirkt unabhängig von Mounts und Landlock: Mit ABI 2 ist `truncate(2)` auch im
+        // Workspace gesperrt, mit ABI ≥ 3 regelt Landlock das (im Workspace erlaubt).
+        let abi2 = p.probe().version.contains("ABI 2");
+        write(&fx.ws.join("t.txt"), "abc");
+        let ws_file = fx.ws.join("t.txt");
+        let ws_file = ws_file.to_str().unwrap();
+        for probe in ["truncate", "open_rdonly_trunc"] {
+            let out = run_with(p.as_ref(), &policy, probe_cmd(&policy, probe, &[ws_file])).await;
+            let r = probe_result(&out);
+            if abi2 {
+                assert_eq!(r, "err:1", "{}: {probe} im Workspace: {out:?}", p.id());
+            } else {
+                assert_eq!(r, "ok", "{}: {probe} im Workspace: {out:?}", p.id());
+            }
+        }
         // Im Workspace bleibt Kürzen per Shell-Umleitung möglich.
         let out = sh(
             p.as_ref(),
