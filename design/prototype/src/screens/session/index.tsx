@@ -11,9 +11,11 @@ import {
   TurnFooter,
   UserMessage,
 } from '@/app/stream'
+import { ApprovalBar, type BarItem, type BarNotice } from '@/app/kit/approvals'
 import { F } from '@/proto/feature-marker'
 import type { ScreenGroup } from '@/proto/types'
 import { currentSession, rateLimiterDiff, type SessionStatus } from '@/mock/data'
+import { editApproval, lintQuestion, prApproval, pushApproval } from './approval-data'
 
 /**
  * Referenz-Gruppe: zeigt, wie Screens aufgebaut sind.
@@ -47,9 +49,42 @@ function ChangesPanel() {
   )
 }
 
+/** Was die Freigabe-Leiste (WEB-007) im jeweiligen Zustand zeigt. */
+function barFor(state: string): { items: BarItem[]; expanded?: boolean; denying?: string; notice?: BarNotice } | undefined {
+  switch (state) {
+    case 'approval':
+      return { items: [pushApproval] }
+    case 'approval-stack':
+      return { items: [pushApproval, editApproval, prApproval, lintQuestion] }
+    case 'approval-args':
+      return { items: [prApproval], expanded: true }
+    case 'approval-diff':
+      return { items: [editApproval, prApproval], expanded: true }
+    case 'approval-deny':
+      return { items: [pushApproval, editApproval], denying: 'Bitte erst die CI auf dem Branch abwarten' }
+    case 'approval-decided':
+      return {
+        items: [editApproval, prApproval],
+        notice: { kind: 'decided', summary: pushApproval.summary, decision: 'allow', by: 'Mara', where: 'am Handy, gerade eben' },
+      }
+    case 'approval-timeout':
+      return {
+        items: [],
+        notice: { kind: 'expired', summary: 'git push -u origin beton/rate-limiter-7f3k', after: '30 Min.', applied: 'abbrechen (strengster Wert aus „ablehnen“ und „abbrechen“)' },
+      }
+    case 'question':
+      return { items: [lintQuestion], }
+  }
+  return undefined
+}
+
+const BAR_STATES = ['approval', 'approval-stack', 'approval-args', 'approval-diff', 'approval-deny', 'approval-decided', 'approval-timeout', 'question']
+
 function SessionStream({ state }: { state: string }) {
+  const bar = barFor(state)
+  const waiting = state === 'approval-m0' || (bar !== undefined && bar.items.length > 0)
   const status: SessionStatus =
-    state === 'streaming' ? 'running' : state === 'approval' || state === 'approval-m0' ? 'waiting' : state === 'failed' ? 'failed' : state === 'empty' ? 'idle' : 'idle'
+    state === 'streaming' ? 'running' : waiting ? 'waiting' : state === 'failed' ? 'failed' : 'idle'
 
   if (state === 'empty') {
     return (
@@ -111,13 +146,13 @@ Test Files  2 passed (2)
 
           {state === 'done' && <TurnFooter duration="1 Min. 12 s" tokens="38.410" cost="Subscription" />}
 
-          {(state === 'approval' || state === 'approval-m0') && (
+          {state === 'approval-m0' && (
             <>
               <UserMessage>Ja, push und PR.</UserMessage>
               <ToolCall kind="git" name="Shell" target="git push -u origin beton/rate-limiter-7f3k" status="waiting" policy="git_guard" />
-              <F id={state === 'approval-m0' ? ['WEB-018', 'HAR-005'] : ['WEB-007', 'POL-010', 'POL-017', 'HAR-005']}>
+              <F id={['WEB-018', 'HAR-005']}>
                 <ApprovalCard
-                  variant={state === 'approval-m0' ? 'minimal' : 'full'}
+                  variant="minimal"
                   tool="Shell"
                   command="git push -u origin beton/rate-limiter-7f3k"
                   rule="git-push-fragen (Projekt shop-frontend)"
@@ -125,6 +160,41 @@ Test Files  2 passed (2)
                 />
               </F>
             </>
+          )}
+
+          {BAR_STATES.includes(state) && state !== 'question' && (
+            <>
+              <UserMessage>Ja, push und PR.</UserMessage>
+              {state === 'approval-decided' ? (
+                <>
+                  <ToolCall kind="git" name="Shell" target="git push -u origin beton/rate-limiter-7f3k" status="running" policy="erlaubt von Mara" />
+                  <F id={['WEB-007', 'WEB-018']}>
+                    <ApprovalCard tool="Shell" command="git push -u origin beton/rate-limiter-7f3k" reason="" resolved="allowed" by="Mara (am Handy)" />
+                  </F>
+                </>
+              ) : state === 'approval-timeout' ? (
+                <>
+                  <ToolCall kind="git" name="Shell" target="git push -u origin beton/rate-limiter-7f3k" status="denied" policy="Zeit abgelaufen" />
+                  <SystemNote tone="deny">Turn abgebrochen · Freigabe abgelaufen um 15:42</SystemNote>
+                </>
+              ) : (
+                ['approval', 'approval-stack', 'approval-deny'].includes(state) && (
+                  <ToolCall kind="git" name="Shell" target="git push -u origin beton/rate-limiter-7f3k" status="waiting" policy="wartet auf Freigabe" />
+                )
+              )}
+              {['approval-stack', 'approval-diff', 'approval-deny', 'approval-decided'].includes(state) && (
+                <ToolCall kind="edit" name="Bearbeiten" target="src/routes/auth.ts" status="waiting" policy="wartet auf Freigabe" />
+              )}
+              {['approval-stack', 'approval-args', 'approval-diff', 'approval-decided'].includes(state) && (
+                <ToolCall kind="other" name="MCP github" target="create_pull_request · beton/rate-limiter-7f3k → main" status="waiting" policy="wartet auf Freigabe" />
+              )}
+            </>
+          )}
+
+          {state === 'question' && (
+            <F id="AGT-007">
+              <ToolCall kind="other" name="Frage an dich" target="ask_user · Limiter pro IP oder pro Account?" status="waiting" policy="wartet auf Antwort" />
+            </F>
           )}
 
           {state === 'failed' && (
@@ -155,6 +225,11 @@ FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memor
           )}
         </div>
       </F>
+      {bar && (
+        <F id={state === 'question' ? ['WEB-007', 'AGT-007', 'UX-001'] : ['WEB-007', 'POL-010', 'POL-014']} badge="top-right">
+          <ApprovalBar key={state} {...bar} />
+        </F>
+      )}
       <Composer
         harness="claude"
         running={state === 'streaming'}
@@ -173,16 +248,23 @@ export const group: ScreenGroup = {
       id: 'session-stream',
       title: 'Session-Verlauf',
       description:
-        'Die Hauptansicht: Verlauf mit Nachrichten, Überlegungen und Tool-Calls, rechts die Änderungen, unten die Eingabe. Freigaben erscheinen als gelbe Karte mit Fase.',
+        'Die Hauptansicht: Verlauf mit Nachrichten, Überlegungen und Tool-Calls, rechts die Änderungen, unten die Eingabe. Offene Freigaben und Fragen stehen in der gelben Leiste mit Fase über der Eingabe (gestapelt, per Tastatur bedienbar: ⌘↵, ⌘⇧↵, ⌘⌫, ⌘⇧A); klickbar.',
       features: [
         'WEB-001', 'WEB-002', 'WEB-003', 'WEB-004', 'WEB-007', 'WEB-008', 'WEB-011', 'WEB-018',
         'SES-001', 'SES-002', 'SES-004', 'SES-005', 'SES-012', 'SES-018', 'WEB-005',
-        'HAR-001', 'HAR-004', 'HAR-005', 'HAR-021', 'USE-004', 'USE-008', 'POL-010', 'POL-017',
+        'HAR-001', 'HAR-004', 'HAR-005', 'HAR-021', 'USE-004', 'USE-008', 'POL-010', 'POL-014', 'POL-017', 'AGT-007', 'UX-001',
         'RUN-003', 'PROTO-005', 'VOI-004', 'VOI-007', 'CLI-002',
       ],
       states: [
         { id: 'streaming', title: 'Agent arbeitet' },
-        { id: 'approval', title: 'Freigabe offen' },
+        { id: 'approval', title: 'Freigabe offen (Leiste)' },
+        { id: 'approval-stack', title: 'Mehrere Freigaben gestapelt' },
+        { id: 'approval-args', title: 'Argumente ausgeklappt' },
+        { id: 'approval-diff', title: 'Datei-Edit mit Diff' },
+        { id: 'approval-deny', title: 'Ablehnen mit Grund' },
+        { id: 'approval-decided', title: 'Entschieden von Mara' },
+        { id: 'approval-timeout', title: 'Freigabe abgelaufen' },
+        { id: 'question', title: 'Frage des Agents (ask_user)' },
         { id: 'approval-m0', title: 'Freigabe (M0, minimal)' },
         { id: 'done', title: 'Fertig' },
         { id: 'interrupted', title: 'Unterbrochen' },
