@@ -18,33 +18,191 @@ pub struct AllowListError {
     pub message: String,
 }
 
+/// Gesperrte IPv4-Netze (Adresse, Präfixlänge).
+const BLOCKED_V4: [(Ipv4Addr, u8); 15] = [
+    (Ipv4Addr::new(0, 0, 0, 0), 8),
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(100, 64, 0, 0), 10),
+    (Ipv4Addr::new(127, 0, 0, 0), 8),
+    (Ipv4Addr::new(169, 254, 0, 0), 16),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 0, 0, 0), 24),
+    (Ipv4Addr::new(192, 0, 2, 0), 24),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+    (Ipv4Addr::new(198, 18, 0, 0), 15),
+    (Ipv4Addr::new(198, 51, 100, 0), 24),
+    (Ipv4Addr::new(203, 0, 113, 0), 24),
+    // Multicast
+    (Ipv4Addr::new(224, 0, 0, 0), 4),
+    // Reserviert inkl. Broadcast 255.255.255.255
+    (Ipv4Addr::new(240, 0, 0, 0), 4),
+    // Azure-Wireserver (DHCP, Metadaten)
+    (Ipv4Addr::new(168, 63, 129, 16), 32),
+];
+
+/// Gesperrte IPv6-Netze ohne eingebettete IPv4-Adresse.
+const BLOCKED_V6: [(Ipv6Addr, u8); 10] = [
+    (Ipv6Addr::UNSPECIFIED, 128),
+    (Ipv6Addr::LOCALHOST, 128),
+    // Unique Local (fc00::/7), u. a. AWS-Metadaten fd00:ec2::254
+    (Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7),
+    (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 10),
+    (Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 0), 10),
+    (Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 0), 8),
+    (Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 32),
+    (Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 0), 64),
+    // Lokales NAT64 (RFC 8215)
+    (Ipv6Addr::new(0x64, 0xff9b, 1, 0, 0, 0, 0, 0), 48),
+    // Teredo: die eingebettete Client-Adresse ist verschleiert, daher ganz gesperrt.
+    (Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 32),
+];
+
+fn in_v4(ip: Ipv4Addr, net: Ipv4Addr, prefix: u8) -> bool {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix))
+    };
+    u32::from(ip) & mask == u32::from(net) & mask
+}
+
+fn in_v6(ip: Ipv6Addr, net: Ipv6Addr, prefix: u8) -> bool {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - u32::from(prefix))
+    };
+    u128::from(ip) & mask == u128::from(net) & mask
+}
+
+/// Die IPv4-Adresse, die eine IPv6-Adresse einbettet: IPv4-gemappt (`::ffff:a.b.c.d`),
+/// IPv4-kompatibel (`::a.b.c.d`), SIIT (`::ffff:0:a.b.c.d`), NAT64 (`64:ff9b::/96`) und
+/// 6to4 (`2002:AABB:CCDD::/48`).
+fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let bits = u128::from(ip);
+    let low = Ipv4Addr::from((bits & 0xffff_ffff) as u32);
+    let prefix96 = bits >> 32;
+    match prefix96 {
+        0xffff | 0xffff_0000 | 0 => Some(low),
+        p if p == u128::from(Ipv6Addr::new(0x64, 0xff9b, 0, 0, 0, 0, 0, 0)) >> 32 => Some(low),
+        _ if bits >> 112 == 0x2002 => Some(Ipv4Addr::from(((bits >> 80) & 0xffff_ffff) as u32)),
+        _ => None,
+    }
+}
+
+fn blocked_v4(ip: Ipv4Addr) -> bool {
+    BLOCKED_V4.iter().any(|(net, p)| in_v4(ip, *net, *p))
+}
+
 /// Ist die Adresse ein gesperrtes (nicht-globales) Ziel?
-pub fn is_blocked(_ip: IpAddr) -> bool {
-    true
+pub fn is_blocked(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => blocked_v4(v4),
+        IpAddr::V6(v6) => {
+            if BLOCKED_V6.iter().any(|(net, p)| in_v6(v6, *net, *p)) {
+                return true;
+            }
+            embedded_v4(v6).is_some_and(blocked_v4)
+        }
+    }
 }
 
 /// IPv4-gemappte IPv6-Adressen als IPv4, sonst unverändert.
 pub fn canonical(ip: IpAddr) -> IpAddr {
-    ip
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllowEntry {
+    net: IpAddr,
+    prefix: u8,
+    port: u16,
+}
+
+impl AllowEntry {
+    fn parse(entry: &str) -> Result<Self, AllowListError> {
+        let fail = |message: &str| AllowListError {
+            entry: entry.to_owned(),
+            message: message.to_owned(),
+        };
+        let (addr, port) = if let Some(rest) = entry.strip_prefix('[') {
+            let (inside, after) = rest.split_once(']').ok_or_else(|| fail("`]` fehlt"))?;
+            let port = after
+                .strip_prefix(':')
+                .ok_or_else(|| fail("Port fehlt (ip:port oder cidr:port)"))?;
+            (inside, port)
+        } else {
+            let (addr, port) = entry
+                .rsplit_once(':')
+                .ok_or_else(|| fail("Port fehlt (ip:port oder cidr:port)"))?;
+            if addr.contains(':') {
+                return Err(fail("IPv6-Adressen in eckigen Klammern angeben"));
+            }
+            (addr, port)
+        };
+        let port = match port.parse::<u16>() {
+            Ok(p) if p > 0 && port.bytes().all(|b| b.is_ascii_digit()) => p,
+            _ => return Err(fail("ungültiger Port")),
+        };
+        let (ip, prefix) = match addr.split_once('/') {
+            Some((ip, prefix)) => (ip, Some(prefix)),
+            None => (addr, None),
+        };
+        let ip: IpAddr = ip
+            .parse()
+            .map_err(|_| fail("ungültige IP-Adresse (Hostnamen sind nicht erlaubt)"))?;
+        let ip = canonical(ip);
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => max,
+            Some(p) => match p.parse::<u8>() {
+                Ok(n) if n <= max && p.bytes().all(|b| b.is_ascii_digit()) => n,
+                _ => return Err(fail("ungültige Präfixlänge")),
+            },
+        };
+        Ok(Self {
+            net: ip,
+            prefix,
+            port,
+        })
+    }
+
+    fn permits(&self, ip: IpAddr, port: u16) -> bool {
+        if port != self.port {
+            return false;
+        }
+        match (self.net, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => in_v4(ip, net, self.prefix),
+            (IpAddr::V6(net), IpAddr::V6(ip)) => in_v6(ip, net, self.prefix),
+            _ => false,
+        }
+    }
 }
 
 /// Ausdrücklich freigegebene private Ziele: `ip:port` oder `cidr:port`, IPv6 in eckigen
 /// Klammern (`[fd00::5]:5432`, `[fd00::/8]:5432`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrivateAllowList {
-    _entries: Vec<String>,
+    entries: Vec<AllowEntry>,
 }
 
 impl PrivateAllowList {
     pub fn parse<S: AsRef<str>>(entries: &[S]) -> Result<Self, AllowListError> {
         Ok(Self {
-            _entries: entries.iter().map(|e| e.as_ref().to_owned()).collect(),
+            entries: entries
+                .iter()
+                .map(|e| AllowEntry::parse(e.as_ref()))
+                .collect::<Result<_, _>>()?,
         })
     }
 
-    /// Gibt der Eintrag dieses Ziel frei?
-    pub fn permits(&self, _addr: SocketAddr) -> bool {
-        false
+    /// Gibt ein Eintrag dieses Ziel frei? IPv4-gemappte Adressen zählen als IPv4.
+    pub fn permits(&self, addr: SocketAddr) -> bool {
+        let ip = canonical(addr.ip());
+        self.entries.iter().any(|e| e.permits(ip, addr.port()))
     }
 }
 
