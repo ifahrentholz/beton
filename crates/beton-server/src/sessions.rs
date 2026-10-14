@@ -1582,6 +1582,8 @@ mod stage_tests {
             sandbox: beton_sandbox::SandboxSpec::from_yaml(yaml).unwrap(),
             proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
             proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
+            connect_timeout: CONNECT_TIMEOUT,
+            start_budget: START_BUDGET,
         }
     }
 
