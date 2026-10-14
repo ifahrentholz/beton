@@ -88,6 +88,9 @@ async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     }
 }
 
+/// Offene Freigaben einer Session: Ablauf (Unix-Sekunden) und Art.
+type OpenApprovals = HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>;
+
 /// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
 pub const DETACH_MAX: Duration = Duration::from_secs(3600);
 
@@ -103,12 +106,7 @@ pub struct RunnerRegistry {
     /// Test-Haken: Sessions, deren Verbindungen bis zum Zeitpunkt abgelehnt werden.
     refuse_until: Mutex<HashMap<SessionId, Instant>>,
     /// Offene Freigaben je Session mit Ablauf (Unix-Sekunden) aus dem Event-Strom des Runners.
-    approvals: Mutex<
-        HashMap<
-            SessionId,
-            HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>,
-        >,
-    >,
+    approvals: Mutex<HashMap<SessionId, OpenApprovals>>,
     /// Abgekoppelte Runner eines vorigen Daemons, die sich bis zur Frist neu verbinden dürfen
     /// (POL-010 AC4).
     expected: Mutex<HashMap<SessionId, (Instant, [u8; 32])>>,
