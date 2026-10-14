@@ -113,6 +113,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
         Command::Proxy(cmd) => crate::secrets::proxy(&ctx, cmd).await,
+        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd),
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }
@@ -147,6 +148,7 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Config(_)
             | Command::Usage(_)
             | Command::Agent(_)
+            | Command::Sandbox(_)
             | Command::Completion(_)
             | Command::Version
             | Command::Auth(_)
@@ -508,6 +510,10 @@ async fn open(ctx: &Ctx, args: OpenArgs) -> CliResult {
 }
 
 /// Öffnet die URL mit `$BROWSER` oder dem Standard der Plattform.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Stufe 0: Browser des Benutzers öffnen"
+)]
 fn open_browser(url: &str) -> anyhow::Result<()> {
     let mut cmd = if let Some(browser) = std::env::var_os("BROWSER").filter(|b| !b.is_empty()) {
         let mut c = std::process::Command::new(browser);
@@ -628,6 +634,10 @@ fn render(value: &Value) -> String {
 
 /// Öffnet die Datei in `$VISUAL`/`$EDITOR`; ist das Ergebnis ungültig, wird der vorige Stand
 /// wiederhergestellt.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Stufe 0: Editor des Benutzers für die eigene Konfiguration"
+)]
 fn config_edit(ctx: &Ctx, scope: Scope) -> CliResult {
     let paths = ctx.paths();
     let path = paths.of(scope).to_path_buf();

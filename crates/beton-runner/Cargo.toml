@@ -21,6 +21,7 @@ beton-harness-direct.workspace = true
 beton-mcp.workspace = true
 beton-policy.workspace = true
 beton-proto.workspace = true
+beton-sandbox.workspace = true
 getrandom.workspace = true
 futures-util.workspace = true
 serde.workspace = true

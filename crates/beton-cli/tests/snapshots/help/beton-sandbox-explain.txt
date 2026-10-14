@@ -1,0 +1,40 @@
+Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln und die Namen der
+Environment-Variablen (nie ihre Werte)
+
+Usage: beton sandbox explain [OPTIONS]
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --stage <STAGE>
+          Stufe: `harness` (Vendor-CLI, Stufe 1) oder `tools` (Tool-Ausführung, Stufe 2)
+          
+          [default: tools]
+          [possible values: harness, tools]
+
+      --harness <HARNESS>
+          Harness, dessen eigene Credential- und State-Pfade Stufe 1 bekommt (`claude`, `codex`)
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

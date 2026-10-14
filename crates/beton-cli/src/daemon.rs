@@ -41,6 +41,10 @@ fn serve_log(home: &Path) -> PathBuf {
 }
 
 /// Startet `beton serve --foreground <extra>` abgelöst und wartet, bis er antwortet.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Stufe 0: Start des eigenen Daemons"
+)]
 pub async fn start_background(ctx: &Ctx, extra: &[String]) -> CliResult<Client> {
     let exe = std::env::current_exe().context("eigenes Binary")?;
     let log_path = serve_log(&ctx.home);

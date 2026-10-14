@@ -1,0 +1,81 @@
+(version 1)
+;; beton Seatbelt-Profil v1 (SBX-007).
+;; Dieser Text ist fest. Pfade, Muster und der Proxy-Port kommen ausschließlich als Parameter
+;; (`sandbox-exec -D KEY=VALUE`) und werden nur über `(param "KEY")` referenziert; die
+;; generierten Zeilen an den Markierungen `;;@…` enthalten nur feste Bausteine und Schlüssel.
+;; Reihenfolge ist Semantik: Bei Seatbelt gewinnt die zuletzt passende Regel.
+(deny default)
+
+;; Prozesse: forken und ausführen; Signale und Prozessinformationen nur im eigenen Baum.
+;; `process-info*` ist trotz `(deny default)` erlaubt, solange es nicht ausdrücklich verboten
+;; ist; ohne das Verbot läse die Sandbox über sysctl(KERN_PROCARGS2) argv und Environment jedes
+;; Prozesses des Benutzers (Runner, Harness).
+(allow process-fork)
+(allow process-exec)
+(allow signal (target same-sandbox))
+(deny process-info*)
+(allow process-info* (target same-sandbox))
+
+;; sysctl nur lesend und nur benannte Werte (Hardware, Betriebssystem, Limits). Kein
+;; pauschales `sysctl-read` und kein Präfix `kern.`: Das gäbe `kern.procargs2` frei.
+(allow sysctl-read
+  (sysctl-name-prefix "hw.")
+  (sysctl-name-prefix "machdep.cpu.")
+  (sysctl-name-prefix "kern.monotonicclock")
+  (sysctl-name "kern.argmax") (sysctl-name "kern.boottime") (sysctl-name "kern.clockrate")
+  (sysctl-name "kern.hostname") (sysctl-name "kern.hv_vmm_present")
+  (sysctl-name "kern.iossupportversion") (sysctl-name "kern.maxfiles")
+  (sysctl-name "kern.maxfilesperproc") (sysctl-name "kern.maxproc")
+  (sysctl-name "kern.maxprocperuid") (sysctl-name "kern.ngroups")
+  (sysctl-name "kern.osproductversion") (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.osrevision") (sysctl-name "kern.ostype") (sysctl-name "kern.osversion")
+  (sysctl-name "kern.secure_kernel") (sysctl-name "kern.usrstack64") (sysctl-name "kern.version")
+  (sysctl-name-prefix "sysctl.name") (sysctl-name-prefix "sysctl.oidfmt") (sysctl-name "sysctl.proc_cputype")
+  (sysctl-name "sysctl.proc_native") (sysctl-name "sysctl.proc_translated")
+  (sysctl-name "vm.loadavg") (sysctl-name "vm.pagesize") (sysctl-name "vm.swapusage")
+  (sysctl-name "security.mac.lockdown_mode_state"))
+
+;; Minimale System-Lesepfade (Betriebssystem, Developer-Tools, Zeitzonen).
+(allow file-read* (literal "/"))
+(allow file-read-metadata
+  (literal "/etc") (literal "/tmp") (literal "/var") (literal "/private") (literal "/private/var")
+  (literal "/private/var/db") (literal "/Applications") (literal "/Library")
+  (literal "/Library/Developer") (literal "/Library/Preferences"))
+(allow file-read*
+  (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/System")
+  (subpath "/private/etc") (subpath "/private/var/select") (subpath "/private/var/db/timezone")
+  (subpath "/Library/Developer/CommandLineTools")
+  (literal "/private/var/db/xcode_select_link")
+  (literal "/Library/Preferences/com.apple.dt.Xcode.plist")
+  (regex #"^/Applications/Xcode[^/]*\.app/Contents/Developer(/.*)?$"))
+(allow file-read* (literal "/dev/random") (literal "/dev/urandom") (literal "/dev/zero"))
+(allow file-read* file-write-data (literal "/dev/null"))
+(allow file-read* file-write-data (subpath "/dev/fd"))
+
+;; Benutzer-/Gruppen-Auflösung, Benachrichtigungen, Logging. Kein DNS (Auflösung im Proxy),
+;; kein Keychain (nur Stufe 1 mit `keychain: true`, unten).
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.logd"))
+(allow ipc-posix-shm-read-data (ipc-posix-name "apple.shm.notification_center"))
+
+;; Freigaben aus `read_paths`/`write_paths`.
+;;@GRANT_ROOTS
+;; Dotfiles direkt in diesen Freigaben sind maskiert, außer `allow_hidden`.
+;;@HIDDEN
+;; Workspace, Scratch, Git und die eigenen Pfade des Harness (Stufe 1).
+;;@ROOTS
+;; Metadaten der Vorfahren aller Wurzeln (für `realpath`, `cd ..`).
+;;@ANCESTORS
+;; Masken: nach den Freigaben, damit sie gewinnen (SBX-004).
+;;@MASKS
+;; Vorfahren von Masken in Schreib-Wurzeln: nicht umbenennen oder löschen (SBX-004 AC4).
+;;@KEEP
+;; Git: Hooks und Konfiguration read-only, `.git` nicht austauschbar (SBX-003 AC4).
+;;@GIT
+;; Keychain (nur Stufe 1 mit `keychain: true`).
+;;@KEYCHAIN
+;; Netz: ausschließlich zur Proxy-Instanz dieser Stufe.
+;;@NETWORK

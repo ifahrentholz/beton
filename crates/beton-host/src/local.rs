@@ -289,12 +289,22 @@ impl RunnerProvider for LocalProvider {
             .get(&h.runner_id)
             .map(|(p, _, _)| p.workdir.clone())
             .ok_or_else(|| RunnerError::NotFound(h.runner_id.to_string()))?;
-        let out = tokio::process::Command::new(&req.program)
-            .args(&req.args)
-            .current_dir(workdir)
-            .env_clear()
-            .envs(self.env_for(&[]))
-            .output()
+        // Ein Kommando im Workdir ist eine Tool-Ausführung; bis SBX-006 ausdrücklich ohne
+        // Isolation (`backend: none`).
+        let mut cmd = beton_sandbox::CommandSpec::new(&req.program)
+            .args(req.args.iter().cloned())
+            .cwd(workdir)
+            .stdio(
+                beton_sandbox::Stdio::Null,
+                beton_sandbox::Stdio::Piped,
+                beton_sandbox::Stdio::Piped,
+            );
+        cmd.env.clear = true;
+        cmd.env.set = self.env_for(&[]);
+        let out = beton_sandbox::Sandbox::unsandboxed(beton_sandbox::Stage::Tools, None)
+            .spawn(cmd)
+            .map_err(std::io::Error::from)?
+            .wait_with_output()
             .await?;
         Ok(ExecOutput {
             code: out.status.code(),

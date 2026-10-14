@@ -4,6 +4,10 @@
 //! Harness (Parent und Childs); `${mcp.<n>.…}` setzt Ergebnisse früherer Tool-Aufrufe ein.
 //! Keine echten Vendor-CLIs, keine API-Keys, kein Netz außer Loopback.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

@@ -10,6 +10,7 @@
 //! cargo xtask security-review-label --range <base>..<head> [--has-label]
 //! cargo xtask spec-check
 //! cargo xtask spec-coverage --milestone <M0…M5> [--report]
+//! cargo xtask spawn-lint
 //! ```
 
 mod codegen;
@@ -18,6 +19,7 @@ mod cov_gate;
 mod coverage;
 mod golden_scan;
 mod security_tests;
+mod spawn_lint;
 mod spec;
 
 use std::path::PathBuf;
@@ -62,14 +64,28 @@ fn run() -> Result<bool> {
         "security-review-label" => security_review_label(&rest),
         "spec-check" => spec_check(&root),
         "spec-coverage" => spec_coverage(&root, &rest),
+        "spawn-lint" => spawn_lint(&root),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spawn-lint|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
         }
     }
+}
+
+/// SBX-001 AC2: keine direkten Spawns außerhalb von `beton-sandbox` (siehe `spawn_lint`).
+fn spawn_lint(root: &std::path::Path) -> Result<bool> {
+    let errors = spawn_lint::check(root);
+    if errors.is_empty() {
+        println!("spawn-lint: ok");
+        return Ok(true);
+    }
+    for e in &errors {
+        eprintln!("spawn-lint: {e}");
+    }
+    Ok(false)
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
@@ -84,6 +100,7 @@ fn load_spec(root: &std::path::Path) -> Result<Spec> {
 }
 
 /// Commits eines Bereichs (ohne Merge-Commits), standardmäßig nur `HEAD`.
+#[expect(clippy::disallowed_methods, reason = "xtask: git log")]
 fn commits_in(range: Option<&str>) -> Result<Vec<Commit>> {
     let mut cmd = Command::new("git");
     cmd.args(["log", "--no-merges", "--format=%H%x1f%an%x1f%ae%x1f%B%x1e"]);
@@ -160,6 +177,7 @@ Keine Basis von `main` gefunden: Ratchet übersprungen, Floor geprüft.\n",
 }
 
 /// Geänderte Dateien eines PRs (`--range <base>..<head>`, gegenüber der Merge-Basis).
+#[expect(clippy::disallowed_methods, reason = "xtask: git diff")]
 fn pr_changes(args: &[String]) -> Result<Vec<security_tests::Change>> {
     let range = flag(args, "--range").context("--range <base>..<head> fehlt")?;
     let (base, head) = range

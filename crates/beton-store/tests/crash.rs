@@ -4,6 +4,10 @@
 //!
 //! Der Kindprozess ist dieselbe Test-Binary mit dem ignorierten Test `crash_child_writer`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)] // Testcode: Panics sind hier die Fehlermeldung.
 
 use std::io::{BufRead, BufReader};

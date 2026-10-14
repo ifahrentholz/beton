@@ -1,6 +1,10 @@
 //! Session-Lebenszyklus über REST und WebSocket mit echtem Runner und Fake-Harness
 //! (SES-001, SES-002, SES-003, SES-005, PROTO-006, HAR-002, DATA-006, DATA-008).
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

@@ -52,6 +52,11 @@
       },
       "default": {}
     },
+    "sandbox": {
+      "description": "Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)\ndarf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.",
+      "$ref": "#/$defs/SandboxSpec",
+      "default": {}
+    },
     "secrets": {
       "description": "Secret-Store (SEC-002, SEC-003); nur in der User-Konfiguration.",
       "$ref": "#/$defs/SecretsSettings",
@@ -468,6 +473,151 @@
         "base_url"
       ]
     },
+    "SandboxBackend": {
+      "description": "Isolations-Backend; `auto` wählt je Betriebssystem (SBX-001).",
+      "type": "string",
+      "enum": [
+        "auto",
+        "seatbelt",
+        "landlock",
+        "bwrap",
+        "windows",
+        "docker",
+        "podman",
+        "none"
+      ]
+    },
+    "SandboxEnvConfig": {
+      "description": "`sandbox.env`.",
+      "type": "object",
+      "properties": {
+        "passthrough": {
+          "description": "Namen oder Präfixe mit `*` (z. B. `LC_*`), die aus dem Daemon-Environment übernommen\nwerden.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "set": {
+          "description": "Feste Werte.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SandboxSpec": {
+      "title": "Sandbox-Konfiguration (SBX-003)",
+      "description": "Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der\nweniger spezifischen Ebene.",
+      "type": "object",
+      "properties": {
+        "allow_hidden": {
+          "description": "Dotfiles direkt in Grants, die nicht maskiert werden (z. B. `.venv`).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_network": {
+          "description": "`false`: gar kein Netz; `true` (Default): nur über den Egress-Proxy.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "backend": {
+          "description": "`auto` (Default), `seatbelt`, `landlock`, `bwrap`, `windows`, `docker`, `podman` oder\n`none` (keine Isolation, nur ausdrücklich).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxBackend"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "egress_allow_private": {
+          "description": "Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_rules": {
+          "description": "Egress-Regeln des Proxys, z. B. `\"GET,HEAD registry.npmjs.org/**\"` (PRX-003).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SandboxEnvConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "masks": {
+          "description": "Zusätzliche Masken: absolute Pfade (`~/…`, `/…`) oder Namensmuster mit `*`/`?` (ein\nPfadsegment, z. B. `.env.*` oder `secrets/`), die in jeder Wurzel in jeder Tiefe\ngelten. Ohne Angabe gilt im Workspace `[.env, .env.*]`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "read_paths": {
+          "description": "Zusätzliche Lese-Wurzeln: absolut oder mit `~` (keine `$VAR`-Expansion).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "workspace": {
+          "description": "`rw` (Default) oder `ro`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceAccess"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "write_paths": {
+          "description": "Zusätzliche Schreib-Wurzeln (absolut oder mit `~`); `/`, `~` und dessen Vorfahren\nsind verboten.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "SecretsSettings": {
       "type": "object",
       "properties": {
@@ -570,6 +720,14 @@
           "type": "string",
           "const": "openai"
         }
+      ]
+    },
+    "WorkspaceAccess": {
+      "description": "Zugriff auf den Workspace.",
+      "type": "string",
+      "enum": [
+        "rw",
+        "ro"
       ]
     }
   }

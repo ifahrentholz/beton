@@ -1,6 +1,10 @@
 //! Subscription-Regel (HAR-015): beton reicht keine Anthropic-Keys an die CLI weiter und
 //! fasst keine Vendor-Credentials an.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};

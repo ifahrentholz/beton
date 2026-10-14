@@ -3,6 +3,10 @@
 //! Runner-Binary, Fake-Vendor-CLIs (QA-002) und der lokale Mock-Server des
 //! Direkt-API-Harness auf Loopback. Kein echter Anbieter, kein echter Key, kein Internet.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

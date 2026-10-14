@@ -591,23 +591,31 @@ where
     let Ok(Endpoint::Stdio { command, args, env }) = server.endpoint() else {
         return;
     };
-    let mut cmd = tokio::process::Command::new(command);
     // Interne Variablen des Runners (Tunnel-Socket, Session, Konfiguration) gehen nicht an
-    // fremde Server.
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("BETON_") {
-            cmd.env_remove(key);
-        }
-    }
-    cmd.args(args)
-        .envs(env)
-        .current_dir(&shared.workdir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        // stderr kann Secrets enthalten: nicht in Events oder Logs übernehmen.
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let mut child = match cmd.spawn() {
+    // fremde Server; stderr kann Secrets enthalten: nicht in Events oder Logs übernehmen.
+    let mut cmd = beton_sandbox::CommandSpec::new(command)
+        .args(args)
+        .cwd(&shared.workdir)
+        .stdio(
+            beton_sandbox::Stdio::Piped,
+            beton_sandbox::Stdio::Piped,
+            beton_sandbox::Stdio::Null,
+        );
+    cmd.env.remove = std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .filter(|k| k.starts_with("BETON_"))
+        .collect();
+    cmd.env.set = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    // MCP-stdio-Server sind Tools (Stufe 2, SBX-002 ab WP-45); bis SBX-006 ausdrücklich ohne
+    // Isolation. Jeder Start meldet `sandbox.started` (SBX-001 AC4).
+    let events = shared.events.clone();
+    let sandbox = beton_sandbox::Sandbox::unsandboxed(
+        beton_sandbox::Stage::Tools,
+        Some(Arc::new(move |ev| {
+            let _ = events.send(EventPayload::SandboxStarted(ev));
+        })),
+    );
+    let mut child = match sandbox.spawn(cmd) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("Start fehlgeschlagen: {e}");
@@ -616,7 +624,7 @@ where
             return;
         }
     };
-    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+    let (Some(mut stdin), Some(stdout)) = (child.take_stdin(), child.take_stdout()) else {
         return;
     };
     let filter = Arc::new(Filter::default());
@@ -684,7 +692,9 @@ where
     }
     drop(stdin);
     let exit = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
-    let _ = child.kill().await;
+    if child.start_kill().is_ok() {
+        let _ = child.wait().await;
+    }
     if server_gone {
         // Offene Anfragen beantworten, damit der Harness nicht hängt.
         let open: Vec<String> = filter

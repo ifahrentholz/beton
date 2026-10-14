@@ -22,7 +22,7 @@ use beton_core::event::{
     Actor, Event, EventPayload, FsChange, FsChanged, SessionStatus, SessionStatusChanged,
 };
 use beton_core::id::{RunnerId, SessionId, TurnId};
-use beton_harness::process::RealLauncher;
+use beton_harness::process::SandboxLauncher;
 use beton_harness::registry::{HarnessLayers, Registry, RegistryOptions};
 use beton_harness::{
     AdapterContext, GateRequest, HarnessId, HarnessSession, HostEnv, NormalizedEvent, SessionSpec,
@@ -466,6 +466,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     env.user = boot.harnesses.user.clone();
     env.project = boot.harnesses.project.clone();
     env.vars.remove("BETON_RUNNER_TOKEN");
+    // SBX-001 AC4: Jeder Start des Harness meldet `sandbox.started`; bis SBX-006 (WP-49)
+    // ausdrücklich ohne Isolation (`backend: none`).
+    let (sandbox_tx, sandbox_rx) = mpsc::unbounded_channel::<EventPayload>();
+    let mut sandbox_events = Some(sandbox_rx);
+    let sandbox = beton_sandbox::Sandbox::unsandboxed(
+        beton_sandbox::Stage::Harness,
+        Some(Arc::new(move |ev| {
+            let _ = sandbox_tx.send(EventPayload::SandboxStarted(ev));
+        })),
+    );
     let actor = Actor::Agent {
         id: None,
         harness: boot.harness.to_string(),
@@ -556,7 +566,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
     let ctx = AdapterContext {
         gate: Arc::new(gate.clone()),
-        launcher: Arc::new(RealLauncher),
+        launcher: Arc::new(SandboxLauncher::new(sandbox)),
         env,
     };
     // `PreToolUse`-Hook (HAR-005): `beton hook claude …` aus dem eigenen Binary.
@@ -921,6 +931,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
     pre_events.extend(drain_gate(&boot, &mut gate_rx, &HashMap::new()));
     pending_status.splice(0..0, pre_events);
+    while let Some(Ok(payload)) = sandbox_events.as_mut().map(|rx| rx.try_recv()) {
+        pending_status.push(system_event(&boot, payload));
+    }
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
@@ -1320,6 +1333,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 if !send(&mut ws, &msg).await { break None; }
                             }
                         }
+                    }
+                }
+                ev = recv_opt(&mut sandbox_events) => {
+                    let Some(payload) = ev else { sandbox_events = None; continue };
+                    if !push(&mut ws, &boot, &mut unacked, vec![system_event(&boot, payload)]).await {
+                        break None;
                     }
                 }
                 call = recv_opt(&mut system_calls) => {

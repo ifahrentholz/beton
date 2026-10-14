@@ -1,6 +1,10 @@
 //! Der echte ACP-Adapter gegen den ACP-Test-Agent der Fake-CLI (`--protocol acp`) über eine
 //! echte Prozessgrenze (QA-002, HAR-007, HAR-008).
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 use std::path::{Path, PathBuf};

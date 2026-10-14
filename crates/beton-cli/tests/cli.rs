@@ -2,6 +2,10 @@
 //! DATA-005). Der Daemon läuft als eigener Prozess mit eigenem `BETON_HOME`; Sessions nutzen
 //! den Fake-Harness (`--dev`), Runner starten als `beton __runner`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 
 mod common;

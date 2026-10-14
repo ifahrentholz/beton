@@ -13,6 +13,7 @@ async-trait.workspace = true
 beton-agents.workspace = true
 beton-core.workspace = true
 beton-harness.workspace = true
+beton-sandbox.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 ignore.workspace = true

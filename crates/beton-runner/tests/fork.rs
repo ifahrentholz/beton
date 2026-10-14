@@ -2,6 +2,10 @@
 //! SES-007, HAR-018, HAR-019). Claude Code und Codex sind die Fake-CLI (QA-002), der
 //! Verlauf der Claude-Fake-CLI liegt mit `--persist` in einem eigenen `CLAUDE_CONFIG_DIR`.
 
+#![allow(
+    clippy::disallowed_methods,
+    reason = "Testaufbau startet Prozesse direkt (SBX-001 gilt für Harness und Tools)"
+)]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 

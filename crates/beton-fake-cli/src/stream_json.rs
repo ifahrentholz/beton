@@ -140,6 +140,10 @@ enum HookOutcome {
 
 /// Ruft den Hook wie Claude Code per Shell auf: Hook-JSON auf stdin, Antwort auf stdout,
 /// Exit-Code 2 blockiert mit stderr als Begründung.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Fake-Harness für Tests: ruft den PreToolUse-Hook wie Claude Code per Shell auf"
+)]
 fn run_hook(command: &str, input: &Value) -> HookOutcome {
     use std::io::Write as _;
     use std::process::{Command, Stdio};

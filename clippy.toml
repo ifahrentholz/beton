@@ -1,2 +1,12 @@
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
+
+# SBX-001 AC2: Harness- und Tool-Prozesse starten ausschließlich über `beton-sandbox`
+# (`SandboxProvider::spawn`, später auch `beton-pty`). Ausnahmen nur für beton-eigene
+# Prozesse (Stufe 0) mit `#[expect(clippy::disallowed_methods, reason = "…")]`; die Liste
+# hält `cargo xtask spawn-lint` fest (xtask/src/spawn_lint.rs).
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "Prozesse über beton_sandbox::SandboxProvider::spawn starten (SBX-001)" },
+    { path = "tokio::process::Command::new", reason = "Prozesse über beton_sandbox::SandboxProvider::spawn starten (SBX-001)" },
+    { path = "process_wrap::tokio::CommandWrap::with_new", reason = "Prozesse über beton_sandbox::SandboxProvider::spawn starten (SBX-001)" },
+]
