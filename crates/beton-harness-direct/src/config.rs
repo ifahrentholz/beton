@@ -361,7 +361,7 @@ ollama:
   base_url: http://127.0.0.1:11434/v1
   api_key: none
 ";
-        let section: BTreeMap<String, Value> = serde_yaml_ng::from_str(yaml).unwrap();
+        let section: BTreeMap<String, Value> = serde_norway::from_str(yaml).unwrap();
         let (ok, problems) = parse_providers(&section);
         assert!(problems.is_empty(), "{problems:?}");
         let or = ok.iter().find(|p| p.name == "openrouter").unwrap();
