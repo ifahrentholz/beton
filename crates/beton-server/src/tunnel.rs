@@ -912,6 +912,20 @@ mod tests {
     /// #198: Nach dem geordneten Stopp verliert nur das Token des beendeten Runners seine
     /// Gültigkeit. Ein Nachfolger, der schon gestartet wurde (Eingabe an die gestoppte Session),
     /// meldet sich mit seinem eigenen Token weiter an.
+    /// Security-Review zu #198: Tokens gelten je Session nur für den zuletzt gestarteten Runner
+    /// (Generation). Ein früherer, nie verbundener Start kommt danach nicht mehr in den Tunnel.
+    #[test]
+    fn ses_003_ac3_minting_revokes_older_tokens_of_the_session() {
+        let runners = RunnerRegistry::default();
+        let (session, other) = (SessionId::new(), SessionId::new());
+        let first = runners.mint_token(session).unwrap();
+        let foreign = runners.mint_token(other).unwrap();
+        let second = runners.mint_token(session).unwrap();
+        assert_eq!(runners.session_for(&first), None, "ältere Generation");
+        assert_eq!(runners.session_for(&second), Some(session));
+        assert_eq!(runners.session_for(&foreign), Some(other), "andere Session");
+    }
+
     #[test]
     fn ses_003_ac3_stopping_a_runner_keeps_the_token_of_its_successor() {
         let runners = RunnerRegistry::default();
