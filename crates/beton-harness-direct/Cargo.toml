@@ -30,7 +30,7 @@ ulid.workspace = true
 
 [dev-dependencies]
 beton-harness-direct = { workspace = true, features = ["mock"] }
-serde_yaml_ng.workspace = true
+serde_norway.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true
 

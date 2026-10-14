@@ -208,7 +208,7 @@ pub fn parse(text: &str, file: &Path) -> Result<McpFile, ConfigError> {
     if text.trim().is_empty() {
         return Ok(McpFile::default());
     }
-    serde_yaml_ng::from_str(text).map_err(|e| ConfigError {
+    serde_norway::from_str(text).map_err(|e| ConfigError {
         file: file.to_owned(),
         line: e.location().map(|l| l.line()),
         column: e.location().map(|l| l.column()),

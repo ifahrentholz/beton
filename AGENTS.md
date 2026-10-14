@@ -84,7 +84,7 @@ Logs gehen über `tracing` (Modul `beton_cli::logging`). Prompts, Tool-Inhalte u
 Der Maintainer hat die Entscheidungen delegiert: Agents treffen Architektur- und Umsetzungsentscheidungen selbst und halten grundsätzliche Entscheidungen als ADR fest (`docs/adr/`). Verbindlich bleiben die Prämissen des Maintainers (ADR-0032 Design-first, ADR-0033 lokal ohne externe Server, ADR-0034 Subscription-first). PRs ohne Label `security-review` dürfen nach grüner CI gemergt werden.
 
 Dem Maintainer vorgelegt werden nur:
-- **Security-Review vor dem Merge** (Label `security-review`): `beton-sandbox`, `beton-proxy`, `beton-secrets`, `beton-policy`, Auth/Sharing in `beton-server`, Release-, Signing- und Update-Pipeline.
+- **Security-Review vor dem Merge** (Label `security-review`): `beton-sandbox`, `beton-proxy`, `beton-secrets`, `beton-policy`, Auth/Sharing in `beton-server`, Release-, Signing- und Update-Pipeline. Bis zur eigenen Agent-Identität (ADR-0036) ist die Freigabe die ausdrückliche Zustimmung des Maintainers im Chat oder als PR-Kommentar; ohne sie wird nicht gemergt. Das gilt auch für das Label `no-test-needed`.
 - **Designs zur Abnahme** (Design-Prototyp, ADR-0032).
 - **Recht, Geld und Accounts** (Label `human-required`), z. B. Nutzungsbedingungen, Signing-Zertifikate, kostenpflichtige Dienste.
 - **Unumkehrbares**, z. B. das Repo öffentlich machen, Releases veröffentlichen, Daten löschen.
