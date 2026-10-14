@@ -50,6 +50,8 @@ pub struct Settings {
     pub features: Vec<String>,
     /// Eigene Preise (USE-003); nur in der User-Konfiguration.
     pub pricing: PricingSettings,
+    /// Usage-Anzeige und -Hinweise (USE-004).
+    pub usage: UsageSettings,
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
@@ -120,6 +122,23 @@ pub struct PricingSettings {
     /// Preis-Overrides mit Glob auf `provider`/`model`; der erste passende Eintrag gewinnt.
     /// Gilt vor vom Harness gemeldeten Kosten und vor dem Preis-Katalog.
     pub overrides: Vec<PriceOverride>,
+}
+
+/// Usage (USE-004): Hinweise zu Abo-Fenstern der Vendor-Logins.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UsageSettings {
+    /// Inbox-Hinweis, sobald ein Abo-Fenster (z. B. 5h) zu mindestens 90 % genutzt ist; einmal
+    /// je Fenster und Periode. Default `true`.
+    pub rate_limit_notice: bool,
+}
+
+impl Default for UsageSettings {
+    fn default() -> Self {
+        Self {
+            rate_limit_notice: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -801,6 +820,28 @@ mod tests {
             .find(|(k, _, _)| k == key)
             .map(|(_, _, s)| s)
             .unwrap_or_else(|| panic!("{key} fehlt"))
+    }
+
+    #[test]
+    fn use_004_ac3_rate_limit_notice_is_on_by_default_and_can_be_switched_off() {
+        let f = fixture();
+        let on = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert!(on.usage.rate_limit_notice);
+        let off = f
+            .load(&[("BETON_CFG_USAGE__RATE_LIMIT_NOTICE", "false")])
+            .unwrap()
+            .daemon_settings()
+            .unwrap();
+        assert!(!off.usage.rate_limit_notice);
+        f.write_user("usage:\n  rate_limit_notice: false\n");
+        assert!(
+            !f.load(&[])
+                .unwrap()
+                .daemon_settings()
+                .unwrap()
+                .usage
+                .rate_limit_notice
+        );
     }
 
     #[test]

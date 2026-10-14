@@ -94,6 +94,9 @@ pub struct Runtime {
     /// Automatische Session-Titel (SES-010).
     pub titles: crate::titles::TitlesConfig,
     pub title_jobs: Arc<crate::titles::TitleJobs>,
+    /// `usage.*` (USE-004 AC3): Inbox-Hinweis bei fast aufgebrauchtem Abo-Fenster.
+    pub usage: crate::usage_notice::UsageConfig,
+    pub usage_notices: Arc<crate::usage_notice::NoticeLog>,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
@@ -147,6 +150,8 @@ impl Runtime {
             sse: crate::sse::SseConfig::default(),
             titles: crate::titles::TitlesConfig::default(),
             title_jobs: Arc::default(),
+            usage: crate::usage_notice::UsageConfig::default(),
+            usage_notices: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
             secret_backend: Arc::new(beton_secrets::backend::NoBackend),
@@ -348,6 +353,8 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_inbox::list_inbox))
         .routes(routes!(crate::api_inbox::get_inbox_item))
         .routes(routes!(crate::api_inbox::resolve_inbox_item))
+        .routes(routes!(crate::api_usage::get_usage))
+        .routes(routes!(crate::api_usage::get_session_usage))
         // Policies: Explain, Dry-Run und Shadow-Ansicht (POL-027).
         .routes(routes!(crate::api_policies::list_policies))
         .routes(routes!(crate::api_policies::evaluate))

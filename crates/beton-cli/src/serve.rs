@@ -304,6 +304,9 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
     let titles = titles_config(&settings.titles);
+    let usage = beton_server::usage_notice::UsageConfig {
+        rate_limit_notice: settings.usage.rate_limit_notice,
+    };
     let attachments = beton_server::attachments::AttachmentLimits {
         max_file_bytes: settings.attachments.max_file_bytes,
         max_files: settings.attachments.max_files,
@@ -405,6 +408,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.harnesses = registry;
         r.features = Arc::new(features);
         r.titles = titles;
+        r.usage = usage;
         r.attachments = attachments;
         r.secret_backend = secret_backend;
         r.redactor = Some(redactor);

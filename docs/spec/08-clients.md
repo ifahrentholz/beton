@@ -80,7 +80,7 @@ beton
 ├── import   [--harness claude|codex|all] [--session REF]… [--last N] [--force] [FILE.jsonl|FILE.tar.zst]
 ├── export   <SESSION> [-o FILE] [--with-blobs] [--with-raw]
 ├── config   get|set|unset|list|edit [--global|--project]
-├── usage    [--by day|session|project|harness|model|user|team] [--since DATE|DUR] [--from DATE --to DATE]
+├── usage    [--by day|session|project|harness|model|auth_source|user|team] [--since DATE|DUR] [--from DATE --to DATE]
 │           [--session ID] [--json|--csv] | pricing explain --model M [--provider P]
 ├── agent    list|show|validate|new|schema
 ├── mcp      list|add|remove|test [--global|--project]  # UX-010, AGT-006

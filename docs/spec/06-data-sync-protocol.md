@@ -96,7 +96,8 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
 | Kosten & Kontext | `cost.delta` | D | `harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported\|estimated\|subscription, auth_source: vendor_cli\|api_key\|gateway\|none, purpose?, cost_source?: override\|harness\|catalog\|none\|subscription, pricing_version?, equivalent_micro?` (die letzten drei setzt der Server beim Append, USE-001) |
-| | `usage.subscription` | D | `vendor, window, used_pct, resets_at` |
+| | `usage.subscription` | D | `vendor, window, used_pct, resets_at` (`window` einheitlich: `5h`, `7d`, `7d_opus`; USE-004) |
+| | `usage.rate_limit_high` | D | `vendor, window, used_pct, resets_at, threshold_pct` (Server: Abo-Fenster ab 90 %, einmal je Fenster und Periode; Inbox-Hinweis, USE-004 AC3) |
 | | `context.usage` | D | `used_tokens, window_tokens, source: harness\|estimated` |
 | | `compaction.started` / `compaction.completed` | D | `before_tokens, after_tokens?` |
 | Workspace & Git | `fs.changed` | D | `changes: [{path, change: added\|modified\|deleted\|renamed, from?}], source: watcher\|api\|import` |

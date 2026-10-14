@@ -412,6 +412,9 @@ fn turn_completed(turn: &Value, st: &mut MapState) -> Vec<EventPayload> {
     out
 }
 
+/// `account/rateLimits/updated` → je Fenster ein `usage.subscription` (USE-004). Gegen 0.161.0
+/// verifiziert: `rateLimits.primary`/`secondary` mit `usedPercent` (0–100),
+/// `windowDurationMins` und `resetsAt` (Unix-Sekunden); fehlende Fenster sind `null`.
 fn rate_limits(limits: &Value) -> Vec<EventPayload> {
     ["primary", "secondary"]
         .iter()
@@ -419,9 +422,10 @@ fn rate_limits(limits: &Value) -> Vec<EventPayload> {
             let w = &limits[*window];
             let used = w["usedPercent"].as_f64()?;
             let resets = time::OffsetDateTime::from_unix_timestamp(w["resetsAt"].as_i64()?).ok()?;
-            let name = w["windowDurationMins"]
-                .as_u64()
-                .map_or_else(|| (*window).to_owned(), |m| format!("{m}m"));
+            let name = w["windowDurationMins"].as_u64().map_or_else(
+                || (*window).to_owned(),
+                beton_core::usage::window_from_minutes,
+            );
             Some(EventPayload::UsageSubscription(UsageSubscription {
                 vendor: "openai".into(),
                 window: name,
@@ -548,15 +552,34 @@ mod tests {
     }
 
     #[test]
-    fn rate_limits_map_to_usage_subscription() {
+    fn use_004_ac2_rate_limits_map_to_usage_subscription() {
+        // Form wie von 0.161.0 gemeldet (Tarif und Guthaben weggelassen).
         let out = map_notification(
             "account/rateLimits/updated",
-            &json!({"rateLimits": {"primary": {"usedPercent": 42, "windowDurationMins": 300, "resetsAt": 1791051000}, "secondary": null}}),
+            &json!({"rateLimits": {"limitId": "codex", "limitName": null,
+                "primary": {"usedPercent": 34, "windowDurationMins": 300, "resetsAt": 1792012264},
+                "secondary": {"usedPercent": 6, "windowDurationMins": 10080, "resetsAt": 1792493577},
+                "rateLimitReachedType": null}}),
+            &mut MapState::default(),
+        );
+        let windows: Vec<_> = out
+            .iter()
+            .map(|e| match e {
+                EventPayload::UsageSubscription(u) => {
+                    (u.vendor.as_str(), u.window.as_str(), u.used_pct)
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(windows, [("openai", "5h", 34.0), ("openai", "7d", 6.0)]);
+        let out = map_notification(
+            "account/rateLimits/updated",
+            &json!({"rateLimits": {"primary": {"usedPercent": 42, "windowDurationMins": 90, "resetsAt": 1791051000}, "secondary": null}}),
             &mut MapState::default(),
         );
         let [EventPayload::UsageSubscription(u)] = out.as_slice() else {
             panic!("{out:?}")
         };
-        assert_eq!((u.window.as_str(), u.used_pct), ("300m", 42.0));
+        assert_eq!((u.window.as_str(), u.used_pct), ("90m", 42.0));
     }
 }

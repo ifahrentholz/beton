@@ -198,7 +198,10 @@ pub async fn start_with(
             system: Some(Arc::new(crate::sessions::ServerSystemCalls(
                 system_state.clone(),
             ))),
-            observer: Some(Arc::new(crate::titles::TitleObserver(system_state))),
+            observer: Some(Arc::new(crate::tunnel::Observers(vec![
+                Arc::new(crate::titles::TitleObserver(system_state.clone())),
+                Arc::new(crate::usage_notice::UsageNoticeObserver(system_state)),
+            ]))),
             shutdown: Some(stop_rx.clone()),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(

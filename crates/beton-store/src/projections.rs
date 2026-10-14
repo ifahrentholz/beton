@@ -9,6 +9,7 @@
 //!   Katalogversion; Grundlage für Usage-Ansichten und die Policy-Variablen `session.cost_usd`
 //!   und `user.daily_cost_usd`
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
+//! - Abo-Fenster der Vendor-Logins je Session (`usage_subscription_windows`, USE-004)
 //! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
 //! - Shadow-Treffer je Tag und Regel (`policy_shadow_daily`, POL-027 AC4)
 //!
@@ -272,6 +273,9 @@ pub(crate) async fn apply(
             .execute(&mut *conn)
             .await?;
         }
+        EventPayload::UsageSubscription(u) => {
+            crate::usage::index_window(conn, org, session, seq, ts, u).await?;
+        }
         // Shadow-Treffer je Tag und Regel (POL-027 AC4).
         EventPayload::PolicyDecision(d) => {
             crate::policy::project_decision(conn, org, session, seq, ts, d).await?;
@@ -331,6 +335,7 @@ impl Store {
             "DELETE FROM inbox_items WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM usage_subscription_windows WHERE org_id = ? AND session_id = ?",
             "DELETE FROM policy_shadow_daily WHERE org_id = ? AND session_id = ?",
         ] {
             sqlx::query(sql)
@@ -501,6 +506,9 @@ impl Store {
             "SELECT * FROM inbox_items WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
             "SELECT * FROM usage_records WHERE org_id = ? ORDER BY session_id, seq",
+            "SELECT org_id, session_id, harness, vendor, window_name, CAST(used_pct AS TEXT), \
+             resets_at, seq, ts FROM usage_subscription_windows WHERE org_id = ? \
+             ORDER BY session_id, vendor, window_name",
             "SELECT * FROM policy_shadow_daily WHERE org_id = ? \
              ORDER BY session_id, day, scope, set_name, rule_id, verdict",
             "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \

@@ -188,6 +188,17 @@ impl Client {
         }
     }
 
+    /// `GET /v1/usage` (USE-005): Parameter wie `from`, `to`, `tz`, `group_by`.
+    pub async fn usage(&self, query: &[(&str, String)]) -> Result<Value> {
+        self.send(self.http.get(self.url("/v1/usage")).query(query))
+            .await
+    }
+
+    /// `GET /v1/sessions/{id}/usage` (USE-007): Records je Turn.
+    pub async fn session_usage(&self, id: &str) -> Result<Value> {
+        self.get(&format!("/v1/sessions/{id}/usage")).await
+    }
+
     /// `POST /v1/sessions`: Session anlegen und Runner starten (SES-001).
     pub async fn create_session(&self, request: &Value) -> Result<Value> {
         self.send(self.http.post(self.url("/v1/sessions")).json(request))

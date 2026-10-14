@@ -11,6 +11,8 @@
 //! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
 //! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
 //! - `schemas/v1/export-header.schema.json` (Kopfzeile des Session-Exports, DATA-010)
+//! - `schemas/v1/usage.schema.json` (`GET /v1/usage`, `beton usage --json`, USE-005/USE-007)
+//! - `schemas/v1/usage-session.schema.json` (`beton usage --session <id> --json`, USE-007)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
@@ -98,6 +100,14 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
             "schemas/v1/export-header.schema.json",
             schemars::schema_for!(beton_store::ExportHeader),
         ),
+        (
+            "schemas/v1/usage.schema.json",
+            schemars::schema_for!(beton_server::api_usage::UsageReportView),
+        ),
+        (
+            "schemas/v1/usage-session.schema.json",
+            schemars::schema_for!(beton_server::api_usage::SessionUsageView),
+        ),
     ] {
         let mut json = serde_json::to_string_pretty(&schema)?;
         json.push('\n');
@@ -145,6 +155,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         use beton_server::api_inbox::{InboxItemView, InboxPage};
         InboxItemView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         InboxPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Usage (USE-005, USE-007).
+        use beton_server::api_usage::{SessionUsageView, UsageReportView};
+        UsageReportView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        SessionUsageView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Policies: Explain, Dry-Run, Shadow-Ansicht (POL-027).
         use beton_server::api_policies::{
             DecisionExplain, EffectivePolicies, EvaluateRequest, PolicyEvaluation, ShadowReport,

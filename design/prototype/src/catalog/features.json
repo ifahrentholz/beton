@@ -351,7 +351,7 @@
   "anchor": "har-021--usage---kontext-reporting",
   "summary": "Adapter liefern Token-Verbrauch und, falls vom Harness gemeldet, Kosten als `cost.delta` sowie den Kontext-Füllstand als `context.usage`. Bei Subscription-Nutzung wird statt eines Geldbetrags die Token-/Rate-Limit-Nutzung gemeldet. Preisberechnung und Usage-Seite liegen in USE-001 bzw. USE-006 (siehe 11-platform-features.md).",
   "acs": [
-   "Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log.",
+   "Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log (bei mehreren Modellen in `modelUsage` eins je Modell, *präzisiert WP-44*).",
    "Bei `auth_source: vendor_cli` ist `cost_micro` leer und `source: subscription`; ein API-Äquivalent erscheint nie als tatsächliche Ausgabe (USE-004).",
    "(ab M2) `session.cost_usd` (Policy-Variable) ist nach jedem `cost.delta` aktualisiert (Test über Policy-Explain, POL-027). *(Präzisiert, WP-40: geprüft über `POST /v1/policies/evaluate` bzw. `beton policy eval --session`, deren Erklärung die benutzten Kontextwerte nennt.)*"
   ]
@@ -5342,7 +5342,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "use-004--subscription-usage",
-  "summary": "Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt eines Geldbetrags. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(Annahme: gegen aktuelle CLI-Versionen verifizieren, siehe HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.",
+  "summary": "Bei Subscription-Nutzung zeigt beton Token-Verbrauch und — soweit die Vendor-CLI es meldet — Rate-Limit-Fenster (genutzter Anteil, Reset-Zeitpunkt) statt eines Geldbetrags. Quellen: Claude-`result`-Nachricht (Tokens je Modell), Codex-Notifications zu Token-Usage und Rate-Limits *(verifiziert, siehe Details und HAR-021 in 01-harnesses.md)*, `usage.subscription`-Events (PROTO-002). Liefert ein Harness nichts (z.B. ACP ohne Usage), zeigt beton „nicht gemeldet“ statt 0.",
   "acs": [
    "Eine Claude-Subscription-Session zeigt Token-Summen pro Modell und kein Geld-Feld; optional das API-Äquivalent, klar als „informativ“ gekennzeichnet.",
    "Ein `usage.subscription {window: \"5h\", used_pct: 72, resets_at}` erscheint als Fortschrittsbalken mit Reset-Uhrzeit in Nutzer-Zeitzone.",
@@ -5362,8 +5362,8 @@
   "summary": "`GET /v1/usage` liefert aggregierte Zeitreihen und Summen mit `group_by` (`day`, `session`, `project`, `harness`, `model`, `auth_source`, ab M4 `user`, `team`), Filtern (`from`, `to`, `project`, `harness`, `user`, `team`) und getrennten Summen für Geld und Tokens. Sichtbarkeit nach Rolle: Member eigene Daten, Team-Admins ihr Team, Owner die Org (AUTH-014, siehe 05-security-identity.md). Tägliche Rollups halten Abfragen über 90 Tage unter 200 ms.",
   "acs": [
    "`GET /v1/usage?group_by=day,harness&from=…&to=…` liefert pro Tag/Harness `cost_usd`, `equivalent_usd`, Token-Summen und `unpriced_count`.",
-   "Ein Member erhält für `user=<anderer>` HTTP 403.",
-   "Abfrage über 90 Tage mit 1 Mio. Records antwortet in < 200 ms (Postgres, Benchmark in CI-Nightly)."
+   "(ab M4) Ein Member erhält für `user=<anderer>` HTTP 403. *(Verschoben, WP-44, #246: Rollen kommen mit AUTH-014 in M4; lokal gibt es nur den Owner.)*",
+   "(ab M4) Abfrage über 90 Tage mit 1 Mio. Records antwortet in < 200 ms (Postgres, Benchmark in CI-Nightly). *(Verschoben, WP-44, #246: Postgres kommt mit DATA-004 in M4.)*"
   ]
  },
  {

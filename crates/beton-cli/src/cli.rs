@@ -86,9 +86,9 @@ pub enum Command {
     /// Konfiguration lesen und schreiben.
     #[command(subcommand)]
     Config(ConfigCommand),
-    /// Verbrauch und Preise.
-    #[command(subcommand)]
-    Usage(UsageCommand),
+    /// Verbrauch: Tokens, Kosten und Abo-Fenster; ohne Daemon direkt aus der lokalen
+    /// Datenbank (nur lesend).
+    Usage(UsageArgs),
     /// Agent-Definitionen auflisten, anzeigen, prüfen und anlegen.
     #[command(subcommand)]
     Agent(AgentCommand),
@@ -841,6 +841,40 @@ pub struct AuditExportArgs {
     /// Zieldatei (Default: stdout); wird nur für den Eigentümer lesbar angelegt.
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub output: Option<PathBuf>,
+}
+
+/// `beton usage` (USE-007, CLI-010). Ohne Angaben: heute und die letzten 7 Tage je Harness.
+#[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct UsageArgs {
+    #[command(subcommand)]
+    pub command: Option<UsageCommand>,
+    #[command(flatten)]
+    pub report: UsageReportArgs,
+}
+
+#[derive(Debug, Clone, Default, Args)]
+pub struct UsageReportArgs {
+    /// Gruppierung, auch mehrere mit Komma: day, session, project, harness, model,
+    /// auth_source (user und team ab M4).
+    #[arg(long, value_name = "DIM", value_delimiter = ',')]
+    pub by: Vec<String>,
+    /// Zeitraum bis jetzt: Dauer (`30m`, `12h`, `7d`, `2w`) oder Datum (`2026-10-01`, ab 00:00
+    /// in der lokalen Zeitzone).
+    #[arg(long, value_name = "DATE|DUR", conflicts_with_all = ["from", "to"])]
+    pub since: Option<String>,
+    /// Erster Tag (`JJJJ-MM-TT`, lokale Zeitzone).
+    #[arg(long, value_name = "DATE")]
+    pub from: Option<String>,
+    /// Letzter Tag, einschließlich (`JJJJ-MM-TT`, lokale Zeitzone).
+    #[arg(long, value_name = "DATE")]
+    pub to: Option<String>,
+    /// Nur diese Session: Tokens, Kosten und Preisquelle je Turn.
+    #[arg(long, value_name = "ID", conflicts_with_all = ["by", "since", "from", "to"])]
+    pub session: Option<String>,
+    /// CSV statt Tabelle (eine Zeile je Gruppe bzw. Turn).
+    #[arg(long)]
+    pub csv: bool,
 }
 
 #[derive(Debug, Subcommand)]

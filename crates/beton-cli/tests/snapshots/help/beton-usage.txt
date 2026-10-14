@@ -1,6 +1,7 @@
-Verbrauch und Preise
+Verbrauch: Tokens, Kosten und Abo-Fenster; ohne Daemon direkt aus der lokalen Datenbank (nur lesend)
 
-Usage: beton usage [OPTIONS] <COMMAND>
+Usage: beton usage [OPTIONS]
+       beton usage <COMMAND>
 
 Commands:
   pricing  Preis-Katalog und eigene Preise
@@ -11,11 +12,22 @@ Options:
           
           [env: BETON_SERVER]
 
+      --by <DIM>
+          Gruppierung, auch mehrere mit Komma: day, session, project, harness, model, auth_source
+          (user und team ab M4)
+
       --json
           Maschinenlesbare Ausgabe (JSON) auf stdout
 
   -q, --quiet
           Keine Fortschritts- und Hinweismeldungen auf stderr
+
+      --since <DATE|DUR>
+          Zeitraum bis jetzt: Dauer (`30m`, `12h`, `7d`, `2w`) oder Datum (`2026-10-01`, ab 00:00 in
+          der lokalen Zeitzone)
+
+      --from <DATE>
+          Erster Tag (`JJJJ-MM-TT`, lokale Zeitzone)
 
   -v, --verbose...
           Mehr Diagnose auf stderr (mehrfach: noch mehr)
@@ -23,8 +35,17 @@ Options:
       --no-color
           Keine Farben (auch über `NO_COLOR`)
 
+      --to <DATE>
+          Letzter Tag, einschließlich (`JJJJ-MM-TT`, lokale Zeitzone)
+
       --config <FILE>
           User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+      --session <ID>
+          Nur diese Session: Tokens, Kosten und Preisquelle je Turn
+
+      --csv
+          CSV statt Tabelle (eine Zeile je Gruppe bzw. Turn)
 
   -h, --help
           Print help

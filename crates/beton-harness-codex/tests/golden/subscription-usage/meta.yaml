@@ -1,0 +1,6 @@
+harness: codex
+cli_version: 0.161.0
+recorded_at: 2026-10-14T21:41:59.799Z
+scenario: 'Kurzer Turn mit Subscription-Login: account/rateLimits/updated und thread/tokenUsage/updated (USE-004)'
+platform: macos-aarch64
+exit_code: 0

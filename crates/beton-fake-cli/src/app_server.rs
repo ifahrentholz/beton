@@ -9,7 +9,7 @@
 //! `item/reasoning/summaryTextDelta`; `tool_call` mit `kind: shell` → `commandExecution`
 //! (Freigabe über `item/commandExecution/requestApproval`), `kind: file_edit|file_write` →
 //! `fileChange` (`item/fileChange/requestApproval`), sonst `mcpToolCall`; `usage` →
-//! `thread/tokenUsage/updated`; `error`/`auth_expired` → `error`-Notification und
+//! `thread/tokenUsage/updated`; `rate_limit` → `account/rateLimits/updated`; `error`/`auth_expired` → `error`-Notification und
 //! `turn/completed` mit Status `failed`; `hang` wartet auf `turn/interrupt`; `await_steer`
 //! wartet auf `turn/steer` und setzt den Turn danach fort. Ein `turn/steer` während einer
 //! offenen Freigabe nimmt der Fake wie die echte CLI an.
@@ -462,6 +462,16 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             self.complete(state, &json!(error), true)?;
         } else if let Some(usage) = &step.usage {
             self.usage(state, usage)?;
+        } else if let Some(limit) = &step.rate_limit {
+            // Wie codex 0.161.0: ein Fenster als `primary`, Tarif und Guthaben ohne Angabe.
+            self.notify(
+                "account/rateLimits/updated",
+                json!({"rateLimits": {
+                    "limitId": "codex", "limitName": null, "planType": null, "credits": null,
+                    "primary": {"usedPercent": limit.used_pct, "windowDurationMins": limit.minutes(), "resetsAt": limit.resets_at()},
+                    "secondary": null, "rateLimitReachedType": null,
+                }}),
+            )?;
         } else if let Some(message) = &step.error {
             return Ok(TurnEnd::Failed {
                 message: message.clone(),
