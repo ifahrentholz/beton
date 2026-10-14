@@ -654,3 +654,52 @@ async fn agt_008_ac2_skill_load_returns_the_body_without_frontmatter() {
     assert!(!result.contains("description: Behebt CI"), "{result}");
     env.daemon.shutdown().await;
 }
+
+// --------------------------------------------------------------------------- AGT-007 AC4
+
+#[tokio::test]
+async fn agt_007_ac4_ask_user_question_answer_becomes_the_tool_result() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "c.yaml",
+        &mcp_scenario(
+            "beton",
+            "ask_user",
+            json!({"question": "Pro IP oder pro Account?", "options": ["Pro IP", "Pro Account"]}),
+        ),
+    );
+    let env = Env::start(&[claude_path(&s)], |_| {}).await;
+    let id = env.create("claude").await;
+    env.input(&id, "los").await;
+    let events = env
+        .wait_for(&id, |e| e["type"] == "approval.requested")
+        .await;
+    let q = of_type(&events, "approval.requested")[0];
+    assert_eq!(q["payload"]["kind"], "question");
+    assert_eq!(
+        q["payload"]["subject"]["question"],
+        "Pro IP oder pro Account?"
+    );
+    // Die Frage steht in der Inbox.
+    let (_, inbox) = env.http("GET", "/v1/inbox?kind=question", None).await;
+    assert_eq!(inbox["items"][0]["summary"], "Pro IP oder pro Account?");
+    let item = inbox["items"][0]["id"].as_str().unwrap().to_owned();
+    let (status, body) = env
+        .http(
+            "POST",
+            &format!("/v1/inbox/{item}/resolve"),
+            Some(json!({"decision": "answer", "answer": "Pro IP, zusätzlich pro Account"})),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    let events = env.wait_for(&id, |e| e["type"] == "turn.completed").await;
+    let result = tool_result(&events);
+    assert!(
+        result.contains("Pro IP, zusätzlich pro Account"),
+        "{result}"
+    );
+    let resolved = of_type(&events, "approval.resolved")[0];
+    assert_eq!(resolved["payload"]["decision"], "answer");
+    env.daemon.shutdown().await;
+}

@@ -1897,6 +1897,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/PolicyNotified"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.notified"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/PolicyRuleIssue"
             },
             "type": {
@@ -2950,6 +2966,7 @@
         "policy.set_changed",
         "policy.set_invalid",
         "policy.state_changed",
+        "policy.notified",
         "policy.enforcement_degraded",
         "policy.rule_inapplicable",
         "budget.exhausted",
@@ -3492,6 +3509,38 @@
         "enforcement",
         "policy_set_hash",
         "eval_us"
+      ]
+    },
+    "PolicyNotified": {
+      "type": "object",
+      "properties": {
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rule_id": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "set": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule_id",
+        "scope",
+        "set",
+        "channels"
       ]
     },
     "PolicyOutcome": {

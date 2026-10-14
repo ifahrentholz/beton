@@ -200,6 +200,11 @@ pub trait RunnerProvider: Send + Sync {
     async fn exec(&self, h: &RunnerHandle, req: ExecRequest) -> Result<ExecOutput, RunnerError>;
     async fn status(&self, h: &RunnerHandle) -> Result<RunnerStatus, RunnerError>;
     async fn terminate(&self, h: &RunnerHandle, mode: TerminateMode) -> Result<(), RunnerError>;
+    /// Gibt einen Runner aus der Aufsicht frei, ohne ihn zu beenden: Er überdauert den Daemon
+    /// und verbindet sich mit dem nächsten neu (POL-010 AC4). Ohne Kindprozesse: nichts zu tun.
+    async fn release(&self, _h: &RunnerHandle) -> Result<(), RunnerError> {
+        Ok(())
+    }
     async fn snapshot(&self, _h: &RunnerHandle) -> Result<SnapshotRef, RunnerError> {
         Err(RunnerError::Unsupported)
     }

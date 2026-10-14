@@ -11,7 +11,7 @@
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
 //! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
 //!
-//! Kommentare und Inbox (COL-005, COL-009) kommen mit ihren Features dazu.
+//! Die Inbox (UX-001) projiziert `crate::inbox`; Kommentare (COL-005, COL-009) kommen mit ihren Features dazu.
 
 use beton_core::event::{
     ApprovalDecision, ApprovalKind, AuthSource, EventPayload, PriceSource, SessionStatus,
@@ -273,6 +273,7 @@ pub(crate) async fn apply(
         }
         _ => {}
     }
+    crate::inbox::index_event(conn, org, session, seq, ts, payload).await?;
     crate::listing::index_event(conn, org, session, seq, payload).await
 }
 
@@ -322,6 +323,7 @@ impl Store {
         crate::listing::purge_docs(&mut *tx, org, id).await?;
         for sql in [
             "DELETE FROM approvals WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM inbox_items WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
         ] {
@@ -490,6 +492,7 @@ impl Store {
              worktree_branch, worktree_base, worktree_base_sha FROM sessions \
              WHERE org_id = ? ORDER BY id",
             "SELECT * FROM approvals WHERE org_id = ? ORDER BY session_id, id",
+            "SELECT * FROM inbox_items WHERE org_id = ? ORDER BY session_id, id",
             "SELECT * FROM usage_daily WHERE org_id = ? ORDER BY session_id, day, harness, model",
             "SELECT * FROM usage_records WHERE org_id = ? ORDER BY session_id, seq",
             "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \
