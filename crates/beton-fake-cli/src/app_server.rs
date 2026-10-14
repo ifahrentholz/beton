@@ -11,7 +11,8 @@
 //! `fileChange` (`item/fileChange/requestApproval`), sonst `mcpToolCall`; `usage` →
 //! `thread/tokenUsage/updated`; `error`/`auth_expired` → `error`-Notification und
 //! `turn/completed` mit Status `failed`; `hang` wartet auf `turn/interrupt`; `await_steer`
-//! wartet auf `turn/steer` und setzt den Turn danach fort.
+//! wartet auf `turn/steer` und setzt den Turn danach fort. Ein `turn/steer` während einer
+//! offenen Freigabe nimmt der Fake wie die echte CLI an.
 
 use std::io::{BufRead, Write};
 use std::time::Duration;
@@ -501,20 +502,9 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                 }
                 continue;
             }
-            let Some(id) = msg.get("id").cloned() else {
+            let Some(text) = self.steer(&msg, state)? else {
                 continue;
             };
-            let params = &msg["params"];
-            if params["expectedTurnId"].as_str() != Some(state.turn_id.as_str()) {
-                self.respond_error(&id, -32600, "expectedTurnId passt nicht zum aktiven Turn")?;
-                continue;
-            }
-            let text = input_text(params);
-            self.respond(&id, json!({"turnId": state.turn_id}))?;
-            let item_id = self.next_item("user");
-            let item = json!({"type": "userMessage", "id": item_id, "content": params["input"]});
-            self.item("item/started", state, item.clone())?;
-            self.item("item/completed", state, item)?;
             if !expected.is_empty() && text != expected {
                 return Ok(TurnEnd::Failed {
                     message: format!("Steer: erwartet `{expected}`, erhalten `{text}`"),
@@ -523,6 +513,28 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             }
             return Ok(TurnEnd::Done);
         }
+    }
+
+    /// Nimmt `turn/steer` für den laufenden Turn an. Wie die echte CLI prüft der Fake
+    /// `expectedTurnId` und legt die Eingabe als Item `userMessage` an; der Text kommt in die
+    /// Kontext-Aufzeichnung (`source: steer`). `None`, wenn die Anfrage abgelehnt wurde.
+    fn steer(&mut self, msg: &Value, state: &TurnState) -> Result<Option<String>, Stop> {
+        let Some(id) = msg.get("id").cloned() else {
+            return Ok(None);
+        };
+        let params = &msg["params"];
+        if params["expectedTurnId"].as_str() != Some(state.turn_id.as_str()) {
+            self.respond_error(&id, -32600, "expectedTurnId passt nicht zum aktiven Turn")?;
+            return Ok(None);
+        }
+        let text = input_text(params);
+        crate::io::record_context("steer", &text);
+        self.respond(&id, json!({"turnId": state.turn_id}))?;
+        let item_id = self.next_item("user");
+        let item = json!({"type": "userMessage", "id": item_id, "content": params["input"]});
+        self.item("item/started", state, item.clone())?;
+        self.item("item/completed", state, item)?;
+        Ok(Some(text))
     }
 
     /// Beantwortet `turn/interrupt`; `true`, wenn es eine war.
@@ -580,6 +592,12 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
                     "cancel" => None,
                     _ => Some(false),
                 });
+            }
+            // Wie codex-cli 0.153.2: Ein Steer während der offenen Rückfrage landet im
+            // laufenden Turn (HAR-006, #149).
+            if msg["method"] == "turn/steer" {
+                self.steer(&msg, state)?;
+                continue;
             }
             if self.interrupt_request(&msg)? {
                 return Ok(None);

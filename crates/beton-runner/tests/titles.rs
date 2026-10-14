@@ -391,6 +391,12 @@ async fn ses_010_sessions_with_a_title_keep_it() {
 
 /// Claude-Session über die Fake-CLI; `env` kommt zur Umgebung des Daemons hinzu.
 async fn claude_title(env: Vec<(&str, &str)>) -> (Vec<Value>, Vec<Value>) {
+    cli_title("claude", env).await
+}
+
+/// Session auf `harness` (`claude` oder `codex`) über die Fake-CLI; liefert die Events und
+/// die protokollierten Einmal-Aufrufe der CLI.
+async fn cli_title(harness: &str, env: Vec<(&str, &str)>) -> (Vec<Value>, Vec<Value>) {
     let dir = tmp();
     let fake = PathBuf::from(runner_bin()).with_file_name("beton-fake-cli");
     if !fake.is_file() {
@@ -409,10 +415,19 @@ async fn claude_title(env: Vec<(&str, &str)>) -> (Vec<Value>, Vec<Value>) {
     let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| !k.ends_with("_API_KEY") && k != "ANTHROPIC_AUTH_TOKEN")
         .collect();
+    let (var, protocol, fake) = match harness {
+        // Ein Link namens `codex`, damit der Versions-Probe die Codex-Version liest.
+        "codex" => {
+            let link = dir.path().join("codex");
+            std::os::unix::fs::symlink(&fake, &link).unwrap();
+            ("BETON_CODEX_PATH", "app-server", link)
+        }
+        _ => ("BETON_CLAUDE_PATH", "stream-json", fake),
+    };
     inherit.insert(
-        "BETON_CLAUDE_PATH".into(),
+        var.into(),
         format!(
-            "{} --protocol stream-json --scenario {} --record {}",
+            "{} --protocol {protocol} --scenario {} --record {}",
             fake.display(),
             sc.display(),
             record.display()
@@ -430,7 +445,7 @@ async fn claude_title(env: Vec<(&str, &str)>) -> (Vec<Value>, Vec<Value>) {
     })
     .await;
     let id = d
-        .create(json!({"target": "claude", "cwd": dir.path()}))
+        .create(json!({"target": harness, "cwd": dir.path()}))
         .await;
     d.wait_status(&id, "idle").await;
     d.input(&id, "Die Login-Route braucht einen Rate-Limiter.")
@@ -511,4 +526,20 @@ async fn ses_010_ac4_api_keys_in_the_daemon_env_never_reach_the_one_shot() {
         title_costs(&events)[0]["payload"]["auth_source"],
         "vendor_cli"
     );
+}
+
+#[tokio::test]
+async fn ses_010_codex_title_falls_back_to_heuristic_without_one_shot() {
+    // `codex exec` lässt sich nicht ohne Tools starten (#146): kein Einmal-Aufruf, auch wenn
+    // die CLI einen Titel liefern könnte; `auto` nimmt die Heuristik (fail closed).
+    let (events, calls) = cli_title("codex", Vec::new()).await;
+    assert_eq!(
+        titles(&events),
+        vec![(
+            "Die Login-Route braucht einen Rate-Limiter.".to_owned(),
+            "generated".to_owned()
+        )]
+    );
+    assert!(calls.is_empty(), "kein `codex exec`: {calls:?}");
+    assert!(title_costs(&events).is_empty(), "kein Modellaufruf");
 }

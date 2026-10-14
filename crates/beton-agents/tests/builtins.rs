@@ -239,3 +239,32 @@ fn agt_012_ac3_duetto_refuses_to_debate_with_one_voice() {
     assert!(system.contains("Debattiere nie mit nur einer Stimme"));
     assert!(system.contains("duetto braucht zwei Stimmen auf verschiedenen Harnesses"));
 }
+
+#[test]
+fn agt_011_plan_mode_agents_never_call_exit_plan_mode_and_delegate_instead() {
+    // #148: maestra hat nach dem Planen `ExitPlanMode` aufgerufen statt zu delegieren. Die
+    // Anweisungen verbieten das; der Claude-Adapter lehnt es zusätzlich ab (HAR-027).
+    let maestra = text("maestra", "prompts/system.md");
+    assert!(
+        maestra.contains("Rufe **nie** `ExitPlanMode` auf"),
+        "{maestra}"
+    );
+    assert!(
+        maestra.contains("sofort die\n  Umsetzung mit `session_spawn`"),
+        "{maestra}"
+    );
+    let plan = text("maestra", "skills/plan/SKILL.md");
+    assert!(plan.contains("nie über `ExitPlanMode`"), "{plan}");
+    let duetto = text("duetto", "prompts/system.md");
+    assert!(duetto.contains("Rufe nie `ExitPlanMode` auf"), "{duetto}");
+    assert!(duetto.contains("per `session_spawn`"), "{duetto}");
+    for (agent, rel) in [
+        ("maestra", "agents/review-claude/prompts/system.md"),
+        ("duetto", "agents/voce-claude/prompts/system.md"),
+    ] {
+        assert!(
+            text(agent, rel).contains("nie `ExitPlanMode`"),
+            "{agent}/{rel}"
+        );
+    }
+}

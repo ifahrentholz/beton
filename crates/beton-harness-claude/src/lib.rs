@@ -531,6 +531,7 @@ impl HarnessAdapter for ClaudeAdapter {
                 tx: tx.clone(),
                 gate: ctx.gate.clone(),
                 gate_timeout: self.gate_timeout,
+                plan_locked: spec.plan_locked,
                 process: process.clone(),
                 closing: closing.clone(),
             },
@@ -564,6 +565,8 @@ struct Reader {
     tx: mpsc::Sender<NormalizedEvent>,
     gate: Arc<dyn Gate>,
     gate_timeout: Duration,
+    /// Der Agent bindet die Session an `plan` (AGT-011): `ExitPlanMode` wird abgelehnt.
+    plan_locked: bool,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -687,6 +690,12 @@ async fn send(
         .await;
 }
 
+/// Tool der CLI, mit dem das Modell den Plan-Modus verlassen will (HAR-027).
+pub const EXIT_PLAN_MODE: &str = "ExitPlanMode";
+
+/// Begründung an das Modell, wenn der Agent die Session an `plan` bindet (AGT-011).
+pub const PLAN_LOCKED_REASON: &str = "Abgelehnt von beton: Diese Session bleibt im Plan-Modus, weil ihr Agent `permission_mode: plan` festlegt; er schreibt selbst keinen Code. Rufe ExitPlanMode nicht auf, sondern gib Plan oder Ergebnis als normale Antwort. Soll etwas umgesetzt werden, delegiere es per session_spawn an einen Sub-Agent.";
+
 /// Permission-Bridge (HAR-005): `can_use_tool` → Gate → `control_response`.
 async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     let req = &v["request"];
@@ -720,17 +729,26 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
         turn,
     )
     .await;
-    let decision = tokio::time::timeout(
-        r.gate_timeout,
-        r.gate.decide(GateRequest {
-            turn_id: turn,
-            call_id: call_id.clone(),
-            tool: tool.clone(),
-            kind: tool_kind(&tool).into(),
-            args: input.clone(),
-        }),
-    )
-    .await;
+    // AGT-011, HAR-027: Bindet der Agent die Session an `plan`, lehnt der Adapter
+    // `ExitPlanMode` ohne Rückfrage ab; die Begründung geht als Tool-Ergebnis an das Modell.
+    let by_agent = r.plan_locked && tool == EXIT_PLAN_MODE;
+    let decision = if by_agent {
+        Ok(GateDecision::Deny {
+            reason: Some(PLAN_LOCKED_REASON.into()),
+        })
+    } else {
+        tokio::time::timeout(
+            r.gate_timeout,
+            r.gate.decide(GateRequest {
+                turn_id: turn,
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                kind: tool_kind(&tool).into(),
+                args: input.clone(),
+            }),
+        )
+        .await
+    };
     let (response, decision, via, modified, comment) = match decision {
         Ok(GateDecision::Allow { updated_args }) => {
             let args = updated_args.clone().unwrap_or_else(|| input.clone());
@@ -745,7 +763,11 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
         Ok(GateDecision::Deny { reason }) => (
             json!({"behavior": "deny", "message": reason.clone().unwrap_or_else(|| "Von beton abgelehnt.".into())}),
             ApprovalDecision::Deny,
-            ResolvedVia::User,
+            if by_agent {
+                ResolvedVia::Policy
+            } else {
+                ResolvedVia::User
+            },
             None,
             // Die Begründung sehen auch andere Clients (WEB-018 AC1).
             reason,
@@ -764,7 +786,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
     }
     // Ein freigegebenes `ExitPlanMode` verlässt `plan` zum Modus davor (HAR-027); das Log
     // erfährt es, und der Wächter erwartet den neuen Modus.
-    let left_plan = if decision == ApprovalDecision::Allow && tool == "ExitPlanMode" {
+    let left_plan = if decision == ApprovalDecision::Allow && tool == EXIT_PLAN_MODE {
         r.state.lock().await.expected_mode.plan_exit_approved()
     } else {
         None
@@ -793,14 +815,14 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
             approval_id,
             decision,
             answer: None,
-            actor: if via == ResolvedVia::Timeout {
-                Actor::System {
-                    component: beton_core::event::SystemComponent::Runner,
-                }
-            } else {
+            actor: if via == ResolvedVia::User {
                 Actor::User {
                     id: PrincipalId::User(UserId::LOCAL),
                     device_id: None,
+                }
+            } else {
+                Actor::System {
+                    component: beton_core::event::SystemComponent::Runner,
                 }
             },
             via,

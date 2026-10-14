@@ -411,3 +411,103 @@ async fn ses_004_ac3_codex_steer_is_processed_in_the_running_turn() {
     assert!(s.steer("zu spät".into()).await.is_err());
     s.shutdown(Shutdown::Kill).await.unwrap();
 }
+
+/// Was beim Modell ankam (`--record`): `(source, text)` je Zeile.
+fn recorded(path: &Path) -> Vec<(String, String)> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).unwrap();
+            (
+                v["source"].as_str().unwrap().to_owned(),
+                v["text"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Lehnt ohne Begründung ab.
+struct DenySilently;
+
+#[async_trait]
+impl Gate for DenySilently {
+    async fn decide(&self, _request: GateRequest) -> GateDecision {
+        GateDecision::Deny { reason: None }
+    }
+}
+
+#[tokio::test]
+async fn har_006_denial_reason_reaches_the_model_via_steer() {
+    // #149: Die Approval-Antwort von Codex kennt nur `decline` ohne Text (Schema 0.153.2);
+    // die Begründung geht als `turn/steer` in den laufenden Turn.
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("kontext.jsonl");
+    let gate = Arc::new(Recording::default());
+    let (mut s, mut rx) = start(
+        &push_ask(),
+        &format!("--record {}", record.display()),
+        gate.clone(),
+    )
+    .await;
+    s.send("Bitte pushen".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    assert_eq!(gate.requests.lock().unwrap().len(), 1);
+    // Weiterhin abgelehnt und nicht ausgeführt.
+    assert_eq!(count(&events, "tool.call.started"), 0);
+    let completed = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::ToolCallCompleted(c) => Some(c),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(completed.status, ToolStatus::Denied);
+    let resolved = events
+        .iter()
+        .find_map(|e| match e {
+            EventPayload::ApprovalResolved(r) => Some(r),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(resolved.comment.as_deref(), Some("nicht erlaubt"));
+    // Die Begründung kam beim Modell an, im selben Turn, zusammen mit dem Befehl.
+    let steered: Vec<String> = recorded(&record)
+        .into_iter()
+        .filter(|(source, _)| source == "steer")
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(steered.len(), 1, "{steered:?}");
+    assert!(steered[0].contains("nicht erlaubt"), "{}", steered[0]);
+    assert!(
+        steered[0].contains("git push origin main"),
+        "{}",
+        steered[0]
+    );
+    assert_eq!(count(&events, "turn.started"), 1);
+    assert_eq!(names(&events).last(), Some(&"turn.completed"));
+    s.shutdown(Shutdown::default()).await.unwrap();
+}
+
+#[tokio::test]
+async fn har_006_denial_without_reason_sends_no_steer() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("kontext.jsonl");
+    let (mut s, mut rx) = start(
+        &push_ask(),
+        &format!("--record {}", record.display()),
+        Arc::new(DenySilently),
+    )
+    .await;
+    s.send("Bitte pushen".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    assert_eq!(count(&events, "tool.call.started"), 0);
+    assert_eq!(names(&events).last(), Some(&"turn.completed"));
+    assert!(
+        !recorded(&record)
+            .iter()
+            .any(|(source, _)| source == "steer"),
+        "ohne Begründung kein Steer"
+    );
+    s.shutdown(Shutdown::default()).await.unwrap();
+}

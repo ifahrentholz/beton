@@ -190,81 +190,6 @@ impl CodexAdapter {
     }
 }
 
-/// Kommandozeile des Einmal-Modus (SES-010, Flags gegen codex-cli 0.153.2 verifiziert):
-/// JSONL-Ereignisse, keine gespeicherte Session, nur lesende Sandbox. Der Inhalt kommt über
-/// stdin (`-`), nicht über argv. Ohne Modell gilt der Default der CLI-Konfiguration.
-pub fn one_shot_args(req: &OneShotRequest) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        "--sandbox",
-        "read-only",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect();
-    if let Some(model) = &req.model {
-        args.extend(["-m".into(), model.clone()]);
-    }
-    args.push("-".into());
-    args
-}
-
-/// Wertet die JSONL-Ausgabe von `codex exec --json` aus (SES-010): letzte
-/// `agent_message`, Tokens aus `turn.completed`; `turn.failed` bzw. `error` sind Fehler.
-pub fn parse_one_shot(
-    stdout: &[u8],
-    model: Option<&str>,
-    auth: AuthSource,
-) -> Result<OneShotReply, HarnessError> {
-    let mut text = None;
-    let mut usage = None;
-    let mut failure = None;
-    for line in String::from_utf8_lossy(stdout).lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        match v["type"].as_str() {
-            Some("item.completed") if v["item"]["type"] == "agent_message" => {
-                text = v["item"]["text"].as_str().map(str::to_owned);
-            }
-            Some("turn.completed") => usage = Some(v["usage"].clone()),
-            Some("turn.failed") => failure = Some("turn.failed".to_owned()),
-            Some("error") => failure = Some("error".to_owned()),
-            _ => {}
-        }
-    }
-    if let Some(kind) = failure.filter(|_| text.is_none()) {
-        return Err(HarnessError::Protocol(format!("codex exec meldet {kind}")));
-    }
-    let text = text.ok_or_else(|| HarnessError::Protocol("codex exec ohne Antwort".into()))?;
-    let model = model.unwrap_or_default().to_owned();
-    let cost = usage.map(|u| {
-        let tok = |k: &str| u[k].as_u64().unwrap_or(0);
-        beton_core::event::CostDelta {
-            harness: "codex".into(),
-            model: model.clone(),
-            input_tokens: tok("input_tokens").saturating_sub(tok("cached_input_tokens")),
-            output_tokens: tok("output_tokens"),
-            cache_read_tokens: tok("cached_input_tokens"),
-            cache_write_tokens: 0,
-            // Codex meldet nur Tokens; Preise folgen mit dem Katalog (USE-002, ab M2).
-            cost_micro: None,
-            currency: "USD".into(),
-            source: if auth == AuthSource::VendorCli {
-                beton_core::event::CostSource::Subscription
-            } else {
-                beton_core::event::CostSource::Estimated
-            },
-            auth_source: auth,
-            purpose: None,
-        }
-    });
-    Ok(OneShotReply { text, model, cost })
-}
-
 #[async_trait]
 impl HarnessAdapter for CodexAdapter {
     fn id(&self) -> HarnessId {
@@ -326,42 +251,21 @@ impl HarnessAdapter for CodexAdapter {
         Some(Arc::new(import::CodexImporter::default()))
     }
 
-    /// `codex exec` mit der Anmeldung der CLI (SES-010, ADR-0034).
+    /// Kein Einmal-Modus (SES-010, #146, fail closed): `codex exec` lässt sich nicht ohne
+    /// Tools starten. Gegen codex-cli 0.153.2 ohne Modellaufruf geprüft (lokaler Mock statt
+    /// Modell-API): `--ignore-user-config` lässt zwar MCP-Server aus Nutzer- und
+    /// Projekt-Konfiguration weg, und Feature-Schalter entfernen Shell, Bilder, Sub-Agents und
+    /// Websuche, `apply_patch` und `request_user_input` bleiben aber je nach Modell. Der
+    /// Adapter startet die CLI daher gar nicht; `titles.generator: auto` nimmt die Heuristik.
+    /// Auf einen anderen Harness weicht beton nicht aus, sonst ginge der Inhalt einer
+    /// Codex-Session an einen anderen Anbieter.
     async fn one_shot(
         &self,
         request: &OneShotRequest,
         ctx: &AdapterContext,
     ) -> Result<OneShotReply, HarnessError> {
-        let (program, mut args) = match resolve_binary(&harness_id(), "codex", &ctx.env) {
-            Some(bin) => (bin.program, bin.args),
-            None => ("codex".into(), Vec::new()),
-        };
-        args.extend(one_shot_args(request));
-        let launch = LaunchSpec {
-            program,
-            args,
-            env: Vec::new(),
-            env_remove: self.env_remove(),
-            clear_env: false,
-            cwd: Some(request.workdir.clone()),
-        };
-        let input = if request.instructions.is_empty() {
-            request.prompt.clone()
-        } else {
-            format!("{}\n\n{}", request.instructions, request.prompt)
-        };
-        let out = beton_harness::process::run_once(
-            ctx.launcher.as_ref(),
-            launch,
-            input.as_bytes(),
-            request.timeout,
-        )
-        .await
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::TimedOut => HarnessError::Timeout(e.to_string()),
-            _ => HarnessError::Io(e),
-        })?;
-        parse_one_shot(&out.stdout, request.model.as_deref(), self.auth)
+        let _ = (request, ctx);
+        Err(HarnessError::OneShotUnsupported)
     }
 
     async fn start(
@@ -848,6 +752,13 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
     if decision == ApprovalDecision::Deny {
         d.state.lock().await.denied.insert(call_id.clone());
     }
+    // Die Antwort kennt nur `decline` ohne Text (Schema 0.153.2); die Begründung geht vorher
+    // als `turn/steer` in den laufenden Turn, damit das Modell sie mit der Ablehnung sieht.
+    if answer == "decline"
+        && let Some(reason) = comment.as_deref()
+    {
+        steer_reason(d, params, reason).await;
+    }
     let _ = d.rpc.respond(id, json!({"decision": answer})).await;
     send(
         &d.tx,
@@ -879,6 +790,59 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
         if let Some(e) = started {
             send(&d.tx, e, None, turn).await;
         }
+    }
+}
+
+/// Text, mit dem das Modell von einer abgelehnten Freigabe erfährt (HAR-006, #149).
+pub fn denial_text(params: &Value, reason: &str) -> String {
+    let what = match params["command"].as_str() {
+        Some(command) => format!("Der Befehl `{command}` wurde"),
+        None => "Die Datei-Änderung wurde".to_owned(),
+    };
+    format!("[beton] {what} nicht freigegeben. Begründung: {reason}")
+}
+
+/// Gibt die Begründung einer Ablehnung per `turn/steer` an das Modell (HAR-006, #149). Die
+/// Anfrage ist geschrieben, bevor die Ablehnung rausgeht; gegen codex-cli 0.153.2 (lokaler
+/// Mock statt Modell-API) geprüft: Codex nimmt den Steer während der offenen Rückfrage an
+/// und schickt ihn nach der Ablehnung im selben Turn an das Modell. Fehlschläge stören den
+/// Turn nicht; die Begründung steht ohnehin in `approval.resolved`.
+async fn steer_reason(d: &Dispatcher, params: &Value, reason: &str) {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return;
+    }
+    let (turn, thread) = {
+        let st = d.state.lock().await;
+        (
+            params["turnId"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| st.codex_turn.clone()),
+            params["threadId"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| st.thread_id.clone()),
+        )
+    };
+    let (Some(turn), Some(thread)) = (turn, thread) else {
+        tracing::warn!("codex: Begründung ohne Turn-ID nicht weitergegeben");
+        return;
+    };
+    let request = json!({
+        "threadId": thread,
+        "expectedTurnId": turn,
+        "input": [{"type": "text", "text": denial_text(params, reason)}],
+    });
+    match d.rpc.request_detached("turn/steer", request).await {
+        Ok(reply) => {
+            tokio::spawn(async move {
+                if let Err(e) = reply.wait_timeout(Duration::from_secs(10)).await {
+                    tracing::warn!("codex: Begründung nicht angekommen: {e}");
+                }
+            });
+        }
+        Err(e) => tracing::warn!("codex: Begründung nicht gesendet: {e}"),
     }
 }
 

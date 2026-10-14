@@ -280,3 +280,98 @@ async fn har_027_approved_exit_plan_mode_returns_to_the_previous_mode() {
         "model=claude-fake effort=- mode=default"
     );
 }
+
+/// Erlaubt alles und zählt die Anfragen.
+#[derive(Default)]
+struct CountingGate(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl beton_harness::Gate for CountingGate {
+    async fn decide(&self, _request: beton_harness::GateRequest) -> beton_harness::GateDecision {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        beton_harness::GateDecision::Allow { updated_args: None }
+    }
+}
+
+#[tokio::test]
+async fn agt_011_plan_bound_by_the_agent_denies_exit_plan_mode_with_a_reason() {
+    // #148: Ein Agent mit `permission_mode: plan` (z. B. maestra) ruft `ExitPlanMode` auf. Der
+    // Adapter lehnt ab, ohne zu fragen, und die Begründung erreicht das Modell.
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("kontext.jsonl");
+    let sc = scenario(
+        dir.path(),
+        "turns:\n  - emit:\n      - { tool_call: { name: ExitPlanMode, kind: other, args: { plan: \"P\" } }, gate: true }\n      - { on_gate: { allow: [{ tool_result: ok }], deny: [{ message: \"Ich delegiere.\" }] } }\n  - emit: [{ echo_settings: true }]\n",
+    );
+    let mut env = HostEnv::default();
+    env.vars.insert(
+        "BETON_CLAUDE_PATH".into(),
+        format!(
+            "{} --protocol stream-json --scenario {} --record {}",
+            fake_cli(),
+            sc.display(),
+            record.display()
+        ),
+    );
+    let gate = Arc::new(CountingGate::default());
+    let ctx = AdapterContext {
+        gate: gate.clone(),
+        launcher: Arc::new(RealLauncher),
+        env,
+    };
+    let mut s = ClaudeAdapter::default()
+        .start(
+            SessionSpec {
+                workdir: dir.path().to_path_buf(),
+                permission_mode: Some(PermissionMode::Plan),
+                plan_locked: true,
+                ..SessionSpec::default()
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+    let mut rx = s.events().unwrap();
+    s.send("plane".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let payloads: Vec<_> = events.iter().map(|e| &e.payload).collect();
+    assert_eq!(
+        gate.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "keine Rückfrage"
+    );
+    let resolved = events
+        .iter()
+        .find_map(|e| match &e.payload {
+            EventPayload::ApprovalResolved(r) => Some(r),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{payloads:?}"));
+    assert_eq!(resolved.decision, beton_core::event::ApprovalDecision::Deny);
+    assert_eq!(resolved.via, beton_core::event::ResolvedVia::Policy);
+    let reason = resolved.comment.clone().unwrap();
+    assert!(reason.contains("session_spawn"), "{reason}");
+    // Kein Moduswechsel, kein Fail-closed, und das Modell hat die Begründung bekommen.
+    assert!(
+        !events.iter().any(|e| matches!(
+            e.payload,
+            EventPayload::SessionSettingsChanged(_) | EventPayload::Error(_)
+        )),
+        "{payloads:?}"
+    );
+    assert_eq!(reply(&events), "Ich delegiere.");
+    let context = std::fs::read_to_string(&record).unwrap();
+    let denials: Vec<serde_json::Value> = context
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .filter(|v| v["source"] == "tool_result")
+        .collect();
+    assert_eq!(denials.len(), 1, "{context}");
+    assert_eq!(denials[0]["text"], reason.as_str());
+    // Die Session bleibt im Plan-Modus.
+    s.send("los".into()).await.unwrap();
+    assert_eq!(
+        reply(&until_turn_end(&mut rx).await),
+        "model=claude-fake effort=- mode=plan"
+    );
+}

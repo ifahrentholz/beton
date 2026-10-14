@@ -635,6 +635,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         mcp: setup.injection.clone(),
         max_turns: setup.max_turns,
         instructions: setup.instructions.clone(),
+        // Ein Agent mit `permission_mode: plan` verlässt `plan` nicht selbst (AGT-011).
+        plan_locked: settings::plan_bound(
+            setup.agent_permission_mode,
+            start_settings.permission_mode,
+        ),
         ..SessionSpec::default()
     };
     // Für einen Neustart mit Resume (Capability `restart`, HAR-017 AC2).

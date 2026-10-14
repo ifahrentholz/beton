@@ -29,7 +29,8 @@ pub fn set_record(path: Option<std::path::PathBuf>) {
 
 /// Protokolliert, was beim Modell als Kontext ankäme (AGT-005): eine JSON-Zeile
 /// `{"source": …, "text": …}` je Eingabe in die Aufzeichnungsdatei, falls gesetzt.
-/// `source`: `append_system_prompt` (Claude), `developer_instructions` (Codex) oder `user`.
+/// `source`: `append_system_prompt` (Claude), `developer_instructions` (Codex), `user`,
+/// `tool_result` (Begründung einer Ablehnung, Claude) oder `steer` (Codex `turn/steer`).
 pub fn record_context(source: &str, text: &str) {
     let Some(Some(path)) = RECORD.get() else {
         return;

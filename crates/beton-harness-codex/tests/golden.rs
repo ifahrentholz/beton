@@ -47,6 +47,12 @@ async fn har_006_ac2_denied_git_push_is_not_executed() {
     );
     let stdin = std::fs::read_to_string(root().join("command-deny/expected.stdin.jsonl")).unwrap();
     assert!(stdin.contains("\"decision\":\"decline\""));
+    // #149: Die Begründung geht vor der Ablehnung als `turn/steer` in denselben Turn.
+    let steer = stdin
+        .find("\"method\":\"turn/steer\"")
+        .expect("turn/steer fehlt");
+    assert!(steer < stdin.find("\"decision\":\"decline\"").unwrap());
+    assert!(stdin.contains("Begründung: nicht erlaubt"));
 }
 
 #[tokio::test]

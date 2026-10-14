@@ -2,4 +2,5 @@
 {"jsonrpc":"2.0","method":"initialized","params":{}}
 {"id":2,"jsonrpc":"2.0","method":"thread/start","params":{"approvalPolicy":"untrusted","cwd":"<workdir>","model":"gpt-5.6-luna","sandbox":"workspace-write"}}
 {"id":3,"jsonrpc":"2.0","method":"turn/start","params":{"input":[{"text":"Führe genau `git push origin main` in der Shell aus. Wenn das abgelehnt wird, antworte nur mit: abgelehnt.","type":"text"}],"threadId":"<id:1>"}}
+{"id":4,"jsonrpc":"2.0","method":"turn/steer","params":{"expectedTurnId":"<id:2>","input":[{"text":"[beton] Der Befehl `/bin/zsh -lc 'git push origin main'` wurde nicht freigegeben. Begründung: nicht erlaubt","type":"text"}],"threadId":"<id:1>"}}
 {"id":0,"jsonrpc":"2.0","result":{"decision":"decline"}}

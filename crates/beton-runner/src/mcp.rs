@@ -132,6 +132,8 @@ pub struct McpSetup {
     pub instructions: Option<String>,
     /// `executor.timeout`: Wanduhr pro Run (AGT-004 AC3).
     pub timeout: Option<std::time::Duration>,
+    /// `executor.permission_mode` des Agents (HAR-027); `plan` bindet die Session (AGT-011).
+    pub agent_permission_mode: Option<beton_harness::PermissionMode>,
 }
 
 /// Woher der Agent einer Session kommt.
@@ -316,6 +318,7 @@ pub async fn prepare(
     }
     let agent: Option<LoadedAgent> = loaded.map(|(a, _)| a);
     setup.max_turns = agent.as_ref().and_then(|a| a.spec.executor.max_turns);
+    setup.agent_permission_mode = agent.as_ref().and_then(|a| a.spec.executor.permission_mode);
     let suffix = random_suffix();
     let agent_skills = match &agent {
         Some(a) => {

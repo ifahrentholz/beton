@@ -90,6 +90,24 @@ pub enum Incoming {
 type Writer = Arc<Mutex<Option<Box<dyn AsyncWrite + Send + Unpin>>>>;
 type Pending = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Result<Value, RpcError>>>>>;
 
+/// Ausstehende Antwort auf eine mit [`RpcClient::request_detached`] gesendete Anfrage.
+#[derive(Debug)]
+pub struct PendingReply(oneshot::Receiver<Result<Value, RpcError>>);
+
+impl PendingReply {
+    /// Wartet auf die Antwort; endet die Verbindung vorher, [`RpcError::Closed`].
+    pub async fn wait(self) -> Result<Value, RpcError> {
+        self.0.await.unwrap_or(Err(RpcError::Closed))
+    }
+
+    /// Wie [`Self::wait`], mit Frist.
+    pub async fn wait_timeout(self, timeout: Duration) -> Result<Value, RpcError> {
+        tokio::time::timeout(timeout, self.wait())
+            .await
+            .unwrap_or(Err(RpcError::Timeout(timeout)))
+    }
+}
+
 /// Client-Seite einer JSON-RPC-Verbindung; günstig klonbar.
 #[derive(Clone)]
 pub struct RpcClient {
@@ -146,6 +164,17 @@ impl RpcClient {
 
     /// Anfrage senden und auf die Antwort warten.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+        self.request_detached(method, params).await?.wait().await
+    }
+
+    /// Anfrage senden, ohne auf die Antwort zu warten: Kehrt der Aufruf zurück, ist die
+    /// Anfrage geschrieben (Reihenfolge auf stdin wie im Aufrufer); die Antwort liefert
+    /// [`PendingReply::wait`].
+    pub async fn request_detached(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingReply, RpcError> {
         let id = self.id();
         let (tx, rx) = oneshot::channel();
         if let Ok(mut p) = self.pending.lock() {
@@ -160,7 +189,7 @@ impl RpcClient {
             }
             return Err(e);
         }
-        rx.await.unwrap_or(Err(RpcError::Closed))
+        Ok(PendingReply(rx))
     }
 
     /// Wie [`Self::request`], mit Frist.

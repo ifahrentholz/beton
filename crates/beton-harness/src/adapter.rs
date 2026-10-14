@@ -129,6 +129,10 @@ pub struct SessionSpec {
     /// Instructions des Agents (AGT-005), fertig zusammengesetzt. Der Adapter liefert sie je
     /// Capability `instructions_delivery` genau einmal aus.
     pub instructions: Option<String>,
+    /// Der Agent legt `plan` fest (`executor.permission_mode: plan`, ohne Override): Die
+    /// Session darf den Plan-Modus nicht selbst verlassen; Claude: `ExitPlanMode` wird ohne
+    /// Rückfrage abgelehnt (AGT-011, HAR-027). Ein Moduswechsel durch den Nutzer bleibt möglich.
+    pub plan_locked: bool,
 }
 
 /// Erste Nachricht mit vorangestellten Instructions (`instructions_delivery:

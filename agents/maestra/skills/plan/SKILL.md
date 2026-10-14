@@ -17,6 +17,7 @@ user-invocable: true
    - **Akzeptanzkriterien** als prüfbare Liste (inkl. Tests, die grün sein müssen),
    - einen Implementer: abwechselnd `impl-claude` und `impl-codex`, damit beide Vendors
      arbeiten; ist nur ein Vendor verfügbar, nur dieser.
-4. Zeige den Plan als nummerierte Liste und fahre dann ohne Rückfrage mit `fanout` fort,
+4. Zeige den Plan als nummerierte Liste in einer normalen Antwort (nie über `ExitPlanMode`)
+   und fahre dann ohne Rückfrage mit `fanout` fort,
    außer das Ziel ist mehrdeutig und eine falsche Annahme wäre teuer – dann frage einmal
    knapp nach.
