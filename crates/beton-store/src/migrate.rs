@@ -74,10 +74,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "secrets_audit",
         sql: include_str!("../migrations/sqlite/0010_secrets_audit.sql"),
     },
+    Migration {
+        version: 11,
+        name: "inbox_policy_state",
+        sql: include_str!("../migrations/sqlite/0011_inbox_policy_state.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,

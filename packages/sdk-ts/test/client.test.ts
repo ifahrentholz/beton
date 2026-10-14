@@ -25,6 +25,25 @@ async function serve(handler: (req: IncomingMessage, text: string) => [number, u
 }
 
 describe('REST-Client', () => {
+  it('UX-001 AC2: Inbox lesen und Einträge entscheiden', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      if (req.method === 'GET') return [200, { items: [], next_cursor: null, open_count: 2 }]
+      return [200, {}]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    const page = await client.inbox.list({ status: 'open', kind: 'approval', limit: 10 })
+    expect(page.open_count).toBe(2)
+    await client.inbox.resolve('inb_1', { decision: 'allow', remember: 'session' })
+    await client.inbox.resolve('inb_2', { decision: 'answer', answer: 'Pro IP' })
+    expect(seen).toEqual([
+      'GET /v1/inbox?status=open&kind=approval&limit=10 ',
+      'POST /v1/inbox/inb_1/resolve {"decision":"allow","remember":"session"}',
+      'POST /v1/inbox/inb_2/resolve {"decision":"answer","answer":"Pro IP"}',
+    ])
+  })
+
   it('legt Sessions an und sendet Eingaben mit Bearer-Token', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

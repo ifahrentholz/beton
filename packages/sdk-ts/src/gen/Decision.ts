@@ -1,2 +1,2 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
-export type Decision = "allow" | "deny";
+export type Decision = "allow" | "deny" | "answer";

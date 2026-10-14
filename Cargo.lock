@@ -870,6 +870,7 @@ dependencies = [
  "beton-harness-direct",
  "beton-host",
  "beton-mcp",
+ "beton-policy",
  "beton-proto",
  "beton-proxy",
  "beton-sandbox",

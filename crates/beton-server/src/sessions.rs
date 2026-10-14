@@ -230,6 +230,13 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             // Verbrauchswerte für Policies (POL-004 AC3/AC4): `session.cost_usd`,
             // `user.daily_cost_usd` aus der Usage-Projektion.
             "policy.usage" => crate::usage_policy::policy_usage(&self.0, session).await,
+            // Zustand und Grants (POL-009, POL-010), Änderungen in `user_day`/`user`.
+            "policy.state" => crate::policy_state::policy_state(&self.0, session).await,
+            "policy.state.apply" => {
+                crate::policy_state::policy_state_apply(&self.0, session, &args).await
+            }
+            // Agent-Inbox (`inbox_read`, AGT-007).
+            "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
@@ -735,7 +742,7 @@ impl<'a> SessionManager<'a> {
     /// Setzt eine gestoppte Session mit neuem Runner fort (SES-003).
     pub async fn resume(&self, session: SessionId) -> Result<SessionRecord, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
-        if !self.state.runtime.runners.connected(session) {
+        if !self.await_adopted(session).await {
             let reference = self.last_native_ref(session).await?;
             self.launch(&record, reference).await?;
         }
@@ -743,9 +750,24 @@ impl<'a> SessionManager<'a> {
         Ok(self.state.store.session(self.org(), session).await?)
     }
 
+    /// Wartet auf einen abgekoppelten Runner eines vorigen Daemons, der sich neu verbinden
+    /// darf (POL-010 AC4), höchstens [`CONNECT_TIMEOUT`]. `true`, wenn er verbunden ist.
+    pub(crate) async fn await_adopted(&self, session: SessionId) -> bool {
+        let runners = &self.state.runtime.runners;
+        let start = Instant::now();
+        while runners.expected(session) && start.elapsed() < CONNECT_TIMEOUT {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !runners.connected(session) {
+            runners.forget_expected(session);
+            return false;
+        }
+        true
+    }
+
     /// Läuft (oder startet gerade) ein Runner für die Session?
     async fn runner_alive(&self, session: SessionId) -> bool {
-        if self.state.runtime.runners.connected(session) {
+        if self.await_adopted(session).await {
             return true;
         }
         let handle = self
@@ -767,7 +789,7 @@ impl<'a> SessionManager<'a> {
 
     /// Startet bzw. verbindet den Runner, falls nötig (SES-003 AC3).
     pub(crate) async fn ensure_runner(&self, session: SessionId) -> Result<(), Problem> {
-        if self.state.runtime.runners.connected(session) {
+        if self.await_adopted(session).await {
             return Ok(());
         }
         // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
@@ -1044,12 +1066,17 @@ impl<'a> SessionManager<'a> {
             .await
     }
 
-    /// Entscheidung für eine offene Freigabe an den Runner (WEB-018, HAR-005).
+    /// Entscheidung für eine offene Freigabe an den Runner (WEB-007, WEB-018, HAR-005).
+    ///
+    /// Geprüft wird gegen die offene Card (POL-010): `allow`/`deny` für Freigaben,
+    /// `answer` (mit Text) oder `deny` für Fragen (`ask_user`); `remember: session` nur, wenn die
+    /// Card `approve_session` anbietet. Der Runner erfährt, wer entschieden hat (`actor`).
     pub async fn resolve_approval(
         &self,
         session: SessionId,
         approval: &str,
         args: Value,
+        by: PrincipalId,
     ) -> Result<(), Problem> {
         let open = self.state.store.open_approvals(self.org()).await?;
         let found = open
@@ -1058,12 +1085,47 @@ impl<'a> SessionManager<'a> {
             .ok_or_else(|| {
                 Problem::new(ProblemCode::NotFound).detail(format!("Freigabe {approval}"))
             })?;
+        let invalid = |m: &str| Problem::new(ProblemCode::ValidationFailed).detail(m.to_owned());
+        let question = found.kind == beton_core::event::ApprovalKind::Question;
+        let decision = args["decision"].as_str().unwrap_or_default();
+        match (decision, question) {
+            ("allow" | "deny", false) | ("answer" | "deny", true) => {}
+            ("answer", false) => return Err(invalid("`answer` gibt es nur für Fragen")),
+            ("allow", true) => return Err(invalid("Fragen beantwortest du mit `answer`")),
+            _ => return Err(invalid("`decision` muss allow, deny oder answer sein")),
+        }
+        if decision == "answer" {
+            let answer = args["answer"].as_str().map(str::trim).unwrap_or_default();
+            if answer.is_empty() {
+                return Err(invalid("`answer` fehlt"));
+            }
+            if answer.chars().count() > 4096 {
+                return Err(invalid("`answer` ist länger als 4096 Zeichen"));
+            }
+        }
+        match args.get("remember").and_then(Value::as_str) {
+            None | Some("none") => {}
+            Some("session") if decision != "allow" => {
+                return Err(invalid("`remember: session` gibt es nur mit `allow`"));
+            }
+            Some("session") => {
+                if !found.options.iter().any(|o| o == "approve_session") {
+                    return Err(Problem::new(ProblemCode::Conflict).detail(
+                        "„Für diese Session erlauben“ bietet diese Freigabe nicht an".to_owned(),
+                    ));
+                }
+            }
+            Some(_) => return Err(invalid("`remember` muss none oder session sein")),
+        }
         let call_id = found.subject["call_id"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        // Nach einem Neustart des Daemons verbindet sich der wartende Runner neu (POL-010 AC4).
+        self.await_adopted(session).await;
         let mut payload = args;
         payload["call_id"] = Value::String(call_id);
+        payload["actor"] = serde_json::to_value(user_actor(by)).unwrap_or(Value::Null);
         self.state
             .runtime
             .runners
@@ -1304,17 +1366,49 @@ pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
 pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerRegistry) {
     let handles: Vec<(SessionId, RunnerHandle)> =
         cfg.launched.handles.lock().await.drain().collect();
-    for (session, h) in handles {
-        runners.revoke_tokens(session);
+    // Runner mit offener Freigabe überdauern den Daemon (POL-010 AC4): abkoppeln statt beenden;
+    // der nächste Daemon nimmt ihr Token bis zum Ablauf der Freigabe an.
+    let mut candidates: Vec<SessionId> = runners.connected_sessions();
+    candidates.extend(handles.iter().map(|(s, _)| *s));
+    candidates.sort();
+    candidates.dedup();
+    let waiting: Vec<SessionId> = candidates
+        .iter()
+        .copied()
+        .filter(|s| runners.connected(*s) && runners.has_open_approvals(*s))
+        .collect();
+    let detached = runners.detach(&waiting);
+    if let Some(path) = cfg
+        .tunnel_socket
+        .as_deref()
+        .and_then(crate::detached::path_for)
+        && let Err(e) = crate::detached::save(&path, &detached)
+    {
+        tracing::warn!("Abgekoppelte Runner nicht gespeichert: {e}");
+    }
+    let kept: Vec<SessionId> = detached.iter().map(|d| d.session_id).collect();
+    for (session, h) in &handles {
+        if kept.contains(session) {
+            tracing::info!(%session, "Runner wartet auf eine Freigabe und bleibt bestehen");
+            let _ = cfg.provider.release(h).await;
+            continue;
+        }
+        runners.revoke_tokens(*session);
         let _ = cfg
             .provider
             .terminate(
-                &h,
+                h,
                 TerminateMode::Graceful {
                     grace: Duration::from_secs(5),
                 },
             )
             .await;
+    }
+    // Übernommene Runner ohne Handle dieses Daemons: über den Tunnel beenden.
+    for session in runners.connected_sessions() {
+        if !kept.contains(&session) && !handles.iter().any(|(s, _)| *s == session) {
+            runners.stop(session, 5);
+        }
     }
 }
 

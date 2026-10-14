@@ -141,6 +141,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         RedactEventRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         RedactEventResponse::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         SessionSettings::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Inbox (UX-001).
+        use beton_server::api_inbox::{InboxItemView, InboxPage};
+        InboxItemView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        InboxPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Workspace-API (SES-017, SES-018).
         use beton_server::api_workspace::{
             ChangesPage, FileDiff, SearchPage, TreePage, WorkspaceFile, WorkspaceInfo,

@@ -270,11 +270,13 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-001 — Inbox
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Zentrale Inbox (Sidebar-Eintrag mit Zähler) für offene Approvals und Fragen (M2), fertige/fehlgeschlagene Async-Agents (M5, ASY-009 in 02-agents.md) und Mentions/Collaboration-Ereignisse (M4, COL-009 in 07-sessions-collaboration.md). Approvals und Fragen sind direkt in der Inbox beantwortbar (Approve/Deny mit optionalem Grund, Antwortfeld) — inklusive pausierter Sessions ohne Zuschauer. Filter nach Typ/Projekt, Tastatursteuerung (`j/k`, `a` approve, `d` deny, `Enter` öffnen). UX-001 ist Owner von Inbox-Projektion, Item-Schema und UI; ASY-009 und COL-009 erzeugen nur Einträge.
+- **Details:** *(Präzisiert, WP-37:)* Item-Schema: `{id, session_id, session_title, kind: approval|question|notice, status: open|done|info, approval_id?, title, summary, detail, created_seq, created_at, resolved_at?, resolution?}`. Quellen: `approval.requested` (`approval` bzw. `question` für `ask_user`, `open`), `approval.resolved` (→ `done` mit `decision`, `via`, `actor`, `comment?`, `answer?`), `policy.notified` (`notice`, `info`, zählt nicht). API: `GET /v1/inbox?status&kind&session_id&limit` → `{items, open_count}`, `GET /v1/inbox/{id}`, `POST /v1/inbox/{id}/resolve` (wie `approval.resolve`, POL-010). Die Projektion ist Teil von `beton admin projections rebuild`. Die Auswahl der Tastatursteuerung hängt am Eintrag, nicht an der Position: neue Einträge verschieben sie nicht, und ein verschwundener Eintrag wird nicht stellvertretend entschieden.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein `approval.requested` erscheint innerhalb von 1 s als Inbox-Item; nach `approval.resolved` (egal von welchem Client) ist es `done`.
   - [ ] AC2 — Approve aus der Inbox setzt eine pausierte Session fort, ohne dass die Session geöffnet wurde.
-  - [ ] AC3 — Der Zähler entspricht der Anzahl `open`-Items und ist in Tray/Dock-Badge gespiegelt (Desktop).
+  - [ ] AC3 — Der Zähler entspricht der Anzahl `open`-Items.
   - [ ] AC4 — Nach Neuaufbau der Projektion aus dem Event-Log ist der Inbox-Zustand identisch.
+  - [ ] AC5 — (ab M3) Der Zähler ist in Tray/Dock-Badge gespiegelt (Desktop, DESK-004). *(Verschoben aus AC3, WP-37, #217: die Desktop-App kommt mit M3.)*
 - **Abhängigkeiten:** POL-010 (siehe 03-policies.md), DATA-005 (siehe 06-data-sync-protocol.md)
 - **Referenz:** ADR-0021; Omnigent Inbox
 

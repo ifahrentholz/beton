@@ -4,11 +4,11 @@
 //! Freischaltungsregeln (Tabelle in `docs/spec/02-agents.md`) begrenzen. Ein direkter Aufruf
 //! eines nicht freigeschalteten Tools wird mit `tool_not_enabled` abgelehnt (fail closed).
 //!
-//! Verfügbar in M1: `policy_query`, `session_spawn` (synchron oder mit `async: true` im
+//! Verfügbar: `policy_query`, `session_spawn` (synchron oder mit `async: true` im
 //! Hintergrund), `session_send`, `session_wait`, `session_status`, `session_list`,
-//! `session_cancel` (Sub-Agents, AGT-009), `skill_load`, `skill_read_file`. `inbox_read` und
-//! `ask_user` folgen mit der Inbox (UX-001, ab M2), `timer_*` und `schedule_*` ab M5 (ASY-003,
-//! ASY-011). Die `session_*`-Tools führt der Server aus (`system.call`, PROTO-015); er prüft
+//! `session_cancel` (Sub-Agents, AGT-009), `skill_load`, `skill_read_file` sowie seit M2
+//! `inbox_read` und `ask_user` (Inbox, UX-001; immer sichtbar). `timer_*` und `schedule_*`
+//! folgen ab M5 (ASY-003, ASY-011). Die `session_*`-Tools führt der Server aus (`system.call`, PROTO-015); er prüft
 //! Grenzen (`max_depth`, `max_concurrent`) und dass nur eigene Childs angesprochen werden.
 
 use std::sync::Arc;
@@ -22,8 +22,10 @@ use crate::protocol::{self, Kind, codes};
 use crate::skills::{self, SkillSet};
 
 /// System-Tools, die diese Version anbietet.
-pub const AVAILABLE: [SystemTool; 9] = [
+pub const AVAILABLE: [SystemTool; 11] = [
     SystemTool::PolicyQuery,
+    SystemTool::InboxRead,
+    SystemTool::AskUser,
     SystemTool::SessionSpawn,
     SystemTool::SessionSend,
     SystemTool::SessionWait,
@@ -58,7 +60,7 @@ fn tool_from_name(name: &str) -> Option<SystemTool> {
 /// Ist die Freischaltungsregel des Tools erfüllt?
 fn unlocked(tool: SystemTool, agent: Option<&AgentSpec>, skills_active: bool) -> bool {
     match tool {
-        SystemTool::PolicyQuery => true,
+        SystemTool::PolicyQuery | SystemTool::InboxRead | SystemTool::AskUser => true,
         SystemTool::SkillLoad | SystemTool::SkillReadFile => skills_active,
         SystemTool::SessionSpawn
         | SystemTool::SessionSend
@@ -72,8 +74,8 @@ fn unlocked(tool: SystemTool, agent: Option<&AgentSpec>, skills_active: bool) ->
     }
 }
 
-/// Sichtbare System-Tools einer Session (AGT-007). Ohne Agent: `policy_query` und, wenn
-/// Skills aktiv sind, `skill_load`/`skill_read_file`. Mit Agent wählt `tools.system` aus
+/// Sichtbare System-Tools einer Session (AGT-007). Ohne Agent: `policy_query`, `inbox_read`,
+/// `ask_user` und, wenn Skills aktiv sind, `skill_load`/`skill_read_file`. Mit Agent wählt `tools.system` aus
 /// (leer: alle verfügbaren); Skill-Tools kommen mit aktiven Skills immer hinzu. Jede Auswahl
 /// gilt nur, wenn die Freischaltungsregel erfüllt ist; Tools späterer Meilensteine bleiben
 /// unsichtbar.
@@ -137,7 +139,35 @@ pub trait SystemBackend: Send + Sync {
     /// `session_send`, `session_wait`, `session_status`, `session_list`, `session_cancel`
     /// (AGT-009): führt der Server für die eigenen Childs aus.
     async fn session_tool(&self, tool: SystemTool, args: &Value) -> Result<Value, ToolFailure>;
+    /// `ask_user` (AGT-007 AC4): Inbox-Frage an den Menschen; blockiert bis zur Antwort oder
+    /// bis `timeout` (`None`: keine Antwort). Ohne Implementierung: abgelehnt.
+    async fn ask_user(
+        &self,
+        _question: &str,
+        _choices: &[String],
+        _timeout: std::time::Duration,
+    ) -> Result<Option<String>, ToolFailure> {
+        Err(ToolFailure::new(
+            "unavailable",
+            "Fragen sind hier nicht möglich",
+        ))
+    }
+    /// `inbox_read`: ungelesene Nachrichten an diese Session (Agent-Inbox), danach gelesen.
+    async fn inbox_read(&self, _args: &Value) -> Result<Value, ToolFailure> {
+        Err(ToolFailure::new(
+            "unavailable",
+            "Keine Agent-Inbox verfügbar",
+        ))
+    }
 }
+
+/// Frist von `ask_user` ohne Angabe bzw. höchstens.
+pub const ASK_DEFAULT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const ASK_MAX: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+/// Länge der Frage bzw. Zahl und Länge der Antwortvorschläge.
+const QUESTION_MAX: usize = 4096;
+const CHOICES_MAX: usize = 10;
+const CHOICE_MAX: usize = 200;
 
 /// Der MCP-Server `beton` einer Session.
 pub struct SystemServer {
@@ -287,6 +317,24 @@ impl SystemServer {
                     }
                 })
             }
+            SystemTool::AskUser => json!({
+                "name": name,
+                "description": "Stellt dem Menschen eine Frage (erscheint in seiner Inbox und in der Session) und wartet auf die Antwort. Nutze es nur, wenn du ohne Entscheidung des Menschen nicht sinnvoll weiterarbeiten kannst. Nach `timeout` (Default 30m, höchstens 24h) kommt `answered: false`.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "Die Frage, mit dem nötigen Kontext."},
+                        "options": {"type": "array", "items": {"type": "string"}, "description": "Antwortvorschläge (höchstens 10); der Mensch kann auch frei antworten."},
+                        "timeout": {"type": "string", "description": "Dauer wie `90s`, `30m`, `2h`."}
+                    },
+                    "required": ["question"]
+                }
+            }),
+            SystemTool::InboxRead => json!({
+                "name": name,
+                "description": "Liest ungelesene Nachrichten an diese Session (Agent-Inbox, z. B. Ergebnisse von Hintergrund-Agents). Jede Nachricht kommt genau einmal.",
+                "inputSchema": {"type": "object", "properties": {}}
+            }),
             SystemTool::SkillReadFile => json!({
                 "name": name,
                 "description": "Liest eine Zusatzdatei eines Skills, z. B. `scripts/run.sh` (nur innerhalb des Skill-Ordners).",
@@ -364,6 +412,8 @@ impl SystemServer {
             | SystemTool::SessionStatus
             | SystemTool::SessionCancel => self.backend.session_tool(tool, &args).await,
             SystemTool::SessionList => self.list(&args).await,
+            SystemTool::AskUser => self.ask(&args).await,
+            SystemTool::InboxRead => self.backend.inbox_read(&args).await,
             SystemTool::SkillLoad => {
                 let name = args["name"].as_str().unwrap_or_default();
                 return protocol::result(
@@ -398,6 +448,52 @@ impl SystemServer {
                 Err(f) => protocol::text_result(format!("{}: {}", f.code, f.message), true),
             },
         )
+    }
+
+    /// `ask_user`: prüft Frage, Vorschläge und Frist, dann fragt der Runner den Menschen.
+    async fn ask(&self, args: &Value) -> Result<Value, ToolFailure> {
+        let invalid = |m: &str| ToolFailure::new("invalid_args", m);
+        let question = args["question"]
+            .as_str()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .ok_or_else(|| invalid("`question` fehlt"))?;
+        if question.chars().count() > QUESTION_MAX {
+            return Err(invalid("`question` ist länger als 4096 Zeichen"));
+        }
+        let choices: Vec<String> = match args.get("options") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::trim)
+                        .filter(|c| !c.is_empty() && c.chars().count() <= CHOICE_MAX)
+                        .map(str::to_owned)
+                        .ok_or_else(|| invalid("`options` enthält nur Texte bis 200 Zeichen"))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(invalid("`options` muss eine Liste sein")),
+        };
+        if choices.len() > CHOICES_MAX {
+            return Err(invalid("höchstens 10 `options`"));
+        }
+        let timeout = match args.get("timeout").and_then(Value::as_str) {
+            None => ASK_DEFAULT,
+            Some(t) => serde_json::from_value::<beton_agents::spec::DurationText>(Value::String(
+                t.to_owned(),
+            ))
+            .ok()
+            .and_then(|d| d.to_duration())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| invalid("`timeout` ist keine Dauer wie `30m`"))?
+            .min(ASK_MAX),
+        };
+        let answer = self.backend.ask_user(question, &choices, timeout).await?;
+        Ok(json!({
+            "answered": answer.is_some(),
+            "answer": answer,
+        }))
     }
 
     /// `session_list`: Childs vom Server, startbare Sub-Agents samt Verfügbarkeit von hier.
@@ -474,6 +570,7 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         spawned: Mutex<Vec<(String, Value)>>,
+        asked: Mutex<Vec<(String, Vec<String>, std::time::Duration)>>,
     }
 
     #[async_trait]
@@ -498,6 +595,21 @@ mod tests {
                 .unwrap()
                 .push((tool_name(tool), args.clone()));
             Ok(json!({"tool": tool_name(tool), "children": []}))
+        }
+        async fn ask_user(
+            &self,
+            question: &str,
+            choices: &[String],
+            timeout: std::time::Duration,
+        ) -> Result<Option<String>, ToolFailure> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((question.to_owned(), choices.to_vec(), timeout));
+            Ok(choices.first().cloned())
+        }
+        async fn inbox_read(&self, _args: &Value) -> Result<Value, ToolFailure> {
+            Ok(json!({"messages": []}))
         }
     }
 
@@ -570,7 +682,7 @@ mod tests {
 
         // Ohne Agent ebenso.
         let s = server(None, backend.clone());
-        assert_eq!(list(&s).await, ["policy_query"]);
+        assert_eq!(list(&s).await, ["policy_query", "inbox_read", "ask_user"]);
         let reply = call(&s, "session_spawn", json!({"agent": "x", "prompt": "p"})).await;
         assert_eq!(reply["error"]["data"]["code"], "tool_not_enabled");
     }
@@ -586,6 +698,8 @@ mod tests {
             list(&s).await,
             [
                 "policy_query",
+                "inbox_read",
+                "ask_user",
                 "session_spawn",
                 "session_send",
                 "session_wait",
@@ -709,23 +823,114 @@ mod tests {
             "{BASE}tools: {{ system: [ask_user, inbox_read, timer_set, policy_query] }}\n"
         ));
         let s = server(Some(&spec), Arc::new(Recorder::default()));
-        assert_eq!(list(&s).await, ["policy_query"]);
-        let reply = call(&s, "ask_user", json!({})).await;
+        assert_eq!(list(&s).await, ["policy_query", "inbox_read", "ask_user"]);
+        let reply = call(&s, "timer_set", json!({})).await;
         assert_eq!(reply["error"]["data"]["code"], "tool_not_enabled");
         // Ein Agent, der policy_query nicht auswählt, bekommt es nicht.
         let spec = agent(&format!("{BASE}tools: {{ system: [ask_user] }}\n"));
         let s = server(Some(&spec), Arc::new(Recorder::default()));
-        assert!(list(&s).await.is_empty());
+        assert_eq!(list(&s).await, ["ask_user"]);
     }
 
     #[test]
     fn agt_007_skill_tools_follow_active_skills() {
         let names = |v: Vec<SystemTool>| v.into_iter().map(tool_name).collect::<Vec<_>>();
-        assert_eq!(names(enabled_tools(None, false)), ["policy_query"]);
+        // Ohne Agent: policy_query, inbox_read, ask_user (ab M2, UX-001).
+        assert_eq!(
+            names(enabled_tools(None, false)),
+            ["policy_query", "inbox_read", "ask_user"]
+        );
         assert_eq!(
             names(enabled_tools(None, true)),
-            ["policy_query", "skill_load", "skill_read_file"]
+            [
+                "policy_query",
+                "inbox_read",
+                "ask_user",
+                "skill_load",
+                "skill_read_file"
+            ]
         );
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac4_ask_user_passes_question_choices_and_timeout() {
+        let backend = Arc::new(Recorder::default());
+        let s = server(None, backend.clone());
+        let r = call(
+            &s,
+            "ask_user",
+            json!({"question": "Pro IP oder pro Account?", "options": ["Pro IP", "Pro Account"], "timeout": "5m"}),
+        )
+        .await;
+        let content = &r["result"]["structuredContent"];
+        assert_eq!(content["answered"], true, "{r}");
+        assert_eq!(content["answer"], "Pro IP");
+        let asked = backend.asked.lock().unwrap().clone();
+        assert_eq!(asked[0].0, "Pro IP oder pro Account?");
+        assert_eq!(asked[0].1, ["Pro IP", "Pro Account"]);
+        assert_eq!(asked[0].2, std::time::Duration::from_secs(300));
+        // Default 30 Minuten, höchstens 24 Stunden.
+        call(&s, "ask_user", json!({"question": "a"})).await;
+        call(&s, "ask_user", json!({"question": "b", "timeout": "3d"})).await;
+        let asked = backend.asked.lock().unwrap().clone();
+        assert_eq!(asked[1].2, std::time::Duration::from_secs(30 * 60));
+        assert_eq!(asked[2].2, std::time::Duration::from_secs(24 * 3600));
+        // Ohne Frage: Fehler für das Modell, keine Inbox-Frage.
+        let r = call(&s, "ask_user", json!({"question": " "})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        let r = call(&s, "ask_user", json!({"question": "x", "options": [1]})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+        assert_eq!(backend.asked.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn agt_007_ask_user_without_answer_says_so() {
+        #[derive(Default)]
+        struct Silent;
+        #[async_trait]
+        impl SystemBackend for Silent {
+            async fn policy_query(&self, _: &Value) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn session_spawn(
+                &self,
+                _: &SpawnTarget,
+                _: &Value,
+            ) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn session_tool(&self, _: SystemTool, _: &Value) -> Result<Value, ToolFailure> {
+                Ok(json!({}))
+            }
+            async fn ask_user(
+                &self,
+                _: &str,
+                _: &[String],
+                _: std::time::Duration,
+            ) -> Result<Option<String>, ToolFailure> {
+                Ok(None)
+            }
+        }
+        let s = SystemServer::new(
+            enabled_tools(None, false),
+            SkillSet::default(),
+            Vec::new(),
+            Arc::new(Silent),
+        );
+        let r = call(&s, "ask_user", json!({"question": "Noch da?"})).await;
+        let content = &r["result"]["structuredContent"];
+        assert_eq!(content["answered"], false, "{r}");
+        assert_eq!(content["answer"], Value::Null);
+        // inbox_read ohne eigene Implementierung: leer statt Fehler? Nein – fail closed.
+        let r = call(&s, "inbox_read", json!({})).await;
+        assert_eq!(r["result"]["isError"], true, "{r}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_inbox_read_comes_from_the_backend() {
+        let s = server(None, Arc::new(Recorder::default()));
+        let r = call(&s, "inbox_read", json!({})).await;
+        assert_eq!(r["result"]["structuredContent"]["messages"], json!([]));
     }
 
     #[tokio::test]

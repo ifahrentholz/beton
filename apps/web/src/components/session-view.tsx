@@ -11,7 +11,7 @@ import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
 import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
-import { openApprovals, timeline, type Item } from '@/lib/timeline'
+import { openApprovals, timeline, type ApprovalItem, type Item } from '@/lib/timeline'
 import { titleFrom, windowTitle } from '@/lib/title'
 import { changedPaths, lineLink, rangeLabel, withAttachments, type WorkspaceSearch } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
@@ -25,6 +25,7 @@ import { useLayout } from './layout-state'
 import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
+import { ApprovalBar } from './approval-bar'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
 
 /** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
@@ -143,6 +144,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     () => (log ? timeline(log) : []),
     [log],
   )
+  const approvals = useMemo(() => items.filter((i): i is ApprovalItem => i.kind === 'approval'), [items])
   const waiting = openApprovals(items).length > 0
   const running = meta.status === 'running' || meta.status === 'waiting_approval'
   const queue = useMemo(() => queueOf(log?.events), [log?.events])
@@ -325,6 +327,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           {sendError}
         </div>
       )}
+      <ApprovalBar sessionId={sessionId} approvals={approvals} />
       <AttachmentChips sessionId={sessionId} />
       <Composer
         sessionId={sessionId}

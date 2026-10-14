@@ -403,6 +403,20 @@ impl Client {
         .await
     }
 
+    /// Frage des Agents beantworten (`ask_user`, AGT-007 AC4).
+    pub async fn answer_question(
+        &self,
+        id: &str,
+        approval_id: &str,
+        answer: &str,
+    ) -> Result<Value> {
+        self.post(
+            &format!("/v1/sessions/{id}/approvals/{approval_id}/resolve"),
+            &serde_json::json!({ "decision": "answer", "answer": answer }),
+        )
+        .await
+    }
+
     /// `GET /v1/secrets` über alle Seiten: `{"items": [...], "store": {...}}`. Enthält nie Werte.
     pub async fn list_secrets(&self) -> Result<Value> {
         let mut items = Vec::new();

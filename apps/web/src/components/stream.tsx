@@ -3,7 +3,8 @@ import type { Attachment } from '@beton/sdk'
 import { Check, ChevronRight, ShieldAlert, SquareTerminal, X } from 'lucide-react'
 import { client } from '@/lib/client'
 import { argSummary, seconds } from '@/lib/format'
-import type { Item, ToolState } from '@/lib/timeline'
+import { decidedBy } from '@/lib/approvals'
+import type { ApprovalItem, Item, ToolState } from '@/lib/timeline'
 import { cn } from '@/lib/utils'
 import { harnessName, voiceOf, voiceVar } from './harness'
 import { SentAttachment } from './attachments'
@@ -113,65 +114,41 @@ export function ToolCard({ item }: { item: Extract<Item, { kind: 'tool' }> }) {
 }
 
 /**
- * Freigabe-Karte (WEB-018): Tool-Name, Argumente als JSON (ausklappbar), „Erlauben“ und
- * „Ablehnen“ mit optionalem Kommentar an das Modell. Die Fase markiert „du bist dran“.
+ * Freigabe im Verlauf (WEB-018, abgelöst durch WEB-007): offen nur als Verweis auf die
+ * Freigabe-Leiste über der Eingabe, entschieden als Karte mit Vermerk, wer entschieden hat.
  */
-export function ApprovalCard({ sessionId, item }: { sessionId: string; item: Extract<Item, { kind: 'approval' }> }) {
+export function ApprovalCard({ item }: { sessionId?: string; item: ApprovalItem }) {
   const [showArgs, setShowArgs] = useState(false)
-  const [comment, setComment] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | undefined>()
   const decided = item.decision !== undefined
-  const resolve = async (allow: boolean) => {
-    setBusy(true)
-    setError(undefined)
-    try {
-      await client.session(sessionId).resolveApproval(item.approvalId, {
-        decision: allow ? 'allow' : 'deny',
-        ...(!allow && comment.trim() ? { reason: comment.trim() } : {}),
-      })
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Entscheidung nicht übermittelt')
-      setBusy(false)
-    }
-  }
+  const question = item.approvalKind === 'question'
   return (
     <div className="ml-9" data-testid="approval-card" data-decided={decided ? 'true' : 'false'}>
-      <div className={cn('chamfer border-l-4 p-3', decided ? 'border-border bg-card' : 'border-signal bg-signal-soft')}>
-        <div className="flex items-baseline gap-2">
+      <div className={cn('border-l-4 p-3', decided ? 'rounded-r-md border-border bg-card' : 'chamfer border-signal bg-signal-soft')}>
+        <div className="flex flex-wrap items-baseline gap-x-2">
           <span className="text-[13px] font-semibold">
-            {decided ? (item.decision === 'allow' ? 'Erlaubt' : 'Abgelehnt') : 'Freigabe nötig'}: {item.tool}
+            {decided
+              ? `${item.decision === 'allow' ? 'Erlaubt' : item.decision === 'answer' ? 'Beantwortet' : item.decision === 'abort' ? 'Abgebrochen' : 'Abgelehnt'}: `
+              : question
+                ? 'Frage: '
+                : 'Freigabe nötig: '}
+            {question ? item.summary : item.tool}
           </span>
-          {decided && <span className="text-[11px] text-muted-foreground">entschieden</span>}
+          {decided && item.resolution && (
+            <span className="text-[12px] text-muted-foreground" data-testid="approval-decided-by">
+              {item.resolution.remember === 'session' ? 'für diese Session, ' : ''}
+              {decidedBy(item.resolution)}
+            </span>
+          )}
+          {!decided && <span className="text-[12px] text-muted-foreground">wartet unten in der Freigabe-Leiste</span>}
         </div>
-        <pre className="mt-1.5 overflow-x-auto rounded-sm bg-card px-2 py-1 font-mono text-[12px]">{argSummary(item.args) || item.tool}</pre>
-        <button className="mt-1 text-[12px] text-muted-foreground hover:text-foreground" onClick={() => setShowArgs((v) => !v)} aria-expanded={showArgs}>
-          {showArgs ? 'Argumente ausblenden' : 'Argumente als JSON'}
-        </button>
+        {!question && <pre className="mt-1.5 overflow-x-auto rounded-sm bg-card px-2 py-1 font-mono text-[12px]">{item.summary}</pre>}
+        {!question && (
+          <button className="mt-1 text-[12px] text-muted-foreground hover:text-foreground" onClick={() => setShowArgs((v) => !v)} aria-expanded={showArgs}>
+            {showArgs ? 'Argumente ausblenden' : 'Argumente als JSON'}
+          </button>
+        )}
         {showArgs && <pre className="mt-1 overflow-x-auto rounded-sm bg-card px-2 py-1 font-mono text-[12px]">{JSON.stringify(item.args, null, 2)}</pre>}
         {item.comment && <p className="mt-1.5 text-[12px] text-muted-foreground">Kommentar: {item.comment}</p>}
-        {!decided && (
-          <>
-            <label className="mt-2 block text-[12px] text-muted-foreground">
-              Kommentar an das Modell (nur beim Ablehnen)
-              <input
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-input bg-card px-2 py-1 text-[13px] text-foreground"
-                placeholder="z. B. Bitte erst die Tests laufen lassen"
-              />
-            </label>
-            <div className="mt-2.5 flex flex-wrap items-center gap-2">
-              <button disabled={busy} onClick={() => void resolve(true)} className="chamfer-sm bg-foreground px-3 py-1.5 text-[13px] font-semibold text-background disabled:opacity-50">
-                Erlauben
-              </button>
-              <button disabled={busy} onClick={() => void resolve(false)} className="rounded-md border border-foreground/30 px-3 py-1.5 text-[13px] disabled:opacity-50">
-                Ablehnen
-              </button>
-              {error && <span className="text-[12px] text-deny">{error}</span>}
-            </div>
-          </>
-        )}
       </div>
     </div>
   )

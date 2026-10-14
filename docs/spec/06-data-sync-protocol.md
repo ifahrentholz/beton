@@ -90,7 +90,8 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `approval.resolved` | D | `approval_id, decision: allow\|deny\|abort\|answer, answer?, actor, via: user\|timeout\|policy\|system, remember?: none\|session, comment?, on_timeout_applied?` |
 | | `policy.decision` | D | `decision_id, phase, subject_ref?, subject_hash?, outcome: allow\|deny\|ask, modified?, approval_id?, matched[], defaults_applied[], conflicts[], errors[], grants_used[], enforcement, policy_set_hash, eval_us` (Details POL-025) |
 | | `policy.set_changed` / `policy.set_invalid` | D | `scope, set, version` bzw. `file, line, error` (POL-001) |
-| | `policy.state_changed` | D | `scope, key, op, value` (POL-009) |
+| | `policy.state_changed` | D | `scope, key, op, value` (POL-009; `value` nach der Operation) |
+| | `policy.notified` | D | `rule_id, scope, set, channels, message?` (Zustellung von `notify`, POL-006, UX-001) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
 | | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
@@ -172,7 +173,7 @@ Endpunkt `GET /v1/tunnel` (lokal ausschließlich auf dem Tunnel-Socket, nicht au
 | S → Runner | `events.ack {session_id, upto_rseq, seq_range}` | Runner verwirft bis `upto_rseq`; ungeackte werden nach Reconnect erneut gesendet |
 | Runner → S | `transient.push {session_id, events}` | Deltas, ohne Ack |
 | S → Runner | `cmd.deliver {cmd_id, name, args, actor}` → `cmd.result` | Inputs, Approvals, Interrupts |
-| Runner → S | `system.call {call_id, tool, args}` → `system.result {call_id, result?, problem?}` | System-Tools, die der Server ausführt, z. B. `session.spawn` (AGT-007); gilt immer für die gebundene Session, Arbeitsverzeichnis und Owner leitet der Server daraus ab |
+| Runner → S | `system.call {call_id, tool, args}` → `system.result {call_id, result?, problem?}` | System-Tools, die der Server ausführt, z. B. `session.spawn` (AGT-007), Policy-Daten `policy.usage`, `policy.state`, `policy.state.apply` (POL-004, POL-009) und `inbox.read`; gilt immer für die gebundene Session, Arbeitsverzeichnis und Owner leitet der Server daraus ab |
 | S → Runner | `policy.bundle {version, hash, sig, rules}` | Policy-Cache (SYNC-006) |
 | beide | `secret.lease.*` (SEC-008, siehe 05-security-identity.md), `budget.lease.*` (SYNC-007) | Leases |
 | beide | Binärframes wie Client-WS | Terminal-/Browser-Kanäle (Server mappt auf Client-Kanäle) |

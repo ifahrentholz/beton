@@ -337,6 +337,43 @@ impl policy::UsageSource for TunnelUsage {
     }
 }
 
+/// Zustand der Policies über den Tunnel (System-Calls `policy.state`, `policy.state.apply`,
+/// POL-009/POL-010).
+struct TunnelState {
+    calls: mpsc::UnboundedSender<mcp::SystemRequest>,
+}
+
+impl TunnelState {
+    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        self.calls
+            .send(mcp::SystemRequest {
+                tool: tool.into(),
+                args,
+                reply,
+            })
+            .map_err(|_| "Runner beendet".to_owned())?;
+        match rx.await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(p)) => Err(p["code"].as_str().unwrap_or("failed").to_owned()),
+            Err(_) => Err("keine Antwort".into()),
+        }
+    }
+}
+
+#[async_trait]
+impl policy::StateSource for TunnelState {
+    async fn load(&self) -> Result<policy::LoadedState, String> {
+        let v = self.call("policy.state", json!({})).await?;
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
+    async fn apply(&self, op: &beton_policy::state::StateOp) -> Result<(), String> {
+        let args = serde_json::to_value(op).map_err(|e| e.to_string())?;
+        self.call("policy.state.apply", args).await.map(|_| ())
+    }
+}
+
 /// Unbestätigte Events in Runner-Reihenfolge.
 #[derive(Default)]
 struct Unacked {
@@ -465,6 +502,33 @@ async fn send(ws: &mut Ws, msg: &TunnelUp) -> bool {
     ws.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
+const DETACH_MAX: Duration = Duration::from_secs(3600);
+
+/// Signal der geordneten Abkopplung im Close-Frame des Daemons (POL-010 AC4).
+fn is_detach_signal(code: u16, reason: &str) -> bool {
+    code == 4503 && reason == "detached"
+}
+
+/// Weiterleben ohne Daemon nur nach geordneter Abkopplung, mit offener Policy-Freigabe und
+/// höchstens [`DETACH_MAX`] lang (POL-010 AC4). Ein abgestürzter Daemon sendet kein Signal: dann
+/// endet der Runner, und der neue Daemon setzt die Session nach HAR-020 fort.
+fn detached_keep(
+    detached_at: Option<std::time::Instant>,
+    now: std::time::Instant,
+    pending_policy: bool,
+) -> bool {
+    pending_policy && detached_at.is_some_and(|t| now.saturating_duration_since(t) <= DETACH_MAX)
+}
+
+/// Endet ein Runner ohne Verbindung zum Daemon? Ist der Daemon weg (Elternprozess tot) oder
+/// hat ein späterer Daemon den Runner übernommen, wartet er nur, wenn `keep` gilt
+/// ([`detached_keep`]) – dann verbindet ihn der nächste Daemon neu (POL-010 AC4). Sonst endet
+/// er (RUN-002 AC2).
+fn orphan_exit(parent_alive: bool, adopted: bool, keep: bool) -> bool {
+    (!parent_alive || adopted) && !keep
+}
+
 /// Lebt der Elternprozess noch? (RUN-002 AC2)
 fn parent_alive(pid: Option<u32>) -> bool {
     #[cfg(unix)]
@@ -587,7 +651,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         },
         gate_tx,
     )
-    .with_usage(Arc::new(TunnelUsage { calls: usage_tx }));
+    .with_usage(Arc::new(TunnelUsage {
+        calls: usage_tx.clone(),
+    }))
+    .with_state(Arc::new(TunnelState { calls: usage_tx }));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
     let stages = match &boot.sandbox {
@@ -703,6 +770,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // Tool-Call selbst durch das Gate schickt (POL-024).
                 (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
                     .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
+                // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
+                Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
                 stages.as_ref().map(|s| s.tools.clone()),
             )
             .await
@@ -1036,6 +1105,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
 
     let mut tracker = StatusTracker::default();
     let mut turn_running = false;
+    // Offene Freigaben (gestapelt, WEB-007): `waiting_approval`, solange eine offen ist.
+    let mut open_approvals: std::collections::HashSet<beton_core::id::ApprovalId> =
+        std::collections::HashSet::new();
     // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
     let mut held_context: Option<NormalizedEvent> = None;
     // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
@@ -1069,6 +1141,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
+    // Von einem späteren Daemon übernommen bzw. geordnet abgekoppelt (POL-010 AC4).
+    let mut adopted = false;
+    let mut detached_at: Option<std::time::Instant> = None;
 
     loop {
         // (Wieder-)Verbinden.
@@ -1076,13 +1151,22 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             Ok(ws) => ws,
             Err(e) => {
                 tracing::warn!("Tunnel nicht erreichbar: {e}");
-                if !parent_alive(boot.parent_pid) {
+                let keep = detached_keep(
+                    detached_at,
+                    std::time::Instant::now(),
+                    gate.has_pending_policy(),
+                );
+                if orphan_exit(parent_alive(boot.parent_pid), adopted, keep) {
                     return finish(session, Exit::ParentGone).await;
                 }
                 tokio::time::sleep(backoff.next_delay()).await;
                 continue;
             }
         };
+        // Verbunden, obwohl der Elternprozess weg ist: ein neuer Daemon hat den Runner
+        // übernommen (POL-010 AC4); ab jetzt zählt die Verbindung, nicht der Elternprozess.
+        adopted |= !parent_alive(boot.parent_pid);
+        detached_at = None;
         backoff.reset();
         let hello = TunnelUp::Hello {
             kind: PeerKind::Runner,
@@ -1237,13 +1321,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     let mut events = vec![gate_event(&boot, first, &call_events)];
                     events.extend(drain_gate(&boot, &mut gate_rx, &call_events));
                     let mut batch = Vec::with_capacity(events.len() + 1);
+                    let mut abort = false;
                     for e in events {
-                        let next = match e.payload() {
-                            Some(EventPayload::ApprovalRequested(_)) => Some(SessionStatus::WaitingApproval),
-                            Some(EventPayload::ApprovalResolved(_)) if turn_running => Some(SessionStatus::Running),
-                            Some(EventPayload::ApprovalResolved(_)) => Some(SessionStatus::Idle),
-                            _ => None,
-                        };
+                        if let Some(EventPayload::ApprovalResolved(r)) = e.payload() {
+                            abort |= r.decision == beton_core::event::ApprovalDecision::Abort;
+                        }
+                        let next = approval_status(e.payload(), &mut open_approvals, turn_running);
                         batch.push(e);
                         if let Some(st) = next {
                             tracker.set(&boot, st, &mut batch);
@@ -1251,6 +1334,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     }
                     if !push(&mut ws, &boot, &mut unacked, batch).await {
                         break None;
+                    }
+                    // Abgelaufen mit `on_timeout: abort` (POL-010): Turn abbrechen.
+                    if abort && turn_running {
+                        let _ = session.interrupt().await;
                     }
                 }
                 ev = harness_rx.recv(), if !paused => {
@@ -1286,8 +1373,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         }
                         let busy = matches!(ev.payload, EventPayload::TurnStarted(_));
                         let next_status = match &ev.payload {
-                            EventPayload::TurnStarted(_) | EventPayload::ApprovalResolved(_) => Some(SessionStatus::Running),
-                            EventPayload::ApprovalRequested(_) => Some(SessionStatus::WaitingApproval),
+                            EventPayload::TurnStarted(_) if !open_approvals.is_empty() => Some(SessionStatus::WaitingApproval),
+                            EventPayload::TurnStarted(_) => Some(SessionStatus::Running),
+                            EventPayload::ApprovalRequested(_) | EventPayload::ApprovalResolved(_) => {
+                                approval_status(Some(&ev.payload), &mut open_approvals, true)
+                            }
                             EventPayload::TurnCompleted(_) | EventPayload::TurnFailed(_) | EventPayload::TurnInterrupted(_) => Some(SessionStatus::Idle),
                             _ => None,
                         };
@@ -1461,6 +1551,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 }
                 msg = ws.next() => {
                     let Some(Ok(msg)) = msg else { break None };
+                    if let Message::Close(Some(frame)) = &msg
+                        && is_detach_signal(u16::from(frame.code), &frame.reason)
+                    {
+                        detached_at = Some(std::time::Instant::now());
+                    }
                     let Message::Text(text) = msg else { continue };
                     let Ok(down) = serde_json::from_str::<TunnelDown>(&text) else { continue };
                     match down {
@@ -1619,7 +1714,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     return Ok(Exit::TimedOut);
                 }
                 _ = parent_check.tick() => {
-                    if !parent_alive(boot.parent_pid) {
+                    // Mit offener Freigabe auf den nächsten Daemon warten (POL-010 AC4);
+                    // ein übernommener Runner folgt der Verbindung, nicht dem Elternprozess.
+                    let keep = detached_keep(detached_at, std::time::Instant::now(), gate.has_pending_policy());
+                    if !adopted && !parent_alive(boot.parent_pid) && !keep {
                         return finish(session, Exit::ParentGone).await;
                     }
                 }
@@ -1789,6 +1887,32 @@ fn track_tool_calls(
         );
     }
     out
+}
+
+/// Status nach einer Freigabe: `waiting_approval`, solange eine offen ist (gestapelte
+/// Freigaben, WEB-007), danach `running` bzw. `idle`.
+fn approval_status(
+    payload: Option<&EventPayload>,
+    open: &mut std::collections::HashSet<beton_core::id::ApprovalId>,
+    turn_running: bool,
+) -> Option<SessionStatus> {
+    match payload? {
+        EventPayload::ApprovalRequested(r) => {
+            open.insert(r.approval_id);
+            Some(SessionStatus::WaitingApproval)
+        }
+        EventPayload::ApprovalResolved(r) => {
+            open.remove(&r.approval_id);
+            Some(if !open.is_empty() {
+                SessionStatus::WaitingApproval
+            } else if turn_running {
+                SessionStatus::Running
+            } else {
+                SessionStatus::Idle
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Ein Gate-Ereignis als Event der Session; `policy.decision` erhält die Event-ID des
@@ -2302,16 +2426,27 @@ async fn run_one_shot(
 }
 
 /// Entscheidung aus `approval.resolve`. `updated_args: null` (so serialisiert die REST-API
-/// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“.
+/// eine fehlende Änderung) heißt „unverändert“, nicht „Argumente leeren“. `remember: session`
+/// merkt die Freigabe (POL-010), `answer` beantwortet eine Frage (AGT-007 AC4), `actor` nennt,
+/// wer entschieden hat (WEB-007 AC2).
 fn gate_decision(args: &Value) -> policy::Human {
+    let allow = args["decision"] == "allow";
     policy::Human {
-        allow: args["decision"] == "allow",
+        allow,
+        remember: allow && args["remember"] == "session",
         reason: args["reason"].as_str().map(str::to_owned),
-        updated_args: if args["decision"] == "allow" {
+        updated_args: if allow {
             args.get("updated_args").filter(|a| !a.is_null()).cloned()
         } else {
             None
         },
+        answer: (args["decision"] == "answer")
+            .then(|| args["answer"].as_str().map(str::to_owned))
+            .flatten(),
+        actor: args
+            .get("actor")
+            .filter(|a| !a.is_null())
+            .and_then(|a| serde_json::from_value(a.clone()).ok()),
     }
 }
 
@@ -2529,8 +2664,7 @@ mod tests {
             gate_decision(&json!({"decision": "allow", "updated_args": null})),
             policy::Human {
                 allow: true,
-                reason: None,
-                updated_args: None
+                ..policy::Human::default()
             }
         );
         assert_eq!(
@@ -2542,8 +2676,111 @@ mod tests {
             policy::Human {
                 allow: false,
                 reason: Some("nein".into()),
-                updated_args: None
+                ..policy::Human::default()
             }
         );
+    }
+
+    #[test]
+    fn pol_010_ac4_runner_outlives_the_daemon_only_while_approvals_are_open() {
+        // Elternprozess lebt: weiter verbinden wie bisher.
+        assert!(!orphan_exit(true, false, false));
+        // Daemon weg, keine offene Freigabe: Runner endet.
+        assert!(orphan_exit(false, false, false));
+        // Daemon weg, Freigabe offen: auf den neuen Daemon warten.
+        assert!(!orphan_exit(false, false, true));
+        // Vom neuen Daemon übernommen: ohne Verbindung und ohne Freigabe endet er.
+        assert!(orphan_exit(true, true, false));
+        assert!(!orphan_exit(true, true, true));
+    }
+
+    #[test]
+    fn pol_010_ac4_only_an_orderly_detach_with_a_policy_approval_keeps_the_runner() {
+        let now = std::time::Instant::now();
+        // Ohne geordnete Abkopplung (Daemon-Absturz): nicht weiterleben.
+        assert!(!detached_keep(None, now, true));
+        // Abgekoppelt mit offener Policy-Freigabe: weiterleben, höchstens eine Stunde.
+        assert!(detached_keep(Some(now), now, true));
+        assert!(!detached_keep(
+            Some(now),
+            now + DETACH_MAX + Duration::from_secs(1),
+            true
+        ));
+        // Ohne offene Policy-Freigabe (z. B. nur eine Frage): nicht.
+        assert!(!detached_keep(Some(now), now, false));
+        // Das Signal steht im Close-Frame.
+        assert!(is_detach_signal(4503, "detached"));
+        assert!(!is_detach_signal(4503, "Daemon fährt herunter"));
+        assert!(!is_detach_signal(1000, "detached"));
+    }
+
+    #[test]
+    fn web_007_status_stays_waiting_while_stacked_approvals_are_open() {
+        use beton_core::event::{
+            ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, ResolvedVia,
+            TimeoutAction,
+        };
+        use beton_core::id::ApprovalId;
+        let (a, b) = (ApprovalId::new(), ApprovalId::new());
+        let req = |id| {
+            EventPayload::ApprovalRequested(ApprovalRequested {
+                approval_id: id,
+                kind: ApprovalKind::Policy,
+                subject: json!({}),
+                options: vec![],
+                expires_at: beton_core::time::Timestamp::now(),
+                on_timeout: TimeoutAction::Deny,
+            })
+        };
+        let res = |id| {
+            EventPayload::ApprovalResolved(ApprovalResolved {
+                approval_id: id,
+                decision: ApprovalDecision::Allow,
+                answer: None,
+                actor: Actor::default(),
+                via: ResolvedVia::User,
+                remember: None,
+                comment: None,
+                on_timeout_applied: None,
+            })
+        };
+        let mut open = std::collections::HashSet::new();
+        assert_eq!(
+            approval_status(Some(&req(a)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&req(b)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(a)), &mut open, true),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(b)), &mut open, true),
+            Some(SessionStatus::Running)
+        );
+        assert_eq!(
+            approval_status(Some(&req(a)), &mut open, false),
+            Some(SessionStatus::WaitingApproval)
+        );
+        assert_eq!(
+            approval_status(Some(&res(a)), &mut open, false),
+            Some(SessionStatus::Idle)
+        );
+    }
+
+    #[test]
+    fn pol_010_resolve_args_carry_remember_answer_and_actor() {
+        let h = gate_decision(&json!({"decision": "allow", "remember": "session",
+            "actor": {"kind": "user", "id": "usr_local"}}));
+        assert!(h.allow && h.remember);
+        assert!(h.actor.is_some());
+        // Merken nur beim Erlauben.
+        assert!(!gate_decision(&json!({"decision": "deny", "remember": "session"})).remember);
+        let a = gate_decision(&json!({"decision": "answer", "answer": "Pro IP"}));
+        assert_eq!(a.answer.as_deref(), Some("Pro IP"));
+        assert!(!a.allow);
     }
 }
