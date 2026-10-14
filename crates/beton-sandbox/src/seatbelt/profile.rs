@@ -106,5 +106,207 @@ fn within_any(p: &Path, roots: &[PathBuf]) -> bool {
 
 /// Erzeugt Profil und Parameter für `policy`.
 pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
-        todo!("SBX-007")
+    let mut b = Builder { params: Vec::new() };
+    let hidden_roots: Vec<&PathBuf> = policy.hidden.iter().map(|h| &h.root).collect();
+    let is_grant = |p: &PathBuf| hidden_roots.contains(&p);
+
+    let mut grant_lines = Vec::new();
+    let mut root_lines = Vec::new();
+    for root in &policy.read_roots {
+        let key = b.path("READ", root)?;
+        let line = format!("(allow file-read* (subpath (param \"{key}\")))");
+        if is_grant(root) {
+            grant_lines.push(line);
+        } else {
+            root_lines.push(line);
+        }
     }
+    for root in &policy.write_roots {
+        let key = b.path("WRITE", root)?;
+        let line = format!("(allow file-read* file-write* (subpath (param \"{key}\")))");
+        if is_grant(root) {
+            grant_lines.push(line);
+        } else {
+            root_lines.push(line);
+        }
+    }
+
+    let mut hidden_lines = Vec::new();
+    for h in &policy.hidden {
+        let re = format!("{}/\\.[^/]+(/.*)?$", root_regex(&h.root)?);
+        let key = b.param("HIDDEN", re);
+        hidden_lines.push(format!(
+            "(deny file-read* file-write* (regex (param \"{key}\")))"
+        ));
+        for name in &h.allow {
+            let key = b.path("UNHIDE", &h.root.join(name))?;
+            let ops = if h.writable {
+                "file-read* file-write*"
+            } else {
+                "file-read*"
+            };
+            hidden_lines.push(format!("(allow {ops} (subpath (param \"{key}\")))"));
+        }
+    }
+
+    let mut ancestors = BTreeSet::new();
+    for root in policy.read_roots.iter().chain(&policy.write_roots) {
+        for a in root.ancestors().skip(1) {
+            if a.parent().is_some() {
+                ancestors.insert(a.to_path_buf());
+            }
+        }
+    }
+    let mut ancestor_lines = Vec::new();
+    for a in &ancestors {
+        let key = b.path("ANC", a)?;
+        ancestor_lines.push(format!(
+            "(allow file-read-metadata (literal (param \"{key}\")))"
+        ));
+    }
+
+    let mut mask_lines = Vec::new();
+    let mut keep = BTreeSet::new();
+    for m in &policy.masks {
+        match m {
+            Mask::Path { path, .. } => {
+                let key = b.path("MASK", path)?;
+                mask_lines.push(format!(
+                    "(deny file-read* file-write* (subpath (param \"{key}\")))"
+                ));
+                for a in path.ancestors().skip(1) {
+                    if within_any(a, &policy.write_roots) {
+                        keep.insert(a.to_path_buf());
+                    }
+                }
+            }
+            Mask::Pattern {
+                root,
+                glob,
+                any_depth,
+                ..
+            } => {
+                let middle = if *any_depth { "/(.*/)?" } else { "/" };
+                let re = format!("{}{middle}{}(/.*)?$", root_regex(root)?, glob_regex(glob));
+                let key = b.param("MASKRE", re);
+                mask_lines.push(format!(
+                    "(deny file-read* file-write* (regex (param \"{key}\")))"
+                ));
+                if !any_depth {
+                    for a in root.ancestors() {
+                        if within_any(a, &policy.write_roots) {
+                            keep.insert(a.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut keep_lines = Vec::new();
+    for a in &keep {
+        let key = b.path("KEEP", a)?;
+        keep_lines.push(format!("(deny file-write-unlink (literal (param \"{key}\")))"));
+    }
+
+    let mut git_lines = Vec::new();
+    if let Some(g) = &policy.git {
+        let mut dirs = vec![g.common_dir.clone()];
+        if g.git_dir != g.common_dir {
+            dirs.push(g.git_dir.clone());
+        }
+        for d in &dirs {
+            let hooks = b.path("GIT_HOOKS", &d.join("hooks"))?;
+            let config = b.path("GIT_CONFIG", &d.join("config"))?;
+            git_lines.push(format!(
+                "(deny file-write* (subpath (param \"{hooks}\")) (literal (param \"{config}\")))"
+            ));
+            let re = format!(
+                "{}/(modules/(.+/)?(hooks(/.*)?|config)|worktrees/[^/]+/config\\.worktree)$",
+                root_regex(d)?
+            );
+            let key = b.param("GIT_RE", re);
+            git_lines.push(format!("(deny file-write* (regex (param \"{key}\")))"));
+            // `hooks` und `config` selbst nicht austauschen (Umbenennen des Elternteils).
+            let keep = b.path("GIT_DIR", d)?;
+            git_lines.push(format!("(deny file-write-unlink (literal (param \"{keep}\")))"));
+        }
+        let dot = b.path("DOT_GIT", &g.dot_git)?;
+        if g.dot_git_is_file {
+            git_lines.push(format!("(deny file-write* (literal (param \"{dot}\")))"));
+        } else {
+            git_lines.push(format!("(deny file-write-unlink (literal (param \"{dot}\")))"));
+        }
+    }
+
+    let mut keychain_lines = Vec::new();
+    if policy.keychain && policy.stage == Stage::Harness {
+        let names: Vec<String> = KEYCHAIN_SERVICES
+            .iter()
+            .map(|s| format!("(global-name \"{s}\")"))
+            .collect();
+        keychain_lines.push(format!(
+            "(allow mach-lookup {} (global-name-prefix \"com.apple.securityd.\"))",
+            names.join(" ")
+        ));
+        keychain_lines.push(
+            "(allow file-read* (subpath \"/Library/Keychains\") (subpath \"/private/var/db/mds\"))"
+                .to_owned(),
+        );
+        keychain_lines.push(
+            "(allow ipc-posix-shm* (ipc-posix-name-prefix \"com.apple.AppleDatabaseChanged\"))"
+                .to_owned(),
+        );
+    }
+
+    let mut net_lines = Vec::new();
+    if let NetMode::ProxyOnly { port } = policy.net {
+        let key = b.param("PROXY_PORT", port.to_string());
+        net_lines.push(format!(
+            "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"{key}\"))))"
+        ));
+    }
+
+    let sections: [(&str, &Vec<String>); 10] = [
+        ("GRANT_ROOTS", &grant_lines),
+        ("HIDDEN", &hidden_lines),
+        ("ROOTS", &root_lines),
+        ("ANCESTORS", &ancestor_lines),
+        ("MASKS", &mask_lines),
+        ("KEEP", &keep_lines),
+        ("GIT", &git_lines),
+        ("KEYCHAIN", &keychain_lines),
+        ("NETWORK", &net_lines),
+        ("", &Vec::new()),
+    ];
+    let mut text = String::with_capacity(TEMPLATE.len() + 4096);
+    for line in TEMPLATE.lines() {
+        if let Some(name) = line.strip_prefix(";;@") {
+            let lines = sections
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, l)| *l)
+                .ok_or_else(|| SandboxError::spawn(format!("Template: unbekannte Markierung {name}")))?;
+            for l in lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+            continue;
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
+    let profile = Profile {
+        text,
+        params: b.params,
+    };
+    if profile.size() > MAX_PROFILE_BYTES {
+        return Err(SandboxError::invalid(
+            "sandbox",
+            format!(
+                "Seatbelt-Profil wäre {} Bytes groß (höchstens {MAX_PROFILE_BYTES})",
+                profile.size()
+            ),
+        ));
+    }
+    Ok(profile)
+}

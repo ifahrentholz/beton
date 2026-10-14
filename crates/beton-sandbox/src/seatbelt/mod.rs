@@ -162,8 +162,29 @@ pub mod macos {
             policy: &ResolvedPolicy,
             cmd: CommandSpec,
         ) -> Result<SandboxedChild, SandboxError> {
-            let _ = (policy, cmd, profile::render, env_denied, child::spawn);
-            todo!("SBX-007")
+            crate::resolve::check_caps(&self.probe(), policy)?;
+            let profile = profile::render(policy)?;
+            let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd);
+            c.arg("-p").arg(&profile.text);
+            for (k, v) in &profile.params {
+                c.arg("-D").arg(format!("{k}={v}"));
+            }
+            c.arg("--").arg(&cmd.program).args(&cmd.args);
+            // Nie erben: explizites Environment der Policy plus erlaubte Variablen des Aufrufs.
+            c.env_clear().envs(&policy.env);
+            for (k, v) in &cmd.env.set {
+                if !env_denied(k) {
+                    c.env(k, v);
+                }
+            }
+            for k in &cmd.env.remove {
+                c.env_remove(k);
+            }
+            c.current_dir(cmd.cwd.as_deref().unwrap_or(&policy.workspace));
+            child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
+                message: format!("{SANDBOX_EXEC}: {e}"),
+                kind: e.kind(),
+            })
         }
     }
 }
