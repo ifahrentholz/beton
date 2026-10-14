@@ -433,8 +433,11 @@ async fn sbx_008_environment_is_not_inherited_and_launcher_argv_has_no_secrets()
     let argv = String::from_utf8_lossy(&argv);
     assert!(argv.contains("__sandbox-exec"), "{argv}");
     assert!(!argv.contains("FIXTURE"), "{argv}");
-    let environ = std::fs::read(format!("/proc/{launcher_pid}/environ")).unwrap();
-    assert!(!String::from_utf8_lossy(&environ).contains("FIXTURE"));
+    // Der Launcher ist nicht dumpable; sein Environment ist dann nicht einmal lesbar.
+    match std::fs::read(format!("/proc/{launcher_pid}/environ")) {
+        Ok(environ) => assert!(!String::from_utf8_lossy(&environ).contains("FIXTURE")),
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied, "{e}"),
+    }
     drop(child);
 }
 
