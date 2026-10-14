@@ -130,9 +130,13 @@ pub fn args(plan: &LaunchPlan, launcher: &Path) -> Result<Vec<String>, SandboxEr
                 let p = path_arg(path)?;
                 a.extend(["--ro-bind".into(), p.clone(), p]);
             }
-            MountOp::Pin { path } => {
+            MountOp::Pin { path, writable } => {
+                // bwrap bindet immer mit eigenem Zustand: beschreibbar nur, wenn der Elternteil
+                // es ist oder ausdrücklich verlangt.
                 let p = path_arg(path)?;
-                a.extend(["--bind".into(), p.clone(), p]);
+                let rw = *writable || plan.write_roots.iter().any(|w| path.starts_with(w));
+                let flag = if rw { "--bind" } else { "--ro-bind" };
+                a.extend([flag.into(), p.clone(), p]);
             }
         }
     }

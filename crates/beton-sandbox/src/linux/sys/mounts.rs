@@ -38,11 +38,18 @@ fn mount(
 /// Bindet `path` read-only neu ein und behält die gesperrten Flags des Mounts (im
 /// User-Namespace dürfen `nosuid`, `nodev`, `noexec` nicht entfernt werden).
 fn remount_ro(path: &Path) -> io::Result<()> {
+    remount(path, true)
+}
+
+fn remount(path: &Path, read_only: bool) -> io::Result<()> {
     let c = cstr(path)?;
     // SAFETY: statvfs füllt eine eigene Struktur.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     cvt(unsafe { libc::statvfs(c.as_ptr(), &mut st) })?;
-    let mut flags = libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY;
+    let mut flags = libc::MS_REMOUNT | libc::MS_BIND;
+    if read_only {
+        flags |= libc::MS_RDONLY;
+    }
     for (st_flag, ms) in [
         (libc::ST_NOSUID, libc::MS_NOSUID),
         (libc::ST_NODEV, libc::MS_NODEV),
@@ -265,8 +272,12 @@ pub fn apply(ops: &[MountOp]) -> StepResult<()> {
                 mount(Some(path), path, None, libc::MS_BIND | libc::MS_REC, None).map_err(fail)?;
                 remount_ro(path).map_err(fail)?;
             }
-            MountOp::Pin { .. } => {
+            MountOp::Pin { writable, .. } => {
                 mount(Some(path), path, None, libc::MS_BIND | libc::MS_REC, None).map_err(fail)?;
+                if *writable {
+                    // Unter einem read-only gebundenen Vorfahren wieder beschreibbar.
+                    remount(path, false).map_err(fail)?;
+                }
             }
         }
     }

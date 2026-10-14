@@ -329,7 +329,9 @@ pub enum MountOp {
     /// Auf sich selbst schreibgeschützt binden (Git-Hooks und -Konfiguration).
     ReadOnly { path: PathBuf },
     /// Auf sich selbst binden; ein Mountpunkt lässt sich weder umbenennen noch ersetzen.
-    Pin { path: PathBuf },
+    /// `writable`: danach beschreibbar (unter einem read-only gebundenen Vorfahren), sonst mit
+    /// dem Zustand des Elternteils.
+    Pin { path: PathBuf, writable: bool },
 }
 
 impl MountOp {
@@ -341,7 +343,7 @@ impl MountOp {
             | MountOp::MaskFile { path }
             | MountOp::Rebind { path, .. }
             | MountOp::ReadOnly { path }
-            | MountOp::Pin { path } => path,
+            | MountOp::Pin { path, .. } => path,
         }
     }
 
@@ -407,8 +409,43 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             write: plan.write_roots.contains(r),
         });
     }
+    // Eine Maske, die es noch nicht gibt, darf in einer Schreib-Wurzel nicht entstehen: Ihr
+    // tiefster vorhandener Vorfahre wird read-only, seine Einträge einzeln beschreibbar
+    // (Mount-Gegenstück zur Landlock-Grant-Expansion, wirkt auch unter dem privaten `/tmp`).
+    let masked: Vec<&PathBuf> = targets.dirs.iter().chain(&targets.files).collect();
+    let mut frozen = BTreeSet::new();
+    for m in &targets.missing_in_write {
+        let Some(w) = plan.write_roots.iter().find(|w| m.starts_with(w)) else {
+            continue;
+        };
+        let Some(e) = m
+            .ancestors()
+            .skip(1)
+            .find(|a| a.starts_with(w) && a.is_dir())
+        else {
+            continue;
+        };
+        if !frozen.insert(e.to_path_buf()) {
+            continue;
+        }
+        ops.push(MountOp::ReadOnly {
+            path: e.to_path_buf(),
+        });
+        for c in std::fs::read_dir(e).into_iter().flatten().flatten() {
+            let c = c.path();
+            if !masked.contains(&&c) {
+                ops.push(MountOp::Pin {
+                    path: c,
+                    writable: true,
+                });
+            }
+        }
+    }
     let git = git_mounts(plan);
-    ops.extend(git.pinned.into_iter().map(|path| MountOp::Pin { path }));
+    ops.extend(git.pinned.into_iter().map(|path| MountOp::Pin {
+        path,
+        writable: false,
+    }));
     ops.extend(
         git.read_only
             .into_iter()
@@ -697,6 +734,28 @@ mod tests {
         assert!(
             rules.contains(&(root.join("ws"), Access::Write)),
             "{rules:?}"
+        );
+        // Dasselbe als Mounts: `.docker` read-only, Einträge einzeln beschreibbar.
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::ReadOnly {
+                path: docker.clone()
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::Pin {
+                path: docker.join("buildx"),
+                writable: true
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::Pin {
+                path: docker.join("daemon.json"),
+                writable: true
+            }),
+            "{ops:?}"
         );
     }
 

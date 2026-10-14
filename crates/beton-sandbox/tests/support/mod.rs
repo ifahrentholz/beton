@@ -399,8 +399,11 @@ pub fn processes_with(marker: &str) -> Vec<u32> {
             let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
             };
+            // Argumente in `cmdline` sind durch NUL getrennt.
             if let Ok(cmd) = std::fs::read(e.path().join("cmdline"))
-                && String::from_utf8_lossy(&cmd).contains(marker)
+                && String::from_utf8_lossy(&cmd)
+                    .replace('\0', " ")
+                    .contains(marker)
             {
                 found.push(pid);
             }
