@@ -560,7 +560,9 @@ fn setrlimit(res: Resource, v: u64) -> std::io::Result<()> {
 
 fn limits(plan: &LaunchPlan) -> StepResult<()> {
     let e = |e| StepError::io("rlimit", "setrlimit", e);
-    if let Some(p) = plan.limits.pids {
+    // Mit cgroup setzt `pids.max` die Grenze (und meldet sie genau); RLIMIT_NPROC griffe
+    // sonst vorher, weil es auch den Launcher außerhalb der cgroup mitzählt.
+    if let (Some(p), None) = (plan.limits.pids, &plan.cgroup) {
         let mut n = u64::from(p);
         if in_initial_userns() {
             // Ohne eigenen User-Namespace zählt RLIMIT_NPROC alle Prozesse des Benutzers.
