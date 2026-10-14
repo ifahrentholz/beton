@@ -899,4 +899,132 @@ mod tests {
         std::fs::write(&file, "kein json").unwrap();
         assert!(crate::detached::take(&file).is_empty());
     }
+
+    fn approval_of(
+        session: SessionId,
+        id: beton_core::id::ApprovalId,
+        secs: i64,
+        kind: beton_core::event::ApprovalKind,
+    ) -> beton_core::event::Event {
+        let mut e = approval(session, id, secs);
+        if let beton_core::event::EventBody::Inline(EventPayload::ApprovalRequested(r)) =
+            &mut e.body
+        {
+            r.kind = kind;
+        }
+        e
+    }
+
+    #[test]
+    fn pol_010_ac4_only_policy_approvals_detach_and_at_most_one_hour() {
+        use beton_core::event::ApprovalKind;
+        let (policy, question) = (SessionId::new(), SessionId::new());
+        let r = RunnerRegistry::default();
+        r.mint_token(policy).unwrap();
+        r.mint_token(question).unwrap();
+        r.note_events(
+            policy,
+            [&approval_of(
+                policy,
+                beton_core::id::ApprovalId::new(),
+                24 * 3600,
+                ApprovalKind::Policy,
+            )],
+        );
+        r.note_events(
+            question,
+            [&approval_of(
+                question,
+                beton_core::id::ApprovalId::new(),
+                3600,
+                ApprovalKind::Question,
+            )],
+        );
+        // Eine Frage (`ask_user`) hält keinen Runner über den Daemon hinaus.
+        let d = r.detach(&[policy, question]);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].session_id, policy);
+        assert!(r.is_detached(policy));
+        assert!(!r.is_detached(question));
+        // Frist höchstens eine Stunde, auch wenn die Freigabe länger läuft.
+        let max = time::OffsetDateTime::now_utc().unix_timestamp() + DETACH_MAX.as_secs() as i64;
+        assert!(d[0].until <= max, "{} > {max}", d[0].until);
+        assert_eq!(DETACH_MAX, Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn pol_010_ac4_unclaimed_adoption_expires_with_its_token() {
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        let token = old.mint_token(s).unwrap();
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        let mut d = old.detach(&[s]).remove(0);
+        let new = RunnerRegistry::default();
+        // Abgelaufen: weder erwartet noch Token gültig.
+        d.until = time::OffsetDateTime::now_utc().unix_timestamp() - 1;
+        new.adopt(&d);
+        assert_eq!(new.session_for(&token), None);
+        assert!(!new.expected(s));
+        // Frist läuft ab, ohne dass der Runner kommt: Token wird entfernt.
+        d.until = time::OffsetDateTime::now_utc().unix_timestamp() + 600;
+        new.adopt(&d);
+        assert_eq!(new.session_for(&token), Some(s));
+        new.forget_expected(s);
+        assert_eq!(
+            new.session_for(&token),
+            None,
+            "Token gilt nur bis zur Übernahme"
+        );
+        // Falsches Token: nie gültig.
+        new.adopt(&d);
+        assert_eq!(new.session_for("bt_run_falsch"), None);
+    }
+
+    #[test]
+    fn pol_010_ac4_open_approvals_are_restored_from_the_projection() {
+        use beton_core::event::ApprovalKind;
+        let s = SessionId::new();
+        let r = RunnerRegistry::default();
+        assert!(!r.has_open_approvals(s));
+        let until = time::OffsetDateTime::now_utc().unix_timestamp() + 600;
+        r.restore_open(
+            s,
+            [(
+                beton_core::id::ApprovalId::new(),
+                until,
+                ApprovalKind::Policy,
+            )],
+        );
+        assert!(r.has_open_approvals(s));
+        r.mint_token(s).unwrap();
+        assert_eq!(r.detach(&[s]).len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pol_010_ac4_detached_file_must_be_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("runners-detached.json");
+        let s = SessionId::new();
+        let r = RunnerRegistry::default();
+        r.mint_token(s).unwrap();
+        r.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        crate::detached::save(&file, &r.detach(&[s])).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            crate::detached::take(&file).is_empty(),
+            "lesbar für andere: nicht übernehmen"
+        );
+        // Ein Symlink statt der Datei wird nicht gelesen.
+        let target = dir.path().join("ziel.json");
+        crate::detached::save(&target, &r.detach(&[s])).unwrap();
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+        assert!(crate::detached::take(&file).is_empty());
+        // Eine liegengebliebene Temp-Datei verhindert das Speichern nicht.
+        let _ = std::fs::remove_file(&file);
+        std::fs::write(file.with_extension("json.tmp"), "alt").unwrap();
+        crate::detached::save(&file, &r.detach(&[s])).unwrap();
+        assert_eq!(crate::detached::take(&file).len(), 1);
+    }
 }

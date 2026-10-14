@@ -2462,6 +2462,90 @@ mod tests {
         call.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn pol_010_ac4_only_policy_approvals_count_as_pending_for_survival() {
+        let mut p = with_policy("rules:\n  - id: c\n    on: tool_call\n    action: ask\n");
+        let g = p.gate.clone();
+        let q = tokio::spawn(async move {
+            g.ask_question(
+                "q",
+                "Frage?".into(),
+                Vec::new(),
+                Duration::from_secs(30),
+                None,
+            )
+            .await
+        });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.has_pending());
+        assert!(!p.gate.has_pending_policy(), "eine Frage zählt nicht");
+        let g = p.gate.clone();
+        let call = tokio::spawn(async move { g.decide(pre("c1", "ls")).await });
+        let _ = next_request(&mut p.rx).await;
+        assert!(p.gate.has_pending_policy());
+        assert!(p.gate.resolve("c1", allow()));
+        call.await.unwrap();
+        assert!(p.gate.resolve("q", Human::default()));
+        q.await.unwrap();
+        assert!(!p.gate.has_pending());
+    }
+
+    #[tokio::test]
+    async fn pol_009_rules_reading_state_deny_without_state() {
+        struct Broken;
+        #[async_trait]
+        impl StateSource for Broken {
+            async fn load(&self) -> Result<LoadedState, String> {
+                Err("weg".into())
+            }
+            async fn apply(&self, _: &beton_policy::state::StateOp) -> Result<(), String> {
+                Err("weg".into())
+            }
+        }
+        for when in ["state.session.pushes > 3", "has(state.session)"] {
+            let p = with_policy_state(
+                &format!(
+                    "rules:\n  - id: limit\n    on: tool_call\n    when: '{when}'\n    action: deny\n"
+                ),
+                Some(Arc::new(Broken)),
+            );
+            assert!(
+                matches!(
+                    p.gate.decide(pre("c1", "ls")).await,
+                    GateDecision::Deny { .. }
+                ),
+                "{when}: ohne Zustand fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn pol_010_long_summaries_are_marked_as_shortened() {
+        let long = "x".repeat(600);
+        let card = tool_card(
+            "tool_call",
+            "Bash",
+            "shell",
+            Some(&long),
+            &json!({}),
+            None,
+            &[],
+        );
+        let summary = card["summary"].as_str().unwrap();
+        assert!(summary.ends_with('…'), "{summary}");
+        assert!(summary.chars().count() <= 501);
+        let short = tool_card(
+            "tool_call",
+            "Bash",
+            "shell",
+            Some("ls"),
+            &json!({}),
+            None,
+            &[],
+        );
+        assert_eq!(short["summary"], "ls");
+    }
+
     #[test]
     fn pol_002_fs_resolver_follows_symlinks() {
         let dir = tempfile::tempdir().unwrap();

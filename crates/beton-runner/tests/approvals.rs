@@ -778,3 +778,109 @@ async fn ux_001_notify_inbox_becomes_a_notice() {
     let (status, _) = env.http("GET", "/v1/inbox?status=kaputt", None).await;
     assert_eq!(status, 400);
 }
+
+// ------------------------------------------------- Security-Review M5: Fail-closed-Pfade
+
+/// Session mit „für diese Session erlaubt“ für `git push origin feature/x`.
+async fn session_with_grant(env: &Env, turns: usize) -> String {
+    env.project_policy("push", ASK_PUSH_SESSION);
+    let id = env
+        .create(&env.scenario(&pushes(turns, "git push origin feature/x")))
+        .await;
+    env.wait_status(&id, "idle").await;
+    let before = env.start_turn(&id, "eins").await;
+    let (status, body) = env
+        .resolve_with(&id, json!({"decision": "allow", "remember": "session"}))
+        .await;
+    assert_eq!(status, 200, "{body}");
+    env.turn_end(&id, before).await;
+    id
+}
+
+#[tokio::test]
+async fn pol_010_ac2_grant_is_restored_from_the_log_after_a_runner_restart() {
+    let mut env = Env::start().await;
+    let id = session_with_grant(&env, 2).await;
+    // Ohne offene Freigabe endet der Runner mit dem Daemon; ein neuer Runner lädt die Grants
+    // aus dem Log (policy.state).
+    env.restart().await;
+    let turn = env.turn(&id, "zwei").await;
+    assert_eq!(
+        of_type(&turn, "session.started").len(),
+        1,
+        "neuer Runner: {turn:#?}"
+    );
+    assert!(approvals_of(&turn).is_empty(), "{turn:#?}");
+    let d = decisions(&turn, "tool_call");
+    assert_eq!(
+        d[0]["payload"]["grants_used"].as_array().unwrap().len(),
+        1,
+        "{d:#?}"
+    );
+}
+
+#[tokio::test]
+async fn pol_010_ac2_a_fork_does_not_inherit_grants() {
+    let env = Env::start().await;
+    let id = session_with_grant(&env, 2).await;
+    let (status, body) = env
+        .http("POST", &format!("/v1/sessions/{id}/fork"), Some(json!({})))
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let child = body["session"]["id"]
+        .as_str()
+        .or_else(|| body["id"].as_str())
+        .unwrap()
+        .to_owned();
+    env.wait_status(&child, "idle").await;
+    let before = env.start_turn(&child, "zwei").await;
+    let card = env.open_approval(&child).await;
+    assert_eq!(card["subject"]["summary"], "git push origin feature/x");
+    env.resolve_with(&child, json!({"decision": "deny"})).await;
+    env.turn_end(&child, before).await;
+}
+
+#[tokio::test]
+async fn pol_010_resolving_twice_or_after_the_timeout_is_rejected() {
+    let env = Env::start().await;
+    env.project_policy(
+        "push",
+        "rules:\n  - id: confirm\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s }\n",
+    );
+    let id = env.create(&env.scenario(&pushes(2, "git push"))).await;
+    env.wait_status(&id, "idle").await;
+    // Zweimal entscheiden: die zweite Entscheidung findet nichts mehr.
+    let before = env.start_turn(&id, "eins").await;
+    let card = env.open_approval(&id).await;
+    let aid = card["id"].as_str().unwrap().to_owned();
+    let url = format!("/v1/sessions/{id}/approvals/{aid}/resolve");
+    let (first, _) = env
+        .http("POST", &url, Some(json!({"decision": "deny"})))
+        .await;
+    assert_eq!(first, 200);
+    env.turn_end(&id, before).await;
+    let (second, body) = env
+        .http("POST", &url, Some(json!({"decision": "allow"})))
+        .await;
+    assert_eq!(second, 404, "{body}");
+    // Nach Ablauf: ebenfalls nichts mehr zu entscheiden, es bleibt bei deny.
+    let turn = env.turn(&id, "zwei").await;
+    let aid = approvals_of(&turn)[0]["payload"]["approval_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (late, body) = env
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/approvals/{aid}/resolve"),
+            Some(json!({"decision": "allow"})),
+        )
+        .await;
+    assert_eq!(late, 404, "{body}");
+    assert!(
+        !of_type(&env.events(&id).await, "tool.call.completed")
+            .iter()
+            .any(|c| c["payload"]["status"] == "ok"),
+        "nie ausgeführt"
+    );
+}

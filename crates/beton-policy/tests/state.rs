@@ -226,3 +226,23 @@ fn pol_014_param_types_are_checked() {
     };
     assert_eq!(reasons[0].reason, "Bitte prüfen");
 }
+
+#[test]
+fn pol_009_has_on_missing_state_is_an_error_not_false() {
+    // Ohne geladenen Zustand (`state` fehlt) wäre `has(state.session)` sonst `false` und eine
+    // Regel `has(state.session) && …` griffe nie (fail open).
+    let s = set(
+        "rules:\n  - id: d\n    on: tool_call\n    when: '!has(state.session) || state.session.n > 3'\n    action: deny\n",
+    );
+    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&shell("ls"), &EvalOptions::default());
+    assert!(matches!(d.outcome, Outcome::Deny { .. }), "{d:?}");
+    assert!(!d.errors.is_empty(), "als Fehler protokolliert: {d:?}");
+    // Mit Zustand normal.
+    let act = Activation::new(
+        Phase::ToolCall,
+        json!({ "tool": { "name": "Bash", "kind": "shell", "args": {} }, "state": { "session": { "n": 1 } } }),
+    )
+    .unwrap();
+    let d = EffectiveSet::new(vec![s]).evaluate(&act, &EvalOptions::default());
+    assert_eq!(d.outcome, Outcome::Allow);
+}

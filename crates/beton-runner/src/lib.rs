@@ -2552,6 +2552,26 @@ mod tests {
     }
 
     #[test]
+    fn pol_010_ac4_only_an_orderly_detach_with_a_policy_approval_keeps_the_runner() {
+        let now = std::time::Instant::now();
+        // Ohne geordnete Abkopplung (Daemon-Absturz): nicht weiterleben.
+        assert!(!detached_keep(None, now, true));
+        // Abgekoppelt mit offener Policy-Freigabe: weiterleben, höchstens eine Stunde.
+        assert!(detached_keep(Some(now), now, true));
+        assert!(!detached_keep(
+            Some(now),
+            now + DETACH_MAX + Duration::from_secs(1),
+            true
+        ));
+        // Ohne offene Policy-Freigabe (z. B. nur eine Frage): nicht.
+        assert!(!detached_keep(Some(now), now, false));
+        // Das Signal steht im Close-Frame.
+        assert!(is_detach_signal(4503, "detached"));
+        assert!(!is_detach_signal(4503, "Daemon fährt herunter"));
+        assert!(!is_detach_signal(1000, "detached"));
+    }
+
+    #[test]
     fn web_007_status_stays_waiting_while_stacked_approvals_are_open() {
         use beton_core::event::{
             ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, ResolvedVia,

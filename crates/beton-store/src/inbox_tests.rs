@@ -316,3 +316,37 @@ async fn ux_001_inbox_pages_with_a_cursor() {
     all.dedup();
     assert_eq!(all.len(), 5, "jeder Eintrag genau einmal");
 }
+
+#[tokio::test]
+async fn pol_009_user_state_values_pass_the_redaction() {
+    struct Hide;
+    impl crate::ValueRedactor for Hide {
+        fn redact(&self, v: &mut Value) -> std::result::Result<bool, crate::RedactionUnavailable> {
+            let text = v.to_string();
+            if text.contains("ghp_geheim") {
+                *v = serde_json::from_str(&text.replace("ghp_geheim", "[REDACTED]")).unwrap();
+                return Ok(true);
+            }
+            Ok(false)
+        }
+    }
+    let t = crate::testutil::store_with(crate::StoreOptions {
+        redactor: std::sync::Arc::new(Hide),
+        ..crate::StoreOptions::default()
+    })
+    .await;
+    let stored = t
+        .store
+        .update_policy_user_state(org(&t), t.local.user, "user", "", "last", |_| {
+            Ok(Some(json!("token ghp_geheim")))
+        })
+        .await
+        .unwrap();
+    assert_eq!(stored, Some(json!("token [REDACTED]")));
+    let (_, user) = t
+        .store
+        .policy_user_state(org(&t), t.local.user, "2026-01-01")
+        .await
+        .unwrap();
+    assert_eq!(user["last"], json!("token [REDACTED]"));
+}
