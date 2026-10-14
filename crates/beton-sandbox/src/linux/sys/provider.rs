@@ -273,7 +273,7 @@ impl LinuxProvider {
             mask_file: None,
             inner: false,
         };
-        let (cmd, pending) = command(&launcher, Stdio::Null, Stdio::Null, Stdio::Null)
+        let (cmd, pending) = command(&launcher, &Stdio::Null, &Stdio::Null, &Stdio::Null)
             .map_err(|e| format!("{}: {e}", launcher.display()))?;
         let mut cmd = cmd;
         let mut child = cmd
@@ -328,22 +328,15 @@ impl Drop for Pending {
     }
 }
 
-fn stdio(s: Stdio) -> std::process::Stdio {
-    match s {
-        Stdio::Piped => std::process::Stdio::piped(),
-        Stdio::Null => std::process::Stdio::null(),
-        Stdio::Inherit => std::process::Stdio::inherit(),
-    }
-}
-
 /// `launcher __sandbox-exec` ohne Environment, mit Plan-Pipe auf FD 3 und Status-Socket auf
 /// FD 4. Nichts davon steht in argv.
 fn command(
     launcher: &Path,
-    stdin: Stdio,
-    stdout: Stdio,
-    stderr: Stdio,
+    stdin: &Stdio,
+    stdout: &Stdio,
+    stderr: &Stdio,
 ) -> std::io::Result<(std::process::Command, Pending)> {
+    let (stdin, stdout, stderr) = (stdin.to_std()?, stdout.to_std()?, stderr.to_std()?);
     let (plan_r, plan_w) = util::pipe()?;
     let (ctl, ctl_child) = match util::seqpacket_pair() {
         Ok(p) => p,
@@ -361,9 +354,9 @@ fn command(
     c.arg(LAUNCHER_ARG)
         .env_clear()
         .current_dir("/")
-        .stdin(stdio(stdin))
-        .stdout(stdio(stdout))
-        .stderr(stdio(stderr));
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr);
     // Coverage-Messung der Tests (cargo llvm-cov): nur der Launcher, nie das Ziel.
     if let Some(v) = std::env::var_os("LLVM_PROFILE_FILE") {
         c.env("LLVM_PROFILE_FILE", v);
@@ -520,7 +513,7 @@ impl SandboxProvider for LinuxProvider {
         }
         let launcher = &self.cfg().launcher;
         let (std_cmd, pending) =
-            command(launcher, cmd.stdin, cmd.stdout, cmd.stderr).map_err(|e| {
+            command(launcher, &cmd.stdin, &cmd.stdout, &cmd.stderr).map_err(|e| {
                 SandboxError::SpawnFailed {
                     message: format!("{}: {e}", launcher.display()),
                     kind: e.kind(),

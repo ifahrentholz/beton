@@ -16,6 +16,7 @@
 //! verbietet ein Clippy-Lint (`disallowed-methods`) den direkten `Command`-Start (SBX-001 AC2).
 //! Fail closed: Fehlt eine geforderte Capability, startet nichts.
 
+pub mod broker;
 pub mod caps;
 pub mod child;
 pub mod command;

@@ -215,7 +215,12 @@ pub mod macos {
         ) -> Result<SandboxedChild, SandboxError> {
             crate::resolve::check_caps(&self.probe(), policy)?;
             let profile = profile::render(policy)?;
-            let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd);
+            let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd).map_err(|e| {
+                SandboxError::SpawnFailed {
+                    message: format!("{SANDBOX_EXEC}: {e}"),
+                    kind: e.kind(),
+                }
+            })?;
             c.arg("-p").arg(&profile.text);
             for (k, v) in &profile.params {
                 c.arg("-D").arg(format!("{k}={v}"));

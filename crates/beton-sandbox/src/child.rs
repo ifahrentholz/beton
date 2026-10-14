@@ -17,7 +17,7 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
 use tokio::io::AsyncReadExt as _;
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 
-use crate::command::{CommandSpec, Stdio};
+use crate::command::CommandSpec;
 
 /// Zusatzaufgaben eines Backends am Prozessbaum.
 pub(crate) trait TreeGuard: Send {
@@ -162,26 +162,21 @@ async fn collect(child: &mut SandboxedChild) -> io::Result<Output> {
     })
 }
 
-fn stdio(mode: Stdio) -> std::process::Stdio {
-    match mode {
-        Stdio::Piped => std::process::Stdio::piped(),
-        Stdio::Null => std::process::Stdio::null(),
-        Stdio::Inherit => std::process::Stdio::inherit(),
-    }
-}
-
 /// Baut das `tokio`-Kommando für `program` mit den Streams aus `cmd`. Environment und
 /// Arbeitsverzeichnis setzt der jeweilige Provider.
 #[expect(
     clippy::disallowed_methods,
     reason = "SBX-001: der einzige Ort, an dem Harness- und Tool-Prozesse entstehen"
 )]
-pub(crate) fn command(program: &std::path::Path, cmd: &CommandSpec) -> tokio::process::Command {
+pub(crate) fn command(
+    program: &std::path::Path,
+    cmd: &CommandSpec,
+) -> io::Result<tokio::process::Command> {
     let mut c = tokio::process::Command::new(program);
-    c.stdin(stdio(cmd.stdin))
-        .stdout(stdio(cmd.stdout))
-        .stderr(stdio(cmd.stderr));
-    c
+    c.stdin(cmd.stdin.to_std()?)
+        .stdout(cmd.stdout.to_std()?)
+        .stderr(cmd.stderr.to_std()?);
+    Ok(c)
 }
 
 /// Startet `cmd` als Prozessgruppen-Leader (Unix) bzw. im Job-Object (Windows); der Baum

@@ -43,7 +43,10 @@ impl SandboxProvider for NoneProvider {
                 policy.backend
             )));
         }
-        let mut c = child::command(&cmd.program, &cmd);
+        let mut c = child::command(&cmd.program, &cmd).map_err(|e| SandboxError::SpawnFailed {
+            message: format!("{}: {e}", cmd.program.display()),
+            kind: e.kind(),
+        })?;
         if cmd.env.clear {
             c.env_clear();
         }

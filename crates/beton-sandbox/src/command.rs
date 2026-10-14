@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 /// Umgang mit einem Standard-Stream des Kindprozesses.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub enum Stdio {
     /// Pipe zum Elternprozess.
     #[default]
@@ -12,6 +12,41 @@ pub enum Stdio {
     Null,
     /// Vom Elternprozess geerbt (z. B. Terminal).
     Inherit,
+    /// Ein übergebener Deskriptor, z. B. vom Exec-Broker per `SCM_RIGHTS` empfangen (SBX-002);
+    /// das Kind bekommt eine Kopie.
+    #[cfg(unix)]
+    Fd(std::sync::Arc<std::os::fd::OwnedFd>),
+}
+
+impl PartialEq for Stdio {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Stdio::Piped, Stdio::Piped)
+            | (Stdio::Null, Stdio::Null)
+            | (Stdio::Inherit, Stdio::Inherit) => true,
+            #[cfg(unix)]
+            (Stdio::Fd(a), Stdio::Fd(b)) => {
+                use std::os::fd::AsRawFd as _;
+                a.as_raw_fd() == b.as_raw_fd()
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Stdio {}
+
+impl Stdio {
+    /// Die Form für `std::process::Command`; ein Deskriptor wird dupliziert.
+    pub(crate) fn to_std(&self) -> std::io::Result<std::process::Stdio> {
+        Ok(match self {
+            Stdio::Piped => std::process::Stdio::piped(),
+            Stdio::Null => std::process::Stdio::null(),
+            Stdio::Inherit => std::process::Stdio::inherit(),
+            #[cfg(unix)]
+            Stdio::Fd(fd) => std::process::Stdio::from(fd.try_clone()?),
+        })
+    }
 }
 
 /// Environment des Kindprozesses.
