@@ -1,0 +1,1 @@
+{"cwd":"/beton-golden/workdir","hook_event_name":"PreToolUse","permission_mode":"default","session_id":"0d085f2a-592f-47d4-8fc1-90303b31cce2","tool_input":{"command":"mkdir beton-ordner","description":"Create directory beton-ordner"},"tool_name":"Bash","tool_use_id":"toolu_01B8jKhgNEnY6FkoJ8Psoxft"}

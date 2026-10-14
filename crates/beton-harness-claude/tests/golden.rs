@@ -70,3 +70,90 @@ fn har_025_ac4_recorded_versions_match_catalog() {
     let problems = golden::check_versions(&capabilities(), &TESTED_VERSIONS, &root()).unwrap();
     assert!(problems.is_empty(), "{problems:#?}");
 }
+
+// ------------------------------------------------------------- HAR-005: PreToolUse-Hook
+
+/// Hook-Eingaben der echten CLI (2.1.296) einer Aufnahme.
+fn hook_payloads(name: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(root().join(name).join("hooks.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn har_005_pretool_hook_deny_blocks_a_vendor_auto_allowed_call() {
+    case("pretool-hook-deny").await;
+    let events =
+        std::fs::read_to_string(root().join("pretool-hook-deny/expected.events.jsonl")).unwrap();
+    // Die CLI meldet die Ablehnung des Hooks als Tool-Fehler mit der Begründung.
+    assert!(
+        events.contains("PreToolUse:Bash hook error: nicht erlaubt"),
+        "{events}"
+    );
+    assert!(!events.contains("\"type\":\"tool.call.started\""));
+    let stdin =
+        std::fs::read_to_string(root().join("pretool-hook-deny/expected.stdin.jsonl")).unwrap();
+    assert!(
+        !stdin.contains("\"behavior\""),
+        "keine Rückfrage des Vendors"
+    );
+}
+
+#[tokio::test]
+async fn har_005_pretool_hook_allow_and_vendor_ask() {
+    case("pretool-hook-allow").await;
+    case("pretool-hook-vendor-ask").await;
+    // `echo` erlaubt die CLI ohne Rückfrage: nur der Hook hat es geprüft.
+    let allow =
+        std::fs::read_to_string(root().join("pretool-hook-allow/expected.stdin.jsonl")).unwrap();
+    assert!(!allow.contains("\"behavior\""), "{allow}");
+    // `mkdir` fragt die CLI nach dem Hook zusätzlich per `can_use_tool`.
+    let ask = std::fs::read_to_string(root().join("pretool-hook-vendor-ask/expected.stdin.jsonl"))
+        .unwrap();
+    assert!(ask.contains("\"behavior\":\"allow\""), "{ask}");
+}
+
+#[test]
+fn har_005_recorded_hook_payloads_map_to_gate_requests() {
+    for name in [
+        "pretool-hook-deny",
+        "pretool-hook-allow",
+        "pretool-hook-vendor-ask",
+    ] {
+        let raw = std::fs::read_to_string(root().join(name).join("raw.jsonl")).unwrap();
+        let payloads = hook_payloads(name);
+        assert!(!payloads.is_empty(), "{name}");
+        for payload in payloads {
+            assert_eq!(payload["hook_event_name"], "PreToolUse");
+            let req = beton_harness_claude::pre_tool_request(&payload, None);
+            assert_eq!(req.tool, "Bash", "{name}");
+            assert_eq!(req.kind, "shell", "{name}");
+            assert_eq!(req.origin, beton_harness::GateOrigin::PreTool);
+            assert!(req.args["command"].is_string(), "{name}");
+            // Dieselbe Call-ID wie der `tool_use` im Strom der CLI.
+            assert!(raw.contains(&req.call_id), "{name}: {}", req.call_id);
+        }
+    }
+    // Antworten an die CLI: Ablehnung mit Begründung, Erlauben ohne Entscheidung.
+    let deny = beton_harness_claude::pre_tool_reply(Some(beton_harness::GateDecision::Deny {
+        reason: Some("nicht erlaubt".into()),
+    }));
+    assert_eq!(deny.exit, 0);
+    let out = deny.stdout.unwrap();
+    assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecisionReason"],
+        "nicht erlaubt"
+    );
+    let pass = beton_harness_claude::pre_tool_reply(Some(beton_harness::GateDecision::Allow {
+        updated_args: None,
+    }));
+    assert!(pass.stdout.is_none());
+    let none = beton_harness_claude::pre_tool_reply(None);
+    assert_eq!(
+        none.stdout.unwrap()["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+}

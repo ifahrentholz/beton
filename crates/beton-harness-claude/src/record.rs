@@ -25,6 +25,10 @@ pub struct Scenario {
     gate: Vec<ScriptDecision>,
     files: &'static [(&'static str, &'static str)],
     extra_args: &'static str,
+    /// Mit `PreToolUse`-Hook (HAR-005): nicht isoliert, ohne Einstellungen und MCP-Server des
+    /// Nutzers (`--setting-sources project --strict-mcp-config`); die Hook-Eingaben landen
+    /// bereinigt in `hooks.jsonl`.
+    hook: bool,
 }
 
 fn send(text: &str) -> ScriptInput {
@@ -45,6 +49,7 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![],
             files: &[],
             extra_args: "",
+            hook: false,
         },
         Scenario {
             name: "bash-tool",
@@ -55,6 +60,7 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![Allow, Allow],
             files: &[],
             extra_args: "",
+            hook: false,
         },
         Scenario {
             name: "bash-deny",
@@ -65,6 +71,7 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![Deny, Deny],
             files: &[],
             extra_args: "",
+            hook: false,
         },
         Scenario {
             name: "file-edit",
@@ -75,6 +82,7 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![Allow, Allow, Allow],
             files: &[("notiz.txt", "Das ist alt.\n")],
             extra_args: "",
+            hook: false,
         },
         Scenario {
             name: "reasoning",
@@ -85,6 +93,7 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![],
             files: &[],
             extra_args: "",
+            hook: false,
         },
         Scenario {
             name: "error-max-turns",
@@ -95,6 +104,40 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![Allow, Allow, Allow],
             files: &[],
             extra_args: "--max-turns 1",
+            hook: false,
+        },
+        Scenario {
+            name: "pretool-hook-deny",
+            description: "PreToolUse-Hook lehnt ein vom Vendor ohne Rückfrage erlaubtes echo ab (HAR-005)",
+            inputs: vec![send(
+                "Führe mit dem Bash-Tool genau `echo beton-hook` aus. Wenn das abgelehnt wird, antworte nur mit: abgelehnt.",
+            )],
+            gate: vec![Deny],
+            files: &[],
+            extra_args: HOOK_ISOLATION,
+            hook: true,
+        },
+        Scenario {
+            name: "pretool-hook-allow",
+            description: "PreToolUse-Hook erlaubt echo; die CLI führt es ohne Rückfrage aus (HAR-005)",
+            inputs: vec![send(
+                "Führe mit dem Bash-Tool genau `echo beton-hook` aus und antworte danach nur mit der Ausgabe.",
+            )],
+            gate: vec![Allow],
+            files: &[],
+            extra_args: HOOK_ISOLATION,
+            hook: true,
+        },
+        Scenario {
+            name: "pretool-hook-vendor-ask",
+            description: "PreToolUse-Hook erlaubt mkdir, danach Rückfrage per can_use_tool (HAR-005)",
+            inputs: vec![send(
+                "Lege mit dem Bash-Tool genau `mkdir beton-ordner` an und antworte danach nur mit: erledigt.",
+            )],
+            gate: vec![Allow, Allow, Allow],
+            files: &[],
+            extra_args: HOOK_ISOLATION,
+            hook: true,
         },
         Scenario {
             name: "interrupt",
@@ -108,9 +151,17 @@ pub fn scenarios() -> Vec<Scenario> {
             gate: vec![],
             files: &[],
             extra_args: "",
+            hook: false,
         },
     ]
 }
+
+/// Isolation der Hook-Aufnahmen: `--safe-mode` schaltet auch Hooks aus `--settings` ab
+/// (gegen 2.1.296 geprüft); stattdessen ohne Einstellungen und MCP-Server des Nutzers.
+const HOOK_ISOLATION: &str = "--setting-sources project --strict-mcp-config";
+
+/// Felder der Hook-Eingabe, die lokale Pfade bzw. Laufzeitdaten tragen.
+const HOOK_DROP: [&str; 4] = ["transcript_path", "scratchpad_dir", "prompt_id", "effort"];
 
 /// Entfernt Konto-, Benutzer- und Pfaddaten aus einer stdout-Zeile.
 fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
@@ -156,6 +207,7 @@ fn clean(v: &mut Value) {
                 "scratchpad_path",
                 "messaging_socket_path",
                 "user_output_styles_dir",
+                "memory_paths",
             ] {
                 if map.contains_key(key) {
                     map.insert(key.into(), Value::String("<lokal>".into()));
@@ -209,16 +261,40 @@ pub async fn record(s: &Scenario, root: &Path, version: &str) -> Result<(), Stri
     }
     let launcher = RecordingLauncher::new(Arc::new(RealLauncher));
     let adapter = ClaudeAdapter {
-        isolated: true,
+        isolated: !s.hook,
         ..ClaudeAdapter::default()
     };
-    let events = golden::drive(
+    // Hook-Aufnahme: das Hook-Kommando läuft über `tee`, damit die Eingaben der CLI
+    // mitgeschrieben werden (nur Pfade in den Settings, kein Token).
+    let hook_dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let hook_log = hook_dir.path().join("hooks.jsonl");
+    let hook = if s.hook {
+        let beton = std::env::current_exe().map_err(|e| e.to_string())?;
+        Some(beton_harness::hook::HookSetup {
+            command: beton_harness::hook::HookCommand {
+                program: "/bin/sh".into(),
+                prefix: vec![
+                    "-c".into(),
+                    format!(
+                        "tee -a {} | \"$0\" \"$@\"",
+                        beton_harness::hook::shell_quote(&hook_log.display().to_string())
+                    ),
+                    beton.display().to_string(),
+                ],
+            },
+            run_dir: hook_dir.path().join("run"),
+        })
+    } else {
+        None
+    };
+    let events = golden::drive_with_hook(
         &adapter,
         &script,
         Arc::new(launcher.clone()),
         env,
         workdir,
         Duration::from_secs(180),
+        hook,
     )
     .await
     .map_err(|e| format!("{}: {e}", s.name))?;
@@ -250,6 +326,26 @@ pub async fn record(s: &Scenario, root: &Path, version: &str) -> Result<(), Stri
     let dir = root.join(s.name);
     let _ = std::fs::remove_dir_all(&dir);
     golden::write_recording(&dir, &meta, &script, &raw, &[]).map_err(|e| e.to_string())?;
+    if s.hook {
+        // Hook-Eingaben je Zeile (die CLI schreibt pro Aufruf ein JSON-Objekt), bereinigt.
+        let text = std::fs::read_to_string(&hook_log).unwrap_or_default();
+        let mut out = String::new();
+        let stream = serde_json::Deserializer::from_str(&text).into_iter::<Value>();
+        for v in stream.flatten() {
+            let mut v = v;
+            if let Some(map) = v.as_object_mut() {
+                for key in HOOK_DROP {
+                    map.remove(key);
+                }
+            }
+            out.push_str(&sanitize(&v.to_string(), &replacements));
+            out.push('\n');
+        }
+        if out.is_empty() {
+            return Err(format!("{}: keine Hook-Aufrufe aufgezeichnet", s.name));
+        }
+        std::fs::write(dir.join("hooks.jsonl"), out).map_err(|e| e.to_string())?;
+    }
     golden::check_case(&dir, &ClaudeAdapter::default(), true)
         .await
         .map_err(|e| e.to_string())?;

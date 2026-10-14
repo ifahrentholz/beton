@@ -40,7 +40,7 @@ use crate::mapping::{MapState, map_line, unmapped};
 use crate::permission::{ModeGuard, vendor_mode};
 
 /// Getestete CLI-Versionen (Golden-Transcripts unter `tests/golden/`).
-pub const TESTED_VERSIONS: [&str; 1] = ["2.1.285"];
+pub const TESTED_VERSIONS: [&str; 2] = ["2.1.285", "2.1.296"];
 /// Unterstützter Bereich; die Fake-CLI meldet 2.1.0.
 pub const VERSION_RANGE: &str = ">=2.1.0, <3.0.0";
 /// Umgebungsvariablen, die bei `auth: subscription` nicht in den Prozess dürfen (HAR-015).
@@ -799,56 +799,67 @@ fn hook_deny(reason: &str) -> HookReply {
     }
 }
 
+/// Gate-Anfrage aus der Eingabe des `PreToolUse`-Hooks (`tool_name`, `tool_input`,
+/// `tool_use_id`; gegen 2.1.296 aufgenommen in `tests/golden/pretool-hook-*/hooks.jsonl`).
+pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
+    let tool = payload["tool_name"].as_str().unwrap_or_default().to_owned();
+    let (_, mcp_server) = mapping::split_mcp_name(&tool);
+    GateRequest {
+        turn_id: turn,
+        call_id: payload["tool_use_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        kind: kind_of(&tool),
+        tool,
+        args: payload["tool_input"].clone(),
+        mcp_server,
+        acp_kind: None,
+        origin: GateOrigin::PreTool,
+        raw: None,
+    }
+}
+
+/// Hook-Ausgabe zu einer Entscheidung des Gates; ohne Entscheidung (`None`) `deny`.
+pub fn pre_tool_reply(decision: Option<GateDecision>) -> HookReply {
+    match decision {
+        Some(GateDecision::Allow { updated_args: None }) => HookReply::pass(),
+        // Nur die Argumente ändern; die CLI prüft sie danach wie gewohnt (gegen 2.1.296
+        // geprüft: ohne `permissionDecision` gilt `updatedInput` samt normaler Rückfrage).
+        Some(GateDecision::Allow {
+            updated_args: Some(args),
+        }) => HookReply {
+            exit: 0,
+            stdout: Some(json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": args,
+            }})),
+            stderr: None,
+        },
+        Some(GateDecision::Deny { reason }) => {
+            hook_deny(reason.as_deref().unwrap_or("Von beton abgelehnt."))
+        }
+        // Fail closed (HAR-005 AC4).
+        None => hook_deny("Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt."),
+    }
+}
+
 #[async_trait]
 impl HookHandler for PreToolHook {
     async fn handle(&self, event: &str, payload: Value) -> HookReply {
         if event != "PreToolUse" {
             return HookReply::block(format!("beton: unerwarteter Hook {event}"));
         }
-        let tool = payload["tool_name"].as_str().unwrap_or_default().to_owned();
-        let call_id = payload["tool_use_id"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        let args = payload["tool_input"].clone();
-        let (_, mcp_server) = mapping::split_mcp_name(&tool);
         let turn = self.state.lock().await.turn;
-        let request = GateRequest {
-            turn_id: turn,
-            call_id: call_id.clone(),
-            kind: kind_of(&tool),
-            tool,
-            args,
-            mcp_server,
-            acp_kind: None,
-            origin: GateOrigin::PreTool,
-            raw: None,
-        };
-        let decision = tokio::time::timeout(self.gate_timeout, self.gate.decide(request)).await;
-        match decision {
-            Ok(GateDecision::Allow { updated_args: None }) => HookReply::pass(),
-            // Nur die Argumente ändern; die CLI prüft sie danach wie gewohnt (gegen 2.1.296
-            // geprüft: ohne `permissionDecision` gilt `updatedInput` samt normaler Rückfrage).
-            Ok(GateDecision::Allow {
-                updated_args: Some(args),
-            }) => HookReply {
-                exit: 0,
-                stdout: Some(json!({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "updatedInput": args,
-                }})),
-                stderr: None,
-            },
-            Ok(GateDecision::Deny { reason }) => {
-                self.state.lock().await.denied.insert(call_id);
-                hook_deny(reason.as_deref().unwrap_or("Von beton abgelehnt."))
-            }
-            // Fail closed (HAR-005 AC4).
-            Err(_) => {
-                self.state.lock().await.denied.insert(call_id);
-                hook_deny("Keine Entscheidung erhalten; aus Sicherheitsgründen abgelehnt.")
-            }
+        let request = pre_tool_request(&payload, turn);
+        let call_id = request.call_id.clone();
+        let decision = tokio::time::timeout(self.gate_timeout, self.gate.decide(request))
+            .await
+            .ok();
+        if !matches!(decision, Some(GateDecision::Allow { .. })) {
+            self.state.lock().await.denied.insert(call_id);
         }
+        pre_tool_reply(decision)
     }
 }
 
