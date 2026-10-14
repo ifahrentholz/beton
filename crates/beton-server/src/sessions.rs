@@ -53,6 +53,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
+    /// Tunnel-Token des zuletzt gestarteten Runners je Session. Ist es gesperrt (geordneter
+    /// Stopp), startet dieser Runner nicht mehr, auch wenn sein Prozess noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, String>>,
 }
 
 impl Launched {
@@ -589,6 +592,7 @@ impl<'a> SessionManager<'a> {
             .runners
             .mint_token(session.id)
             .map_err(|e| Problem::internal(&e))?;
+        let boot_token = token.clone();
         let spec = RunnerSpec {
             runner_id: RunnerId::new(),
             session_id: session.id,
@@ -609,7 +613,7 @@ impl<'a> SessionManager<'a> {
                 &provisioned,
                 &RunnerBoot {
                     tunnel_socket: socket,
-                    token,
+                    token: boot_token,
                     session_id: session.id,
                     epoch: session.epoch,
                     harness: session.harness.clone(),
@@ -637,6 +641,7 @@ impl<'a> SessionManager<'a> {
             .await
             .map_err(|e| Problem::new(ProblemCode::Unavailable).detail(e.to_string()))?;
         cfg.launched.handles.lock().await.insert(session.id, handle);
+        cfg.launched.tokens.lock().await.insert(session.id, token);
         Ok(())
     }
 
@@ -666,8 +671,23 @@ impl<'a> SessionManager<'a> {
 
     /// Läuft (oder startet gerade) ein Runner für die Session?
     async fn runner_alive(&self, session: SessionId) -> bool {
-        if self.state.runtime.runners.connected(session) {
-            return true;
+        self.state.runtime.runners.connected(session) || self.runner_starting(session).await
+    }
+
+    /// Ist der zuletzt gestartete Runner noch auf dem Weg zum Tunnel? Sein Prozess läuft und
+    /// sein Token gilt. Nach einem geordneten Stopp ist das Token gesperrt: Ein Prozess, der
+    /// sich nur noch beendet, meldet sich nicht wieder (#198).
+    async fn runner_starting(&self, session: SessionId) -> bool {
+        let token = self
+            .cfg()
+            .launched
+            .tokens
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        if !token.is_some_and(|t| self.state.runtime.runners.token_valid(&t)) {
+            return false;
         }
         let handle = self
             .cfg()
@@ -691,23 +711,9 @@ impl<'a> SessionManager<'a> {
         if self.state.runtime.runners.connected(session) {
             return Ok(());
         }
-        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
-        let handle = self
-            .cfg()
-            .launched
-            .handles
-            .lock()
-            .await
-            .get(&session)
-            .cloned();
-        let starting = match &handle {
-            Some(h) => matches!(
-                self.cfg().provider.status(h).await,
-                Ok(beton_host::RunnerStatus::Running)
-            ),
-            None => false,
-        };
-        if !starting {
+        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter oder geordnet
+        // gestoppter wird ersetzt.
+        if !self.runner_starting(session).await {
             self.cfg().launched.handles.lock().await.remove(&session);
             self.resume(session).await?;
         }
@@ -1052,6 +1058,7 @@ impl<'a> SessionManager<'a> {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
+        self.cfg().launched.tokens.lock().await.remove(&session);
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1104,6 +1111,7 @@ impl<'a> SessionManager<'a> {
             .map_err(|e| Problem::internal(&e))??;
         }
         self.state.runtime.runners.revoke_tokens(session);
+        self.cfg().launched.tokens.lock().await.remove(&session);
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1158,6 +1166,7 @@ pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
 pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerRegistry) {
     let handles: Vec<(SessionId, RunnerHandle)> =
         cfg.launched.handles.lock().await.drain().collect();
+    cfg.launched.tokens.lock().await.clear();
     for (session, h) in handles {
         runners.revoke_tokens(session);
         let _ = cfg

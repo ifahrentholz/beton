@@ -536,6 +536,95 @@ async fn ses_003_ac3_input_to_stopped_session_resumes_it() {
     d.daemon.shutdown().await;
 }
 
+/// Runner-Provider, dessen Prozesse nach dem Trennen noch als `running` gelten: so wie ein
+/// geordnet gestoppter Runner, der unter Last noch Sekunden bis zum Exit braucht (#198).
+struct Lingering(LocalProvider);
+
+#[async_trait::async_trait]
+impl beton_host::RunnerProvider for Lingering {
+    fn id(&self) -> &str {
+        self.0.id()
+    }
+    fn capabilities(&self) -> beton_host::RunnerCapabilities {
+        self.0.capabilities()
+    }
+    async fn provision(
+        &self,
+        spec: &beton_host::RunnerSpec,
+    ) -> Result<beton_host::Provisioned, beton_host::RunnerError> {
+        self.0.provision(spec).await
+    }
+    async fn start(
+        &self,
+        env: &beton_host::Provisioned,
+        boot: &beton_host::RunnerBoot,
+    ) -> Result<beton_host::RunnerHandle, beton_host::RunnerError> {
+        self.0.start(env, boot).await
+    }
+    async fn exec(
+        &self,
+        h: &beton_host::RunnerHandle,
+        req: beton_host::ExecRequest,
+    ) -> Result<beton_host::ExecOutput, beton_host::RunnerError> {
+        self.0.exec(h, req).await
+    }
+    async fn status(
+        &self,
+        _h: &beton_host::RunnerHandle,
+    ) -> Result<beton_host::RunnerStatus, beton_host::RunnerError> {
+        Ok(beton_host::RunnerStatus::Running)
+    }
+    async fn terminate(
+        &self,
+        h: &beton_host::RunnerHandle,
+        mode: beton_host::TerminateMode,
+    ) -> Result<(), beton_host::RunnerError> {
+        self.0.terminate(h, mode).await
+    }
+    async fn list_managed(
+        &self,
+    ) -> Result<Vec<beton_host::ManagedResource>, beton_host::RunnerError> {
+        self.0.list_managed().await
+    }
+}
+
+/// #198: Die Eingabe kommt, solange der im Leerlauf gestoppte Runner noch nicht beendet ist.
+/// Sein Prozess darf nicht als „startet gerade“ gelten; die Session wird mit einem neuen
+/// Runner fortgesetzt.
+#[tokio::test]
+async fn ses_003_ac3_input_resumes_while_the_stopped_runner_is_still_exiting() {
+    let dir = tmp();
+    let runners = dir.path().join("runners");
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.provider = std::sync::Arc::new(Lingering(LocalProvider::new(
+            vec![runner_bin().into()],
+            runners,
+        )));
+        r.tunnel.idle_timeout = Duration::from_millis(300);
+        r.tunnel.idle_check = Duration::from_millis(100);
+        r
+    })
+    .await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    let start = Instant::now();
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "hallo"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body} nach {:?}", start.elapsed());
+    d.wait_for(&id, is("turn.completed")).await;
+    d.daemon.shutdown().await;
+}
+
 #[tokio::test]
 async fn ses_005_ac1_ac3_interrupt_during_tool_call_and_idempotent() {
     let dir = tmp();
