@@ -215,6 +215,18 @@ impl Env {
         assert_eq!(status, 202, "{body}");
         let start = Instant::now();
         while done(&self.events(id).await) == before {
+            // Freigaben erteilen (ergibt `approval.wait`-Spans).
+            let (_, approvals) = self
+                .http("GET", &format!("/v1/sessions/{id}/approvals"), None)
+                .await;
+            if let Some(aid) = approvals["items"][0]["id"].as_str() {
+                self.http(
+                    "POST",
+                    &format!("/v1/sessions/{id}/approvals/{aid}/resolve"),
+                    Some(json!({"decision": "allow"})),
+                )
+                .await;
+            }
             assert!(
                 start.elapsed() < Duration::from_secs(30),
                 "Turn endet nicht: {:#?}",

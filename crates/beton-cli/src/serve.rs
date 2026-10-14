@@ -372,6 +372,31 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
             .context("Audit-Eintrag")?;
     }
     let secret_backend = secrets.backend.clone();
+    // OBS-003: Traces nur mit konfiguriertem Endpoint (ADR-0025, ADR-0033).
+    let tracer = match beton_server::otel::OtelConfig::resolve(
+        settings.observability.otlp.endpoint.as_deref(),
+        &settings.observability.otlp.headers,
+        settings.observability.capture_content,
+        &|k| std::env::var(k).ok(),
+    ) {
+        Ok(Some(config)) => {
+            tracing::info!(
+                capture_content = config.capture_content,
+                "OTLP-Export aktiv"
+            );
+            Some(beton_server::otel::SessionTracer::start(
+                config,
+                redactor.clone(),
+            ))
+        }
+        Ok(None) => None,
+        Err(e) => {
+            return Err(CliError::new(
+                Exit::General,
+                anyhow::anyhow!("observability: {e}"),
+            ));
+        }
+    };
     let daemon = beton_server::start_with(config, store.clone(), move |mut r| {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
@@ -383,6 +408,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.attachments = attachments;
         r.secret_backend = secret_backend;
         r.redactor = Some(redactor);
+        r.tracer = tracer;
         r
     })
     .await
@@ -477,6 +503,40 @@ mod tests {
         let mut settings = Settings::default();
         settings.events.store_raw = false;
         assert!(!store_options(&settings, none()).store_raw);
+    }
+
+    #[test]
+    fn obs_003_observability_settings_resolve_to_an_exporter_config() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "observability": {
+                "otlp": { "endpoint": "http://127.0.0.1:4318", "headers": { "x-k": "v" } },
+                "capture_content": true
+            }
+        }))
+        .unwrap();
+        let c = beton_server::otel::OtelConfig::resolve(
+            settings.observability.otlp.endpoint.as_deref(),
+            &settings.observability.otlp.headers,
+            settings.observability.capture_content,
+            &|_| None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(c.endpoint, "http://127.0.0.1:4318/v1/traces");
+        assert_eq!(c.headers, vec![("x-k".to_owned(), "v".to_owned())]);
+        assert!(c.capture_content);
+        // Default: kein Endpoint, kein Export.
+        let d = Settings::default();
+        assert!(!d.observability.capture_content);
+        assert_eq!(
+            beton_server::otel::OtelConfig::resolve(
+                d.observability.otlp.endpoint.as_deref(),
+                &d.observability.otlp.headers,
+                false,
+                &|_| None,
+            ),
+            Ok(None)
+        );
     }
 
     #[test]

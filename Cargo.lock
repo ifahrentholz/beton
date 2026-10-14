@@ -873,6 +873,7 @@ dependencies = [
  "ignore",
  "proptest",
  "regex",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
