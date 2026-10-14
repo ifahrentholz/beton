@@ -4,6 +4,9 @@
 //! `beton-proxy`, `beton-secrets`, Auth-Code in `beton-server`), muss er im selben Bereich
 //! mindestens eine Testdatei ändern oder neu anlegen. Ausnahme: Label `no-test-needed`, das
 //! nur ein Mensch setzen darf (die CI prüft den Setzenden über die GitHub-API).
+//!
+//! Außerdem QA-013 AC1 in der Übergangsform aus ADR-0036: Ein PR, der irgendeinen dieser
+//! Bereiche berührt (Code oder Tests), braucht das Label `security-review`.
 
 /// Ein sicherheitskritischer Bereich: Code-Pfade (Präfixe) und Pfade seiner Tests.
 #[derive(Debug, Clone, Copy)]
@@ -89,15 +92,34 @@ pub fn violations(changes: &[Change]) -> Vec<&'static str> {
     AREAS
         .iter()
         .filter(|area| {
-            let code_changed = changes.iter().any(|c| {
-                area.code.iter().any(|p| c.path.starts_with(p)) && is_code(&c.path)
-            });
+            let code_changed = changes
+                .iter()
+                .any(|c| area.code.iter().any(|p| c.path.starts_with(p)) && is_code(&c.path));
             let tests_touched = changes.iter().any(|c| {
                 !c.status.starts_with('D')
                     && is_test_file(&c.path)
                     && area.tests.iter().any(|p| c.path.starts_with(p))
             });
             code_changed && !tests_touched
+        })
+        .map(|area| area.name)
+        .collect()
+}
+
+/// QA-013 AC1 (ADR-0036): berührte Bereiche, wenn das Label `security-review` fehlt.
+pub fn missing_review_label(changes: &[Change], has_label: bool) -> Vec<&'static str> {
+    if has_label {
+        return Vec::new();
+    }
+    AREAS
+        .iter()
+        .filter(|area| {
+            changes.iter().any(|c| {
+                area.code
+                    .iter()
+                    .chain(area.tests)
+                    .any(|p| c.path.starts_with(p))
+            })
         })
         .map(|area| area.name)
         .collect()
@@ -112,6 +134,29 @@ mod tests {
             status: status.into(),
             path: path.into(),
         }
+    }
+
+    #[test]
+    fn qa_013_ac1_sandbox_change_requires_security_review_label() {
+        let changes = [change("M", "crates/beton-sandbox/src/seatbelt.rs")];
+        assert_eq!(missing_review_label(&changes, false), ["beton-sandbox"]);
+        assert!(missing_review_label(&changes, true).is_empty());
+    }
+
+    #[test]
+    fn qa_013_ac1_any_security_path_counts_tests_included() {
+        let changes = [
+            change("A", "crates/beton-policy/tests/combine.rs"),
+            change("M", "crates/beton-server/src/security.rs"),
+            change("M", "crates/beton-server/src/queue.rs"),
+            change("M", "docs/spec/03-policies.md"),
+        ];
+        assert_eq!(
+            missing_review_label(&changes, false),
+            ["beton-policy", "beton-server (Auth)"]
+        );
+        let unrelated = [change("M", "crates/beton-server/src/queue.rs")];
+        assert!(missing_review_label(&unrelated, false).is_empty());
     }
 
     #[test]
@@ -164,7 +209,9 @@ mod tests {
     fn qa_013_ac2_docs_only_and_test_modules_are_recognized() {
         assert!(violations(&[change("M", "crates/beton-secrets/README.md")]).is_empty());
         assert!(is_test_file("crates/beton-policy/src/cel/tests.rs"));
-        assert!(is_test_file("crates/beton-policy/policies/git.policytest.yaml"));
+        assert!(is_test_file(
+            "crates/beton-policy/policies/git.policytest.yaml"
+        ));
         assert!(is_test_file("crates/beton-sandbox/fuzz/fuzz_targets/a.rs"));
         assert!(!is_test_file("crates/beton-policy/src/attestation.rs"));
     }
@@ -192,8 +239,7 @@ mod tests {
     /// QA-013 AC1; die Branch-Protection selbst stellt der Maintainer ein).
     #[test]
     fn codeowners_cover_all_security_critical_areas() {
-        let text =
-            std::fs::read_to_string(crate::repo_root().join(".github/CODEOWNERS")).unwrap();
+        let text = std::fs::read_to_string(crate::repo_root().join(".github/CODEOWNERS")).unwrap();
         for area in AREAS {
             for path in area.code {
                 assert!(

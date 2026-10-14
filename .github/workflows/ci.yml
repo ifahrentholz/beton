@@ -3,6 +3,9 @@ name: CI
 
 on:
   pull_request:
+    # `labeled`/`unlabeled`: die Label-Checks aus QA-013 (`security-review`, `no-test-needed`)
+    # sollen auf Änderungen der Labels reagieren.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
 
@@ -218,6 +221,18 @@ jobs:
             if [ "$actor" = "User" ]; then extra="--no-test-needed"; fi
           fi
           cargo xtask security-tests-touched --range "origin/${BASE_REF}..HEAD" $extra
+      - name: security-review-Label (QA-013, ADR-0036)
+        # covers: QA-013 AC1 (Übergang bis M3: sicherheitskritische Pfade nur mit Label `security-review`)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          PR: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          extra=""
+          if gh api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name' | grep -qx 'security-review'; then
+            extra="--has-label"
+          fi
+          cargo xtask security-review-label --range "origin/${BASE_REF}..HEAD" $extra
 
   web:
     name: web (Vitest, Playwright)
