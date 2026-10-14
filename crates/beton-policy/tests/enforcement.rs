@@ -14,9 +14,7 @@ use beton_policy::load::{LoadedSet, Scope, parse_set};
 
 fn set(body: &str) -> Arc<LoadedSet> {
     let text = format!("spec_version: 1\nname: guard\nrules:\n{body}");
-    Arc::new(
-        parse_set(Scope::Project, "guard.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")),
-    )
+    Arc::new(parse_set(Scope::User, "guard.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
 }
 
 fn rule(id: &str, when: &str, action: &str) -> String {

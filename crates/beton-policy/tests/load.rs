@@ -528,8 +528,10 @@ fn pol_007_modify_args_below_user_is_a_load_error() {
         err.message.contains("rules[0].modify.args") && err.message.contains("User-Ebene"),
         "{err}"
     );
-    let rules = vec![json!({ "id": "inject", "on": "tool_call", "action": "modify",
-                             "modify": { "args": { "command": "id" } } })];
+    let rules = vec![
+        json!({ "id": "inject", "on": "tool_call", "action": "modify",
+                             "modify": { "args": { "command": "id" } } }),
+    ];
     let err = inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap_err();
     assert!(err.message.contains("policies[0].modify.args"), "{err}");
     parse_set(Scope::User, "x.yaml", text).unwrap();

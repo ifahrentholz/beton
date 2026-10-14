@@ -81,6 +81,15 @@ impl Env {
         self.dir.path().join("work")
     }
 
+    /// Schreibt eine User-Policy (`$BETON_HOME/policies/`).
+    fn user_policy(&self, name: &str, body: &str) -> PathBuf {
+        let dir = self.dir.path().join("home/.beton/policies");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.yaml"));
+        std::fs::write(&path, format!("spec_version: 1\nname: {name}\n{body}")).unwrap();
+        path
+    }
+
     /// Schreibt eine Projekt-Policy.
     fn project_policy(&self, name: &str, body: &str) -> PathBuf {
         let path = self.work().join(format!(".beton/policies/{name}.yaml"));
@@ -455,7 +464,8 @@ async fn pol_003_ac1_pol_006_ac1_tool_call_deny_is_enforced_with_reason() {
 #[tokio::test]
 async fn pol_006_ac3_modified_args_are_executed_and_requested_keeps_the_original() {
     let env = Env::start().await;
-    env.project_policy(
+    // `args` ändert nur eine Policy ab der User-Ebene (#234).
+    env.user_policy(
         "dry",
         "rules:\n  - id: dry-run\n    on: tool_call\n    when: 'tool.kind == \"shell\"'\n    action: modify\n    modify: { args: { command: \"git push --dry-run origin main\" } }\n",
     );

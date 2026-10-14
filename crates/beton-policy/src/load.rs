@@ -21,8 +21,9 @@ use crate::yaml::{self, Document, Style};
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
 /// Modifikationen, die nur Policies ab der User-Ebene vornehmen dürfen: Ein Repo bzw. ein Agent
-/// kann damit sonst Schutz lockern (#231: Permission-Mode).
-pub const USER_ONLY_MODIFY: [&str; 1] = ["permission_mode"];
+/// könnte damit sonst Schutz lockern (#231: Permission-Mode) oder Befehle in Tool-Calls
+/// einschleusen (#234: Argumente).
+pub const USER_ONLY_MODIFY: [&str; 2] = ["permission_mode", "args"];
 
 /// Kanonische Tool-Klassen (POL-005), gültig in `kinds:`.
 use crate::enforcement::KINDS;

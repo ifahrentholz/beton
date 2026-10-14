@@ -211,13 +211,14 @@ fn pol_007_ac3_first_writer_wins_for_model() {
 
 #[test]
 fn pol_007_ac4_args_patches_by_pointer() {
+    // `args` ändern nur Ebenen ab User (#234); Team ist autoritativer als User.
     let project = set(
-        Scope::Project,
+        Scope::Team,
         "p",
         "rules:\n  - id: p\n    on: tool_call\n    action: modify\n    modify: { args: { timeout: 10, env: { A: \"1\" } } }\n",
     );
     let agent = set(
-        Scope::Agent,
+        Scope::User,
         "a",
         "rules:\n  - id: a\n    on: tool_call\n    action: modify\n    modify: { args: { timeout: 99, env: { B: \"2\" }, dry: true } }\n",
     );
@@ -235,18 +236,18 @@ fn pol_007_ac4_args_patches_by_pointer() {
     assert_eq!(conflict.field, "/args/timeout");
     assert_eq!(conflict.kept, json!(10));
     assert_eq!(conflict.discarded, json!(99));
-    assert_eq!(conflict.discarded_rule.scope, Scope::Agent);
+    assert_eq!(conflict.discarded_rule.scope, Scope::User);
 }
 
 #[test]
 fn pol_007_ac4_overlapping_pointers_conflict() {
     let user = set(
-        Scope::User,
+        Scope::Org,
         "u",
         "rules:\n  - id: u\n    on: tool_call\n    action: modify\n    modify: { args: { env: null } }\n",
     );
     let agent = set(
-        Scope::Agent,
+        Scope::User,
         "a",
         "rules:\n  - id: a\n    on: tool_call\n    action: modify\n    modify: { args: { env: { B: \"2\" } } }\n",
     );
@@ -291,7 +292,7 @@ fn mixed_sets() -> Vec<Arc<LoadedSet>> {
             ),
         ),
         set(
-            Scope::Project,
+            Scope::Team,
             "p-b",
             "rules:\n  - id: m\n    on: tool_call\n    action: modify\n    modify: { args: { safe: false, note: p } }\n",
         ),
@@ -305,7 +306,7 @@ fn mixed_sets() -> Vec<Arc<LoadedSet>> {
             ),
         ),
         set(
-            Scope::Agent,
+            Scope::Org,
             "a-b",
             "rules:\n  - id: m\n    on: tool_call\n    action: modify\n    modify: { args: { note: a } }\n  - id: n\n    on: tool_call\n    action: notify\n",
         ),
@@ -362,7 +363,9 @@ fn pol_007_mixed_outcomes() {
     // file_read: Projekt-Default ask ist durch p1 aufgehoben
     let d = eval(sets.clone(), &tool("file_read", json!({})));
     assert_eq!(d.outcome, Outcome::Allow);
-    assert_eq!(d.modified.args, Some(json!({ "safe": true, "note": "p" })));
+    // `args`-Patches ab User (#234): Org `note: a` vor Team `note: p`, Team `safe: false` vor
+    // User `safe: true`.
+    assert_eq!(d.modified.args, Some(json!({ "safe": false, "note": "a" })));
     // other: Projekt-Default ask greift (Agent-allow hebt ihn nicht auf)
     let d = eval(sets, &tool("other", json!({})));
     assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:?}");
