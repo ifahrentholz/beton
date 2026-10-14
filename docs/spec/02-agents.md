@@ -143,7 +143,7 @@ sandbox:                             # Felder und Semantik: SBX (04-sandbox.md)
 | `schedule_create` / `schedule_list` / `schedule_update` / `schedule_delete` | Schedules für erlaubte Agents verwalten | Agent-Feld `tools.system` enthält sie (ab M5, ASY-011) |
 | `skill_load` / `skill_read_file` | Skill-Inhalt bzw. Zusatzdatei laden (für Harnesses ohne native Skills) | wenn Skills aktiv |
 
-Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind = "system"` (ab M2; im Event-Log `tool.call.requested` mit `mcp_server: beton`, `source: beton_mcp`). `tools.system` wählt aus (leer bzw. fehlend: alle verfügbaren), die Spalte „Freischaltung“ begrenzt; `skill_load`/`skill_read_file` kommen mit aktiven Skills immer hinzu. Tools, deren Freischaltung fehlt oder die erst ein späterer Meilenstein bringt, sind unsichtbar, ein direkter Aufruf endet mit `tool_not_enabled`.
+Alle System-Tool-Aufrufe durchlaufen die Policy-Phase `tool_call` mit `tool.kind = "system"` (ab M2; im Event-Log `tool.call.requested` mit `mcp_server: beton`, `source: beton_mcp`; bei Harnesses mit vollem Gate über deren Gate, sonst im Relay-Hub, WP-35). Erlaubt die Policy, laufen System-Tools ohne zusätzliche menschliche Rückfrage, auch wenn der Vendor fragt (#151). `tools.system` wählt aus (leer bzw. fehlend: alle verfügbaren), die Spalte „Freischaltung“ begrenzt; `skill_load`/`skill_read_file` kommen mit aktiven Skills immer hinzu. Tools, deren Freischaltung fehlt oder die erst ein späterer Meilenstein bringt, sind unsichtbar, ein direkter Aufruf endet mit `tool_not_enabled`.
 
 ## Features — Agents (AGT)
 

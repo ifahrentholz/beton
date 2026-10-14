@@ -432,7 +432,7 @@
   "anchor": "har-026--fake-harness",
   "summary": "Deterministischer Harness `fake`, der Szenarien aus YAML abspielt (Text-Deltas, Tool-Calls mit Gate-Anfragen, Fehler, Verzögerungen) und alle Capabilities konfigurierbar deklariert. Er ist Grundlage für E2E-Tests (Playwright gegen Web/Desktop), Policy-Integrationstests und Demos ohne Subscription. HAR-026 ist Owner des Szenario-Formats; die Protokoll-Fake-CLIs (QA-002) spielen dieselben Szenarien über die echte Prozessgrenze der Adapter ab.",
   "acs": [
-   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts` und der vom Runner vergebenen `evt_`-IDs; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
+   "`beton run fake --scenario tests/fake/push-ask.yaml` erzeugt bei identischer Eingabe ein byte-identisches Event-Log (abzüglich `ts`, der vom Runner vergebenen IDs – `evt_`, ab M2 auch `pd_` und `apr_` aus dem Policy-Gate – und der Laufzeit `eval_us`; Turn-, Nachrichten- und Call-IDs des Fake-Harness sind deterministisch).",
    "Der Fake-Harness kann Capabilities so deklarieren, dass jeder Fehlerpfad (Start verweigert, `capability_unsupported`, Crash, Auth-Ablauf) testbar ist.",
    "Der Fake-Harness ist in Release-Builds nur mit `--dev` bzw. Feature-Flag (`fake_harness`, UX-007) verfügbar und erscheint sonst nicht im Katalog."
   ]
@@ -926,7 +926,7 @@
   "anchor": "pol-003--hook-phasen--evaluationspunkte",
   "summary": "Policies entscheiden an sechs Phasen. Jede Phase hat definierte erlaubte Aktionen und modifizierbare Felder.",
   "acs": [
-   "Für jede Phase existiert ein Integrationstest mit dem Fake-Harness, der `deny` durchsetzt (Aktion findet nicht statt) und `policy.decision` mit korrekter `phase` loggt.",
+   "Für jede Phase existiert ein Integrationstest mit dem Fake-Harness, der `deny` durchsetzt (Aktion findet nicht statt) und `policy.decision` mit korrekter `phase` loggt. *(Präzisiert für M2: `session_start`, `model_request`, `tool_call` und `tool_result`. `browser_navigate` und `browser_action` löst erst der eingebettete Browser aus (M3, BRW-019, POL-020); ihre Tests kommen mit ihm, bis dahin gibt es keine Aktion in diesen Phasen.)*",
    "Eine `modify`-Regel mit einem für die Phase nicht erlaubten Feld (z. B. `args` in `model_request`) ist ein Ladefehler.",
    "`session_start` mit `ask` startet den Harness erst nach Freigabe; bei `deny` wird kein Harness-Prozess gestartet."
   ]
@@ -974,7 +974,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-006--aktionen--entscheidungsmodell",
-  "summary": "Regeln haben genau eine Aktion: `allow` (ausdrückliche Erlaubnis; hebt Defaults derselben Ebene auf), `deny` (mit `reason`, die das Modell erhält), `ask` (Approval-Card, POL-010), `modify` (Felder laut Phase, POL-003), `notify` (Kanäle `inbox`, `push`, `log`; blockiert nie). Die Kombination erfolgt nach dem verbindlichen Algorithmus im Design.",
+  "summary": "Regeln haben genau eine Aktion: `allow` (ausdrückliche Erlaubnis; hebt Defaults derselben Ebene auf), `deny` (mit `reason`, die das Modell erhält), `ask` (Approval-Card, POL-010), `modify` (Felder laut Phase, POL-003), `notify` (Kanäle `inbox`, `push`, `log`; blockiert nie). Die Kombination erfolgt nach dem verbindlichen Algorithmus im Design. *(Präzisiert, WP-35:)* `notify` erscheint bis zur Zustellung über Inbox und Push (WP-37) als `notice` im Verlauf. Ein `modify` auf `args` setzt der Harness nur mit vollem Gate um (Claude `updatedInput`, Direkt-API, Fake); Codex und ACP können geänderte Argumente nicht ausführen und lehnen ab (fail closed). Nach einem `args`-Patch berechnet die Engine `tool.command`, `tool.argv`, `tool.paths`, `tool.urls` und `tool.parse_uncertain` für Pass 2 neu.",
   "acs": [
    "Bei einem `deny` erhält das Modell den `reason`-Text als Tool-Fehler bzw. Ablehnungsbegründung (Fake-Harness prüft den Text).",
    "`notify` mit Kanal `push` erzeugt eine Notification, ohne die Aktion zu verzögern (Latenz der Entscheidung unverändert ±1 ms).",
@@ -2907,7 +2907,7 @@
   "anchor": "ses-001--session-lebenszyklus-create--archive--delete",
   "summary": "Sessions werden per API/CLI/UI erzeugt (Harness oder Agent, Arbeitsverzeichnis, optional Projekt), archiviert, wiederhergestellt und gelöscht. Archivieren stoppt einen laufenden Runner und blendet die Session aus der Standardliste aus; Löschen entfernt Event-Log und Blobs und hinterlässt einen Tombstone (ID, Owner, Löschzeitpunkt) für Sync-Konsistenz.",
   "acs": [
-   "Given `beton run claude`, then existiert eine Session mit Status `starting`→`idle` und erstem Event `session.created` (seq 1), gefolgt von `session.started`.",
+   "Given `beton run claude`, then existiert eine Session mit Status `starting`→`idle` und erstem Event `session.created` (seq 1), gefolgt von `session.started` (ab M2 steht dazwischen das `policy.decision` der Phase `session_start`, POL-003).",
    "When eine laufende Session archiviert wird, then wird der Runner beendet, Status `stopped`, Flag `archived=true`, und sie fehlt in `GET /v1/sessions` ohne `?archived=true`.",
    "When eine Session gelöscht wird, then liefern `GET /v1/sessions/{id}` und Event-Abfragen `404`, Blobs sind entfernt, ein Tombstone ist vorhanden.",
    "Lifecycle-Aktionen erzeugen jeweils genau ein Event mit `actor` des Auslösers."
