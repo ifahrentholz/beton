@@ -178,6 +178,13 @@ pub async fn start_with(
     }
     #[cfg(unix)]
     if let Some(path) = &config.tunnel_socket {
+        // Runner, die beim letzten Herunterfahren auf eine Freigabe warteten (POL-010 AC4).
+        if let Some(file) = crate::detached::path_for(path) {
+            for d in crate::detached::take(&file) {
+                tracing::info!(session = %d.session_id, "Wartender Runner darf sich neu verbinden");
+                runtime.runners.adopt(&d);
+            }
+        }
         let tstate = crate::tunnel::TunnelState {
             events: crate::hub::EventService {
                 store: store_for_tunnel.clone(),
@@ -192,6 +199,7 @@ pub async fn start_with(
                 system_state.clone(),
             ))),
             observer: Some(Arc::new(crate::titles::TitleObserver(system_state))),
+            shutdown: Some(stop_rx.clone()),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

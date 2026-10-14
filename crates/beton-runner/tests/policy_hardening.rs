@@ -263,6 +263,7 @@ async fn agt_005_agt_008_claude_gets_project_claude_md_and_skills_from_beton() {
         &paths,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -455,6 +456,7 @@ async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
         &paths,
         None,
         None,
+        None,
     )
     .await
     .err()
@@ -526,6 +528,7 @@ async fn pol_010_human_changed_args_are_checked_again() {
             allow: true,
             reason: None,
             updated_args: Some(serde_json::json!({ "command": "rm -rf ~" })),
+            ..beton_runner::policy::Human::default()
         }
     ));
     let d = task.await.unwrap();

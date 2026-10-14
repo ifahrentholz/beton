@@ -809,6 +809,8 @@ pub struct ApprovalView {
     pub subject: Value,
     pub options: Vec<String>,
     pub requested_seq: u64,
+    /// Ablauf der Card (RFC 3339, POL-010).
+    pub expires_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
@@ -845,6 +847,7 @@ pub async fn list_approvals(
             subject: a.subject,
             options: a.options,
             requested_seq: a.requested_seq,
+            expires_at: a.expires_at.to_string(),
         })
         .collect();
     Ok(axum::Json(ApprovalPage {
@@ -858,11 +861,27 @@ pub async fn list_approvals(
 pub enum Decision {
     Allow,
     Deny,
+    /// Antwort auf eine Frage (`ask_user`, AGT-007 AC4).
+    Answer,
+}
+
+/// Merken einer Freigabe (POL-010).
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ToSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Remember {
+    None,
+    /// „Für diese Session erlauben“ (`approve_session`).
+    Session,
 }
 
 #[derive(Debug, Deserialize, Serialize, ToSchema, TS)]
 pub struct ResolveApprovalRequest {
     pub decision: Decision,
+    /// `session` bei `allow`: gilt für denselben Befehl in dieser Session, falls die Card
+    /// `approve_session` anbietet (sonst 409).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub remember: Option<Remember>,
     /// Geänderte Argumente bei `allow` (HAR-005 AC2).
     #[schema(value_type = Option<Object>)]
     #[ts(optional, type = "unknown")]
@@ -870,6 +889,10 @@ pub struct ResolveApprovalRequest {
     /// Begründung bei `deny`; das Modell sieht sie.
     #[ts(optional)]
     pub reason: Option<String>,
+    /// Antwort bei `answer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub answer: Option<String>,
 }
 
 /// Freigabe entscheiden (WEB-018, HAR-005).
@@ -879,13 +902,15 @@ pub struct ResolveApprovalRequest {
     responses((status = 200, description = "Entscheidung zugestellt", body = Object)))]
 pub async fn resolve_approval(
     State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
     Path((id, approval_id)): Path<(String, String)>,
     ApiJson(req): ApiJson<ResolveApprovalRequest>,
 ) -> ApiResult<axum::Json<Value>> {
     let args = serde_json::to_value(&req).map_err(|e| Problem::internal(&e))?;
+    let (_, by) = principal(auth);
     state
         .sessions()
-        .resolve_approval(session_id(&id)?, &approval_id, args)
+        .resolve_approval(session_id(&id)?, &approval_id, args, by)
         .await?;
     Ok(axum::Json(serde_json::json!({})))
 }
@@ -1120,7 +1145,12 @@ impl Command for ApprovalResolve {
             .to_owned();
         ctx.state
             .sessions()
-            .resolve_approval(need_session(session)?, &approval, args)
+            .resolve_approval(
+                need_session(session)?,
+                &approval,
+                args,
+                PrincipalId::User(UserId::LOCAL),
+            )
             .await?;
         Ok(serde_json::json!({}))
     }

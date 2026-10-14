@@ -501,11 +501,12 @@ async fn pol_006_ac2_notify_creates_a_notice_without_blocking() {
         decisions(&turn, "tool_call")[0]["payload"]["outcome"],
         "allow"
     );
+    // Kanal `push` wird bis Web-Push (WEB-014) zum Inbox-Eintrag (UX-001).
     assert!(
-        of_type(&turn, "notice").iter().any(|n| n["payload"]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Shell-Aufruf")),
+        of_type(&turn, "policy.notified")
+            .iter()
+            .any(|n| n["payload"]["message"] == "Shell-Aufruf"
+                && n["payload"]["channels"] == json!(["push"])),
         "{turn:#?}"
     );
     assert_eq!(

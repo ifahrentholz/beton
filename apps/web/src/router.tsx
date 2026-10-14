@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, Outlet, useParams } from '@tanstack/react-router'
 import { Menu } from 'lucide-react'
 import { AppLayout } from '@/components/app-layout'
+import { InboxView } from '@/components/inbox'
 import { useLayout } from '@/components/layout-state'
 import { SessionView } from '@/components/session-view'
 import { validateWorkspaceSearch } from '@/lib/workspace'
@@ -67,7 +68,10 @@ const sessionRoute = createRoute({
   validateSearch: validateWorkspaceSearch,
 })
 
-export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute]) })
+// Inbox (UX-001).
+const inboxRoute = createRoute({ getParentRoute: () => rootRoute, path: '/inbox', component: InboxView })
+
+export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute, inboxRoute]) })
 
 declare module '@tanstack/react-router' {
   interface Register {

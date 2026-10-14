@@ -517,7 +517,7 @@ fn pol_007_dry_run_is_reported_but_not_combined() {
 struct GrantFor(&'static str);
 
 impl Grants for GrantFor {
-    fn grant(&self, rule: &RuleRef, _ctx: &Activation) -> Option<String> {
+    fn grant(&self, rule: &RuleRef, _fingerprint: &str) -> Option<String> {
         (rule.rule_id == self.0).then(|| "grant-1".to_owned())
     }
 }
@@ -635,10 +635,8 @@ fn pol_007_effects_and_notifications_are_reported() {
     let effect_rules: Vec<_> = d.effects.iter().map(|e| e.rule.rule_id.as_str()).collect();
     assert_eq!(effect_rules, ["count"]);
     assert_eq!(d.notifications.len(), 1);
-    assert_eq!(
-        d.notifications[0].message.as_deref(),
-        Some("Push {{ 1 + 1 }}")
-    );
+    // `{{ … }}` ist CEL und wird ausgewertet (POL-002, POL-009).
+    assert_eq!(d.notifications[0].message.as_deref(), Some("Push 2"));
     // ask: Effects vorgemerkt bis zur Auflösung; Approval-Einstellungen am Grund
     let d = eval(vec![s], &tool("file_write", json!({})));
     let Outcome::Ask { reasons } = &d.outcome else {

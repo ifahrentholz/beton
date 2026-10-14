@@ -974,7 +974,7 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-006--aktionen--entscheidungsmodell",
-  "summary": "Regeln haben genau eine Aktion: `allow` (ausdrückliche Erlaubnis; hebt Defaults derselben Ebene auf), `deny` (mit `reason`, die das Modell erhält), `ask` (Approval-Card, POL-010), `modify` (Felder laut Phase, POL-003), `notify` (Kanäle `inbox`, `push`, `log`; blockiert nie). Die Kombination erfolgt nach dem verbindlichen Algorithmus im Design. *(Präzisiert, WP-35:)* `notify` erscheint bis zur Zustellung über Inbox und Push (WP-37) als `notice` im Verlauf. Ein `modify` auf `args` setzt der Harness nur mit vollem Gate um (Claude `updatedInput`, Direkt-API, Fake); Codex und ACP können geänderte Argumente nicht ausführen und lehnen ab (fail closed). Nach einem `args`-Patch berechnet die Engine `tool.command`, `tool.argv`, `tool.paths`, `tool.urls` und `tool.parse_uncertain` für Pass 2 neu.",
+  "summary": "Regeln haben genau eine Aktion: `allow` (ausdrückliche Erlaubnis; hebt Defaults derselben Ebene auf), `deny` (mit `reason`, die das Modell erhält), `ask` (Approval-Card, POL-010), `modify` (Felder laut Phase, POL-003), `notify` (Kanäle `inbox`, `push`, `log`; blockiert nie). Die Kombination erfolgt nach dem verbindlichen Algorithmus im Design. *(Präzisiert, WP-35/WP-37:)* `notify` wird zugestellt: Kanal `inbox` als `policy.notified { rule_id, scope, set, channels, message }` und damit als Hinweis in der Inbox (UX-001); `push` ebenso, bis Desktop-Notifications (DESK-005, M3) und Web-Push (WEB-014, M4) ihn zusätzlich zustellen; `log` als `notice` im Verlauf. `{{ … }}` in `message` wird im Kontext der Entscheidung ausgewertet; ein fehlerhafter Ausdruck erscheint als `?`. Ein `modify` auf `args` setzt der Harness nur mit vollem Gate um (Claude `updatedInput`, Direkt-API, Fake); Codex und ACP können geänderte Argumente nicht ausführen und lehnen ab (fail closed). Nach einem `args`-Patch berechnet die Engine `tool.command`, `tool.argv`, `tool.paths`, `tool.urls` und `tool.parse_uncertain` für Pass 2 neu.",
   "acs": [
    "Bei einem `deny` erhält das Modell den `reason`-Text als Tool-Fehler bzw. Ablehnungsbegründung (Fake-Harness prüft den Text).",
    "`notify` mit Kanal `push` erzeugt eine Notification, ohne die Aktion zu verzögern (Latenz der Entscheidung unverändert ±1 ms).",
@@ -1110,7 +1110,7 @@
   "anchor": "pol-014--regeltyp-require_approval",
   "summary": "Zucker für `ask`: Approval für bestimmte Tools, Tool-Klassen, MCP-Server oder einen CEL-Ausdruck, mit Timeout-, `on_timeout`- und `remember`-Einstellungen.",
   "acs": [
-   "`kinds: [file_write]` erzeugt für `Write` (Claude), `apply_patch` (Codex) und ACP-`edit` jeweils eine Card.",
+   "`kinds: [file_write, file_edit]` erzeugt für `Write` (Claude), `apply_patch` (Codex) und ACP-`edit` jeweils eine Card. *(Korrigiert, WP-37: `apply_patch` und ACP-`edit` sind laut POL-005 `file_edit`, deshalb beide Klassen.)*",
    "`remember: none` blendet `approve_session` in der Card aus."
   ]
  },
@@ -4004,7 +4004,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-018--minimale-approval-karte-m0",
-  "summary": "Damit Rückfragen des Claude-Code-Adapters (HAR-005, siehe 01-harnesses.md) schon vor der Policy-Engine beantwortbar sind, zeigt der Chat-Stream ein offenes `approval.requested` als einfache Karte: Tool-Name, Argumente als JSON (ausklappbar), Buttons „Erlauben“ und „Ablehnen“ (optional mit Kommentar an das Modell). In der CLI fragt `beton run` interaktiv mit `[y/N]`, ohne TTY gilt `--on-ask` (CLI-002). Ab M2 ersetzt die Approval-Bar (WEB-007) die Karte und ergänzt Policy-Begründung, Diff-Vorschau, Stapelung und „Für Session erlauben“. Die Karte bleibt als Inline-Darstellung im Verlauf erhalten.",
+  "summary": "Damit Rückfragen des Claude-Code-Adapters (HAR-005, siehe 01-harnesses.md) schon vor der Policy-Engine beantwortbar sind, zeigt der Chat-Stream ein offenes `approval.requested` als einfache Karte: Tool-Name, Argumente als JSON (ausklappbar), Buttons „Erlauben“ und „Ablehnen“ (optional mit Kommentar an das Modell). In der CLI fragt `beton run` interaktiv mit `[y/N]`, ohne TTY gilt `--on-ask` (CLI-002). Ab M2 ersetzt die Approval-Bar (WEB-007) die Karte und ergänzt Policy-Begründung, Diff-Vorschau, Stapelung und „Für Session erlauben“. Die Karte bleibt als Inline-Darstellung im Verlauf erhalten. *(Umgesetzt, WP-37: entschieden wird nur noch in der Leiste; die Karte verweist bis zur Entscheidung auf sie.)*",
   "acs": [
    "Given eine Claude-Session (Fake-Harness), die ein `can_use_tool` auslöst, Then erscheint im Web die Karte; „Erlauben“ setzt den Tool-Call fort, „Ablehnen“ liefert dem Modell `deny` mit dem eingegebenen Kommentar.",
    "Sind zwei Clients verbunden und entscheidet einer, verschwindet die Karte beim anderen mit Vermerk „entschieden“ (`approval.resolved`).",
@@ -5575,8 +5575,9 @@
   "acs": [
    "Ein `approval.requested` erscheint innerhalb von 1 s als Inbox-Item; nach `approval.resolved` (egal von welchem Client) ist es `done`.",
    "Approve aus der Inbox setzt eine pausierte Session fort, ohne dass die Session geöffnet wurde.",
-   "Der Zähler entspricht der Anzahl `open`-Items und ist in Tray/Dock-Badge gespiegelt (Desktop).",
-   "Nach Neuaufbau der Projektion aus dem Event-Log ist der Inbox-Zustand identisch."
+   "Der Zähler entspricht der Anzahl `open`-Items.",
+   "Nach Neuaufbau der Projektion aus dem Event-Log ist der Inbox-Zustand identisch.",
+   "(ab M3) Der Zähler ist in Tray/Dock-Badge gespiegelt (Desktop, DESK-004). *(Verschoben aus AC3, WP-37, #217: die Desktop-App kommt mit M3.)*"
   ]
  },
  {

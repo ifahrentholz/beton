@@ -64,7 +64,8 @@ struct State {
     /// Turn dieses Skript-Laufs.
     our_turn: Option<String>,
     queue: VecDeque<String>,
-    pending: VecDeque<(String, String)>,
+    /// Offene Freigaben bzw. Fragen (`ask_user`): ID, Kurzform, Frage?
+    pending: VecDeque<(String, String, bool)>,
     asked: bool,
     denied_by_on_ask: bool,
     stdin_open: bool,
@@ -210,11 +211,19 @@ pub async fn drive(
             line = async { match lines.as_mut() { Some(l) => l.recv().await, None => std::future::pending().await } }, if lines.is_some() => {
                 match line {
                     Some(line) => {
-                        if let Some((approval, _)) = st.pending.front().cloned() && st.asked {
-                            let allow = matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "j" | "ja");
+                        if let Some((approval, _, question)) = st.pending.front().cloned() && st.asked {
                             st.pending.pop_front();
                             st.asked = false;
-                            client.resolve_approval(&st.id, &approval, allow, (!allow).then_some("im Terminal abgelehnt")).await?;
+                            if question {
+                                // Frage des Agents (AGT-007 AC4): leer = nicht beantworten.
+                                match line.trim() {
+                                    "" => client.resolve_approval(&st.id, &approval, false, Some("im Terminal nicht beantwortet")).await?,
+                                    answer => client.answer_question(&st.id, &approval, answer).await?,
+                                };
+                            } else {
+                                let allow = matches!(line.trim().to_lowercase().as_str(), "y" | "yes" | "j" | "ja");
+                                client.resolve_approval(&st.id, &approval, allow, (!allow).then_some("im Terminal abgelehnt")).await?;
+                            }
                         } else if !line.trim().is_empty() && !read_only {
                             st.queue.push_back(line);
                         }
@@ -254,7 +263,7 @@ pub async fn drive(
         }
         // Freigaben beantworten.
         if !st.asked
-            && let Some((approval, summary)) = st.pending.front().cloned()
+            && let Some((approval, summary, question)) = st.pending.front().cloned()
         {
             if read_only {
                 // Zuschauer entscheiden nicht.
@@ -268,6 +277,9 @@ pub async fn drive(
                 client
                     .resolve_approval(&st.id, &approval, false, Some("--on-ask deny"))
                     .await?;
+            } else if tty && !script && question {
+                renderer.ask(&format!("{summary}\nAntwort (leer = nicht beantworten):"));
+                st.asked = true;
             } else if tty && !script {
                 renderer.ask(&format!("Freigabe für {summary}? [y/N]"));
                 st.asked = true;
@@ -419,13 +431,14 @@ fn on_event(st: &mut State, e: &Value, script: bool) {
         }
         "approval.requested" => {
             if let Some(a) = p["approval_id"].as_str() {
-                st.pending.push_back((a.to_owned(), approval_summary(p)));
+                st.pending
+                    .push_back((a.to_owned(), approval_summary(p), p["kind"] == "question"));
             }
         }
         "approval.resolved" => {
             if let Some(a) = p["approval_id"].as_str() {
-                let was_front = st.pending.front().is_some_and(|(id, _)| id == a);
-                st.pending.retain(|(id, _)| id != a);
+                let was_front = st.pending.front().is_some_and(|(id, _, _)| id == a);
+                st.pending.retain(|(id, _, _)| id != a);
                 if was_front {
                     st.asked = false;
                 }

@@ -60,6 +60,14 @@ impl Ctx<'_, '_> {
                 test,
             } => {
                 let target = self.eval(operand)?;
+                // `has(state.<scope>)` ohne geladenen Zustand ist ein Fehler, kein `false`:
+                // sonst griffe eine Regel `has(state.session) && …` nie (fail open, POL-009).
+                if *test
+                    && matches!(target, Value::Null)
+                    && matches!(operand.as_ref(), Node::Var(v) if v.as_ref() == "state")
+                {
+                    return Err(fail("Policy-Zustand nicht geladen"));
+                }
                 select(&target, field, *declared, *test)
             }
             Node::And(a, b) => self.logic(a, b, false),

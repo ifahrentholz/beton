@@ -272,7 +272,14 @@ mod tests {
         let names: Vec<_> = plan.servers.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["p", "u"]);
         assert!(plan.bridge);
-        assert_eq!(plan.system_tools, [SystemTool::PolicyQuery]);
+        assert_eq!(
+            plan.system_tools,
+            [
+                SystemTool::PolicyQuery,
+                SystemTool::InboxRead,
+                SystemTool::AskUser
+            ]
+        );
     }
 
     #[test]
@@ -354,6 +361,8 @@ mod tests {
             plan.system_tools,
             [
                 SystemTool::PolicyQuery,
+                SystemTool::InboxRead,
+                SystemTool::AskUser,
                 SystemTool::SessionSpawn,
                 SystemTool::SessionSend,
                 SystemTool::SessionWait,

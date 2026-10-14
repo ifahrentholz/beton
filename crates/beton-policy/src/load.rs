@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::Phase;
 use crate::cel::{CompileError, Program, compile_bool, compile_expr, ext};
 use crate::doc::{
-    Action, DefaultAction, Mode, PolicySetDoc, RuleDoc, RuleType, SPEC_VERSION, modifiable,
+    Action, ApprovalDoc, DefaultAction, Mode, PolicySetDoc, Remember, RuleDoc, RuleType,
+    SPEC_VERSION, TimeoutAction, modifiable,
 };
 use crate::types::Ty;
 use crate::yaml::{self, Document, Style};
@@ -69,8 +70,9 @@ pub enum RuleKind {
         when: Option<Program>,
         action: Action,
     },
-    /// Eingebauter Regeltyp. Die Entzuckerung folgt mit den Regeltyp-Paketen (WP-42, WP-43);
-    /// bis dahin wertet die Engine die Regel in ihren Phasen als Fehler (fail closed).
+    /// Eingebauter Regeltyp ohne Entzuckerung. `require_approval` (POL-014) wird beim Laden
+    /// zu einer `ask`-Regel; die übrigen folgen mit ihren Regeltyp-Paketen (WP-42, WP-43) und
+    /// gelten bis dahin in ihren Phasen als Fehler (fail closed).
     Builtin(RuleType),
 }
 
@@ -80,9 +82,22 @@ pub struct LoadedRule {
     pub id: String,
     pub kind: RuleKind,
     pub doc: RuleDoc,
-    /// Ausdrücke in `notify.message` (`{{ … }}`), `effects[].value` und `remember_key`,
-    /// geprüft beim Laden.
-    pub aux: Vec<Program>,
+    /// Ausdrücke in `notify.message` (`{{ … }}`, in Reihenfolge), geprüft beim Laden.
+    pub notify_exprs: Vec<Program>,
+    /// Ausdruck je Eintrag in `effects` (`value`, sofern gesetzt).
+    pub effect_values: Vec<Option<Program>>,
+    /// Fingerprint für gemerkte Freigaben (POL-010).
+    pub remember_key: Option<Program>,
+}
+
+impl LoadedRule {
+    /// Alle Hilfsausdrücke (`notify.message`, `effects[].value`, `remember_key`).
+    pub fn aux(&self) -> impl Iterator<Item = &Program> {
+        self.notify_exprs
+            .iter()
+            .chain(self.effect_values.iter().flatten())
+            .chain(self.remember_key.iter())
+    }
 }
 
 impl LoadedRule {
@@ -415,11 +430,16 @@ fn check_rule(
                 ),
             ));
         }
+        if rule_type == RuleType::RequireApproval {
+            return require_approval(rule, loc, at);
+        }
         return Ok(LoadedRule {
             id: rule.id.clone(),
             kind: RuleKind::Builtin(rule_type),
             doc: rule.clone(),
-            aux: Vec::new(),
+            notify_exprs: Vec::new(),
+            effect_values: Vec::new(),
+            remember_key: None,
         });
     }
     if rule.params.is_some() {
@@ -490,29 +510,47 @@ fn check_rule(
             return Err(loc.at(&field("approval"), "`approval` nur mit action: ask"));
         }
         if let Some(t) = &approval.timeout {
-            ext::parse_duration(t).map_err(|e| loc.at(&field("approval.timeout"), e))?;
+            check_timeout(t).map_err(|e| loc.at(&field("approval.timeout"), e))?;
         }
     }
     if rule.notify.is_some() && action != Action::Notify {
         return Err(loc.at(&field("notify"), "`notify` nur mit action: notify"));
     }
-    let mut aux = Vec::new();
+    let mut notify_exprs = Vec::new();
     if let Some(message) = rule.notify.as_ref().and_then(|n| n.message.as_ref()) {
         for expr in template_exprs(message) {
             let path = field("notify.message");
-            aux.push(compile_expr(expr, phase, Ty::Dyn).map_err(|e| loc.at(&path, &e))?);
+            notify_exprs.push(compile_expr(expr, phase, Ty::Dyn).map_err(|e| loc.at(&path, &e))?);
         }
     }
+    let mut effect_values = Vec::with_capacity(rule.effects.len());
     for (j, effect) in rule.effects.iter().enumerate() {
-        if let Some(value) = &effect.value {
-            let path = field(&format!("effects[{j}].value"));
-            aux.push(compile_expr(value, phase, Ty::Dyn).map_err(|e| loc.cel(&path, &e))?);
+        let path = field(&format!("effects[{j}].value"));
+        let program = match &effect.value {
+            Some(value) => {
+                Some(compile_expr(value, phase, Ty::Dyn).map_err(|e| loc.cel(&path, &e))?)
+            }
+            None => None,
+        };
+        let needs_value = matches!(
+            effect.op,
+            crate::doc::EffectOp::Set | crate::doc::EffectOp::Append
+        );
+        if needs_value && program.is_none() {
+            return Err(loc.at(&path, "`value` fehlt (nötig für set und append)"));
         }
+        if effect.key.is_empty() {
+            return Err(loc.at(&field(&format!("effects[{j}].key")), "`key` ist leer"));
+        }
+        effect_values.push(program);
     }
-    if let Some(key) = &rule.remember_key {
-        let path = field("remember_key");
-        aux.push(compile_expr(key, phase, Ty::String).map_err(|e| loc.cel(&path, &e))?);
-    }
+    let remember_key = match &rule.remember_key {
+        Some(key) => {
+            let path = field("remember_key");
+            Some(compile_expr(key, phase, Ty::String).map_err(|e| loc.cel(&path, &e))?)
+        }
+        None => None,
+    };
     for (j, kind) in rule.kinds.iter().flatten().enumerate() {
         if !KINDS.contains(&kind.as_str()) {
             return Err(loc.at(
@@ -532,7 +570,179 @@ fn check_rule(
             action,
         },
         doc: rule.clone(),
-        aux,
+        notify_exprs,
+        effect_values,
+        remember_key,
+    })
+}
+
+/// Eine Approval-Frist muss eine positive Dauer sein.
+fn check_timeout(text: &str) -> Result<(), String> {
+    let d = ext::parse_duration(text)?;
+    if d <= time::Duration::ZERO {
+        return Err(format!("Frist `{text}` muss positiv sein"));
+    }
+    Ok(())
+}
+
+/// Parameter von `require_approval` (POL-014).
+const REQUIRE_APPROVAL_PARAMS: [&str; 7] = [
+    "tools",
+    "kinds",
+    "servers",
+    "match",
+    "timeout",
+    "on_timeout",
+    "remember",
+];
+
+/// CEL-Zeichenkettenliteral.
+fn cel_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// `require_approval` (POL-014): Zucker für `ask` in Phase `tool_call`. Die Kriterien
+/// `tools` (Glob gegen `tool.name` bzw. `mcp:<server>/<tool>`), `kinds`, `servers` und `match`
+/// (CEL) sind ODER-verknüpft; `timeout`, `on_timeout` und `remember` landen in `approval`.
+fn require_approval(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, LoadError> {
+    let field = |f: &str| format!("{at}.params.{f}");
+    let empty = BTreeMap::new();
+    let params = rule.params.as_ref().unwrap_or(&empty);
+    if let Some(unknown) = params
+        .keys()
+        .find(|k| !REQUIRE_APPROVAL_PARAMS.contains(&k.as_str()))
+    {
+        return Err(loc.at(
+            &field(unknown),
+            format!(
+                "unbekannter Parameter `{unknown}` (erlaubt: {})",
+                REQUIRE_APPROVAL_PARAMS.join(", ")
+            ),
+        ));
+    }
+    let strings = |name: &str| -> Result<Vec<String>, LoadError> {
+        match params.get(name) {
+            None => Ok(Vec::new()),
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| loc.at(&format!("{}[{i}]", field(name)), "Text erwartet"))
+                })
+                .collect(),
+            Some(_) => Err(loc.at(&field(name), "Liste erwartet")),
+        }
+    };
+    let text = |name: &str| -> Result<Option<String>, LoadError> {
+        match params.get(name) {
+            None => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(loc.at(&field(name), "Text erwartet")),
+        }
+    };
+    let tools = strings("tools")?;
+    let kinds = strings("kinds")?;
+    let servers = strings("servers")?;
+    let matcher = text("match")?;
+
+    let mut parts: Vec<String> = Vec::new();
+    for (i, kind) in kinds.iter().enumerate() {
+        if !KINDS.contains(&kind.as_str()) {
+            return Err(loc.at(
+                &format!("{}[{i}]", field("kinds")),
+                format!(
+                    "unbekannte Tool-Klasse `{kind}` (erlaubt: {})",
+                    KINDS.join(", ")
+                ),
+            ));
+        }
+    }
+    if !kinds.is_empty() {
+        let list: Vec<String> = kinds.iter().map(|k| cel_string(k)).collect();
+        parts.push(format!("tool.kind in [{}]", list.join(", ")));
+    }
+    if !servers.is_empty() {
+        let list: Vec<String> = servers.iter().map(|s| cel_string(s)).collect();
+        parts.push(format!("tool.server in [{}]", list.join(", ")));
+    }
+    for pattern in &tools {
+        if pattern.starts_with("mcp:") {
+            parts.push(format!(
+                "glob(\"mcp:\" + tool.server + \"/\" + tool.name, {})",
+                cel_string(pattern)
+            ));
+        } else {
+            parts.push(format!("glob(tool.name, {})", cel_string(pattern)));
+        }
+    }
+    if let Some(m) = &matcher {
+        compile_bool(m, Phase::ToolCall).map_err(|e| loc.cel(&field("match"), &e))?;
+        parts.push(format!("({m})"));
+    }
+    if parts.is_empty() {
+        return Err(loc.at(
+            &format!("{at}.params"),
+            "require_approval braucht mindestens eines von tools, kinds, servers oder match",
+        ));
+    }
+
+    let timeout = text("timeout")?;
+    if let Some(t) = &timeout {
+        check_timeout(t).map_err(|e| loc.at(&field("timeout"), e))?;
+    }
+    let on_timeout = match text("on_timeout")?.as_deref() {
+        None => None,
+        Some("deny") => Some(TimeoutAction::Deny),
+        Some("allow") => Some(TimeoutAction::Allow),
+        Some("abort") => Some(TimeoutAction::Abort),
+        Some(other) => {
+            return Err(loc.at(
+                &field("on_timeout"),
+                format!("`on_timeout: {other}` ist ungültig (deny, allow, abort)"),
+            ));
+        }
+    };
+    let remember = match text("remember")?.as_deref() {
+        None => None,
+        Some("session") => Some(Remember::Session),
+        Some("none") => Some(Remember::None),
+        Some(other) => {
+            return Err(loc.at(
+                &field("remember"),
+                format!("`remember: {other}` ist ungültig (session, none)"),
+            ));
+        }
+    };
+
+    let source = parts.join(" || ");
+    let when =
+        compile_bool(&source, Phase::ToolCall).map_err(|e| loc.cel(&format!("{at}.params"), &e))?;
+    let mut doc = rule.clone();
+    doc.approval = Some(ApprovalDoc {
+        timeout,
+        on_timeout,
+        remember,
+        allow_on_timeout: None,
+    });
+    doc.reason.get_or_insert_with(|| {
+        format!(
+            "Regel `{}` verlangt deine Freigabe (require_approval)",
+            rule.id
+        )
+    });
+    Ok(LoadedRule {
+        id: rule.id.clone(),
+        kind: RuleKind::Cel {
+            phase: Phase::ToolCall,
+            when: Some(when),
+            action: Action::Ask,
+        },
+        doc,
+        notify_exprs: Vec::new(),
+        effect_values: Vec::new(),
+        remember_key: None,
     })
 }
 
