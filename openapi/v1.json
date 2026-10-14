@@ -891,6 +891,87 @@
         }
       }
     },
+    "/v1/proxy/ca/rotate": {
+      "post": {
+        "tags": [
+          "proxy"
+        ],
+        "summary": "Neue beton-CA erzeugen (`beton proxy ca rotate`); die Rotation steht im Audit-Log.",
+        "operationId": "rotate_ca",
+        "responses": {
+          "200": {
+            "description": "Neue CA erzeugt; neue Sessions nutzen sie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProxyCaView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Secret-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Kein Backend (`secrets_unavailable`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/secrets": {
       "get": {
         "tags": [
@@ -6220,6 +6301,32 @@
           },
           "capabilities": {
             "$ref": "#/components/schemas/RunnerCapabilities"
+          }
+        }
+      },
+      "ProxyCaView": {
+        "type": "object",
+        "description": "Öffentliche Angaben zur beton-CA.",
+        "required": [
+          "subject",
+          "fingerprint_sha256",
+          "not_before",
+          "not_after"
+        ],
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "`beton egress CA <installation-id>`"
+          },
+          "fingerprint_sha256": {
+            "type": "string",
+            "description": "SHA-256 über das DER-Zertifikat, hex."
+          },
+          "not_before": {
+            "type": "string"
+          },
+          "not_after": {
+            "type": "string"
           }
         }
       },

@@ -1,0 +1,28 @@
+# PRX-003 AC1/AC3: "*."-Hosts, Groß-/Kleinschreibung, abschließender Punkt, IDN, IP-Literale.
+- name: Subdomain-Wildcard (AC3)
+  rules: ["* *.example.com"]
+  cases:
+    - { request: "GET https://a.example.com/", expect: allow, rule: "* *.example.com" }
+    - { request: "GET https://deep.a.example.com/x", expect: allow }
+    - { request: "GET https://example.com/", expect: deny }
+    - { request: "GET https://example.com.evil.test/", expect: deny }
+    - { request: "GET https://aexample.com/", expect: deny }
+- name: Hosts werden normalisiert
+  rules: ["GET API.Example.Test."]
+  cases:
+    - { request: "GET https://api.example.test/", expect: allow }
+    - { request: "GET https://API.EXAMPLE.TEST./", expect: allow }
+    - { request: "GET https://api.example.test.evil/", expect: deny }
+- name: IDN als Punycode
+  rules: ["GET bücher.example"]
+  cases:
+    - { request: "GET https://xn--bcher-kva.example/", expect: allow }
+    - { request: "GET https://buecher.example/", expect: deny }
+- name: IP-Literale
+  rules: ["GET 93.184.216.34", "GET [2001:db8::1]:8443"]
+  cases:
+    - { request: "GET https://93.184.216.34/", expect: allow }
+    - { request: "GET https://1572395042/", expect: allow }
+    - { request: "GET https://93.184.216.35/", expect: deny }
+    - { request: "GET https://[2001:db8:0::1]:8443/", expect: allow }
+    - { request: "GET https://[2001:db8::1]/", expect: deny }

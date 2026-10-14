@@ -1,0 +1,43 @@
+# PRX-003 AC1: "**", "*", "?", Default "/**" und mehrere Ziele pro Regel.
+- name: Default ist "/**"
+  rules: ["GET example.test"]
+  cases:
+    - { request: "GET https://example.test/", expect: allow }
+    - { request: "GET https://example.test/a/b/c", expect: allow }
+- name: Doppelstern beliebig tief
+  rules: ["GET example.test/repos/a/**"]
+  cases:
+    - { request: "GET https://example.test/repos/a", expect: allow }
+    - { request: "GET https://example.test/repos/a/", expect: allow }
+    - { request: "GET https://example.test/repos/a/x/y/z", expect: allow }
+    - { request: "GET https://example.test/repos/ab", expect: deny }
+    - { request: "GET https://example.test/repos", expect: deny }
+- name: Doppelstern in der Mitte
+  rules: ["GET example.test/a/**/z"]
+  cases:
+    - { request: "GET https://example.test/a/z", expect: allow }
+    - { request: "GET https://example.test/a/b/c/z", expect: allow }
+    - { request: "GET https://example.test/a/b/c/zz", expect: deny }
+- name: Stern ist genau ein Segment
+  rules: ["GET example.test/repos/*/issues", "GET example.test/files/v*.json"]
+  cases:
+    - { request: "GET https://example.test/repos/beton/issues", expect: allow }
+    - { request: "GET https://example.test/repos/a/b/issues", expect: deny }
+    - { request: "GET https://example.test/files/v1.json", expect: allow }
+    - { request: "GET https://example.test/files/v1/x.json", expect: deny }
+- name: Fragezeichen ist genau ein Zeichen
+  rules: ["GET example.test/v?/x"]
+  cases:
+    - { request: "GET https://example.test/v1/x", expect: allow }
+    - { request: "GET https://example.test/v10/x", expect: deny }
+    - { request: "GET https://example.test/v/x", expect: deny }
+- name: Mehrere Ziele in einer Regel
+  rules: ["GET,HEAD static.crates.io/** index.crates.io/**"]
+  cases:
+    - { request: "GET https://static.crates.io/x", expect: allow }
+    - { request: "HEAD https://index.crates.io/y", expect: allow }
+    - { request: "GET https://crates.io/", expect: deny }
+- name: Query wird ignoriert
+  rules: ["GET example.test/search"]
+  cases:
+    - { request: "GET https://example.test/search?q=1&x=/../../etc", expect: allow }

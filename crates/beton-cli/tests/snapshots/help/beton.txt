@@ -20,6 +20,7 @@ Commands:
   auth        Lokale Anmeldung verwalten
   secrets     Secrets verwalten (API-Keys, Tokens); Werte werden nie angezeigt
   audit       Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen
+  proxy       Egress-Proxy der Sandbox verwalten
   admin       Wartung von Datenbank und Projektionen
   completion  Shell-Vervollständigung ausgeben
   version     Version ausgeben

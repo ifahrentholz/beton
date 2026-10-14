@@ -11,6 +11,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod api_proxy;
 pub mod api_secrets;
 pub mod api_sessions;
 pub mod api_workspace;

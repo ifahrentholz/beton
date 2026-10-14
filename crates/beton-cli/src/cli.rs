@@ -101,6 +101,9 @@ pub enum Command {
     /// Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen.
     #[command(subcommand)]
     Audit(AuditCommand),
+    /// Egress-Proxy der Sandbox verwalten.
+    #[command(subcommand)]
+    Proxy(ProxyCommand),
     /// Wartung von Datenbank und Projektionen.
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -591,6 +594,20 @@ pub enum AuthCommand {
     /// Lokales Token erneuern; laufende Clients lesen es neu.
     #[command(name = "rotate-local")]
     RotateLocal,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProxyCommand {
+    /// beton-CA des Egress-Proxys (TLS-Terminierung in der Sandbox).
+    #[command(subcommand)]
+    Ca(ProxyCaCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ProxyCaCommand {
+    /// Neue CA erzeugen; neue Sessions nutzen sie, laufende behalten ihre bis zum Neustart.
+    /// Die Rotation steht im Audit-Log.
+    Rotate,
 }
 
 #[derive(Debug, Subcommand)]
