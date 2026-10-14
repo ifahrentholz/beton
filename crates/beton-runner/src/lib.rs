@@ -479,6 +479,13 @@ async fn send(ws: &mut Ws, msg: &TunnelUp) -> bool {
     ws.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// Endet ein Runner ohne Verbindung zum Daemon? Ist der Daemon weg (Elternprozess tot) oder
+/// hat ein späterer Daemon den Runner übernommen, wartet er nur, solange eine Freigabe offen ist
+/// – dann verbindet ihn der nächste Daemon neu (POL-010 AC4). Sonst endet er (RUN-002 AC2).
+fn orphan_exit(parent_alive: bool, adopted: bool, pending: bool) -> bool {
+    (!parent_alive || adopted) && !pending
+}
+
 /// Lebt der Elternprozess noch? (RUN-002 AC2)
 fn parent_alive(pid: Option<u32>) -> bool {
     #[cfg(unix)]
@@ -1004,6 +1011,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
+    // Von einem späteren Daemon übernommen (POL-010 AC4).
+    let mut adopted = false;
 
     loop {
         // (Wieder-)Verbinden.
@@ -1011,13 +1020,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             Ok(ws) => ws,
             Err(e) => {
                 tracing::warn!("Tunnel nicht erreichbar: {e}");
-                if !parent_alive(boot.parent_pid) {
+                if orphan_exit(parent_alive(boot.parent_pid), adopted, gate.has_pending()) {
                     return finish(session, Exit::ParentGone).await;
                 }
                 tokio::time::sleep(backoff.next_delay()).await;
                 continue;
             }
         };
+        // Verbunden, obwohl der Elternprozess weg ist: ein neuer Daemon hat den Runner
+        // übernommen (POL-010 AC4); ab jetzt zählt die Verbindung, nicht der Elternprozess.
+        adopted |= !parent_alive(boot.parent_pid);
         backoff.reset();
         let hello = TunnelUp::Hello {
             kind: PeerKind::Runner,
@@ -1560,7 +1572,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     return Ok(Exit::TimedOut);
                 }
                 _ = parent_check.tick() => {
-                    if !parent_alive(boot.parent_pid) {
+                    // Mit offener Freigabe auf den nächsten Daemon warten (POL-010 AC4);
+                    // ein übernommener Runner folgt der Verbindung, nicht dem Elternprozess.
+                    if !adopted && !parent_alive(boot.parent_pid) && !gate.has_pending() {
                         return finish(session, Exit::ParentGone).await;
                     }
                 }

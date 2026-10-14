@@ -595,12 +595,16 @@ impl PolicyGate {
         true
     }
 
-    /// `state.*` für den Kontext; `user_day`/`user` frisch, wenn eine Regel sie liest.
+    /// `state.*` für den Kontext; `user_day`/`user` frisch, wenn eine Regel sie liest. Geladen
+    /// wird nur, wenn eine Regel der Phase `state` liest oder – in `tool_call` – Grants greifen
+    /// können; vor dem Start braucht das Gate sonst keinen Server.
     async fn with_state_values(&self, set: &EffectiveSet, phase: Phase, vars: &mut Vars) {
-        if !self.ensure_state().await {
+        let used: BTreeSet<String> = set.programs(phase).flat_map(|p| p.fields()).collect();
+        let reads_state = used.iter().any(|f| f == "state" || f.starts_with("state."));
+        let grants_matter = phase == Phase::ToolCall && set.has_phase(Phase::ToolCall);
+        if !(reads_state || grants_matter) || !self.ensure_state().await {
             return;
         }
-        let used: BTreeSet<String> = set.programs(phase).flat_map(|p| p.fields()).collect();
         let user_scopes = used.iter().any(|f| f.starts_with("state.user"));
         if user_scopes
             && let Some(source) = &self.inner.state_source
@@ -1231,6 +1235,16 @@ impl PolicyGate {
             )
             .await;
         answered.human.answer
+    }
+
+    /// Wartet eine Freigabe auf einen Menschen? (POL-010 AC4: dann überdauert der Runner den
+    /// Daemon.)
+    pub fn has_pending(&self) -> bool {
+        self.inner
+            .pending
+            .lock()
+            .map(|p| !p.is_empty())
+            .unwrap_or(true)
     }
 
     /// Entscheidung aus `approval.resolve` (Schlüssel: `subject.call_id`). `false`, wenn

@@ -503,7 +503,9 @@ async fn pol_010_ac5_timeout_applies_abort_and_ends_the_turn() {
 async fn pol_010_ac4_open_approval_survives_a_daemon_restart() {
     let mut env = Env::start().await;
     env.project_policy("push", ASK_PUSH_SESSION);
-    let id = env.create(&env.scenario(&pushes(1, "git push origin main"))).await;
+    let id = env
+        .create(&env.scenario(&pushes(1, "git push origin main")))
+        .await;
     env.wait_status(&id, "idle").await;
     let before = env.start_turn(&id, "los").await;
     let card = env.open_approval(&id).await;

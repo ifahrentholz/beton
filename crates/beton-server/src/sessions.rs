@@ -663,7 +663,7 @@ impl<'a> SessionManager<'a> {
     /// Setzt eine gestoppte Session mit neuem Runner fort (SES-003).
     pub async fn resume(&self, session: SessionId) -> Result<SessionRecord, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
-        if !self.state.runtime.runners.connected(session) {
+        if !self.await_adopted(session).await {
             let reference = self.last_native_ref(session).await?;
             self.launch(&record, reference).await?;
         }
@@ -671,9 +671,24 @@ impl<'a> SessionManager<'a> {
         Ok(self.state.store.session(self.org(), session).await?)
     }
 
+    /// Wartet auf einen abgekoppelten Runner eines vorigen Daemons, der sich neu verbinden
+    /// darf (POL-010 AC4), höchstens [`CONNECT_TIMEOUT`]. `true`, wenn er verbunden ist.
+    pub(crate) async fn await_adopted(&self, session: SessionId) -> bool {
+        let runners = &self.state.runtime.runners;
+        let start = Instant::now();
+        while runners.expected(session) && start.elapsed() < CONNECT_TIMEOUT {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !runners.connected(session) {
+            runners.forget_expected(session);
+            return false;
+        }
+        true
+    }
+
     /// Läuft (oder startet gerade) ein Runner für die Session?
     async fn runner_alive(&self, session: SessionId) -> bool {
-        if self.state.runtime.runners.connected(session) {
+        if self.await_adopted(session).await {
             return true;
         }
         let handle = self
@@ -695,7 +710,7 @@ impl<'a> SessionManager<'a> {
 
     /// Startet bzw. verbindet den Runner, falls nötig (SES-003 AC3).
     pub(crate) async fn ensure_runner(&self, session: SessionId) -> Result<(), Problem> {
-        if self.state.runtime.runners.connected(session) {
+        if self.await_adopted(session).await {
             return Ok(());
         }
         // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
@@ -1027,6 +1042,8 @@ impl<'a> SessionManager<'a> {
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        // Nach einem Neustart des Daemons verbindet sich der wartende Runner neu (POL-010 AC4).
+        self.await_adopted(session).await;
         let mut payload = args;
         payload["call_id"] = Value::String(call_id);
         payload["actor"] = serde_json::to_value(user_actor(by)).unwrap_or(Value::Null);
@@ -1203,17 +1220,49 @@ pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
 pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerRegistry) {
     let handles: Vec<(SessionId, RunnerHandle)> =
         cfg.launched.handles.lock().await.drain().collect();
-    for (session, h) in handles {
-        runners.revoke_tokens(session);
+    // Runner mit offener Freigabe überdauern den Daemon (POL-010 AC4): abkoppeln statt beenden;
+    // der nächste Daemon nimmt ihr Token bis zum Ablauf der Freigabe an.
+    let mut candidates: Vec<SessionId> = runners.connected_sessions();
+    candidates.extend(handles.iter().map(|(s, _)| *s));
+    candidates.sort();
+    candidates.dedup();
+    let waiting: Vec<SessionId> = candidates
+        .iter()
+        .copied()
+        .filter(|s| runners.connected(*s) && runners.has_open_approvals(*s))
+        .collect();
+    let detached = runners.detach(&waiting);
+    if let Some(path) = cfg
+        .tunnel_socket
+        .as_deref()
+        .and_then(crate::detached::path_for)
+        && let Err(e) = crate::detached::save(&path, &detached)
+    {
+        tracing::warn!("Abgekoppelte Runner nicht gespeichert: {e}");
+    }
+    let kept: Vec<SessionId> = detached.iter().map(|d| d.session_id).collect();
+    for (session, h) in &handles {
+        if kept.contains(session) {
+            tracing::info!(%session, "Runner wartet auf eine Freigabe und bleibt bestehen");
+            let _ = cfg.provider.release(h).await;
+            continue;
+        }
+        runners.revoke_tokens(*session);
         let _ = cfg
             .provider
             .terminate(
-                &h,
+                h,
                 TerminateMode::Graceful {
                     grace: Duration::from_secs(5),
                 },
             )
             .await;
+    }
+    // Übernommene Runner ohne Handle dieses Daemons: über den Tunnel beenden.
+    for session in runners.connected_sessions() {
+        if !kept.contains(&session) && !handles.iter().any(|(s, _)| *s == session) {
+            runners.stop(session, 5);
+        }
     }
 }
 

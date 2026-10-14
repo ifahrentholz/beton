@@ -74,6 +74,20 @@ impl RunnerConn {
     }
 }
 
+/// Wartet, bis der Daemon herunterfährt; ohne Signal nie.
+async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
+    match rx {
+        Some(rx) => {
+            while !*rx.borrow() {
+                if rx.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
 /// Verbundene Runner und ihre Tokens.
 #[derive(Default)]
 pub struct RunnerRegistry {
@@ -85,6 +99,11 @@ pub struct RunnerRegistry {
     stopping: Mutex<HashMap<SessionId, String>>,
     /// Test-Haken: Sessions, deren Verbindungen bis zum Zeitpunkt abgelehnt werden.
     refuse_until: Mutex<HashMap<SessionId, Instant>>,
+    /// Offene Freigaben je Session mit Ablauf (Unix-Sekunden) aus dem Event-Strom des Runners.
+    approvals: Mutex<HashMap<SessionId, HashMap<beton_core::id::ApprovalId, i64>>>,
+    /// Abgekoppelte Runner eines vorigen Daemons, die sich bis zur Frist neu verbinden dürfen
+    /// (POL-010 AC4).
+    expected: Mutex<HashMap<SessionId, Instant>>,
     next_conn: AtomicU64,
     next_cmd: AtomicU64,
 }
@@ -128,6 +147,108 @@ impl RunnerRegistry {
 
     pub fn connected(&self, session: SessionId) -> bool {
         lock(&self.conns).contains_key(&session)
+    }
+
+    /// Verfolgt offene Freigaben aus den Events des Runners (POL-010 AC4, Leerlauf).
+    pub fn note_events<'a>(
+        &self,
+        session: SessionId,
+        events: impl IntoIterator<Item = &'a beton_core::event::Event>,
+    ) {
+        let mut all = lock(&self.approvals);
+        let open = all.entry(session).or_default();
+        for e in events {
+            match e.payload() {
+                Some(EventPayload::ApprovalRequested(r)) => {
+                    open.insert(
+                        r.approval_id,
+                        r.expires_at.as_offset_date_time().unix_timestamp(),
+                    );
+                }
+                Some(EventPayload::ApprovalResolved(r)) => {
+                    open.remove(&r.approval_id);
+                }
+                _ => {}
+            }
+        }
+        if open.is_empty() {
+            all.remove(&session);
+        }
+    }
+
+    /// Wartet der Runner der Session auf eine Freigabe?
+    pub fn has_open_approvals(&self, session: SessionId) -> bool {
+        lock(&self.approvals)
+            .get(&session)
+            .is_some_and(|m| !m.is_empty())
+    }
+
+    /// Koppelt die Runner mit offener Freigabe ab (POL-010 AC4): Session, Hash des Tokens und
+    /// Ablauf der letzten offenen Freigabe. Runner ohne offene Freigabe fehlen.
+    pub fn detach(&self, sessions: &[SessionId]) -> Vec<crate::detached::DetachedRunner> {
+        let approvals = lock(&self.approvals);
+        let tokens = lock(&self.tokens);
+        let mut out = Vec::new();
+        for session in sessions {
+            let Some(until) = approvals
+                .get(session)
+                .and_then(|m| m.values().max().copied())
+            else {
+                continue;
+            };
+            for (hash, s) in tokens.iter() {
+                if s == session {
+                    out.push(crate::detached::DetachedRunner {
+                        session_id: *session,
+                        token_sha256: hex::encode(hash),
+                        until,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Nimmt einen abgekoppelten Runner eines vorigen Daemons an (POL-010 AC4).
+    pub fn adopt(&self, d: &crate::detached::DetachedRunner) {
+        let Ok(bytes) = hex::decode(&d.token_sha256) else {
+            return;
+        };
+        let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return;
+        };
+        let left = d.until - time::OffsetDateTime::now_utc().unix_timestamp();
+        if left <= 0 {
+            return;
+        }
+        lock(&self.tokens).insert(hash, d.session_id);
+        lock(&self.expected).insert(
+            d.session_id,
+            Instant::now() + Duration::from_secs(left.unsigned_abs()),
+        );
+    }
+
+    /// Wird ein abgekoppelter Runner für die Session noch erwartet?
+    pub fn expected(&self, session: SessionId) -> bool {
+        let mut expected = lock(&self.expected);
+        match expected.get(&session) {
+            Some(until) if *until > Instant::now() && !self.connected(session) => true,
+            Some(_) => {
+                expected.remove(&session);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Ein erwarteter Runner kommt nicht zurück (z. B. Wartezeit abgelaufen).
+    pub fn forget_expected(&self, session: SessionId) {
+        lock(&self.expected).remove(&session);
+    }
+
+    /// Verbundene Sessions.
+    pub fn connected_sessions(&self) -> Vec<SessionId> {
+        lock(&self.conns).keys().copied().collect()
     }
 
     /// Kommando an den Runner zustellen (`cmd.deliver`) und auf `cmd.result` warten.
@@ -233,6 +354,8 @@ pub struct TunnelState {
     pub queues: Arc<crate::queue::Queues>,
     /// Weitere Beobachter gespeicherter Events (Session-Titel, SES-010).
     pub observer: Option<Arc<dyn EventObserver>>,
+    /// Herunterfahren: Verbindungen enden mit 4503, Runner verbinden sich neu (POL-010 AC4).
+    pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl TunnelState {
@@ -379,6 +502,7 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
 
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
     let conn_id = state.runners.next_conn.fetch_add(1, Ordering::Relaxed);
+    lock(&state.runners.expected).remove(&session_id);
     lock(&state.runners.conns).insert(
         session_id,
         RunnerConn {
@@ -393,8 +517,15 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     let mut ping = tokio::time::interval(state.config.ping_interval);
     ping.reset();
     let mut last_pong = Instant::now();
+    let mut shutdown = state.shutdown.clone();
     loop {
         tokio::select! {
+            () = shutting_down(&mut shutdown) => {
+                let _ = sink
+                    .send(close_msg(close::SHUTTING_DOWN, "Daemon fährt herunter"))
+                    .await;
+                break;
+            }
             down = rx.recv() => {
                 let Some(down) = down else { break };
                 if sink.send(Message::Text(serde_json::to_string(&down).unwrap_or_default().into())).await.is_err() {
@@ -548,6 +679,7 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                 .unwrap_or(persisted)
                 .max(persisted);
             let fresh: Vec<_> = batch.into_iter().filter(|e| e.rseq > persisted).collect();
+            runners.note_events(session, fresh.iter().map(|e| &e.event));
             let mut busy = None;
             for e in &fresh {
                 match e.event.payload() {
@@ -638,7 +770,11 @@ pub async fn idle_reaper(
         }
         let idle: Vec<SessionId> = lock(&state.runners.conns)
             .iter()
-            .filter(|(s, c)| c.idle(state.config.idle_timeout) && hub.subscribers(**s) == 0)
+            .filter(|(s, c)| {
+                c.idle(state.config.idle_timeout)
+                    && hub.subscribers(**s) == 0
+                    && !state.runners.has_open_approvals(**s)
+            })
             .map(|(s, _)| *s)
             .collect();
         for session in idle {
@@ -679,14 +815,19 @@ mod tests {
         assert!(!c.idle(timeout));
     }
 
-    fn approval(session: SessionId, id: beton_core::id::ApprovalId, secs: i64) -> beton_core::event::Event {
+    fn approval(
+        session: SessionId,
+        id: beton_core::id::ApprovalId,
+        secs: i64,
+    ) -> beton_core::event::Event {
         beton_core::event::Event::new(
             session,
             0,
             beton_core::event::Actor::default(),
             EventPayload::ApprovalRequested(beton_core::event::ApprovalRequested {
                 approval_id: id,
-                expires_at: (time::OffsetDateTime::now_utc() + time::Duration::seconds(secs)).into(),
+                expires_at: (time::OffsetDateTime::now_utc() + time::Duration::seconds(secs))
+                    .into(),
                 ..beton_core::event::ApprovalRequested::default()
             }),
         )
