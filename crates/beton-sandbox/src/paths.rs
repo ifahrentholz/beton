@@ -207,6 +207,49 @@ pub(crate) fn validate_spec(spec: &SandboxSpec) -> Result<(), SandboxError> {
             ));
         }
     }
+    let harness = spec.harness.clone().unwrap_or_default();
+    for (i, rule) in harness.egress_extra.iter().flatten().enumerate() {
+        if rule.trim().is_empty() {
+            return Err(SandboxError::invalid(
+                format!("harness.egress_extra[{i}]"),
+                "leere Regel",
+            ));
+        }
+    }
+    for (name, list) in [
+        ("egress_passthrough", &spec.egress_passthrough),
+        ("harness.egress_passthrough", &harness.egress_passthrough),
+    ] {
+        for (i, entry) in list.iter().flatten().enumerate() {
+            check_passthrough(&format!("{name}[{i}]"), entry)?;
+        }
+    }
+    for (i, port) in spec.dev_ports.iter().flatten().enumerate() {
+        if *port == 0 {
+            return Err(SandboxError::invalid(
+                format!("dev_ports[{i}]"),
+                "Port 0 ist kein gültiger Port",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Form eines Passthrough-Eintrags (`host` oder `host:port`, PRX-005); die genaue Prüfung des
+/// Hosts übernimmt der Proxy beim Start der Instanz.
+fn check_passthrough(field: &str, raw: &str) -> Result<(), SandboxError> {
+    let bad = raw.is_empty()
+        || raw.len() > 260
+        || raw.contains(['/', '*', '@', '[', ']', '?', '#'])
+        || raw.chars().any(|c| c.is_whitespace() || c.is_control());
+    if bad {
+        return Err(SandboxError::invalid(
+            field,
+            format!(
+                "`{raw}`: erwartet wird `host` oder `host:port` (ohne Schema, Pfad oder Wildcard)"
+            ),
+        ));
+    }
     Ok(())
 }
 

@@ -20,6 +20,9 @@ pub fn with_origins(
     policy: &ResolvedPolicy,
     origins: &std::collections::BTreeMap<String, String>,
 ) -> Value {
-    let _ = origins;
-    explain(policy)
+    let mut v = explain(policy);
+    if let Value::Object(map) = &mut v {
+        map.insert("origins".into(), json!(origins));
+    }
+    v
 }

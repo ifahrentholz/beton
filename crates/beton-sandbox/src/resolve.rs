@@ -159,6 +159,10 @@ pub struct ResolvedPolicy {
     pub net: NetMode,
     pub egress_rules: Vec<String>,
     pub egress_allow_private: Vec<String>,
+    /// Passthrough-Ziele dieser Stufe (PRX-005).
+    pub egress_passthrough: Vec<String>,
+    /// Loopback-Ports für Dev-Server (`bind`/`connect`, PRX-008 AC3).
+    pub dev_ports: Vec<u16>,
     /// Ressourcenlimits des Prozessbaums (SBX-013).
     pub limits: Limits,
     /// Capabilities, die das Backend erzwingen muss.
@@ -188,6 +192,8 @@ impl ResolvedPolicy {
             net: NetMode::None,
             egress_rules: Vec::new(),
             egress_allow_private: Vec::new(),
+            egress_passthrough: Vec::new(),
+            dev_ports: Vec::new(),
             limits: Limits::default(),
             required: CapSet::new(),
             degraded: caps::required_default(),
@@ -300,6 +306,15 @@ pub fn resolve(
     ctx: &ResolveCtx,
 ) -> Result<ResolvedPolicy, SandboxError> {
     spec.validate()?;
+    // Das Preset gilt immer, auch wenn der Aufrufer nicht gemergt hat (SBX-012); auf eine
+    // schon gemergte Konfiguration angewendet ändert es nichts.
+    let merged;
+    let spec = if spec.preset.is_some() {
+        merged = SandboxSpec::merged(&[spec]);
+        &merged
+    } else {
+        spec
+    };
     let home = std::fs::canonicalize(&ctx.home)
         .map_err(|e| SandboxError::invalid("home", format!("{}: {e}", ctx.home.display())))?;
     let forbidden = Forbidden::new(&home);
@@ -593,6 +608,8 @@ pub fn resolve(
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
+        egress_passthrough: spec.egress_passthrough.clone().unwrap_or_default(),
+        dev_ports: spec.dev_ports.clone().unwrap_or_default(),
         limits: spec.limits.unwrap_or_default(),
         required,
         degraded,

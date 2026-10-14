@@ -339,49 +339,65 @@ impl SandboxSpec {
     }
 
     /// Wie [`SandboxSpec::merged`] mit Herkunft je Feld (`explain`, SBX-012 AC3): Schlüssel
-    /// ist der Feldname (bei vereinigten Listen `masks[<eintrag>]`), Wert der Name der
-    /// Ebene bzw. `preset:<name>`.
+    /// ist der Feldname (bei vereinigten Listen `masks[<eintrag>]`, bei `env.set` und
+    /// `limits` der Pfad des Eintrags), Wert der Name der Ebene bzw. `preset:<name>`.
     pub fn merged_with_origins(
         layers: &[(&str, &SandboxSpec)],
     ) -> (SandboxSpec, BTreeMap<String, String>) {
-        let origins = BTreeMap::new();
-        (
-            Self::merge_plain(&layers.iter().map(|(_, l)| *l).collect::<Vec<_>>()),
-            origins,
-        )
-    }
-
-    fn merge_plain(layers: &[&SandboxSpec]) -> SandboxSpec {
+        let mut all: Vec<(String, SandboxSpec)> = Vec::new();
+        if let Some(p) = layers.iter().rev().find_map(|(_, l)| l.preset) {
+            all.push((format!("preset:{}", p.as_str()), crate::preset::layer(p)));
+        }
+        for (name, layer) in layers {
+            all.push(((*name).to_owned(), (*layer).clone()));
+        }
         let mut out = SandboxSpec::default();
-        for layer in layers {
-            if layer.backend.is_some() {
-                out.backend = layer.backend;
+        let mut origins = BTreeMap::new();
+        for (name, layer) in &all {
+            let mut set = |field: &str| {
+                origins.insert(field.to_owned(), name.clone());
+            };
+            macro_rules! scalar {
+                ($($f:ident),*) => {$(
+                    if layer.$f.is_some() {
+                        out.$f = layer.$f.clone();
+                        set(stringify!($f));
+                    }
+                )*};
             }
-            if layer.workspace.is_some() {
-                out.workspace = layer.workspace;
-            }
-            if layer.allow_network.is_some() {
-                out.allow_network = layer.allow_network;
-            }
-            for (field, value) in [
-                (&mut out.read_paths, &layer.read_paths),
-                (&mut out.write_paths, &layer.write_paths),
-                (&mut out.allow_hidden, &layer.allow_hidden),
-                (&mut out.egress_rules, &layer.egress_rules),
-                (&mut out.egress_allow_private, &layer.egress_allow_private),
-            ] {
-                if value.is_some() {
-                    field.clone_from(value);
-                }
-            }
+            scalar!(
+                backend,
+                preset,
+                require_tool_isolation,
+                workspace,
+                allow_network,
+                read_paths,
+                write_paths,
+                allow_hidden,
+                egress_rules,
+                egress_allow_private,
+                egress_passthrough,
+                dev_ports
+            );
             if let Some(l) = &layer.limits {
+                for (field, present) in [
+                    ("limits.memory_mb", l.memory_mb.is_some()),
+                    ("limits.pids", l.pids.is_some()),
+                    ("limits.cpu_seconds", l.cpu_seconds.is_some()),
+                    ("limits.file_size_mb", l.file_size_mb.is_some()),
+                ] {
+                    if present {
+                        set(field);
+                    }
+                }
                 out.limits = Some(out.limits.unwrap_or_default().merged_with(l));
             }
             if let Some(masks) = &layer.masks {
-                let all = out.masks.get_or_insert_with(Vec::new);
+                let list = out.masks.get_or_insert_with(Vec::new);
                 for m in masks {
-                    if !all.contains(m) {
-                        all.push(m.clone());
+                    if !list.contains(m) {
+                        list.push(m.clone());
+                        set(&format!("masks[{m}]"));
                     }
                 }
             }
@@ -389,12 +405,27 @@ impl SandboxSpec {
                 let target = out.env.get_or_insert_with(SandboxEnvConfig::default);
                 if env.passthrough.is_some() {
                     target.passthrough.clone_from(&env.passthrough);
+                    set("env.passthrough");
                 }
                 for (k, v) in &env.set {
                     target.set.insert(k.clone(), v.clone());
+                    set(&format!("env.set.{k}"));
+                }
+            }
+            if let Some(h) = &layer.harness {
+                let target = out
+                    .harness
+                    .get_or_insert_with(HarnessSandboxConfig::default);
+                if h.egress_extra.is_some() {
+                    target.egress_extra.clone_from(&h.egress_extra);
+                    set("harness.egress_extra");
+                }
+                if h.egress_passthrough.is_some() {
+                    target.egress_passthrough.clone_from(&h.egress_passthrough);
+                    set("harness.egress_passthrough");
                 }
             }
         }
-        out
+        (out, origins)
     }
 }
