@@ -515,8 +515,9 @@ mod tests {
             })
             .unwrap(),
         );
+        // ACP-Agents kommen nur aus der User-Konfiguration (SBX-002).
         let layers = HarnessLayers {
-            project: acp,
+            user: acp,
             ..HarnessLayers::default()
         };
         let mine: HarnessId = "acp:mein-agent".parse().unwrap();

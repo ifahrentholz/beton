@@ -181,6 +181,10 @@ pub fn stage_env(stage: Option<&beton_harness::StageEnv>) -> Vec<(String, String
     ]
 }
 
+/// Tools, die Claude über `CLAUDE_CODE_SHELL` startet (Integritätsprüfung des Runners,
+/// SBX-002). `BashOutput`/`KillShell` starten nichts.
+pub const SHELL_TOOLS: [&str; 1] = ["Bash"];
+
 /// Tool-Klassen, für die Claude Code im Modus `default` selbst um Freigabe fragt
 /// (`can_use_tool`); Lesen, Suchen und sichere Shell-Kommandos wie `echo` erlaubt die CLI ohne
 /// Rückfrage. Gilt, wenn kein `PreToolUse`-Hook installiert ist (POL-024).
@@ -198,6 +202,28 @@ pub fn hook_settings(command: &str, timeout_s: u64) -> String {
         {"type": "command", "command": command, "timeout": timeout_s}
     ]}]}})
     .to_string()
+}
+
+/// Settings für `--settings`: Hook-Settings (HAR-005, nur nicht isoliert) und die Variablen
+/// des Stufenmodells zusätzlich als `env` (SBX-002). Verifiziert gegen 2.1.296: Die
+/// Prozess-Umgebung gewinnt gegen `env` aus User-, Projekt- und `--settings`-Einstellungen;
+/// `--settings` ist unter den Einstellungen die vorrangige Quelle und wirkt auch mit
+/// `--safe-mode`. So bleibt die Shell von beton, auch wenn eine spätere Version Einstellungen
+/// über die Umgebung stellt.
+pub fn merge_settings(hook: Option<String>, env: &[(String, String)]) -> Option<String> {
+    if env.is_empty() {
+        return hook;
+    }
+    let mut v: Value = match hook {
+        Some(h) => serde_json::from_str(&h).unwrap_or_else(|_| json!({})),
+        None => json!({}),
+    };
+    let vars: serde_json::Map<String, Value> = env
+        .iter()
+        .map(|(k, val)| (k.clone(), Value::String(val.clone())))
+        .collect();
+    v["env"] = Value::Object(vars);
+    Some(v.to_string())
 }
 
 /// Name der Instructions-Datei im privaten Verzeichnis der Session.
@@ -311,9 +337,11 @@ pub fn command_args_with(
         if let Some(dir) = &spec.mcp.skills_dir {
             args.extend(["--plugin-dir".into(), dir.display().to_string()]);
         }
-        if let Some(settings) = settings {
-            args.extend(["--settings".into(), settings.to_owned()]);
-        }
+    }
+    // Isoliert schaltet `--safe-mode` Hooks auch aus `--settings` ab, `env` wirkt weiter
+    // (verifiziert gegen 2.1.296); Hook-Settings gibt es isoliert ohnehin nicht.
+    if let Some(settings) = settings {
+        args.extend(["--settings".into(), settings.to_owned()]);
     }
     args
 }
@@ -587,10 +615,12 @@ impl HarnessAdapter for ClaudeAdapter {
             }
             _ => None,
         };
-        let settings = hook.as_ref().map(|(_, line)| {
+        let hook_json = hook.as_ref().map(|(_, line)| {
             // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013).
             hook_settings(line, self.gate_timeout.as_secs() + 30)
         });
+        let stage_vars = stage_env(ctx.stage.as_ref());
+        let settings = merge_settings(hook_json, &stage_vars);
         args.extend(command_args_with(
             &spec,
             self.isolated,
@@ -611,7 +641,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: stage_env(ctx.stage.as_ref()),
+            env: stage_vars,
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),

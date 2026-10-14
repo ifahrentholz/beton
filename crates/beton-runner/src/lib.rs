@@ -894,17 +894,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             permission_mode: start_settings
                 .permission_mode
                 .map(|m| m.as_str().to_owned()),
-            sandbox: Some(beton_policy::vars::StartSandboxVars {
-                enabled: Some(stages.is_some()),
-                backend: Some(
-                    stages
-                        .as_ref()
-                        .map(|s| s.harness.policy().backend.as_str())
-                        .unwrap_or("none")
-                        .into(),
-                ),
-                profile: None,
-            }),
+            sandbox: Some(stages::sandbox_vars(stages.as_ref())),
             network: Some(beton_policy::vars::StartNetworkVars {
                 proxy_enabled: Some(beton_harness::SandboxStatus::current().egress_proxy),
             }),
@@ -1137,6 +1127,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Gate-Anfrage (beobachtet), Ergebnisse geprüfter Eingaben (SES-004, #101).
     let mut call_events: HashMap<String, beton_core::id::EventId> = HashMap::new();
     let mut unobserved: HashMap<String, GateRequest> = HashMap::new();
+    // SBX-002: Mit `shell_override` muss jeder erfolgreiche Shell-Aufruf über den Exec-Broker
+    // gelaufen sein, sonst endet die Session (fail closed).
+    let mut integrity = stages
+        .as_ref()
+        .filter(|s| {
+            !s.harness.policy().inherited_tools
+                && predicted_caps(&boot, caps.as_ref(), true).tool_isolation
+                    == beton_harness::ToolIsolation::ShellOverride
+        })
+        .map(|_| stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS));
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
@@ -1352,7 +1352,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     let mut batch = Vec::with_capacity(incoming.len() + 4);
                     let mut exited = None;
                     let mut run_over = false;
+                    let mut violation = None;
                     for mut ev in incoming {
+                        if let (Some(i), Some(s)) = (integrity.as_mut(), stages.as_ref())
+                            && let Err(reason) = i.observe(&ev.payload, s.broker_starts())
+                        {
+                            violation = Some(reason);
+                        }
                         if timed_out && let EventPayload::TurnInterrupted(t) = &mut ev.payload {
                             t.reason = Some(TIMED_OUT.into());
                         }
@@ -1440,6 +1446,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             run_over = true;
                             break;
                         }
+                    }
+                    if let Some(reason) = violation {
+                        // Kommandos liefen in Stufe 1: sofort beenden, Session `failed`.
+                        tracing::error!("Integritätsprüfung der Sandbox: {reason}");
+                        let _ = session.shutdown(Shutdown::Kill).await;
+                        end_integrity_violation(&boot, &mut lifecycle, &reason, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        return Ok(Exit::HarnessExited { code: None });
                     }
                     if run_over {
                         end_timed_out(&boot, &mut lifecycle, &mut batch);
@@ -2167,6 +2182,36 @@ async fn sleep_until_opt(at: Option<tokio::time::Instant>) {
 
 /// Events am Ende eines Runs mit Zeitüberschreitung: Session `stopped` mit Grund `timed_out`,
 /// Runner beendet.
+/// Integritätsverstoß des Stufenmodells (SBX-002): Fehler-Event, Runner und Session `failed`.
+fn end_integrity_violation(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    reason: &str,
+    out: &mut Vec<Event>,
+) {
+    out.push(system_event(
+        boot,
+        EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({
+                "type": "urn:beton:problem:sandbox_integrity",
+                "code": "sandbox_integrity",
+                "title": "Ein Shell-Kommando lief nicht in der Tool-Sandbox (Stufe 2)",
+                "detail": reason,
+            }),
+        }),
+    ));
+    if let Ok(st) = lifecycle.go(RunnerState::Failed, Some(reason.to_owned())) {
+        out.push(system_event(boot, EventPayload::RunnerStatus(st)));
+    }
+    out.push(system_event(
+        boot,
+        EventPayload::SessionStatus(SessionStatusChanged {
+            status: SessionStatus::Failed,
+            reason: Some("sandbox_integrity".into()),
+        }),
+    ));
+}
+
 fn end_timed_out(boot: &RunnerBoot, lifecycle: &mut Lifecycle, out: &mut Vec<Event>) {
     out.push(system_event(
         boot,

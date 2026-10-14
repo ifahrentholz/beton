@@ -127,10 +127,12 @@ impl SessionStages {
     }
 }
 
-/// `start.sandbox` der Policy-Variablen (POL): noch ohne Unterscheidung.
+/// `start.sandbox` der Policy-Variablen (POL-004): `enabled` heißt, die Tools laufen in einer
+/// Sandbox. Läuft ein Harness degraded (`tool_isolation: inherited`, Tools in Stufe 1), ist es
+/// `false`, damit Policies, die eine Sandbox verlangen, greifen.
 pub fn sandbox_vars(stages: Option<&SessionStages>) -> beton_policy::vars::StartSandboxVars {
     beton_policy::vars::StartSandboxVars {
-        enabled: Some(stages.is_some()),
+        enabled: Some(stages.is_some_and(|s| !s.harness.policy().inherited_tools)),
         backend: Some(
             stages
                 .map(|s| s.harness.policy().backend.as_str())
@@ -142,32 +144,94 @@ pub fn sandbox_vars(stages: Option<&SessionStages>) -> beton_policy::vars::Start
 }
 
 impl SessionStages {
-    /// Starts des Exec-Brokers (Stufe 2); noch nicht gezählt.
+    /// Kommandos, die der Exec-Broker bisher in Stufe 2 gestartet hat.
     pub fn broker_starts(&self) -> u64 {
-        0
+        #[cfg(unix)]
+        {
+            self._broker.started()
+        }
+        #[cfg(not(unix))]
+        {
+            0
+        }
     }
 }
 
-/// Integritätsprüfung für `tool_isolation: shell_override`: noch ohne Wirkung.
+/// Integritätsprüfung für Harnesses mit `tool_isolation: shell_override` (Claude Code): Jeder
+/// erfolgreiche Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
+/// Ignoriert die CLI `CLAUDE_CODE_SHELL` (etwa nach einem Update), liefen ihre Kommandos in
+/// Stufe 1; dann endet die Session (fail closed, Security-Review #228). Gezählt werden nur
+/// erfolgreich abgeschlossene Aufrufe (abgelehnte oder gescheiterte sind vielleicht nie
+/// gestartet); zusätzliche Broker-Starts (Env-Probe, Shell-Snapshot) schaden nicht.
 #[derive(Debug, Default)]
 pub struct ShellIntegrity {
-    _shell_tools: Vec<String>,
+    shell_tools: Vec<String>,
+    open: std::collections::HashSet<String>,
+    succeeded: u64,
 }
 
 impl ShellIntegrity {
     pub fn new(shell_tools: &[&str]) -> Self {
         Self {
-            _shell_tools: shell_tools.iter().map(|s| (*s).to_owned()).collect(),
+            shell_tools: shell_tools.iter().map(|s| (*s).to_owned()).collect(),
+            ..Self::default()
         }
     }
 
+    /// Wertet ein Event aus; `Err` mit Begründung bei einem Verstoß.
     pub fn observe(
         &mut self,
-        _payload: &beton_core::event::EventPayload,
-        _broker_starts: u64,
+        payload: &beton_core::event::EventPayload,
+        broker_starts: u64,
     ) -> Result<(), String> {
+        use beton_core::event::{EventPayload, ToolStatus};
+        match payload {
+            EventPayload::ToolCallRequested(r) if self.shell_tools.contains(&r.tool) => {
+                self.open.insert(r.call_id.clone());
+            }
+            EventPayload::ToolCallCompleted(c) => {
+                let shell = self.open.remove(&c.call_id);
+                if shell && c.status == ToolStatus::Ok {
+                    self.succeeded += 1;
+                    if self.succeeded > broker_starts {
+                        return Err(format!(
+                            "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker ({} \
+                             erfolgreiche Aufrufe, {broker_starts} Starts in Stufe 2); die \
+                             Session endet, weil Kommandos sonst in Stufe 1 liefen",
+                            c.call_id, self.succeeded
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
+}
+
+/// Stufe 2 darf vom Session-Verzeichnis nur ihren Scratch, den Austausch und das CA-Bundle
+/// erreichen, nie Scratch und Sockets der Stufe 1 oder den Broker-Socket (fail closed, etwa
+/// wenn `TMPDIR` in einer Freigabe liegt).
+fn check_session_dir(
+    root: &Path,
+    allowed: &[&Path],
+    tools: &beton_sandbox::ResolvedPolicy,
+) -> Result<(), SandboxError> {
+    for r in tools.read_roots.iter().chain(&tools.write_roots) {
+        let covers_root = root.starts_with(r);
+        let inside_other = r.starts_with(root) && !allowed.iter().any(|a| r.starts_with(a));
+        if covers_root || inside_other {
+            return Err(SandboxError::PathEscape {
+                path: "sandbox".into(),
+                message: format!(
+                    "Stufe 2 erreicht das Session-Verzeichnis {} über {}",
+                    root.display(),
+                    r.display()
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Ist das Stufenmodell konfiguriert? Bis WP-49 nur mit ausdrücklichem Backend außer `none`.
@@ -292,19 +356,25 @@ async fn compose_unix(
     use std::os::unix::fs::PermissionsExt as _;
 
     let id = provider.id();
+    // Unter `session_base` (Linux: `/var/tmp`, nicht `TMPDIR`), damit die Symlink-Sperre im
+    // Austausch greift; was Stufe 2 davon sieht, prüft `check_session_dir` (SBX-002).
     let dir = tempfile::Builder::new()
         .prefix("beton-sbx-")
-        .tempdir()
+        .tempdir_in(beton_sandbox::session_base())
         .map_err(|e| io("Sandbox-Verzeichnis", e))?;
-    let root = dir.path().to_path_buf();
-    let (harness_tmp, tools_tmp, exec, bin, ca_dir) = (
+    let root = dir
+        .path()
+        .canonicalize()
+        .map_err(|e| io("Sandbox-Verzeichnis", e))?;
+    let (harness_tmp, tools_tmp, xchg, exec, bin, ca_dir) = (
         root.join("harness"),
         root.join("tools"),
+        root.join("xchg"),
         root.join("exec"),
         root.join("exec/bin"),
         root.join("ca"),
     );
-    for d in [&root, &harness_tmp, &tools_tmp, &exec, &bin, &ca_dir] {
+    for d in [&root, &harness_tmp, &tools_tmp, &xchg, &exec, &bin, &ca_dir] {
         std::fs::create_dir_all(d).map_err(|e| io("Sandbox-Verzeichnis", e))?;
         std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| io("Sandbox-Verzeichnis", e))?;
@@ -312,11 +382,25 @@ async fn compose_unix(
     let grants = beton_sandbox::masks::harness_grants(input.harness);
     let harness_cfg = spec.harness.clone().unwrap_or_default();
 
+    // Netz: Stufe 2 nach `allow_network`; Stufe 1 immer, wenn der Harness Vendor-Hosts
+    // (Passthrough) oder `harness.egress_extra` hat, auch mit `allow_network: false` (z. B.
+    // Preset `readonly`): Das gilt für die Tools, die Vendor-CLI braucht ihre API.
+    let mut harness_pass: Vec<String> = grants
+        .as_ref()
+        .map(|g| g.passthrough.clone())
+        .unwrap_or_default();
+    harness_pass.extend(harness_cfg.egress_passthrough.clone().unwrap_or_default());
+    let harness_extra = harness_cfg.egress_extra.clone().unwrap_or_default();
+    let tools_net = spec.allow_network.unwrap_or(true);
+    let harness_net = !harness_pass.is_empty() || !harness_extra.is_empty();
+    let mut harness_spec = spec.clone();
+    harness_spec.allow_network = Some(harness_net);
+
     // Proxy: je Stufe eine Instanz (PRX-001); ohne CA kein Netz (PRX-002, fail closed).
     let mut proxies = Vec::new();
     let mut endpoints: [Option<ProxyEndpoint>; 2] = [None, None];
     let mut passthrough: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-    if spec.allow_network.unwrap_or(true) {
+    if tools_net || harness_net {
         let ca = opts.proxy_ca.ok_or_else(|| {
             unavailable(
                 id,
@@ -333,11 +417,6 @@ async fn compose_unix(
             path: field.into(),
             message: e,
         };
-        let mut harness_pass: Vec<String> = grants
-            .as_ref()
-            .map(|g| g.passthrough.clone())
-            .unwrap_or_default();
-        harness_pass.extend(harness_cfg.egress_passthrough.clone().unwrap_or_default());
         let tools_pass = spec.egress_passthrough.clone().unwrap_or_default();
         if !tools_pass.is_empty() {
             // Ausdrücklich konfiguriert (PRX-005); ohne TLS-Terminierung und ohne
@@ -349,13 +428,15 @@ async fn compose_unix(
         }
         let specs = [
             (
+                harness_net,
                 Stage::Harness,
-                harness_cfg.egress_extra.clone().unwrap_or_default(),
+                harness_extra,
                 harness_pass,
                 Vec::new(),
                 "harness.egress_extra",
             ),
             (
+                tools_net,
                 Stage::Tools,
                 spec.egress_rules.clone().unwrap_or_default(),
                 tools_pass,
@@ -363,7 +444,10 @@ async fn compose_unix(
                 "egress_rules",
             ),
         ];
-        for (i, (stage, rules, pass, private, field)) in specs.into_iter().enumerate() {
+        for (i, (needed, stage, rules, pass, private, field)) in specs.into_iter().enumerate() {
+            if !needed {
+                continue;
+            }
             let instance = proxy
                 .start(InstanceSpec {
                     label: format!("{}/{}", input.session_id, stage.as_str()),
@@ -400,7 +484,10 @@ async fn compose_unix(
     let [harness_proxy, tools_proxy] = endpoints;
 
     // Stufe 2 und der Broker.
-    let tools_policy = provider.resolve(&spec, &ctx(Stage::Tools, &tools_tmp, tools_proxy))?;
+    let mut c = ctx(Stage::Tools, &tools_tmp, tools_proxy);
+    c.exchange = Some(xchg.clone());
+    let tools_policy = provider.resolve(&spec, &c)?;
+    check_session_dir(&root, &[&tools_tmp, &xchg, &ca_dir], &tools_policy)?;
     let tools = Sandbox::new(provider.clone(), tools_policy, input.events.clone());
     let broker = beton_sandbox::broker::Broker::start(&exec, tools.clone())
         .await
@@ -414,7 +501,9 @@ async fn compose_unix(
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
     c.harness = grants;
     c.exec = Some(broker.access(bin.clone()));
-    c.shared = vec![tools_tmp.clone()];
+    c.exchange = Some(xchg.clone());
+    // Nichts im `PATH` der Stufe 1, was Stufe 2 schreiben kann (SBX-002).
+    c.untrusted_path = tools.policy().write_roots.clone();
     c.programs = vec![exe];
     if let Some(program) = &input.program {
         for r in program_roots(program, input.host_env.get("PATH").map(String::as_str)) {
@@ -423,7 +512,7 @@ async fn compose_unix(
             }
         }
     }
-    let mut harness_policy = provider.resolve(&spec, &c)?;
+    let mut harness_policy = provider.resolve(&harness_spec, &c)?;
     harness_policy.inherited_tools = inherited;
     let harness = Sandbox::new(provider, harness_policy, input.events);
     Ok(SessionStages {
@@ -431,7 +520,7 @@ async fn compose_unix(
         tools,
         env: StageEnv {
             shim_dir: bin,
-            exchange: tools_tmp,
+            exchange: xchg,
             tools: None,
         },
         passthrough,
