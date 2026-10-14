@@ -279,8 +279,6 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
     let roots: Vec<&PathBuf> = plan.roots().collect();
     c.dirs.retain(|d| !roots.contains(&d));
     c.files.retain(|f| !roots.contains(&f));
-    // Nichts innerhalb einer bereits maskierten Wurzel noch einmal maskieren, außer es liegt in
-    // einer Freigabe, die wieder eingebunden wird.
     let dirs: Vec<PathBuf> = c.dirs.iter().cloned().collect();
     let mut shadows: Vec<PathBuf> = PRIVATE_TMPFS.iter().map(PathBuf::from).collect();
     shadows.extend(dirs.iter().cloned());
@@ -291,9 +289,18 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
         .collect();
     rebind.sort();
     rebind.dedup();
+    // Sichtbar bleibt ein Pfad nur, wenn jeder ihn verdeckende Mount von einer tieferen
+    // Wiedereinbindung aufgehoben wird (eine Maske in `~/.config` verschwindet mit der Maske von
+    // `~/.config`, auch wenn `~` wieder eingebunden wird).
     let reachable = |p: &Path| {
-        let shadowed = |p: &Path| shadows.iter().any(|s| p != s && p.starts_with(s));
-        !shadowed(p) || rebind.iter().any(|r| p.starts_with(r))
+        shadows
+            .iter()
+            .filter(|s| p != *s && p.starts_with(s))
+            .all(|s| {
+                rebind
+                    .iter()
+                    .any(|r| p.starts_with(r) && r.starts_with(s) && r != s)
+            })
     };
     Ok(MaskTargets {
         dirs: dirs.iter().filter(|d| reachable(d)).cloned().collect(),
@@ -555,8 +562,150 @@ fn expand_write(w: &Path, missing: &[PathBuf], rules: &mut Vec<(PathBuf, Access)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::resolve::{ResolveCtx, resolve};
+    use crate::spec::SandboxSpec;
+    use crate::{CommandSpec, ProviderId};
+
+    fn write(p: &Path) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "x").unwrap();
+    }
+
+    fn plan_for(root: &Path, yaml: &str) -> LaunchPlan {
+        let home = root.join("home");
+        let ws = root.join("ws");
+        let scratch = root.join("scratch");
+        write(&home.join(".ssh/id_ed25519"));
+        write(&home.join(".config/gh/hosts.yml"));
+        write(&home.join(".netrc"));
+        write(&home.join("Documents/a.txt"));
+        write(&ws.join(".env"));
+        write(&ws.join("a/.env.local"));
+        write(&ws.join("src/main.rs"));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
+        ctx.adapters = crate::masks::builtin_harness_grants();
+        let spec = SandboxSpec::from_yaml(yaml).unwrap();
+        let policy = resolve(ProviderId::Landlock, &spec, &ctx).unwrap();
+        LaunchPlan::new(
+            &policy,
+            &CommandSpec::new("/bin/true"),
+            LaunchMode::Landlock,
+        )
+    }
+
+    #[test]
+    fn sbx_004_mask_targets_cover_dotfiles_patterns_and_skip_nested_masks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let plan = plan_for(&root, "read_paths: [\"~\"]\n");
+        let t = mask_targets(&plan).unwrap();
+        let home = root.join("home");
+        assert!(t.dirs.contains(&home.join(".ssh")), "{t:?}");
+        assert!(t.dirs.contains(&home.join(".config")), "{t:?}");
+        // Unter einer Maske nichts weiter maskieren (der Pfad existiert dort nicht mehr).
+        assert!(!t.dirs.contains(&home.join(".config/gh")), "{t:?}");
+        assert!(t.files.contains(&home.join(".netrc")), "{t:?}");
+        assert!(t.files.contains(&root.join("ws/.env")), "{t:?}");
+        assert!(t.files.contains(&root.join("ws/a/.env.local")), "{t:?}");
+        assert!(!t.files.iter().any(|f| f.ends_with("main.rs")), "{t:?}");
+        // Wurzeln unter `/tmp` (Fixtures unter Linux) kommen wieder hinein.
+        for r in plan.roots() {
+            assert_eq!(
+                t.rebind.contains(r),
+                r.starts_with("/tmp") || r.starts_with("/run"),
+                "{r:?}: {t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sbx_004_mount_ops_apply_parents_before_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let plan = plan_for(&root, "read_paths: [\"~\"]\n");
+        let (ops, _) = mount_ops(&plan).unwrap();
+        for (i, op) in ops.iter().enumerate() {
+            for later in &ops[i + 1..] {
+                let shadows = matches!(later, MountOp::Tmpfs { .. } | MountOp::MaskDir { .. });
+                assert!(
+                    !(shadows && op.path().starts_with(later.path()) && op.path() != later.path()),
+                    "{op:?} vor {later:?}"
+                );
+            }
+        }
+        assert!(matches!(ops[0], MountOp::Tmpfs { .. }));
+    }
+
+    #[test]
+    fn sbx_004_missing_mask_in_write_root_expands_the_grant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("home/.docker/buildx")).unwrap();
+        write(&root.join("home/.docker/daemon.json"));
+        let plan = plan_for(
+            &root,
+            "read_paths: [\"~\"]\nwrite_paths: [\"~/.docker\"]\nallow_hidden: [.docker]\n",
+        );
+        let t = mask_targets(&plan).unwrap();
+        let docker = root.join("home/.docker");
+        assert!(
+            t.missing_in_write.contains(&docker.join("config.json")),
+            "{t:?}"
+        );
+        let rules = landlock_rules(&plan, &t.missing_in_write);
+        // Die Wurzel selbst ist nur lesbar, ihre Einträge einzeln beschreibbar.
+        assert!(
+            rules.contains(&(docker.clone(), Access::ReadExec)),
+            "{rules:?}"
+        );
+        assert!(
+            !rules.contains(&(docker.clone(), Access::Write)),
+            "{rules:?}"
+        );
+        assert!(
+            rules.contains(&(docker.join("buildx"), Access::Write)),
+            "{rules:?}"
+        );
+        assert!(
+            rules.contains(&(docker.join("daemon.json"), Access::Write)),
+            "{rules:?}"
+        );
+        // Ohne fehlende Maske bleibt der Workspace eine ganze Schreib-Wurzel.
+        assert!(
+            rules.contains(&(root.join("ws"), Access::Write)),
+            "{rules:?}"
+        );
+    }
+
+    #[test]
+    fn sbx_003_git_mounts_pin_dot_git_and_protect_hooks_and_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let git = root.join("ws/.git");
+        std::fs::create_dir_all(git.join("modules/sub/hooks")).unwrap();
+        write(&git.join("config"));
+        write(&git.join("modules/sub/config"));
+        plan.git = Some(GitProtection {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git.clone(),
+        });
+        ensure_git_hooks(plan.git.as_ref().unwrap()).unwrap();
+        assert!(git.join("hooks").is_dir());
+        let m = git_mounts(&plan);
+        assert_eq!(m.pinned, vec![git.clone()]);
+        for p in ["hooks", "config", "modules/sub/hooks", "modules/sub/config"] {
+            assert!(m.read_only.contains(&git.join(p)), "{p}: {m:?}");
+        }
+        // Nicht vorhandene Dateien werden nicht gebunden.
+        assert!(!m.read_only.contains(&git.join("commondir")), "{m:?}");
+    }
 
     #[test]
     fn globs_match_one_segment() {

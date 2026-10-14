@@ -277,20 +277,21 @@ impl LinuxProvider {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("{}: {e}", launcher.display()))?;
-        match pending.finish(&plan) {
-            Ok(fd) => close(fd),
+        // Der Status-Socket bleibt offen, bis das Ziel endet: Sein Schließen hieße „Runner tot“.
+        let ctl = match pending.finish(&plan) {
+            Ok(fd) => fd,
             Err((e, _)) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(e);
             }
-        }
+        };
         let start = Instant::now();
-        loop {
+        let result = loop {
             match child.try_wait() {
-                Ok(Some(st)) if st.success() => return Ok(()),
+                Ok(Some(st)) if st.success() => break Ok(()),
                 Ok(Some(st)) => {
-                    return Err(format!("die Sandbox erzwingt die Regeln nicht ({st})"));
+                    break Err(format!("die Sandbox erzwingt die Regeln nicht ({st})"));
                 }
                 Ok(None) if start.elapsed() < READY_TIMEOUT => {
                     std::thread::sleep(Duration::from_millis(5));
@@ -298,10 +299,12 @@ impl LinuxProvider {
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err("keine Antwort".into());
+                    break Err("keine Antwort".into());
                 }
             }
-        }
+        };
+        close(ctl);
+        result
     }
 }
 
