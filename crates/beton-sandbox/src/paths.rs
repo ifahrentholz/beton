@@ -196,6 +196,9 @@ pub(crate) fn validate_spec(spec: &SandboxSpec) -> Result<(), SandboxError> {
             }
         }
     }
+    if let Some(limits) = &spec.limits {
+        limits.validate()?;
+    }
     for (i, rule) in spec.egress_rules.iter().flatten().enumerate() {
         if rule.trim().is_empty() {
             return Err(SandboxError::invalid(

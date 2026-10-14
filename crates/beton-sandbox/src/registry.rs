@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use beton_core::event::SandboxStarted;
+use beton_core::event::{SandboxStarted, SandboxViolation};
 
 use crate::child::SandboxedChild;
 use crate::command::CommandSpec;
@@ -37,8 +37,8 @@ impl Os {
     }
 }
 
-/// Backend für `auto` (SBX-001 AC3). Linux: `landlock`; ob stattdessen `bwrap` greift,
-/// entscheidet SBX-009 anhand der Probe.
+/// Bevorzugtes Backend für `auto` (SBX-001 AC3). Linux: `landlock`; ob stattdessen `bwrap`
+/// greift, entscheidet [`Registry::auto_choice`] anhand der Probe (SBX-009).
 pub fn auto_backend(os: Os) -> Option<ProviderId> {
     match os {
         Os::MacOs => Some(ProviderId::Seatbelt),
@@ -110,20 +110,32 @@ impl Registry {
     }
 
     /// Die Backends dieser Plattform. Was hier (noch) nicht isolieren kann, ist registriert,
-    /// meldet aber `unavailable` mit Grund: kein stiller Fallback (SBX-006).
+    /// meldet aber `unavailable` mit Grund: kein stiller Fallback (SBX-006). Unter Linux ist
+    /// das laufende Programm (`beton`) der Launcher (`beton __sandbox-exec`).
     pub fn platform() -> Self {
+        let exe = std::env::current_exe().unwrap_or_default();
+        Self::with_launcher(&exe)
+    }
+
+    /// Wie [`Registry::platform`], mit ausdrücklichem Linux-Launcher (Tests).
+    pub fn with_launcher(launcher: &std::path::Path) -> Self {
         let os = Os::current();
         let mut r = Self::empty(os);
         r.register(crate::seatbelt::provider());
-        let linux = |what: &str| -> String {
-            if os == Os::Linux {
-                format!("noch nicht umgesetzt ({what})")
-            } else {
-                "nur unter Linux".to_owned()
-            }
-        };
-        r.register(unavailable(ProviderId::Landlock, &linux("SBX-008")));
-        r.register(unavailable(ProviderId::Bwrap, &linux("SBX-009")));
+        #[cfg(target_os = "linux")]
+        {
+            let (landlock, bwrap) = crate::linux::sys::provider::LinuxProvider::pair(
+                crate::linux::LinuxConfig::new(launcher),
+            );
+            r.register(Arc::new(landlock));
+            r.register(Arc::new(bwrap));
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let cfg = crate::linux::LinuxConfig::new(launcher);
+            r.register(crate::linux::landlock_provider(cfg.clone()));
+            r.register(crate::linux::bwrap_provider(cfg));
+        }
         r.register(unavailable(
             ProviderId::Windows,
             if os == Os::Windows {
@@ -137,6 +149,21 @@ impl Registry {
         }
         r.register(Arc::new(NoneProvider));
         r
+    }
+
+    /// Das Backend für `auto` auf diesem Rechner. Linux: `landlock`; sind unprivilegierte
+    /// User-Namespaces gesperrt, aber bwrap nutzbar, `bwrap` (SBX-009 AC1). Ist keins nutzbar,
+    /// bleibt es bei `landlock`, dessen Start dann mit Grund scheitert (kein Fallback auf
+    /// `none`).
+    pub fn auto_choice(&self) -> Option<ProviderId> {
+        let first = auto_backend(self.os)?;
+        if first == ProviderId::Landlock {
+            let usable = |id| self.get(id).is_some_and(|p| p.probe().available);
+            if !usable(ProviderId::Landlock) && usable(ProviderId::Bwrap) {
+                return Some(ProviderId::Bwrap);
+            }
+        }
+        Some(first)
     }
 
     pub fn register(&mut self, provider: Arc<dyn SandboxProvider>) {
@@ -155,13 +182,13 @@ impl Registry {
     /// ist [`SandboxError::Unavailable`]. `none` wird nie automatisch gewählt.
     pub fn select(&self, choice: BackendChoice) -> Result<Arc<dyn SandboxProvider>, SandboxError> {
         let id = match choice {
-            BackendChoice::Auto => {
-                auto_backend(self.os).ok_or_else(|| SandboxError::Unavailable {
+            BackendChoice::Auto => self
+                .auto_choice()
+                .ok_or_else(|| SandboxError::Unavailable {
                     provider: ProviderId::None,
                     missing: crate::caps::required_default(),
                     hint: "für dieses Betriebssystem gibt es kein Sandbox-Backend".into(),
-                })?
-            }
+                })?,
             BackendChoice::Provider(id) => id,
         };
         self.get(id).ok_or_else(|| SandboxError::Unavailable {
@@ -180,6 +207,9 @@ impl Registry {
 /// Empfänger der `sandbox.started`-Events.
 pub type EventSink = Arc<dyn Fn(SandboxStarted) + Send + Sync>;
 
+/// Empfänger der `sandbox.violation`-Events (SBX-013 AC1, SBX-014).
+pub type ViolationSink = Arc<dyn Fn(SandboxViolation) + Send + Sync>;
+
 /// Eine aufgelöste Sandbox einer Stufe: Provider, Policy und Event-Empfänger. Jeder
 /// erfolgreiche [`Sandbox::spawn`] meldet genau ein `sandbox.started`, ein gescheiterter
 /// keines.
@@ -188,6 +218,7 @@ pub struct Sandbox {
     provider: Arc<dyn SandboxProvider>,
     policy: ResolvedPolicy,
     events: Option<EventSink>,
+    violations: Option<ViolationSink>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -209,7 +240,14 @@ impl Sandbox {
             provider,
             policy,
             events,
+            violations: None,
         }
+    }
+
+    /// Meldet erkannte Verstöße (z. B. ein erreichtes Limit) als `sandbox.violation`.
+    pub fn with_violations(mut self, sink: ViolationSink) -> Self {
+        self.violations = Some(sink);
+        self
     }
 
     /// Ohne Isolation (`backend: none`, ausdrücklich), z. B. bis SBX-006 scharf ist.
@@ -243,7 +281,9 @@ impl Sandbox {
     }
 
     pub fn spawn(&self, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
-        let child = self.provider.spawn(&self.policy, cmd)?;
+        let child = self
+            .provider
+            .spawn_observed(&self.policy, cmd, self.violations.clone())?;
         if let Some(events) = &self.events {
             events(self.started_event());
         }
