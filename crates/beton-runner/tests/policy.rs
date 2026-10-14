@@ -802,3 +802,21 @@ async fn pol_001_reload_with_unenforceable_rule_ends_the_session() {
     assert_eq!(error["payload"]["problem"]["rules"], json!(["no-edit"]));
     env.wait_status(&id, "failed").await;
 }
+
+#[tokio::test]
+async fn har_005_failed_tool_call_without_gate_decision_also_ends_the_session() {
+    // Re-Review R2 (#253): Ein Kommando mit `…; exit 1` endet als Fehler (Claude `is_error`),
+    // wurde aber ausgeführt. Auch das ist ohne Gate-Entscheidung eine Integritätsverletzung.
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"rm -rf x; exit 1\" } }, skip_gate: true }\n      - { tool_error: \"exit 1\" }\n      - { message: \"fertig\" }\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let _ = env.input(&id, "los").await;
+    env.wait_for(&id, |e| {
+        e["type"] == "error" && e["payload"]["problem"]["code"] == "policy_integrity_violation"
+    })
+    .await;
+    env.wait_status(&id, "failed").await;
+}
