@@ -4,8 +4,9 @@
 //! wenn das Tool auf der Liste steht. Weil ein Default nur durch `allow` derselben Ebene
 //! aufgehoben wird, wirken Allowlists verschiedener Ebenen als Schnittmenge (POL-007).
 //!
-//! - `allow`: Globs gegen `tool.name` eingebauter Tools (`tool.server == "builtin"`) bzw.
-//!   gegen `tool.kind`; `mcp:<server>/<tool>` gegen MCP-Tools. Ein Name ohne `mcp:` erlaubt
+//! - `allow`: Globs gegen `tool.name` eingebauter Tools (`tool.server == "builtin"`, nie
+//!   Klasse `mcp`, nicht bei ACP, wo `tool.name` der Titel des Agents ist) bzw. gegen
+//!   `tool.kind`; `mcp:<server>/<tool>` gegen MCP-Tools. Ein Name ohne `mcp:` erlaubt
 //!   nie ein gleichnamiges MCP-Tool (ein fremder Server könnte sonst `Read` anbieten).
 //! - `allow_kinds`: Tool-Klassen (POL-005), `allow_servers`: MCP-Server.
 //! - `deny_reason`: Begründung der Ablehnung (Default der Ebene).
@@ -39,7 +40,8 @@ pub(super) fn desugar(rule: &RuleDoc, params: &Params, shadow: bool) -> Result<S
                 lit(pattern)
             )),
             None => parts.push(format!(
-                "(tool.server == \"builtin\" && tool.kind != \"mcp\" && glob(tool.name, {p})) || glob(tool.kind, {p})",
+                // Bei ACP ist `tool.name` der Titel des Agents (Review #285 M2).
+                "(tool.server == \"builtin\" && tool.kind != \"mcp\" && !session.harness.startsWith(\"acp\") && glob(tool.name, {p})) || glob(tool.kind, {p})",
                 p = lit(pattern)
             )),
         }
