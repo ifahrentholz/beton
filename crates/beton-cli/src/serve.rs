@@ -308,6 +308,8 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         rate_limit_notice: settings.usage.rate_limit_notice,
     };
     let compaction = settings.compaction;
+    // `user.timezone` (POL-004 AC4); beim Laden geprüft, ohne Angabe UTC.
+    let timezone = settings.user.timezone.clone().unwrap_or_default();
     let attachments = beton_server::attachments::AttachmentLimits {
         max_file_bytes: settings.attachments.max_file_bytes,
         max_files: settings.attachments.max_files,
@@ -411,6 +413,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.titles = titles;
         r.usage = usage;
         r.compaction = compaction;
+        r.timezone = timezone;
         r.attachments = attachments;
         r.secret_backend = secret_backend;
         r.redactor = Some(redactor);
