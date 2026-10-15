@@ -1,0 +1,33 @@
+# Policy-Test (POL-026 AC4): Regeltyp loop_detection (POL-018).
+spec_version: 1
+layers: { user: [loop_detection.yaml] }
+cases:
+  - name: Dritter identischer Call fragt nach, ein anderer dazwischen setzt nicht zurück
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "git diff" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } },
+          expect: { outcome: ask, rules: [loop/repeat] }, resolve: { decision: allow, remember: none } }
+  - name: Was aus dem Fenster von 10 Calls fällt, zählt nicht mehr
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/a } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/b } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/c } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/d } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/e } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/f } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/g } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/h } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Read, args: { file_path: /repo/i } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+  - name: Fünf Fehler in Folge lösen die Aktion aus
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cargo build" }, consecutive_errors: 5 } }
+    expect: { outcome: ask, rules: [loop/errors] }
+  - name: Vier Fehler noch nicht
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cargo build" }, consecutive_errors: 4 } }
+    expect: { outcome: allow }

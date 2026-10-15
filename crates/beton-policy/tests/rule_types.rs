@@ -811,3 +811,94 @@ fn pol_017_params_are_checked_when_loading() {
         assert!(e.contains(needle), "{params}: {e}");
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// POL-018 loop_detection
+// ---------------------------------------------------------------------------------------
+
+fn counted(repeat: i64, errors: Option<i64>) -> Activation {
+    let mut input = Map::new();
+    let mut tool =
+        json!({ "name": "Bash", "args": { "command": "npm test" }, "repeat_count": repeat });
+    if let Some(e) = errors {
+        tool["consecutive_errors"] = json!(e);
+    }
+    input.insert("tool".into(), tool);
+    activation(Phase::ToolCall, &json!({}), &input, Some("claude"), None).unwrap()
+}
+
+#[test]
+fn pol_018_ac1_third_identical_call_asks() {
+    let s = set(Scope::User, "u", "  - id: loop\n    type: loop_detection\n");
+    assert_eq!(
+        outcome(&eval(vec![s.clone()], &counted(2, Some(0)))),
+        "allow"
+    );
+    let d = eval(vec![s], &counted(3, Some(0)));
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["loop/repeat"]);
+}
+
+#[test]
+fn pol_018_ac2_consecutive_errors_trigger_the_configured_action() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: loop\n    type: loop_detection\n    params: { consecutive_errors: 5, action: deny }\n",
+    );
+    assert_eq!(
+        outcome(&eval(vec![s.clone()], &counted(1, Some(4)))),
+        "allow"
+    );
+    let d = eval(vec![s], &counted(1, Some(5)));
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+    assert_eq!(rule_ids(&d), ["loop/errors"]);
+}
+
+#[test]
+fn pol_018_notify_reports_without_blocking() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: loop\n    type: loop_detection\n    params: { identical_threshold: 2, action: notify }\n",
+    );
+    let d = eval(vec![s], &counted(2, Some(0)));
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+    assert_eq!(d.notifications.len(), 1, "{d:?}");
+    assert_eq!(d.notifications[0].rule.rule_id, "loop/repeat");
+    assert!(
+        d.notifications[0]
+            .message
+            .as_deref()
+            .is_some_and(|m| m.contains('2')),
+        "{:?}",
+        d.notifications
+    );
+}
+
+/// Ohne Zähler (z. B. `beton policy eval` ohne Session) greift die Erkennung nicht; sie
+/// ist eine Heuristik gegen festgefahrene Agents, keine Schutzgrenze.
+#[test]
+fn pol_018_without_counters_the_rule_does_not_fire() {
+    let s = set(Scope::User, "u", "  - id: loop\n    type: loop_detection\n");
+    let d = eval(vec![s], &call("Bash", json!({ "command": "ls" })));
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+    assert!(d.errors.is_empty(), "{:?}", d.errors);
+}
+
+#[test]
+fn pol_018_params_are_checked_when_loading() {
+    for (params, needle) in [
+        ("{ window: 20 }", "window"),
+        ("{ identical_threshold: 1 }", "identical_threshold"),
+        ("{ identical_threshold: x }", "Zahl"),
+        ("{ consecutive_errors: 0 }", "consecutive_errors"),
+        ("{ action: allow }", "action"),
+        ("{ threshold: 3 }", "threshold"),
+    ] {
+        let e = load_err(&format!(
+            "  - id: x\n    type: loop_detection\n    params: {params}\n"
+        ));
+        assert!(e.contains(needle), "{params}: {e}");
+    }
+}

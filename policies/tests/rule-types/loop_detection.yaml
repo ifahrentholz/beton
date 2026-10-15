@@ -1,0 +1,8 @@
+# Testdaten zum Regeltyp loop_detection (POL-018, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: loops
+rules:
+  - id: loop
+    type: loop_detection
+    params: { window: 10, identical_threshold: 3, consecutive_errors: 5, action: ask }
