@@ -45,7 +45,7 @@
       "$ref": "#/$defs/UsageTotals"
     },
     "tz": {
-      "description": "Zeitzone der Tagesgrenzen, z. B. `+02:00`.",
+      "description": "Zeitzone der Tagesgrenzen, z. B. `Europe/Berlin` oder `+02:00`.",
       "type": "string"
     }
   },

@@ -269,7 +269,7 @@ async fn use_005_invalid_parameters_and_m4_dimensions_are_rejected() {
         "team=t1",
         "group_by=farbe",
         "from=gestern",
-        "tz=Europe/Berlin",
+        "tz=Europe/Berln",
     ] {
         let res = get(&t, &format!("/v1/usage?{q}")).await;
         assert_eq!(res.status, 400, "{q}");
@@ -493,4 +493,115 @@ async fn use_006_pricing_lists_overrides_in_order_and_the_catalog() {
     assert!((first.cache_write_per_mtok - 0.5).abs() < 1e-9);
     assert!(view.overrides[1].free);
     assert_eq!(view.overrides[1].model, None);
+}
+
+// ------------------------------------------------------------- POL-004 AC4 (user.timezone)
+
+fn metered() -> EventPayload {
+    // 1,75 USD (1 Mio. Eingabe-Tokens zum Katalogpreis).
+    cost("codex", "gpt-5.3-codex", AuthSource::ApiKey, 1_000_000, 0)
+}
+
+#[tokio::test]
+async fn pol_004_ac4_daily_and_monthly_cost_in_the_users_timezone() {
+    use beton_core::timezone::UserTimeZone;
+    use time::macros::datetime;
+
+    use crate::usage_policy::usage_values;
+
+    let t = app().await;
+    let s = session(&t, "codex").await;
+    for ts in [
+        "2026-06-30T22:30:00.000Z",
+        "2026-07-01T21:30:00.000Z",
+        "2026-07-01T22:30:00.000Z",
+        "2026-12-01T22:30:00.000Z",
+        "2026-12-01T23:30:00.000Z",
+    ] {
+        append(&t, &s, ts, vec![metered()]).await;
+    }
+    let berlin = UserTimeZone::parse("Europe/Berlin").unwrap();
+    // Sommer (+02:00): der 2. Juli beginnt am 1. Juli um 22:00 UTC, der Juli am 30. Juni.
+    let v = usage_values(
+        &t.store,
+        OrgId::LOCAL,
+        s.id,
+        &berlin,
+        datetime!(2026-07-02 10:00 UTC),
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["timezone"], "Europe/Berlin");
+    assert_eq!(v["user_daily_cost_usd"], 1.75);
+    assert_eq!(v["user_monthly_cost_usd"], 5.25);
+    // Winter (+01:00, Versatz zum Auswertungszeitpunkt): 22:30 UTC ist noch der 1. Dezember.
+    let v = usage_values(
+        &t.store,
+        OrgId::LOCAL,
+        s.id,
+        &berlin,
+        datetime!(2026-12-02 10:00 UTC),
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["user_daily_cost_usd"], 1.75);
+    assert_eq!(v["user_monthly_cost_usd"], 3.5);
+    // Default UTC: am 2. Juli um 10:00 UTC zählt nichts vom Vortag.
+    let utc = UserTimeZone::utc();
+    let v = usage_values(
+        &t.store,
+        OrgId::LOCAL,
+        s.id,
+        &utc,
+        datetime!(2026-07-02 10:00 UTC),
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["timezone"], "UTC");
+    assert_eq!(v["user_daily_cost_usd"], 0.0);
+    assert_eq!(v["user_monthly_cost_usd"], 3.5);
+}
+
+#[tokio::test]
+async fn pol_004_ac4_usage_api_defaults_to_the_users_timezone() {
+    let berlin = beton_core::timezone::UserTimeZone::parse("Europe/Berlin").unwrap();
+    let t = app_full(
+        |r| r,
+        move |mut r| {
+            r.timezone = berlin;
+            r
+        },
+    )
+    .await;
+    let s = session(&t, "codex").await;
+    // Um das Ende der Sommerzeit (25.10.2026): 22:30 UTC ist davor schon der nächste Tag.
+    append(&t, &s, "2026-10-23T22:30:00.000Z", vec![metered()]).await;
+    append(&t, &s, "2026-10-26T22:30:00.000Z", vec![metered()]).await;
+    let days = |body: &Value| -> Vec<String> {
+        body["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["day"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let res = get(&t, "/v1/usage?group_by=day&from=2026-10-23&to=2026-10-27").await;
+    assert_eq!(res.status, 200, "{}", String::from_utf8_lossy(&res.body));
+    let body = res.json();
+    assert_eq!(body["tz"], "Europe/Berlin");
+    assert_eq!(body["from"], "2026-10-22T22:00:00.000Z");
+    assert_eq!(body["to"], "2026-10-27T23:00:00.000Z");
+    assert_eq!(days(&body), ["2026-10-24", "2026-10-26"]);
+    // Ein fester Versatz bleibt möglich und gilt vor der Einstellung.
+    let res = get(
+        &t,
+        "/v1/usage?group_by=day&from=2026-10-23&to=2026-10-27&tz=%2B02:00",
+    )
+    .await;
+    let body = res.json();
+    assert_eq!(body["tz"], "+02:00");
+    assert_eq!(days(&body), ["2026-10-24", "2026-10-27"]);
+    let res = get(&t, "/v1/usage?tz=Mars%2FOlympus").await;
+    assert_eq!(res.status, 400);
+    assert_problem(&res, "validation_failed");
 }
