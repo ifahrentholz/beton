@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 
 use beton_core::event::BudgetAction;
 use serde_json::Value;
+use sha2::Digest as _;
 
 use crate::Phase;
 use crate::cel::{CompileError, compile_bool};
@@ -66,6 +67,16 @@ impl BudgetScope {
             BudgetScope::Run => "run.cost_usd + run.equivalent_usd",
             BudgetScope::Subtree => "run.subtree_cost_usd + run.subtree_equivalent_usd",
             BudgetScope::User => "user.daily_cost_usd + user.daily_equivalent_usd",
+        }
+    }
+
+    /// Modelle ohne Preis in diesem Bereich (CEL-Liste aus `policy.usage`).
+    pub fn unpriced_expr(self) -> &'static str {
+        match self {
+            BudgetScope::Session => "session.unpriced_models",
+            BudgetScope::Run => "run.unpriced_models",
+            BudgetScope::Subtree => "run.subtree_unpriced_models",
+            BudgetScope::User => "user.daily_unpriced_models",
         }
     }
 
@@ -119,14 +130,32 @@ pub fn reserved_prefix(key: &str) -> Option<RuleType> {
         .find(|t| key.starts_with(&format!("{}/", t.as_str())))
 }
 
-/// Zustands-Key der bestätigten Schwelle einer Budget-Regel.
-pub fn asked_key(t: RuleType, scope: Scope, set: &str, id: &str) -> String {
-    format!("{}/{}/{set}/{id}/asked", t.as_str(), scope.as_str())
+/// Präfix der Zustands-Keys einer Budget-Regel: `<typ>/<ebene>/<set>/<id>`. Der Tageszustand
+/// (`user_day`) gilt über alle Sessions und Repos; unterhalb der User-Ebene trägt der Key von
+/// `daily_budget` deshalb zusätzlich die Herkunft des Sets (Hash der Datei bzw. des Agents),
+/// damit ein Repo keine Schwellen eines anderen bestätigt (Security-Review #284).
+pub fn key_base(t: RuleType, scope: Scope, set: &str, origin: &str, id: &str) -> String {
+    if t == RuleType::DailyBudget && scope > Scope::User {
+        let h = hex::encode(sha2::Sha256::digest(origin.as_bytes()));
+        format!("{}/{}/{}/{set}/{id}", t.as_str(), scope.as_str(), &h[..12])
+    } else {
+        format!("{}/{}/{set}/{id}", t.as_str(), scope.as_str())
+    }
 }
 
-/// Gehört `key` zur Regel `id` in `set` auf Ebene `scope`?
-pub fn own_key(t: RuleType, scope: Scope, set: &str, id: &str, key: &str) -> bool {
-    key.starts_with(&format!("{}/{}/{set}/{id}/", t.as_str(), scope.as_str()))
+/// Zustands-Key der bestätigten Schwelle einer Budget-Regel.
+pub fn asked_key(t: RuleType, scope: Scope, set: &str, origin: &str, id: &str) -> String {
+    format!("{}/asked", key_base(t, scope, set, origin, id))
+}
+
+/// Zustands-Key der freigegebenen Modelle ohne Preis (`on_unpriced: ask`).
+pub fn unpriced_key(t: RuleType, scope: Scope, set: &str, origin: &str, id: &str) -> String {
+    format!("{}/unpriced", key_base(t, scope, set, origin, id))
+}
+
+/// Gehört `key` zur Regel `id` des Sets `set` (Ebene `scope`, Herkunft `origin`)?
+pub fn own_key(t: RuleType, scope: Scope, set: &str, origin: &str, id: &str, key: &str) -> bool {
+    key.starts_with(&format!("{}/", key_base(t, scope, set, origin, id)))
 }
 
 /// CEL-Literal für eine Zahl (`5.0`).
@@ -305,6 +334,7 @@ fn budget(
     rule: &RuleDoc,
     scope: Scope,
     set: &str,
+    origin: &str,
 ) -> Result<Vec<RuleDoc>, ParamError> {
     let empty = BTreeMap::new();
     let allowed: &[&str] = match t {
@@ -313,6 +343,7 @@ fn budget(
             "limit_usd",
             "ask_at_usd",
             "on_exceed",
+            "on_unpriced",
             "fallback_model",
             "fallback_effort",
         ],
@@ -321,6 +352,7 @@ fn budget(
             "limit_usd",
             "ask_at_usd",
             "on_exceed",
+            "on_unpriced",
             "fallback_model",
         ],
     };
@@ -352,13 +384,78 @@ fn budget(
     let limit = p.limit()?;
     let thresholds = p.thresholds(limit)?;
     let exceed = on_exceed(&p, t == RuleType::SpendCap)?;
+    let unpriced = match p.text("on_unpriced")?.as_deref() {
+        None | Some("ask") => Some(Action::Ask),
+        Some("deny") => Some(Action::Deny),
+        Some("ignore") => None,
+        Some(other) => {
+            return Err(at(
+                "on_unpriced",
+                format!("`on_unpriced: {other}` ist ungültig (ask, deny, ignore)"),
+            ));
+        }
+    };
     let cost = budget_scope.cost_expr();
     let state = budget_scope.state();
-    let key = asked_key(t, scope, set, &rule.id);
+    let key = asked_key(t, scope, set, origin, &rule.id);
     let state_ref = format!("state.{}", state_name(state));
     let key_lit = cel_string(&key);
+    let unpriced_lit = cel_string(&unpriced_key(t, scope, set, origin, &rule.id));
     let mut parts = Vec::new();
     for phase in [Phase::SessionStart, Phase::ModelRequest] {
+        let model = match phase {
+            Phase::SessionStart => "start.model",
+            _ => "request.model",
+        };
+        // Startmodell eines Repo-Agents bzw. eines Spawns ohne Katalogpreis: Das Budget
+        // könnte seine Kosten nicht zählen, also lehnt es ab (Security-Review #284, M1).
+        if phase == Phase::SessionStart {
+            let when = "has(start.model) && !priced(start.model) && \
+                 ((has(start.trigger) && start.trigger == \"spawn\") || \
+                 (has(agent.source) && !(agent.source in [\"user\", \"builtin\"])))";
+            let mut d = part(rule, phase, Some(when.to_owned()), Action::Deny);
+            d.reason = Some(format!(
+                "Startmodell ohne Katalogpreis von einem Agent bzw. Spawn unterhalb der \
+                 User-Ebene: {} `{}` kann seine Kosten nicht zählen",
+                t.as_str(),
+                rule.id
+            ));
+            parts.push(d);
+        }
+        // Nutzung ohne Preis (`on_unpriced`): das nächste Modell bzw. schon genutzte Modelle,
+        // die noch nicht freigegeben sind (je Modell einmal im Bereich des Budgets).
+        if let Some(action) = unpriced {
+            let acked = |x: &str| {
+                format!("({unpriced_lit} in {state_ref} && {x} in {state_ref}[{unpriced_lit}])")
+            };
+            let list = budget_scope.unpriced_expr();
+            let when = format!(
+                "(has({model}) && !priced({model}) && !{}) || {list}.exists(m, !{})",
+                acked(model),
+                acked("m")
+            );
+            let mut u = part(rule, phase, Some(when), action);
+            u.reason = Some(format!(
+                "Modell ohne Katalogpreis: {} `{}` kann die Kosten {} nicht zählen (on_unpriced)",
+                t.as_str(),
+                rule.id,
+                budget_scope.label()
+            ));
+            if action == Action::Ask {
+                u.effects = vec![EffectDoc {
+                    op: EffectOp::Set,
+                    scope: state,
+                    key: unpriced_key(t, scope, set, origin, &rule.id),
+                    value: Some(format!(
+                        "({unpriced_lit} in {state_ref} ? {state_ref}[{unpriced_lit}] : []) + {list}.filter(m, !{}) + (has({model}) && !priced({model}) && !{} ? [{model}] : [])",
+                        acked("m"),
+                        acked(model)
+                    )),
+                }];
+                u.effects_on = Some(vec![DefaultAction::Allow]);
+            }
+            parts.push(u);
+        }
         for (i, t_i) in thresholds.iter().enumerate() {
             let next = thresholds.get(i + 1).copied().unwrap_or(limit);
             let when = format!(
@@ -621,9 +718,10 @@ pub(crate) fn desugar(
     rule: &RuleDoc,
     scope: Scope,
     set: &str,
+    origin: &str,
 ) -> Option<Result<Vec<RuleDoc>, ParamError>> {
     Some(match t {
-        RuleType::SpendCap | RuleType::DailyBudget => budget(t, rule, scope, set),
+        RuleType::SpendCap | RuleType::DailyBudget => budget(t, rule, scope, set, origin),
         RuleType::ModelRoute => model_route(rule),
         _ => return None,
     })
@@ -638,10 +736,11 @@ pub const SESSION_BUDGET_RULE: &str = "max-cost";
 /// User-Ebene: eine `spend_cap`-Regel `max-cost` mit `scope: session` und `on_exceed: deny`.
 /// Ein ungültiger Betrag ist ein Ladefehler (der Runner startet dann nicht, fail closed).
 pub fn session_budget(max_cost_usd: f64) -> Result<crate::load::LoadedSet, crate::load::LoadError> {
+    // Der Lauf samt Sub-Agents (Security-Review #284, M2): Teilbaum der Session.
     let rule = serde_json::json!({
         "id": SESSION_BUDGET_RULE,
         "type": "spend_cap",
-        "params": { "scope": "session", "limit_usd": max_cost_usd, "on_exceed": "deny" },
+        "params": { "scope": "subtree", "limit_usd": max_cost_usd, "on_exceed": "deny" },
         "reason": format!("Session-Budget von {} erreicht (--max-cost)", usd(max_cost_usd)),
     });
     crate::load::inline_set(
@@ -731,6 +830,7 @@ pub fn exhausted(decision: &Decision, set: &EffectiveSet) -> Vec<Exhausted> {
         let limit_part = loaded.rules.iter().find(|r| {
             r.id == m.rule.rule_id
                 && r.doc.effects.is_empty()
+                && r.doc.reason == m.reason
                 && matches!(&r.kind, RuleKind::Cel { phase, action, .. }
                     if *phase == decision.phase && *action == wanted)
         });

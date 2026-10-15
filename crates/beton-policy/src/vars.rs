@@ -90,6 +90,10 @@ pub struct SessionVars {
     /// nie Geld (ADR-0034). Budgets zählen `cost_usd + equivalent_usd` (POL-011).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub equivalent_usd: Option<f64>,
+    /// Modelle der Session, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat (ohne
+    /// Katalogpreis); Budgets fragen dann nach (`on_unpriced`, POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpriced_models: Option<Vec<String>>,
     /// Eingabe-Tokens bisher.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_in: Option<i64>,
@@ -150,12 +154,18 @@ pub struct RunVars {
     /// Listenpreis-Äquivalent der Subscription-Nutzung des Runs in USD (ADR-0034).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub equivalent_usd: Option<f64>,
+    /// Modelle des Runs ohne Preis (POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpriced_models: Option<Vec<String>>,
     /// Kosten des Runs inklusive aller Child-Sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtree_cost_usd: Option<f64>,
     /// Listenpreis-Äquivalent des Runs inklusive aller Child-Sessions in USD (ADR-0034).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtree_equivalent_usd: Option<f64>,
+    /// Modelle ohne Preis im Run inklusive aller Child-Sessions (POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtree_unpriced_models: Option<Vec<String>>,
     /// Laufzeit in Sekunden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_s: Option<f64>,
@@ -192,6 +202,9 @@ pub struct UserVars {
     /// Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daily_equivalent_usd: Option<f64>,
+    /// Modelle ohne Preis, die der User heute genutzt hat (POL-012).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_unpriced_models: Option<Vec<String>>,
     /// Kosten des Users im laufenden Monat in USD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monthly_cost_usd: Option<f64>,

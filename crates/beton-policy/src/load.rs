@@ -528,7 +528,7 @@ fn desugar_parts(
         return Ok(None);
     };
     check_type_fields(rule, rule_type, loc, at)?;
-    let Some(parts) = crate::budget::desugar(rule_type, rule, scope, loc.set) else {
+    let Some(parts) = crate::budget::desugar(rule_type, rule, scope, loc.set, loc.file) else {
         return Ok(None);
     };
     let params = |path: &str| {

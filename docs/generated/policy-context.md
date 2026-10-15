@@ -29,6 +29,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.tokens_out` | `int` | alle | Ausgabe-Tokens bisher. |
 | `session.tool_calls` | `int` | alle | Tool-Calls bisher. |
 | `session.turns` | `int` | alle | Abgeschlossene oder laufende Turns. |
+| `session.unpriced_models` | `list(string)` | alle | Modelle der Session, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat (ohne Katalogpreis); Budgets fragen dann nach (`on_unpriced`, POL-011). |
 | `session.worktree` | `string` | alle | Arbeitsverzeichnis (absolut). |
 | `run.budget_usd` | `double` | alle | Budget des Runs in USD. |
 | `run.cost_usd` | `double` | alle | Kosten des Runs in USD. |
@@ -37,10 +38,13 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `run.id` | `string` | alle | ID des Runs. |
 | `run.subtree_cost_usd` | `double` | alle | Kosten des Runs inklusive aller Child-Sessions. |
 | `run.subtree_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent des Runs inklusive aller Child-Sessions in USD (ADR-0034). |
+| `run.subtree_unpriced_models` | `list(string)` | alle | Modelle ohne Preis im Run inklusive aller Child-Sessions (POL-011). |
 | `run.trigger` | `string` | alle | `interactive`, `spawn`, `timer`, `schedule`, `webhook`, `fork` oder `import`. |
 | `run.turns` | `int` | alle | Turns des Runs. |
+| `run.unpriced_models` | `list(string)` | alle | Modelle des Runs ohne Preis (POL-011). |
 | `user.daily_cost_usd` | `double` | alle | Kosten des Users heute (00:00 in `user.timezone`) in USD über alle Sessions. |
 | `user.daily_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034). |
+| `user.daily_unpriced_models` | `list(string)` | alle | Modelle ohne Preis, die der User heute genutzt hat (POL-012). |
 | `user.email` | `string` | alle | E-Mail-Adresse (nur mit Identität, ab M4). |
 | `user.id` | `string` | alle | ID (`usr_…`). |
 | `user.monthly_cost_usd` | `double` | alle | Kosten des Users im laufenden Monat in USD. |

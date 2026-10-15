@@ -378,6 +378,8 @@ struct Run<'a> {
     /// haben mehrere Teile mit derselben ID (POL-011 bis POL-013), die Effects gehören zum
     /// Teil, der gegriffen hat.
     hits: Vec<&'a LoadedRule>,
+    /// Regel, deren Modell Pass 1 übernommen hat (erster Schreiber).
+    model_writer: Option<RuleRef>,
 }
 
 /// Ein Verdikt mit Herkunft (für die Kombination).
@@ -417,6 +419,7 @@ impl<'a> Run<'a> {
                 eval_us: 0,
             },
             hits: Vec::new(),
+            model_writer: None,
         }
     }
 
@@ -506,6 +509,7 @@ impl<'a> Run<'a> {
                 fingerprint: None,
             });
         }
+        self.unpriced_route(&mut verdicts);
         // Pass 2 – Entscheidung
         if self.pass_decide(&ctx, &mut verdicts).is_err() {
             return self.deadline_deny();
@@ -538,6 +542,36 @@ impl<'a> Run<'a> {
         };
         self.effects(&outcome, &ctx);
         outcome
+    }
+
+    /// Eine Regel unterhalb der User-Ebene (Projekt, Agent) darf nicht auf ein Modell ohne
+    /// Katalogpreis umrouten, solange ein Budget gilt: dessen Kosten wären sonst unbekannt
+    /// (POL-011, POL-013; Security-Review #284).
+    fn unpriced_route(&mut self, verdicts: &mut Verdicts) {
+        let (Some(model), Some(writer)) = (&self.decision.modified.model, &self.model_writer)
+        else {
+            return;
+        };
+        if writer.scope <= Scope::User || crate::cel::ext::priced(model) {
+            return;
+        }
+        let budgets = crate::budget::budget_rules(self.set);
+        let Some(budget) = budgets.first() else {
+            return;
+        };
+        verdicts.deny.push(Reason {
+            rule: writer.clone(),
+            reason: format!(
+                "Umrouten auf `{model}` abgelehnt: Das Modell hat keinen Katalogpreis, und \
+                 solange ein Budget gilt (`{}`), darf eine Regel der Ebene {} nicht darauf \
+                 umleiten",
+                budget.rule.rule_id,
+                writer.scope.as_str()
+            ),
+            severity: None,
+            approval: None,
+            fingerprint: None,
+        });
     }
 
     /// Die geladene Regel zu einer Referenz (gleiche Version).
@@ -779,6 +813,7 @@ impl<'a> Run<'a> {
                 }
             }
         }
+        self.model_writer = written.get("model").map(|(_, r)| r.clone());
         let text = |f: &str| {
             written
                 .get(f)

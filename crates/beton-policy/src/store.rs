@@ -334,9 +334,9 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
         // eigenen Schwellen-Keys eines Budget-Regeltyps (`spend_cap/<ebene>/<set>/<id>/…`), die
         // handgeschriebene Regeln nicht schreiben dürfen.
         let own = |key: &str| {
-            rule.doc
-                .rule_type
-                .is_some_and(|t| crate::budget::own_key(t, new.scope, &new.name, &rule.id, key))
+            rule.doc.rule_type.is_some_and(|t| {
+                crate::budget::own_key(t, new.scope, &new.name, &new.origin, &rule.id, key)
+            })
         };
         if !rule.doc.effects.iter().all(|e| own(&e.key)) {
             return Err(format!("Regel `{}` neu mit effects", rule.id));

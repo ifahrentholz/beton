@@ -59,6 +59,8 @@ pub(crate) enum Func {
     Under,
     DomainMatches,
     BytesHuman,
+    /// `priced(model)`: Listenpreis im Preis-Katalog (POL-011).
+    Priced,
     HasCommand,
     HasFlag,
     UrlHost,
@@ -679,6 +681,12 @@ impl Checker<'_> {
                     _ => (Func::DomainMatches, Ty::Bool),
                 }
             }
+            "priced" if n == 1 => {
+                if !is(0, &Ty::String) {
+                    return Err(mismatch());
+                }
+                (Func::Priced, Ty::Bool)
+            }
             "bytes_human" if n == 1 => {
                 if !matches!(types[0], Ty::Int | Ty::Uint | Ty::Dyn) {
                     return Err(mismatch());
@@ -712,7 +720,8 @@ impl Checker<'_> {
             known @ ("size" | ".size" | "matches" | ".matches" | ".startsWith" | ".endsWith"
             | ".contains" | "duration" | "timestamp" | "int" | "uint" | "double"
             | "string" | "glob" | "under" | "domain_matches" | "bytes_human"
-            | "shell.has_command" | "shell.has_flag" | "url.host" | "url.path") => {
+            | "priced" | "shell.has_command" | "shell.has_flag" | "url.host"
+            | "url.path") => {
                 return Err(self.err(
                     id,
                     format!(

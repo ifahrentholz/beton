@@ -861,8 +861,11 @@ fn pol_002_priced_knows_the_list_prices_of_the_catalog() {
 
 fn unpriced_turn(model: &str, session: Value) -> Activation {
     let mut session = session;
-    session["cost_usd"] = json!(0.0);
-    session["equivalent_usd"] = json!(0.0);
+    for f in ["cost_usd", "equivalent_usd"] {
+        if session.get(f).is_none() {
+            session[f] = json!(0.0);
+        }
+    }
     act(
         Phase::ModelRequest,
         json!({

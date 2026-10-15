@@ -118,6 +118,15 @@ pub fn under(resolver: &dyn PathResolver, path: &str, root: &str) -> Result<bool
 }
 
 /// `bytes_human(n)`: `512 B`, `1.5 KiB`, `5.0 MiB` …
+/// `priced(model)`: Hat das Modell (ID oder Alias) einen Listenpreis im eingebetteten
+/// Preis-Katalog (USE-002)? Ohne IO; Grundlage dafür, ob ein Budget die Kosten einer
+/// Subscription-Nutzung zählen kann (POL-011, ADR-0034).
+pub fn priced(model: &str) -> bool {
+    beton_core::pricing::Catalog::embedded()
+        .resolve(model)
+        .is_some()
+}
+
 pub fn bytes_human(n: u64) -> String {
     const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     if n < 1024 {

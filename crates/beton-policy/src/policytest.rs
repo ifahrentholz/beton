@@ -556,9 +556,9 @@ fn defaults(harness: &str, now: &str) -> Value {
     json!({
         "now": now,
         "session": { "id": "ses_policytest", "harness": harness, "mode": "native", "cost_usd": 0.0,
-                     "equivalent_usd": 0.0, "tokens_in": 0, "tokens_out": 0, "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD },
+                     "equivalent_usd": 0.0, "unpriced_models": [], "tokens_in": 0, "tokens_out": 0, "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD },
         "user": { "id": "usr_local", "timezone": "UTC", "daily_cost_usd": 0.0,
-                  "daily_equivalent_usd": 0.0, "monthly_cost_usd": 0.0 },
+                  "daily_equivalent_usd": 0.0, "daily_unpriced_models": [], "monthly_cost_usd": 0.0 },
         "actor": { "kind": "agent" },
         "approvals": { "granted_in_session": 0, "denied_in_session": 0 },
     })
