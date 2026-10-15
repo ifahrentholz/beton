@@ -530,6 +530,7 @@ impl Client {
         cursor: Option<&str>,
         limit: u32,
         action: Option<&str>,
+        kind: Option<&str>,
     ) -> Result<Page<Value>> {
         let mut query = vec![("limit", limit.to_string())];
         if let Some(c) = cursor {
@@ -537,6 +538,9 @@ impl Client {
         }
         if let Some(a) = action {
             query.push(("action", a.to_owned()));
+        }
+        if let Some(k) = kind {
+            query.push(("kind", k.to_owned()));
         }
         self.send(self.http.get(self.url("/v1/audit")).query(&query))
             .await

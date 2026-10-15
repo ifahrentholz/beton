@@ -48,6 +48,7 @@ beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

@@ -152,6 +152,8 @@ impl Runtime {
                 sandbox: beton_sandbox::SandboxSpec::default(),
                 proxy_extra_ca_files: Vec::new(),
                 proxy_ca: None,
+                credentials: None,
+                daemon_env: Arc::new(std::env::vars().collect()),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -457,12 +459,23 @@ pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Rout
                 parts.local,
                 parts.runtime.secret_backend.clone(),
             );
+            let cap = Arc::new(caps.proxy);
             if parts.runtime.sessions.proxy_ca.is_none() {
                 parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
                     store: beton_proxy::CaStore::new(s.clone(), parts.store.clone(), parts.local),
-                    cap: caps.proxy,
+                    cap: cap.clone(),
                     host_id: parts.runtime.host.id.to_string(),
                 }));
+            }
+            if parts.runtime.sessions.credentials.is_none() {
+                parts.runtime.sessions.credentials =
+                    Some(Arc::new(crate::credentials::CredentialService::new(
+                        s.clone(),
+                        cap,
+                        parts.runtime.host.id.to_string(),
+                        parts.store.clone(),
+                        parts.local,
+                    )));
             }
             s
         }

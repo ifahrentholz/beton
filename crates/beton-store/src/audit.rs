@@ -39,6 +39,14 @@ pub const GENESIS_HASH: &str = "000000000000000000000000000000000000000000000000
 /// Aktion für versiegelte Nutzungsfenster.
 pub const USED_ACTION: &str = "secret.used";
 
+/// Nutzungsfenster eines Credential-Bindings des Proxys (PRX-006 AC6): `secret_ref` ist
+/// `credential:<binding>`, `host_id` der Ziel-Host. Versiegelt als `credential.used` mit
+/// `target_kind: credential`.
+pub const CREDENTIAL_PREFIX: &str = "credential:";
+
+/// Aktion für versiegelte Nutzungsfenster eines Credential-Bindings.
+pub const CREDENTIAL_USED_ACTION: &str = "credential.used";
+
 /// Ein neuer Audit-Eintrag; `seq` und Hashes vergibt der Store.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewAuditEntry {
@@ -80,6 +88,8 @@ pub struct AuditQuery {
     pub before_seq: Option<u64>,
     /// Nur diese Aktion.
     pub action: Option<String>,
+    /// Nur diese Art des Ziels, z. B. `credential` (PRX-009 AC4) oder `secret`.
+    pub target_kind: Option<String>,
     pub limit: u32,
 }
 
@@ -88,6 +98,7 @@ impl Default for AuditQuery {
         Self {
             before_seq: None,
             action: None,
+            target_kind: None,
             limit: 100,
         }
     }
@@ -387,13 +398,15 @@ impl Store {
         let rows = sqlx::query(&format!(
             "SELECT {ENTRY_COLUMNS} FROM audit_entries WHERE org_id = ? AND seq IS NOT NULL \
              AND (? IS NULL OR seq < ?) AND (? IS NULL OR action = ?) \
-             ORDER BY seq DESC LIMIT ?"
+             AND (? IS NULL OR target_kind = ?) ORDER BY seq DESC LIMIT ?"
         ))
         .bind(org.to_string())
         .bind(query.before_seq.map(to_i64).transpose()?)
         .bind(query.before_seq.map(to_i64).transpose()?)
         .bind(query.action.as_deref())
         .bind(query.action.as_deref())
+        .bind(query.target_kind.as_deref())
+        .bind(query.target_kind.as_deref())
         .bind(i64::from(limit) + 1)
         .fetch_all(&self.pool)
         .await?;
@@ -552,19 +565,27 @@ async fn seal_in(conn: &mut SqliteConnection, org: OrgId, now: Timestamp) -> Res
         let host: String = row.try_get("host_id")?;
         let last: String = row.try_get("last_at")?;
         let count: i64 = row.try_get("count")?;
+        let mut details = serde_json::json!({
+            "purpose": row.try_get::<String, _>("purpose")?,
+            "first_at": start.to_string(),
+            "last_at": last,
+        });
+        let (action, target_kind, target_id) = match secret_ref.strip_prefix(CREDENTIAL_PREFIX) {
+            Some(binding) => {
+                details["binding"] = serde_json::Value::String(binding.to_owned());
+                (CREDENTIAL_USED_ACTION, "credential", binding.to_owned())
+            }
+            None => (USED_ACTION, "secret", secret_ref.clone()),
+        };
         let entry = NewAuditEntry {
             at: start,
             actor: parse(row.try_get("actor_id")?)?,
-            action: USED_ACTION.into(),
-            target_kind: "secret".into(),
-            target_id: secret_ref.clone(),
+            action: action.into(),
+            target_kind: target_kind.into(),
+            target_id,
             session_id: (!session.is_empty()).then(|| parse(&session)).transpose()?,
             host_id: (!host.is_empty()).then(|| host.clone()),
-            details: serde_json::json!({
-                "purpose": row.try_get::<String, _>("purpose")?,
-                "first_at": start.to_string(),
-                "last_at": last,
-            }),
+            details,
         };
         append_in(
             conn,

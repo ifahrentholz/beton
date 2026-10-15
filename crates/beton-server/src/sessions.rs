@@ -134,6 +134,12 @@ pub struct SessionsConfig {
     /// Lädt die beton-CA über die Proxy-Capability (PRX-002); `None`: keine Session mit Netz
     /// im Stufenmodell (fail closed).
     pub proxy_ca: Option<Arc<dyn ProxyCaSource>>,
+    /// Werte und Audit der Credential-Bindings (PRX-006); `None`: Sessions mit Credentials
+    /// bekommen keine Werte (fail closed).
+    pub credentials: Option<Arc<crate::credentials::CredentialService>>,
+    /// Umgebung des Daemons beim Start: Quelle `env` der Credentials (PRX-006) und `HOME` für
+    /// `~` in `file`. Geht nie an Runner oder Sandbox.
+    pub daemon_env: Arc<std::collections::BTreeMap<String, String>>,
 }
 
 /// Quelle der beton-CA für den Runner einer Session (PRX-001, PRX-002, #191).
@@ -146,7 +152,8 @@ pub trait ProxyCaSource: Send + Sync {
 /// Die CA aus dem Secret-Store, gelesen nur über die Proxy-Capability (SEC-001 AC2).
 pub struct StoreCa {
     pub store: beton_proxy::CaStore,
-    pub cap: beton_secrets::ProxyCap,
+    /// Geteilt mit den Credentials der Sessions (PRX-006); beide sind der Egress-Proxy.
+    pub cap: Arc<beton_secrets::ProxyCap>,
     pub host_id: String,
 }
 
@@ -266,6 +273,10 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             }
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
+            // Credentials der Proxy-Instanzen des Runners (PRX-006, PRX-009 AC4).
+            "credential.resolve" | "credential.used" | "credential.misuse" => {
+                credential_call(&self.0, session, tool, &args).await
+            }
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
@@ -273,6 +284,27 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             }
         };
         result.map_err(problem)
+    }
+}
+
+/// `credential.*` aus dem Runner einer Session; ohne Credential-Dienst nie ein Wert.
+async fn credential_call(
+    state: &AppState,
+    session: SessionId,
+    tool: &str,
+    args: &Value,
+) -> Result<Value, Problem> {
+    let cfg = &state.runtime.sessions;
+    let service = cfg.credentials.as_ref().ok_or_else(|| {
+        Problem::new(ProblemCode::CredentialSourceError).detail("Credentials sind nicht verfügbar")
+    })?;
+    match tool {
+        "credential.resolve" => {
+            let record = state.store.session(state.local.org, session).await?;
+            service.resolve(cfg, session, &record.harness, args).await
+        }
+        "credential.used" => service.used(session, args).await,
+        _ => service.misuse(session, args).await,
     }
 }
 
@@ -1587,6 +1619,8 @@ mod stage_tests {
             sandbox: beton_sandbox::SandboxSpec::from_yaml(yaml).unwrap(),
             proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
             proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
+            credentials: None,
+            daemon_env: Arc::default(),
             connect_timeout: CONNECT_TIMEOUT,
             start_budget: START_BUDGET,
         }

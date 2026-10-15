@@ -369,6 +369,9 @@ pub struct AuditPageView {
 pub struct AuditFilter {
     /// Nur diese Aktion, z. B. `secret.used`.
     pub action: Option<String>,
+    /// Nur diese Art des Ziels, z. B. `credential` (Nutzung und Fehlgebrauch von
+    /// Credential-Bindings, PRX-009 AC4) oder `secret`.
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -399,6 +402,7 @@ pub async fn list_audit(
             &AuditQuery {
                 before_seq: before,
                 action: filter.action,
+                target_kind: filter.kind,
                 limit,
             },
         )

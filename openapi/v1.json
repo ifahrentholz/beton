@@ -171,6 +171,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Nur diese Art des Ziels, z. B. `credential` (Nutzung und Fehlgebrauch von\nCredential-Bindings, PRX-009 AC4) oder `secret`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7654,7 +7663,8 @@
           "unavailable",
           "secrets_unavailable",
           "redaction_unavailable",
-          "sandbox_unavailable"
+          "sandbox_unavailable",
+          "credential_source_error"
         ]
       },
       "ProviderInfo": {

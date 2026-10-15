@@ -22,6 +22,7 @@ pub mod app;
 pub mod attachments;
 pub mod commands;
 pub mod config;
+pub mod credentials;
 pub mod detached;
 pub mod exports;
 pub mod extract;

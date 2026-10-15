@@ -323,7 +323,12 @@ pub async fn audit(ctx: &Ctx, cmd: AuditCommand) -> CliResult {
 
 async fn audit_list(ctx: &Ctx, client: &beton_sdk::Client, args: AuditListArgs) -> CliResult {
     let page = client
-        .audit_page(None, args.limit, args.action.as_deref())
+        .audit_page(
+            None,
+            args.limit,
+            args.action.as_deref(),
+            args.kind.as_deref(),
+        )
         .await?;
     if ctx.global.json {
         return print_json(&Value::Array(page.items));
@@ -343,12 +348,13 @@ async fn audit_list(ctx: &Ctx, client: &beton_sdk::Client, args: AuditListArgs) 
                 text(e, "action"),
                 text(e, "target_id"),
                 text(e, "session_id"),
+                text(e, "host_id"),
                 e["count"].to_string(),
             ]
         })
         .collect();
     print_table(
-        &["SEQ", "ZEIT", "AKTION", "ZIEL", "SESSION", "ANZAHL"],
+        &["SEQ", "ZEIT", "AKTION", "ZIEL", "SESSION", "HOST", "ANZAHL"],
         &rows,
     )
 }
@@ -357,7 +363,9 @@ async fn audit_export(client: &beton_sdk::Client, args: AuditExportArgs) -> CliR
     let mut all = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let page = client.audit_page(cursor.as_deref(), 200, None).await?;
+        let page = client
+            .audit_page(cursor.as_deref(), 200, None, None)
+            .await?;
         all.extend(page.items);
         match page.next_cursor {
             Some(c) => cursor = Some(c),

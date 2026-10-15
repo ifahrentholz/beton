@@ -834,6 +834,10 @@ pub struct AuditListArgs {
     /// Nur diese Aktion, z. B. `secret.used`.
     #[arg(long, value_name = "ACTION")]
     pub action: Option<String>,
+    /// Nur diese Art des Ziels: `credential` (Nutzung und Fehlgebrauch von
+    /// Credential-Bindings des Proxys), `secret`, `session` …
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]
