@@ -40,6 +40,7 @@ fn shell_tool(command: &str) -> Value {
         args: &args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     })
     .unwrap()
     .to_context()
@@ -349,6 +350,7 @@ fn tool_act(harness: &str, name: &str, acp_kind: Option<&str>, args: Value) -> A
         args: &args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     })
     .unwrap();
     Activation::new(Phase::ToolCall, json!({ "tool": tool.to_context() })).unwrap()

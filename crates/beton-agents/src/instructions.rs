@@ -103,8 +103,45 @@ pub fn compose(input: ComposeInput<'_>) -> Result<Composed, String> {
             .and_then(|i| i.project_files.as_ref()),
         Some(ProjectFiles::List(_))
     );
-    for name in wanted(input.spec) {
-        if input.harness_reads.iter().any(|r| r == &name) {
+    project_files(
+        &wanted(input.spec),
+        explicit,
+        input.workdir,
+        input.harness_reads,
+        &mut parts,
+        &mut out,
+    );
+    if !parts.is_empty() {
+        out.text = Some(parts.join("\n\n"));
+    }
+    Ok(out)
+}
+
+/// Projektdateien einer Session ohne Agent (wie `project_files: auto`): Was der Harness nicht
+/// selbst liest, liefert beton (AGT-005; Claude liest seit #233 keine Projektdateien mehr).
+pub fn compose_project_files(workdir: &Path, harness_reads: &[String]) -> Composed {
+    let mut out = Composed::default();
+    let mut parts = Vec::new();
+    let names: Vec<String> = AUTO_PROJECT_FILES.iter().map(|s| (*s).to_owned()).collect();
+    project_files(&names, false, workdir, harness_reads, &mut parts, &mut out);
+    if !parts.is_empty() {
+        out.text = Some(parts.join("\n\n"));
+    }
+    out
+}
+
+/// Hängt die Projektdateien `names` als Blöcke an `parts` an.
+fn project_files(
+    names: &[String],
+    explicit: bool,
+    workdir: &Path,
+    harness_reads: &[String],
+    parts: &mut Vec<String>,
+    out: &mut Composed,
+) {
+    for name in names {
+        let name = name.clone();
+        if harness_reads.iter().any(|r| r == &name) {
             continue;
         }
         if !inside(&name) {
@@ -113,7 +150,7 @@ pub fn compose(input: ComposeInput<'_>) -> Result<Composed, String> {
             ));
             continue;
         }
-        let path = input.workdir.join(&name);
+        let path = workdir.join(&name);
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -147,10 +184,6 @@ pub fn compose(input: ComposeInput<'_>) -> Result<Composed, String> {
         ));
         out.project_files.push(name);
     }
-    if !parts.is_empty() {
-        out.text = Some(parts.join("\n\n"));
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

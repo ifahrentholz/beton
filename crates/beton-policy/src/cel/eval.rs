@@ -478,7 +478,8 @@ fn index(target: &Value, key: &Value) -> Res {
         }
         Value::Map(map) => Key::from_value(key)
             .and_then(|k| map.get(&k).cloned())
-            .ok_or_else(|| fail(format!("Schlüssel `{key}` fehlt"))),
+            // Ohne den Schlüssel selbst: er kann aus den Tool-Argumenten stammen (#234).
+            .ok_or_else(|| fail(format!("Schlüssel ({}) fehlt", key.type_name()))),
         other => Err(fail(format!("Index auf {}", other.type_name()))),
     }
 }
@@ -488,9 +489,7 @@ fn to_int(v: &Value) -> Result<i64, EvalError> {
         Value::Int(i) => Ok(*i),
         Value::Uint(u) => i64::try_from(*u).map_err(|_| fail("Überlauf")),
         Value::Double(d) if d.is_finite() && d.abs() < 9.2e18 => Ok(d.trunc() as i64),
-        Value::String(s) => s
-            .parse()
-            .map_err(|_| fail(format!("`{s}` ist keine ganze Zahl"))),
+        Value::String(s) => s.parse().map_err(|_| fail("String ist keine ganze Zahl")),
         Value::Timestamp(t) => Ok(t.unix_timestamp()),
         other => Err(fail(format!("int() auf {}", other.type_name()))),
     }

@@ -36,6 +36,16 @@ pub struct RawToolCall<'a> {
     pub cwd: &'a str,
     /// Home-Verzeichnis für `~`, falls bekannt.
     pub home: Option<&'a str>,
+    /// Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des Direkt-
+    /// Harness). Nur für sie gelten die Klassen der reservierten Namen (`beton*`) aus der
+    /// Abbildungstabelle; ein gleichnamiger fremder Server ist `mcp` (#234). `None`: keine
+    /// Herkunftsprüfung (Policy-Tests ohne Session).
+    pub trusted_servers: Option<&'a [String]>,
+}
+
+/// Reservierter Server-Name von beton (`beton`, `beton-*`, `beton_*`).
+pub fn reserved_server(name: &str) -> bool {
+    name == "beton" || name.starts_with("beton-") || name.starts_with("beton_")
 }
 
 /// Fehler der Normalisierung; der Aufrufer lehnt dann ab (fail closed).
@@ -169,10 +179,19 @@ impl ToolMap {
         acp_kind: Option<&str>,
         server: Option<&str>,
     ) -> Option<Lookup<'_>> {
+        let table = self.harnesses.get(harness);
         if let Some(server) = server {
-            return Some(self.server_tool(server, name));
+            // Der Claude-Hook meldet den vollen Namen `mcp__<server>__<tool>` und den Server
+            // (#232): `tool.name` ist der Name ohne Präfix.
+            let prefixed = table
+                .and_then(|t| t.mcp_prefix.as_deref())
+                .and_then(|p| name.strip_prefix(p))
+                .and_then(|rest| rest.strip_prefix(server))
+                .and_then(|rest| rest.strip_prefix("__"))
+                .filter(|tool| !tool.is_empty());
+            return Some(self.server_tool(server, prefixed.unwrap_or(name)));
         }
-        let table = self.harnesses.get(harness)?;
+        let table = table?;
         let key = if table.by_kind { acp_kind? } else { name };
         if let Some(spec) = table.tools.get(key) {
             return Some(Lookup {
@@ -261,6 +280,8 @@ pub struct ToolSource {
     pub mcp_server: Option<String>,
     pub cwd: String,
     pub home: Option<String>,
+    /// Siehe [`RawToolCall::trusted_servers`].
+    pub trusted_servers: Option<Vec<String>>,
 }
 
 impl ToolSource {
@@ -273,6 +294,7 @@ impl ToolSource {
             args,
             cwd: &self.cwd,
             home: self.home.as_deref(),
+            trusted_servers: self.trusted_servers.as_deref(),
         }
     }
 }
@@ -301,6 +323,21 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
     }
     let found = map.lookup(raw.harness, raw.native_name, raw.acp_kind, raw.mcp_server);
     let (spec, server, name) = match found {
+        // Reservierter Name, aber nicht von beton eingebunden: gewöhnliches MCP-Tool (#234).
+        Some(l)
+            if l.server != "builtin"
+                && reserved_server(&l.server)
+                && raw.trusted_servers.is_some_and(|t| !t.contains(&l.server)) =>
+        {
+            (
+                ToolSpec {
+                    kind: "mcp".into(),
+                    ..ToolSpec::default()
+                },
+                l.server,
+                l.name,
+            )
+        }
         Some(l) => (l.spec.into_owned(), l.server, l.name),
         None => (
             ToolSpec {
