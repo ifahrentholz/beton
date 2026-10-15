@@ -126,6 +126,76 @@ pub struct SessionsConfig {
     pub import_lock: Arc<Mutex<()>>,
     /// Skill-Verzeichnisse des Users für das Slash-Menü (WEB-006, AGT-008).
     pub skill_paths: crate::session_skills::SkillPaths,
+    /// `sandbox:` der User-Konfiguration (SBX-003); greift im Runner als Stufenmodell, wenn
+    /// `backend` ausdrücklich gesetzt ist (SBX-002, bis WP-49).
+    pub sandbox: beton_sandbox::SandboxSpec,
+    /// `proxy.extra_ca_files` (PRX-002).
+    pub proxy_extra_ca_files: Vec<PathBuf>,
+    /// Lädt die beton-CA über die Proxy-Capability (PRX-002); `None`: keine Session mit Netz
+    /// im Stufenmodell (fail closed).
+    pub proxy_ca: Option<Arc<dyn ProxyCaSource>>,
+}
+
+/// Quelle der beton-CA für den Runner einer Session (PRX-001, PRX-002, #191).
+#[async_trait::async_trait]
+pub trait ProxyCaSource: Send + Sync {
+    /// Die CA in Übergabeform; jeder Abruf ist auditiert (SEC-012).
+    async fn handover(&self, session: SessionId) -> Result<beton_proxy::CaHandover, String>;
+}
+
+/// Die CA aus dem Secret-Store, gelesen nur über die Proxy-Capability (SEC-001 AC2).
+pub struct StoreCa {
+    pub store: beton_proxy::CaStore,
+    pub cap: beton_secrets::ProxyCap,
+    pub host_id: String,
+}
+
+#[async_trait::async_trait]
+impl ProxyCaSource for StoreCa {
+    async fn handover(&self, session: SessionId) -> Result<beton_proxy::CaHandover, String> {
+        let ca = self
+            .store
+            .load_or_create(
+                &self.cap,
+                beton_secrets::UseContext {
+                    session_id: Some(session),
+                    host_id: self.host_id.clone(),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        ca.handover().map_err(|e| e.to_string())
+    }
+}
+
+/// Was der Runner für das Stufenmodell bekommt: Konfiguration und, bei Netz, die CA. Ohne
+/// Stufenmodell nichts. Fehlt die CA, startet die Session nicht (PRX-002, fail closed).
+pub async fn stage_boot(
+    cfg: &SessionsConfig,
+    session: SessionId,
+) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
+    let spec = beton_sandbox::SandboxSpec::merged(&[&cfg.sandbox]);
+    if !beton_host::stages_active(&spec) {
+        return Ok((None, None));
+    }
+    let boot = beton_host::SandboxBoot {
+        spec: cfg.sandbox.clone(),
+        extra_ca_files: cfg.proxy_extra_ca_files.clone(),
+    };
+    if spec.allow_network == Some(false) {
+        return Ok((Some(boot), None));
+    }
+    let source = cfg.proxy_ca.as_ref().ok_or_else(|| {
+        Problem::new(ProblemCode::SandboxUnavailable)
+            .detail("proxy_ca_missing: keine Quelle für die beton-CA")
+    })?;
+    let ca = source.handover(session).await.map_err(|e| {
+        Problem::new(ProblemCode::SandboxUnavailable).detail(format!("beton-CA: {e}"))
+    })?;
+    Ok((
+        Some(boot),
+        Some(beton_host::CaText::new(ca.expose().to_owned())),
+    ))
 }
 
 impl SessionsConfig {
@@ -147,6 +217,12 @@ impl SessionsConfig {
     /// Agent-Snapshot einer Session für den Runner (AGT-004).
     pub fn agent_snapshot(&self, session: SessionId) -> PathBuf {
         self.agent_snapshots_root.join(format!("{session}.json"))
+    }
+}
+
+impl std::fmt::Debug for dyn ProxyCaSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProxyCaSource")
     }
 }
 
@@ -619,6 +695,7 @@ impl<'a> SessionManager<'a> {
         let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
         let agent_snapshot = self.snapshot_file(session.id).await?;
+        let (sandbox, proxy_ca) = stage_boot(cfg, session.id).await?;
         let token = self
             .state
             .runtime
@@ -669,6 +746,8 @@ impl<'a> SessionManager<'a> {
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
+                    sandbox,
+                    proxy_ca,
                     compaction: self.state.runtime.compaction,
                 },
             )
@@ -1466,4 +1545,83 @@ async fn tidy_worktrees(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stage_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    struct FixedCa(Result<(), String>);
+
+    #[async_trait::async_trait]
+    impl ProxyCaSource for FixedCa {
+        async fn handover(&self, _: SessionId) -> Result<beton_proxy::CaHandover, String> {
+            self.0.clone()?;
+            beton_proxy::BetonCa::generate("stagetest", time::OffsetDateTime::now_utc())
+                .unwrap()
+                .handover()
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    fn cfg(yaml: &str, ca: Option<Result<(), String>>) -> SessionsConfig {
+        let tmp = std::env::temp_dir();
+        SessionsConfig {
+            provider: Arc::new(beton_host::LocalProvider::new(Vec::new(), tmp.clone())),
+            tunnel_socket: None,
+            dev: false,
+            launched: Arc::default(),
+            harnesses_user: Default::default(),
+            providers: Default::default(),
+            worktrees_root: tmp.clone(),
+            snapshots_root: tmp.clone(),
+            forks_root: tmp.clone(),
+            fresh_root: tmp.clone(),
+            agent_snapshots_root: tmp.clone(),
+            beton_home: tmp,
+            vendor_env: beton_harness::HostEnv::default(),
+            import_lock: Arc::default(),
+            skill_paths: crate::session_skills::SkillPaths::from_process(),
+            sandbox: beton_sandbox::SandboxSpec::from_yaml(yaml).unwrap(),
+            proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
+            proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
+            connect_timeout: CONNECT_TIMEOUT,
+            start_budget: START_BUDGET,
+        }
+    }
+
+    #[tokio::test]
+    async fn sbx_002_runner_gets_stage_config_only_with_explicit_backend() {
+        let (sb, ca) = stage_boot(&cfg("{}\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        assert!(sb.is_none() && ca.is_none());
+        let (sb, ca) = stage_boot(&cfg("backend: auto\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        let sb = sb.unwrap();
+        assert!(sb.spec.backend.is_some());
+        assert_eq!(sb.extra_ca_files, vec![PathBuf::from("/etc/firmen-ca.pem")]);
+        assert!(ca.unwrap().ca().is_ok());
+    }
+
+    #[tokio::test]
+    async fn prx_002_session_with_network_but_without_ca_does_not_start() {
+        for source in [None, Some(Err("secrets_locked".to_owned()))] {
+            let err = stage_boot(&cfg("backend: auto\n", source), SessionId::new())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, ProblemCode::SandboxUnavailable, "{err:?}");
+        }
+        // Ohne Netz braucht es keine CA.
+        let (sb, ca) = stage_boot(
+            &cfg("backend: auto\nallow_network: false\n", None),
+            SessionId::new(),
+        )
+        .await
+        .unwrap();
+        assert!(sb.is_some() && ca.is_none());
+    }
 }

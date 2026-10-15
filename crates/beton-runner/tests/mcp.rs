@@ -84,7 +84,12 @@ impl Env {
             inherit.insert((*k).to_owned(), v.clone());
         }
         let runners = dir.path().join("runners");
+        let user_harnesses = std::fs::read_to_string(dir.path().join(USER_HARNESSES))
+            .ok()
+            .map(|t| serde_json::from_str(&t).unwrap())
+            .unwrap_or_default();
         let daemon = start_with(cfg, store.clone(), move |mut r| {
+            r.sessions.harnesses_user = user_harnesses;
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -270,17 +275,24 @@ fn codex_path(scenario: &Path) -> (&'static str, String) {
     )
 }
 
-/// ACP-Agent `fake` im Projekt registrieren (HAR-008).
-fn acp_config(work: &Path, scenario: &Path, extra: &str) {
+/// ACP-Agent `fake` in der User-Konfiguration registrieren (HAR-008; die Projektebene darf
+/// keine ACP-Agents setzen, SBX-002). `Env::start` liest die Datei.
+fn acp_config(work: &Path, scenario: &Path, bridge: Option<bool>) {
+    let mut agent = json!({
+        "command": fake_cli().display().to_string(),
+        "args": ["--protocol", "acp", "--scenario", scenario.display().to_string()],
+    });
+    if let Some(b) = bridge {
+        agent["mcp_bridge"] = json!(b);
+    }
     write(
-        &work.join(".beton/config.yaml"),
-        &format!(
-            "harnesses:\n  acp:\n    agents:\n      fake:\n        command: {}\n        args: [\"--protocol\", \"acp\", \"--scenario\", \"{}\"]\n{extra}",
-            fake_cli().display(),
-            scenario.display()
-        ),
+        &work.parent().unwrap().join(USER_HARNESSES),
+        &json!({"acp": {"agents": {"fake": agent}}}).to_string(),
     );
 }
+
+/// `harnesses:` der User-Ebene als JSON (Testumgebung).
+const USER_HARNESSES: &str = "user-harnesses.json";
 
 /// Ergebnis des einzigen abgeschlossenen Tool-Calls als Text.
 fn tool_result(events: &[Value]) -> String {
@@ -366,7 +378,7 @@ async fn har_009_ac1_policy_query_answers_from_the_runner_in_acp() {
         "a.yaml",
         &mcp_scenario("beton", "policy_query", json!({"action": "git push"})),
     );
-    let env = Env::start(&[], |dir| acp_config(&dir.join("work"), &s, "")).await;
+    let env = Env::start(&[], |dir| acp_config(&dir.join("work"), &s, None)).await;
     let id = env.create("acp:fake").await;
     let events = env.turn(&id, "los").await;
     let result = tool_result(&events);
@@ -389,7 +401,7 @@ async fn har_009_ac2_without_bridge_the_beton_server_is_not_passed() {
     let fake = fake_cli();
     let env = Env::start(&[], |dir| {
         let work = dir.join("work");
-        acp_config(&work, &s, "        mcp_bridge: false\n");
+        acp_config(&work, &s, Some(false));
         write(
             &work.join(".beton/mcp.yaml"),
             &format!(
@@ -642,7 +654,7 @@ async fn agt_008_ac2_skill_load_returns_the_body_without_frontmatter() {
     );
     let env = Env::start(&[], |dir| {
         let work = dir.join("work");
-        acp_config(&work, &s, "");
+        acp_config(&work, &s, None);
         write(
             &work.join(".beton/skills/fix-ci/SKILL.md"),
             "---\nname: fix-ci\ndescription: Behebt CI\n---\n# Fix CI\n\nLogs lesen.\n",

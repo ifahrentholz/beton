@@ -115,6 +115,7 @@ async fn start_in(
         ),
     );
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env,

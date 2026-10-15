@@ -9,6 +9,7 @@ pub mod fork;
 pub mod mcp;
 pub mod policy;
 pub mod settings;
+pub mod stages;
 pub mod state;
 pub mod workspace;
 
@@ -71,6 +72,8 @@ pub mod env {
     pub const FORK_PLAN: &str = "BETON_FORK_PLAN";
     /// `1`: Das Ergebnis des Fork-Plans steht schon im Log.
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
+    /// `sandbox:` der User-Konfiguration und `proxy.extra_ca_files` als JSON (SBX-002, #191).
+    pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
 }
@@ -109,6 +112,10 @@ pub struct RunnerBoot {
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
     pub fork_logged: bool,
+    /// Zweistufige Sandbox (SBX-002); `None`: wie bisher ohne Isolation.
+    pub sandbox: Option<stages::SandboxBoot>,
+    /// beton-CA für die Proxy-Instanzen der Session (dritte stdin-Zeile, PRX-002).
+    pub proxy_ca: Option<stages::CaText>,
     /// Automatische Compaction (USE-009).
     pub compaction: beton_harness::CompactionSettings,
 }
@@ -139,6 +146,14 @@ impl RunnerBoot {
         // Ohne zweite Zeile (stdin geschlossen) gibt es keine Keys.
         let _ = std::io::stdin().read_line(&mut keys);
         let credentials = beton_harness_direct::secret::KeyMap::from_json_line(&keys);
+        keys.clear();
+        // Dritte Zeile: beton-CA für die Proxy-Instanzen (PRX-002), nur mit Stufenmodell.
+        let mut ca = String::new();
+        let _ = std::io::stdin().read_line(&mut ca);
+        let proxy_ca = Some(ca.trim())
+            .filter(|c| !c.is_empty())
+            .map(|c| stages::CaText::new(c.to_owned()));
+        zeroize::Zeroize::zeroize(&mut ca);
         Ok(Self {
             socket: PathBuf::from(var(env::SOCKET)?),
             token: token.trim().to_owned(),
@@ -183,6 +198,14 @@ impl RunnerBoot {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from),
             fork_logged: std::env::var(env::FORK_LOGGED).is_ok_and(|v| v == "1"),
+            sandbox: match std::env::var(env::SANDBOX) {
+                Ok(json) => Some(
+                    serde_json::from_str(&json)
+                        .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::SANDBOX)))?,
+                ),
+                Err(_) => None,
+            },
+            proxy_ca,
             compaction: match std::env::var(env::COMPACTION) {
                 Ok(json) => serde_json::from_str(&json)
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::COMPACTION)))?,
@@ -255,10 +278,9 @@ fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter
     let project = layers.project.entries.get("claude");
     beton_harness_claude::ClaudeAdapter {
         auth: layers.user.auth("claude").source(),
-        isolated: project
-            .and_then(|e| e.isolated)
-            .or_else(|| user.and_then(|e| e.isolated))
-            .unwrap_or(false),
+        // Die Projektebene darf nur verschärfen (SBX-002, HAR-004).
+        isolated: user.and_then(|e| e.isolated).unwrap_or(false)
+            || project.and_then(|e| e.isolated) == Some(true),
         ..beton_harness_claude::ClaudeAdapter::default()
     }
 }
@@ -571,6 +593,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // ausdrücklich ohne Isolation (`backend: none`).
     let (sandbox_tx, sandbox_rx) = mpsc::unbounded_channel::<EventPayload>();
     let mut sandbox_events = Some(sandbox_rx);
+    let stage_tx = sandbox_tx.clone();
     let sandbox = beton_sandbox::Sandbox::unsandboxed(
         beton_sandbox::Stage::Harness,
         Some(Arc::new(move |ev| {
@@ -676,11 +699,90 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
     .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
+    // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
+    // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
+    let stages = match &boot.sandbox {
+        Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
+            let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
+                Ok(ca) => ca,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(format!(
+                        "sandbox_unavailable: beton-CA: {e}"
+                    ));
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            };
+            let events: beton_sandbox::EventSink = {
+                let tx = stage_tx.clone();
+                Arc::new(move |ev| {
+                    let _ = tx.send(EventPayload::SandboxStarted(ev));
+                })
+            };
+            let input = stages::StageInput {
+                session_id: boot.session_id.to_string(),
+                harness: boot.harness.as_str(),
+                tool_isolation: predicted_caps(&boot, caps.as_ref(), true).tool_isolation,
+                workdir: &boot.workdir,
+                // Ohne Home scheitert die Auflösung (fail closed).
+                home: paths.home.clone().unwrap_or_default(),
+                host_env: std::env::vars()
+                    .filter(|(k, _)| !k.starts_with("BETON_"))
+                    .collect(),
+                program: beton_harness::registry::resolve_binary(
+                    &boot.harness,
+                    boot.harness.as_str(),
+                    &env,
+                )
+                .map(|b| b.program),
+                events: Some(events),
+            };
+            let opts = stages::StageOptions {
+                spec: sb.spec.clone(),
+                proxy_ca: ca,
+                proxy: beton_proxy::ProxyOptions {
+                    extra_ca_files: sb.extra_ca_files.clone(),
+                },
+                exe: std::env::current_exe().unwrap_or_default(),
+            };
+            match stages::compose(input, opts).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(e.to_string());
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            }
+        }
+        _ => None,
+    };
+    let in_proc = caps
+        .as_ref()
+        .is_some_and(|c| c.transport == beton_harness::Transport::InProc);
+    let (launcher, stage): (
+        Arc<dyn beton_harness::process::ProcessLauncher>,
+        Option<beton_harness::StageEnv>,
+    ) = match &stages {
+        // Direkt-API und Fake laufen im Runner; nur ihre Tools gehen in Stufe 2.
+        Some(st) if in_proc => (
+            Arc::new(SandboxLauncher::new(sandbox)),
+            Some(beton_harness::StageEnv {
+                tools: Some(Arc::new(SandboxLauncher::new(st.tools.clone()))),
+                ..st.env.clone()
+            }),
+        ),
+        Some(st) => (
+            Arc::new(SandboxLauncher::new(st.harness.clone())),
+            Some(st.env.clone()),
+        ),
+        None => (Arc::new(SandboxLauncher::new(sandbox)), None),
+    };
     // Vor dem Start prüft der Runner Policies selbst (Start verweigert, #182, POL-024).
     gate.defer_rechecks();
     let ctx = AdapterContext {
+        stage,
         gate: Arc::new(gate.clone()),
-        launcher: Arc::new(SandboxLauncher::new(sandbox)),
+        launcher,
         env,
     };
     // `PreToolUse`-Hook (HAR-005): `beton hook claude …` aus dem eigenen Binary.
@@ -717,6 +819,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
                 // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
+                stages.as_ref().map(|s| s.tools.clone()),
                 // `policy_query` wertet wie ein echter Call aus, ohne Seiteneffekte (AGT-007 AC3).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::PolicyOracle>),
             )
@@ -851,11 +954,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             permission_mode: start_settings
                 .permission_mode
                 .map(|m| m.as_str().to_owned()),
-            sandbox: Some(beton_policy::vars::StartSandboxVars {
-                enabled: Some(beton_harness::SandboxStatus::current().tool_sandbox),
-                backend: Some("none".into()),
-                profile: None,
-            }),
+            sandbox: Some(stages::sandbox_vars(stages.as_ref())),
             network: Some(beton_policy::vars::StartNetworkVars {
                 proxy_enabled: Some(beton_harness::SandboxStatus::current().egress_proxy),
             }),
@@ -1107,6 +1206,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Gate-Anfrage (beobachtet), Ergebnisse geprüfter Eingaben (SES-004, #101).
     let mut call_events: HashMap<String, beton_core::id::EventId> = HashMap::new();
     let mut unobserved: HashMap<String, GateRequest> = HashMap::new();
+    // SBX-002: Mit `shell_override` muss jeder abgeschlossene Shell-Aufruf über den Exec-Broker
+    // gelaufen sein, sonst endet die Session (fail closed).
+    let mut integrity = stages
+        .as_ref()
+        .filter(|s| {
+            !s.harness.policy().inherited_tools
+                && predicted_caps(&boot, caps.as_ref(), true).tool_isolation
+                    == beton_harness::ToolIsolation::ShellOverride
+        })
+        .map(|_| stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS));
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
@@ -1349,7 +1458,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     }
                     let mut exited = None;
                     let mut run_over = false;
+                    let mut sandbox_violation = None;
                     for mut ev in incoming {
+                        // SBX-002: Shell-Aufruf ohne Start über den Exec-Broker (Stufe 1).
+                        let sandbox_hit = match (integrity.as_mut(), stages.as_ref()) {
+                            (Some(i), Some(s)) => i.observe(&ev.payload, s.broker_starts()).err(),
+                            _ => None,
+                        };
                         if timed_out && let EventPayload::TurnInterrupted(t) = &mut ev.payload {
                             t.reason = Some(TIMED_OUT.into());
                         }
@@ -1446,6 +1561,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             let _ = session.shutdown(Shutdown::Kill).await;
                             return Ok(Exit::PolicyViolation);
                         }
+                        // Nach der Policy-Integrität (die hat Vorrang und endet oben sofort):
+                        // höchstens ein Integritätsfehler, keine weiteren Events dieses Stapels.
+                        if let Some(reason) = sandbox_hit {
+                            sandbox_violation = Some(reason);
+                            break;
+                        }
                         for req in observe {
                             // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
                             let g = gate.clone();
@@ -1467,6 +1588,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             run_over = true;
                             break;
                         }
+                    }
+                    if let Some(reason) = sandbox_violation {
+                        // Kommandos liefen in Stufe 1: sofort beenden, Session `failed`.
+                        tracing::error!("Integritätsprüfung der Sandbox: {reason}");
+                        let _ = session.shutdown(Shutdown::Kill).await;
+                        end_sandbox_integrity_violation(&boot, &mut lifecycle, &reason, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        return Ok(Exit::PolicyViolation);
                     }
                     if run_over {
                         end_timed_out(&boot, &mut lifecycle, &mut batch);
@@ -2265,6 +2395,28 @@ fn end_policy_failure(
     ));
 }
 
+/// Integritätsverstoß des Stufenmodells (SBX-002): `error` mit Problem `sandbox_integrity`,
+/// Runner und Session `failed` (wie bei der Policy-Integrität, HAR-005).
+fn end_sandbox_integrity_violation(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    reason: &str,
+    out: &mut Vec<Event>,
+) {
+    out.push(system_event(
+        boot,
+        EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({
+                "type": "urn:beton:problem:sandbox_integrity",
+                "code": "sandbox_integrity",
+                "title": "Ein Shell-Kommando lief nicht in der Tool-Sandbox (Stufe 2)",
+                "detail": reason,
+            }),
+        }),
+    ));
+    end_policy_failure(boot, lifecycle, "sandbox_integrity", out);
+}
+
 /// Events am Ende eines Runs mit Zeitüberschreitung: Session `stopped` mit Grund `timed_out`,
 /// Runner beendet.
 fn end_timed_out(boot: &RunnerBoot, lifecycle: &mut Lifecycle, out: &mut Vec<Event>) {
@@ -2766,19 +2918,26 @@ mod tests {
     }
 
     #[test]
-    fn har_004_isolated_from_project_overrides_user() {
+    fn har_004_project_may_isolate_but_never_lift_the_user_isolation() {
         let a = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: HarnessesConfig::default(),
             ..HarnessLayers::default()
         });
         assert!(a.isolated);
+        // SBX-002: Die Projektebene (Repo-Inhalt) verschärft nur.
         let b = claude_adapter(&HarnessLayers {
             user: layer(None, Some(true)),
             project: layer(None, Some(false)),
             ..HarnessLayers::default()
         });
-        assert!(!b.isolated);
+        assert!(b.isolated);
+        let c = claude_adapter(&HarnessLayers {
+            user: layer(None, Some(false)),
+            project: layer(None, Some(true)),
+            ..HarnessLayers::default()
+        });
+        assert!(c.isolated);
     }
 
     use super::*;

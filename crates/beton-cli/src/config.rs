@@ -59,8 +59,19 @@ pub struct Settings {
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
+    /// Egress-Proxy (PRX-002); nur in der User-Konfiguration.
+    pub proxy: ProxySettings,
     /// Betreiber-Observability (OBS-003); nur in der User-Konfiguration.
     pub observability: ObservabilitySettings,
+}
+
+/// `proxy:` (PRX-002).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProxySettings {
+    /// Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut
+    /// oder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.
+    pub extra_ca_files: Vec<String>,
 }
 
 /// Traces je Session (OBS-003). Ohne Endpoint gibt es keinen Export (ADR-0025, ADR-0033).
@@ -85,6 +96,19 @@ pub struct OtlpSettings {
 }
 
 impl Settings {
+    /// `proxy.extra_ca_files` mit expandiertem `~` (PRX-002).
+    pub fn proxy_extra_ca_files(&self) -> Vec<std::path::PathBuf> {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        self.proxy
+            .extra_ca_files
+            .iter()
+            .map(|f| match (f.strip_prefix("~/"), &home) {
+                (Some(rest), Some(h)) => h.join(rest),
+                _ => std::path::PathBuf::from(f),
+            })
+            .collect()
+    }
+
     /// Preis-Overrides in Deklarationsreihenfolge: zuerst `pricing.overrides`, danach die
     /// Preise unter `providers.<name>.models[].pricing` (HAR-011) mit genau diesem Provider
     /// und Modell. Ungültige Provider-Einträge meldet die Registry; sie liefern keine Preise.
@@ -575,14 +599,10 @@ fn check_project_layer(layer: &Value) -> Result<(), (String, String)> {
             ));
         }
     }
-    if let Some(harnesses) = map.get("harnesses").and_then(Value::as_object) {
-        for (id, entry) in harnesses {
-            if entry.get("auth").is_some() {
-                return Err((
-                    format!("harnesses.{id}.auth"),
-                    "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
-                ));
-            }
+    if let Some(harnesses) = map.get("harnesses") {
+        // Typfehler meldet die übliche Prüfung; hier zählt nur, was das Projekt setzen darf.
+        if let Ok(cfg) = serde_json::from_value::<HarnessesConfig>(harnesses.clone()) {
+            cfg.check_project()?;
         }
     }
     Ok(())
@@ -616,6 +636,15 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
         key,
         message,
     })?;
+    for (i, file) in settings.proxy_extra_ca_files().iter().enumerate() {
+        beton_proxy::check_extra_ca_files(std::slice::from_ref(file)).map_err(|e| {
+            ConfigError::Invalid {
+                origin: origin.to_owned(),
+                key: format!("proxy.extra_ca_files[{i}]"),
+                message: e.to_string(),
+            }
+        })?;
+    }
     Ok(settings)
 }
 
@@ -972,7 +1001,7 @@ mod tests {
             .set(Scope::User, "server.listen", "[\"127.0.0.1:7421\"]")
             .unwrap();
         layers
-            .set(Scope::Project, "harnesses.claude.command", "./claude")
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
             .unwrap();
         let again = f.load(&[]).unwrap();
         assert_eq!(
@@ -985,8 +1014,8 @@ mod tests {
         );
         assert!(f.project.join(".beton/config.yaml").is_file());
         assert_eq!(
-            again.get("harnesses.claude.command", Some(Scope::Project)),
-            Some(Value::String("./claude".into()))
+            again.get("harnesses.claude.isolated", Some(Scope::Project)),
+            Some(Value::Bool(true))
         );
         let mut layers = again;
         assert!(layers.unset(Scope::User, "events.store_raw").unwrap());
@@ -1016,6 +1045,42 @@ mod tests {
         // In der User-Datei ist sie erlaubt.
         layers
             .set(Scope::User, "harnesses.claude.auth", "api_key")
+            .unwrap();
+    }
+
+    /// SBX-002: Die Projektdatei ist Repo-Inhalt, den auch die Sandbox schreiben kann; sie
+    /// darf Harnesses nur verschärfen (`isolated: true`, `mcp_bridge`) und nie wählen, was in
+    /// Stufe 1 läuft.
+    #[test]
+    fn sbx_002_project_may_only_tighten_harnesses() {
+        let f = fixture();
+        let mut layers = f.load(&[]).unwrap();
+        for (key, value) in [
+            ("harnesses.claude.command", "./x"),
+            ("harnesses.claude.extra_args", "[\"--settings\", \"{}\"]"),
+            (
+                "harnesses.claude.env_passthrough",
+                "[\"AWS_SECRET_ACCESS_KEY\"]",
+            ),
+            ("harnesses.claude.isolated", "false"),
+            ("harnesses.acp.agents.gemini", "{\"command\": \"./x\"}"),
+        ] {
+            let err = layers.set(Scope::Project, key, value).unwrap_err();
+            assert!(err.to_string().contains("SBX-002"), "{key}: {err}");
+        }
+        assert!(!f.project.join(".beton/config.yaml").exists());
+        layers
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
+            .unwrap();
+        layers
+            .set(Scope::Project, "harnesses.claude.mcp_bridge", "false")
+            .unwrap();
+        // Von Hand geschrieben: Laden scheitert (fail closed).
+        f.write_project("harnesses:\n  claude:\n    command: ./x\n");
+        assert!(f.load(&[]).is_err());
+        // In der User-Datei ist alles erlaubt.
+        layers
+            .set(Scope::User, "harnesses.claude.command", "claude")
             .unwrap();
     }
 

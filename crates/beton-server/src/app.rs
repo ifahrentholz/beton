@@ -149,6 +149,9 @@ impl Runtime {
                 vendor_env: beton_harness::HostEnv::from_process(),
                 import_lock: Arc::default(),
                 skill_paths: crate::session_skills::SkillPaths::from_process(),
+                sandbox: beton_sandbox::SandboxSpec::default(),
+                proxy_extra_ca_files: Vec::new(),
+                proxy_ca: None,
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
@@ -440,17 +443,30 @@ pub fn build(parts: AppParts) -> Router {
 /// zusätzlichen Routen).
 pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Router {
     let openapi_json = Arc::new(doc.to_pretty_json().unwrap_or_default().into_bytes());
-    // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
-    // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
-    // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
-    let secrets = parts.secrets.unwrap_or_else(|| {
-        beton_secrets::Secrets::new(
-            parts.store.clone(),
-            parts.local,
-            parts.runtime.secret_backend.clone(),
-        )
-        .0
-    });
+    // Die REST-API gibt nie Secret-Werte heraus. `beton serve` reicht den Secret-Dienst samt
+    // Redaction herein und die Proxy-Capability an die Quelle der beton-CA (PRX-002, #191).
+    // Ohne Angabe (Tests) entsteht ein eigener Dienst; dann bekommt die CA-Quelle dessen
+    // Proxy-Capability. Direkt-API-Harness und Git-Provider-Client bekommen ihre mit ihren
+    // Arbeitspaketen (HAR-011, GIT-002).
+    let mut parts = parts;
+    let secrets = match parts.secrets.take() {
+        Some(s) => s,
+        None => {
+            let (s, caps) = beton_secrets::Secrets::new(
+                parts.store.clone(),
+                parts.local,
+                parts.runtime.secret_backend.clone(),
+            );
+            if parts.runtime.sessions.proxy_ca.is_none() {
+                parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+                    store: beton_proxy::CaStore::new(s.clone(), parts.store.clone(), parts.local),
+                    cap: caps.proxy,
+                    host_id: parts.runtime.host.id.to_string(),
+                }));
+            }
+            s
+        }
+    };
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

@@ -315,3 +315,60 @@ fn sbx_008_probe_reports_landlock_abi_and_kernel() {
         );
     }
 }
+
+#[test]
+fn sbx_012_ac3_explain_shows_which_values_come_from_the_preset() {
+    let e = env("sandbox:\n  preset: dev\n  workspace: ro\n  masks: [secrets/]\n");
+    let v = json(&sandbox(&e, &["explain", "--json", "--stage", "tools"]));
+    assert_eq!(v["origins"]["egress_rules"], "preset:dev", "{v}");
+    assert_eq!(v["origins"]["write_paths"], "preset:dev", "{v}");
+    assert_eq!(v["origins"]["workspace"], "user", "{v}");
+    assert_eq!(v["origins"]["masks[secrets/]"], "user", "{v}");
+    assert!(
+        v["egress_rules"][0]
+            .as_str()
+            .unwrap()
+            .contains("registry.npmjs.org"),
+        "{v}"
+    );
+    let o = sandbox(&e, &["explain"]);
+    let text = stdout(&o);
+    assert!(text.contains("preset:dev"), "{text}");
+}
+
+#[test]
+fn prx_002_extra_ca_files_must_exist_and_contain_a_certificate() {
+    let e = env("");
+    let missing = e.home.join("fehlt.pem");
+    std::fs::write(
+        e.beton_home.join("config.yaml"),
+        format!("proxy:\n  extra_ca_files: [\"{}\"]\n", missing.display()),
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert!(
+        stderr(&o).contains("proxy.extra_ca_files"),
+        "{}",
+        stderr(&o)
+    );
+    let empty = e.home.join("leer.pem");
+    std::fs::write(&empty, "").unwrap();
+    std::fs::write(
+        e.beton_home.join("config.yaml"),
+        format!("proxy:\n  extra_ca_files: [\"{}\"]\n", empty.display()),
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    // Im Projekt ist der Schlüssel verboten (nur User-Konfiguration).
+    std::fs::write(e.beton_home.join("config.yaml"), "").unwrap();
+    std::fs::create_dir_all(e.ws.join(".beton")).unwrap();
+    std::fs::write(
+        e.ws.join(".beton/config.yaml"),
+        "proxy:\n  extra_ca_files: [\"/etc/x.pem\"]\n",
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+}

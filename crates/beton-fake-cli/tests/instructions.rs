@@ -63,6 +63,7 @@ fn ctx(var: &str, value: String) -> AdapterContext {
     let mut env = HostEnv::default();
     env.vars.insert(var.into(), value);
     AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env,

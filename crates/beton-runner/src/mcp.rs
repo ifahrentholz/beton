@@ -352,6 +352,7 @@ pub async fn prepare(
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
     gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
     asker: Option<Arc<dyn Asker>>,
+    tools: Option<beton_sandbox::Sandbox>,
     oracle: Option<Arc<dyn PolicyOracle>>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
@@ -481,6 +482,7 @@ pub async fn prepare(
             prefix: Vec::new(),
         },
         gate,
+        tools,
     })
     .await;
     #[cfg(not(unix))]
@@ -569,8 +571,9 @@ mod tests {
             })
             .unwrap(),
         );
+        // ACP-Agents kommen nur aus der User-Konfiguration (SBX-002).
         let layers = HarnessLayers {
-            project: acp,
+            user: acp,
             ..HarnessLayers::default()
         };
         let mine: HarnessId = "acp:mein-agent".parse().unwrap();

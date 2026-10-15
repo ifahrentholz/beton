@@ -41,8 +41,9 @@ use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::ca::{BetonCa, CaInfo, LeafIssuer};
 use crate::ip::{PrivateAllowList, destination_allowed};
-use crate::net::{ConnectError, Connector, Idle, Net, find_connect_error};
+use crate::net::{ConnectError, Connector, Idle, Net, dial_checked, find_connect_error};
 use crate::normalize::{Host, Scheme, normalize_path};
+use crate::passthrough::{Hello, Passthrough, client_hello_sni};
 use crate::rules::{Decision, DenyReason, Request as RulesRequest, RuleSet};
 
 /// Timeout für den Verbindungsaufbau zum Upstream (inkl. DNS und TLS).
@@ -77,6 +78,8 @@ pub struct InstanceSpec {
     pub label: String,
     pub rules: RuleSet,
     pub allow_private: PrivateAllowList,
+    /// Vendor-Hosts ohne TLS-Terminierung (PRX-005); nur in Stufe 1 bzw. ausdrücklich.
+    pub passthrough: Passthrough,
 }
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
@@ -111,6 +114,12 @@ fn extra_roots(files: &[PathBuf]) -> Result<Vec<CertificateDer<'static>>, ProxyE
         out.extend(certs);
     }
     Ok(out)
+}
+
+/// Prüft `proxy.extra_ca_files` (beim Laden der Konfiguration): Jede Datei muss lesbar sein und
+/// mindestens ein Zertifikat enthalten (PRX-002).
+pub fn check_extra_ca_files(files: &[PathBuf]) -> Result<(), ProxyError> {
+    extra_roots(files).map(|_| ())
 }
 
 /// TLS-Client-Konfiguration für Upstreams: strikte webpki-Prüfung gegen `roots`, kein
@@ -197,6 +206,36 @@ impl EgressProxy {
         self.shared.ca.cert_pem()
     }
 
+    /// CA-Bundle für die Sandbox (PRX-008): beton-CA plus System-Roots als PEM. Werkzeuge in
+    /// der Sandbox sehen sonst nur Leafs der beton-CA; die System-Roots braucht der Harness für
+    /// seine Passthrough-Verbindungen (PRX-005).
+    pub fn ca_bundle_pem(&self) -> String {
+        let mut pem = self.ca_pem();
+        for root in native_roots() {
+            pem.push_str(&crate::ca::pem_certificate(root.as_ref()));
+        }
+        pem
+    }
+
+    /// Nur für Tests anderer Crates (Feature `test-net`, nie in Produktionsbuilds): Jeder Name
+    /// aus `hosts` löst auf eine öffentlich wirkende Adresse auf, die der Dialer auf den
+    /// lokalen Test-Upstream abbildet; alle anderen Namen sind NXDOMAIN, alle anderen Adressen
+    /// unerreichbar. Upstream-TLS vertraut nur `upstream_roots`. Die Private-IP-Sperre gilt
+    /// unverändert (ADR-0033: kein Test erreicht ein echtes Netz).
+    #[cfg(any(test, feature = "test-net"))]
+    pub fn with_test_hosts(
+        ca: BetonCa,
+        upstream_roots: Vec<CertificateDer<'static>>,
+        hosts: &[(&str, std::net::SocketAddr)],
+    ) -> Self {
+        let mut roots = RootCertStore::empty();
+        for r in upstream_roots {
+            roots.add(r).unwrap_or_else(|e| panic!("Test-CA: {e}"));
+        }
+        Self::build(ca, &roots, crate::net::Net::test_hosts(hosts))
+            .unwrap_or_else(|e| panic!("Test-Proxy: {e}"))
+    }
+
     /// Startet eine Instanz auf `127.0.0.1:<zufälliger Port>` mit eigenem Token, eigenem
     /// Leaf-Schlüssel und eigenem Upstream-Pool.
     pub async fn start(&self, spec: InstanceSpec) -> Result<ProxyInstance, ProxyError> {
@@ -223,6 +262,8 @@ impl EgressProxy {
         let instance = Arc::new(Instance {
             label: spec.label,
             rules: spec.rules,
+            passthrough: spec.passthrough,
+            net: self.shared.net.clone(),
             allow_private: allow.clone(),
             expected,
             leafs: LeafIssuer::new(self.shared.ca.clone())?,
@@ -327,6 +368,9 @@ impl ProxyInstance {
 struct Instance {
     label: String,
     rules: RuleSet,
+    /// Vendor-Hosts ohne TLS-Terminierung (PRX-005).
+    passthrough: Passthrough,
+    net: Net,
     allow_private: Arc<PrivateAllowList>,
     /// Erwarteter Klartext von `Proxy-Authorization: Basic …` (`bt:<token>`).
     expected: Zeroizing<Vec<u8>>,
@@ -386,6 +430,33 @@ fn private_destination(ip: IpAddr) -> Response<ProxyBody> {
         format!("Ziel {ip} ist nicht global und nicht in egress_allow_private freigegeben"),
         None,
     )
+}
+
+/// Antwort auf einen gescheiterten Verbindungsaufbau (wie bei weitergeleiteten Requests).
+fn connect_problem(e: &ConnectError) -> Response<ProxyBody> {
+    match e {
+        ConnectError::PrivateDestination(ip) => private_destination(*ip),
+        ConnectError::InvalidHost => invalid("ungültiger Host"),
+        ConnectError::Dns(_) => problem(StatusCode::BAD_GATEWAY, "dns_error", e.to_string(), None),
+        ConnectError::Tls(_) => problem(
+            StatusCode::BAD_GATEWAY,
+            "upstream_tls_error",
+            e.to_string(),
+            None,
+        ),
+        ConnectError::Timeout => problem(
+            StatusCode::GATEWAY_TIMEOUT,
+            "upstream_timeout",
+            e.to_string(),
+            None,
+        ),
+        ConnectError::Connect(_) => problem(
+            StatusCode::BAD_GATEWAY,
+            "upstream_connect_error",
+            e.to_string(),
+            None,
+        ),
+    }
 }
 
 fn empty(status: StatusCode) -> Response<ProxyBody> {
@@ -519,7 +590,7 @@ impl Instance {
             return res;
         }
         if req.method() == Method::CONNECT {
-            self.connect(req)
+            self.connect(req).await
         } else {
             self.forward_absolute(req).await
         }
@@ -538,8 +609,9 @@ impl Instance {
         );
     }
 
-    /// CONNECT: Vorprüfung (PRX-003 AC5) ohne TLS-Handshake, dann Tunnel mit MITM.
-    fn connect(self: Arc<Self>, req: Request<Incoming>) -> Response<ProxyBody> {
+    /// CONNECT: Vorprüfung (PRX-003 AC5) ohne TLS-Handshake, dann Tunnel mit MITM bzw. für
+    /// Passthrough-Ziele ohne TLS-Terminierung (PRX-005).
+    async fn connect(self: Arc<Self>, req: Request<Incoming>) -> Response<ProxyBody> {
         let Some(authority) = req.uri().authority().cloned() else {
             return invalid("CONNECT braucht host:port");
         };
@@ -552,6 +624,9 @@ impl Instance {
         {
             self.log_deny("CONNECT", &host, port, "", "private_destination");
             return private_destination(*ip);
+        }
+        if self.passthrough.contains(&host, port) {
+            return self.passthrough(req, host, port).await;
         }
         if !self.rules.may_connect(Scheme::Https, &host, port) {
             self.log_deny("CONNECT", &host, port, "", "no_matching_rule");
@@ -587,6 +662,108 @@ impl Instance {
             }
         });
         empty(StatusCode::OK)
+    }
+
+    /// Passthrough (PRX-005): Upstream nach Auflösung und Private-IP-Prüfung verbinden, erst
+    /// dann `200`; danach muss das erste, was der Client schickt, ein `ClientHello` mit der SNI
+    /// des CONNECT-Hosts sein. Sonst wird getrennt, bevor ein Byte den Upstream erreicht.
+    /// Protokolliert werden nur Host, Port, Entscheidung und Byte-Zahlen.
+    async fn passthrough(
+        self: Arc<Self>,
+        req: Request<Incoming>,
+        host: Host,
+        port: u16,
+    ) -> Response<ProxyBody> {
+        let dial = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            dial_checked(&self.net, &self.allow_private, &host, port),
+        )
+        .await
+        .unwrap_or(Err(ConnectError::Timeout));
+        let upstream = match dial {
+            Ok(tcp) => tcp,
+            Err(ConnectError::PrivateDestination(ip)) => {
+                self.log_deny("CONNECT", &host, port, "", "private_destination");
+                return private_destination(ip);
+            }
+            Err(e) => {
+                tracing::debug!(instance = %self.label, host = %host, port, "Passthrough: {e}");
+                return connect_problem(&e);
+            }
+        };
+        let inst = self.clone();
+        spawn_until(self.stopped.clone(), async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    inst.splice(TokioIo::new(upgraded), upstream, host, port)
+                        .await
+                }
+                Err(e) => tracing::debug!("CONNECT-Upgrade: {e}"),
+            }
+        });
+        empty(StatusCode::OK)
+    }
+
+    async fn splice(
+        self: Arc<Self>,
+        mut client: TokioIo<Upgraded>,
+        upstream: TcpStream,
+        host: Host,
+        port: u16,
+    ) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut hello = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 4096];
+        let verdict = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            loop {
+                match client_hello_sni(&hello) {
+                    Hello::Incomplete => {}
+                    done => return done,
+                }
+                match client.read(&mut chunk).await {
+                    Ok(0) | Err(_) => return Hello::Invalid,
+                    Ok(n) => hello.extend_from_slice(&chunk[..n]),
+                }
+            }
+        })
+        .await
+        .unwrap_or(Hello::Invalid);
+        let expected = match &host {
+            Host::Domain(d) => Some(d.as_str()),
+            Host::Ip(_) => None,
+        };
+        let reason = match &verdict {
+            Hello::Sni(Some(sni)) if Some(sni.as_str()) == expected => None,
+            Hello::Sni(Some(_)) => Some("sni_mismatch"),
+            Hello::Sni(None) => Some("sni_missing"),
+            Hello::Incomplete | Hello::Invalid => Some("no_client_hello"),
+        };
+        if let Some(reason) = reason {
+            self.log_deny("CONNECT", &host, port, "", reason);
+            return;
+        }
+        tracing::debug!(
+            instance = %self.label,
+            host = %host,
+            port,
+            decision = "passthrough",
+            "Egress durchgereicht (ohne TLS-Terminierung)"
+        );
+        let mut upstream = Idle::new(upstream, IDLE_TIMEOUT);
+        if upstream.write_all(&hello).await.is_err() {
+            return;
+        }
+        let mut client = Idle::new(client, IDLE_TIMEOUT);
+        let copied = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        let (up, down) = copied.unwrap_or((0, 0));
+        tracing::trace!(
+            instance = %self.label,
+            host = %host,
+            port,
+            bytes_up = up + hello.len() as u64,
+            bytes_down = down,
+            "Passthrough beendet"
+        );
     }
 
     async fn serve_tunnel(
@@ -775,29 +952,7 @@ impl Instance {
         let found = find_connect_error(err);
         tracing::debug!(instance = %self.label, "Upstream: {err} ({found:?})");
         match found {
-            Some(ConnectError::PrivateDestination(ip)) => private_destination(*ip),
-            Some(ConnectError::InvalidHost) => invalid("ungültiger Host"),
-            Some(e @ ConnectError::Dns(_)) => {
-                problem(StatusCode::BAD_GATEWAY, "dns_error", e.to_string(), None)
-            }
-            Some(e @ ConnectError::Tls(_)) => problem(
-                StatusCode::BAD_GATEWAY,
-                "upstream_tls_error",
-                e.to_string(),
-                None,
-            ),
-            Some(e @ ConnectError::Timeout) => problem(
-                StatusCode::GATEWAY_TIMEOUT,
-                "upstream_timeout",
-                e.to_string(),
-                None,
-            ),
-            Some(e @ ConnectError::Connect(_)) => problem(
-                StatusCode::BAD_GATEWAY,
-                "upstream_connect_error",
-                e.to_string(),
-                None,
-            ),
+            Some(e) => connect_problem(e),
             None => problem(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",

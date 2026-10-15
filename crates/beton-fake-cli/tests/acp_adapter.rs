@@ -62,6 +62,7 @@ async fn start(
     gate: Arc<dyn Gate>,
 ) -> (Box<dyn HarnessSession>, mpsc::Receiver<NormalizedEvent>) {
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env: env_for(scenario),
@@ -265,6 +266,7 @@ async fn har_007_ac3_without_session_load_resume_is_cold_and_fork_uses_preamble(
 async fn har_007_session_load_continues_the_session() {
     let (_dir, path) = scenario("turns:\n  - emit: [{ message: \"Hallo.\" }]\n");
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env: env_for(&path),
@@ -333,6 +335,7 @@ async fn har_007_auth_error_asks_for_agent_login() {
 async fn har_007_wrong_protocol_version_is_incompatible() {
     let (_dir, path) = scenario("faults: { bad_handshake: true }\nturns: []\n");
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env: env_for(&path),
@@ -392,6 +395,7 @@ async fn gemini_env_child() {
         ..HostEnv::default()
     };
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env,

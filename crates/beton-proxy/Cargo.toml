@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Test-Zugang für Netz-Tests anderer Crates (Namen → lokale Test-Upstreams); nur als
+# dev-dependency aktivieren, nie in Produktionsbuilds (ADR-0033).
+test-net = []
+
 [dependencies]
 base64.workspace = true
 beton-core.workspace = true
@@ -43,6 +48,7 @@ serde_norway.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "test-util"] }
 tokio-tungstenite.workspace = true
+tracing-subscriber.workspace = true
 futures-util.workspace = true
 
 [lints]

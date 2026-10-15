@@ -118,6 +118,7 @@ impl Gate for Recorder {
 
 fn ctx(gate: Arc<dyn Gate>) -> AdapterContext {
     AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env: HostEnv::default(),
