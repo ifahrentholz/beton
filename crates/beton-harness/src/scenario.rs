@@ -355,7 +355,9 @@ pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Kontextfenster für `context.usage` (Fake-CLI `stream-json`:
-    /// `modelUsage.<modell>.contextWindow` im `result`, SES-011).
+    /// `modelUsage.<modell>.contextWindow` im `result`, SES-011). Der Fake-Harness meldet damit
+    /// `context.usage` mit Eingabe plus Cache als belegtem Kontext; `0` heißt „Fenster
+    /// unbekannt“ (USE-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
 }

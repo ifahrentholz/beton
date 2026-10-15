@@ -18,6 +18,14 @@
         "ws_allowed_origins": []
       }
     },
+    "compaction": {
+      "description": "Automatische Compaction (USE-009): `auto: harness | beton | off`, `threshold` (0,8).",
+      "$ref": "#/$defs/CompactionSettings",
+      "default": {
+        "auto": "harness",
+        "threshold": 0.8
+      }
+    },
     "events": {
       "$ref": "#/$defs/EventsSettings",
       "default": {
@@ -194,6 +202,26 @@
       },
       "additionalProperties": false
     },
+    "AutoCompaction": {
+      "description": "Wer automatisch kompaktiert (`compaction.auto`, USE-009).",
+      "oneOf": [
+        {
+          "description": "Der Harness entscheidet selbst (Vendor-CLIs; Direkt-API-Harness ab `threshold`).",
+          "type": "string",
+          "const": "harness"
+        },
+        {
+          "description": "beton kompaktiert vor dem nächsten Turn, wenn der zuletzt gemeldete Kontext über\n`threshold` liegt – einmal je Überschreitung, bei Harnesses mit `compaction: native`.",
+          "type": "string",
+          "const": "beton"
+        },
+        {
+          "description": "Nie automatisch, nur über den Button, `/compact` oder die API.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
     "BackendChoice": {
       "description": "Konfiguration `secrets.backend`.",
       "oneOf": [
@@ -213,6 +241,24 @@
           "const": "file"
         }
       ]
+    },
+    "CompactionSettings": {
+      "description": "`compaction:` in der User-Konfiguration (USE-009).",
+      "type": "object",
+      "properties": {
+        "auto": {
+          "description": "`harness` (Default), `beton` oder `off`.",
+          "$ref": "#/$defs/AutoCompaction",
+          "default": "harness"
+        },
+        "threshold": {
+          "description": "Anteil des Kontextfensters (größer 0, höchstens 1), ab dem automatisch kompaktiert\nwird; Default 0,8.",
+          "type": "number",
+          "format": "double",
+          "default": 0.8
+        }
+      },
+      "additionalProperties": false
     },
     "EventsSettings": {
       "type": "object",

@@ -523,6 +523,101 @@ impl SessionUsageView {
     }
 }
 
+/// Ein Modell des mitgelieferten Preis-Katalogs (USE-002); USD je 1 Mio. Tokens, wie im
+/// Katalog angegeben (fehlende Cache-Raten bleiben leer).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, TS, JsonSchema)]
+pub struct CatalogEntryView {
+    pub model: String,
+    /// Weitere IDs desselben Modells, z. B. datierte Snapshots.
+    pub aliases: Vec<String>,
+    pub provider: String,
+    pub context_window: Option<u64>,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    pub cache_read_per_mtok: Option<f64>,
+    pub cache_write_per_mtok: Option<f64>,
+    /// Ab wann der Preis gilt (`YYYY-MM-DD`).
+    pub valid_from: String,
+}
+
+/// Ein eigener Preis (USE-003) in Prüfreihenfolge: `pricing.overrides`, danach die Preise der
+/// Provider-Konfiguration. Raten wirksam, d. h. fehlende Cache-Raten geschätzt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, TS, JsonSchema)]
+pub struct PriceOverrideView {
+    /// Position in der Prüfreihenfolge, ab 1; der erste Treffer gewinnt.
+    pub position: u32,
+    /// Glob auf den Provider; fehlt = jeder.
+    pub provider: Option<String>,
+    /// Glob auf das Modell; fehlt = jedes.
+    pub model: Option<String>,
+    /// Kostenlos (z. B. lokales Ollama).
+    pub free: bool,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    pub cache_read_per_mtok: f64,
+    pub cache_write_per_mtok: f64,
+    /// Die Cache-Raten sind geschätzt (0,1 × bzw. 1,25 × Eingabe, USE-003 AC2).
+    pub cache_estimated: bool,
+    pub context_window: Option<u64>,
+}
+
+/// Antwort von `GET /v1/usage/pricing`: womit der Server neue Turns bewertet (USE-002,
+/// USE-003); Ziel des Hinweises „ohne Preis“ der Usage-Seite (USE-006 AC4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema, TS, JsonSchema)]
+pub struct PricingView {
+    /// Version des eingebauten Katalogs; kommt mit jedem beton-Release, kein Online-Abruf.
+    pub catalog_version: String,
+    pub currency: String,
+    pub overrides: Vec<PriceOverrideView>,
+    pub catalog: Vec<CatalogEntryView>,
+}
+
+impl PricingView {
+    pub fn new(pricer: &beton_core::pricing::Pricer) -> Self {
+        let usd = |micro: i64| micro as f64 / 1_000_000.0;
+        Self {
+            catalog_version: pricer.catalog().version().to_owned(),
+            currency: "USD".into(),
+            overrides: pricer
+                .overrides()
+                .iter()
+                .enumerate()
+                .map(|(i, o)| {
+                    let r = o.rates();
+                    PriceOverrideView {
+                        position: u32::try_from(i + 1).unwrap_or(u32::MAX),
+                        provider: o.matcher.provider.clone(),
+                        model: o.matcher.model.clone(),
+                        free: o.free,
+                        input_per_mtok: usd(r.input_micro),
+                        output_per_mtok: usd(r.output_micro),
+                        cache_read_per_mtok: usd(r.cache_read_micro),
+                        cache_write_per_mtok: usd(r.cache_write_micro),
+                        cache_estimated: r.cache_estimated,
+                        context_window: o.context_window,
+                    }
+                })
+                .collect(),
+            catalog: pricer
+                .catalog()
+                .models()
+                .iter()
+                .map(|m| CatalogEntryView {
+                    model: m.id.clone(),
+                    aliases: m.aliases.clone(),
+                    provider: m.provider.clone(),
+                    context_window: m.context_window,
+                    input_per_mtok: m.input_per_mtok,
+                    output_per_mtok: m.output_per_mtok,
+                    cache_read_per_mtok: m.cache_read_per_mtok,
+                    cache_write_per_mtok: m.cache_write_per_mtok,
+                    valid_from: m.valid_from.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 fn invalid(detail: String) -> Problem {
     Problem::new(ProblemCode::ValidationFailed).detail(detail)
 }
@@ -539,6 +634,14 @@ pub async fn get_usage(
     let q = params.to_query(now).map_err(invalid)?;
     let report = state.store.usage_report(state.local.org, &q).await?;
     Ok(axum::Json(UsageReportView::new(&q, &report, now)))
+}
+
+/// Preise, mit denen der Server bewertet (USE-002, USE-003): eigene Preise in
+/// Prüfreihenfolge und der mitgelieferte Katalog.
+#[utoipa::path(get, path = "/v1/usage/pricing", tag = "usage",
+    responses((status = 200, description = "Eigene Preise und Preis-Katalog", body = PricingView)))]
+pub async fn get_pricing(State(state): State<AppState>) -> ApiResult<axum::Json<PricingView>> {
+    Ok(axum::Json(PricingView::new(state.store.pricer())))
 }
 
 /// Usage einer Session je Turn (USE-007 AC2): Tokens, Kosten, Preisquelle.

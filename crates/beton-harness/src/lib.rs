@@ -21,11 +21,12 @@ pub mod registry;
 pub mod scenario;
 
 pub use crate::adapter::{
-    AdapterContext, AllowAll, AuthStatus, DenyAll, ExitInfo, Gate, GateDecision, GateOrigin,
-    GateRequest, HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment,
-    InvalidPermissionMode, McpInjection, McpLaunch, Mode, ModelGateDecision, ModelGateRequest,
-    NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, RebuildRequest,
-    ResultGateRequest, SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
+    AdapterContext, AllowAll, AuthStatus, AutoCompaction, CompactionSettings,
+    DEFAULT_COMPACTION_THRESHOLD, DenyAll, ExitInfo, Gate, GateDecision, GateOrigin, GateRequest,
+    HarnessAdapter, HarnessError, HarnessSession, HostEnv, InputAttachment, InvalidPermissionMode,
+    McpInjection, McpLaunch, Mode, ModelGateDecision, ModelGateRequest, NormalizedEvent,
+    OneShotReply, OneShotRequest, PermissionMode, ProbeReport, RebuildRequest, ResultGateRequest,
+    SessionSpec, Shutdown, SwitchOutcome, Transport, UserInput, VENDOR_DIR_VARS,
     prefix_instructions,
 };
 pub use crate::capabilities::{

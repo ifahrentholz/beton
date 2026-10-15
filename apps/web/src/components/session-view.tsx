@@ -6,6 +6,7 @@ import type { Capabilities, HarnessInfo, PermissionMode } from '@beton/sdk'
 import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
+import { compacting as compactingOf, contextOf } from '@/lib/context'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
@@ -26,6 +27,7 @@ import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
 import { ApprovalBar } from './approval-bar'
+import { ContextBar } from './context-bar'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
 
 /** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
@@ -83,7 +85,7 @@ function StreamItem({ item, sessionId, harness }: { item: Item; sessionId: strin
     case 'error':
       return <ErrorCard title={item.title} detail={item.detail} />
     case 'note':
-      return <SystemNote text={item.text} tone={item.tone} />
+      return <SystemNote text={item.text} tone={item.tone} detail={item.detail} />
     case 'offloaded':
       return <Offloaded sessionId={sessionId} item={item} harness={harness} />
   }
@@ -181,22 +183,26 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       .session(sessionId)
       .rename(title)
       .then((s) => useSessions.getState().upsert([s]))
+  // Kontext und Compaction (USE-008, USE-009): letzter `context.usage`, laufende Compaction.
+  const context = useMemo(() => contextOf(log?.events), [log?.events])
+  const isCompacting = useMemo(() => compactingOf(log?.events), [log?.events])
+  const compact = () => {
+    setSendError(undefined)
+    client
+      .session(sessionId)
+      .compact()
+      .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Kompaktieren fehlgeschlagen'))
+  }
   // beton-eigene Slash-Befehle, die es schon gibt (WEB-006): `/compact` (SES-011) und `/fork`
   // (SES-006).
   const compaction = meta.capabilities?.compaction
   const commands: BetonCommand[] = []
-  if (compaction && compaction !== 'none' && !running) {
+  if (compaction && compaction !== 'none' && !running && !isCompacting) {
     commands.push({
       name: 'compact',
       title: 'Kontext komprimieren',
       description: 'Verlauf vom Harness zusammenfassen lassen und Kontext freigeben',
-      run: () => {
-        setSendError(undefined)
-        client
-          .session(sessionId)
-          .compact()
-          .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Komprimieren fehlgeschlagen'))
-      },
+      run: compact,
     })
   }
   if (meta.harness) {
@@ -329,6 +335,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       )}
       <ApprovalBar sessionId={sessionId} approvals={approvals} />
       <AttachmentChips sessionId={sessionId} />
+      <ContextBar
+        harness={meta.harness}
+        capabilities={meta.capabilities}
+        context={context}
+        compacting={isCompacting}
+        running={running}
+        onCompact={compact}
+      />
       <Composer
         sessionId={sessionId}
         harness={meta.harness || 'claude'}
