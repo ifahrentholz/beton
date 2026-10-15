@@ -113,6 +113,16 @@ pub fn override_rejected(name: &str, configured: &[String]) -> Option<&'static s
     None
 }
 
+/// Nur die absoluten Einträge eines `PATH` (Platzhalter bis zur Umsetzung).
+pub fn absolute_path(path: &str) -> String {
+    path.to_owned()
+}
+
+/// Besteht ein `PATH` nur aus absoluten Einträgen (Platzhalter bis zur Umsetzung)?
+pub fn path_ok(_path: &str) -> bool {
+    true
+}
+
 /// Konfigurierte Namen der Stufe 2, die Stufe 1 überschreiben darf: das Environment der
 /// Policy ohne von beton gesetzte, gesperrte, Harness- und Credential-Variablen.
 pub fn forward_names(policy: &crate::ResolvedPolicy) -> Vec<String> {

@@ -348,6 +348,7 @@ pub async fn resolve_secrets(
     servers: Vec<beton_mcp::config::ConfiguredServer>,
     session_id: beton_core::id::SessionId,
     stages: Option<&mut crate::stages::SessionStages>,
+    _agent_trusted: bool,
 ) -> (Vec<beton_mcp::config::ConfiguredServer>, Vec<EventPayload>) {
     let mut stages = stages;
     let mut kept = Vec::with_capacity(servers.len());
@@ -501,7 +502,7 @@ pub async fn prepare(
 
     // AGT-001 AC3, AGT-006 AC3: `${secret:<name>}` → Platzhalter, nie der Wert.
     let (servers, failures) =
-        resolve_secrets(std::mem::take(&mut plan.servers), session_id, stages).await;
+        resolve_secrets(std::mem::take(&mut plan.servers), session_id, stages, false).await;
     plan.servers = servers;
     setup.initial.extend(failures);
 

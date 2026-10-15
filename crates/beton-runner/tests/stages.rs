@@ -541,7 +541,7 @@ async fn agt_001_ac3_agt_006_ac3_secret_refs_in_mcp_servers_become_placeholders(
     let servers = beton_mcp::config::merge(&file, &beton_mcp::config::McpFile::default(), None);
     let session = beton_core::id::SessionId::new();
     let (kept, failures) =
-        beton_runner::mcp::resolve_secrets(servers.clone(), session, Some(&mut s)).await;
+        beton_runner::mcp::resolve_secrets(servers.clone(), session, Some(&mut s), false).await;
     let names: Vec<&str> = kept.iter().map(|k| k.name.as_str()).collect();
     assert_eq!(names, ["gh", "ohne", "web"], "{failures:?}");
     let gh = kept.iter().find(|k| k.name == "gh").unwrap();
@@ -559,10 +559,54 @@ async fn agt_001_ac3_agt_006_ac3_secret_refs_in_mcp_servers_become_placeholders(
     // Nirgends ein Ausdruck oder Wert, nur Platzhalter.
     assert!(!format!("{kept:?}").contains("${secret:"));
     // Ohne Stufenmodell startet keiner der Server mit Referenz.
-    let (kept, failures) = beton_runner::mcp::resolve_secrets(servers, session, None).await;
+    let (kept, failures) = beton_runner::mcp::resolve_secrets(servers, session, None, false).await;
     assert_eq!(
         kept.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
         ["ohne"]
     );
     assert_eq!(failures.len(), 4);
+}
+
+/// Security-Review #291 (P4b): Repo-Inhalt bestimmt sonst Pfad und Methode, mit denen ein
+/// Credential an einen gebundenen Host geht. Bis #200 entschieden ist, löst beton
+/// `${secret:…}` nur für Server der User-Ebene und von User- bzw. eingebauten Agents auf.
+#[tokio::test]
+async fn agt_006_ac3_secret_refs_only_for_user_level_servers() {
+    let fx = fx();
+    let mut s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts(GH, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let server = |name: &str| {
+        format!(
+            "servers:\n  {name}:\n    url: https://api.github.com/mcp\n    headers: {{ Authorization: \"Bearer ${{secret:github}}\" }}\n"
+        )
+    };
+    let path = std::path::Path::new("mcp.yaml");
+    let user = beton_mcp::config::parse(&server("u"), path).unwrap();
+    let project = beton_mcp::config::parse(&server("p"), path).unwrap();
+    let servers = beton_mcp::config::merge(&user, &project, None);
+    let session = beton_core::id::SessionId::new();
+    let (kept, failures) =
+        beton_runner::mcp::resolve_secrets(servers.clone(), session, Some(&mut s), false).await;
+    assert_eq!(
+        kept.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
+        ["u"]
+    );
+    let text = format!("{failures:?}");
+    assert_eq!(failures.len(), 1, "{text}");
+    assert!(text.contains("\"p\"") && text.contains("#200"), "{text}");
+    // Agent-Server: nur, wenn der Agent vom Benutzer bzw. eingebaut ist.
+    let mut agent = servers[0].clone();
+    agent.name = "a".into();
+    agent.layer = beton_mcp::config::Layer::Agent;
+    let (kept, failures) =
+        beton_runner::mcp::resolve_secrets(vec![agent.clone()], session, Some(&mut s), false).await;
+    assert!(kept.is_empty() && failures.len() == 1);
+    let (kept, _) =
+        beton_runner::mcp::resolve_secrets(vec![agent], session, Some(&mut s), true).await;
+    assert_eq!(kept.len(), 1);
 }

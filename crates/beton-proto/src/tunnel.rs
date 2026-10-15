@@ -222,3 +222,20 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn prx_006_system_results_never_show_credential_values_in_debug() {
+        let down = TunnelDown::SystemResult {
+            call_id: "sys_1".into(),
+            result: Some(serde_json::json!({ "value_b64": "RklYVFVSRS1TRUNSRVQ=", "ttl_s": 60 })),
+            problem: None,
+        };
+        let text = format!("{down:?}");
+        assert!(text.contains("sys_1"), "{text}");
+        assert!(!text.contains("RklYVFVSRS1TRUNSRVQ="), "{text}");
+    }
+}

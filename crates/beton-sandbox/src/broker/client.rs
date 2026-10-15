@@ -336,6 +336,18 @@ mod tests {
     }
 
     #[test]
+    fn sbx_002_bt_exec_forwards_only_absolute_path_entries() {
+        assert_eq!(
+            super::super::absolute_path("bin:/usr/bin::./x:/bin"),
+            "/usr/bin:/bin"
+        );
+        assert!(super::super::path_ok("/usr/bin:/bin"));
+        for bad in ["bin:/usr/bin", "/usr/bin::/bin", "", "./x", "/usr/bin:"] {
+            assert!(!super::super::path_ok(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn sbx_005_overrides_are_an_allowlist() {
         // #259: Nur Basis-, Werkzeug- und ausdrücklich konfigurierte Variablen gehen von
         // Stufe 1 nach Stufe 2; ein Token unter neuem Namen nicht.
@@ -366,6 +378,13 @@ mod tests {
             "RUST_LOG",
             "NODE_OPTIONS",
         ] {
+            assert!(r(ok, &configured).is_none(), "{ok}");
+        }
+        // `LC_*` nur mit POSIX- bzw. glibc-Kategorien, nicht als Präfix für beliebige Namen.
+        for bad in ["LC_FOO_TOKEN", "LC_", "LC_SECRET"] {
+            assert!(r(bad, &configured).is_some(), "{bad}");
+        }
+        for ok in ["LC_CTYPE", "LC_MESSAGES", "LC_TIME", "LC_PAPER"] {
             assert!(r(ok, &configured).is_none(), "{ok}");
         }
         // Konfigurierte Namen heben Sperren nie auf.

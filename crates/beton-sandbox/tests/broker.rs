@@ -555,6 +555,12 @@ async fn sbx_005_bt_exec_forwards_only_allowed_variables_to_stage_two() {
     let mut r = request(&fx, &token, &["/bin/sh", "-c", "exit 0"]);
     r.env_overrides.insert("RUST_LOG".into(), "debug".into());
     assert!(matches!(ask(&broker, &r), Reply::Started { .. }));
+    // `PATH` nur mit absoluten Einträgen (SBX-002): ein relativer hinge vom Arbeitsverzeichnis ab.
+    for path in ["bin:/usr/bin", "/usr/bin::/bin", "./node_modules/.bin:/bin"] {
+        let mut r = request(&fx, &token, &["/bin/sh", "-c", "exit 0"]);
+        r.env_overrides.insert("PATH".into(), path.into());
+        assert_eq!(error_code(&ask(&broker, &r)), "env_denied", "{path}");
+    }
 }
 
 /// `script` direkt in einer Sandbox der Stufe `stage` (ohne Broker), mit `X` und `WS` im

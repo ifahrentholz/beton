@@ -156,6 +156,22 @@ fn prx_006_credentials_are_loaded_and_validated() {
 }
 
 #[test]
+fn prx_006_source_variable_must_not_be_passed_through() {
+    // Sonst stünde der echte Wert der Quelle unter ihrem eigenen Namen in Stufe 1/2.
+    for pass in ["GH_PAT", "GH_*", "*"] {
+        let (path, message) = invalid(&format!(
+            "env:\n  passthrough: [\"{pass}\"]\ncredentials: [{{ name: gh, type: github, source: {{ env: GH_PAT }}, env: [GH_TOKEN] }}]\n"
+        ));
+        assert_eq!(path, "credentials[0].source.env", "{pass}: {message}");
+    }
+    // Andere Variablen bleiben erlaubt.
+    SandboxSpec::from_yaml(
+        "env:\n  passthrough: [RUST_LOG]\ncredentials: [{ name: gh, type: github, source: { env: GH_PAT }, env: [GH_TOKEN] }]\n",
+    )
+    .unwrap();
+}
+
+#[test]
 fn sbx_005_ac2_passthrough_of_ssh_auth_sock_is_a_configuration_error() {
     for name in [
         "SSH_AUTH_SOCK",
