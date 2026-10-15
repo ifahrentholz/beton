@@ -165,7 +165,7 @@ mod imp {
         };
         let env_overrides = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .filter(|(k, _)| override_rejected(k).is_none())
+            .filter(|(k, _)| override_rejected(k, &[]).is_none())
             .collect();
         let req = Request {
             v: super::super::proto::VERSION,
@@ -329,8 +329,52 @@ mod tests {
     }
 
     #[test]
-    fn sbx_002_overrides_drop_stage_one_and_denied_variables() {
+    fn sbx_005_overrides_are_an_allowlist() {
+        // #259: Nur Basis-, Werkzeug- und ausdrücklich konfigurierte Variablen gehen von
+        // Stufe 1 nach Stufe 2; ein Token unter neuem Namen nicht.
         use super::super::override_rejected as r;
+        let configured = vec!["RUST_LOG".to_owned(), "NODE_OPTIONS".to_owned()];
+        for bad in [
+            "FOO_TOKEN",
+            "GITHUB_TOKEN",
+            "NPM_TOKEN",
+            "GIT_ASKPASS",
+            "GIT_CONFIG_PARAMETERS",
+            "SSH_ASKPASS",
+            "AWS_SECRET_ACCESS_KEY",
+        ] {
+            assert!(r(bad, &configured).is_some(), "{bad}");
+        }
+        for ok in [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "PWD",
+            "OLDPWD",
+            "TERM",
+            "COLUMNS",
+            "GIT_EDITOR",
+            "GIT_AUTHOR_NAME",
+            "RUST_LOG",
+            "NODE_OPTIONS",
+        ] {
+            assert!(r(ok, &configured).is_none(), "{ok}");
+        }
+        // Konfigurierte Namen heben Sperren nie auf.
+        let bad = vec![
+            "LD_PRELOAD".to_owned(),
+            "HOME".to_owned(),
+            "CLAUDE_X".to_owned(),
+        ];
+        for name in &bad {
+            assert!(r(name, &bad).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn sbx_002_overrides_drop_stage_one_and_denied_variables() {
+        let r = |name: &str| super::super::override_rejected(name, &[]);
         for bad in [
             "LD_PRELOAD",
             "DYLD_INSERT_LIBRARIES",
@@ -352,7 +396,7 @@ mod tests {
         ] {
             assert!(r(bad).is_some(), "{bad}");
         }
-        for ok in ["PATH", "LANG", "PWD", "GIT_EDITOR", "NODE_OPTIONS", "CI"] {
+        for ok in ["PATH", "LANG", "PWD", "GIT_EDITOR", "CI"] {
             assert!(r(ok).is_none(), "{ok}");
         }
     }

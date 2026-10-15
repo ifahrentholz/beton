@@ -198,7 +198,7 @@ fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
         return Err(reject("invalid_request", "NUL-Byte in argv"));
     }
     for (k, v) in &req.env_overrides {
-        if let Some(why) = super::override_rejected(k) {
+        if let Some(why) = super::override_rejected(k, &[]) {
             return Err(reject("env_denied", format!("`{k}`: {why}")));
         }
         if v.contains('\0') {

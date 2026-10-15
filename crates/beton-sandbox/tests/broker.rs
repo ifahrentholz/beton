@@ -507,6 +507,56 @@ async fn sbx_002_ac1_tool_via_bt_exec_cannot_read_the_harness_credentials() {
     assert!(!stdout.contains("rc=0"), "{stdout}{stderr}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_005_bt_exec_forwards_only_allowed_variables_to_stage_two() {
+    // Escape-Test zu #259: Was die Vendor-CLI in Stufe 1 setzt, gelangt nur über die
+    // Allowlist nach Stufe 2.
+    let fx = fx();
+    let mut tctx = ctx(&fx, Stage::Tools);
+    tctx.host_env.insert("RUST_LOG".into(), "info".into());
+    let p = provider();
+    let spec = SandboxSpec::from_yaml(&format!(
+        "read_paths: [\"{}\"]\nenv:\n  passthrough: [RUST_LOG]\n",
+        launcher().parent().unwrap().display()
+    ))
+    .unwrap();
+    let sandbox = Sandbox::new(p.clone(), p.resolve(&spec, &tctx).unwrap(), None);
+    let broker = Broker::start(&fx.exec_dir, sandbox).await.unwrap();
+    let shim = shim_dir(&fx).join("bt-exec");
+    let (ok, stdout, stderr) = in_stage_one(
+        &fx,
+        &broker,
+        "claude",
+        &format!(
+            "export FOO_TOKEN=FIXTURE-FOO GIT_ASKPASS=/tmp/x RUST_LOG=trace PWD=\"$PWD\"; \
+             echo \"eins=$FOO_TOKEN\"; {} /usr/bin/env | sed 's/^/zwei:/'",
+            shim.display()
+        ),
+    )
+    .await;
+    assert!(ok, "{stdout}{stderr}");
+    // Kontrollgruppe: in Stufe 1 ist die Variable gesetzt …
+    assert!(stdout.contains("eins=FIXTURE-FOO"), "{stdout}");
+    // … in Stufe 2 nicht, ebenso wenig GIT_ASKPASS; erlaubte Werkzeug-Variablen schon.
+    let two: Vec<&str> = stdout.lines().filter(|l| l.starts_with("zwei:")).collect();
+    assert!(two.contains(&"zwei:BETON_STAGE=tools"), "{stdout}");
+    assert!(!two.iter().any(|l| l.contains("FOO_TOKEN")), "{stdout}");
+    assert!(!two.iter().any(|l| l.contains("GIT_ASKPASS")), "{stdout}");
+    assert!(
+        two.contains(&"zwei:RUST_LOG=trace"),
+        "konfigurierte Variable: {stdout}"
+    );
+    // Der Broker lehnt eine solche Variable selbst ab (fail closed), auch ohne bt-exec.
+    let token = broker.token().expose().to_owned();
+    let mut r = request(&fx, &token, &["/bin/sh", "-c", "exit 0"]);
+    r.env_overrides
+        .insert("FOO_TOKEN".into(), "FIXTURE-FOO".into());
+    assert_eq!(error_code(&ask(&broker, &r)), "env_denied");
+    let mut r = request(&fx, &token, &["/bin/sh", "-c", "exit 0"]);
+    r.env_overrides.insert("RUST_LOG".into(), "debug".into());
+    assert!(matches!(ask(&broker, &r), Reply::Started { .. }));
+}
+
 /// `script` direkt in einer Sandbox der Stufe `stage` (ohne Broker), mit `X` und `WS` im
 /// Environment.
 async fn in_stage(ctx: ResolveCtx, script: &str, vars: &[(&str, &Path)]) -> (bool, String) {

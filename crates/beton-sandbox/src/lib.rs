@@ -59,6 +59,9 @@ pub use provider::{ProbeReport, ProviderId, SandboxProvider};
 pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
 pub use resolve::{
     ExecAccess, Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Secret, Stage,
-    check_caps, mark_unenforced_limits, resolve,
+    check_caps, check_credential_file, mark_unenforced_limits, resolve,
 };
-pub use spec::{BackendChoice, HarnessSandboxConfig, Limits, Preset, SandboxSpec, WorkspaceAccess};
+pub use spec::{
+    BackendChoice, CredentialSourceSpec, CredentialSpec, CredentialType, HarnessSandboxConfig,
+    Limits, Preset, SandboxSpec, WorkspaceAccess,
+};

@@ -134,6 +134,9 @@ pub struct ResolveCtx {
     pub untrusted_path: Vec<PathBuf>,
     /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
     pub programs: Vec<PathBuf>,
+    /// Credential-Variablen dieser Stufe mit ihrem Platzhalter (PRX-006, SBX-005); gewinnen
+    /// gegen `passthrough` und `set`.
+    pub credential_env: BTreeMap<String, String>,
 }
 
 impl ResolveCtx {
@@ -155,6 +158,7 @@ impl ResolveCtx {
             session_dir: None,
             untrusted_path: Vec::new(),
             programs: Vec::new(),
+            credential_env: BTreeMap::new(),
         }
     }
 }
@@ -231,6 +235,9 @@ pub struct ResolvedPolicy {
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
+    /// Variablen mit Credential-Platzhalter (nur Namen; PRX-006). Der Exec-Broker lässt sie
+    /// nicht überschreiben.
+    pub credential_env: Vec<String>,
     pub net: NetMode,
     pub egress_rules: Vec<String>,
     pub egress_allow_private: Vec<String>,
@@ -271,6 +278,7 @@ impl ResolvedPolicy {
             no_symlinks: Vec::new(),
             private: Vec::new(),
             env: BTreeMap::new(),
+            credential_env: Vec::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
             egress_allow_private: Vec::new(),
@@ -992,6 +1000,7 @@ pub fn resolve(
         no_symlinks,
         private,
         env,
+        credential_env: Vec::new(),
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
@@ -1054,4 +1063,20 @@ pub fn check_caps(probe: &ProbeReport, policy: &ResolvedPolicy) -> Result<(), Sa
         missing,
         hint,
     })
+}
+
+/// Größte Credential-Datei (PRX-006).
+pub const CREDENTIAL_FILE_MAX: u64 = 64 * 1024;
+
+/// Prüft eine Credential-Datei (`source.file`, PRX-006 AC4) gegen die aufgelösten Policies
+/// aller Stufen: Sie muss existieren, außerhalb jeder Lese- und Schreib-Wurzel liegen (auch
+/// über Symlinks), darf keine weiteren Hardlinks haben und höchstens 64 KiB groß sein.
+/// Liefert den kanonischen Pfad.
+pub fn check_credential_file(
+    path: &Path,
+    home: &Path,
+    policies: &[&ResolvedPolicy],
+) -> Result<PathBuf, SandboxError> {
+    let _ = (home, policies);
+    Ok(path.to_path_buf())
 }

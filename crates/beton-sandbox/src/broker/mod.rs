@@ -38,7 +38,7 @@ pub const EXEC_ARG: &str = "__exec";
 /// Warum der Broker eine Variable aus `env_overrides` ablehnt (bzw. `bt-exec` sie nicht
 /// weitergibt): gesperrt (SBX-005), von beton je Stufe gesetzt, Familie eines Harness oder
 /// kein gültiger Name. `None`: erlaubt.
-pub fn override_rejected(name: &str) -> Option<&'static str> {
+pub fn override_rejected(name: &str, _configured: &[String]) -> Option<&'static str> {
     let valid = !name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
