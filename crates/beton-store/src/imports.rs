@@ -76,6 +76,7 @@ impl Store {
         at: Timestamp,
         replace: bool,
     ) -> Result<()> {
+        let _writer = self.write_guard().await?;
         let sql = if replace {
             "INSERT INTO session_imports (org_id, host_id, harness, vendor_session_id, \
              session_id, imported_at) VALUES (?, ?, ?, ?, ?, ?) \

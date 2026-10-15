@@ -36,14 +36,19 @@ fn runner_bin() -> &'static str {
 async fn fixture(
     customize: impl FnOnce(beton_server::app::Runtime) -> beton_server::app::Runtime,
 ) -> Fixture {
+    fixture_with(StoreOptions::default(), customize).await
+}
+
+async fn fixture_with(
+    options: StoreOptions,
+    customize: impl FnOnce(beton_server::app::Runtime) -> beton_server::app::Runtime,
+) -> Fixture {
     // Kurzer Pfad: Unix-Sockets vertragen keine langen Pfade.
     let dir = tempfile::Builder::new()
         .prefix("bt")
         .tempdir_in("/tmp")
         .unwrap();
-    let store = Store::open(dir.path(), StoreOptions::default())
-        .await
-        .unwrap();
+    let store = Store::open(dir.path(), options).await.unwrap();
     let mut cfg = ServerConfig::local(dir.path().to_path_buf());
     cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
     cfg.socket = None;
@@ -367,6 +372,94 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
         .collect();
     let expected: Vec<String> = (0..30).map(|i| format!("Zeile {i}")).collect();
     assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
+/// #288: Lehnt der Server ein Event fachlich ab (hier: Nutzlast über dem Blob-Limit), steht an
+/// seiner Stelle ein sichtbares `event.rejected` ohne den abgelehnten Inhalt. Spätere Events
+/// bleiben erhalten, und der Runner sendet das abgelehnte Event nicht endlos erneut.
+#[tokio::test]
+async fn proto_015_ac5_rejected_event_is_replaced_in_place() {
+    let options = StoreOptions {
+        max_blob_bytes: 128 * 1024,
+        ..StoreOptions::default()
+    };
+    let f = fixture_with(options, |r| r).await;
+    let big = "x".repeat(200 * 1024);
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..8 {
+        let text = if i == 3 {
+            big.clone()
+        } else {
+            format!("Zeile {i}")
+        };
+        yaml.push_str(&format!(
+            "      - {{ message: \"{text}\", delay_ms: 20 }}\n"
+        ));
+    }
+    yaml.push_str("  - emit:\n      - { message: \"danach\" }\n");
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let entries: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => m.content[0]["text"]
+                .as_str()
+                .filter(|t| t.starts_with("Zeile"))
+                .map(str::to_owned),
+            _ if e.type_name() == "event.rejected" => Some("abgelehnt".into()),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..8)
+        .map(|i| match i {
+            3 => "abgelehnt".to_owned(),
+            i => format!("Zeile {i}"),
+        })
+        .collect();
+    assert_eq!(
+        entries, expected,
+        "Ersatz an der Stelle des abgelehnten Events"
+    );
+    let rejected: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_name() == "event.rejected")
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert_eq!(rejected.len(), 1, "genau ein Ersatz, kein erneutes Senden");
+    let payload = &rejected[0]["payload"];
+    assert_eq!(payload["original_type"], "message.completed");
+    assert_eq!(payload["reason"], "payload_too_large");
+    assert!(payload["rseq"].as_u64().is_some_and(|r| r > 0));
+    assert_eq!(rejected[0]["actor"]["component"], "server");
+    assert!(
+        !rejected[0].to_string().contains("xxxxxxxx"),
+        "kein abgelehnter Inhalt im Ersatz"
+    );
+    // Die Verbindung bleibt bestehen (keine Reconnect-Schleife), weitere Events kommen an.
+    f.deliver("input.submit", json!({"text": "noch einmal"}))
+        .await;
+    f.wait_for_count(|p| matches!(p, EventPayload::TurnCompleted(_)), 2)
+        .await;
+    let events = f.events().await;
+    gapless(&events);
+    assert!(events.iter().any(|e| matches!(e.payload(),
+        Some(EventPayload::MessageCompleted(m)) if m.content[0]["text"] == "danach")));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.type_name() == "event.rejected")
+            .count(),
+        1
+    );
     f.provider
         .terminate(&h, beton_host::TerminateMode::Force)
         .await

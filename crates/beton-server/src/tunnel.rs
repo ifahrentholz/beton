@@ -16,7 +16,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use beton_core::event::{
-    Actor, Event, EventPayload, SessionStatus, SessionStatusChanged, SystemComponent,
+    Actor, Event, EventPayload, EventRejected, SessionStatus, SessionStatusChanged, SystemComponent,
 };
 use beton_core::id::SessionId;
 use beton_proto::tunnel::{PROTOCOL, SUBPROTOCOL, TunnelDown, TunnelUp};
@@ -488,12 +488,45 @@ fn problem_msg(p: Problem) -> Message {
     Message::Text(serde_json::to_string(&msg).unwrap_or_default().into())
 }
 
-/// Antwort auf einen Push, den der Store vorübergehend nicht speichern konnte (5xx, z. B.
-/// `database is locked`). Fachliche Ablehnungen (4xx) wiederholen sich beim erneuten Senden
-/// und trennen deshalb nicht.
+/// Antwort auf einen Push, den der Server nicht gespeichert hat (z. B. `database is locked`,
+/// `seq_conflict`). Spätere Pushes derselben Verbindung dürfen die Lücke nicht überspringen,
+/// deshalb trennt sie danach. Fachlich abgelehnte Events führen nicht hierher: Sie ersetzt der
+/// Server durch `event.rejected` und bestätigt den Push ([`rejected`], #288). `stale_epoch`
+/// beendet die Verbindung ohnehin.
 fn unsaved_push(reply: &TunnelDown) -> bool {
-    matches!(reply, TunnelDown::Problem { problem }
-        if problem["status"].as_u64().is_some_and(|s| s >= 500))
+    matches!(reply, TunnelDown::Problem { problem } if problem["code"] != "stale_epoch")
+}
+
+/// Ersatz für ein fachlich abgelehntes Runner-Event (PROTO-015, #288): an dessen Stelle im
+/// Log, mit Typ, `rseq` und Problem-Code, aber ohne den abgelehnten Inhalt. Turn und Zeitpunkt
+/// bleiben erhalten, damit der Ersatz im Verlauf an der richtigen Stelle steht.
+fn rejected(session: SessionId, rseq: u64, original: &Event, error: &beton_store::Error) -> Event {
+    let reason = match error {
+        beton_store::Error::BlobTooLarge { .. } => ProblemCode::PayloadTooLarge,
+        _ => ProblemCode::ValidationFailed,
+    };
+    tracing::warn!(
+        %session,
+        rseq,
+        event_type = original.type_name(),
+        code = reason.as_str(),
+        "Event abgelehnt, ersetzt durch event.rejected"
+    );
+    let mut event = Event::new(
+        session,
+        0,
+        Actor::System {
+            component: SystemComponent::Server,
+        },
+        EventPayload::EventRejected(EventRejected {
+            original_type: original.type_name().into(),
+            rseq,
+            reason: reason.as_str().into(),
+        }),
+    );
+    event.ts = original.ts;
+    event.turn_id = original.turn_id;
+    event
 }
 
 fn close_msg(code: u16, reason: &str) -> Message {
@@ -732,23 +765,32 @@ async fn append_status(
             reason: Some(reason.into()),
         }),
     );
-    if let Ok(written) = append(state, session, vec![event]).await {
+    if let Ok(written) = append(state, session, vec![event], &|_, _, _| None).await {
         state.queue().observe(session, &written);
     }
 }
 
-/// Anhängen mit Wiederholung, falls der Kopf sich parallel bewegt hat.
+/// Anhängen mit Wiederholung, falls der Kopf sich parallel bewegt hat. Fachlich abgelehnte
+/// Events ersetzt `replace` ([`EventService::append_replacing`]).
 async fn append(
     state: &TunnelState,
     session: SessionId,
     events: Vec<Event>,
+    replace: &(dyn Fn(usize, &Event, &beton_store::Error) -> Option<Event> + Sync),
 ) -> Result<Vec<Event>, Problem> {
     let org = state.local.org;
     for _ in 0..5 {
         let record = state.events.store.session(org, session).await?;
         match state
             .events
-            .append(org, session, record.head_seq, record.epoch, events.clone())
+            .append_replacing(
+                org,
+                session,
+                record.head_seq,
+                record.epoch,
+                events.clone(),
+                replace,
+            )
             .await
         {
             Err(beton_store::Error::SeqConflict { .. }) => continue,
@@ -836,31 +878,32 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                     _ => {}
                 }
             }
-            let seq_range =
-                if fresh.is_empty() {
-                    None
-                } else {
-                    let written =
-                        match append(state, session, fresh.into_iter().map(|e| e.event).collect())
-                            .await
-                        {
-                            Ok(w) => w,
-                            Err(problem) => {
-                                // Nicht still verwerfen: ohne Ack behält der Runner die Events,
-                                // und das Problem wird sichtbar (bei 5xx trennt die Verbindung
-                                // danach, siehe `unsaved_push`).
-                                tracing::warn!(%session, "Events nicht gespeichert");
-                                return Some(TunnelDown::Problem {
-                                    problem: serde_json::to_value(problem).ok()?,
-                                });
-                            }
-                        };
-                    state.queue().observe(session, &written);
-                    if let Some(o) = &state.observer {
-                        o.observe(session, &written);
-                    }
-                    Some((written.first()?.seq, written.last()?.seq))
+            let seq_range = if fresh.is_empty() {
+                None
+            } else {
+                let rseqs: Vec<u64> = fresh.iter().map(|e| e.rseq).collect();
+                let replace = |i: usize, original: &Event, error: &beton_store::Error| {
+                    Some(rejected(session, rseqs.get(i).copied()?, original, error))
                 };
+                let events = fresh.into_iter().map(|e| e.event).collect();
+                let written = match append(state, session, events, &replace).await {
+                    Ok(w) => w,
+                    Err(problem) => {
+                        // Nicht still verwerfen: ohne Ack behält der Runner die Events,
+                        // das Problem wird sichtbar, und die Verbindung trennt danach
+                        // (siehe `unsaved_push`).
+                        tracing::warn!(%session, code = problem.code.as_str(), "Events nicht gespeichert");
+                        return Some(TunnelDown::Problem {
+                            problem: serde_json::to_value(problem).ok()?,
+                        });
+                    }
+                };
+                state.queue().observe(session, &written);
+                if let Some(o) = &state.observer {
+                    o.observe(session, &written);
+                }
+                Some((written.first()?.seq, written.last()?.seq))
+            };
             lock(&runners.persisted).insert(session, upto);
             if let Some(conn) = lock(&runners.conns).get_mut(&session) {
                 conn.last_activity = Instant::now();
@@ -999,6 +1042,54 @@ mod tests {
         );
         lock(&runners.conns).insert(session, conn());
         assert!(runners.connected(session), "Hauptschleife");
+    }
+
+    /// #288: Jeder nicht gespeicherte Push trennt danach (auch 4xx wie `seq_conflict`), damit
+    /// ein späterer Push die Lücke nicht überspringt; `stale_epoch` beendet ohnehin.
+    #[test]
+    fn proto_015_ac1_every_unsaved_push_disconnects() {
+        let reply = |code| TunnelDown::Problem {
+            problem: serde_json::to_value(Problem::new(code)).unwrap(),
+        };
+        assert!(unsaved_push(&reply(ProblemCode::Internal)));
+        assert!(unsaved_push(&reply(ProblemCode::SeqConflict)));
+        assert!(unsaved_push(&reply(ProblemCode::NotFound)));
+        assert!(!unsaved_push(&reply(ProblemCode::StaleEpoch)));
+        let ack = TunnelDown::EventsAck {
+            session_id: SessionId::new(),
+            upto_rseq: 3,
+            seq_range: None,
+        };
+        assert!(!unsaved_push(&ack));
+    }
+
+    /// #288: Der Ersatz nennt Typ, `rseq` und Grund, aber nicht den abgelehnten Inhalt.
+    #[test]
+    fn proto_015_ac5_rejected_replacement_has_no_content() {
+        let session = SessionId::new();
+        let mut original = Event::new(
+            session,
+            0,
+            Actor::default(),
+            EventPayload::Notice(beton_core::event::Notice {
+                text: "geheimer Inhalt".into(),
+                ..Default::default()
+            }),
+        );
+        original.turn_id = Some(beton_core::id::TurnId::new());
+        let error = beton_store::Error::BlobTooLarge { size: 2, max: 1 };
+        let e = rejected(session, 7, &original, &error);
+        assert_eq!(e.turn_id, original.turn_id);
+        assert_eq!(e.ts, original.ts);
+        assert_ne!(e.id, original.id);
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["type"], "event.rejected");
+        assert_eq!(
+            json["payload"],
+            serde_json::json!({"original_type": "notice", "rseq": 7, "reason": "payload_too_large"})
+        );
+        assert_eq!(json["actor"]["component"], "server");
+        assert!(!json.to_string().contains("geheimer Inhalt"));
     }
 
     #[test]
