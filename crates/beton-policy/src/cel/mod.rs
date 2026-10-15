@@ -106,6 +106,52 @@ impl Default for Limits {
     }
 }
 
+/// Umgebungsvariable, mit der Integrationstests das Zeitbudget je `evaluate` großzügig
+/// setzen (Millisekunden, #298). Nur Debug-Builds kennen und lesen sie; gesetzt wird sie für
+/// alle Testläufe in `.cargo/config.toml`.
+#[cfg(debug_assertions)]
+pub const TEST_BUDGET_ENV: &str = "BETON_TEST_POLICY_BUDGET_MS";
+
+/// Obergrenze für [`TEST_BUDGET_ENV`]: großzügig, aber nie ohne Zeitbudget.
+#[cfg(debug_assertions)]
+const TEST_BUDGET_MAX_US: u64 = 60_000_000;
+
+impl Limits {
+    /// Grenzen der Auswertung im Betrieb (Runner, Server, CLI): die Werte aus POL-002.
+    ///
+    /// Nur in Debug-Builds hebt [`TEST_BUDGET_ENV`] das Zeitbudget an: Unter Last auf
+    /// geteilten CI-Runnern überschreitet eine unoptimierte Auswertung sonst die 10 ms in
+    /// Tests, die das Budget gar nicht prüfen (#298). Release-Builds lesen keine Variable.
+    pub fn runtime() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            static RUNTIME: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
+            RUNTIME
+                .get_or_init(|| {
+                    Limits::default()
+                        .with_test_budget(std::env::var(TEST_BUDGET_ENV).ok().as_deref())
+                })
+                .clone()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            Self::default()
+        }
+    }
+
+    /// Hebt das Zeitbudget auf `raw` Millisekunden an (höchstens 60 s). Kleinere, fehlende
+    /// oder ungültige Werte lassen die Grenzen unverändert; das Kostenbudget bleibt immer
+    /// gleich. Nur in Debug-Builds (#298).
+    #[cfg(debug_assertions)]
+    pub fn with_test_budget(mut self, raw: Option<&str>) -> Self {
+        if let Some(ms) = raw.and_then(|r| r.trim().parse::<u64>().ok()) {
+            let us = ms.saturating_mul(1_000).min(TEST_BUDGET_MAX_US);
+            self.eval_budget_us = self.eval_budget_us.max(us);
+        }
+        self
+    }
+}
+
 /// Zählt Kosten je Ausdruck und überwacht das Zeitbudget einer gesamten Auswertung.
 pub struct Meter<'a> {
     max_cost: u64,

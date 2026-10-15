@@ -257,6 +257,18 @@ impl RunnerProvider for LocalProvider {
                 serde_json::to_string(&boot.harnesses).unwrap_or_default(),
             ));
         }
+        // Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298): nur
+        // Debug-Builds reichen die Variable weiter. Sie kommt aus der Umgebung des Daemons,
+        // weil die Test-Helfer die geerbte Umgebung ohne `BETON_*` übergeben.
+        #[cfg(debug_assertions)]
+        if let Some(v) = self
+            .inherit
+            .get(beton_runner::env::TEST_POLICY_BUDGET)
+            .cloned()
+            .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
+        {
+            vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
+        }
         let (program, args) = self
             .command
             .split_first()

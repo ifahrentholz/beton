@@ -228,6 +228,7 @@ async fn eval(ctx: &Ctx, args: PolicyEvalArgs) -> CliResult {
                 &act,
                 &EvalOptions {
                     capabilities: matrix.capabilities(phase),
+                    limits: beton_policy::cel::Limits::runtime(),
                     ..EvalOptions::default()
                 },
             );

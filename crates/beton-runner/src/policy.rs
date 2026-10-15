@@ -43,6 +43,7 @@ use beton_harness::{
 use beton_policy::Phase;
 use beton_policy::approval::{ApprovalPlan, plan};
 use beton_policy::audit::{DecisionMeta, decision_event, subject_hash};
+use beton_policy::cel::Limits;
 use beton_policy::cel::ext::{LexicalResolver, PathResolver};
 use beton_policy::context::Activation;
 use beton_policy::doc::StateScope;
@@ -700,6 +701,14 @@ fn builtin_deny(phase: Phase, hash: &str, rule_id: &str, message: String) -> Dec
 
 /// Tool-Klassen, die Policy-Dateien lesen, aber nicht ändern können (#234).
 const READ_ONLY_KINDS: [&str; 2] = ["file_read", "search"];
+
+/// Höchstdauer einer Auswertung: [`EVAL_TIMEOUT`], nie kürzer als das Zeitbudget der Engine.
+/// Im Betrieb (10 ms) bleibt es bei `EVAL_TIMEOUT`; nur das großzügige Budget der
+/// Integrationstests (Debug-Builds, #298) verlängert den Timeout, damit unter Last nicht er
+/// statt des Budgets reißt.
+fn eval_timeout(limits: &Limits) -> Duration {
+    EVAL_TIMEOUT.max(Duration::from_micros(limits.eval_budget_us))
+}
 
 /// Ablehnung ohne Auswertung (Fehler, Zeitüberschreitung): fail closed.
 fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
@@ -1529,15 +1538,18 @@ impl PolicyGate {
                 }
                 let evaluator = self.inner.evaluator.clone();
                 let set2 = set.clone();
+                let limits = Limits::runtime();
+                let timeout = eval_timeout(&limits);
                 let job = tokio::task::spawn_blocking(move || {
                     let opts = EvalOptions {
                         capabilities,
                         grants: Some(&grants),
+                        limits,
                         ..EvalOptions::default()
                     };
                     evaluator.evaluate(&set2, &act, &opts)
                 });
-                match tokio::time::timeout(EVAL_TIMEOUT, job).await {
+                match tokio::time::timeout(timeout, job).await {
                     Ok(Ok(Ok(d))) => d,
                     Ok(Ok(Err(e))) => engine_deny(phase, set.hash(), format!("Engine-Fehler: {e}")),
                     Ok(Err(_)) => engine_deny(phase, set.hash(), "Engine abgestürzt".into()),
@@ -2769,6 +2781,19 @@ mod tests {
     fn gate() -> (PolicyGate, mpsc::UnboundedReceiver<GateEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (PolicyGate::new(PolicyOptions::default(), tx), rx)
+    }
+
+    /// POL-024 AC3 / #298: Im Betrieb bleibt der Timeout bei 250 ms; nur ein längeres
+    /// Zeitbudget der Engine (Integrationstests) verlängert ihn.
+    #[test]
+    fn pol_024_eval_timeout_is_never_shorter_than_the_engine_budget() {
+        let real = Limits::default();
+        assert_eq!(eval_timeout(&real), EVAL_TIMEOUT);
+        let generous = Limits {
+            eval_budget_us: 500_000,
+            ..real
+        };
+        assert_eq!(eval_timeout(&generous), Duration::from_millis(500));
     }
 
     fn ask(call: &str) -> GateRequest {
