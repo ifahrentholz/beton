@@ -39,12 +39,89 @@ jobs:
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30 statt 15 min: Mit kaltem Cache brauchen Bau und Lauf der Fuzz-Targets (QA-009) bis
+    # 14 min; die Fuzz-Schritte sind einzeln begrenzt.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Basis des PRs für die Auswahl der Fuzz-Targets (QA-009 AC2).
+          fetch-depth: 0
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      # Das Fuzz-Crate ist ein eigener Workspace mit eigener Cargo.lock (QA-009); es gelten
+      # dieselben Regeln (deny.toml im Repo-Root).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: fuzz/Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check
+      # Fuzzing (QA-009) als Schritte dieses Jobs statt eines eigenen Jobs: Jeder Job müsste
+      # Required Check werden (QA-010 AC3). `cargo xtask` läuft mit stable (rust-toolchain.toml),
+      # nur `cargo +nightly fuzz` mit nightly.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
+      - name: Betroffene Fuzz-Targets bestimmen
+        id: fuzz
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # PR: nur Targets, deren Quellen, Harness oder Korpus der PR ändert; Push auf main:
+          # alle (kurz).
+          if [ -n "$BASE_REF" ]; then
+            targets=$(cargo xtask fuzz-targets --affected --range "origin/${BASE_REF}..HEAD")
+          else
+            targets=$(cargo xtask fuzz-targets)
+          fi
+          echo "Fuzz-Targets: ${targets:-keine}"
+          echo "targets=$(echo $targets)" >> "$GITHUB_OUTPUT"
+      - name: Fuzz-Targets je 60 s (parallel)
+        # covers: QA-009 AC2 (ein PR, der beton-proxy ändert, startet die Proxy-Fuzz-Targets)
+        if: steps.fuzz.outputs.targets != ''
+        timeout-minutes: 20
+        env:
+          TARGETS: ${{ steps.fuzz.outputs.targets }}
+        run: |
+          # Ohne ASan: Die eigenen Crates enthalten kein `unsafe` (Lint `unsafe_code = deny`),
+          # Panics, Hänger und verletzte Invarianten findet libFuzzer auch so; der Build ist
+          # deutlich schneller. Die Nightly-Läufe nutzen ASan.
+          cargo +nightly fuzz build -O --sanitizer none
+          bin="fuzz/target/$(rustc +nightly -vV | sed -n 's/^host: //p')/release"
+          pids=()
+          for t in $TARGETS; do
+            mkdir -p "fuzz/artifacts/$t" "$RUNNER_TEMP/corpus/$t"
+            "$bin/$t" "$RUNNER_TEMP/corpus/$t" "fuzz/corpus/$t" \
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048 \
+              -artifact_prefix="fuzz/artifacts/$t/" > "fuzz/artifacts/$t.log" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          i=0
+          for t in $TARGETS; do
+            if wait "${pids[$i]}"; then
+              echo "$t: $(grep -E '^#[0-9]+' "fuzz/artifacts/$t.log" | tail -n 1)"
+            else
+              echo "::error title=Fuzz-Target $t::Absturz, Hänger oder verletzte Invariante (Reproducer im Artefakt fuzz-artifacts)"
+              tail -n 80 "fuzz/artifacts/$t.log"
+              failed=1
+            fi
+            i=$((i + 1))
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          retention-days: 14
 
   test-linux:
     name: test (linux, ohne Netzwerk)

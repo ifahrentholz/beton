@@ -1,4 +1,5 @@
-# Nächtliche Läufe: E2E-Determinismus (QA-007 AC2) und das volle Streaming-Budget (WEB-015).
+# Nächtliche Läufe: E2E-Determinismus (QA-007 AC2), das volle Streaming-Budget (WEB-015) und
+# Fuzzing aller Targets je 30 min (QA-009 AC1).
 name: Nightly
 
 on:
@@ -58,4 +59,59 @@ jobs:
           path: |
             apps/web/playwright-report
             apps/web/test-results
+          retention-days: 14
+
+  fuzz-targets:
+    name: Fuzz-Targets bestimmen
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - id: list
+        run: echo "targets=$(cargo xtask fuzz-targets | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }} (30 min, ASan)
+    needs: fuzz-targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-targets.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          shared-key: fuzz-nightly
+          # Alle Matrix-Jobs bauen dasselbe; einer speichert den Cache.
+          save-if: ${{ matrix.target == 'http_request' }}
+      - name: ${{ matrix.target }} 30 min
+        # covers: QA-009 AC1 (Nightly-Läufe ohne Crash/Timeout)
+        run: |
+          mkdir -p "$RUNNER_TEMP/corpus"
+          cargo +nightly fuzz run -O "${{ matrix.target }}" "$RUNNER_TEMP/corpus" "fuzz/corpus/${{ matrix.target }}" -- \
+            -max_total_time=1800 -timeout=10 -rss_limit_mb=2048
+      # Neue Korpus-Einträge werden nie automatisch committet; wer sie übernehmen will, holt
+      # sie aus diesem Artefakt (`cargo fuzz cmin` vor dem Commit).
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-corpus-${{ matrix.target }}
+          path: ${{ runner.temp }}/corpus
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts
           retention-days: 14
