@@ -335,9 +335,10 @@ impl RunnerRegistry {
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
             let mut conns = lock(&self.conns);
+            // Vor dem Start nimmt der Runner nur Freigaben an (`session_start` mit `ask`, #218).
             let conn = conns
                 .get_mut(&session)
-                .filter(|c| !c.prestart)
+                .filter(|c| !c.prestart || name == "approval.resolve")
                 .ok_or_else(|| {
                     Problem::new(ProblemCode::Unavailable)
                         .detail("Für diese Session läuft kein Runner")
@@ -974,6 +975,28 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, ProblemCode::Unavailable);
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("kein Runner")
+        );
+        // Freigaben (`session_start` mit `ask`) erreichen den Runner schon vorab.
+        let err = runners
+            .deliver(
+                session,
+                "approval.resolve",
+                Value::Null,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("antwortet nicht")
+        );
         lock(&runners.conns).insert(session, conn());
         assert!(runners.connected(session), "Hauptschleife");
     }
