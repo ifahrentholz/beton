@@ -1520,11 +1520,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             let waited = answered.remove(&cmd_id);
                             let reply = match checked {
                                 policy::Checked::Allow(m) => {
-                                    if let Err(problem) = apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
-                                        Err(problem)
-                                    } else {
-                                        gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
-                                        deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                    match apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
+                                        Err(problem) => Err(problem),
+                                        Ok(changed) => {
+                                            if let Some(change) = changed {
+                                                // HAR-017: Auch ein Wechsel durch eine Policy steht im
+                                                // Log, ab diesem Turn (POL-011 AC2, POL-013).
+                                                let event = system_event(&boot, EventPayload::SessionSettingsChanged(
+                                                    change.event(Some(beton_core::event::SettingsMechanism::Live), turn.or(next_turn)),
+                                                ));
+                                                if !push(&mut ws, &boot, &mut unacked, vec![event]).await { break None; }
+                                            }
+                                            gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
+                                            deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                        }
                                     }
                                 }
                                 policy::Checked::Deny { reason, .. } => Err(json!({"code": "policy_denied", "detail": reason})),
@@ -1844,33 +1853,43 @@ fn apply_start_modifications(
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
-/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet).
+/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet). Liefert die
+/// angewendete Änderung für `session.settings_changed` (HAR-017).
 async fn apply_turn_modifications(
     session: &mut dyn HarnessSession,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
     spec: &mut SessionSpec,
-) -> Result<(), Value> {
-    let effort = m
+) -> Result<Option<settings::Change>, Value> {
+    let mapped = m
         .reasoning_effort
         .as_deref()
         .and_then(|e| beton_harness::map_effort(e, &caps.efforts));
     let model = m.model.clone().filter(|v| spec.model.as_ref() != Some(v));
-    let effort = effort.filter(|v| spec.effort.as_ref() != Some(v));
+    let effort = mapped.filter(|v| spec.effort.as_ref() != Some(v));
     if model.is_none() && effort.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     session
         .set_model(model.clone(), effort.clone())
         .await
         .map_err(|e| json!({"code": e.code(), "detail": e.to_string()}))?;
+    let change = settings::Change {
+        model: model.clone(),
+        requested_effort: m
+            .reasoning_effort
+            .clone()
+            .filter(|r| effort.is_some() && effort.as_ref() != Some(r)),
+        effort: effort.clone(),
+        permission_mode: None,
+    };
     if model.is_some() {
         spec.model = model;
     }
     if effort.is_some() {
         spec.effort = effort;
     }
-    Ok(())
+    Ok(Some(change))
 }
 
 /// Buchführung für POL-025 AC1: Tool-Calls ohne Gate-Anfrage bis zum Ende merken; liefert die,

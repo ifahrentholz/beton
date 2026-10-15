@@ -360,6 +360,10 @@ pub struct Usage {
     /// unbekannt“ (USE-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Nutzung über ein Abo (Fake-Harness): `auth_source: vendor_cli`, ohne Geldbetrag; der
+    /// Server rechnet das Listenpreis-Äquivalent (ADR-0034, POL-011).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

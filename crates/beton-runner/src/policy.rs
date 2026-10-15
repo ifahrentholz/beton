@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, EventPayload,
-    Notice, NoticeLevel, PolicyNotified, PolicyRuleIssue, RawJson, RememberScope, ResolvedVia,
-    SystemComponent, TimeoutAction,
+    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, BudgetExhausted,
+    EventPayload, Notice, NoticeLevel, PolicyNotified, PolicyRuleIssue, RawJson, RememberScope,
+    ResolvedVia, SystemComponent, TimeoutAction,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -57,7 +57,7 @@ use beton_policy::state::{FinalOutcome, PolicyState, StateChange, StateOp, effec
 use beton_policy::store::{PolicyStore, StoreEvent};
 use beton_policy::vars::{
     ActorVars, AgentVars, ApprovalsVars, CelTimestamp, HostVars, OrgVars, RequestVars, ResultVars,
-    SessionVars, StartVars, StateVars, ToolVars, UserVars, Vars,
+    RunVars, SessionVars, StartVars, StateVars, ToolVars, UserVars, Vars,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -116,21 +116,50 @@ impl Evaluator for EngineEvaluator {
     }
 }
 
-/// Verbrauchswerte aus der Usage-Projektion des Servers (POL-004 AC3/AC4).
+/// Verbrauchswerte aus der Usage-Projektion des Servers (POL-004 AC3/AC4). Für Budgets
+/// (POL-011, POL-012) zusätzlich das Listenpreis-Äquivalent der Subscription-Nutzung
+/// (ADR-0034), der Teilbaum der Session und die Records ohne Preis.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub session_cost_usd: Option<f64>,
     #[serde(default)]
+    pub session_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub session_without_price: Option<u64>,
+    #[serde(default)]
     pub session_tokens_in: Option<i64>,
     #[serde(default)]
     pub session_tokens_out: Option<i64>,
     #[serde(default)]
+    pub subtree_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub subtree_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub subtree_without_price: Option<u64>,
+    #[serde(default)]
     pub user_daily_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub user_daily_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub user_daily_without_price: Option<u64>,
     #[serde(default)]
     pub user_monthly_cost_usd: Option<f64>,
     #[serde(default)]
     pub timezone: Option<String>,
+}
+
+impl Usage {
+    /// Records ohne Geld und ohne Listenpreis-Äquivalent im Kostenbereich einer Budget-Regel.
+    fn without_price(&self, scope: beton_policy::budget::BudgetScope) -> u64 {
+        use beton_policy::budget::BudgetScope;
+        match scope {
+            BudgetScope::Session | BudgetScope::Run => self.session_without_price,
+            BudgetScope::Subtree => self.subtree_without_price,
+            BudgetScope::User => self.user_daily_without_price,
+        }
+        .unwrap_or(0)
+    }
 }
 
 /// Quelle der Verbrauchswerte (im Runner: System-Call `policy.usage` über den Tunnel).
@@ -141,11 +170,17 @@ pub trait UsageSource: Send + Sync {
 
 /// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
 /// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
-const USAGE_FIELDS: [&str; 6] = [
+const USAGE_FIELDS: [&str; 12] = [
     "session.cost_usd",
+    "session.equivalent_usd",
     "session.tokens_in",
     "session.tokens_out",
+    "run.cost_usd",
+    "run.equivalent_usd",
+    "run.subtree_cost_usd",
+    "run.subtree_equivalent_usd",
     "user.daily_cost_usd",
+    "user.daily_equivalent_usd",
     "user.monthly_cost_usd",
     "user.timezone",
 ];
@@ -524,6 +559,9 @@ struct Inner {
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
     queries: Mutex<dry::QueryBudget>,
+    /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
+    /// Regel und Session; POL-011).
+    inapplicable: Mutex<BTreeSet<String>>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -768,6 +806,7 @@ impl PolicyGate {
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
+                inapplicable: Mutex::new(BTreeSet::new()),
             }),
         }
     }
@@ -1277,14 +1316,62 @@ impl PolicyGate {
         };
         if let Some(s) = vars.session.as_mut() {
             s.cost_usd = u.session_cost_usd;
+            s.equivalent_usd = u.session_equivalent_usd;
             s.tokens_in = u.session_tokens_in;
             s.tokens_out = u.session_tokens_out;
         }
+        // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
+        let run = vars.run.get_or_insert_with(RunVars::default);
+        run.cost_usd = u.session_cost_usd;
+        run.equivalent_usd = u.session_equivalent_usd;
+        run.subtree_cost_usd = u.subtree_cost_usd;
+        run.subtree_equivalent_usd = u.subtree_equivalent_usd;
         if let Some(user) = vars.user.as_mut() {
             user.daily_cost_usd = u.user_daily_cost_usd;
+            user.daily_equivalent_usd = u.user_daily_equivalent_usd;
             user.monthly_cost_usd = u.user_monthly_cost_usd;
-            user.timezone = u.timezone;
+            user.timezone = u.timezone.clone();
         }
+        self.report_inapplicable(set, &u);
+    }
+
+    /// Budget-Regeln, deren Kosten unbekannt sind (Nutzung ohne Geld und ohne Katalogpreis,
+    /// POL-011): Die Regel rechnet nur mit den bekannten Beträgen und greift deshalb unter
+    /// Umständen nicht; `policy.rule_inapplicable` macht das einmal je Regel sichtbar.
+    fn report_inapplicable(&self, set: &EffectiveSet, usage: &Usage) {
+        let mut fresh = Vec::new();
+        if let Ok(mut seen) = self.inner.inapplicable.lock() {
+            for b in beton_policy::budget::budget_rules(set) {
+                if usage.without_price(b.scope) == 0 {
+                    continue;
+                }
+                let key = format!(
+                    "{}/{}/{}",
+                    b.rule.scope.as_str(),
+                    b.rule.set,
+                    b.rule.rule_id
+                );
+                if seen.insert(key) {
+                    fresh.push(b);
+                }
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        let scopes: BTreeSet<&str> = fresh.iter().map(|b| b.scope.as_str()).collect();
+        self.emit(
+            EventPayload::PolicyRuleInapplicable(PolicyRuleIssue {
+                rule_ids: fresh.iter().map(|b| b.rule.rule_id.clone()).collect(),
+                reason: format!(
+                    "Nutzung ohne Preis (weder Geld noch Listenpreis-Äquivalent im Katalog) im \
+                     Bereich {}: das Budget zählt nur bekannte Kosten",
+                    scopes.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            }),
+            None,
+            None,
+        );
     }
 
     /// Wertet das Set auf dem Kontext aus (Engine in eigenem Thread, mit Zeitbudget); Fehler,
@@ -1367,6 +1454,18 @@ impl PolicyGate {
         // an `policy.decision` (POL-025 AC2, #234).
         let _ = raw;
         self.emit(EventPayload::PolicyDecision(event), turn, None);
+        // Erreichte Budget-Limits (POL-011, POL-012): `deny` bzw. `ask` ab `limit_usd`.
+        for e in beton_policy::budget::exhausted(&decision, &set) {
+            self.emit(
+                EventPayload::BudgetExhausted(BudgetExhausted {
+                    scope: e.scope.as_str().to_owned(),
+                    lease_id: None,
+                    action: e.action,
+                }),
+                turn,
+                None,
+            );
+        }
         // `notify` blockiert nie (POL-006 AC2): `inbox` (und bis Web-Push bzw.
         // Desktop-Notifications auch `push`) wird zum Inbox-Eintrag (`policy.notified`, UX-001),
         // `log` zum Hinweis im Verlauf.

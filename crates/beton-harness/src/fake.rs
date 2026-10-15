@@ -820,10 +820,22 @@ impl Player {
                 output_tokens: usage.output_tokens,
                 cache_read_tokens: usage.cache_read_tokens,
                 cache_write_tokens: usage.cache_write_tokens,
-                cost_micro: usage.cost_usd.map(|usd| (usd * 1_000_000.0).round() as i64),
+                // Abo: nie Geld (ADR-0034).
+                cost_micro: usage
+                    .cost_usd
+                    .filter(|_| !usage.subscription)
+                    .map(|usd| (usd * 1_000_000.0).round() as i64),
                 currency: "USD".into(),
-                source: CostSource::Reported,
-                auth_source: AuthSource::None,
+                source: if usage.subscription {
+                    CostSource::Subscription
+                } else {
+                    CostSource::Reported
+                },
+                auth_source: if usage.subscription {
+                    AuthSource::VendorCli
+                } else {
+                    AuthSource::None
+                },
                 purpose: None,
                 ..CostDelta::default()
             }))
