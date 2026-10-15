@@ -902,3 +902,38 @@ fn pol_018_params_are_checked_when_loading() {
         assert!(e.contains(needle), "{params}: {e}");
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// User-Defaults von `beton setup` (POL-001)
+// ---------------------------------------------------------------------------------------
+
+fn user_defaults() -> String {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../policies/user-defaults.yaml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// `beton setup` legt `~/.beton/policies/defaults.yaml` an: `git_guard` (Demo: `force_push:
+/// ask`) und `loop_detection` mit `id: loop`, Schema als lokale Datei (ADR-0033).
+#[test]
+fn pol_001_user_defaults_have_git_guard_and_loop_detection_with_local_schema() {
+    let text = user_defaults();
+    assert!(
+        text.lines().any(|l| l == beton_policy::doc::SCHEMA_COMMENT),
+        "{text}"
+    );
+    assert!(!text.contains("http"), "nie eine URL (ADR-0033)");
+    let s = parse_set(Scope::User, "defaults.yaml", &text).unwrap();
+    let docs: Vec<_> = s
+        .rules
+        .iter()
+        .map(|r| (r.doc.id.as_str(), r.doc.rule_type))
+        .collect();
+    assert!(docs.contains(&("git", Some(beton_policy::doc::RuleType::GitGuard))));
+    assert!(docs.contains(&("loop", Some(beton_policy::doc::RuleType::LoopDetection))));
+    let d = eval(
+        vec![Arc::new(s)],
+        &git_call("git push --force", "feature/x"),
+    );
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+}
