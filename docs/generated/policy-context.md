@@ -12,6 +12,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.cost_usd` | `double` | alle | Kosten der Session in USD aus der Usage-Projektion (ohne Subscriptions). |
 | `session.depth` | `int` | alle | Tiefe im Sub-Agent-Baum (0 = Wurzel). |
 | `session.duration_s` | `double` | alle | Laufzeit in Sekunden. |
+| `session.equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung der Session in USD laut Preis-Katalog; nie Geld (ADR-0034). Budgets zählen `cost_usd + equivalent_usd` (POL-011). |
 | `session.harness` | `string` | alle | Harness, z. B. `claude`, `codex`, `acp:gemini`. |
 | `session.id` | `string` | alle | ID der Session (`ses_…`). |
 | `session.is_async` | `bool` | alle | Asynchroner Lauf (Timer, Schedule, Spawn mit `async`). |
@@ -32,11 +33,14 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `run.budget_usd` | `double` | alle | Budget des Runs in USD. |
 | `run.cost_usd` | `double` | alle | Kosten des Runs in USD. |
 | `run.duration_s` | `double` | alle | Laufzeit in Sekunden. |
+| `run.equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Runs in USD (ADR-0034). |
 | `run.id` | `string` | alle | ID des Runs. |
 | `run.subtree_cost_usd` | `double` | alle | Kosten des Runs inklusive aller Child-Sessions. |
+| `run.subtree_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent des Runs inklusive aller Child-Sessions in USD (ADR-0034). |
 | `run.trigger` | `string` | alle | `interactive`, `spawn`, `timer`, `schedule`, `webhook`, `fork` oder `import`. |
 | `run.turns` | `int` | alle | Turns des Runs. |
 | `user.daily_cost_usd` | `double` | alle | Kosten des Users heute (00:00 in `user.timezone`) in USD über alle Sessions. |
+| `user.daily_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034). |
 | `user.email` | `string` | alle | E-Mail-Adresse (nur mit Identität, ab M4). |
 | `user.id` | `string` | alle | ID (`usr_…`). |
 | `user.monthly_cost_usd` | `double` | alle | Kosten des Users im laufenden Monat in USD. |

@@ -35,7 +35,9 @@ fn pol_001_ac1_spec_example_loads() {
         .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(set.name, "git-and-budget");
     assert_eq!(set.scope, Scope::Project);
-    let ids: Vec<&str> = set.rules.iter().map(|r| r.id.as_str()).collect();
+    // Regeltypen werden zu mehreren Regeln derselben ID (POL-011).
+    let mut ids: Vec<&str> = set.rules.iter().map(|r| r.id.as_str()).collect();
+    ids.dedup();
     assert_eq!(
         ids,
         [
@@ -704,8 +706,9 @@ fn pol_001_new_rules_with_effects_or_approval_timeouts_count_as_loosening() {
 }
 
 /// N2 (#253): `only_tightens` behandelt noch nicht entzuckerte Regeltypen als verschärfend, weil
-/// die Engine sie fail closed als Fehler wertet; entzuckerte (bisher nur `require_approval`)
-/// klassifiziert es über ihre CEL-Fassung. Wird ein weiterer Typ in CEL übersetzt, schlägt dieser
+/// die Engine sie fail closed als Fehler wertet; entzuckerte (`require_approval`, `spend_cap`,
+/// `daily_budget`, `model_route`) klassifiziert es über ihre CEL-Fassung (Budget-Teile samt
+/// eigener Schwellen-Keys verschärfen, Umrouten nicht: `tests/budgets.rs`). Wird ein weiterer Typ in CEL übersetzt, schlägt dieser
 /// Test fehl: dann die Klassifikation in `only_tightens` (store.rs) prüfen und den Typ hier
 /// eintragen (ein `tool_allowlist` z. B. enthält `allow`-Anteile).
 #[test]
@@ -714,7 +717,7 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
     for (t, params) in [
         ("spend_cap", "{ limit_usd: 1 }"),
         ("daily_budget", "{ limit_usd: 1 }"),
-        ("model_route", "{}"),
+        ("model_route", "{ allowed_models: [\"claude-*\"] }"),
         ("require_approval", "{ kinds: [shell] }"),
         ("tool_allowlist", "{}"),
         ("path_guard", "{}"),
@@ -727,7 +730,12 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
             "spec_version: 1\nname: t\nrules:\n  - id: r\n    type: {t}\n    params: {params}\n"
         );
         let set = parse_set(Scope::User, "t.yaml", &text).unwrap_or_else(|e| panic!("{t}: {e}"));
-        let desugared = ["require_approval"];
+        let desugared = [
+            "require_approval",
+            "spend_cap",
+            "daily_budget",
+            "model_route",
+        ];
         assert_eq!(
             matches!(set.rules[0].kind, RuleKind::Builtin(_)),
             !desugared.contains(&t),

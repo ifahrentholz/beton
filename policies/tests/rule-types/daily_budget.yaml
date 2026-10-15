@@ -1,0 +1,8 @@
+# Testdaten zum Regeltyp daily_budget (POL-012, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: daily
+rules:
+  - id: daily-cap
+    type: daily_budget
+    params: { limit_usd: 50, ask_at_usd: [40] }

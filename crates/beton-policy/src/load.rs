@@ -93,8 +93,10 @@ pub enum RuleKind {
         action: Action,
     },
     /// Eingebauter Regeltyp ohne Entzuckerung. `require_approval` (POL-014) wird beim Laden
-    /// zu einer `ask`-Regel; die übrigen folgen mit ihren Regeltyp-Paketen (WP-42, WP-43) und
-    /// gelten bis dahin in ihren Phasen als Fehler (fail closed).
+    /// zu einer `ask`-Regel, `spend_cap`, `daily_budget` und `model_route` (POL-011 bis
+    /// POL-013) zu mehreren CEL-Regeln derselben ID ([`crate::budget`]); die übrigen folgen mit
+    /// ihren Regeltyp-Paketen (WP-42) und gelten bis dahin in ihren Phasen als Fehler (fail
+    /// closed).
     Builtin(RuleType),
 }
 
@@ -199,6 +201,8 @@ struct Locator<'a> {
     doc: Option<&'a Document>,
     /// Präfix des Feldpfads (`policies` bei Inline-Regeln aus `agent.yaml`).
     prefix: &'a str,
+    /// Name des Sets (Zustands-Keys der Regeltypen, POL-011/POL-012).
+    set: &'a str,
 }
 
 impl Locator<'_> {
@@ -305,6 +309,7 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
         text,
         doc: Some(&doc),
         prefix: "",
+        set: "",
     };
     let set: PolicySetDoc = serde_path_to_error::deserialize(doc.value.clone())
         .map_err(|e| loc.at(&error_path(&e), e.inner()))?;
@@ -323,6 +328,10 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
             format!("name `{}` muss [a-z0-9-] sein (max. 64)", set.name),
         ));
     }
+    let loc = Locator {
+        set: &set.name,
+        ..loc
+    };
     let rules = check_rules(scope, &set.rules, &loc)?;
     Ok(LoadedSet {
         scope,
@@ -368,6 +377,7 @@ pub fn inline_set(
         text: "",
         doc: None,
         prefix: "policies",
+        set: name,
     };
     let docs: Vec<RuleDoc> = rules
         .iter()
@@ -427,6 +437,24 @@ fn check_rules_with(
         if !seen.insert(rule.id.as_str()) {
             return Err(loc.at(&field("id"), format!("Regel-ID `{}` ist doppelt", rule.id)));
         }
+        // Zustands-Keys der Regeltypen schreiben nur diese selbst (#268).
+        for (j, effect) in rule.effects.iter().enumerate() {
+            if let Some(t) = crate::budget::reserved_prefix(&effect.key) {
+                return Err(loc.at(
+                    &field(&format!("effects[{j}].key")),
+                    format!(
+                        "Key `{}` ist für den Regeltyp {} reserviert ({}/…)",
+                        effect.key,
+                        t.as_str(),
+                        t.as_str()
+                    ),
+                ));
+            }
+        }
+        if let Some(parts) = desugar_parts(scope, rule, loc, &at)? {
+            out.extend(parts);
+            continue;
+        }
         out.push(check_rule(scope, rule, loc, &at)?);
     }
     Ok(out)
@@ -438,8 +466,32 @@ fn check_rule(
     loc: &Locator,
     at: &str,
 ) -> Result<LoadedRule, LoadError> {
-    let field = |f: &str| format!("{at}.{f}");
     if let Some(rule_type) = rule.rule_type {
+        check_type_fields(rule, rule_type, loc, at)?;
+        if rule_type == RuleType::RequireApproval {
+            return require_approval(rule, loc, at);
+        }
+        return Ok(LoadedRule {
+            id: rule.id.clone(),
+            kind: RuleKind::Builtin(rule_type),
+            doc: rule.clone(),
+            notify_exprs: Vec::new(),
+            effect_values: Vec::new(),
+            remember_key: None,
+        });
+    }
+    check_cel_rule(scope, rule, loc, at)
+}
+
+/// Ein Regeltyp (`type` + `params`) schließt eigene Bedingung, Aktion und deren Felder aus.
+fn check_type_fields(
+    rule: &RuleDoc,
+    rule_type: RuleType,
+    loc: &Locator,
+    at: &str,
+) -> Result<(), LoadError> {
+    let field = |f: &str| format!("{at}.{f}");
+    {
         let forbidden = [
             ("on", rule.on.is_some()),
             ("when", rule.when.is_some()),
@@ -459,18 +511,63 @@ fn check_rule(
                 ),
             ));
         }
-        if rule_type == RuleType::RequireApproval {
-            return require_approval(rule, loc, at);
-        }
-        return Ok(LoadedRule {
-            id: rule.id.clone(),
-            kind: RuleKind::Builtin(rule_type),
-            doc: rule.clone(),
-            notify_exprs: Vec::new(),
-            effect_values: Vec::new(),
-            remember_key: None,
-        });
     }
+    Ok(())
+}
+
+/// Regeltypen, die zu mehreren CEL-Regeln derselben ID werden (POL-011 bis POL-013,
+/// [`crate::budget`]). Jeder Teil durchläuft die Prüfung einer handgeschriebenen Regel seiner
+/// Ebene; `doc` behält Typ und Parameter (Explain, Hot-Reload).
+fn desugar_parts(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<Option<Vec<LoadedRule>>, LoadError> {
+    let Some(rule_type) = rule.rule_type else {
+        return Ok(None);
+    };
+    check_type_fields(rule, rule_type, loc, at)?;
+    let Some(parts) = crate::budget::desugar(rule_type, rule, scope, loc.set) else {
+        return Ok(None);
+    };
+    let params = |path: &str| {
+        if path.is_empty() {
+            format!("{at}.params")
+        } else {
+            format!("{at}.params.{path}")
+        }
+    };
+    let parts = parts.map_err(|e| match e {
+        crate::budget::ParamError::At { path, message } => loc.at(&params(&path), message),
+        crate::budget::ParamError::Cel { path, error } => loc.cel(&params(&path), &error),
+    })?;
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        let mut loaded = check_cel_rule(scope, &part, loc, at).map_err(|e| LoadError {
+            message: format!(
+                "{}: Entzuckerung von {} fehlgeschlagen: {}",
+                loc.path(&params("")),
+                rule_type.as_str(),
+                e.message
+            ),
+            ..e
+        })?;
+        loaded.doc.rule_type = Some(rule_type);
+        loaded.doc.params.clone_from(&rule.params);
+        out.push(loaded);
+    }
+    Ok(Some(out))
+}
+
+/// Eine Regel mit Phase, Bedingung und Aktion (handgeschrieben oder entzuckert).
+fn check_cel_rule(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<LoadedRule, LoadError> {
+    let field = |f: &str| format!("{at}.{f}");
     if rule.params.is_some() {
         return Err(loc.at(&field("params"), "`params` gibt es nur mit `type`"));
     }

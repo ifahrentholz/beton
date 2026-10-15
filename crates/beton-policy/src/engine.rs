@@ -374,6 +374,10 @@ struct Run<'a> {
     opts: &'a EvalOptions<'a>,
     meter: Meter<'a>,
     decision: Decision,
+    /// Die geladene Regel je Eintrag in `decision.matched` (gleiche Reihenfolge): Regeltypen
+    /// haben mehrere Teile mit derselben ID (POL-011 bis POL-013), die Effects gehören zum
+    /// Teil, der gegriffen hat.
+    hits: Vec<&'a LoadedRule>,
 }
 
 /// Ein Verdikt mit Herkunft (für die Kombination).
@@ -412,6 +416,7 @@ impl<'a> Run<'a> {
                 policy_set_hash: set.hash.clone(),
                 eval_us: 0,
             },
+            hits: Vec::new(),
         }
     }
 
@@ -694,6 +699,7 @@ impl<'a> Run<'a> {
                 continue;
             }
             self.decision.matched.push(entry);
+            self.hits.push(rule);
             let Some(m) = &rule.doc.modify else { continue };
             let unsupported: Vec<&str> = m
                 .fields()
@@ -706,9 +712,20 @@ impl<'a> Run<'a> {
                     unsupported.join("`, `"),
                     self.phase
                 );
+                // Die Begründung der Regel allein erklärt nicht, warum abgelehnt wird.
+                let explained = |mut r: Reason| {
+                    if r.reason != what {
+                        r.reason = format!("{} ({what})", r.reason);
+                    }
+                    r
+                };
                 match rule.doc.on_unsupported.unwrap_or(OnUnsupported::Deny) {
-                    OnUnsupported::Deny => verdicts.deny.push(Self::reason(set, rule, &what)),
-                    OnUnsupported::Ask => verdicts.ask.push((Self::reason(set, rule, &what), true)),
+                    OnUnsupported::Deny => verdicts
+                        .deny
+                        .push(explained(Self::reason(set, rule, &what))),
+                    OnUnsupported::Ask => verdicts
+                        .ask
+                        .push((explained(Self::reason(set, rule, &what)), true)),
                     OnUnsupported::Skip => self
                         .decision
                         .warnings
@@ -876,6 +893,7 @@ impl<'a> Run<'a> {
                 continue;
             }
             self.decision.matched.push(entry);
+            self.hits.push(rule);
             match action {
                 Action::Deny => verdicts.deny.push(Self::reason(
                     set,
@@ -978,16 +996,14 @@ impl<'a> Run<'a> {
             Outcome::Deny { .. } => DefaultAction::Deny,
             Outcome::Ask { .. } => DefaultAction::Ask,
         };
-        let matched: Vec<RuleRef> = self
+        let matched: Vec<(RuleRef, &'a LoadedRule)> = self
             .decision
             .matched
             .iter()
             .map(|m| m.rule.clone())
+            .zip(self.hits.iter().copied())
             .collect();
-        for rule_ref in matched {
-            let Some(rule) = self.loaded(&rule_ref) else {
-                continue;
-            };
+        for (rule_ref, rule) in matched {
             if rule.doc.effects.is_empty() {
                 continue;
             }

@@ -1,0 +1,34 @@
+# Policy-Test (POL-026 AC4): Regeltyp daily_budget (POL-012).
+spec_version: 1
+layers: { user: [daily_budget.yaml] }
+fixtures:
+  user: { timezone: Europe/Berlin }
+cases:
+  - name: Unter dem Tagesbudget ist alles frei
+    phase: model_request
+    given: { user: { daily_cost_usd: 12.0 } }
+    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    expect: { outcome: allow }
+  - name: Die Schwelle fragt einmal am Tag
+    steps:
+      - { cost_delta_usd: 41.0 }
+      - { phase: model_request, input: { request: { model: claude-opus-4-1, granularity: turn } },
+          expect: { outcome: ask, rules: [daily-cap], reason_contains: "40 USD" }, resolve: { decision: allow } }
+      - { phase: model_request, input: { request: { model: claude-opus-4-1, granularity: turn } },
+          expect: { outcome: allow } }
+    expect_state: { user_day: { "daily_budget/user/daily/daily-cap/asked": 40.0 } }
+  - name: Zwei Sessions mit je 30 USD überschreiten 50 USD
+    phase: model_request
+    given: { user: { daily_cost_usd: 60.0 } }
+    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    expect: { outcome: deny, rules: [daily-cap], reason_contains: Kostenlimit }
+  - name: Subscription-Nutzung zählt mit dem Listenpreis-Äquivalent
+    phase: model_request
+    given: { user: { daily_cost_usd: 20.0, daily_equivalent_usd: 30.0 } }
+    input: { request: { model: claude-sonnet-4-5, granularity: turn } }
+    expect: { outcome: deny, rules: [daily-cap] }
+  - name: Neue Sessions starten nach der Überschreitung nicht
+    phase: session_start
+    given: { user: { daily_cost_usd: 55.0 } }
+    input: { start: { trigger: interactive, harness: claude } }
+    expect: { outcome: deny, rules: [daily-cap] }

@@ -106,7 +106,7 @@ cases:
       - { phase: model_request, input: { request: { model: m, granularity: turn } },
           expect: { outcome: ask, rules: [budget], reason_contains: "3" }, resolve: { decision: allow } }
       - { phase: model_request, input: { request: { model: m, granularity: turn } }, expect: { outcome: allow } }
-      - { cost_delta_usd: 1.9 }
+      - { cost_delta_usd: 2.0 }
       - { phase: model_request, input: { request: { model: m, granularity: turn } },
           expect: { outcome: deny, rules: [budget], reason_contains: "5" } }
     expect_state: { session: { "spend_cap/project/b/budget/asked": 3.0 } }
@@ -117,6 +117,11 @@ cases:
           expect: { outcome: ask, rules: [budget] }, resolve: { decision: deny } }
       - { phase: model_request, input: { request: { model: m, granularity: turn } },
           expect: { outcome: ask, rules: [budget] } }
+  - name: Genau 5,00 USD lehnt vor dem nächsten Turn ab
+    phase: model_request
+    given: { session: { cost_usd: 5.0 }, state: { session: { "spend_cap/project/b/budget/asked": 3.0 } } }
+    input: { request: { model: m, granularity: turn } }
+    expect: { outcome: deny, rules: [budget] }
   - name: Auch session_start prüft das Limit
     phase: session_start
     given: { session: { cost_usd: 7.0 } }
@@ -133,7 +138,10 @@ fn pol_011_ac1_skipped_thresholds_ask_only_for_the_highest() {
         "u",
         "  - id: budget\n    type: spend_cap\n    params: { limit_usd: 25, ask_at_usd: [20, 10] }\n",
     );
-    let d = eval(vec![s], &request(json!({ "cost_usd": 21.0, "equivalent_usd": 0.0 })));
+    let d = eval(
+        vec![s],
+        &request(json!({ "cost_usd": 21.0, "equivalent_usd": 0.0 })),
+    );
     assert!(matches!(d.outcome, Outcome::Ask { ref reasons } if reasons.len() == 1));
     assert!(reason_text(&d).contains("20"), "{}", reason_text(&d));
     // Die Freigabe merkt sich die Schwelle 20 (Effects erst nach der Auflösung).
@@ -259,7 +267,9 @@ fn pol_011_ac4_explain_shows_the_desugared_cel_rules() {
         && r.when.is_some()));
     for phase in ["session_start", "model_request"] {
         assert!(
-            rules.iter().any(|r| r.phases == [phase] && r.action == "deny"),
+            rules
+                .iter()
+                .any(|r| r.phases == [phase] && r.action == "deny"),
             "{rules:#?}"
         );
     }
@@ -337,12 +347,18 @@ fn pol_011_params_are_checked_on_load() {
         assert!(e.contains(needle), "{params}: {e}");
     }
     // `type` schließt eigene Bedingungen und Effects weiter aus.
-    assert!(load_err("  - id: x\n    type: spend_cap\n    on: model_request\n    params: { limit_usd: 1 }\n").contains("on"));
+    assert!(
+        load_err(
+            "  - id: x\n    type: spend_cap\n    on: model_request\n    params: { limit_usd: 1 }\n"
+        )
+        .contains("on")
+    );
 }
 
 // ------------------------------------------------------------------------- POL-012
 
-const DAILY: &str = "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, ask_at_usd: [40] }\n";
+const DAILY: &str =
+    "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, ask_at_usd: [40] }\n";
 
 fn user_request(daily: f64, equivalent: f64) -> Activation {
     act(
@@ -421,7 +437,12 @@ fn pol_012_team_scope_and_own_timezone_follow_with_m4() {
     let rule = |params: &str| format!("  - id: x\n    type: daily_budget\n    params: {params}\n");
     assert!(load_err(&rule("{ scope: team, limit_usd: 5 }")).contains("M4"));
     assert!(load_err(&rule("{ limit_usd: 5, timezone: Europe/Berlin }")).contains("timezone"));
-    assert!(load_err(&rule("{ limit_usd: 5, fallback_effort: low, on_exceed: route, fallback_model: x }")).contains("fallback_effort"));
+    assert!(
+        load_err(&rule(
+            "{ limit_usd: 5, fallback_effort: low, on_exceed: route, fallback_model: x }"
+        ))
+        .contains("fallback_effort")
+    );
 }
 
 // ------------------------------------------------------------------------- POL-013
@@ -462,7 +483,11 @@ fn pol_013_ac1_a_start_with_a_model_outside_the_allowlist_is_denied_with_a_reaso
     let text = reason_text(&d);
     assert!(text.contains("claude-sonnet-*"), "{text}");
     assert_eq!(
-        eval(vec![s.clone()], &start_with(Some("claude-sonnet-4-5"), false, 0.0)).outcome,
+        eval(
+            vec![s.clone()],
+            &start_with(Some("claude-sonnet-4-5"), false, 0.0)
+        )
+        .outcome,
         Outcome::Allow
     );
     // Ein unbekanntes Modell (Default des Harness) ist nicht nachweisbar erlaubt.
@@ -569,13 +594,25 @@ fn pol_013_params_are_checked_on_load() {
         ("{}", "allowed_models"),
         ("{ allowed_models: [] }", "allowed_models"),
         ("{ allowed_models: claude }", "allowed_models"),
-        ("{ routes: [{ when: 'session.cost_usd > \"5\"', model: x }] }", "routes[0].when"),
+        (
+            "{ routes: [{ when: 'session.cost_usd > \"5\"', model: x }] }",
+            "routes[0].when",
+        ),
         ("{ routes: [{ when: 'session.is_async' }] }", "routes[0]"),
         ("{ routes: [{ model: x, temperature: 1 }] }", "temperature"),
         ("{ routes: [{ model: x }, { model: y }] }", "routes[1]"),
-        ("{ routes: [{ model: x, reasoning_effort: max }] }", "reasoning_effort"),
-        ("{ allowed_models: [x], on_unsupported: never }", "on_unsupported"),
-        ("{ allowed_models: [x], fallback_model: y }", "fallback_model"),
+        (
+            "{ routes: [{ model: x, reasoning_effort: max }] }",
+            "reasoning_effort",
+        ),
+        (
+            "{ allowed_models: [x], on_unsupported: never }",
+            "on_unsupported",
+        ),
+        (
+            "{ allowed_models: [x], fallback_model: y }",
+            "fallback_model",
+        ),
     ] {
         let e = load_err(&rule(params));
         assert!(e.contains(needle), "{params}: {e}");
@@ -600,7 +637,9 @@ fn pol_001_new_budget_rules_tighten_but_routing_does_not() {
         Ok(())
     );
     assert_eq!(
-        with("  - id: allow-list\n    type: model_route\n    params: { allowed_models: [\"claude-*\"] }\n"),
+        with(
+            "  - id: allow-list\n    type: model_route\n    params: { allowed_models: [\"claude-*\"] }\n"
+        ),
         Ok(())
     );
     // Umrouten ist `modify`: erst in einer neuen Session.
@@ -612,7 +651,11 @@ fn pol_001_new_budget_rules_tighten_but_routing_does_not() {
     }
     // Ein geändertes Limit ist eine Änderung einer bestehenden Regel.
     let old = set(Scope::Project, "p", SPEND_CAP);
-    let new = set(Scope::Project, "p", &SPEND_CAP.replace("limit_usd: 5", "limit_usd: 50"));
+    let new = set(
+        Scope::Project,
+        "p",
+        &SPEND_CAP.replace("limit_usd: 5", "limit_usd: 50"),
+    );
     assert!(only_tightens(Some(&old), &new).is_err());
     // Unverändert bleibt unverändert.
     assert_eq!(only_tightens(Some(&old), &old.clone()), Ok(()));
