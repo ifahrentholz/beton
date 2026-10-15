@@ -1076,12 +1076,16 @@ impl Instance {
         }
         let traffic = (!switching).then(|| self.traffic.clone()).flatten();
         let host = host.to_string();
-        let Some(r) = redactor.filter(|_| !switching) else {
+        let Some(r) = redactor else {
             return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
         };
-        // PRX-010: zurückgespiegelte Werte durch die Platzhalter ersetzen.
-        let r = Arc::new(r);
+        // PRX-010: zurückgespiegelte Werte durch die Platzhalter ersetzen. Header immer, auch
+        // bei `101`; der Byte-Strom nach dem Upgrade bleibt unberührt.
         r.headers(res.headers_mut());
+        if switching {
+            return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
+        }
+        let r = Arc::new(r);
         let (mut parts, body) = res.into_parts();
         match r.treatment(&mut parts.headers) {
             Treatment::Pass => {
