@@ -1325,3 +1325,67 @@ fn pol_015_acp_titles_are_not_matched_by_name_patterns() {
     assert_eq!(outcome(&eval(vec![by_kind.clone()], &read)), "allow");
     assert_eq!(outcome(&eval(vec![by_kind], &shell_titled_read)), "deny");
 }
+
+/// Review #285 (minor): Die User-Defaults setzen `best_effort` nur für die MCP-Teile von
+/// `git_guard` und für `loop_detection`; die Shell-Teile bleiben `required`.
+#[test]
+fn pol_001_user_defaults_use_best_effort_only_for_mcp_parts_and_loop() {
+    use beton_policy::doc::Enforcement;
+    let s = parse_set(Scope::User, "defaults.yaml", &user_defaults()).unwrap();
+    for r in &s.rules {
+        let best_effort = r.doc.enforcement == Some(Enforcement::BestEffort);
+        let want = r.id.starts_with("git/mcp-") || r.id.starts_with("loop/");
+        assert_eq!(best_effort, want, "{}", r.id);
+    }
+    // Eigener Parameter: `mcp_enforcement` gilt nur für die MCP-Teile.
+    let s = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ mcp_enforcement: best_effort }}\n"),
+    );
+    let mcp = s.rules.iter().find(|r| r.id == "git/mcp-merge").unwrap();
+    assert_eq!(mcp.doc.enforcement, Some(Enforcement::BestEffort));
+    let push = s.rules.iter().find(|r| r.id == "git/push").unwrap();
+    assert_eq!(push.doc.enforcement, None);
+    assert!(
+        load_err(&format!("{GIT}    params: {{ mcp_enforcement: soft }}\n"))
+            .contains("mcp_enforcement")
+    );
+}
+
+/// POL-015: Mehrere Allowlists derselben Ebene ergeben die Vereinigung; ein `allow` einer
+/// Ebene hebt alle Defaults dieser Ebene auf (auch `defaults:` anderer Sets).
+#[test]
+fn pol_015_allowlists_of_the_same_layer_are_united() {
+    let a = set(
+        Scope::Project,
+        "a",
+        "  - id: a\n    type: tool_allowlist\n    params: { allow_kinds: [file_read] }\n",
+    );
+    let b = set(
+        Scope::Project,
+        "b",
+        "  - id: b\n    type: tool_allowlist\n    params: { allow_kinds: [shell] }\n",
+    );
+    let c = Arc::new(
+        parse_set(
+            Scope::Project,
+            "c.yaml",
+            "spec_version: 1\nname: c\ndefaults: { tool_call: deny }\n",
+        )
+        .unwrap(),
+    );
+    let sets = vec![a, b, c];
+    let read = eval(
+        sets.clone(),
+        &call("Read", json!({ "file_path": "/repo/a" })),
+    );
+    assert_eq!(outcome(&read), "allow", "{read:?}");
+    let bash = eval(sets.clone(), &call("Bash", json!({ "command": "ls" })));
+    assert_eq!(outcome(&bash), "allow", "{bash:?}");
+    let write = eval(
+        sets,
+        &call("Write", json!({ "file_path": "/repo/a", "content": "x" })),
+    );
+    assert_eq!(outcome(&write), "deny", "{write:?}");
+}

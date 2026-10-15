@@ -695,11 +695,33 @@ mod tests {
         )
         .unwrap();
         let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
-        for harness in ["claude", "codex", "fake"] {
+        for harness in ["claude", "codex", "fake", "acp:gemini"] {
             let matrix = crate::policy::matrix_for(harness).unwrap();
             let check = beton_policy::enforcement::check_start(&effective, &matrix);
             assert!(check.refused.is_empty(), "{harness}: {check:?}");
         }
+        // Direkt-Harness (Provider aus der Konfiguration): beton prüft jeden Call selbst.
+        use beton_harness::HarnessAdapter as _;
+        use beton_harness_direct::config::{KeyRef, Provider, WireKind};
+        let direct = beton_harness_direct::DirectAdapter::new(
+            Provider {
+                name: "local".into(),
+                wire: WireKind::Anthropic,
+                base_url: "http://127.0.0.1:1".parse().unwrap(),
+                key: KeyRef::None,
+                prompt_caching: false,
+                models: Vec::new(),
+            },
+            &beton_harness_direct::DirectOptions::default(),
+        );
+        let matrix = direct
+            .capabilities(
+                beton_harness::Mode::Native,
+                &beton_harness::ProbeReport::default(),
+            )
+            .enforcement();
+        let check = beton_policy::enforcement::check_start(&effective, &matrix);
+        assert!(check.is_clean(), "direct: {check:?}");
     }
 
     /// Review #285 B2: Eine Allowlist (Default `deny` der Ebene) verweigert unter Codex den
