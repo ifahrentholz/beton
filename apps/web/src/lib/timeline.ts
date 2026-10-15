@@ -92,6 +92,18 @@ function problemText(problem: unknown): { title: string; detail?: string } {
   return typeof p.detail === 'string' ? { title, detail: p.detail } : { title }
 }
 
+/** Grund eines `event.rejected` in Klartext (Problem-Code aus PROTO-015). */
+function rejectReason(code: string): string {
+  switch (code) {
+    case 'payload_too_large':
+      return 'zu groß'
+    case 'validation_failed':
+      return 'ungültig'
+    default:
+      return code
+  }
+}
+
 /** Erste passende Regel einer Policy-Entscheidung (Name und Begründung). */
 function policyRule(matched: unknown[]): { rule: string; reason: string } {
   const m = (matched[0] ?? {}) as Record<string, unknown>
@@ -258,6 +270,15 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
         break
       case 'error':
         items.push({ kind: 'error', key, ...problemText(e.payload.problem) })
+        break
+      // Vom Server abgelehntes Runner-Event (PROTO-015): sichtbar an seiner Stelle, ohne Inhalt.
+      case 'event.rejected':
+        items.push({
+          kind: 'error',
+          key,
+          title: 'Ein Ereignis wurde nicht gespeichert',
+          detail: `${e.payload.original_type} · ${rejectReason(e.payload.reason)}. Der Server hat es abgelehnt; der Inhalt fehlt im Verlauf.`,
+        })
         break
       case 'harness.exited':
         items.push({
