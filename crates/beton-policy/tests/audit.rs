@@ -8,6 +8,7 @@ use std::sync::Arc;
 use beton_core::event::PolicyOutcome;
 use beton_policy::Phase;
 use beton_policy::audit::{DecisionMeta, decision_event, new_decision_id, subject_hash};
+use beton_policy::cel::Clock;
 use beton_policy::context::Activation;
 use beton_policy::enforcement::Level;
 use beton_policy::engine::{EffectiveSet, EvalOptions};
@@ -22,6 +23,23 @@ fn set(body: &str) -> Arc<LoadedSet> {
 }
 
 const SECRET_ARG: &str = "rm -rf /geheimes-verzeichnis-4711";
+
+/// Stehende Uhr: Die Tests zu Fehlertexten prüfen nicht das Zeitbudget (POL-002); unter fremder
+/// Last auf dem CI-Runner darf es sie nicht verfälschen (#273). Die Engine bleibt unverändert.
+struct FrozenClock;
+
+impl Clock for FrozenClock {
+    fn now_us(&self) -> u64 {
+        0
+    }
+}
+
+fn frozen() -> EvalOptions<'static> {
+    EvalOptions {
+        clock: Some(&FrozenClock),
+        ..EvalOptions::default()
+    }
+}
 
 fn shell(command: &str) -> Activation {
     Activation::new(
@@ -105,7 +123,7 @@ fn pol_025_ac2_errors_carry_no_argument_values() {
     let effective = EffectiveSet::new(vec![set(
         "  - id: as-int\n    on: tool_call\n    when: 'int(tool.args.command) > 1'\n    action: deny\n  - id: as-url\n    on: tool_call\n    when: 'url.host(tool.args.command) == \"x\"'\n    action: deny\n  - id: as-key\n    on: tool_call\n    when: 'tool.args[tool.command] == 1'\n    action: deny\n",
     )]);
-    let decision = effective.evaluate(&shell(SECRET_ARG), &EvalOptions::default());
+    let decision = effective.evaluate(&shell(SECRET_ARG), &frozen());
     let event = decision_event(&decision, DecisionMeta::new(Level::Full));
     assert_eq!(event.errors.len(), 3, "{:?}", event.errors);
     let text = serde_json::to_string(&event).unwrap();
@@ -123,7 +141,7 @@ fn pol_025_ac2_regex_duration_and_path_errors_carry_no_values() {
     let effective = EffectiveSet::new(vec![set(
         "  - id: as-regex\n    on: tool_call\n    when: 'tool.command.matches(tool.args.command + \"(\")'\n    action: deny\n  - id: as-duration\n    on: tool_call\n    when: 'duration(tool.args.command) > duration(\"1s\")'\n    action: deny\n  - id: as-path\n    on: tool_call\n    when: 'under(tool.args.command, \"/repo\")'\n    action: deny\n",
     )]);
-    let decision = effective.evaluate(&shell(SECRET_ARG), &EvalOptions::default());
+    let decision = effective.evaluate(&shell(SECRET_ARG), &frozen());
     let event = decision_event(&decision, DecisionMeta::new(Level::Full));
     assert_eq!(event.errors.len(), 3, "{:?}", event.errors);
     let text = serde_json::to_string(&event).unwrap();
