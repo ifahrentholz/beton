@@ -61,6 +61,7 @@ fn boot() -> RunnerBoot {
         agent_snapshot: None,
         snapshots: None,
         fork: None,
+        compaction: Default::default(),
     }
 }
 

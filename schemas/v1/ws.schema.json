@@ -865,10 +865,30 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "trigger": {
+          "description": "Wer die Compaction ausgelöst hat (USE-009); setzt der Runner. Fehlt in Logs vor M2.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompactionTrigger"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "before_tokens"
+      ]
+    },
+    "CompactionTrigger": {
+      "description": "Auslöser einer Compaction (USE-009): `user` über Button, `/compact` oder API, `beton`\nautomatisch vor dem nächsten Turn (`compaction.auto: beton`), `harness` vom Harness selbst.",
+      "type": "string",
+      "enum": [
+        "user",
+        "beton",
+        "harness"
       ]
     },
     "ConflictFile": {

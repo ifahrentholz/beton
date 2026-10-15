@@ -156,7 +156,8 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Die Seite zeigt für den Fake-Harness-Datensatz dieselben Summen wie `GET /v1/usage` (E2E-Test).
   - [ ] AC2 — Klick auf eine Session in der Tabelle öffnet die Session.
   - [ ] AC3 — CSV-Export enthält die sichtbaren Spalten und Filter im Dateinamen.
-  - [ ] AC4 — Records ohne Preis werden mit Hinweis „ohne Preis – Override anlegen“ und Link zu den Pricing-Einstellungen dargestellt.
+  - [ ] AC4 — Records ohne Preis werden mit Hinweis „ohne Preis – eigenen Preis anlegen“ und Link zu den Pricing-Einstellungen dargestellt.
+- **Details** *(präzisiert, M2, WP-47)*: Seite `/usage` nach dem Entwurf `usage-overview`; alle Zahlen aus `GET /v1/usage` (Kennzahlen mit `group_by=day`, Verlauf und Subscriptions mit `group_by=day,harness`, Aufschlüsselung je Dimension), Tagesgrenzen in der Zeitzone des Browsers (`tz`). Zeitraum: Heute, 7 Tage, 14 Tage (Standard), laufender Monat. Tokens in Kennzahlen und Verlauf sind Eingabe plus Ausgabe; „Cache gelesen“ steht nur in der Tabelle. Kosten gibt es nur für `billing: metered`; der Bereich „Subscriptions“ zeigt je Harness mit Subscription-Login die Abo-Fenster (USE-004) bzw. „Kontingent nicht gemeldet“, nie einen Geldbetrag (ADR-0034). Die Dimensionen Person und Team sind bis M4 deaktiviert. CSV-Export: die Spalten der Tabelle (Tokens als ganze Zahlen), Dateiname `verbrauch_<von>_<bis>_nach-<gruppierung>.csv`. Ziel des Links aus AC4 ist die Seite „Preise“ (`/usage/pricing`, Entwurf `usage-pricing`) mit eigenen Preisen in Prüfreihenfolge, Katalog und Turns ohne Preis aus `GET /v1/usage/pricing`; sie ist in M2 nur lesend, Anlegen aus der UI folgt mit #266. Wortlaut des Hinweises wie im Entwurf („eigenen Preis“ statt „Override“).
 - **Abhängigkeiten:** USE-005; WEB-001 (siehe 08-clients.md)
 
 ### USE-007 — CLI `beton usage`
@@ -175,7 +176,8 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Nach einem `context.usage {used_tokens: 150000, window_tokens: 200000}` zeigt der Ring 75 % im Warnstil.
   - [ ] AC2 — Ohne bekanntes Fenster erscheint „150 k Tokens“ ohne Prozentangabe.
-  - [ ] AC3 — Die TUI zeigt denselben Wert in der Statuszeile.
+  - [ ] AC3 — (ab M3) Die TUI zeigt denselben Wert in der Statuszeile. *(Verschoben, WP-47, #265: Die TUI kommt mit TUI-001 in M3.)*
+- **Details** *(präzisiert, M2, WP-47)*: Ring in einer Zeile direkt über der Eingabe (Entwurf `usage-context`), Wert aus dem letzten `context.usage` der Session; Stufen ab 70 % „wird knapp“ (Rost), ab 85 % „fast voll“, ab 95 % „voll“ (`--deny`). `window_tokens: 0` heißt „Fenster unbekannt“; dann ergänzt der Runner das Fenster aus dem Preis-Katalog (`context_window` des Modells), Preise aus der Provider-Konfiguration (HAR-011) nutzt der Direkt-API-Harness schon selbst. Vor dem ersten gemeldeten Kontext zeigt die Web-UI keine Zeile.
 - **Abhängigkeiten:** USE-002; SES-011 (siehe 07-sessions-collaboration.md)
 - **Referenz:** ADR-0021
 
@@ -186,6 +188,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Klick auf „Kompaktieren“ erzeugt `compaction.started`/`compaction.completed`; die Kontextanzeige aktualisiert sich ohne Reload.
   - [ ] AC2 — Mit `compaction.auto: beton` und Fake-Harness (`compaction: native`) wird bei Überschreiten von 80 % genau einmal kompaktiert, bevor der nächste Turn startet.
   - [ ] AC3 — Bei `compaction: none` ist der Button deaktiviert und zeigt einen Tooltip mit Grund.
+- **Details** *(präzisiert, M2, WP-47)*: User-Konfiguration `compaction: {auto: harness | beton | off, threshold: 0.8}`; `threshold` liegt in (0, 1]. `beton`: Bevor der Server den nächsten Turn zustellt (Queue, SES-004), prüft er den letzten `context.usage`; liegt `used_tokens` über `threshold × window_tokens`, seit diesem Stand kein `compaction.started` und hat der Harness `compaction: native`, sendet er `session.compact {trigger: beton}` und wartet auf `compaction.completed` (höchstens 5 Min., danach startet der Turn trotzdem). Der Direkt-API-Harness kompaktiert nur bei `harness` selbst ab `threshold`, bei `beton` und `off` nicht; die Automatik der Vendor-CLIs bleibt unberührt. `compaction.started|completed` tragen `trigger` (`user`, `beton`, `harness`), den der Runner setzt; der Verlauf zeigt „von dir ausgelöst“ (Texte für Automatik und Harness, Lade- und Fehlerzustände folgen mit #267 nach Abnahme von #262). Der Button ist auch während eines Turns und ohne bekannte Capabilities deaktiviert; `/compact` gibt es im Slash-Menü, die Command-Palette (UX-002) folgt in M3, die Einstellung der Automatik aus der UI mit #266.
 - **Abhängigkeiten:** USE-008; HAR-022 (siehe 01-harnesses.md), SES-011 (siehe 07-sessions-collaboration.md)
 
 ### VOI — Spracheingabe (lokales Whisper)

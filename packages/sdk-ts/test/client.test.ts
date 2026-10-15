@@ -70,6 +70,25 @@ describe('REST-Client', () => {
     ])
   })
 
+  it('USE-006: Verbrauch mit Zeitraum und Gruppierung, Preise und Usage einer Session', async () => {
+    const seen: string[] = []
+    const url = await serve((req) => {
+      seen.push(`${req.method} ${req.url}`)
+      return [200, {}]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    await client.usage.report({ from: '2026-10-01', to: '2026-10-14', tz: '+02:00', groupBy: ['day', 'harness'] })
+    await client.usage.report()
+    await client.usage.pricing()
+    await client.session('ses_1').usage()
+    expect(seen).toEqual([
+      'GET /v1/usage?from=2026-10-01&to=2026-10-14&tz=%2B02%3A00&group_by=day%2Charness',
+      'GET /v1/usage',
+      'GET /v1/usage/pricing',
+      'GET /v1/sessions/ses_1/usage',
+    ])
+  })
+
   it('legt Sessions an und sendet Eingaben mit Bearer-Token', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

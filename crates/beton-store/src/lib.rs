@@ -156,6 +156,11 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
+    /// Bewertung beim Append: Katalog und Preis-Overrides (USE-002, USE-003).
+    pub fn pricer(&self) -> &beton_core::pricing::Pricer {
+        &self.options.pricer
+    }
+
     /// Öffnet (bzw. erzeugt) den Store im Datenverzeichnis, z. B. `~/.beton`:
     /// `beton.db` plus `blobs/`. Migrationen laufen dabei unter Lock (DATA-003).
     pub async fn open(data_dir: &Path, options: StoreOptions) -> Result<Self> {
