@@ -63,6 +63,8 @@ struct RunnerConn {
     last_activity: Instant,
     busy: bool,
     pending: HashMap<String, oneshot::Sender<CmdReply>>,
+    /// Vorab-Verbindung vor dem Start des Harness (#218): kein verbundener Runner.
+    prestart: bool,
 }
 
 impl RunnerConn {
@@ -174,7 +176,7 @@ impl RunnerRegistry {
     }
 
     pub fn connected(&self, session: SessionId) -> bool {
-        lock(&self.conns).contains_key(&session)
+        lock(&self.conns).get(&session).is_some_and(|c| !c.prestart)
     }
 
     /// Verfolgt offene Freigaben aus den Events des Runners (POL-010 AC4, Leerlauf).
@@ -333,9 +335,13 @@ impl RunnerRegistry {
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
             let mut conns = lock(&self.conns);
-            let conn = conns.get_mut(&session).ok_or_else(|| {
-                Problem::new(ProblemCode::Unavailable).detail("Für diese Session läuft kein Runner")
-            })?;
+            let conn = conns
+                .get_mut(&session)
+                .filter(|c| !c.prestart)
+                .ok_or_else(|| {
+                    Problem::new(ProblemCode::Unavailable)
+                        .detail("Für diese Session läuft kein Runner")
+                })?;
             conn.pending.insert(cmd_id.clone(), tx);
             conn.last_activity = Instant::now();
             let _ = conn.tx.send(TunnelDown::CmdDeliver {
@@ -543,7 +549,10 @@ async fn connection(
         return;
     };
     let Ok(TunnelUp::SessionBind {
-        session_id, epoch, ..
+        session_id,
+        epoch,
+        prestart,
+        ..
     }) = TunnelUp::from_json(&text)
     else {
         let _ = sink
@@ -624,6 +633,7 @@ async fn connection(
             last_activity: Instant::now(),
             busy: false,
             pending: HashMap::new(),
+            prestart,
         },
     );
 
@@ -933,6 +943,7 @@ mod tests {
             last_activity: Instant::now() - Duration::from_secs(10),
             busy: false,
             pending: HashMap::new(),
+            prestart: false,
         }
     }
 
@@ -944,7 +955,7 @@ mod tests {
         let runners = RunnerRegistry::default();
         let session = SessionId::new();
         let bind: TunnelUp = serde_json::from_value(serde_json::json!({
-            "type": "session.bind", "session_id": session, "epoch": 0,
+            "t": "session.bind", "session_id": session, "epoch": 0,
             "last_acked_rseq": 0, "prestart": true
         }))
         .unwrap();
@@ -954,7 +965,12 @@ mod tests {
         lock(&runners.conns).insert(session, pre);
         assert!(!runners.connected(session), "Vorab-Verbindung");
         let err = runners
-            .deliver(session, "input.submit", Value::Null, Duration::from_millis(50))
+            .deliver(
+                session,
+                "input.submit",
+                Value::Null,
+                Duration::from_millis(50),
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ProblemCode::Unavailable);

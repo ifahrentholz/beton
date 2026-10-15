@@ -1291,6 +1291,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: false,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             continue;
@@ -2201,6 +2202,7 @@ impl PreStart {
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: true,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             return false;
@@ -2606,6 +2608,8 @@ async fn report_start_failure(boot: &RunnerBoot, error: &beton_harness::HarnessE
         session_id: boot.session_id,
         epoch: boot.epoch,
         last_acked_rseq: 0,
+        // Nur die Meldung des gescheiterten Starts, keine Kommandos (#218).
+        prestart: true,
     };
     if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
         return;

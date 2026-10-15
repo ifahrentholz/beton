@@ -631,18 +631,18 @@ impl SessionManager<'_> {
             )
             .await;
         if let Err(e) = delivered {
+            let detail = e.detail.unwrap_or_default();
             self.subagents().finish(
                 child.id,
                 Some(generation),
                 TaskStatus::Failed,
-                Some(format!(
-                    "Auftrag nicht zugestellt: {}",
-                    e.detail.unwrap_or_default()
-                )),
+                Some(format!("Auftrag nicht zugestellt: {detail}")),
                 None,
             );
-            return Err(Problem::new(ProblemCode::Unavailable)
-                .detail(format!("Auftrag an {agent} nicht zugestellt")));
+            return Err(Problem::new(ProblemCode::Unavailable).detail(format!(
+                "Auftrag an {agent} nicht zugestellt ({}: {detail})",
+                e.code.as_str()
+            )));
         }
         let state = self.state().clone();
         let child = child.id;
