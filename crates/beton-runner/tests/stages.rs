@@ -71,6 +71,7 @@ fn opts(yaml: &str, ca: bool) -> StageOptions {
         exe: exe(),
         services: Some(services()),
         harness_key: None,
+        direct: None,
     }
 }
 
@@ -485,4 +486,38 @@ async fn sbx_002_bt_exec_from_stage_one_runs_in_stage_two() {
     assert_eq!(stdout.matches("FIXTURE-CLAUDE").count(), 1, "{stdout}");
     // Je ein sandbox.started für Stufe 1 und für den Start über den Broker.
     assert_eq!(started.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn har_011_ac2_direct_loop_gets_its_own_proxy_instance_with_a_placeholder() {
+    let fx = fx();
+    let mut o = opts("backend: auto\nallow_network: false\n", true);
+    o.direct = Some(beton_runner::stages::DirectRoute {
+        binding: "provider:openrouter".into(),
+        host: "openrouter.ai".into(),
+        port: 443,
+    });
+    let s = compose(input(&fx, "direct:openrouter", ToolIsolation::Beton), o)
+        .await
+        .unwrap()
+        .unwrap();
+    let d = s.direct().unwrap();
+    assert!(d.placeholder.as_str().starts_with("bt_cred_"));
+    assert!(d.proxy_url.starts_with("http://bt:"));
+    assert!(d.ca_pem.contains("BEGIN CERTIFICATE"));
+    // Die Tools bleiben ohne Netz.
+    assert!(!s.tools.policy().env.contains_key("HTTPS_PROXY"));
+    // Ohne Dienste der Stufe 0 kein Start (fail closed).
+    let mut o = opts("backend: auto\n", true);
+    o.services = None;
+    o.direct = Some(beton_runner::stages::DirectRoute {
+        binding: "provider:openrouter".into(),
+        host: "openrouter.ai".into(),
+        port: 443,
+    });
+    assert!(
+        compose(input(&fx, "direct:openrouter", ToolIsolation::Beton), o)
+            .await
+            .is_err()
+    );
 }

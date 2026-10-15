@@ -91,6 +91,31 @@ pub struct HarnessKey {
     pub hosts: Vec<String>,
 }
 
+/// Model-API des Direkt-API-Harness (Stufe 0) über eine eigene Proxy-Instanz (HAR-011 AC2):
+/// Der Loop sendet nur den Platzhalter, der Proxy setzt den Key ein.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectRoute {
+    /// Binding-Name, z. B. `provider:openrouter`.
+    pub binding: String,
+    pub host: String,
+    pub port: u16,
+}
+
+/// Zugang des Loops zu seiner Proxy-Instanz.
+pub struct DirectEgress {
+    pub proxy_url: zeroize::Zeroizing<String>,
+    pub ca_pem: String,
+    pub placeholder: Placeholder,
+}
+
+impl std::fmt::Debug for DirectEgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectEgress")
+            .field("placeholder", &self.placeholder)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Variable und Model-API-Hosts der Vendor-CLIs für `auth: api_key` (HAR-015, PRX-005).
 pub fn vendor_key(harness: &str) -> Option<(&'static str, &'static [&'static str])> {
     match harness {
@@ -116,6 +141,8 @@ pub struct StageOptions {
     pub services: Option<StageServices>,
     /// API-Key der Vendor-CLI (`auth: api_key`, HAR-015 AC4).
     pub harness_key: Option<HarnessKey>,
+    /// Model-API des Direkt-API-Harness über den Proxy (HAR-011 AC2).
+    pub direct: Option<DirectRoute>,
 }
 
 impl std::fmt::Debug for StageOptions {
@@ -149,6 +176,8 @@ pub struct SessionStages {
     passthrough: [Vec<String>; 2],
     /// Platzhalter der Credentials der Stufe 2 je Binding (für `${secret:<name>}`, AGT-001).
     placeholders: BTreeMap<String, Placeholder>,
+    /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
+    direct: Option<DirectEgress>,
     _summaries: Option<AbortOnDrop>,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
@@ -175,6 +204,11 @@ impl Drop for AbortOnDrop {
 }
 
 impl SessionStages {
+    /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
+    pub fn direct(&self) -> Option<&DirectEgress> {
+        self.direct.as_ref()
+    }
+
     /// Platzhalter des Credentials `name` der Stufe 2 (`${secret:name}`, AGT-001, AGT-006).
     pub fn placeholder(&self, name: &str) -> Option<&Placeholder> {
         self.placeholders.get(name)
@@ -470,7 +504,9 @@ async fn compose_unix(
     // Credentials (PRX-006): je Binding ein Platzhalter (160 bit, je Session neu); ohne
     // Dienste der Stufe 0 startet keine Session mit Credentials (fail closed).
     let tools_creds = spec.credentials.clone().unwrap_or_default();
-    if (!tools_creds.is_empty() || opts.harness_key.is_some()) && opts.services.is_none() {
+    if (!tools_creds.is_empty() || opts.harness_key.is_some() || opts.direct.is_some())
+        && opts.services.is_none()
+    {
         return Err(unavailable(
             id,
             &[Cap::Net],
@@ -544,7 +580,8 @@ async fn compose_unix(
                 move |summary| ev.summary(summary),
             ))
         });
-    if tools_net || harness_net {
+    let mut direct = None;
+    if tools_net || harness_net || opts.direct.is_some() {
         let ca = opts.proxy_ca.ok_or_else(|| {
             unavailable(
                 id,
@@ -628,6 +665,47 @@ async fn compose_unix(
             });
             proxies.push(instance);
         }
+        // HAR-011 AC2: eigene Instanz für den Loop des Direkt-API-Harness (Stufe 0).
+        if let (Some(route), Some(sv)) = (&opts.direct, &opts.services) {
+            let p = placeholder()?;
+            let target = if route.port == 443 {
+                route.host.clone()
+            } else {
+                format!("{}:{}", route.host, route.port)
+            };
+            let credentials = Credentials::new(
+                vec![Binding {
+                    name: route.binding.clone(),
+                    kind: CredentialKind::Bearer,
+                    hosts: vec![route.host.clone()],
+                    username: None,
+                    placeholder: p.clone(),
+                    implicit: false,
+                }],
+                sv.source.clone(),
+                sv.audit.clone(),
+            )
+            .map_err(|e| invalid("providers", e.to_string()))?;
+            let instance = proxy
+                .start(InstanceSpec {
+                    label: format!("{}/loop", input.session_id),
+                    rules: RuleSet::compile(&[format!("* {target}/**")])
+                        .map_err(|e| invalid("providers", e.to_string()))?,
+                    credentials,
+                    source: EgressSource::Harness,
+                    events: sv.events.clone(),
+                    traffic: Some(traffic.clone()),
+                    ..InstanceSpec::default()
+                })
+                .await
+                .map_err(|e| unavailable(id, &[Cap::Net], e.to_string()))?;
+            direct = Some(DirectEgress {
+                proxy_url: instance.proxy_url(),
+                ca_pem: proxy.ca_pem(),
+                placeholder: p,
+            });
+            proxies.push(instance);
+        }
     }
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
@@ -701,6 +779,7 @@ async fn compose_unix(
         },
         passthrough,
         placeholders,
+        direct,
         _summaries: summaries,
         _broker: broker,
         _proxies: proxies,

@@ -628,7 +628,10 @@ dependencies = [
  "beton-harness",
  "beton-harness-direct",
  "beton-mcp",
+ "beton-proxy",
+ "rcgen",
  "reqwest",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",
@@ -638,6 +641,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
  "ulid",
@@ -809,6 +813,7 @@ dependencies = [
 name = "beton-sandbox"
 version = "0.0.0"
 dependencies = [
+ "base64 0.23.1",
  "beton-core",
  "beton-proxy",
  "getrandom 0.4.3",

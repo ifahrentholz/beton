@@ -223,10 +223,62 @@ impl RunnerBoot {
             &beton_harness_direct::DirectOptions {
                 keys: Arc::new(self.credentials.clone()),
                 discover_models: false,
+                egress: None,
             },
         )
         .0
     }
+}
+
+/// Proxy-Weg des Direkt-API-Harness dieser Session (HAR-011 AC2): nur für Provider mit Key.
+fn direct_route(boot: &RunnerBoot) -> Option<stages::DirectRoute> {
+    let name = boot.harness.as_str().strip_prefix("direct:")?;
+    let p = beton_harness_direct::config::parse_provider(name, boot.harnesses.providers.get(name)?)
+        .ok()?;
+    p.key.lookup()?;
+    Some(stages::DirectRoute {
+        binding: format!("provider:{name}"),
+        host: p.base_url.host_str()?.to_owned(),
+        port: p.base_url.port_or_known_default()?,
+    })
+}
+
+/// Der Direkt-API-Harness der Session mit Platzhalter statt Key und Weg über den Proxy.
+fn direct_via_proxy(boot: &RunnerBoot, registry: &mut Registry, egress: &stages::DirectEgress) {
+    let Some(name) = boot.harness.as_str().strip_prefix("direct:") else {
+        return;
+    };
+    let Some(Ok(p)) = boot
+        .harnesses
+        .providers
+        .get(name)
+        .map(|v| beton_harness_direct::config::parse_provider(name, v))
+    else {
+        return;
+    };
+    let Some(lookup) = p.key.lookup().map(str::to_owned) else {
+        return;
+    };
+    let keys = beton_harness_direct::secret::KeyMap::new(
+        [(
+            lookup,
+            beton_harness_direct::secret::ApiKey::new(egress.placeholder.as_str()),
+        )]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect(),
+    );
+    registry.register(Arc::new(beton_harness_direct::DirectAdapter::new(
+        p,
+        &beton_harness_direct::DirectOptions {
+            keys: Arc::new(keys),
+            discover_models: false,
+            egress: Some(beton_harness_direct::Egress {
+                proxy_url: egress.proxy_url.to_string(),
+                ca_pem: egress.ca_pem.clone(),
+            }),
+        },
+    )));
 }
 
 /// Eingebaute Adapter mit den Optionen aus der Konfiguration; der Fake nur mit `dev`
@@ -303,6 +355,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         &beton_harness_direct::DirectOptions {
             keys: Arc::new(boot.credentials.clone()),
             discover_models: false,
+            egress: None,
         },
     );
     for p in problems {
@@ -586,6 +639,7 @@ fn parent_alive(pid: Option<u32>) -> bool {
 
 /// Führt die Session aus, bis der Server stoppt, der Harness endet oder der Daemon stirbt.
 pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerError> {
+    let mut registry = registry;
     let mut env = HostEnv::from_process();
     env.user = boot.harnesses.user.clone();
     env.project = boot.harnesses.project.clone();
@@ -752,7 +806,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     var: var.to_owned(),
                     hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
                 });
+            // HAR-011 AC2: Der Loop des Direkt-API-Harness erreicht seinen Anbieter nur über
+            // eine eigene Proxy-Instanz, die den Key einsetzt.
+            let direct = direct_route(&boot);
             let opts = stages::StageOptions {
+                direct,
                 spec: sb.spec.clone(),
                 proxy_ca: ca,
                 proxy: beton_proxy::ProxyOptions {
@@ -777,6 +835,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
+        direct_via_proxy(&boot, &mut registry, egress);
+    }
     let in_proc = caps
         .as_ref()
         .is_some_and(|c| c.transport == beton_harness::Transport::InProc);

@@ -742,7 +742,13 @@ impl<'a> SessionManager<'a> {
             workspace,
             env_allowlist: Vec::new(),
             // API-Keys für `direct:*` (HAR-011) gehen über stdin, nie in die Runner-Umgebung.
-            secret_env: beton_harness_direct::key_vars(&session.harness, &cfg.providers),
+            // Im Stufenmodell gar nicht: Dort sieht der Loop nur einen Platzhalter, den der
+            // Proxy ersetzt (HAR-011 AC2, PRX-006).
+            secret_env: if sandbox.is_some() {
+                Vec::new()
+            } else {
+                beton_harness_direct::key_vars(&session.harness, &cfg.providers)
+            },
         };
         let provisioned = cfg
             .provider

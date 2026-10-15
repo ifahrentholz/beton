@@ -162,7 +162,9 @@ async fn read_request(
             }
         }
     } else {
-        let len: usize = get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let len: usize = get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         while rest.len() < len {
             match tls.read(&mut chunk).await {
                 Ok(0) | Err(_) => return None,
@@ -189,8 +191,8 @@ async fn read_request(
 fn decode_chunked(mut raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     while let Some(pos) = raw.windows(2).position(|w| w == b"\r\n") {
-        let size = usize::from_str_radix(String::from_utf8_lossy(&raw[..pos]).trim(), 16)
-            .unwrap_or(0);
+        let size =
+            usize::from_str_radix(String::from_utf8_lossy(&raw[..pos]).trim(), 16).unwrap_or(0);
         raw = &raw[pos + 2..];
         if size == 0 || raw.len() < size {
             break;
@@ -243,7 +245,10 @@ fn respond(req: &Request, repos: &Path, git_exe: &Path) -> (u16, Vec<(String, St
         .env("REQUEST_METHOD", &req.method)
         .env("PATH_INFO", &req.path)
         .env("QUERY_STRING", &req.query)
-        .env("CONTENT_TYPE", req.header("content-type").unwrap_or_default())
+        .env(
+            "CONTENT_TYPE",
+            req.header("content-type").unwrap_or_default(),
+        )
         .env("CONTENT_LENGTH", req.body.len().to_string())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -315,8 +320,12 @@ async fn upstream(
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {
-            let (acceptor, repos, git_exe, seen) =
-                (acceptor.clone(), repos.clone(), git_exe.clone(), seen.clone());
+            let (acceptor, repos, git_exe, seen) = (
+                acceptor.clone(),
+                repos.clone(),
+                git_exe.clone(),
+                seen.clone(),
+            );
             tokio::spawn(async move {
                 let Ok(mut tls) = acceptor.accept(tcp).await else {
                     return;
@@ -367,7 +376,10 @@ struct Audit(Mutex<Vec<String>>);
 
 impl beton_proxy::CredentialAudit for Audit {
     fn used<'a>(&'a self, binding: &'a str, host: &'a str) -> BoxFuture<'a, Result<(), String>> {
-        self.0.lock().unwrap().push(format!("used {binding} {host}"));
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("used {binding} {host}"));
         Box::pin(async { Ok(()) })
     }
 
@@ -406,13 +418,21 @@ async fn prx_006_ac1_sec_011_ac1_git_clone_push_and_github_api_only_via_the_plac
     }
     // Privates Repository mit einem Commit (bare, Smart-HTTP über `git http-backend`).
     let bare = repos.join("me/private.git");
-    git(&git_exe, &root, &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()]);
+    git(
+        &git_exe,
+        &root,
+        &["init", "-q", "--bare", "-b", "main", bare.to_str().unwrap()],
+    );
     let work = root.join("work");
     git(&git_exe, &work, &["init", "-q", "-b", "main"]);
     std::fs::write(work.join("README"), "geheim\n").unwrap();
     git(&git_exe, &work, &["add", "README"]);
     git(&git_exe, &work, &["commit", "-qm", "eins"]);
-    git(&git_exe, &work, &["push", "-q", bare.to_str().unwrap(), "main"]);
+    git(
+        &git_exe,
+        &work,
+        &["push", "-q", bare.to_str().unwrap(), "main"],
+    );
 
     let seen = Seen::default();
     let (addr, upstream_ca) = upstream(repos.clone(), git_exe.clone(), seen.clone()).await;
@@ -461,10 +481,13 @@ async fn prx_006_ac1_sec_011_ac1_git_clone_push_and_github_api_only_via_the_plac
         url: Some(Secret::new(instance.proxy_url().to_string())),
         ca_bundle: Some(bundle.clone()),
     });
-    ctx.credential_env = [("GH_TOKEN", placeholder.as_str()), ("GITHUB_TOKEN", placeholder.as_str())]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect();
+    ctx.credential_env = [
+        ("GH_TOKEN", placeholder.as_str()),
+        ("GITHUB_TOKEN", placeholder.as_str()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
     let gh = if cfg!(target_os = "linux") {
         tool("gh")
     } else {
@@ -527,8 +550,14 @@ async fn prx_006_ac1_sec_011_ac1_git_clone_push_and_github_api_only_via_the_plac
     assert!(out.status.success(), "{stdout}\n{stderr}");
     // Die Sandbox sieht nur den Platzhalter …
     assert!(stdout.contains(&format!("token={placeholder}")), "{stdout}");
-    assert!(!stdout.contains(TOKEN) && !stderr.contains(TOKEN), "{stdout}{stderr}");
-    assert!(stdout.trim_end().ends_with('0'), "kein ghp_ im Env: {stdout}");
+    assert!(
+        !stdout.contains(TOKEN) && !stderr.contains(TOKEN),
+        "{stdout}{stderr}"
+    );
+    assert!(
+        stdout.trim_end().ends_with('0'),
+        "kein ghp_ im Env: {stdout}"
+    );
     // … und trotzdem gelingen clone, push und API-Aufrufe.
     assert!(stdout.contains("geheim"), "{stdout}");
     assert!(stdout.contains("push-ok"), "{stdout}");
@@ -548,8 +577,14 @@ async fn prx_006_ac1_sec_011_ac1_git_clone_push_and_github_api_only_via_the_plac
     let seen = seen.lock().unwrap().clone();
     assert!(!seen.iter().any(|s| s.contains("bt_cred_")), "{seen:?}");
     let audit = audit.0.lock().unwrap().clone();
-    assert!(audit.iter().any(|a| a == "used github github.com"), "{audit:?}");
-    assert!(audit.iter().any(|a| a == "used github api.github.com"), "{audit:?}");
+    assert!(
+        audit.iter().any(|a| a == "used github github.com"),
+        "{audit:?}"
+    );
+    assert!(
+        audit.iter().any(|a| a == "used github api.github.com"),
+        "{audit:?}"
+    );
     assert!(!audit.iter().any(|a| a.starts_with("misuse")), "{audit:?}");
     drop(instance);
 }
