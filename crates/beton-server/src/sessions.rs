@@ -753,6 +753,7 @@ impl<'a> SessionManager<'a> {
                     proxy_ca,
                     compaction: self.state.runtime.compaction,
                     max_cost_usd: created.max_cost_usd,
+                    spawned: created.trigger == SessionTrigger::Spawn,
                 },
             )
             .await

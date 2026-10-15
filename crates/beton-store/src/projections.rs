@@ -464,23 +464,7 @@ impl Store {
     /// Summen über die Usage-Records einer Auswahl. Geld enthält nie Subscriptions
     /// (USE-001 AC3); Quelle für `session.cost_usd` und `user.daily_cost_usd` (POL-004).
     pub async fn usage_totals(&self, org: OrgId, scope: UsageScope) -> Result<UsageTotals> {
-        let (filter, binds): (&str, Vec<String>) = match scope {
-            UsageScope::Org => ("", Vec::new()),
-            UsageScope::Session(id) => (" AND session_id = ?", vec![id.to_string()]),
-            UsageScope::UserBetween(user, from, to) => (
-                " AND user_id = ? AND ts >= ? AND ts < ?",
-                vec![user.to_string(), from.to_string(), to.to_string()],
-            ),
-            UsageScope::Subtree(root) => (
-                " AND session_id IN (WITH RECURSIVE tree (id) AS ( \
-                   SELECT id FROM sessions WHERE org_id = ? AND id = ? \
-                   UNION ALL \
-                   SELECT c.id FROM sessions c JOIN tree t ON c.parent_id = t.id \
-                   WHERE c.org_id = ? \
-                 ) SELECT id FROM tree)",
-                vec![org.to_string(), root.to_string(), org.to_string()],
-            ),
-        };
+        let (filter, binds) = usage_filter(org, scope);
         let sql = format!(
             "SELECT COUNT(*) AS records, \
              COALESCE(SUM(input_tokens), 0) AS input_tokens, \
@@ -512,6 +496,26 @@ impl Store {
             unpriced: to_u64(row.try_get("unpriced")?)?,
             without_price: to_u64(row.try_get("without_price")?)?,
         })
+    }
+
+    /// Modelle einer Auswahl, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat
+    /// (ohne Preis bzw. ohne Katalogpreis), sortiert: Budgets fragen dafür nach (POL-011).
+    pub async fn unpriced_models(&self, org: OrgId, scope: UsageScope) -> Result<Vec<String>> {
+        let (filter, binds) = usage_filter(org, scope);
+        let sql = format!(
+            "SELECT DISTINCT model FROM usage_records WHERE org_id = ?{filter} \
+             AND ((auth_source = 'vendor_cli' AND equivalent_micro IS NULL) \
+               OR (auth_source <> 'vendor_cli' AND cost_micro IS NULL)) \
+             ORDER BY model"
+        );
+        let mut query = sqlx::query(&sql).bind(org.to_string());
+        for b in &binds {
+            query = query.bind(b);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>("model").map_err(Into::into))
+            .collect()
     }
 
     /// Vollständiger, sortierter Inhalt aller Projektionen einer Org (Vergleich vor/nach Rebuild,
@@ -563,5 +567,26 @@ impl Store {
             }
         }
         Ok(out)
+    }
+}
+
+/// Filter (SQL nach `org_id = ?`) und Bind-Werte einer Auswahl von Usage-Records.
+fn usage_filter(org: OrgId, scope: UsageScope) -> (&'static str, Vec<String>) {
+    match scope {
+        UsageScope::Org => ("", Vec::new()),
+        UsageScope::Session(id) => (" AND session_id = ?", vec![id.to_string()]),
+        UsageScope::UserBetween(user, from, to) => (
+            " AND user_id = ? AND ts >= ? AND ts < ?",
+            vec![user.to_string(), from.to_string(), to.to_string()],
+        ),
+        UsageScope::Subtree(root) => (
+            " AND session_id IN (WITH RECURSIVE tree (id) AS ( \
+               SELECT id FROM sessions WHERE org_id = ? AND id = ? \
+               UNION ALL \
+               SELECT c.id FROM sessions c JOIN tree t ON c.parent_id = t.id \
+               WHERE c.org_id = ? \
+             ) SELECT id FROM tree)",
+            vec![org.to_string(), root.to_string(), org.to_string()],
+        ),
     }
 }

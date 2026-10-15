@@ -332,7 +332,7 @@ async fn api_006_ac4_the_session_budget_is_a_spend_cap_rule() {
     assert_eq!(budget["rules"][0]["id"], "max-cost");
     assert_eq!(budget["rules"][0]["rule_type"], "spend_cap");
     let turn = json!({ "session_id": id.to_string(), "phase": "model_request",
-                       "input": { "request": { "model": "x", "granularity": "turn" } } });
+                       "input": { "request": { "model": "claude-sonnet-4-5", "granularity": "turn" } } });
     let v = post(t, "/v1/policies/evaluate", turn.clone()).await.json();
     assert_eq!(v["outcome"], "allow", "{v}");
     append(t, id, vec![cost(1_000_000)]).await;

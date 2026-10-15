@@ -58,7 +58,21 @@ pub async fn usage_values(
     let tree = store
         .usage_totals(org, UsageScope::Subtree(session))
         .await?;
+    // Modelle ohne Preis je Bereich (`on_unpriced`, POL-011, Security-Review #284).
+    let (from, to) = tz.day_bounds(now);
+    let unpriced_day = store
+        .unpriced_models(org, UsageScope::UserBetween(user, from.into(), to.into()))
+        .await?;
+    let unpriced_session = store
+        .unpriced_models(org, UsageScope::Session(session))
+        .await?;
+    let unpriced_tree = store
+        .unpriced_models(org, UsageScope::Subtree(session))
+        .await?;
     Ok(json!({
+        "session_unpriced_models": unpriced_session,
+        "subtree_unpriced_models": unpriced_tree,
+        "user_daily_unpriced_models": unpriced_day,
         "session_cost_usd": usd(s.cost_micro),
         "session_equivalent_usd": usd(s.equivalent_micro),
         "session_without_price": s.without_price,

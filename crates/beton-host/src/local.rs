@@ -236,6 +236,9 @@ impl RunnerProvider for LocalProvider {
         if let Some(max) = boot.max_cost_usd {
             vars.push((beton_runner::env::MAX_COST.into(), max.to_string()));
         }
+        if boot.spawned {
+            vars.push((beton_runner::env::SPAWNED.into(), "1".into()));
+        }
         if let Some(sb) = &boot.sandbox {
             vars.push((
                 beton_runner::env::SANDBOX.into(),

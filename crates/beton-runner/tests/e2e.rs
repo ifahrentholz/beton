@@ -133,6 +133,7 @@ impl Fixture {
                     proxy_ca: None,
                     compaction: Default::default(),
                     max_cost_usd: None,
+                    spawned: false,
                 },
             )
             .await
@@ -486,6 +487,7 @@ async fn runner_token_only_opens_its_own_session() {
                 proxy_ca: None,
                 compaction: Default::default(),
                 max_cost_usd: None,
+                spawned: false,
             },
         )
         .await

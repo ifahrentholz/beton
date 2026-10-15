@@ -415,6 +415,27 @@ impl SessionManager<'_> {
             permission_mode.as_deref(),
         )?;
 
+        // Session-Budget des Laufs (API-006 `--max-cost`): Das Child erbt, was der Teilbaum des
+        // Parents noch übrig hat; ist nichts mehr übrig, startet es nicht (Security-Review
+        // #284, M2).
+        let max_cost_usd = match created.max_cost_usd {
+            None => None,
+            Some(max) => {
+                let spent = self
+                    .state()
+                    .store
+                    .usage_totals(self.org(), beton_store::UsageScope::Subtree(parent))
+                    .await?;
+                let remaining =
+                    max - (spent.cost_micro + spent.equivalent_micro) as f64 / 1_000_000.0;
+                if remaining <= 0.0 {
+                    return Err(denied(format!(
+                        "budget: Das Session-Budget von {max} USD (--max-cost) ist erreicht"
+                    )));
+                }
+                Some(remaining)
+            }
+        };
         // Gleichzeitige Childs (AC3): Platz reservieren, bevor etwas angelegt wird.
         let id = SessionId::new();
         let generation = self
@@ -438,6 +459,7 @@ impl SessionManager<'_> {
                 effort,
                 permission_mode,
                 snapshot,
+                max_cost_usd,
                 mode: requested_worktree.unwrap_or(limits.worktree),
                 in_background,
             })
@@ -520,7 +542,7 @@ impl SessionManager<'_> {
                     trigger: SessionTrigger::Spawn,
                     home_node: self.state().local.node,
                     harness_opts: Value::Null,
-                    max_cost_usd: None,
+                    max_cost_usd: c.max_cost_usd,
                 },
             )
             .await;
@@ -1031,6 +1053,8 @@ struct StartChild<'a> {
     effort: Option<String>,
     permission_mode: Option<String>,
     snapshot: Option<beton_agents::AgentSnapshot>,
+    /// Geerbtes Session-Budget (Rest des Parents, API-006).
+    max_cost_usd: Option<f64>,
     mode: WorktreeMode,
     in_background: bool,
 }

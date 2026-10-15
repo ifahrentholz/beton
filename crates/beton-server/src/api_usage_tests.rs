@@ -718,6 +718,7 @@ async fn pol_012_ac3_the_daily_budget_is_available_again_at_local_midnight() {
             json!({
                 "user": { "daily_cost_usd": v["user_daily_cost_usd"],
                           "daily_equivalent_usd": v["user_daily_equivalent_usd"],
+                          "daily_unpriced_models": v["user_daily_unpriced_models"],
                           "timezone": v["timezone"] },
                 "request": { "model": "gpt-5.3-codex", "granularity": "turn" },
                 "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },

@@ -79,6 +79,8 @@ pub mod env {
     /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
     /// User-Ebene durch (POL-011).
     pub const MAX_COST: &str = "BETON_MAX_COST";
+    /// `1`: Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
+    pub const SPAWNED: &str = "BETON_SPAWNED";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -123,6 +125,8 @@ pub struct RunnerBoot {
     pub compaction: beton_harness::CompactionSettings,
     /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
     pub max_cost_usd: Option<f64>,
+    /// Child einer `session_spawn`.
+    pub spawned: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -224,6 +228,7 @@ impl RunnerBoot {
                 ),
                 Err(_) => None,
             },
+            spawned: std::env::var(env::SPAWNED).is_ok_and(|v| v == "1"),
         })
     }
 
@@ -965,6 +970,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             trigger: Some(
                 if boot.fork.is_some() {
                     "fork"
+                } else if boot.spawned {
+                    "spawn"
                 } else if boot.resume.is_some() {
                     "resume"
                 } else {

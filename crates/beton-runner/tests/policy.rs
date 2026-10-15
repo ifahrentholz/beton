@@ -956,7 +956,7 @@ async fn pol_011_without_a_list_price_the_budget_reports_rule_inapplicable() {
     let cards = of_type(&events, "approval.requested");
     assert_eq!(cards.len(), 1, "{events:#?}");
     assert!(
-        cards[0]["payload"]["reasons"][0]["reason"]
+        cards[0]["payload"]["subject"]["reasons"][0]["reason"]
             .as_str()
             .unwrap()
             .contains("Katalogpreis"),

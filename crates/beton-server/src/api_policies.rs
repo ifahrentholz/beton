@@ -211,17 +211,21 @@ fn effective(
     beton_home: &Path,
     workdir: Option<&Path>,
     max_cost_usd: Option<f64>,
-) -> std::sync::Arc<EffectiveSet> {
+) -> Result<std::sync::Arc<EffectiveSet>, String> {
     let mut store = PolicyStore::new();
     store.add_dir(Scope::User, policies_dir(beton_home));
     if let Some(w) = workdir {
         store.add_dir(Scope::Project, policies_dir(&w.join(".beton")));
     }
-    if let Some(Ok(budget)) = max_cost_usd.map(beton_policy::budget::session_budget) {
+    // Ein ungültiges Budget fällt nie still weg (Security-Review #284); der Runner startet
+    // dann ebenfalls nicht.
+    if let Some(max) = max_cost_usd {
+        let budget = beton_policy::budget::session_budget(max)
+            .map_err(|e| format!("Session-Budget ungültig: {}", e.message))?;
         store.set_inline(Scope::User, vec![budget]);
     }
     let _ = store.refresh();
-    store.effective()
+    Ok(store.effective())
 }
 
 /// Session-Budget aus `session.created` (API-006).
@@ -263,7 +267,8 @@ pub async fn list_policies(
     let home = state.runtime.sessions.beton_home.clone();
     let set = tokio::task::spawn_blocking(move || effective(&home, workdir.as_deref(), budget))
         .await
-        .map_err(|e| Problem::internal(&e))?;
+        .map_err(|e| Problem::internal(&e))?
+        .map_err(|e| Problem::new(ProblemCode::Internal).detail(e))?;
     Ok(axum::Json(EffectivePolicies {
         policy_set_hash: set.hash().to_owned(),
         sets: sets_json(&set),
@@ -306,6 +311,7 @@ async fn session_fixtures(
             "permission_mode": created.permission_mode,
             "cost_usd": usage["session_cost_usd"],
             "equivalent_usd": usage["session_equivalent_usd"],
+            "unpriced_models": usage["session_unpriced_models"],
             "tokens_in": usage["session_tokens_in"],
             "tokens_out": usage["session_tokens_out"],
             "worktree": worktree.display().to_string(),
@@ -316,6 +322,7 @@ async fn session_fixtures(
             "timezone": usage["timezone"],
             "daily_cost_usd": usage["user_daily_cost_usd"],
             "daily_equivalent_usd": usage["user_daily_equivalent_usd"],
+            "daily_unpriced_models": usage["user_daily_unpriced_models"],
             "monthly_cost_usd": usage["user_monthly_cost_usd"],
         },
         // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
@@ -324,6 +331,8 @@ async fn session_fixtures(
             "equivalent_usd": usage["session_equivalent_usd"],
             "subtree_cost_usd": usage["subtree_cost_usd"],
             "subtree_equivalent_usd": usage["subtree_equivalent_usd"],
+            "unpriced_models": usage["session_unpriced_models"],
+            "subtree_unpriced_models": usage["subtree_unpriced_models"],
         },
         "state": {
             "session": policy["session"],
@@ -397,9 +406,11 @@ pub async fn evaluate(
     let home = state.runtime.sessions.beton_home.clone();
     let input = input.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let set = effective(&home, workdir.as_deref(), budget);
+        let set = effective(&home, workdir.as_deref(), budget)
+            .map_err(|e| Problem::new(ProblemCode::Internal).detail(e))?;
         let act =
-            beton_policy::policytest::activation(phase, &fixtures, &input, Some(&harness), None)?;
+            beton_policy::policytest::activation(phase, &fixtures, &input, Some(&harness), None)
+                .map_err(invalid)?;
         let decision = set.evaluate(
             &act,
             &EvalOptions {
@@ -430,11 +441,10 @@ pub async fn evaluate(
         event.decision_id.clear();
         let mut ex = explain(&event, Some(&set));
         ex.context = context_values(&set, phase, &act);
-        Ok::<_, String>((event, ex, level, exhausted))
+        Ok::<_, Problem>((event, ex, level, exhausted))
     })
     .await
-    .map_err(|e| Problem::internal(&e))?
-    .map_err(invalid)?;
+    .map_err(|e| Problem::internal(&e))??;
     let (event, ex, level, budget_exhausted) = result;
     Ok(axum::Json(PolicyEvaluation {
         budget_exhausted,

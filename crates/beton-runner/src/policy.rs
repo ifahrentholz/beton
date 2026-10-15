@@ -147,6 +147,13 @@ pub struct Usage {
     pub user_monthly_cost_usd: Option<f64>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Modelle ohne Preis je Bereich (`on_unpriced`, POL-011).
+    #[serde(default)]
+    pub session_unpriced_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub subtree_unpriced_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub user_daily_unpriced_models: Option<Vec<String>>,
 }
 
 impl Usage {
@@ -170,9 +177,13 @@ pub trait UsageSource: Send + Sync {
 
 /// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
 /// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
-const USAGE_FIELDS: [&str; 12] = [
+const USAGE_FIELDS: [&str; 16] = [
     "session.cost_usd",
     "session.equivalent_usd",
+    "session.unpriced_models",
+    "run.unpriced_models",
+    "run.subtree_unpriced_models",
+    "user.daily_unpriced_models",
     "session.tokens_in",
     "session.tokens_out",
     "run.cost_usd",
@@ -906,12 +917,21 @@ impl PolicyGate {
             return;
         }
         let user_scopes = used.iter().any(|f| f.starts_with("state.user"));
-        if user_scopes
-            && let Some(source) = &self.inner.state_source
-            && let Ok(Ok(fresh)) = tokio::time::timeout(USAGE_TIMEOUT, source.load()).await
-            && let Ok(mut u) = self.inner.user_state.lock()
-        {
-            *u = (fresh.user_day, fresh.user);
+        // Scheitert das Neuladen von `user_day`/`user`, gilt der Zustand als nicht verfügbar
+        // statt still der alte Stand (POL-009, Security-Review #284): Regeln darauf scheitern.
+        let mut user_available = true;
+        if user_scopes && let Some(source) = &self.inner.state_source {
+            match tokio::time::timeout(USAGE_TIMEOUT, source.load()).await {
+                Ok(Ok(fresh)) => {
+                    if let Ok(mut u) = self.inner.user_state.lock() {
+                        *u = (fresh.user_day, fresh.user);
+                    }
+                }
+                _ => {
+                    tracing::warn!("Policy: Zustand user_day/user nicht verfügbar");
+                    user_available = false;
+                }
+            }
         }
         let (session, run) = self
             .inner
@@ -928,8 +948,8 @@ impl PolicyGate {
         vars.state = Some(StateVars {
             session: Some(session),
             run: Some(run),
-            user_day: Some(user_day),
-            user: Some(user),
+            user_day: user_available.then_some(user_day),
+            user: user_available.then_some(user),
         });
     }
 
@@ -1324,6 +1344,7 @@ impl PolicyGate {
         if let Some(s) = vars.session.as_mut() {
             s.cost_usd = u.session_cost_usd;
             s.equivalent_usd = u.session_equivalent_usd;
+            s.unpriced_models.clone_from(&u.session_unpriced_models);
             s.tokens_in = u.session_tokens_in;
             s.tokens_out = u.session_tokens_out;
         }
@@ -1333,9 +1354,14 @@ impl PolicyGate {
         run.equivalent_usd = u.session_equivalent_usd;
         run.subtree_cost_usd = u.subtree_cost_usd;
         run.subtree_equivalent_usd = u.subtree_equivalent_usd;
+        run.unpriced_models.clone_from(&u.session_unpriced_models);
+        run.subtree_unpriced_models
+            .clone_from(&u.subtree_unpriced_models);
         if let Some(user) = vars.user.as_mut() {
             user.daily_cost_usd = u.user_daily_cost_usd;
             user.daily_equivalent_usd = u.user_daily_equivalent_usd;
+            user.daily_unpriced_models
+                .clone_from(&u.user_daily_unpriced_models);
             user.monthly_cost_usd = u.user_monthly_cost_usd;
             user.timezone = u.timezone.clone();
         }
