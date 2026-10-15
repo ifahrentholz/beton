@@ -20,7 +20,7 @@ use beton_mcp::system::{SpawnTarget, SystemBackend, SystemServer, ToolFailure};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-/// Antwort von `policy_query`, solange es keine Policy-Engine gibt (POL-027, ab M2).
+/// Antwort von `policy_query` ohne Policy-Gate (z. B. Werkzeuge ohne Session): nie `allow`.
 pub fn policy_answer(args: &Value) -> Value {
     json!({
         "decision": "ask",
@@ -49,16 +49,27 @@ pub trait Asker: Send + Sync {
     ) -> Option<String>;
 }
 
+/// Beantwortet `policy_query` mit der Entscheidung, die die Engine bei tatsächlicher
+/// Ausführung träfe (AGT-007 AC3, POL-027); im Runner das Policy-Gate.
+#[async_trait]
+pub trait PolicyOracle: Send + Sync {
+    async fn query(&self, args: &Value) -> Value;
+}
+
 /// System-Tools im Runner.
 struct RunnerBackend {
     calls: mpsc::UnboundedSender<SystemRequest>,
     asker: Option<Arc<dyn Asker>>,
+    oracle: Option<Arc<dyn PolicyOracle>>,
 }
 
 #[async_trait]
 impl SystemBackend for RunnerBackend {
     async fn policy_query(&self, args: &Value) -> Result<Value, ToolFailure> {
-        Ok(policy_answer(args))
+        Ok(match &self.oracle {
+            Some(o) => o.query(args).await,
+            None => policy_answer(args),
+        })
     }
 
     async fn session_spawn(
@@ -341,6 +352,7 @@ pub async fn prepare(
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
     gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
     asker: Option<Arc<dyn Asker>>,
+    oracle: Option<Arc<dyn PolicyOracle>>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
     let loaded = load(source, workdir, paths)?;
@@ -453,6 +465,7 @@ pub async fn prepare(
             Arc::new(RunnerBackend {
                 calls: calls_tx,
                 asker,
+                oracle,
             }),
         ))
     });

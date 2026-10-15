@@ -1774,6 +1774,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/PolicyQueried"
+            },
+            "type": {
+              "type": "string",
+              "const": "policy.queried"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/PolicyRuleIssue"
             },
             "type": {
@@ -2844,6 +2860,7 @@
         "policy.set_invalid",
         "policy.state_changed",
         "policy.notified",
+        "policy.queried",
         "policy.enforcement_degraded",
         "policy.rule_inapplicable",
         "budget.exhausted",
@@ -3427,6 +3444,40 @@
         "allow",
         "deny",
         "ask"
+      ]
+    },
+    "PolicyQueried": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "limited": {
+          "type": "boolean",
+          "default": false
+        },
+        "outcome": {
+          "$ref": "#/$defs/PolicyOutcome"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "subject_hash": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject_hash",
+        "tool",
+        "kind",
+        "outcome",
+        "rules"
       ]
     },
     "PolicyRuleIssue": {

@@ -35,7 +35,7 @@ pub enum StoreEvent {
     Invalid(PolicySetInvalid),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileEntry {
     scope: Scope,
     /// Hash des zuletzt gelesenen Inhalts (gültig oder nicht).
@@ -50,8 +50,9 @@ struct FileEntry {
     deleted: bool,
 }
 
-/// Policy-Sets aller lokalen Ebenen mit Hot-Reload.
-#[derive(Debug, Default)]
+/// Policy-Sets aller lokalen Ebenen mit Hot-Reload. Eine Kopie erlaubt eine Auswertung mit
+/// dem aktuellen Stand der Dateien, ohne Ereignisse des Originals zu verbrauchen (POL-027).
+#[derive(Debug, Default, Clone)]
 pub struct PolicyStore {
     dirs: Vec<(Scope, PathBuf)>,
     files: BTreeMap<PathBuf, FileEntry>,

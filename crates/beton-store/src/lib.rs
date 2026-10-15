@@ -23,6 +23,9 @@ mod listing;
 #[cfg(test)]
 mod listing_tests;
 mod migrate;
+mod policy;
+#[cfg(test)]
+mod policy_tests;
 mod projections;
 mod redaction;
 pub mod schema;
@@ -61,6 +64,7 @@ pub use crate::imports::ImportKey;
 pub use crate::inbox::{InboxQuery, InboxRecord};
 pub use crate::listing::{SessionFilter, SessionScope, SessionView, fts_query};
 pub use crate::migrate::SCHEMA_VERSION;
+pub use crate::policy::{MAX_SNAPSHOT_SETS, MAX_SNAPSHOT_SOURCE, ShadowHits};
 pub use crate::projections::{ApprovalRecord, UsageDaily, UsageRecord, UsageScope, UsageTotals};
 pub use crate::redaction::{MANUAL_MARKER, ManualRedaction, ManualRedactionOutcome};
 pub use crate::secrets_meta::SecretMetaRecord;

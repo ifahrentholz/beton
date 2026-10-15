@@ -366,6 +366,11 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_usage::get_usage))
         .routes(routes!(crate::api_usage::get_pricing))
         .routes(routes!(crate::api_usage::get_session_usage))
+        // Policies: Explain, Dry-Run und Shadow-Ansicht (POL-027).
+        .routes(routes!(crate::api_policies::list_policies))
+        .routes(routes!(crate::api_policies::evaluate))
+        .routes(routes!(crate::api_policies::shadow))
+        .routes(routes!(crate::api_policies::explain_decision))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(crate::attachments::routes())
         .routes(routes!(crate::session_skills::list))

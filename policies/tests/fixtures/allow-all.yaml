@@ -1,0 +1,7 @@
+# Testdaten für die Policy-Tests (QA-004): erlaubt alles ausdrücklich.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: allow-all
+rules:
+  - { id: allow-tools, on: tool_call, action: allow }
+  - { id: allow-browser, on: browser_navigate, action: allow }
