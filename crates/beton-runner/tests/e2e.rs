@@ -319,6 +319,57 @@ async fn proto_015_ac1_events_survive_tunnel_outage_exactly_once_in_order() {
         .unwrap();
 }
 
+/// Scheitert das Speichern eines Pushs (hier hält ein fremder Schreiber die SQLite-Sperre
+/// länger als `busy_timeout`, wie unter Last in der CI, #278), gehen die Events nicht verloren:
+/// Der Runner sendet sie erneut, und spätere Pushes überspringen sie nicht.
+#[tokio::test]
+async fn proto_015_ac1_failed_push_is_resent_without_gap() {
+    use sqlx::Connection as _;
+    let f = fixture(|r| r).await;
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..30 {
+        yaml.push_str(&format!(
+            "      - {{ message: \"Zeile {i}\", delay_ms: 50 }}\n"
+        ));
+    }
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    f.wait_for_count(|p| matches!(p, EventPayload::MessageCompleted(_)), 3)
+        .await;
+    // Fremde Schreibsperre, länger als der Busy-Timeout des Stores (5 s).
+    let mut blocker = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(f.dir.path().join("beton.db")),
+    )
+    .await
+    .unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut blocker)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(6_500)).await;
+    sqlx::query("ROLLBACK").execute(&mut blocker).await.unwrap();
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let lines: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => {
+                m.content[0]["text"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..30).map(|i| format!("Zeile {i}")).collect();
+    assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn proto_015_ac2_stale_epoch_stops_writing() {
     let f = fixture(|r| r).await;
