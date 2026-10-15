@@ -274,6 +274,29 @@ fn tool_vars(n: &beton_policy::normalize::NormalizedTool, call_index: Option<i64
     }
 }
 
+/// Ergebnis der gemeinsamen Vorprüfungen eines Tool-Calls ([`PolicyGate::precheck`]).
+pub(crate) struct Precheck {
+    /// Ohne Call-ID teilten sich Calls gespeicherte Entscheide (#234): fail closed.
+    pub missing_call_id: bool,
+    /// Normalisierter Call (mit Klasse des Adapters) oder warum er nicht prüfbar ist.
+    pub tool: Result<beton_policy::normalize::NormalizedTool, String>,
+    /// Kanonische Klasse für Durchsetzung und Card.
+    pub kind: String,
+    /// Pfad bzw. Wort, mit dem ein nicht nur lesender Call Policy-Dateien berührt (#234).
+    pub policy_files: Option<String>,
+    /// System-Tool eines von beton eingebundenen, reservierten Servers (#151).
+    pub beton_system: bool,
+    /// `ExitPlanMode`: entscheidet immer ein Mensch (HAR-027).
+    pub plan_exit: bool,
+}
+
+/// Begründung für Tool-Calls auf Policy-Dateien (Regel `policy-files`, #234).
+fn policy_files_reason(path: &str) -> String {
+    format!(
+        "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+    )
+}
+
 /// Klasse des Adapters, wenn die Abbildungstabelle das Tool nicht kennt (z. B. Fake-Szenario).
 fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateRequest) {
     if n.kind == "other" && beton_policy::enforcement::KINDS.contains(&req.kind.as_str()) {
@@ -1647,8 +1670,8 @@ impl PolicyGate {
         let subject_ref = json!({"call_id": req.call_id});
         let mut vars = self.base_vars("agent");
         self.wait_seen(&req.call_id).await;
-        let tool = normalize_source(&source, &req.args);
-        let verdict = match tool {
+        let pre = self.precheck(req);
+        let verdict = match pre.tool {
             Err(e) => {
                 // Nicht normalisierbar: ablehnen und auditieren (fail closed).
                 let set = self.refresh(req.turn_id);
@@ -1670,9 +1693,8 @@ impl PolicyGate {
                     subject: tool_subject(&req.tool, &req.args),
                 }
             }
-            Ok(mut n) => {
-                adapter_kind(&mut n, req);
-                if let Some(path) = self.touches_policy_files(&n) {
+            Ok(n) => {
+                if let Some(path) = pre.policy_files {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
                 vars.tool = Some(tool_vars(&n, Some(call_index)));
@@ -1834,25 +1856,55 @@ impl PolicyGate {
         dirs
     }
 
-    /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle. Für
-    /// MCP-Tools entscheidet die Normalisierung mit der Herkunft des Servers (#234): Ein
-    /// fremder Server namens `beton` ist kein System-Tool, auch wenn der Adapter das meint.
-    fn kind_of(&self, req: &GateRequest) -> String {
-        if let Ok(n) = normalize_source(&self.tool_source(req), &req.args)
-            && n.server != "builtin"
-        {
-            return n.kind;
-        }
-        if req.kind.is_empty() {
-            beton_harness::tool_kind(
+    /// Gemeinsame Vorprüfungen eines Tool-Calls (#253, Security-Review B2 zu #257): Echte
+    /// Calls (`decide`, `tool_verdict`, Nachprüfung geänderter Argumente) und `policy_query`
+    /// rufen genau diese Funktion auf, damit die Abfrage dieselbe Entscheidung liefert.
+    pub(crate) fn precheck(&self, req: &GateRequest) -> Precheck {
+        self.precheck_args(req, &req.args)
+    }
+
+    /// Wie [`PolicyGate::precheck`] mit anderen Argumenten (vom Menschen geändert).
+    fn precheck_args(&self, req: &GateRequest, args: &Value) -> Precheck {
+        let normalized = normalize_source(&self.tool_source(req), args);
+        // Für MCP-Tools entscheidet die Normalisierung mit der Herkunft des Servers (#234):
+        // Ein fremder Server namens `beton` ist kein System-Tool, auch wenn der Adapter das meint.
+        let kind = match &normalized {
+            Ok(n) if n.server != "builtin" => n.kind.clone(),
+            _ if req.kind.is_empty() => beton_harness::tool_kind(
                 self.inner.opts.harness.as_str(),
                 &req.tool,
                 req.acp_kind.as_deref(),
                 req.mcp_server.as_deref(),
-            )
-        } else {
-            req.kind.clone()
+            ),
+            _ => req.kind.clone(),
+        };
+        // #151 gilt nur für System-Tools, die beton selbst einbindet (reservierter Server),
+        // nicht für Claude-Builtins der Klasse `system` (Re-Review R3 zu #253, HAR-027).
+        let beton_system =
+            kind == "system" && normalized.as_ref().is_ok_and(|n| n.server != "builtin");
+        let tool = normalized
+            .map(|mut n| {
+                adapter_kind(&mut n, req);
+                n
+            })
+            .map_err(|e| e.to_string());
+        let policy_files = tool
+            .as_ref()
+            .ok()
+            .and_then(|n| self.touches_policy_files(n));
+        Precheck {
+            missing_call_id: req.call_id.trim().is_empty(),
+            tool,
+            kind,
+            policy_files,
+            beton_system,
+            plan_exit: req.tool == EXIT_PLAN_MODE,
         }
+    }
+
+    /// Kanonische Klasse einer Anfrage (aus [`PolicyGate::precheck`]).
+    fn kind_of(&self, req: &GateRequest) -> String {
+        self.precheck(req).kind
     }
 
     /// Prüft vom Menschen geänderte Argumente erneut (eigenes `policy.decision` mit
@@ -1865,15 +1917,13 @@ impl PolicyGate {
         args: &Value,
     ) -> Option<String> {
         let source = self.tool_source(req);
-        let mut n = match normalize_source(&source, args) {
+        let pre = self.precheck_args(req, args);
+        let n = match pre.tool {
             Ok(n) => n,
             Err(e) => return Some(format!("Geänderte Argumente nicht prüfbar: {e}")),
         };
-        adapter_kind(&mut n, req);
-        if let Some(path) = self.touches_policy_files(&n) {
-            return Some(format!(
-                "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
-            ));
+        if let Some(path) = pre.policy_files {
+            return Some(policy_files_reason(&path));
         }
         let mut vars = self.base_vars("agent");
         vars.tool = Some(tool_vars(&n, None));
@@ -1969,9 +2019,7 @@ impl PolicyGate {
         path: &str,
     ) -> Verdict {
         let set = self.refresh(req.turn_id);
-        let reason = format!(
-            "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
-        );
+        let reason = policy_files_reason(path);
         let decision = builtin_deny(Phase::ToolCall, set.hash(), "policy-files", reason.clone());
         let event = decision_event(
             &decision,
@@ -2202,14 +2250,15 @@ impl PolicyGate {
 #[async_trait]
 impl Gate for PolicyGate {
     async fn decide(&self, req: GateRequest) -> GateDecision {
+        let pre = self.precheck(&req);
         // Ohne Call-ID teilten sich Calls gespeicherte Entscheide (#234): fail closed.
-        if req.call_id.trim().is_empty() {
+        if pre.missing_call_id {
             tracing::warn!("Policy: Tool-Call ohne Call-ID abgelehnt");
             return GateDecision::Deny {
                 reason: Some("Abgelehnt von beton: Tool-Call ohne ID.".into()),
             };
         }
-        let kind = self.kind_of(&req);
+        let kind = pre.kind.clone();
         match req.origin {
             GateOrigin::PreTool => {
                 let v = self.tool_verdict(&req, Level::Full).await;
@@ -2259,10 +2308,7 @@ impl Gate for PolicyGate {
                 // #151 gilt nur für System-Tools, die beton selbst einbindet (reservierter
                 // Server), nicht für Claude-Builtins der Klasse `system`; `ExitPlanMode`
                 // entscheidet immer ein Mensch (Re-Review R3 zu #253, HAR-027).
-                let beton_system = kind == "system"
-                    && normalize_source(&self.tool_source(&req), &req.args)
-                        .is_ok_and(|n| n.server != "builtin");
-                let plan_exit = req.tool == EXIT_PLAN_MODE;
+                let (beton_system, plan_exit) = (pre.beton_system, pre.plan_exit);
                 if v.human
                     || (!plan_exit
                         && (req.origin == GateOrigin::AutoApproval || beton_system || yolo))

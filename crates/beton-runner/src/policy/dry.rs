@@ -19,7 +19,7 @@ use beton_harness::{GateOrigin, GateRequest};
 use beton_policy::Phase;
 use beton_policy::audit::subject_hash;
 use beton_policy::engine::{EffectiveSet, Outcome};
-use beton_policy::normalize::{harness_family, normalize_source};
+use beton_policy::normalize::harness_family;
 use beton_policy::snapshot::Manifest;
 use serde_json::{Value, json};
 
@@ -281,14 +281,17 @@ impl PolicyGate {
             );
             return denied("Policy-Zustand nicht lesbar");
         };
+        // Dieselben Vorprüfungen wie der echte Call (Policy-Dateien, Herkunft des Servers,
+        // System-Ausnahme, `ExitPlanMode`; Security-Review B2).
         let source = self.tool_source(&req);
-        let mut n = match normalize_source(&source, &req.args) {
+        let pre = self.precheck(&req);
+        let n = match pre.tool {
             Ok(n) => n,
             Err(e) => {
                 self.log_query(
                     &subject,
                     &req.tool,
-                    &req.kind,
+                    &pre.kind,
                     PolicyOutcome::Deny,
                     Vec::new(),
                     false,
@@ -296,13 +299,34 @@ impl PolicyGate {
                 return denied(&format!("Tool-Call nicht prüfbar: {e}"));
             }
         };
+        if let Some(path) = &pre.policy_files {
+            let rules = vec!["policy-files".to_owned()];
+            self.log_query(
+                &subject,
+                &req.tool,
+                &n.kind,
+                PolicyOutcome::Deny,
+                rules.clone(),
+                false,
+            );
+            let reason = format!("{} (policy-files)", super::policy_files_reason(path));
+            return json!({
+                "decision": "deny",
+                "engine": "beton-policy",
+                "action": action,
+                "tool": { "name": n.name, "kind": n.kind },
+                "rules": rules,
+                "reason": reason,
+                "modified": false,
+                "explain": format!("Entscheidung: deny – {reason}"),
+            });
+        }
         // Wie beim echten Call: dieser wäre der nächste.
         let call_index = self.inner.calls.load(std::sync::atomic::Ordering::SeqCst) + 1;
         let mut vars = self.base_vars("agent");
         if let Some(s) = vars.session.as_mut() {
             s.tool_calls = Some(call_index);
         }
-        super::adapter_kind(&mut n, &req);
         vars.tool = Some(tool_vars(&n, Some(call_index)));
         self.with_usage_values(&set, Phase::ToolCall, &mut vars)
             .await;
@@ -311,7 +335,7 @@ impl PolicyGate {
         let decision = self
             .run_engine(&set, Phase::ToolCall, vars, Some(source))
             .await;
-        let (verdict, outcome, reasons) = match &decision.outcome {
+        let (mut verdict, mut outcome, reasons) = match &decision.outcome {
             Outcome::Allow => ("allow", PolicyOutcome::Allow, &[][..]),
             Outcome::Deny { reasons } => ("deny", PolicyOutcome::Deny, reasons.as_slice()),
             Outcome::Ask { reasons } => ("ask", PolicyOutcome::Ask, reasons.as_slice()),
@@ -324,12 +348,19 @@ impl PolicyGate {
                 rules.push(r.rule.rule_id.clone());
             }
         }
-        self.log_query(&subject, &req.tool, &n.kind, outcome, rules.clone(), false);
-        let reason = reasons
+        let mut reason = reasons
             .iter()
             .map(|r| format!("{} ({})", r.reason, r.rule.rule_id))
             .collect::<Vec<_>>()
             .join("; ");
+        // `ExitPlanMode` entscheidet beim echten Call immer ein Mensch (HAR-027).
+        if pre.plan_exit && outcome == PolicyOutcome::Allow {
+            verdict = "ask";
+            outcome = PolicyOutcome::Ask;
+            reason = "Den Plan-Modus verlässt eine Session nur nach Freigabe durch einen Menschen"
+                .into();
+        }
+        self.log_query(&subject, &req.tool, &n.kind, outcome, rules.clone(), false);
         let explain = if reason.is_empty() {
             format!("Entscheidung: {verdict}")
         } else {

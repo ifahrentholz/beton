@@ -264,6 +264,7 @@ async fn agt_005_agt_008_claude_gets_project_claude_md_and_skills_from_beton() {
         None,
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -454,6 +455,7 @@ async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
         beton_runner::mcp::AgentSource::Ref("streng"),
         &beton_harness::registry::HarnessLayers::default(),
         &paths,
+        None,
         None,
         None,
         None,
