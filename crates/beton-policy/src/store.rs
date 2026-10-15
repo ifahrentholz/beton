@@ -320,7 +320,9 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
             continue;
         }
         // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`) über ihre
-        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`.
+        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`. Eine
+        // `tool_allowlist` bringt `allow`-Regeln mit (sie heben Defaults anderer Sets derselben
+        // Ebene auf) und lockert damit (POL-015).
         let action = match &rule.kind {
             crate::load::RuleKind::Cel { action, .. } => *action,
             crate::load::RuleKind::Builtin(_) => Action::Deny,

@@ -15,6 +15,7 @@ pub mod policytest;
 pub mod snapshot;
 pub mod state;
 pub mod store;
+mod sugar;
 pub mod types;
 pub mod value;
 pub mod vars;

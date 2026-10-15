@@ -944,18 +944,23 @@ impl<'a> Run<'a> {
             if lifted {
                 continue;
             }
+            // Begründung eines Regeltyps (`deny_reason` einer Allowlist, POL-015), sonst
+            // allgemein.
+            let text = set.default_reasons.get(&self.phase).cloned();
             let reason = Reason {
                 rule: set.rule_ref(&format!("defaults.{}", self.phase)),
-                reason: format!(
-                    "Default der Ebene {} für {}: {}",
-                    scope.as_str(),
-                    self.phase,
-                    if default == DefaultAction::Deny {
-                        "deny"
-                    } else {
-                        "ask"
-                    }
-                ),
+                reason: text.unwrap_or_else(|| {
+                    format!(
+                        "Default der Ebene {} für {}: {}",
+                        scope.as_str(),
+                        self.phase,
+                        if default == DefaultAction::Deny {
+                            "deny"
+                        } else {
+                            "ask"
+                        }
+                    )
+                }),
                 severity: None,
                 approval: None,
                 fingerprint: None,
