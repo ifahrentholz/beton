@@ -580,7 +580,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
   | Projects | `GET|POST|PATCH|DELETE /v1/projects` | 07 |
   | Imports | `GET /v1/imports/candidates`, `POST /v1/imports` | 07 |
   | Agents/Harnesses | `GET /v1/agents`, `GET /v1/harnesses`, `GET /v1/models` | 01/02 |
-  | Policies/Usage | `/v1/policies`, `POST /v1/policies/evaluate`, `GET /v1/usage` | 03/11 |
+  | Policies/Usage | `GET /v1/policies`, `POST /v1/policies/evaluate`, `GET /v1/policies/shadow`, `GET /v1/sessions/{id}/policy-decisions/{seq}` (POL-027), `GET /v1/usage` | 03/11 |
   | Hosts/Runner | `GET /v1/hosts`, `GET /v1/runners` | 10 |
   | Auth/Identität | `GET /v1/me`, `/v1/tokens` (PAT), `/v1/service-accounts`, `/v1/devices` | 05 |
   | Schedules/Webhooks | `/v1/schedules`, `POST /v1/triggers/{id}/fire` | 02 |

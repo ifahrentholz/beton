@@ -92,6 +92,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `policy.set_changed` / `policy.set_invalid` | D | `scope, set, version` bzw. `file, line, error` (POL-001) |
 | | `policy.state_changed` | D | `scope, key, op, value` (POL-009; `value` nach der Operation) |
 | | `policy.notified` | D | `rule_id, scope, set, channels, message?` (Zustellung von `notify`, POL-006, UX-001) |
+| | `policy.queried` | D | `subject_hash, tool, kind, outcome: allow\|deny\|ask, rules[], limited` (Abfrage per `policy_query` ohne Klartext; `rules` nur aus den Gründen von `deny`/`ask`; AGT-007, POL-027) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
 | | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
@@ -328,7 +329,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Paginieren über 1 000 Sessions mit `limit=50` liefert jede genau einmal, auch wenn währenddessen neue entstehen.
   - [ ] AC2 — Gleicher `Idempotency-Key` mit anderem Body liefert 422 `idempotency_key_reused`.
-  - [ ] AC3 — `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts.
+  - [ ] AC3 — (ab M4, mit POL-008: erster schreibender Policy-Endpunkt `PUT /v1/orgs/{org}/policies/{name}`) `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts. *(Verschoben, WP-40, #255: In M2 gibt es keinen schreibenden Policy-Endpunkt; lokale Policies sind Dateien. `extract::check_if_match` steht bereit.)*
   - [ ] AC4 — Ein Lint über das OpenAPI-Dokument erzwingt `snake_case`, Cursor-Pagination auf allen Listen-Endpunkten und Problem-Responses für 4xx/5xx.
 - **Abhängigkeiten:** PROTO-011, PROTO-013
 

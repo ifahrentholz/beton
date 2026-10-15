@@ -52,6 +52,8 @@ pub struct Settings {
     pub pricing: PricingSettings,
     /// Usage-Anzeige und -Hinweise (USE-004).
     pub usage: UsageSettings,
+    /// Angaben zum User, z. B. `timezone` (POL-004 AC4); nur in der User-Konfiguration.
+    pub user: UserSettings,
     /// Automatische Compaction (USE-009): `auto: harness | beton | off`, `threshold` (0,8).
     pub compaction: beton_harness::CompactionSettings,
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
@@ -165,6 +167,20 @@ impl Default for UsageSettings {
             rate_limit_notice: true,
         }
     }
+}
+
+/// Angaben zum User (POL-004 AC4).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UserSettings {
+    /// Zeitzone des Users als IANA-Name (z. B. `Europe/Berlin`, mit Sommerzeit), `UTC` oder
+    /// fester Versatz (`+02:00`). Bestimmt Tages- und Monatsgrenzen von
+    /// `user.daily_cost_usd`/`user.monthly_cost_usd`, den Tag von `user_day` (POL-009) und
+    /// den Default von `tz` in `GET /v1/usage`; `beton usage` rechnet damit statt mit dem
+    /// lokalen Versatz. Ohne Angabe gilt UTC. Ein unbekannter Name ist ein
+    /// Konfigurationsfehler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<beton_core::timezone::UserTimeZone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -859,6 +875,25 @@ mod tests {
             .find(|(k, _, _)| k == key)
             .map(|(_, _, s)| s)
             .unwrap_or_else(|| panic!("{key} fehlt"))
+    }
+
+    #[test]
+    fn pol_004_ac4_user_timezone_defaults_to_utc_and_rejects_unknown_names() {
+        let f = fixture();
+        let settings = |f: &Fixture| f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(settings(&f).user.timezone, None);
+        f.write_user("user:\n  timezone: Europe/Berlin\n");
+        let tz = settings(&f).user.timezone.unwrap();
+        assert_eq!(tz.name(), "Europe/Berlin");
+        // Fail closed: kein stilles UTC bei einem Tippfehler, der Fehler nennt den Schlüssel.
+        f.write_user("user:\n  timezone: Europe/Berln\n");
+        let err = f.load(&[]).unwrap_err().to_string();
+        assert!(err.contains("user.timezone"), "{err}");
+        assert!(err.contains("Europe/Berln"), "{err}");
+        // Nur in der User-Konfiguration, nicht im Projekt (Repository).
+        f.write_user("");
+        f.write_project("user:\n  timezone: Europe/Berlin\n");
+        assert!(f.load(&[]).is_err());
     }
 
     #[test]

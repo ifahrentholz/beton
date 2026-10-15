@@ -1,0 +1,35 @@
+# Policy-Test (POL-026 AC4): Regeltyp require_approval (POL-014).
+spec_version: 1
+layers: { project: [require_approval.yaml] }
+cases:
+  - name: Write (Claude) fragt nach
+    phase: tool_call
+    input: { tool: { name: Write, args: { file_path: /repo/a.txt, content: x } } }
+    expect: { outcome: ask, rules: [approve-writes] }
+  - name: Bearbeiten fragt nach
+    phase: tool_call
+    input: { tool: { name: Edit, args: { file_path: /repo/a.txt, old_string: a, new_string: b } } }
+    expect: { outcome: ask, rules: [approve-writes], reason_contains: Freigabe }
+  - name: MCP-Tool nach Glob fragt nach
+    phase: tool_call
+    input: { tool: { name: mcp__github__create_pull_request, args: { title: x } } }
+    expect: { outcome: ask, rules: [approve-github-pr] }
+  - name: CEL-Kriterium fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "make deploy prod" } } }
+    expect: { outcome: ask, rules: [approve-deploy] }
+  - name: Lesen ist frei
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/a.txt } } }
+    expect: { outcome: allow }
+  - name: Codex apply_patch ist file_edit
+    harness: codex
+    phase: tool_call
+    input: { tool: { name: apply_patch, args: { input: "*** Begin Patch\n*** Update File: a.txt\n@@\n-a\n+b\n*** End Patch\n" } } }
+    expect: { outcome: ask, rules: [approve-writes] }
+  - name: remember none bietet keine Freigabe für die Session an
+    steps:
+      - { phase: tool_call, input: { tool: { name: mcp__github__create_pull_request, args: { title: x } } },
+          expect: { outcome: ask }, resolve: { decision: allow, remember: session } }
+      - { phase: tool_call, input: { tool: { name: mcp__github__create_pull_request, args: { title: x } } },
+          expect: { outcome: ask } }

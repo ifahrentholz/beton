@@ -12,6 +12,7 @@
 pub mod agents;
 pub mod api;
 pub mod api_inbox;
+pub mod api_policies;
 pub mod api_proxy;
 pub mod api_secrets;
 pub mod api_sessions;

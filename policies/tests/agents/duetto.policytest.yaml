@@ -1,0 +1,21 @@
+# Policy-Test (POL-026, QA-004): Built-in-Agent duetto (AGT-012) bringt keine eigenen Regeln
+# mit; es gelten die Regeln der höheren Ebenen unverändert.
+spec_version: 1
+layers:
+  user: [../fixtures/dangerous-shell.yaml]
+  project: [../fixtures/deny-push.yaml]
+  agent: [../../../agents/duetto/agent.yaml]
+harness: claude
+cases:
+  - name: Lesende Kommandos sind erlaubt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git log --oneline" } } }
+    expect: { outcome: allow }
+  - name: User-Regel fragt auch unter duetto nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "rm -rf build" } } }
+    expect: { outcome: ask, rules: [rm-rf] }
+  - name: Projekt-deny gilt auch unter duetto
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push" } } }
+    expect: { outcome: deny, rules: [no-push] }

@@ -1,0 +1,47 @@
+Eine hypothetische Anfrage auswerten, ohne Events, Freigaben oder Zustand
+
+Usage: beton policy eval [OPTIONS] --phase <PHASE> --input <FILE>
+
+Options:
+      --phase <PHASE>
+          Phase: session_start, model_request, tool_call, tool_result, browser_navigate,
+          browser_action
+
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --input <FILE>
+          Eingabe als JSON-Datei (`-` = stdin), z. B. `{"tool": {"name": "Bash", "args": {"command":
+          "git push"}}}`
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+      --session <ID>
+          Kontext dieser Session (Projekt-Policies, Kosten, Zustand); sonst lokal mit Fixtures
+
+      --harness <HARNESS>
+          Harness für Normalisierung und Durchsetzung (Default: der der Session bzw. claude)
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --fixtures <FILE>
+          Kontextwerte als JSON-Datei wie `fixtures` in Policy-Tests
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

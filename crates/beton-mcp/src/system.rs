@@ -216,6 +216,7 @@ impl SystemServer {
                     "properties": {
                         "action": {"type": "string", "description": "Die geplante Aktion, z. B. `git push origin main`."},
                         "tool": {"type": "string", "description": "Tool, mit dem sie ausgeführt würde, z. B. `Bash`."},
+                        "server": {"type": "string", "description": "MCP-Server des Tools, falls es eines ist, z. B. `github`."},
                         "args": {"type": "object", "description": "Argumente des Tool-Calls."}
                     },
                     "required": ["action"]

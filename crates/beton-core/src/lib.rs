@@ -9,4 +9,5 @@ pub mod network;
 pub mod pricing;
 pub mod registry;
 pub mod time;
+pub mod timezone;
 pub mod usage;

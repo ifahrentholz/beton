@@ -18,7 +18,7 @@ from: string,
  */
 to: string, 
 /**
- * Zeitzone der Tagesgrenzen, z. B. `+02:00`.
+ * Zeitzone der Tagesgrenzen, z. B. `Europe/Berlin` oder `+02:00`.
  */
 tz: string, group_by: Array<string>, 
 /**

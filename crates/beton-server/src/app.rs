@@ -100,6 +100,9 @@ pub struct Runtime {
     pub usage_notices: Arc<crate::usage_notice::NoticeLog>,
     /// `compaction.*` (USE-009): Automatik vor dem nächsten Turn bzw. im Direkt-API-Loop.
     pub compaction: beton_harness::CompactionSettings,
+    /// `user.timezone` (POL-004 AC4): Tages- und Monatsgrenzen der Policy-Kosten, Tag von
+    /// `user_day` (POL-009) und Default von `tz` der Usage-API (USE-005). Default UTC.
+    pub timezone: beton_core::timezone::UserTimeZone,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
@@ -160,6 +163,7 @@ impl Runtime {
             title_jobs: Arc::default(),
             usage: crate::usage_notice::UsageConfig::default(),
             compaction: beton_harness::CompactionSettings::default(),
+            timezone: beton_core::timezone::UserTimeZone::utc(),
             usage_notices: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
@@ -365,6 +369,11 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_usage::get_usage))
         .routes(routes!(crate::api_usage::get_pricing))
         .routes(routes!(crate::api_usage::get_session_usage))
+        // Policies: Explain, Dry-Run und Shadow-Ansicht (POL-027).
+        .routes(routes!(crate::api_policies::list_policies))
+        .routes(routes!(crate::api_policies::evaluate))
+        .routes(routes!(crate::api_policies::shadow))
+        .routes(routes!(crate::api_policies::explain_decision))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(crate::attachments::routes())
         .routes(routes!(crate::session_skills::list))

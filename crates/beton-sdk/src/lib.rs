@@ -547,6 +547,25 @@ impl Client {
         self.get("/v1/audit/verify").await
     }
 
+    /// `GET /v1/policies`: effektives Set (POL-027), mit `session` samt Projekt-Ebene.
+    pub async fn policies(&self, session: Option<&str>) -> Result<Value> {
+        match session {
+            Some(id) => self.get(&format!("/v1/policies?session_id={id}")).await,
+            None => self.get("/v1/policies").await,
+        }
+    }
+
+    /// `POST /v1/policies/evaluate`: Auswertung ohne Seiteneffekte (POL-027 AC3).
+    pub async fn evaluate_policy(&self, request: &Value) -> Result<Value> {
+        self.post("/v1/policies/evaluate", request).await
+    }
+
+    /// `GET /v1/sessions/{id}/policy-decisions/{seq}`: Explain einer Entscheidung (POL-027).
+    pub async fn explain_decision(&self, session: &str, seq: u64) -> Result<Value> {
+        self.get(&format!("/v1/sessions/{session}/policy-decisions/{seq}"))
+            .await
+    }
+
     /// `POST /v1/proxy/ca/rotate`: neue beton-CA (PRX-002); liefert Subject, Fingerabdruck
     /// und Gültigkeit, nie den Schlüssel.
     pub async fn rotate_proxy_ca(&self) -> Result<Value> {

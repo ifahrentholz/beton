@@ -329,7 +329,8 @@ async fn har_009_ac1_policy_query_answers_from_the_runner_in_claude() {
     assert_eq!(req[0]["payload"]["source"], "beton_mcp");
     let result = tool_result(&events);
     assert!(
-        result.contains("decision") && result.contains("ask"),
+        // Ohne Policies erlaubt die Engine (POL-027, AGT-007 AC3).
+        result.contains("decision") && result.contains("allow") && result.contains("beton-policy"),
         "{result}"
     );
     let ready = of_type(&events, "harness.ready");
@@ -360,7 +361,8 @@ async fn har_009_ac1_policy_query_answers_from_the_runner_in_codex() {
     assert_eq!(req[0]["payload"]["source"], "beton_mcp");
     let result = tool_result(&events);
     assert!(
-        result.contains("decision") && result.contains("ask"),
+        // Ohne Policies erlaubt die Engine (POL-027, AGT-007 AC3).
+        result.contains("decision") && result.contains("allow") && result.contains("beton-policy"),
         "{result}"
     );
     let ready = of_type(&events, "harness.ready");
@@ -381,7 +383,8 @@ async fn har_009_ac1_policy_query_answers_from_the_runner_in_acp() {
     let events = env.turn(&id, "los").await;
     let result = tool_result(&events);
     assert!(
-        result.contains("decision") && result.contains("ask"),
+        // Ohne Policies erlaubt die Engine (POL-027, AGT-007 AC3).
+        result.contains("decision") && result.contains("allow") && result.contains("beton-policy"),
         "{result}"
     );
     let ready = of_type(&events, "harness.ready");

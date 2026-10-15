@@ -260,6 +260,10 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             "policy.state.apply" => {
                 crate::policy_state::policy_state_apply(&self.0, session, &args).await
             }
+            // Set-Snapshot je Version für Explain (POL-027 AC2).
+            "policy.snapshot" => {
+                crate::api_policies::policy_snapshot(&self.0, session, &args).await
+            }
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
             other => {

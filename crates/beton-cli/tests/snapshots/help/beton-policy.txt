@@ -1,0 +1,36 @@
+Policies testen, auswerten und Entscheidungen erklären
+
+Usage: beton policy [OPTIONS] <COMMAND>
+
+Commands:
+  test     Deklarative Policy-Tests (`*.policytest.yaml`) ausführen; Exit 0 bestanden, 1 Fehlschlag
+  eval     Eine hypothetische Anfrage auswerten, ohne Events, Freigaben oder Zustand
+  explain  Eine Entscheidung einer Session erklären (Regeln, Teilausdrücke, Set-Version)
+  show     Geltende Regeln mit Ebene und Herkunft anzeigen
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

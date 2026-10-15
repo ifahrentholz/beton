@@ -384,6 +384,30 @@ impl policy::StateSource for TunnelState {
     }
 }
 
+#[async_trait]
+impl policy::SnapshotSink for TunnelState {
+    async fn store(
+        &self,
+        manifest: &beton_policy::snapshot::Manifest,
+        sources: &[(String, Vec<u8>)],
+    ) -> Result<(), String> {
+        // Policy-Dateien und Inline-Regeln sind UTF-8 (sonst lädt das Set nicht).
+        let sources: Vec<Value> = sources
+            .iter()
+            .map(|(version, bytes)| {
+                let text = String::from_utf8(bytes.clone()).map_err(|e| e.to_string())?;
+                Ok(json!({ "version": version, "text": text }))
+            })
+            .collect::<Result<_, String>>()?;
+        self.call(
+            "policy.snapshot",
+            json!({ "manifest": manifest, "sources": sources }),
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
 /// Unbestätigte Events in Runner-Reihenfolge.
 #[derive(Default)]
 struct Unacked {
@@ -666,7 +690,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     .with_usage(Arc::new(TunnelUsage {
         calls: usage_tx.clone(),
     }))
-    .with_state(Arc::new(TunnelState { calls: usage_tx }));
+    .with_state(Arc::new(TunnelState {
+        calls: usage_tx.clone(),
+    }))
+    // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
+    .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
     let stages = match &boot.sandbox {
@@ -788,6 +816,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
                 stages.as_ref().map(|s| s.tools.clone()),
+                // `policy_query` wertet wie ein echter Call aus, ohne Seiteneffekte (AGT-007 AC3).
+                Some(Arc::new(gate.clone()) as Arc<dyn mcp::PolicyOracle>),
             )
             .await
         }
@@ -971,6 +1001,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
     }
     let mut pre_events = pre.finish(&boot, &mut gate_rx, &mut unacked).await;
+    // Set-Snapshot aus `session_start` jetzt über den Tunnel (POL-027 AC2).
+    gate.flush_snapshot();
     let mut spec = SessionSpec {
         workdir: boot.workdir.clone(),
         model: start_settings.model.clone(),

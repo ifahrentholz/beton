@@ -418,7 +418,7 @@ Für Tool-Calls setzt jeder Adapter `tool.native_name` (z. B. `Bash`, `exec_comm
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log (bei mehreren Modellen in `modelUsage` eins je Modell, *präzisiert WP-44*).
   - [ ] AC2 — Bei `auth_source: vendor_cli` ist `cost_micro` leer und `source: subscription`; ein API-Äquivalent erscheint nie als tatsächliche Ausgabe (USE-004).
-  - [ ] AC3 — (ab M2) `session.cost_usd` (Policy-Variable) ist nach jedem `cost.delta` aktualisiert (Test über Policy-Explain, POL-027).
+  - [ ] AC3 — (ab M2) `session.cost_usd` (Policy-Variable) ist nach jedem `cost.delta` aktualisiert (Test über Policy-Explain, POL-027). *(Präzisiert, WP-40: geprüft über `POST /v1/policies/evaluate` bzw. `beton policy eval --session`, deren Erklärung die benutzten Kontextwerte nennt.)*
 - **Abhängigkeiten:** HAR-004, PROTO-002 (siehe 06-data-sync-protocol.md), USE-001 (ab M2, siehe 11-platform-features.md)
 
 ### HAR-022 — Compaction-Durchreichung

@@ -1,0 +1,11 @@
+# Testdaten für die Policy-Tests (QA-004): Browser nur für freigegebene Hosts.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: browser
+defaults:
+  browser_navigate: deny
+rules:
+  - id: allow-docs
+    on: browser_navigate
+    when: 'browser.host == "docs.rs"'
+    action: allow
