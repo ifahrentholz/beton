@@ -113,6 +113,30 @@ fn cli_005_ac1_non_interactive_setup_reports_missing_cli_with_nonzero_exit() {
     assert_eq!(std::fs::read_dir(empty.path()).unwrap().count(), 0);
 }
 
+/// POL-001: `beton setup` legt die Policy-Defaults der User-Ebene an; `--check` ändert nichts.
+#[test]
+fn pol_001_setup_creates_user_policy_defaults_but_check_does_not() {
+    let empty = tempfile::tempdir().unwrap();
+    let checked = tempfile::tempdir().unwrap();
+    run(isolated(checked.path(), empty.path(), true).args(["setup", "--check", "--json"]));
+    assert!(!checked.path().join("policies").exists());
+    let home = tempfile::tempdir().unwrap();
+    let out = run(isolated(home.path(), empty.path(), true)
+        .env("BETON_CODEX_PATH", fake_cli())
+        .args(["setup", "--non-interactive"]));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let file = home.path().join("policies/defaults.yaml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("type: git_guard"), "{text}");
+    assert!(text.contains("id: loop"), "{text}");
+    assert!(home.path().join("schemas/v1/policy.schema.json").is_file());
+    assert!(
+        stderr(&out).contains("Policy-Defaults angelegt"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 fn doctor(cmd: &mut Command) -> (Option<i32>, DoctorReport, Value) {
     let out = run(cmd.args(["doctor", "--json"]));
     let text = stdout(&out);

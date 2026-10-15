@@ -130,6 +130,10 @@ pub struct SessionVars {
     /// Arbeitsverzeichnis (absolut).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
+    /// Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die
+    /// Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
     /// Git-Branch des Arbeitsverzeichnisses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -265,6 +269,9 @@ pub struct HostVars {
     /// Lokaler Host (derselbe Rechner wie der Server).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local: Option<bool>,
+    /// Home-Verzeichnis des Users auf dem Host (absolut); `~` und `${home}` in `path_guard`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// Wer die Aktion auslöst.
@@ -449,6 +456,11 @@ pub struct ToolVars {
     /// Betroffene Pfade, absolut und normalisiert.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
+    /// Pfade aus `paths`, in die der Call schreibt: Datei-Tools der Klassen `file_write` und
+    /// `file_edit`, bei Shell-Kommandos Umleitungsziele und Ziele bekannter Datei-Kommandos
+    /// (best effort, POL-016).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_paths: Option<Vec<String>>,
     /// URLs in den Argumenten.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub urls: Option<Vec<String>>,

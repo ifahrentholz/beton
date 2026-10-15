@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "servers": {
-      "description": "MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*` und `beton_*` sind reserviert).",
+      "description": "MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*`, `beton_*` und `builtin` sind reserviert).",
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/McpServer"

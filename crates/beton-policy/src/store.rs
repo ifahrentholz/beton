@@ -322,7 +322,9 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
         // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`, die Teile
         // von `spend_cap`/`daily_budget`/`model_route` → `deny`/`ask`/`modify`) über ihre
         // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`.
-        // Umrouten (`modify`) verschärft nicht: Es gilt erst in einer neuen Session.
+        // Umrouten (`modify`) verschärft nicht: Es gilt erst in einer neuen Session. Eine
+        // `tool_allowlist` bringt `allow`-Regeln mit (sie heben Defaults anderer Sets derselben
+        // Ebene auf) und lockert damit (POL-015).
         let action = match &rule.kind {
             crate::load::RuleKind::Cel { action, .. } => *action,
             crate::load::RuleKind::Builtin(_) => Action::Deny,

@@ -196,6 +196,9 @@ const USAGE_FIELDS: [&str; 16] = [
     "user.timezone",
 ];
 
+/// Fenster von `tool.repeat_count` in Tool-Calls (POL-004, POL-018).
+const REPEAT_WINDOW: usize = 10;
+
 /// Startparameter des Gates.
 #[derive(Debug, Clone)]
 pub struct PolicyOptions {
@@ -203,6 +206,9 @@ pub struct PolicyOptions {
     pub harness: HarnessId,
     pub workdir: PathBuf,
     pub home: Option<PathBuf>,
+    /// Projektverzeichnis (`session.project_root`, CLI-008); ohne Angabe aus `workdir`
+    /// ermittelt.
+    pub project_root: Option<PathBuf>,
     /// Policy-Verzeichnisse je Ebene (User `$BETON_HOME/policies`, Projekt
     /// `<worktree>/.beton/policies`).
     pub dirs: Vec<(Scope, PathBuf)>,
@@ -217,6 +223,7 @@ impl Default for PolicyOptions {
             harness: HarnessId::FAKE.parse().unwrap_or_else(|_| unreachable!()),
             workdir: PathBuf::from("/"),
             home: None,
+            project_root: None,
             dirs: Vec::new(),
             approval_timeout: APPROVAL_TIMEOUT,
             agent: None,
@@ -314,6 +321,7 @@ fn tool_vars(n: &beton_policy::normalize::NormalizedTool, call_index: Option<i64
         argv: Some(n.argv.clone()),
         cwd: Some(n.cwd.clone()),
         paths: Some(n.paths.clone()),
+        write_paths: Some(n.write_paths.clone()),
         urls: Some(n.urls.clone()),
         call_index,
         is_subagent_spawn: Some(n.is_subagent_spawn),
@@ -563,6 +571,10 @@ struct Inner {
     /// Gemerkte Freigaben (`approve_session`, POL-010).
     grants: Mutex<SessionGrants>,
     calls: AtomicI64,
+    /// Identitäten der letzten Tool-Calls (Call-ID, Identität) für `tool.repeat_count`.
+    recent: Mutex<std::collections::VecDeque<(String, String)>>,
+    /// Fehlgeschlagene Tool-Calls in Folge (`tool.consecutive_errors`, POL-018).
+    errors_in_row: AtomicI64,
     granted: AtomicI64,
     denied: AtomicI64,
     started_at: CelTimestamp,
@@ -616,6 +628,36 @@ impl PathResolver for FsResolver {
             }
         }
     }
+}
+
+/// Aktueller Git-Branch von `workdir` (`session.branch`, POL-017) aus `HEAD`, ohne `git`
+/// zu starten: `.git` als Verzeichnis oder als Datei mit `gitdir:` (Worktree). `None` bei
+/// losgelöstem HEAD oder ohne Repository.
+fn current_branch(workdir: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let read = |path: &Path| -> Option<String> {
+        let mut text = String::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(4096)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    };
+    let dot_git = workdir
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|p| p.exists())?;
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = read(&dot_git)?;
+        let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+        dot_git.parent()?.join(target)
+    };
+    let head = read(&git_dir.join("HEAD"))?;
+    let branch = head.trim().strip_prefix("ref: refs/heads/")?;
+    (!branch.is_empty()).then(|| branch.to_owned())
 }
 
 fn truncate(text: &str) -> String {
@@ -779,7 +821,13 @@ struct Evaluated {
 }
 
 impl PolicyGate {
-    pub fn new(opts: PolicyOptions, events: mpsc::UnboundedSender<GateEvent>) -> Self {
+    pub fn new(mut opts: PolicyOptions, events: mpsc::UnboundedSender<GateEvent>) -> Self {
+        if opts.project_root.is_none() {
+            opts.project_root = Some(beton_agents::resolve::project_root(
+                &opts.workdir,
+                Path::new(""),
+            ));
+        }
         let mut store = PolicyStore::new();
         for (scope, dir) in &opts.dirs {
             store.add_dir(*scope, dir);
@@ -812,6 +860,8 @@ impl PolicyGate {
                 state_source: None,
                 grants: Mutex::new(SessionGrants::default()),
                 calls: AtomicI64::new(0),
+                recent: Mutex::new(std::collections::VecDeque::new()),
+                errors_in_row: AtomicI64::new(0),
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
@@ -1097,6 +1147,39 @@ impl PolicyGate {
         }
     }
 
+    /// Ein `tool.call.completed` aus dem Event-Strom: zählt fehlgeschlagene Calls in Folge
+    /// (`tool.consecutive_errors`, POL-018). Ein erfolgreicher Call setzt zurück; abgelehnte
+    /// und abgebrochene ändern nichts.
+    pub fn note_completed(&self, status: beton_core::event::ToolStatus) {
+        use beton_core::event::ToolStatus;
+        match status {
+            ToolStatus::Error => {
+                self.inner.errors_in_row.fetch_add(1, Ordering::SeqCst);
+            }
+            ToolStatus::Ok => self.inner.errors_in_row.store(0, Ordering::SeqCst),
+            _ => {}
+        }
+    }
+
+    /// Merkt sich einen Tool-Call im Fenster von `tool.repeat_count` (POL-018) und liefert die
+    /// Zahl identischer Calls darin (einschließlich dieses). Dieselbe Call-ID zählt einmal.
+    fn note_call(&self, call_id: &str, n: &beton_policy::normalize::NormalizedTool) -> i64 {
+        let id = beton_policy::normalize::call_identity(&n.kind, &n.name, &n.args);
+        let Ok(mut recent) = self.inner.recent.lock() else {
+            return 1;
+        };
+        match recent.iter_mut().find(|(c, _)| c == call_id) {
+            Some(entry) => entry.1 = id.clone(),
+            None => {
+                recent.push_back((call_id.to_owned(), id.clone()));
+                while recent.len() > REPEAT_WINDOW {
+                    recent.pop_front();
+                }
+            }
+        }
+        i64::try_from(recent.iter().filter(|(_, i)| *i == id).count()).unwrap_or(i64::MAX)
+    }
+
     /// Ein `tool.call.requested` aus dem Event-Strom (Zuordnung im Relay-Hub, Reihenfolge).
     pub fn note_requested(&self, call_id: &str, mcp_server: Option<&str>, tool: &str) {
         if let Ok(mut r) = self.inner.requested.lock() {
@@ -1298,6 +1381,14 @@ impl PolicyGate {
                 tool_calls: Some(self.inner.calls.load(Ordering::SeqCst)),
                 started_at: Some(self.inner.started_at.clone()),
                 worktree: Some(self.inner.opts.workdir.display().to_string()),
+                // Bei jeder Auswertung neu: der Agent kann den Branch wechseln (POL-017).
+                branch: current_branch(&self.inner.opts.workdir),
+                project_root: self
+                    .inner
+                    .opts
+                    .project_root
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
                 ..SessionVars::default()
             }),
             user: Some(UserVars {
@@ -1312,6 +1403,12 @@ impl PolicyGate {
                 os: Some(std::env::consts::OS.into()),
                 arch: Some(std::env::consts::ARCH.into()),
                 local: Some(true),
+                home: self
+                    .inner
+                    .opts
+                    .home
+                    .as_ref()
+                    .map(|h| h.display().to_string()),
                 ..HostVars::default()
             }),
             actor: Some(ActorVars {
@@ -1828,7 +1925,10 @@ impl PolicyGate {
                 if let Some(path) = pre.policy_files {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
-                vars.tool = Some(tool_vars(&n, Some(call_index)));
+                let mut tool = tool_vars(&n, Some(call_index));
+                tool.repeat_count = Some(self.note_call(&req.call_id, &n));
+                tool.consecutive_errors = Some(self.inner.errors_in_row.load(Ordering::SeqCst));
+                vars.tool = Some(tool);
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,

@@ -1,0 +1,11 @@
+# Testdaten zum Regeltyp tool_allowlist (POL-015, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: allowlist
+rules:
+  - id: read-only
+    type: tool_allowlist
+    params:
+      allow: ["mcp:github/get_*"]
+      allow_kinds: [system, file_read, search]
+      deny_reason: Nur lesende Tools sind erlaubt

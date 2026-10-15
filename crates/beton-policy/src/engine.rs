@@ -871,6 +871,7 @@ impl<'a> Run<'a> {
                     ("argv", serde_json::json!(tool.argv)),
                     ("cwd", serde_json::json!(tool.cwd)),
                     ("paths", serde_json::json!(tool.paths)),
+                    ("write_paths", serde_json::json!(tool.write_paths)),
                     ("urls", serde_json::json!(tool.urls)),
                     ("parse_uncertain", serde_json::json!(tool.parse_uncertain)),
                 ] {
@@ -997,18 +998,23 @@ impl<'a> Run<'a> {
             if lifted {
                 continue;
             }
+            // Begründung eines Regeltyps (`deny_reason` einer Allowlist, POL-015), sonst
+            // allgemein.
+            let text = set.type_defaults.get(&self.phase).map(|d| d.reason.clone());
             let reason = Reason {
                 rule: set.rule_ref(&format!("defaults.{}", self.phase)),
-                reason: format!(
-                    "Default der Ebene {} für {}: {}",
-                    scope.as_str(),
-                    self.phase,
-                    if default == DefaultAction::Deny {
-                        "deny"
-                    } else {
-                        "ask"
-                    }
-                ),
+                reason: text.unwrap_or_else(|| {
+                    format!(
+                        "Default der Ebene {} für {}: {}",
+                        scope.as_str(),
+                        self.phase,
+                        if default == DefaultAction::Deny {
+                            "deny"
+                        } else {
+                            "ask"
+                        }
+                    )
+                }),
                 severity: None,
                 approval: None,
                 fingerprint: None,

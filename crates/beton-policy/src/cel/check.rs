@@ -57,12 +57,16 @@ pub(crate) enum Func {
     ToString,
     Glob(Option<Arc<Regex>>),
     Under,
+    Resolve,
     DomainMatches,
     BytesHuman,
     /// `priced(model)`: Listenpreis im Preis-Katalog (POL-011).
     Priced,
     HasCommand,
     HasFlag,
+    GitOps,
+    GitPushTargets,
+    GitElsewhere,
     UrlHost,
     UrlPath,
 }
@@ -687,6 +691,12 @@ impl Checker<'_> {
                 }
                 (Func::Priced, Ty::Bool)
             }
+            "resolve" if n == 1 => {
+                if !is(0, &Ty::String) {
+                    return Err(mismatch());
+                }
+                (Func::Resolve, Ty::String)
+            }
             "bytes_human" if n == 1 => {
                 if !matches!(types[0], Ty::Int | Ty::Uint | Ty::Dyn) {
                     return Err(mismatch());
@@ -706,6 +716,18 @@ impl Checker<'_> {
                 }
                 (Func::HasFlag, Ty::Bool)
             }
+            "shell.git_ops" | "shell.git_push_targets" | "shell.git_elsewhere"
+                if n == 1 || (n == 2 && name == "shell.git_push_targets") =>
+            {
+                if !is(0, &Ty::list(Ty::list(Ty::String))) || (n == 2 && !is(1, &Ty::Bool)) {
+                    return Err(mismatch());
+                }
+                match name {
+                    "shell.git_ops" => (Func::GitOps, Ty::list(Ty::String)),
+                    "shell.git_push_targets" => (Func::GitPushTargets, Ty::list(Ty::String)),
+                    _ => (Func::GitElsewhere, Ty::Bool),
+                }
+            }
             "url.host" | "url.path" if n == 1 => {
                 if !is(0, &Ty::String) {
                     return Err(mismatch());
@@ -717,10 +739,31 @@ impl Checker<'_> {
                 };
                 (f, Ty::String)
             }
-            known @ ("size" | ".size" | "matches" | ".matches" | ".startsWith" | ".endsWith"
-            | ".contains" | "duration" | "timestamp" | "int" | "uint" | "double"
-            | "string" | "glob" | "under" | "domain_matches" | "bytes_human"
-            | "priced" | "shell.has_command" | "shell.has_flag" | "url.host"
+            known @ ("size"
+            | ".size"
+            | "matches"
+            | ".matches"
+            | ".startsWith"
+            | ".endsWith"
+            | ".contains"
+            | "duration"
+            | "timestamp"
+            | "int"
+            | "uint"
+            | "double"
+            | "string"
+            | "glob"
+            | "under"
+            | "resolve"
+            | "domain_matches"
+            | "bytes_human"
+            | "priced"
+            | "shell.has_command"
+            | "shell.has_flag"
+            | "shell.git_ops"
+            | "shell.git_push_targets"
+            | "shell.git_elsewhere"
+            | "url.host"
             | "url.path") => {
                 return Err(self.err(
                     id,

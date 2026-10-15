@@ -730,8 +730,16 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
             "spec_version: 1\nname: t\nrules:\n  - id: r\n    type: {t}\n    params: {params}\n"
         );
         let set = parse_set(Scope::User, "t.yaml", &text).unwrap_or_else(|e| panic!("{t}: {e}"));
+        // tool_allowlist (WP-42): `allow`-Anteile, neu also lockernd (tests/rule_types.rs).
+        // path_guard, git_guard, loop_detection (WP-42): nur `deny`/`ask`/`notify`.
+        // spend_cap, daily_budget, model_route (WP-43): Budget-Teile verschärfen, Umrouten
+        // nicht (tests/budgets.rs).
         let desugared = [
             "require_approval",
+            "tool_allowlist",
+            "path_guard",
+            "git_guard",
+            "loop_detection",
             "spend_cap",
             "daily_budget",
             "model_route",

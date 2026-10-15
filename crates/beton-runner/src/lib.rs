@@ -694,6 +694,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             harness: boot.harness.clone(),
             workdir: boot.workdir.clone(),
             home: paths.home.clone(),
+            project_root: Some(beton_agents::resolve::project_root(
+                &boot.workdir,
+                &paths.beton_home,
+            )),
             dirs: policy::policy_dirs(&paths.beton_home, &boot.workdir),
             approval_timeout: policy::APPROVAL_TIMEOUT,
             agent: snapshot.as_ref().map(|s| beton_policy::vars::AgentVars {
@@ -2083,6 +2087,7 @@ fn track_tool_calls(
             );
         }
         EventPayload::ToolCallCompleted(c) => {
+            gate.note_completed(c.status);
             if let Some(req) = unobserved.remove(&c.call_id)
                 && !gate.decided(&c.call_id)
             {

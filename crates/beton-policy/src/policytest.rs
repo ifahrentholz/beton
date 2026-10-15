@@ -26,7 +26,6 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -551,12 +550,20 @@ pub fn tool_context(
     Ok((ctx, source))
 }
 
+/// `host.home` ist das Home des Testlaufs, solange Fixtures es nicht setzen (POL-016).
+fn with_home(ctx: &mut Value, home: Option<&str>) {
+    if let Some(home) = home {
+        ctx["host"]["home"] = Value::String(home.to_owned());
+    }
+}
+
 /// Grundwerte des Kontexts (überschreibbar durch `fixtures` und `given`).
 fn defaults(harness: &str, now: &str) -> Value {
     json!({
         "now": now,
         "session": { "id": "ses_policytest", "harness": harness, "mode": "native", "cost_usd": 0.0,
-                     "equivalent_usd": 0.0, "unpriced_models": [], "tokens_in": 0, "tokens_out": 0, "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD },
+                     "equivalent_usd": 0.0, "unpriced_models": [], "tokens_in": 0, "tokens_out": 0,
+                     "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD, "project_root": DEFAULT_CWD },
         "user": { "id": "usr_local", "timezone": "UTC", "daily_cost_usd": 0.0,
                   "daily_equivalent_usd": 0.0, "daily_unpriced_models": [], "monthly_cost_usd": 0.0 },
         "actor": { "kind": "agent" },
@@ -576,6 +583,7 @@ pub fn activation(
 ) -> Result<Activation, String> {
     let harness = harness.unwrap_or(DEFAULT_HARNESS);
     let mut ctx = defaults(harness, DEFAULT_NOW);
+    with_home(&mut ctx, home);
     merge(&mut ctx, fixtures);
     let (ctx, source) = with_input(phase, ctx, input, harness, home)?;
     build(phase, ctx, source)
@@ -597,6 +605,9 @@ fn with_input(
             .as_str()
             .unwrap_or(DEFAULT_CWD)
             .to_owned();
+        // `~` wie `host.home` des Kontexts (Fixtures), sonst das Home des Testlaufs.
+        let fixture_home = ctx["host"]["home"].as_str().map(str::to_owned);
+        let home = fixture_home.as_deref().or(home);
         let (t, s) = tool_context(&tool, harness, &cwd, home)?;
         ctx["tool"] = t;
         source = Some(s);
@@ -692,25 +703,11 @@ fn subset(expected: &Value, actual: &Value) -> bool {
 }
 
 fn identity(tool: &Value) -> String {
-    let canonical = serde_json::to_vec(&canonical(&tool["args"])).unwrap_or_default();
-    format!(
-        "{}:{}:{}",
+    crate::normalize::call_identity(
         tool["kind"].as_str().unwrap_or_default(),
         tool["name"].as_str().unwrap_or_default(),
-        hex::encode(Sha256::digest(&canonical))
+        &tool["args"],
     )
-}
-
-fn canonical(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let sorted: BTreeMap<&String, Value> =
-                m.iter().map(|(k, v)| (k, canonical(v))).collect();
-            Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
-        }
-        Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
 }
 
 impl CaseState {
@@ -786,6 +783,7 @@ impl CaseState {
         given.remove("state");
         let now = self.now.format(&Rfc3339).map_err(|e| e.to_string())?;
         let mut vars = defaults(harness, &now);
+        with_home(&mut vars, ctx.home.as_deref());
         merge(&mut vars, &ctx.fixtures);
         vars["now"] = Value::String(now.clone());
         merge(&mut vars, &Value::Object(given.clone()));
@@ -1042,7 +1040,15 @@ fn check(expect: &Expect, actual: &Value, reasons: &[Reason]) -> Vec<String> {
     for (field, expected) in [("rules", &expect.rules), ("would", &expect.would)] {
         if let Some(want) = expected {
             let have = list(&actual[field]);
-            let missing: Vec<&String> = want.iter().filter(|r| !have.contains(r)).collect();
+            // Die ID einer Typ-Regel trifft auch ihre Teilregeln (`loop` → `loop/repeat`).
+            let hit = |w: &String| {
+                have.iter().any(|h| {
+                    h == w
+                        || h.strip_prefix(w.as_str())
+                            .is_some_and(|r| r.starts_with('/'))
+                })
+            };
+            let missing: Vec<&String> = want.iter().filter(|r| !hit(r)).collect();
             if !missing.is_empty() {
                 f.push(format!(
                     "{field}: erwartet {}, es fehlt {}; tatsächlich [{}]",

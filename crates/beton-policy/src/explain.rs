@@ -317,6 +317,11 @@ pub fn render(ex: &Explanation) -> String {
             );
             for r in &s.rules {
                 let dry = if r.dry_run { " [dry_run]" } else { "" };
+                // Entzuckerte Regeltypen nennen ihren Typ (`deny [git_guard]`).
+                let typ = match &r.rule_type {
+                    Some(t) if *t != r.action => format!(" [{t}]"),
+                    _ => String::new(),
+                };
                 let when = r
                     .when
                     .as_deref()
@@ -324,7 +329,7 @@ pub fn render(ex: &Explanation) -> String {
                     .unwrap_or_default();
                 let _ = writeln!(
                     out,
-                    "    - {} ({}) {}{dry}{when}",
+                    "    - {} ({}) {}{typ}{dry}{when}",
                     r.id,
                     r.phases.join(", "),
                     r.action

@@ -1,0 +1,53 @@
+# Policy-Test (POL-026, QA-004): User-Defaults, die `beton setup` nach
+# ~/.beton/policies/defaults.yaml schreibt (POL-001, POL-017, POL-018).
+spec_version: 1
+layers: { user: [../user-defaults.yaml] }
+fixtures:
+  session: { branch: feature/x }
+cases:
+  - name: Force-Push erzeugt eine Approval-Card (Demo M2)
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push --force" } } }
+    expect: { outcome: ask, rules: [git/force-push, git/push], reason_contains: force-push }
+  - name: Push fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin feature/x" } } }
+    expect: { outcome: ask, rules: [git/push] }
+  - name: Push auf main wird abgelehnt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push --force origin main" } } }
+    expect: { outcome: deny, rules: [git/protected] }
+  - name: Merge fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git merge main" } } }
+    expect: { outcome: ask, rules: [git/merge] }
+  - name: Branch löschen fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin --delete old" } } }
+    expect: { outcome: ask, rules: [git/delete-branch] }
+  - name: Verlauf umschreiben fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git rebase -i HEAD~3" } } }
+    expect: { outcome: ask, rules: [git/history-rewrite] }
+  - name: Unsicheres Git-Kommando fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "eval \"git push\"" } } }
+    expect: { outcome: ask, rules: [git/uncertain] }
+  - name: Merge über das GitHub-MCP-Tool fragt nach
+    phase: tool_call
+    input: { tool: { name: mcp__github__merge_pull_request, args: { pull_number: 1 } } }
+    expect: { outcome: ask, rules: [git/mcp-merge] }
+  - name: Dritter identischer Call fragt nach
+    steps:
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } }, expect: { outcome: allow } }
+      - { repeat: 1 }
+      - { phase: tool_call, input: { tool: { name: Bash, args: { command: "npm test" } } },
+          expect: { outcome: ask, rules: [loop/repeat] } }
+  - name: Fünf Fehler in Folge fragen nach
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/a }, consecutive_errors: 5 } }
+    expect: { outcome: ask, rules: [loop/errors] }
+  - name: Gewöhnliche Arbeit bleibt frei
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cargo test && git status" } } }
+    expect: { outcome: allow }
