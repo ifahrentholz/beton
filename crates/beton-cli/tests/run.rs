@@ -288,13 +288,20 @@ async fn api_006_ac4_max_cost_counts_the_sub_agents_of_the_run() {
     ]));
     let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
     if out.status.code() != Some(5) {
+        // Diagnose: Verlauf von Parent und Child.
         let client = serve.client();
         let ev = events(&client, v["session_id"].as_str().unwrap()).await;
-        panic!(
-            "{}\n{}",
-            stderr(&out),
-            serde_json::to_string_pretty(&ev).unwrap()
-        );
+        let mut text = serde_json::to_string_pretty(&ev).unwrap();
+        for e in ev.iter().filter(|e| e["type"] == "agent.spawned") {
+            if let Some(child) = e["payload"]["child_session_id"].as_str() {
+                let child_events = events(&client, child).await;
+                text.push_str(&format!(
+                    "\n--- Child {child}\n{}",
+                    serde_json::to_string_pretty(&child_events).unwrap()
+                ));
+            }
+        }
+        panic!("{}\n{text}", stderr(&out));
     }
     assert_eq!(v["status"], "denied", "{v}");
     // Das Child erbt das verbleibende Budget des Laufs.

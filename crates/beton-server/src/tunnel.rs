@@ -936,6 +936,32 @@ mod tests {
         }
     }
 
+    /// #218 (Security-Review #284, M2): Die Vorab-Verbindung des Runners vor dem Start des
+    /// Harness (Policy `session_start` mit Verbrauchswerten bzw. Zustand) zählt nicht als
+    /// verbundener Runner; Kommandos warten auf die Verbindung der Hauptschleife.
+    #[tokio::test]
+    async fn ses_003_a_prestart_connection_is_not_a_connected_runner() {
+        let runners = RunnerRegistry::default();
+        let session = SessionId::new();
+        let bind: TunnelUp = serde_json::from_value(serde_json::json!({
+            "type": "session.bind", "session_id": session, "epoch": 0,
+            "last_acked_rseq": 0, "prestart": true
+        }))
+        .unwrap();
+        assert!(matches!(bind, TunnelUp::SessionBind { prestart: true, .. }));
+        let mut pre = conn();
+        pre.prestart = true;
+        lock(&runners.conns).insert(session, pre);
+        assert!(!runners.connected(session), "Vorab-Verbindung");
+        let err = runners
+            .deliver(session, "input.submit", Value::Null, Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ProblemCode::Unavailable);
+        lock(&runners.conns).insert(session, conn());
+        assert!(runners.connected(session), "Hauptschleife");
+    }
+
     #[test]
     fn run_003_ac2_runner_with_an_open_command_is_not_idle() {
         let timeout = Duration::from_secs(1);
