@@ -4215,6 +4215,14 @@
         "kind": {
           "$ref": "#/$defs/SessionKind"
         },
+        "max_cost_usd": {
+          "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "model": {
           "type": [
             "string",

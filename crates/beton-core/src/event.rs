@@ -525,6 +525,9 @@ payload!(SessionCreated {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[ts(optional, as = "Option<Value>")]
     harness_opts: Value,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] max_cost_usd: Option<f64>,
 });
 payload!(SessionStarted {
     runner_id: RunnerId,

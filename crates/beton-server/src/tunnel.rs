@@ -63,6 +63,8 @@ struct RunnerConn {
     last_activity: Instant,
     busy: bool,
     pending: HashMap<String, oneshot::Sender<CmdReply>>,
+    /// Vorab-Verbindung vor dem Start des Harness (#218): kein verbundener Runner.
+    prestart: bool,
 }
 
 impl RunnerConn {
@@ -174,7 +176,7 @@ impl RunnerRegistry {
     }
 
     pub fn connected(&self, session: SessionId) -> bool {
-        lock(&self.conns).contains_key(&session)
+        lock(&self.conns).get(&session).is_some_and(|c| !c.prestart)
     }
 
     /// Verfolgt offene Freigaben aus den Events des Runners (POL-010 AC4, Leerlauf).
@@ -333,9 +335,14 @@ impl RunnerRegistry {
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
             let mut conns = lock(&self.conns);
-            let conn = conns.get_mut(&session).ok_or_else(|| {
-                Problem::new(ProblemCode::Unavailable).detail("Für diese Session läuft kein Runner")
-            })?;
+            // Vor dem Start nimmt der Runner nur Freigaben an (`session_start` mit `ask`, #218).
+            let conn = conns
+                .get_mut(&session)
+                .filter(|c| !c.prestart || name == "approval.resolve")
+                .ok_or_else(|| {
+                    Problem::new(ProblemCode::Unavailable)
+                        .detail("Für diese Session läuft kein Runner")
+                })?;
             conn.pending.insert(cmd_id.clone(), tx);
             conn.last_activity = Instant::now();
             let _ = conn.tx.send(TunnelDown::CmdDeliver {
@@ -576,7 +583,10 @@ async fn connection(
         return;
     };
     let Ok(TunnelUp::SessionBind {
-        session_id, epoch, ..
+        session_id,
+        epoch,
+        prestart,
+        ..
     }) = TunnelUp::from_json(&text)
     else {
         let _ = sink
@@ -657,6 +667,7 @@ async fn connection(
             last_activity: Instant::now(),
             busy: false,
             pending: HashMap::new(),
+            prestart,
         },
     );
 
@@ -976,7 +987,61 @@ mod tests {
             last_activity: Instant::now() - Duration::from_secs(10),
             busy: false,
             pending: HashMap::new(),
+            prestart: false,
         }
+    }
+
+    /// #218 (Security-Review #284, M2): Die Vorab-Verbindung des Runners vor dem Start des
+    /// Harness (Policy `session_start` mit Verbrauchswerten bzw. Zustand) zählt nicht als
+    /// verbundener Runner; Kommandos warten auf die Verbindung der Hauptschleife.
+    #[tokio::test]
+    async fn ses_003_a_prestart_connection_is_not_a_connected_runner() {
+        let runners = RunnerRegistry::default();
+        let session = SessionId::new();
+        let bind: TunnelUp = serde_json::from_value(serde_json::json!({
+            "t": "session.bind", "session_id": session, "epoch": 0,
+            "last_acked_rseq": 0, "prestart": true
+        }))
+        .unwrap();
+        assert!(matches!(bind, TunnelUp::SessionBind { prestart: true, .. }));
+        let mut pre = conn();
+        pre.prestart = true;
+        lock(&runners.conns).insert(session, pre);
+        assert!(!runners.connected(session), "Vorab-Verbindung");
+        let err = runners
+            .deliver(
+                session,
+                "input.submit",
+                Value::Null,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ProblemCode::Unavailable);
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("kein Runner")
+        );
+        // Freigaben (`session_start` mit `ask`) erreichen den Runner schon vorab.
+        let err = runners
+            .deliver(
+                session,
+                "approval.resolve",
+                Value::Null,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("antwortet nicht")
+        );
+        lock(&runners.conns).insert(session, conn());
+        assert!(runners.connected(session), "Hauptschleife");
     }
 
     /// #288: Jeder nicht gespeicherte Push trennt danach (auch 4xx wie `seq_conflict`), damit

@@ -368,6 +368,7 @@ async fn stored_session(
                 trigger: SessionTrigger::Api,
                 home_node: local.node,
                 harness_opts: opts,
+                max_cost_usd: None,
             },
         )
         .await

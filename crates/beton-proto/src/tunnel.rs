@@ -47,6 +47,10 @@ pub enum TunnelUp {
         session_id: SessionId,
         epoch: u64,
         last_acked_rseq: u64,
+        /// Vorab-Verbindung vor dem Start des Harness (Policy `session_start`, #218): nur
+        /// System-Calls und Events, keine Kommandos; der Server wartet auf die Hauptschleife.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        prestart: bool,
     },
     #[serde(rename = "events.push")]
     EventsPush {
@@ -205,9 +209,12 @@ mod tests {
             session_id: "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C".parse().unwrap(),
             epoch: 1,
             last_acked_rseq: 0,
+            prestart: false,
         })
         .unwrap();
         assert_eq!(v["t"], "session.bind");
+        // Ohne `prestart` (ältere Runner) ist es die Verbindung der Hauptschleife (#218).
+        assert!(v.get("prestart").is_none());
         let ack: TunnelDown = serde_json::from_value(serde_json::json!({
             "t": "events.ack", "session_id": "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C", "upto_rseq": 5, "seq_range": [2, 6]
         }))

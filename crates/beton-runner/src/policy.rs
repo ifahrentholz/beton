@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use beton_core::event::{
-    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, EventPayload,
-    Notice, NoticeLevel, PolicyNotified, PolicyRuleIssue, RawJson, RememberScope, ResolvedVia,
-    SystemComponent, TimeoutAction,
+    Actor, ApprovalDecision, ApprovalKind, ApprovalRequested, ApprovalResolved, BudgetExhausted,
+    EventPayload, Notice, NoticeLevel, PolicyNotified, PolicyRuleIssue, RawJson, RememberScope,
+    ResolvedVia, SystemComponent, TimeoutAction,
 };
 use beton_core::id::{ApprovalId, PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
@@ -57,7 +57,7 @@ use beton_policy::state::{FinalOutcome, PolicyState, StateChange, StateOp, effec
 use beton_policy::store::{PolicyStore, StoreEvent};
 use beton_policy::vars::{
     ActorVars, AgentVars, ApprovalsVars, CelTimestamp, HostVars, OrgVars, RequestVars, ResultVars,
-    SessionVars, StartVars, StateVars, ToolVars, UserVars, Vars,
+    RunVars, SessionVars, StartVars, StateVars, ToolVars, UserVars, Vars,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -116,21 +116,57 @@ impl Evaluator for EngineEvaluator {
     }
 }
 
-/// Verbrauchswerte aus der Usage-Projektion des Servers (POL-004 AC3/AC4).
+/// Verbrauchswerte aus der Usage-Projektion des Servers (POL-004 AC3/AC4). Für Budgets
+/// (POL-011, POL-012) zusätzlich das Listenpreis-Äquivalent der Subscription-Nutzung
+/// (ADR-0034), der Teilbaum der Session und die Records ohne Preis.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Usage {
     #[serde(default)]
     pub session_cost_usd: Option<f64>,
     #[serde(default)]
+    pub session_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub session_without_price: Option<u64>,
+    #[serde(default)]
     pub session_tokens_in: Option<i64>,
     #[serde(default)]
     pub session_tokens_out: Option<i64>,
     #[serde(default)]
+    pub subtree_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub subtree_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub subtree_without_price: Option<u64>,
+    #[serde(default)]
     pub user_daily_cost_usd: Option<f64>,
+    #[serde(default)]
+    pub user_daily_equivalent_usd: Option<f64>,
+    #[serde(default)]
+    pub user_daily_without_price: Option<u64>,
     #[serde(default)]
     pub user_monthly_cost_usd: Option<f64>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Modelle ohne Preis je Bereich (`on_unpriced`, POL-011).
+    #[serde(default)]
+    pub session_unpriced_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub subtree_unpriced_models: Option<Vec<String>>,
+    #[serde(default)]
+    pub user_daily_unpriced_models: Option<Vec<String>>,
+}
+
+impl Usage {
+    /// Records ohne Geld und ohne Listenpreis-Äquivalent im Kostenbereich einer Budget-Regel.
+    fn without_price(&self, scope: beton_policy::budget::BudgetScope) -> u64 {
+        use beton_policy::budget::BudgetScope;
+        match scope {
+            BudgetScope::Session | BudgetScope::Run => self.session_without_price,
+            BudgetScope::Subtree => self.subtree_without_price,
+            BudgetScope::User => self.user_daily_without_price,
+        }
+        .unwrap_or(0)
+    }
 }
 
 /// Quelle der Verbrauchswerte (im Runner: System-Call `policy.usage` über den Tunnel).
@@ -141,11 +177,21 @@ pub trait UsageSource: Send + Sync {
 
 /// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
 /// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
-const USAGE_FIELDS: [&str; 6] = [
+const USAGE_FIELDS: [&str; 16] = [
     "session.cost_usd",
+    "session.equivalent_usd",
+    "session.unpriced_models",
+    "run.unpriced_models",
+    "run.subtree_unpriced_models",
+    "user.daily_unpriced_models",
     "session.tokens_in",
     "session.tokens_out",
+    "run.cost_usd",
+    "run.equivalent_usd",
+    "run.subtree_cost_usd",
+    "run.subtree_equivalent_usd",
     "user.daily_cost_usd",
+    "user.daily_equivalent_usd",
     "user.monthly_cost_usd",
     "user.timezone",
 ];
@@ -536,6 +582,9 @@ struct Inner {
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
     queries: Mutex<dry::QueryBudget>,
+    /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
+    /// Regel und Session; POL-011).
+    inapplicable: Mutex<BTreeSet<String>>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -818,6 +867,7 @@ impl PolicyGate {
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
+                inapplicable: Mutex::new(BTreeSet::new()),
             }),
         }
     }
@@ -917,12 +967,21 @@ impl PolicyGate {
             return;
         }
         let user_scopes = used.iter().any(|f| f.starts_with("state.user"));
-        if user_scopes
-            && let Some(source) = &self.inner.state_source
-            && let Ok(Ok(fresh)) = tokio::time::timeout(USAGE_TIMEOUT, source.load()).await
-            && let Ok(mut u) = self.inner.user_state.lock()
-        {
-            *u = (fresh.user_day, fresh.user);
+        // Scheitert das Neuladen von `user_day`/`user`, gilt der Zustand als nicht verfügbar
+        // statt still der alte Stand (POL-009, Security-Review #284): Regeln darauf scheitern.
+        let mut user_available = true;
+        if user_scopes && let Some(source) = &self.inner.state_source {
+            match tokio::time::timeout(USAGE_TIMEOUT, source.load()).await {
+                Ok(Ok(fresh)) => {
+                    if let Ok(mut u) = self.inner.user_state.lock() {
+                        *u = (fresh.user_day, fresh.user);
+                    }
+                }
+                _ => {
+                    tracing::warn!("Policy: Zustand user_day/user nicht verfügbar");
+                    user_available = false;
+                }
+            }
         }
         let (session, run) = self
             .inner
@@ -939,8 +998,8 @@ impl PolicyGate {
         vars.state = Some(StateVars {
             session: Some(session),
             run: Some(run),
-            user_day: Some(user_day),
-            user: Some(user),
+            user_day: user_available.then_some(user_day),
+            user: user_available.then_some(user),
         });
     }
 
@@ -1031,6 +1090,13 @@ impl PolicyGate {
 
     /// MCP-Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des
     /// Direkt-Harness; #234).
+    /// Inline-Sets einer Ebene, z. B. das Session-Budget (API-006, POL-011).
+    pub fn set_inline(&self, scope: Scope, sets: Vec<beton_policy::load::LoadedSet>) {
+        if let Ok(mut store) = self.inner.store.lock() {
+            store.set_inline(scope, sets);
+        }
+    }
+
     pub fn set_trusted_servers(&self, servers: Vec<String>) {
         if let Ok(mut t) = self.inner.trusted_servers.lock() {
             *t = servers;
@@ -1374,14 +1440,68 @@ impl PolicyGate {
         };
         if let Some(s) = vars.session.as_mut() {
             s.cost_usd = u.session_cost_usd;
+            s.equivalent_usd = u.session_equivalent_usd;
+            s.unpriced_models.clone_from(&u.session_unpriced_models);
             s.tokens_in = u.session_tokens_in;
             s.tokens_out = u.session_tokens_out;
         }
+        // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
+        let run = vars.run.get_or_insert_with(RunVars::default);
+        run.cost_usd = u.session_cost_usd;
+        run.equivalent_usd = u.session_equivalent_usd;
+        run.subtree_cost_usd = u.subtree_cost_usd;
+        run.subtree_equivalent_usd = u.subtree_equivalent_usd;
+        run.unpriced_models.clone_from(&u.session_unpriced_models);
+        run.subtree_unpriced_models
+            .clone_from(&u.subtree_unpriced_models);
         if let Some(user) = vars.user.as_mut() {
             user.daily_cost_usd = u.user_daily_cost_usd;
+            user.daily_equivalent_usd = u.user_daily_equivalent_usd;
+            user.daily_unpriced_models
+                .clone_from(&u.user_daily_unpriced_models);
             user.monthly_cost_usd = u.user_monthly_cost_usd;
-            user.timezone = u.timezone;
+            user.timezone = u.timezone.clone();
         }
+        self.report_inapplicable(set, &u);
+    }
+
+    /// Budget-Regeln, deren Kosten unbekannt sind (Nutzung ohne Geld und ohne Katalogpreis,
+    /// POL-011): Die Regel rechnet nur mit den bekannten Beträgen und greift deshalb unter
+    /// Umständen nicht; `policy.rule_inapplicable` macht das einmal je Regel sichtbar.
+    fn report_inapplicable(&self, set: &EffectiveSet, usage: &Usage) {
+        let mut fresh = Vec::new();
+        if let Ok(mut seen) = self.inner.inapplicable.lock() {
+            for b in beton_policy::budget::budget_rules(set) {
+                if usage.without_price(b.scope) == 0 {
+                    continue;
+                }
+                let key = format!(
+                    "{}/{}/{}",
+                    b.rule.scope.as_str(),
+                    b.rule.set,
+                    b.rule.rule_id
+                );
+                if seen.insert(key) {
+                    fresh.push(b);
+                }
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        let scopes: BTreeSet<&str> = fresh.iter().map(|b| b.scope.as_str()).collect();
+        self.emit(
+            EventPayload::PolicyRuleInapplicable(PolicyRuleIssue {
+                rule_ids: fresh.iter().map(|b| b.rule.rule_id.clone()).collect(),
+                reason: format!(
+                    "Nutzung ohne Preis (weder Geld noch Listenpreis-Äquivalent im Katalog) im \
+                     Bereich {}: das Budget zählt nur bekannte Kosten",
+                    scopes.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            }),
+            None,
+            None,
+        );
     }
 
     /// Wertet das Set auf dem Kontext aus (Engine in eigenem Thread, mit Zeitbudget); Fehler,
@@ -1464,6 +1584,18 @@ impl PolicyGate {
         // an `policy.decision` (POL-025 AC2, #234).
         let _ = raw;
         self.emit(EventPayload::PolicyDecision(event), turn, None);
+        // Erreichte Budget-Limits (POL-011, POL-012): `deny` bzw. `ask` ab `limit_usd`.
+        for e in beton_policy::budget::exhausted(&decision, &set) {
+            self.emit(
+                EventPayload::BudgetExhausted(BudgetExhausted {
+                    scope: e.scope.as_str().to_owned(),
+                    lease_id: None,
+                    action: e.action,
+                }),
+                turn,
+                None,
+            );
+        }
         // `notify` blockiert nie (POL-006 AC2): `inbox` (und bis Web-Push bzw.
         // Desktop-Notifications auch `push`) wird zum Inbox-Eintrag (`policy.notified`, UX-001),
         // `log` zum Hinweis im Verlauf.
@@ -3245,6 +3377,38 @@ mod tests {
                 "{when}: ohne Zustand fail closed"
             );
         }
+    }
+
+    /// Security-Review #284 (Minor 2): Scheitert das Neuladen von `user_day`/`user`, nimmt das
+    /// Gate nicht still den alten Stand, sondern behandelt ihn als nicht verfügbar (POL-009).
+    #[tokio::test]
+    async fn pol_009_a_failed_reload_of_user_state_fails_closed() {
+        struct Once(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl StateSource for Once {
+            async fn load(&self) -> Result<LoadedState, String> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(LoadedState::default())
+                } else {
+                    Err("weg".into())
+                }
+            }
+            async fn apply(&self, _: &beton_policy::state::StateOp) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let p = with_policy_state(
+            "rules:\n  - id: daily\n    on: tool_call\n    when: 'has(state.user_day.pushes)'\n    action: deny\n",
+            Some(Arc::new(Once(std::sync::atomic::AtomicUsize::new(0)))),
+        );
+        // Erster Load (Zustand der Session) gelingt, das Neuladen von `user_day` nicht.
+        assert!(
+            matches!(
+                p.gate.decide(pre("c1", "ls")).await,
+                GateDecision::Deny { .. }
+            ),
+            "ohne frischen user_day fail closed"
+        );
     }
 
     #[test]

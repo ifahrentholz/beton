@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use beton_sdk::{Client, DaemonInfo};
 use common::{
-    BackgroundDaemon, Serve, background_home, beton, events, fake_claude, run, status, stderr,
-    stdout, wait_until,
+    BackgroundDaemon, Serve, background_home, beton, events, fake_claude, fake_cli, run, status,
+    stderr, stdout, wait_until,
 };
 use serde_json::{Value, json};
 
@@ -142,6 +142,179 @@ async fn api_006_ac3_on_ask_deny_exits_4_without_hanging() {
     assert_eq!(out.status.code(), Some(4), "{}", stderr(&out));
     assert!(started.elapsed() < Duration::from_secs(20));
     assert!(stderr(&out).contains("--on-ask deny"), "{}", stderr(&out));
+}
+
+#[tokio::test]
+async fn api_006_ac4_exceeding_max_cost_exits_5_via_a_spend_cap_rule() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.0 } }]\n",
+    );
+    let script = |max: &str| {
+        run(beton(serve.home())
+            .current_dir(serve.work.path())
+            .args([
+                "run",
+                "fake",
+                "--max-cost",
+                max,
+                "--output-format",
+                "json",
+                "-p",
+                "los",
+                "--scenario",
+            ])
+            .arg(&scenario))
+    };
+    let out = script("0.5");
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(v["status"], "denied", "{v}");
+    assert!(stderr(&out).contains("max-cost"), "{}", stderr(&out));
+    // Durchgesetzt hat es eine `spend_cap`-Regel der Session.
+    let id = v["session_id"].as_str().unwrap();
+    let show = run(beton(serve.home()).current_dir(serve.work.path()).args([
+        "--json",
+        "policy",
+        "show",
+        "--effective",
+        "--session",
+        id,
+    ]));
+    assert!(show.status.success(), "{}", stderr(&show));
+    let text = stdout(&show);
+    assert!(
+        text.contains("max-cost") && text.contains("spend_cap"),
+        "{text}"
+    );
+    // Unter dem Budget endet der Lauf normal; ungültige Budgets sind ein Usage-Fehler.
+    let out = script("5");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(script("0").status.code(), Some(2));
+}
+
+/// Security-Review #284 (M2): `--max-cost` gilt für den Lauf samt Sub-Agents. Ein Agent
+/// (Codex) startet einen teuren Sub-Agent (Claude über ein Abo, Listenpreis 3 USD); der Lauf
+/// endet mit Exit-Code 5, und das Child erbt das verbleibende Budget.
+#[cfg(unix)]
+#[tokio::test]
+async fn api_006_ac4_max_cost_counts_the_sub_agents_of_the_run() {
+    let vendor = tempfile::tempdir().unwrap();
+    let claude_s = vendor.path().join("claude.yaml");
+    let codex_s = vendor.path().join("codex.yaml");
+    std::fs::write(
+        &claude_s,
+        "turns:\n  - expect_input: rechne\n    emit:\n      - { message: \"42\" }\n      - { usage: { input_tokens: 1000000, output_tokens: 0, model: claude-sonnet-4-5 } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &codex_s,
+        "turns:\n  - expect_input: los\n    emit:\n      - { mcp_call: { server: beton, tool: session_spawn, args: { agent: helfer, prompt: rechne } } }\n      - { message: \"fertig\" }\n",
+    )
+    .unwrap();
+    let link = vendor.path().join("bin/codex");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(fake_cli(), &link).unwrap();
+    let env = [
+        (
+            "BETON_CLAUDE_PATH".to_owned(),
+            format!(
+                "{} --protocol stream-json --scenario {}",
+                fake_cli().display(),
+                claude_s.display()
+            ),
+        ),
+        (
+            "BETON_CODEX_PATH".to_owned(),
+            format!(
+                "{} --protocol app-server --scenario {}",
+                link.display(),
+                codex_s.display()
+            ),
+        ),
+    ];
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let serve = Serve::start_without_api_keys(&pairs);
+    let work = serve.work.path();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Start",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::create_dir_all(work.join(".beton/agents/lead")).unwrap();
+    write(
+        &work.join(".beton/agents/lead"),
+        "agent.yaml",
+        "spec_version: 1\nname: lead\nexecutor: { harness: codex }\nagents:\n  helfer:\n    executor: { harness: claude, model: claude-sonnet-4-5 }\nspawn: { agents: [helfer] }\n",
+    );
+    let mut cmd = beton(serve.home());
+    cmd.current_dir(work);
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    for (k, _) in std::env::vars() {
+        if k.ends_with("_API_KEY") {
+            cmd.env_remove(k);
+        }
+    }
+    let out = run(cmd.args([
+        "run",
+        "lead",
+        "--max-cost",
+        "0.5",
+        "--output-format",
+        "json",
+        "-p",
+        "los",
+    ]));
+    let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    if out.status.code() != Some(5) {
+        // Diagnose: Verlauf von Parent und Child.
+        let client = serve.client();
+        let ev = events(&client, v["session_id"].as_str().unwrap()).await;
+        let mut text = serde_json::to_string_pretty(&ev).unwrap();
+        for e in ev.iter().filter(|e| e["type"] == "agent.spawned") {
+            if let Some(child) = e["payload"]["child_session_id"].as_str() {
+                let child_events = events(&client, child).await;
+                text.push_str(&format!(
+                    "\n--- Child {child}\n{}",
+                    serde_json::to_string_pretty(&child_events).unwrap()
+                ));
+            }
+        }
+        panic!("{}\n{text}", stderr(&out));
+    }
+    assert_eq!(v["status"], "denied", "{v}");
+    // Das Child erbt das verbleibende Budget des Laufs.
+    let client = serve.client();
+    let parent = events(&client, v["session_id"].as_str().unwrap()).await;
+    let spawned = parent
+        .iter()
+        .find(|e| e["type"] == "agent.spawned")
+        .unwrap_or_else(|| panic!("{parent:#?}"));
+    let child = spawned["payload"]["child_session_id"].as_str().unwrap();
+    let created = events(&client, child).await;
+    let max = created[0]["payload"]["max_cost_usd"].as_f64().unwrap();
+    assert!(max > 0.0 && max <= 0.5, "{max}");
 }
 
 #[tokio::test]

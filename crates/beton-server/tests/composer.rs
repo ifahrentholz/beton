@@ -34,6 +34,7 @@ async fn session(t: &TestApp, cwd: &Path, agent: Option<&str>) -> String {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

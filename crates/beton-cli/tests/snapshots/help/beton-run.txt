@@ -108,6 +108,10 @@ Options:
       --timeout <DUR>
           Abbruch nach dieser Dauer, z. B. `90s`, `5m` (Skript-Modus)
 
+      --max-cost <USD>
+          Session-Budget in USD (API-006): eine `spend_cap`-Regel der Session (POL-011). Bei
+          Subscriptions zählt das Listenpreis-Äquivalent; erreicht, endet der Lauf mit Exit-Code 5
+
       --scenario <FILE>
           Szenario-Datei, nur für den Harness `fake` (HAR-026)
 

@@ -29,6 +29,7 @@ async fn session(t: &TestStore) -> SessionRecord {
                 trigger: SessionTrigger::User,
                 home_node: t.local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

@@ -319,8 +319,10 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
         if rule.doc.dry_run || old_rules.iter().any(|r| r.doc == rule.doc) {
             continue;
         }
-        // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`) über ihre
-        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`. Eine
+        // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`, die Teile
+        // von `spend_cap`/`daily_budget`/`model_route` → `deny`/`ask`/`modify`) über ihre
+        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`.
+        // Umrouten (`modify`) verschärft nicht: Es gilt erst in einer neuen Session. Eine
         // `tool_allowlist` bringt `allow`-Regeln mit (sie heben Defaults anderer Sets derselben
         // Ebene auf) und lockert damit (POL-015).
         let action = match &rule.kind {
@@ -330,8 +332,15 @@ pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), Str
         if !matches!(action, Action::Deny | Action::Ask | Action::Notify) {
             return Err(format!("Regel `{}` neu mit allow oder modify", rule.id));
         }
-        // Effects können Zähler anderer Regeln zurücksetzen (#253 N1).
-        if !rule.doc.effects.is_empty() {
+        // Effects können Zähler anderer Regeln zurücksetzen (#253 N1). Ausgenommen sind die
+        // eigenen Schwellen-Keys eines Budget-Regeltyps (`spend_cap/<ebene>/<set>/<id>/…`), die
+        // handgeschriebene Regeln nicht schreiben dürfen.
+        let own = |key: &str| {
+            rule.doc.rule_type.is_some_and(|t| {
+                crate::budget::own_key(t, new.scope, &new.name, &new.origin, &rule.id, key)
+            })
+        };
+        if !rule.doc.effects.iter().all(|e| own(&e.key)) {
             return Err(format!("Regel `{}` neu mit effects", rule.id));
         }
         // Der kürzeste Timeout gilt für die ganze Card; `on_timeout: allow` erlaubt (N2).

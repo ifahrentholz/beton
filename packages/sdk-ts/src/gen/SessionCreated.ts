@@ -15,4 +15,9 @@ permission_mode?: string, cwd: string, project_id?: `prj_${string}`, parent_sess
 /**
  * Harness-spezifische Startoptionen aus `POST /v1/sessions` (z. B. Fake-Szenario).
  */
-harness_opts?: JsonValue, };
+harness_opts?: JsonValue, 
+/**
+ * Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+ * `spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).
+ */
+max_cost_usd?: number, };

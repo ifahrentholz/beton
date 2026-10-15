@@ -94,7 +94,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `policy.notified` | D | `rule_id, scope, set, channels, message?` (Zustellung von `notify`, POL-006, UX-001) |
 | | `policy.queried` | D | `subject_hash, tool, kind, outcome: allow\|deny\|ask, rules[], limited` (Abfrage per `policy_query` ohne Klartext; `rules` nur aus den Gründen von `deny`/`ask`; AGT-007, POL-027) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
-| | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
+| | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` (Lease aufgebraucht, SYNC-007; ohne `lease_id` ein Budget-Limit von `spend_cap`/`daily_budget`, POL-011) |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
 | Kosten & Kontext | `cost.delta` | D | `harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported\|estimated\|subscription, auth_source: vendor_cli\|api_key\|gateway\|none, purpose?, cost_source?: override\|harness\|catalog\|none\|subscription, pricing_version?, equivalent_micro?` (die letzten drei setzt der Server beim Append, USE-001) |
 | | `usage.subscription` | D | `vendor, window, used_pct, resets_at` (`window` einheitlich: `5h`, `7d`, `7d_opus`; USE-004) |
