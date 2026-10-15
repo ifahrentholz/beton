@@ -583,6 +583,9 @@ fn sugar_rules(
         if doc.kinds.is_none() {
             doc.kinds = part.kinds;
         }
+        if doc.enforcement.is_none() {
+            doc.enforcement = part.enforcement;
+        }
         let mut notify_exprs = Vec::new();
         if let Some(message) = part.notify.as_ref().and_then(|n| n.message.as_ref()) {
             for expr in template_exprs(message) {

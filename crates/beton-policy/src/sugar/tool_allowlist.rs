@@ -70,6 +70,7 @@ pub(super) fn desugar(rule: &RuleDoc, params: &Params, shadow: bool) -> Result<S
                 reason: deny_reason,
                 kinds: None,
                 notify: None,
+                enforcement: None,
             }],
             defaults: Vec::new(),
         });
@@ -83,6 +84,7 @@ pub(super) fn desugar(rule: &RuleDoc, params: &Params, shadow: bool) -> Result<S
             reason: format!("Auf der Allowlist `{id}` (tool_allowlist)"),
             kinds: None,
             notify: None,
+            enforcement: None,
         }],
         defaults: vec![(Phase::ToolCall, DefaultAction::Deny, deny_reason)],
     })

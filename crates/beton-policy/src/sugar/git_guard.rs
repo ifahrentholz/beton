@@ -24,9 +24,9 @@ use serde_json::Value;
 
 use super::{ParamError, Params, Sugar, SugarRule, check_glob, lit, strings_at};
 use crate::Phase;
-use crate::doc::Action;
+use crate::doc::{Action, Enforcement};
 
-const PARAMS: [&str; 8] = [
+const PARAMS: [&str; 9] = [
     "push",
     "force_push",
     "protected_branches",
@@ -35,6 +35,7 @@ const PARAMS: [&str; 8] = [
     "delete_branch",
     "history_rewrite",
     "mcp_tools",
+    "mcp_enforcement",
 ];
 
 /// Operationen mit Regel-Teil, Default und Begründung.
@@ -106,6 +107,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
                 reason: format!("{what} (git_guard)"),
                 kinds: shell(),
                 notify: None,
+                enforcement: None,
             });
         }
     }
@@ -145,6 +147,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
                 reason: "Push bzw. Merge auf einen geschützten Branch (git_guard)".into(),
                 kinds: shell(),
                 notify: None,
+                enforcement: None,
         });
     }
 
@@ -158,9 +161,22 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
         reason: "Git-Kommando nicht sicher erkennbar (git_guard)".into(),
         kinds: shell(),
         notify: None,
+        enforcement: None,
     });
 
-    // MCP-Tools je Operation.
+    // MCP-Tools je Operation; `mcp_enforcement` gilt nur für diese Teile (Harnesses ohne
+    // Vorabprüfung von MCP-Tools, z. B. Codex, starten dann mit Warnung).
+    let mcp_enforcement = match params.text("mcp_enforcement")?.as_deref() {
+        None => None,
+        Some("required") => Some(Enforcement::Required),
+        Some("best_effort") => Some(Enforcement::BestEffort),
+        Some(other) => {
+            return Err(ParamError::new(
+                "mcp_enforcement",
+                format!("`mcp_enforcement: {other}` ist ungültig (required, best_effort)"),
+            ));
+        }
+    };
     let mcp = mcp_tools(params)?;
     for (op, patterns) in mcp {
         let Some((_, Some(a))) = actions.iter().find(|(o, _)| *o == op) else {
@@ -185,6 +201,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
             reason: format!("{what} über ein MCP-Tool (git_guard)"),
             kinds: Some(vec!["mcp".into()]),
             notify: None,
+            enforcement: mcp_enforcement,
         });
     }
     Ok(Sugar {

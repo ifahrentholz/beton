@@ -73,6 +73,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
                 "file_edit".into(),
             ]),
             notify: None,
+            enforcement: None,
         });
     }
     if let Some(violation) = violation(&write_allow, &write_deny, "write")? {
@@ -90,6 +91,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
                 "shell".into(),
             ]),
             notify: None,
+            enforcement: None,
         });
     }
     Ok(Sugar {

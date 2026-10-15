@@ -9,12 +9,12 @@ rules:
   # und Verlauf umschreiben fragen nach, main/master sind geschützt. Force-Push fragt hier
   # ebenfalls nach (Approval-Card, Demo M2) statt des Typ-Defaults `deny`; wer ihn ganz
   # verbieten will, setzt `force_push: deny`.
-  # `best_effort`: Harnesses, die einzelne Klassen nicht vorab prüfen können (z. B. MCP-Tools
-  # bei Codex), starten mit Warnung statt gar nicht (POL-024).
+  # `mcp_enforcement: best_effort`: Harnesses, die MCP-Tools nicht vorab prüfen können (z. B.
+  # Codex), starten mit Warnung statt gar nicht (POL-024); die Shell-Teile bleiben `required`.
+  # Ein Merge über das GitHub-MCP-Tool fragt nach (das Ziel ist dort nicht erkennbar).
   - id: git
     type: git_guard
-    enforcement: best_effort
-    params: { force_push: ask }
+    params: { force_push: ask, mcp_enforcement: best_effort }
   # Festgefahrene Agents (POL-018): drei identische Calls unter den letzten zehn bzw. fünf
   # Fehler in Folge fragen nach.
   - id: loop

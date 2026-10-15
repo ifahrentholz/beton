@@ -70,6 +70,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
         rules: vec![
             SugarRule {
                 part: Some("repeat"),
+                enforcement: None,
                 phase: Phase::ToolCall,
                 when: format!("has(tool.repeat_count) && tool.repeat_count >= {identical}"),
                 action,
@@ -85,6 +86,7 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
             },
             SugarRule {
                 part: Some("errors"),
+                enforcement: None,
                 phase: Phase::ToolCall,
                 when: format!(
                     "has(tool.consecutive_errors) && tool.consecutive_errors >= {errors}"

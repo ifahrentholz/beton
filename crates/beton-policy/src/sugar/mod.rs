@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::Phase;
-use crate::doc::{Action, DefaultAction, NotifyDoc, RuleDoc, RuleType};
+use crate::doc::{Action, DefaultAction, Enforcement, NotifyDoc, RuleDoc, RuleType};
 
 /// Ergebnis der Entzuckerung eines Regeltyps.
 #[derive(Debug, Default)]
@@ -43,6 +43,8 @@ pub(crate) struct SugarRule {
     /// eigenes `kinds` hat.
     pub kinds: Option<Vec<String>>,
     pub notify: Option<NotifyDoc>,
+    /// `enforcement` dieses Teils, falls die Typ-Regel kein eigenes hat (POL-024).
+    pub enforcement: Option<Enforcement>,
 }
 
 /// Fehler in den Parametern: Feld relativ zu `params` (leer = `params` selbst).
