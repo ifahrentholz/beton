@@ -36,7 +36,7 @@ mod mcp;
 mod one_shot;
 mod stream_json;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use beton_harness::scenario::{Faults, Scenario};
@@ -87,6 +87,8 @@ struct Args {
     settings: Option<String>,
     /// `--safe-mode` von Claude Code: schaltet auch Hooks aus `--settings` ab (wie 2.1.296).
     safe_mode: bool,
+    /// `--setting-sources` von Claude Code (`user,project,local`); ohne Flag alle drei.
+    setting_sources: Option<String>,
 }
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -129,6 +131,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--record" => out.record = args.next().map(PathBuf::from),
             "--settings" => out.settings = args.next(),
             "--safe-mode" => out.safe_mode = true,
+            "--setting-sources" => out.setting_sources = args.next(),
             "--append-system-prompt-file" => {
                 out.append_system_prompt_file = args.next().map(PathBuf::from);
             }
@@ -174,6 +177,33 @@ fn hook_command(args: &[String]) -> ExitCode {
     let _ = std::io::stdout().write_all(out.stdout.as_bytes());
     let _ = std::io::stderr().write_all(out.stderr.as_bytes());
     ExitCode::from(u8::try_from(out.exit).unwrap_or(2))
+}
+
+/// Schalten die Einstellungen alle Hooks ab (`disableAllHooks`, wie Claude Code 2.1.296)? Der
+/// Wert aus `--settings` hat Vorrang; sonst gelten `.claude/settings.json` (Quelle `project`)
+/// und `.claude/settings.local.json` (Quelle `local`) im Arbeitsverzeichnis, wenn
+/// `--setting-sources` sie lädt (#233). User-Einstellungen liest die Fake-CLI nicht.
+fn hooks_disabled(settings: Option<&str>, sources: Option<&str>) -> bool {
+    let flag = settings
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v["disableAllHooks"].as_bool());
+    if let Some(disabled) = flag {
+        return disabled;
+    }
+    let sources: Vec<&str> = sources
+        .unwrap_or("user,project,local")
+        .split(',')
+        .map(str::trim)
+        .collect();
+    [
+        ("project", "settings.json"),
+        ("local", "settings.local.json"),
+    ]
+    .iter()
+    .filter(|(source, _)| sources.contains(source))
+    .filter_map(|(_, file)| std::fs::read_to_string(Path::new(".claude").join(file)).ok())
+    .filter_map(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    .any(|v| v["disableAllHooks"] == true)
 }
 
 /// Kommando des `PreToolUse`-Hooks aus `--settings` (erster Eintrag).
@@ -351,11 +381,15 @@ fn main() -> ExitCode {
             stdin.lock(),
             stdout.lock(),
         )
-        .with_pre_tool_hook(if args.safe_mode {
-            None
-        } else {
-            pre_tool_hook(args.settings.as_deref())
-        })
+        .with_pre_tool_hook(
+            if args.safe_mode
+                || hooks_disabled(args.settings.as_deref(), args.setting_sources.as_deref())
+            {
+                None
+            } else {
+                pre_tool_hook(args.settings.as_deref())
+            },
+        )
         .run(&scenario),
         "app-server" => app_server::AppServer::new(
             &scenario,

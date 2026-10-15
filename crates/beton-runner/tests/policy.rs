@@ -31,6 +31,11 @@ struct Env {
 
 impl Env {
     async fn start() -> Self {
+        Self::start_in(None).await
+    }
+
+    /// Daemon mit `user.timezone` (POL-004 AC4); `None` = Default UTC.
+    async fn start_in(timezone: Option<beton_core::timezone::UserTimeZone>) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("bt")
             .tempdir_in("/tmp")
@@ -60,6 +65,9 @@ impl Env {
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
             r.sessions.dev = true;
+            if let Some(tz) = timezone {
+                r.timezone = tz;
+            }
             r
         })
         .await
@@ -79,6 +87,15 @@ impl Env {
 
     fn work(&self) -> PathBuf {
         self.dir.path().join("work")
+    }
+
+    /// Schreibt eine User-Policy (`$BETON_HOME/policies/`).
+    fn user_policy(&self, name: &str, body: &str) -> PathBuf {
+        let dir = self.dir.path().join("home/.beton/policies");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.yaml"));
+        std::fs::write(&path, format!("spec_version: 1\nname: {name}\n{body}")).unwrap();
+        path
     }
 
     /// Schreibt eine Projekt-Policy.
@@ -455,7 +472,8 @@ async fn pol_003_ac1_pol_006_ac1_tool_call_deny_is_enforced_with_reason() {
 #[tokio::test]
 async fn pol_006_ac3_modified_args_are_executed_and_requested_keeps_the_original() {
     let env = Env::start().await;
-    env.project_policy(
+    // `args` ändert nur eine Policy ab der User-Ebene (#234).
+    env.user_policy(
         "dry",
         "rules:\n  - id: dry-run\n    on: tool_call\n    when: 'tool.kind == \"shell\"'\n    action: modify\n    modify: { args: { command: \"git push --dry-run origin main\" } }\n",
     );
@@ -718,6 +736,26 @@ async fn pol_004_ac3_session_cost_reflects_logged_cost_deltas() {
     assert!(body["detail"].as_str().unwrap().contains("Budget"));
 }
 
+#[tokio::test]
+async fn pol_004_ac4_user_timezone_comes_from_the_setting() {
+    let berlin = beton_core::timezone::UserTimeZone::parse("Europe/Berlin").unwrap();
+    let env = Env::start_in(Some(berlin)).await;
+    // Nur `user.timezone`, ohne Kostenfeld: der Wert kommt trotzdem vom Daemon.
+    env.project_policy(
+        "zeitzone",
+        "rules:\n  - id: tz\n    on: model_request\n    when: 'user.timezone == \"Europe/Berlin\" && user.daily_cost_usd == 0.0'\n    action: deny\n    reason: \"Zeitzone Europe/Berlin\"\n",
+    );
+    let s = env.scenario("turns:\n  - emit: [{ message: \"nie\" }]\n");
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let (status, body) = env.input(&id, "eins").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("Europe/Berlin"),
+        "{body}"
+    );
+}
+
 // ---------------------------------------------------------------------- SES-004 (#101)
 
 #[tokio::test]
@@ -757,4 +795,76 @@ async fn ses_004_queued_input_is_checked_on_dequeue() {
         assert!(start.elapsed() < Duration::from_secs(30), "{events:#?}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+// ------------------------------------------------------------------ HAR-005, #233 (K3)
+
+#[tokio::test]
+async fn har_005_tool_call_without_gate_decision_ends_the_session() {
+    // Der Harness meldet vollen Gate, führt aber einen Tool-Call ohne Gate-Anfrage aus (wie
+    // Claude mit ausgehebeltem `PreToolUse`-Hook): Integritätsverletzung, Session endet.
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo hi\" } }, skip_gate: true }\n      - { tool_result: \"hi\" }\n      - { message: \"fertig\" }\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let (status, body) = env.input(&id, "los").await;
+    assert_eq!(status, 202, "{body}");
+    let events = env
+        .wait_for(&id, |e| {
+            e["type"] == "error" && e["payload"]["problem"]["code"] == "policy_integrity_violation"
+        })
+        .await;
+    env.wait_status(&id, "failed").await;
+    let error = events.iter().find(|e| e["type"] == "error").unwrap();
+    // Keine Argumente im Klartext.
+    assert!(!error.to_string().contains("echo hi"), "{error}");
+}
+
+// ------------------------------------------------------------------ POL-001, #234 (M4)
+
+#[tokio::test]
+async fn pol_001_reload_with_unenforceable_rule_ends_the_session() {
+    // Nach dem Start hinzugefügte Pflichtregel, die der Harness nicht durchsetzen kann: Die
+    // Session endet (wie die Prüfung beim Start, fail closed).
+    let env = Env::start().await;
+    let s = env.scenario(
+        "capabilities: { tool_call_gate: approval_only, approval_kinds: [shell] }\nturns:\n  - emit: [{ message: \"ok\" }]\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    env.project_policy(
+        "edit",
+        "rules:\n  - id: no-edit\n    on: tool_call\n    when: 'tool.kind == \"file_edit\"'\n    action: deny\n",
+    );
+    // Die Eingabe löst den Reload aus; der Runner endet dabei (Antwort 202 oder 503).
+    let _ = env.input(&id, "los").await;
+    let events = env
+        .wait_for(&id, |e| {
+            e["type"] == "error"
+                && e["payload"]["problem"]["code"] == "policy_enforcement_unavailable"
+        })
+        .await;
+    let error = events.iter().find(|e| e["type"] == "error").unwrap();
+    assert_eq!(error["payload"]["problem"]["rules"], json!(["no-edit"]));
+    env.wait_status(&id, "failed").await;
+}
+
+#[tokio::test]
+async fn har_005_failed_tool_call_without_gate_decision_also_ends_the_session() {
+    // Re-Review R2 (#253): Ein Kommando mit `…; exit 1` endet als Fehler (Claude `is_error`),
+    // wurde aber ausgeführt. Auch das ist ohne Gate-Entscheidung eine Integritätsverletzung.
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"rm -rf x; exit 1\" } }, skip_gate: true }\n      - { tool_error: \"exit 1\" }\n      - { message: \"fertig\" }\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let _ = env.input(&id, "los").await;
+    env.wait_for(&id, |e| {
+        e["type"] == "error" && e["payload"]["problem"]["code"] == "policy_integrity_violation"
+    })
+    .await;
+    env.wait_status(&id, "failed").await;
 }

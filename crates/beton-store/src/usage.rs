@@ -59,17 +59,37 @@ impl UsageDimension {
         Self::ALL.into_iter().find(|d| d.as_str() == s)
     }
 
-    /// SQL-Ausdruck über `usage_records r` (Tag in der Zeitzone des Users, Parameter 1).
-    fn column(self) -> &'static str {
+    /// SQL-Ausdruck über `usage_records r` (Tag in der Zeitzone des Users: Parameter 1 bzw.
+    /// je Versatzwechsel ein eigener Versatz, [`day_column`]).
+    fn column(self, q: &UsageQuery) -> String {
         match self {
-            Self::Day => "date(r.ts, ?1)",
+            Self::Day => return day_column(q),
             Self::Session => "r.session_id",
             Self::Project => "r.project_id",
             Self::Harness => "r.harness",
             Self::Model => "r.model",
             Self::AuthSource => "r.auth_source",
         }
+        .to_owned()
     }
+}
+
+/// Tag eines Records in der Zeitzone des Users. Mit Sommerzeit gilt je Abschnitt zwischen zwei
+/// Versatzwechseln dessen Versatz; Zeitpunkte und Versätze stammen aus [`UsageQuery`] (keine
+/// Eingabe des Users), Zeitstempel vergleichen als Text wie `r.ts >= ?3`.
+fn day_column(q: &UsageQuery) -> String {
+    if q.offset_changes.is_empty() {
+        return "date(r.ts, ?1)".into();
+    }
+    let mut out = String::from("date(r.ts, CASE");
+    for (at, offset) in q.offset_changes.iter().rev() {
+        out.push_str(&format!(
+            " WHEN r.ts >= '{at}' THEN '{}'",
+            offset_modifier(*offset)
+        ));
+    }
+    out.push_str(" ELSE ?1 END)");
+    out
 }
 
 /// Abrechnungsart einer Gruppe: Subscription (Login der Vendor-CLI) oder nach Verbrauch
@@ -86,8 +106,12 @@ pub enum Billing {
 pub struct UsageQuery {
     pub from: Timestamp,
     pub to: Timestamp,
-    /// Versatz der Zeitzone des Users zu UTC in Sekunden; bestimmt die Tagesgrenzen von `day`.
+    /// Versatz der Zeitzone des Users zu UTC in Sekunden zu Beginn (`from`); bestimmt mit
+    /// `offset_changes` die Tagesgrenzen von `day`.
     pub utc_offset_s: i32,
+    /// Versatzwechsel im Zeitraum (Sommerzeit): ab dem Zeitpunkt gilt der Versatz in Sekunden.
+    /// Leer bei UTC und festen Versätzen.
+    pub offset_changes: Vec<(Timestamp, i32)>,
     pub group_by: Vec<UsageDimension>,
     pub project: Option<ProjectId>,
     pub harness: Option<String>,
@@ -193,7 +217,7 @@ impl Store {
         let mut select = String::new();
         let mut group = Vec::new();
         for d in &dims {
-            select.push_str(&format!("{} AS g_{}, ", d.column(), d.as_str()));
+            select.push_str(&format!("{} AS g_{}, ", d.column(q), d.as_str()));
             group.push(format!("g_{}", d.as_str()));
             if *d == UsageDimension::Session {
                 select.push_str("MAX(s.title) AS session_title, ");

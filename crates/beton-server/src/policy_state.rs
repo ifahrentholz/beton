@@ -1,8 +1,8 @@
 //! Zustand der Policies für den Runner (POL-009) und gemerkte Freigaben (POL-010).
 //!
 //! - `policy.state`: `session`/`run` aus den `policy.state_changed` des Session-Logs (ein Fork
-//!   übernimmt sie bis zum Fork-Punkt), `user_day`/`user` aus dem Store (Tag in der Zeitzone
-//!   des Users; bis zur Einstellung `user.timezone`, #195, UTC) und die Grants der Session aus
+//!   übernimmt sie bis zum Fork-Punkt), `user_day`/`user` aus dem Store (Kalendertag in
+//!   `user.timezone`, Default UTC, POL-004 AC4) und die Grants der Session aus
 //!   `approval.requested` (Gründe mit Fingerprint) + `approval.resolved { remember: session }`.
 //! - `policy.state.apply`: eine Änderung in `user_day`/`user`, atomar im Store.
 //! - `inbox.read`: Agent-Inbox der Session (AGT-007). Erzeuger kommen mit ASY-002 (M5); bis
@@ -12,16 +12,16 @@ use std::collections::HashMap;
 
 use beton_core::event::{ApprovalDecision, EventPayload, RememberScope};
 use beton_core::id::SessionId;
-use beton_policy::state::{PolicyState, StateChange, StateOp, day_key, next_value};
+use beton_policy::state::{PolicyState, StateChange, StateOp, next_value};
 use serde_json::{Value, json};
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 use crate::app::AppState;
 use crate::problem::{Problem, ProblemCode};
 
-/// Zeitzone des Users für `user_day` (bis zur Einstellung, #195: UTC).
-fn user_offset() -> UtcOffset {
-    UtcOffset::UTC
+/// Heutiger Tag von `user_day`: 00:00 bis 24:00 in `user.timezone` (POL-009 AC3).
+fn user_day(state: &AppState) -> String {
+    state.runtime.timezone.day_key(OffsetDateTime::now_utc())
 }
 
 /// `policy.state` für die gebundene Session.
@@ -74,7 +74,7 @@ pub async fn policy_state(state: &AppState, session: SessionId) -> Result<Value,
         }
     }
     let replayed = PolicyState::replay(changes.iter());
-    let day = day_key(OffsetDateTime::now_utc(), user_offset());
+    let day = user_day(state);
     let (user_day, user) = state
         .store
         .policy_user_state(org, record.owner, &day)
@@ -104,7 +104,7 @@ pub async fn policy_state_apply(
     };
     let org = state.local.org;
     let record = state.store.session(org, session).await?;
-    let day = day_key(OffsetDateTime::now_utc(), user_offset());
+    let day = user_day(state);
     let value = op.value.clone();
     let next = state
         .store

@@ -70,6 +70,9 @@ hex = "0.4"
 http-body-util = "0.1"
 # Dateiauswahl mit ripgrep-Semantik (`.gitignore`) für die Workspace-Suche (SES-017).
 ignore = "0.4"
+# Zeitzonen des Users (POL-004 AC4, #195): IANA-Datenbank im Binary, keine Netzabrufe und
+# kein System-tzdata nötig (ADR-0033).
+jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
 # Linux-Sandbox (SBX-008, SBX-009, SBX-013): Landlock, seccomp-BPF, Namespaces und rlimits.
 landlock = "0.4.4"
 libc = "0.2"
