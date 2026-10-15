@@ -1277,3 +1277,51 @@ fn pol_017_push_config_overrides_are_uncertain_and_send_pack_is_a_push() {
     assert_eq!(outcome(&d), "deny", "{d:?}");
     assert!(rule_ids(&d).contains(&"git/protected".to_owned()));
 }
+
+/// M2: Bei ACP ist `tool.name` der Titel, den der Agent liefert; Namensmuster der Allowlist
+/// gelten dort nicht, nur Klassen (`allow_kinds`).
+#[test]
+fn pol_015_acp_titles_are_not_matched_by_name_patterns() {
+    let acp = |title: &str, kind: &str, args: Value| {
+        let mut input = Map::new();
+        input.insert(
+            "tool".into(),
+            json!({ "name": title, "acp_kind": kind, "args": args }),
+        );
+        activation(
+            Phase::ToolCall,
+            &json!({}),
+            &input,
+            Some("acp:gemini"),
+            None,
+        )
+        .unwrap()
+    };
+    let by_name = set(
+        Scope::User,
+        "u",
+        "  - id: list\n    type: tool_allowlist\n    params: { allow: [Read] }\n",
+    );
+    let shell_titled_read = acp("Read", "execute", json!({ "command": "rm -rf build" }));
+    assert_eq!(
+        outcome(&eval(vec![by_name.clone()], &shell_titled_read)),
+        "deny"
+    );
+    let read = acp("Read", "read", json!({ "path": "/repo/a" }));
+    assert_eq!(outcome(&eval(vec![by_name.clone()], &read)), "deny");
+    // Unter Claude gilt das Namensmuster weiter.
+    assert_eq!(
+        outcome(&eval(
+            vec![by_name],
+            &call("Read", json!({ "file_path": "/repo/a" }))
+        )),
+        "allow"
+    );
+    let by_kind = set(
+        Scope::User,
+        "u",
+        "  - id: list\n    type: tool_allowlist\n    params: { allow_kinds: [file_read] }\n",
+    );
+    assert_eq!(outcome(&eval(vec![by_kind.clone()], &read)), "allow");
+    assert_eq!(outcome(&eval(vec![by_kind], &shell_titled_read)), "deny");
+}
