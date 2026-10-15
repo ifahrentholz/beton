@@ -90,6 +90,17 @@ struct Run {
 }
 
 async fn start(yaml: &str, gate: Arc<dyn Gate>, adapter: ClaudeAdapter, hook: bool) -> Run {
+    start_in(yaml, gate, adapter, hook, None).await
+}
+
+/// Wie [`start`], mit eigenem Arbeitsverzeichnis (Projekt-Einstellungen, #233).
+async fn start_in(
+    yaml: &str,
+    gate: Arc<dyn Gate>,
+    adapter: ClaudeAdapter,
+    hook: bool,
+    workdir: Option<&std::path::Path>,
+) -> Run {
     let dir = tempfile::tempdir().unwrap();
     let scenario = dir.path().join("szenario.yaml");
     std::fs::write(&scenario, yaml).unwrap();
@@ -110,7 +121,7 @@ async fn start(yaml: &str, gate: Arc<dyn Gate>, adapter: ClaudeAdapter, hook: bo
         env,
     };
     let spec = SessionSpec {
-        workdir: std::env::temp_dir(),
+        workdir: workdir.map_or_else(std::env::temp_dir, std::path::Path::to_path_buf),
         hook: hook.then(|| HookSetup {
             command: HookCommand {
                 program: PathBuf::from(fake_cli()),
@@ -258,4 +269,35 @@ async fn har_005_hook_session_declares_full_gate() {
     let caps = run.session.capabilities().unwrap();
     assert_eq!(caps.tool_call_gate, ToolCallGate::Full);
     run.session.shutdown(Shutdown::default()).await.unwrap();
+}
+
+/// K3 (#233): `disableAllHooks: true` in `.claude/settings.json` bzw. `settings.local.json` des
+/// Repositorys schaltete den beton-Hook ab (gegen 2.1.296 mit der echten CLI geprüft; die
+/// Fake-CLI bildet das nach). beton lädt keine Projekt-Einstellungen; der Hook bleibt.
+#[tokio::test]
+async fn har_005_project_settings_cannot_disable_the_hook() {
+    for file in ["settings.json", "settings.local.json"] {
+        let work = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(work.path().join(".claude")).unwrap();
+        std::fs::write(
+            work.path().join(".claude").join(file),
+            r#"{"disableAllHooks": true}"#,
+        )
+        .unwrap();
+        let gate = Recording::new(|_| GateDecision::Deny {
+            reason: Some("beton: echo ist verboten".into()),
+        });
+        let mut run = start_in(
+            ECHO,
+            gate.clone(),
+            ClaudeAdapter::default(),
+            true,
+            Some(work.path()),
+        )
+        .await;
+        let events = turn(&mut run, "los").await;
+        assert_eq!(gate.requests().len(), 1, "{file}: Hook abgeschaltet");
+        assert_eq!(completed(&events)[0].0, ToolStatus::Denied, "{file}");
+        run.session.shutdown(Shutdown::default()).await.unwrap();
+    }
 }

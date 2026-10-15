@@ -679,7 +679,7 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-014--agent-policies--sandbox-block",
-  "summary": "`policies` im Agent bildet die Agent-Ebene der Policy-Hierarchie (POL-007): Einträge sind Policy-Datei-Referenzen (`ref`) oder Inline-Regeln (Format POL-001). `sandbox` beschreibt die Sandbox-Anforderungen des Agents (Semantik in SBX-003, SBX-006); beide können nur verschärfen, was höhere Ebenen vorgeben.",
+  "summary": "`policies` im Agent bildet die Agent-Ebene der Policy-Hierarchie (POL-007): Einträge sind Policy-Datei-Referenzen (`ref`) oder Inline-Regeln (Format POL-001). `sandbox` beschreibt die Sandbox-Anforderungen des Agents (Semantik in SBX-003, SBX-006); beide können nur verschärfen, was höhere Ebenen vorgeben. *(Übergang bis WP-49, #234:)* Solange die Agent-Ebene nicht angebunden ist, verweigert der Runner den Start eines Agents (auch eines Sub-Agents) mit `policies`, statt die Regeln still zu ignorieren (fail closed). `modify.permission_mode` und `modify.args` sind auf der Agent-Ebene ein Ladefehler (POL-007).",
   "acs": [
    "Eine Inline-Regel `git_guard` im Agent erscheint im effektiven Policy-Set mit `scope: agent` (`beton policy explain`).",
    "Eine Agent-Regel `allow` kann ein `deny` der Projekt-Ebene nicht aufheben (Policy-Test).",
@@ -893,7 +893,7 @@
   "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden vor jeder Auswertung über den Inhalts-Hash der Policy-Dateien erkannt (unabhängig von der Latenz eines Dateisystem-Watchers) und gelten ab der nächsten Auswertung.",
   "acs": [
    "Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.",
-   "Wird eine Projekt-Policy-Datei während einer laufenden Session geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart.",
+   "Wird eine Projekt- oder User-Policy-Datei während einer laufenden Session verschärfend geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart *(lockernde Änderungen erst in einer neuen Session, #253)*.",
    "Eine fehlerhafte Änderung lässt die alte Version aktiv und erzeugt `policy.set_invalid` mit Datei, Zeile und Fehler.",
    "Doppelte Regel-IDs in einem Set sind ein Ladefehler."
   ]
@@ -990,12 +990,12 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-007--hierarchie--kombination-lokale-ebenen",
-  "summary": "Die Ebenen User → Projekt → Agent werden gemäß Kombinationsalgorithmus zusammengeführt: strengere Entscheidung gewinnt, Defaults werden nur durch `allow` derselben Ebene aufgehoben, Modifikations-Konflikte nach \"erster Schreiber gewinnt\" bzw. JSON-Pointer-Priorität. Ein Repo kann so nur verschärfen; ein `allow` im Agent kann kein `deny`/`ask` aus Projekt oder User aufheben.",
+  "summary": "Die Ebenen User → Projekt → Agent werden gemäß Kombinationsalgorithmus zusammengeführt: strengere Entscheidung gewinnt, Defaults werden nur durch `allow` derselben Ebene aufgehoben, Modifikations-Konflikte nach \"erster Schreiber gewinnt\" bzw. JSON-Pointer-Priorität. Ein Repo kann so nur verschärfen; ein `allow` im Agent kann kein `deny`/`ask` aus Projekt oder User aufheben. *(Ergänzt nach dem Security-Review, #231/#234:)* `modify.permission_mode` und `modify.args` dürfen nur Sets ab der User-Ebene enthalten; auf Projekt- und Agent-Ebene sind sie ein Ladefehler (ein Repo könnte sonst den Modus lockern oder Befehle in Tool-Calls einschleusen). `model`, `reasoning_effort` und `redact` bleiben auf jeder Ebene erlaubt.",
   "acs": [
    "User `deny` + Agent `allow` auf dieselbe Aktion → `deny` (Policy-Test).",
    "Projekt-Default `browser_navigate: deny` + Agent-`allow` für `github.com` → `deny`; zusätzliches Projekt-`allow` für `github.com` → `allow`.",
    "User-Regel `modify model: A` und Agent-Regel `modify model: B` → Modell A; `policy.decision.conflicts` enthält den verworfenen Wert B mit Regel-ID.",
-   "Zwei `args`-Patches auf denselben Pointer mit unterschiedlichen Werten → Wert der autoritativeren Ebene; disjunkte Pointer werden beide angewendet.",
+   "Zwei `args`-Patches auf denselben Pointer mit unterschiedlichen Werten → Wert der autoritativeren Ebene (ab User-Ebene, #234); disjunkte Pointer werden beide angewendet.",
    "Die Auswertung ist unabhängig von der Datei-Lade-Reihenfolge (Property-Test mit permutierten Sets)."
   ]
  },
