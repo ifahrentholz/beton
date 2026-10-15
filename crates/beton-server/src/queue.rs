@@ -83,7 +83,13 @@ pub struct QueueCtx {
     pub runners: Arc<RunnerRegistry>,
     pub cmd_timeout: Duration,
     pub queues: Arc<Queues>,
+    /// `compaction.auto: beton` kompaktiert vor dem nächsten Turn (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
+
+/// So lange wartet ein Turn höchstens auf die automatische Compaction davor (USE-009); danach
+/// startet er trotzdem.
+pub const AUTO_COMPACTION_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl std::fmt::Debug for QueueCtx {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -422,6 +428,8 @@ impl Guard {
         by: PrincipalId,
         actor: Actor,
     ) -> Result<String, Problem> {
+        // USE-009 AC2: Automatik vor dem Turn, damit er mit dem kleineren Kontext startet.
+        self.auto_compact().await;
         // Die Eingabe gehört zum Verlauf (Chat, Replay, Export): als Nachricht des Nutzers
         // vor der Zustellung, damit sie vor der Antwort steht.
         self.user_message(text, attachments, by, actor).await?;
@@ -437,6 +445,96 @@ impl Guard {
             )
             .await?;
         Ok(result["turn_id"].as_str().unwrap_or_default().to_owned())
+    }
+
+    /// Automatische Compaction (USE-009, `compaction.auto: beton`): Liegt der zuletzt
+    /// gemeldete Kontext über `compaction.threshold` und wurde seitdem nicht kompaktiert, stößt
+    /// der Server die native Compaction an (`session.compact {trigger: beton}`) und wartet auf
+    /// `compaction.completed`, höchstens [`AUTO_COMPACTION_TIMEOUT`]. Scheitert sie, startet der
+    /// Turn trotzdem; die Compaction ist eine Komfortfunktion, keine Schutzmaßnahme.
+    async fn auto_compact(&self) {
+        if self.ctx.compaction.auto != beton_harness::AutoCompaction::Beton {
+            return;
+        }
+        match self.compaction_due().await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(p) => {
+                tracing::warn!(session = %self.session, code = p.code.as_str(), "Automatische Compaction: Stand nicht lesbar");
+                return;
+            }
+        }
+        // Vor dem Kommando abonnieren, damit kein Event durchrutscht.
+        let (mut rx, _) = self.ctx.events.hub.subscribe(self.session);
+        if let Err(p) = self
+            .ctx
+            .runners
+            .deliver(
+                self.session,
+                "session.compact",
+                json!({"trigger": "beton"}),
+                self.ctx.cmd_timeout,
+            )
+            .await
+        {
+            tracing::warn!(session = %self.session, code = p.code.as_str(), "Automatische Compaction abgelehnt");
+            return;
+        }
+        let completed = async {
+            loop {
+                match rx.recv().await {
+                    Ok(e) if matches!(e.payload(), Some(EventPayload::CompactionCompleted(_))) => {
+                        break;
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        };
+        if tokio::time::timeout(AUTO_COMPACTION_TIMEOUT, completed)
+            .await
+            .is_err()
+        {
+            tracing::warn!(session = %self.session, "Automatische Compaction ohne Abschluss; der Turn startet trotzdem");
+        }
+    }
+
+    /// Fällig, wenn der letzte `context.usage` über der Schwelle liegt, danach keine
+    /// Compaction begonnen hat (einmal je Überschreitung) und der Harness kompaktieren kann.
+    async fn compaction_due(&self) -> Result<bool, Problem> {
+        let store = &self.ctx.events.store;
+        let (org, session) = (self.ctx.org, self.session);
+        let Some(context) = store
+            .last_event_of_type(org, session, "context.usage")
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Some(EventPayload::ContextUsage(c)) = context.payload() else {
+            return Ok(false);
+        };
+        if !self
+            .ctx
+            .compaction
+            .beton_due(c.used_tokens, c.window_tokens)
+        {
+            return Ok(false);
+        }
+        if store
+            .last_event_of_type(org, session, "compaction.started")
+            .await?
+            .is_some_and(|started| started.seq > context.seq)
+        {
+            return Ok(false);
+        }
+        let started = store
+            .last_event_of_type(org, session, "session.started")
+            .await?;
+        Ok(matches!(
+            started.as_ref().and_then(Event::payload),
+            Some(EventPayload::SessionStarted(s))
+                if s.capabilities["compaction"].as_str().is_some_and(|c| c != "none")
+        ))
     }
 
     /// Anhänge an den Runner (WEB-006): Textdateien als Teil des Texts, Bilder und PDF je als

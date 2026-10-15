@@ -5380,7 +5380,7 @@
    "Die Seite zeigt für den Fake-Harness-Datensatz dieselben Summen wie `GET /v1/usage` (E2E-Test).",
    "Klick auf eine Session in der Tabelle öffnet die Session.",
    "CSV-Export enthält die sichtbaren Spalten und Filter im Dateinamen.",
-   "Records ohne Preis werden mit Hinweis „ohne Preis – Override anlegen“ und Link zu den Pricing-Einstellungen dargestellt."
+   "Records ohne Preis werden mit Hinweis „ohne Preis – eigenen Preis anlegen“ und Link zu den Pricing-Einstellungen dargestellt."
   ]
  },
  {
@@ -5412,7 +5412,7 @@
   "acs": [
    "Nach einem `context.usage {used_tokens: 150000, window_tokens: 200000}` zeigt der Ring 75 % im Warnstil.",
    "Ohne bekanntes Fenster erscheint „150 k Tokens“ ohne Prozentangabe.",
-   "Die TUI zeigt denselben Wert in der Statuszeile."
+   "(ab M3) Die TUI zeigt denselben Wert in der Statuszeile. *(Verschoben, WP-47, #265: Die TUI kommt mit TUI-001 in M3.)*"
   ]
  },
  {

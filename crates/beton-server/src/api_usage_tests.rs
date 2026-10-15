@@ -446,3 +446,51 @@ async fn use_005_openapi_documents_the_usage_routes() {
     assert!(doc["paths"]["/v1/usage"]["get"].is_object());
     assert!(doc["paths"]["/v1/sessions/{id}/usage"]["get"].is_object());
 }
+
+/// Ziel des Hinweises „ohne Preis“ (USE-006 AC4): eigene Preise in Prüfreihenfolge mit
+/// geschätzten Cache-Raten und der mitgelieferte Katalog (USE-002, USE-003).
+#[tokio::test]
+async fn use_006_pricing_lists_overrides_in_order_and_the_catalog() {
+    let t = app().await;
+    let res = get(&t, "/v1/usage/pricing").await;
+    assert_eq!(res.status, 200);
+    let view: crate::api_usage::PricingView = serde_json::from_slice(&res.body).unwrap();
+    assert_eq!(
+        view.catalog_version,
+        beton_core::pricing::Catalog::embedded().version()
+    );
+    assert!(view.overrides.is_empty());
+    assert!(view.catalog.iter().any(|m| m.model == "claude-opus-5-5"));
+    let doc = get(&t, "/v1/openapi.json").await.json();
+    assert!(doc["paths"]["/v1/usage/pricing"]["get"].is_object());
+
+    let overrides = vec![
+        beton_core::pricing::PriceOverride {
+            matcher: beton_core::pricing::OverrideMatch {
+                provider: Some("litellm-intern".into()),
+                model: Some("llama-3.3-70b*".into()),
+            },
+            input_per_mtok: Some(0.4),
+            output_per_mtok: Some(0.8),
+            ..Default::default()
+        },
+        beton_core::pricing::PriceOverride {
+            matcher: beton_core::pricing::OverrideMatch {
+                provider: Some("ollama-local".into()),
+                model: None,
+            },
+            free: true,
+            ..Default::default()
+        },
+    ];
+    let pricer =
+        beton_core::pricing::Pricer::new(beton_core::pricing::Catalog::embedded(), overrides);
+    let view = crate::api_usage::PricingView::new(&pricer);
+    let first = &view.overrides[0];
+    assert_eq!(first.position, 1);
+    assert!(first.cache_estimated);
+    assert!((first.cache_read_per_mtok - 0.04).abs() < 1e-9);
+    assert!((first.cache_write_per_mtok - 0.5).abs() < 1e-9);
+    assert!(view.overrides[1].free);
+    assert_eq!(view.overrides[1].model, None);
+}

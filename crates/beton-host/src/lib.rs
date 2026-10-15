@@ -111,6 +111,8 @@ pub struct RunnerBoot {
     pub snapshots: Option<PathBuf>,
     /// Session mit übernommenem Verlauf (Fork bzw. Resume eines Imports, HAR-018, HAR-019).
     pub fork: Option<ForkBoot>,
+    /// `compaction:` der User-Konfiguration (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
@@ -261,6 +263,7 @@ macro_rules! runner_provider_contract {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    compaction: Default::default(),
                 }
             }
 

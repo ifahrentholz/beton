@@ -665,6 +665,7 @@ impl<'a> SessionManager<'a> {
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
+                    compaction: self.state.runtime.compaction,
                 },
             )
             .await
