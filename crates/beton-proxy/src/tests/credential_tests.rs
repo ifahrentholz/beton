@@ -613,6 +613,44 @@ async fn prx_010_ac1_echoed_values_are_replaced_by_the_placeholder() {
     }
 }
 
+/// PRX-010: Header werden immer redigiert, auch die einer `101`-Antwort (WebSocket-Upgrade);
+/// nur der Byte-Strom nach dem Upgrade bleibt unberührt. Befund des Fuzz-Targets
+/// `http_request` (QA-009).
+#[tokio::test]
+async fn prx_010_ac1_headers_of_an_upgrade_response_are_redacted() {
+    let fx = fx().await;
+    let i = fx.instance(&["* api.github.com/**"]).await;
+    let mut r = with_header(
+        origin("GET", "api.github.com", "/ws/echo"),
+        "authorization",
+        &format!("token {}", fx.ph()),
+    );
+    for (name, value) in [
+        ("connection", "Upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-version", "13"),
+        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    ] {
+        r = with_header(r, name, value);
+    }
+    let mut s = h1(tunnel(&fx.h, &i, "api.github.com", 443, &[b"http/1.1"]).await).await;
+    let res = s.send_request(r).await.unwrap();
+    assert_eq!(res.status(), 101);
+    // Der Upstream hat den echten Wert bekommen und spiegelt ihn zurück.
+    assert_eq!(
+        header(&fx.api.seen()[0], "authorization").unwrap(),
+        format!("token {TOKEN}")
+    );
+    assert!(
+        !format!("{:?}", res.headers()).contains(TOKEN),
+        "echter Wert in den Headern der 101-Antwort"
+    );
+    assert_eq!(
+        res.headers().get("x-echo-auth").unwrap().to_str().unwrap(),
+        format!("token {}", fx.ph())
+    );
+}
+
 #[tokio::test]
 async fn prx_010_ac2_binary_and_large_bodies_pass_unchanged() {
     let fx = fx().await;
