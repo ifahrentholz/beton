@@ -18,6 +18,8 @@
 //! Ablehnung, nie zu stillschweigendem Erlauben.
 
 pub mod ca;
+pub mod credentials;
+pub mod egress;
 pub mod ip;
 mod net;
 pub mod normalize;
@@ -29,6 +31,11 @@ pub mod rules;
 mod tests;
 
 pub use ca::{BetonCa, CaError, CaHandover, CaInfo, CaStore, LeafIssuer};
+pub use credentials::{
+    Binding, CredentialAudit, CredentialError, CredentialKind, CredentialSource, Credentials,
+    Placeholder, SecretBytes,
+};
+pub use egress::{EgressEvents, Traffic, spawn_summaries};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
 pub use passthrough::{Passthrough, PassthroughError};

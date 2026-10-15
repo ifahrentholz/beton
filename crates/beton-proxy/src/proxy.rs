@@ -39,7 +39,11 @@ use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use zeroize::{Zeroize as _, Zeroizing};
 
+use beton_core::event::EgressSource;
+
 use crate::ca::{BetonCa, CaInfo, LeafIssuer};
+use crate::credentials::Credentials;
+use crate::egress::{EgressEvents, Traffic};
 use crate::ip::{PrivateAllowList, destination_allowed};
 use crate::net::{ConnectError, Connector, Idle, Net, dial_checked, find_connect_error};
 use crate::normalize::{Host, Scheme, normalize_path};
@@ -72,7 +76,7 @@ pub enum ProxyError {
 }
 
 /// Regeln und Freigaben einer Proxy-Instanz (eine pro Session-Stufe).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct InstanceSpec {
     /// Kennung für Logs, z. B. `ses_…/tools`; nie ein Secret.
     pub label: String,
@@ -80,6 +84,26 @@ pub struct InstanceSpec {
     pub allow_private: PrivateAllowList,
     /// Vendor-Hosts ohne TLS-Terminierung (PRX-005); nur in Stufe 1 bzw. ausdrücklich.
     pub passthrough: Passthrough,
+    /// Credential-Bindings mit Platzhaltern (PRX-006); nie auf Passthrough-Verbindungen.
+    pub credentials: Credentials,
+    /// Herkunft für `egress.blocked` (PRX-009).
+    pub source: EgressSource,
+    /// Empfänger von `egress.blocked` (PRX-009 AC1); ohne Empfänger nur Logs.
+    pub events: Option<Arc<dyn EgressEvents>>,
+    /// Zähler für `egress.summary` (PRX-009 AC3), je Session geteilt.
+    pub traffic: Option<Traffic>,
+}
+
+impl fmt::Debug for InstanceSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceSpec")
+            .field("label", &self.label)
+            .field("rules", &self.rules)
+            .field("passthrough", &self.passthrough)
+            .field("credentials", &self.credentials)
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
@@ -263,6 +287,10 @@ impl EgressProxy {
             label: spec.label,
             rules: spec.rules,
             passthrough: spec.passthrough,
+            credentials: spec.credentials,
+            source: spec.source,
+            events: spec.events,
+            traffic: spec.traffic,
             net: self.shared.net.clone(),
             allow_private: allow.clone(),
             expected,
@@ -370,6 +398,15 @@ struct Instance {
     rules: RuleSet,
     /// Vendor-Hosts ohne TLS-Terminierung (PRX-005).
     passthrough: Passthrough,
+    /// Credential-Bindings (PRX-006).
+    #[allow(dead_code)]
+    credentials: Credentials,
+    #[allow(dead_code)]
+    source: EgressSource,
+    #[allow(dead_code)]
+    events: Option<Arc<dyn EgressEvents>>,
+    #[allow(dead_code)]
+    traffic: Option<Traffic>,
     net: Net,
     allow_private: Arc<PrivateAllowList>,
     /// Erwarteter Klartext von `Proxy-Authorization: Basic …` (`bt:<token>`).
