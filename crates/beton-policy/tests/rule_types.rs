@@ -937,3 +937,31 @@ fn pol_001_user_defaults_have_git_guard_and_loop_detection_with_local_schema() {
     );
     assert_eq!(outcome(&d), "ask", "{d:?}");
 }
+
+/// POL-026: `expect.rules` mit der ID einer Typ-Regel (`loop`) trifft ihre entzuckerten
+/// Teilregeln (`loop/repeat`), wie im Beispiel der Spec; eine fremde ID mit demselben Anfang
+/// (`loo`) nicht.
+#[test]
+fn pol_026_expected_rule_id_of_a_rule_type_matches_its_parts() {
+    use beton_policy::policytest::{Summary, TestOptions, run_paths};
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("loop.yaml"),
+        "spec_version: 1\nname: l\nrules:\n  - id: loop\n    type: loop_detection\n",
+    )
+    .unwrap();
+    let case = |rules: &str| {
+        format!(
+            "spec_version: 1\nlayers: {{ user: [loop.yaml] }}\ncases:\n  - name: x\n    phase: tool_call\n    input: {{ tool: {{ name: Bash, args: {{ command: ls }}, repeat_count: 3 }} }}\n    expect: {{ outcome: ask, rules: [{rules}] }}\n"
+        )
+    };
+    let run = |rules: &str| {
+        let file = dir.path().join("t.policytest.yaml");
+        std::fs::write(&file, case(rules)).unwrap();
+        Summary::of(&run_paths(&[file], &TestOptions::default()).unwrap()).exit_code()
+    };
+    assert_eq!(run("loop/repeat"), 0);
+    assert_eq!(run("loop"), 0);
+    assert_eq!(run("loo"), 1);
+    assert_eq!(run("loop/errors"), 1);
+}
