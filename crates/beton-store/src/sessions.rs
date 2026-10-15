@@ -237,6 +237,7 @@ impl Store {
     }
 
     pub async fn create_org(&self, org: OrgId, name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)")
             .bind(org.to_string())
             .bind(name)
@@ -247,6 +248,7 @@ impl Store {
     }
 
     pub async fn create_user(&self, org: OrgId, user: UserId, display_name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO users (id, org_id, display_name, created_at) VALUES (?, ?, ?, ?)")
             .bind(user.to_string())
             .bind(org.to_string())
@@ -258,6 +260,7 @@ impl Store {
     }
 
     pub async fn create_node(&self, org: OrgId, node: NodeId, name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO nodes (id, org_id, name, created_at) VALUES (?, ?, ?, ?)")
             .bind(node.to_string())
             .bind(org.to_string())
@@ -270,6 +273,7 @@ impl Store {
 
     /// Löscht einen User. Besitzt er noch Sessions, schlägt das fehl (DATA-001 AC3).
     pub async fn delete_user(&self, org: OrgId, user: UserId) -> Result<()> {
+        let _writer = self.write_guard().await?;
         let result = sqlx::query("DELETE FROM users WHERE org_id = ? AND id = ?")
             .bind(org.to_string())
             .bind(user.to_string())

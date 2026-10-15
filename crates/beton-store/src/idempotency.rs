@@ -28,11 +28,14 @@ impl Store {
         key: &str,
     ) -> Result<Option<StoredResponse>> {
         let cutoff = Timestamp::from(Timestamp::now().as_offset_date_time() - IDEMPOTENCY_TTL);
-        sqlx::query("DELETE FROM idempotency_keys WHERE org_id = ? AND created_at < ?")
-            .bind(org.to_string())
-            .bind(cutoff.to_string())
-            .execute(&self.pool)
-            .await?;
+        {
+            let _writer = self.write_guard().await?;
+            sqlx::query("DELETE FROM idempotency_keys WHERE org_id = ? AND created_at < ?")
+                .bind(org.to_string())
+                .bind(cutoff.to_string())
+                .execute(&self.pool)
+                .await?;
+        }
         let row = sqlx::query(
             "SELECT request_hash, status, content_type, body FROM idempotency_keys \
              WHERE org_id = ? AND key = ?",
@@ -59,6 +62,7 @@ impl Store {
         key: &str,
         response: &StoredResponse,
     ) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query(
             "INSERT INTO idempotency_keys (org_id, key, request_hash, status, content_type, body, \
              created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",

@@ -368,6 +368,7 @@ impl Store {
         let cutoff = now.checked_sub(GC_GRACE).unwrap_or(SystemTime::UNIX_EPOCH);
         let cutoff_ts = Timestamp::from(time::OffsetDateTime::from(cutoff)).to_string();
         // Org-übergreifend: der Blob-Store ist ein gemeinsamer Inhaltsspeicher.
+        let writer = self.write_guard().await?;
         let rows_deleted = sqlx::query(
             "DELETE FROM blobs /* org-übergreifend: GC */ WHERE created_at < ? AND NOT EXISTS ( \
                SELECT 1 FROM blob_refs r WHERE r.org_id = blobs.org_id AND r.sha256 = blobs.sha256)",
@@ -376,6 +377,7 @@ impl Store {
         .execute(&self.pool)
         .await?
         .rows_affected();
+        drop(writer);
         let known: std::collections::HashSet<String> =
             sqlx::query_scalar("SELECT DISTINCT sha256 FROM blobs /* org-übergreifend: GC */")
                 .fetch_all(&self.pool)

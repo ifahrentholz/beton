@@ -472,6 +472,7 @@ impl Store {
             pool,
             blobs: BlobStore::unopened(&data_dir.join("blobs")),
             options: StoreOptions::default(),
+            writer: Default::default(),
         }))
     }
 }

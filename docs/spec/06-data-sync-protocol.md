@@ -403,11 +403,12 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### DATA-003 — SQLite-Backend & Migrationen
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.
+- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Schreibzugriffe eines Prozesses laufen über eine faire Schreibsperre im Store (Warteschlange in Ankunftsreihenfolge, Wartezeit höchstens wie `busy_timeout`), damit ein Dauerschreiber andere Schreiber nicht verdrängt; SQLites Busy-Handler pollt nur und regelt weiter den Zugriff anderer Prozesse. Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.
   - [ ] AC2 — Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.
   - [ ] AC3 — Zwei gleichzeitig startende Daemons migrieren nicht doppelt (Lock-Test).
+  - [ ] AC4 — Während drei Sessions dauerhaft Batches à 256 Events schreiben, gelingt jeder parallele interaktive Schreibzugriff (Session anlegen, Idempotency-Lookup, einzelnes Event) in unter 1 s.
 - **Abhängigkeiten:** DATA-001
 - **Referenz:** ADR-0009
 

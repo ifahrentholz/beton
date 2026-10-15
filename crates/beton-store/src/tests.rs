@@ -1560,6 +1560,73 @@ async fn data_002_concurrent_writers_do_not_fail_with_busy() {
     }
 }
 
+/// #287: Dauerschreiber (Tunnel-Sessions mit 256er-Batches) greifen die Schreibsperre sofort
+/// wieder. Ein paralleler, interaktiver Schreiber (REST: Session anlegen, Idempotency-Lookup,
+/// Eingabe) bekommt sie trotzdem binnen fester Frist, statt im SQLite-Busy-Handler zu pollen
+/// und nach `busy_timeout` mit `database is locked` zu scheitern.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_003_ac4_interactive_writer_is_not_starved_by_continuous_writers() {
+    let t = store().await;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let batches = Arc::new(AtomicUsize::new(0));
+    let mut writers = Vec::new();
+    for w in 0..3 {
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        let (store, stop, batches) = (t.store.clone(), stop.clone(), batches.clone());
+        writers.push(tokio::spawn(async move {
+            let mut head = s.head_seq;
+            while !stop.load(Ordering::Relaxed) {
+                let events = (0..256)
+                    .map(|i| notice(s.id, &format!("Writer {w}, Zeile {i}")))
+                    .collect();
+                head = store
+                    .append(s.org_id, s.id, head, s.epoch, events)
+                    .await
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .seq;
+                batches.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+    while batches.load(Ordering::Relaxed) < 3 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let mut worst = Duration::ZERO;
+    for i in 0..15 {
+        let start = Instant::now();
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        t.store
+            .idempotency_lookup(org(&t), &format!("key-{i}"))
+            .await
+            .unwrap();
+        append_one(&t.store, &s, notice(s.id, "Eingabe")).await;
+        worst = worst.max(start.elapsed());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    for w in writers {
+        w.await.unwrap();
+    }
+    eprintln!(
+        "interaktiver Schreiber: höchstens {worst:?}, Dauerschreiber: {} Batches",
+        batches.load(Ordering::Relaxed)
+    );
+    assert!(
+        worst < Duration::from_secs(1),
+        "interaktiver Schreiber wartet {worst:?} auf die Schreibsperre"
+    );
+}
+
 #[tokio::test]
 async fn agt_009_session_tree_lists_descendants_with_tokens() {
     let t = store().await;
