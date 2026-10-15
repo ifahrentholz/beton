@@ -1,0 +1,64 @@
+# Policy-Test (POL-026 AC4): Regeltyp git_guard (POL-017) mit Standardwerten.
+spec_version: 1
+layers: { user: [git_guard.yaml] }
+fixtures:
+  session: { branch: feature/x }
+cases:
+  - name: git push --force
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push --force" } } }
+    expect: { outcome: deny, rules: [git/force-push], reason_contains: force }
+  - name: Force über +refspec
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin +main" } } }
+    expect: { outcome: deny, rules: [git/force-push, git/protected] }
+  - name: git -C x push -f
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git -C x push -f" } } }
+    expect: { outcome: deny, rules: [git/force-push] }
+  - name: verkettet mit --force-with-lease
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cd a && git push --force-with-lease" } } }
+    expect: { outcome: deny, rules: [git/force-push] }
+  - name: Codex-Shell
+    harness: codex
+    phase: tool_call
+    input: { tool: { name: exec_command, args: { command: "git push --force origin feature/x" } } }
+    expect: { outcome: deny, rules: [git/force-push] }
+  - name: Push auf einen Feature-Branch fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin feature/x" } } }
+    expect: { outcome: ask, rules: [git/push] }
+  - name: Push auf main ist geschützt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin main" } } }
+    expect: { outcome: deny, rules: [git/protected], reason_contains: geschützt }
+  - name: Push des aktuellen Branches main
+    phase: tool_call
+    given: { session: { branch: main } }
+    input: { tool: { name: Bash, args: { command: "git push" } } }
+    expect: { outcome: deny, rules: [git/protected] }
+  - name: Merge fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git merge main" } } }
+    expect: { outcome: ask, rules: [git/merge] }
+  - name: Branch löschen fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git branch -D old" } } }
+    expect: { outcome: ask, rules: [git/delete-branch] }
+  - name: Verlauf umschreiben fragt nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git reset --hard HEAD~2" } } }
+    expect: { outcome: ask, rules: [git/history-rewrite] }
+  - name: unsicher parsebares Kommando mit git
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "eval \"git push\"" } } }
+    expect: { outcome: ask, rules: [git/uncertain] }
+  - name: MCP-Merge folgt merge
+    phase: tool_call
+    input: { tool: { name: mcp__github__merge_pull_request, args: { pull_number: 7 } } }
+    expect: { outcome: ask, rules: [git/mcp-merge] }
+  - name: Lesende Git-Kommandos sind frei
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git status && git log -5" } } }
+    expect: { outcome: allow }

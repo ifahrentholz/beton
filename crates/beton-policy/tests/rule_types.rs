@@ -544,3 +544,270 @@ fn pol_002_resolve_uses_the_path_resolution() {
     assert_eq!(outcome(&d), "deny");
     assert!(!d.errors.is_empty(), "{d:?}");
 }
+
+// ---------------------------------------------------------------------------------------
+// POL-017 git_guard
+// ---------------------------------------------------------------------------------------
+
+/// Wertet `expr` für ein Shell-Kommando aus (über `notify.message`, die Werte als JSON zeigt).
+fn shell_value(expr: &str, command: &str) -> String {
+    let s = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "  - id: show\n    on: tool_call\n    action: notify\n    notify: {{ channels: [log], message: \"{{{{ {expr} }}}}\" }}\n"
+        ),
+    );
+    let d = eval(vec![s], &call("Bash", json!({ "command": command })));
+    assert!(d.errors.is_empty(), "{command}: {:?}", d.errors);
+    d.notifications[0].message.clone().unwrap()
+}
+
+#[test]
+fn pol_017_git_ops_classify_subcommands() {
+    for (command, ops) in [
+        ("git status", "[]"),
+        ("git push", r#"["push"]"#),
+        ("git push --force", r#"["push","force_push"]"#),
+        ("git push origin +main", r#"["push","force_push"]"#),
+        ("git -C x push -f", r#"["push","force_push"]"#),
+        (
+            "cd a && git push --force-with-lease",
+            r#"["push","force_push"]"#,
+        ),
+        (
+            "git push --force-with-lease=main:abc origin feature",
+            r#"["push","force_push"]"#,
+        ),
+        ("git push --mirror backup", r#"["push","force_push"]"#),
+        (
+            "git -c core.x=y push -uf origin x",
+            r#"["push","force_push"]"#,
+        ),
+        ("sudo git push --force", r#"["push","force_push"]"#),
+        ("git push origin feature && rm -f x", r#"["push"]"#),
+        (
+            "git push origin --delete old",
+            r#"["push","delete_branch"]"#,
+        ),
+        ("git push origin :old", r#"["push","delete_branch"]"#),
+        ("git branch -D old", r#"["delete_branch"]"#),
+        ("git branch --delete old", r#"["delete_branch"]"#),
+        ("git branch new", "[]"),
+        ("git merge feature", r#"["merge"]"#),
+        ("git merge --abort", "[]"),
+        ("git reset --hard HEAD~1", r#"["history_rewrite"]"#),
+        ("git reset HEAD~1", "[]"),
+        ("git rebase main", r#"["history_rewrite"]"#),
+        ("git rebase --abort", "[]"),
+        ("git filter-branch --all", r#"["history_rewrite"]"#),
+        ("git commit --amend --no-edit", r#"["history_rewrite"]"#),
+        ("git commit -m x", "[]"),
+    ] {
+        assert_eq!(
+            shell_value("shell.git_ops(tool.argv)", command),
+            ops,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn pol_017_git_push_targets_follow_refspecs() {
+    for (command, targets) in [
+        ("git push", r#"["HEAD"]"#),
+        ("git push origin", r#"["HEAD"]"#),
+        ("git push -u origin feature/x", r#"["feature/x"]"#),
+        ("git push origin +main", r#"["main"]"#),
+        ("git push origin HEAD:main", r#"["main"]"#),
+        ("git push origin a:refs/heads/master b", r#"["master","b"]"#),
+        ("git push -o ci.skip origin x", r#"["x"]"#),
+        ("git push origin :old", r#"["old"]"#),
+        ("git push --all origin", r#"["*"]"#),
+        ("git push --tags", "[]"),
+        ("git status", "[]"),
+    ] {
+        assert_eq!(
+            shell_value("shell.git_push_targets(tool.argv)", command),
+            targets,
+            "{command}"
+        );
+    }
+}
+
+const GIT: &str = "  - id: git\n    type: git_guard\n";
+
+fn git_call(command: &str, branch: &str) -> Activation {
+    call_with(
+        "Bash",
+        json!({ "command": command }),
+        json!({ "session": { "branch": branch } }),
+    )
+}
+
+fn rule_ids(d: &Decision) -> Vec<String> {
+    reasons(d).into_iter().map(|(id, _)| id).collect()
+}
+
+#[test]
+fn pol_017_ac1_force_push_variants_are_denied() {
+    let s = set(Scope::User, "u", GIT);
+    for command in [
+        "git push --force",
+        "git push origin +main",
+        "git push origin +feature",
+        "git -C x push -f",
+        "cd a && git push --force-with-lease",
+        "git push --mirror backup",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert_eq!(outcome(&d), "deny", "{command}: {d:?}");
+        assert!(
+            rule_ids(&d).contains(&"git/force-push".to_owned()),
+            "{command}: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn pol_017_ac2_push_asks_and_protected_branches_are_denied() {
+    let s = set(Scope::User, "u", GIT);
+    let d = eval(
+        vec![s.clone()],
+        &git_call("git push origin feature/x", "feature/x"),
+    );
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["git/push"]);
+    for (command, branch) in [
+        ("git push origin main", "feature/x"),
+        ("git push origin HEAD:master", "feature/x"),
+        ("git push", "main"),
+        ("git push origin", "master"),
+        ("git push --all origin", "feature/x"),
+        ("git merge feature/x", "main"),
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, branch));
+        assert_eq!(outcome(&d), "deny", "{command} auf {branch}: {d:?}");
+        assert!(
+            rule_ids(&d).contains(&"git/protected".to_owned()),
+            "{command}: {d:?}"
+        );
+    }
+    // Ohne bekannten Branch lässt sich das Ziel nicht prüfen: ablehnen (fail closed).
+    let d = eval(
+        vec![s],
+        &call_with(
+            "Bash",
+            json!({ "command": "git push" }),
+            json!({ "session": { "branch": null } }),
+        ),
+    );
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+}
+
+#[test]
+fn pol_017_ac3_mcp_merge_follows_the_merge_setting() {
+    let pr = || {
+        call(
+            "mcp__github__merge_pull_request",
+            json!({ "pull_number": 1 }),
+        )
+    };
+    let d = eval(vec![set(Scope::User, "u", GIT)], &pr());
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["git/mcp-merge"]);
+    for (merge, want) in [("deny", "deny"), ("allow", "allow")] {
+        let s = set(
+            Scope::User,
+            "u",
+            &format!("{GIT}    params: {{ merge: {merge} }}\n"),
+        );
+        assert_eq!(outcome(&eval(vec![s], &pr())), want, "merge: {merge}");
+    }
+    // Eigene MCP-Tools je Operation.
+    let s = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ mcp_tools: {{ push: [\"gitea/push_*\"] }} }}\n"),
+    );
+    let d = eval(vec![s.clone()], &call("mcp__gitea__push_files", json!({})));
+    assert_eq!(rule_ids(&d), ["git/mcp-push"]);
+    // Ohne `merge`-Liste kein MCP-Merge mehr.
+    let d = eval(vec![s], &pr());
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+}
+
+#[test]
+fn pol_017_ac4_uncertain_command_with_git_asks() {
+    let s = set(Scope::User, "u", GIT);
+    let d = eval(vec![s.clone()], &git_call("eval \"git status\"", "feature"));
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["git/uncertain"]);
+    // Ohne `git` bleibt ein unsicheres Kommando Sache anderer Regeln.
+    let d = eval(vec![s], &git_call("eval \"ls\"", "feature"));
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+}
+
+#[test]
+fn pol_017_other_operations_and_settings() {
+    let s = set(Scope::User, "u", GIT);
+    for (command, want, rule) in [
+        ("git merge feature", "ask", "git/merge"),
+        ("git branch -D old", "ask", "git/delete-branch"),
+        ("git push origin --delete old", "ask", "git/delete-branch"),
+        ("git reset --hard HEAD~1", "ask", "git/history-rewrite"),
+        ("git commit --amend", "ask", "git/history-rewrite"),
+        ("git status", "allow", ""),
+        ("git push origin feature && rm -f x", "ask", "git/push"),
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert_eq!(outcome(&d), want, "{command}: {d:?}");
+        if !rule.is_empty() {
+            assert!(rule_ids(&d).contains(&rule.to_owned()), "{command}: {d:?}");
+        }
+    }
+    // Demo (POL-017): `force_push: ask` macht aus dem Force-Push eine Approval-Card.
+    let s = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ force_push: ask, push: allow }}\n"),
+    );
+    let d = eval(vec![s.clone()], &git_call("git push --force", "feature"));
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["git/force-push"]);
+    let d = eval(vec![s], &git_call("git push origin feature", "feature"));
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+    // Eigene geschützte Branches und Aktion.
+    let s = set(
+        Scope::User,
+        "u",
+        &format!(
+            "{GIT}    params: {{ protected_branches: [\"release/*\"], protected_action: ask }}\n"
+        ),
+    );
+    let d = eval(
+        vec![s.clone()],
+        &git_call("git push origin release/1.0", "x"),
+    );
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert!(rule_ids(&d).contains(&"git/protected".to_owned()));
+    let d = eval(vec![s], &git_call("git push origin main", "x"));
+    assert_eq!(rule_ids(&d), ["git/push"]);
+}
+
+#[test]
+fn pol_017_params_are_checked_when_loading() {
+    for (params, needle) in [
+        ("{ pushes: ask }", "pushes"),
+        ("{ push: maybe }", "push"),
+        ("{ force_push: [deny] }", "force_push"),
+        ("{ protected_branches: main }", "Liste"),
+        ("{ mcp_tools: { rebase: [x] } }", "rebase"),
+        ("{ mcp_tools: [x] }", "mcp_tools"),
+    ] {
+        let e = load_err(&format!(
+            "  - id: x\n    type: git_guard\n    params: {params}\n"
+        ));
+        assert!(e.contains(needle), "{params}: {e}");
+    }
+}
