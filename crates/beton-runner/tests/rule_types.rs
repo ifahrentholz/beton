@@ -138,3 +138,49 @@ async fn pol_016_runner_fills_home_project_root_and_write_paths_and_resolves_sym
         .await;
     assert_eq!(d, GateDecision::Allow { updated_args: None });
 }
+
+#[tokio::test]
+async fn pol_017_runner_reads_the_current_branch_for_pushes_without_refspec() {
+    let env = Env::new();
+    env.policy("  - id: git\n    type: git_guard\n    params: { push: allow }\n");
+    let push = |call: &str| {
+        req(
+            call,
+            "Bash",
+            "shell",
+            serde_json::json!({ "command": "git push" }),
+        )
+    };
+    std::fs::write(env.wt().join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+    let (g, _rx) = env.gate();
+    assert_eq!(
+        g.decide(push("p1")).await,
+        GateDecision::Allow { updated_args: None }
+    );
+    // Der Branch wird bei jeder Auswertung gelesen (der Agent kann ihn wechseln).
+    std::fs::write(env.wt().join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let d = g.decide(push("p2")).await;
+    assert!(denied(&d), "{d:?}");
+    // Worktree mit `.git`-Datei (git worktree): HEAD im verwiesenen Verzeichnis.
+    std::fs::remove_dir_all(env.wt().join(".git")).unwrap();
+    let gitdir = env.root.join("repo.git/worktrees/wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/y\n").unwrap();
+    std::fs::write(
+        env.wt().join(".git"),
+        format!("gitdir: {}\n", gitdir.display()),
+    )
+    .unwrap();
+    assert_eq!(
+        g.decide(push("p3")).await,
+        GateDecision::Allow { updated_args: None }
+    );
+    // Losgelöster HEAD: kein Branch, das Ziel ist unbekannt (fail closed).
+    std::fs::write(
+        gitdir.join("HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    let d = g.decide(push("p4")).await;
+    assert!(denied(&d), "{d:?}");
+}

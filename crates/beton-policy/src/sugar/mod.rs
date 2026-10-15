@@ -8,6 +8,7 @@
 //!
 //! `require_approval` (POL-014) entzuckert [`crate::load`] selbst.
 
+mod git_guard;
 mod path_guard;
 mod tool_allowlist;
 
@@ -73,6 +74,7 @@ pub(crate) fn desugar(
     match t {
         RuleType::ToolAllowlist => Some(tool_allowlist::desugar(rule, &params, shadow)),
         RuleType::PathGuard => Some(path_guard::desugar(&params)),
+        RuleType::GitGuard => Some(git_guard::desugar(&params)),
         _ => None,
     }
 }

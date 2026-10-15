@@ -10,7 +10,7 @@ use time::format_description::well_known::Rfc3339;
 use super::check::{Compr, Func, Node};
 use super::{EvalError, Meter, ext};
 use crate::context::Activation;
-use crate::normalize::shell;
+use crate::normalize::{git, shell};
 use crate::value::{Key, Value, numeric_cmp};
 
 type Res = Result<Value, EvalError>;
@@ -336,6 +336,26 @@ impl Ctx<'_, '_> {
                     }
                     _ => shell::has_flag(&refs, s(1)?),
                 }))
+            }
+            Func::GitOps | Func::GitPushTargets => {
+                let argv = argv(&args[0])?;
+                self.meter
+                    .charge(argv.iter().map(|c| c.len() as u64).sum::<u64>())?;
+                let refs: Vec<Vec<&str>> = argv
+                    .iter()
+                    .map(|c| c.iter().map(String::as_str).collect())
+                    .collect();
+                let items: Vec<Value> = match func {
+                    Func::GitOps => git::git_ops(&refs)
+                        .into_iter()
+                        .map(|op| Value::String(op.into()))
+                        .collect(),
+                    _ => git::git_push_targets(&refs)
+                        .into_iter()
+                        .map(|b| Value::String(b.into()))
+                        .collect(),
+                };
+                Ok(Value::list(items))
             }
             Func::UrlHost => ext::url_host(s(0)?)
                 .map(|h| Value::String(h.into()))

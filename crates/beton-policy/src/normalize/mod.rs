@@ -5,6 +5,7 @@
 //! Die Abbildung nativer Tools liegt als Daten in `data/tool-map.yaml` (AC3). Die
 //! Normalisierung ist rein (ohne IO); Symlinks löst sie nicht auf.
 
+pub mod git;
 pub mod shell;
 
 use std::collections::BTreeMap;

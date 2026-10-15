@@ -62,6 +62,8 @@ pub(crate) enum Func {
     BytesHuman,
     HasCommand,
     HasFlag,
+    GitOps,
+    GitPushTargets,
     UrlHost,
     UrlPath,
 }
@@ -705,6 +707,17 @@ impl Checker<'_> {
                 }
                 (Func::HasFlag, Ty::Bool)
             }
+            "shell.git_ops" | "shell.git_push_targets" if n == 1 => {
+                if !is(0, &Ty::list(Ty::list(Ty::String))) {
+                    return Err(mismatch());
+                }
+                let f = if name == "shell.git_ops" {
+                    Func::GitOps
+                } else {
+                    Func::GitPushTargets
+                };
+                (f, Ty::list(Ty::String))
+            }
             "url.host" | "url.path" if n == 1 => {
                 if !is(0, &Ty::String) {
                     return Err(mismatch());
@@ -716,10 +729,29 @@ impl Checker<'_> {
                 };
                 (f, Ty::String)
             }
-            known @ ("size" | ".size" | "matches" | ".matches" | ".startsWith" | ".endsWith"
-            | ".contains" | "duration" | "timestamp" | "int" | "uint" | "double"
-            | "string" | "glob" | "under" | "resolve" | "domain_matches"
-            | "bytes_human" | "shell.has_command" | "shell.has_flag" | "url.host"
+            known @ ("size"
+            | ".size"
+            | "matches"
+            | ".matches"
+            | ".startsWith"
+            | ".endsWith"
+            | ".contains"
+            | "duration"
+            | "timestamp"
+            | "int"
+            | "uint"
+            | "double"
+            | "string"
+            | "glob"
+            | "under"
+            | "resolve"
+            | "domain_matches"
+            | "bytes_human"
+            | "shell.has_command"
+            | "shell.has_flag"
+            | "shell.git_ops"
+            | "shell.git_push_targets"
+            | "url.host"
             | "url.path") => {
                 return Err(self.err(
                     id,

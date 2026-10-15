@@ -574,6 +574,36 @@ impl PathResolver for FsResolver {
     }
 }
 
+/// Aktueller Git-Branch von `workdir` (`session.branch`, POL-017) aus `HEAD`, ohne `git`
+/// zu starten: `.git` als Verzeichnis oder als Datei mit `gitdir:` (Worktree). `None` bei
+/// losgelöstem HEAD oder ohne Repository.
+fn current_branch(workdir: &Path) -> Option<String> {
+    use std::io::Read as _;
+    let read = |path: &Path| -> Option<String> {
+        let mut text = String::new();
+        std::fs::File::open(path)
+            .ok()?
+            .take(4096)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
+    };
+    let dot_git = workdir
+        .ancestors()
+        .map(|d| d.join(".git"))
+        .find(|p| p.exists())?;
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = read(&dot_git)?;
+        let target = text.lines().next()?.strip_prefix("gitdir:")?.trim();
+        dot_git.parent()?.join(target)
+    };
+    let head = read(&git_dir.join("HEAD"))?;
+    let branch = head.trim().strip_prefix("ref: refs/heads/")?;
+    (!branch.is_empty()).then(|| branch.to_owned())
+}
+
 fn truncate(text: &str) -> String {
     let mut end = text.len().min(TEXT_MAX);
     while !text.is_char_boundary(end) {
@@ -1243,6 +1273,8 @@ impl PolicyGate {
                 tool_calls: Some(self.inner.calls.load(Ordering::SeqCst)),
                 started_at: Some(self.inner.started_at.clone()),
                 worktree: Some(self.inner.opts.workdir.display().to_string()),
+                // Bei jeder Auswertung neu: der Agent kann den Branch wechseln (POL-017).
+                branch: current_branch(&self.inner.opts.workdir),
                 project_root: self
                     .inner
                     .opts

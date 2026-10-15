@@ -380,7 +380,7 @@ const WRAPPERS: [(&str, &[&str]); 13] = [
 ];
 
 /// Git-Optionen vor dem Unterkommando, die einen Wert nehmen (`git -C dir push`).
-const GIT_VALUE_OPTIONS: [&str; 6] = [
+pub(crate) const GIT_VALUE_OPTIONS: [&str; 6] = [
     "-C",
     "-c",
     "--git-dir",
@@ -390,7 +390,7 @@ const GIT_VALUE_OPTIONS: [&str; 6] = [
 ];
 
 /// Das eigentliche Kommando eines Teilkommandos (Wrapper wie `sudo`/`env` übersprungen).
-fn effective<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
+pub(crate) fn effective<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
     let mut i = 0;
     while i < cmd.len() {
         let w = cmd[i];

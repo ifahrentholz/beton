@@ -728,8 +728,13 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
         );
         let set = parse_set(Scope::User, "t.yaml", &text).unwrap_or_else(|e| panic!("{t}: {e}"));
         // tool_allowlist (WP-42): `allow`-Anteile, neu also lockernd (tests/rule_types.rs).
-        // path_guard (WP-42): nur `deny`/`ask`.
-        let desugared = ["require_approval", "tool_allowlist", "path_guard"];
+        // path_guard, git_guard (WP-42): nur `deny`/`ask`.
+        let desugared = [
+            "require_approval",
+            "tool_allowlist",
+            "path_guard",
+            "git_guard",
+        ];
         assert_eq!(
             matches!(set.rules[0].kind, RuleKind::Builtin(_)),
             !desugared.contains(&t),
