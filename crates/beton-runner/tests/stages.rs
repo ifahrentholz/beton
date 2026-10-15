@@ -263,7 +263,7 @@ fn sbx_002_shell_call_without_broker_start_is_an_integrity_violation() {
         let mut i = ShellIntegrity::new(&["Bash"]);
         i.observe(&requested("x", "Bash"), 0).unwrap();
         assert!(
-            i.observe(&completed("x", status.clone()), 0).is_err(),
+            i.observe(&completed("x", status), 0).is_err(),
             "{status:?} ohne Broker-Start"
         );
     }
