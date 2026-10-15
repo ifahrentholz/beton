@@ -67,6 +67,7 @@ async fn fixture(
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -129,6 +130,7 @@ impl Fixture {
                     snapshots: None,
                     fork: None,
                     compaction: Default::default(),
+                    max_cost_usd: None,
                 },
             )
             .await
@@ -479,6 +481,7 @@ async fn runner_token_only_opens_its_own_session() {
                 snapshots: None,
                 fork: None,
                 compaction: Default::default(),
+                max_cost_usd: None,
             },
         )
         .await

@@ -113,6 +113,8 @@ pub struct RunnerBoot {
     pub fork: Option<ForkBoot>,
     /// `compaction:` der User-Konfiguration (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
@@ -264,6 +266,7 @@ macro_rules! runner_provider_contract {
                     snapshots: None,
                     fork: None,
                     compaction: Default::default(),
+                    max_cost_usd: None,
                 }
             }
 

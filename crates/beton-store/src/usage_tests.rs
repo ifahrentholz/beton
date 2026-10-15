@@ -30,6 +30,7 @@ fn new_session(t: &TestStore) -> NewSession {
         trigger: SessionTrigger::User,
         home_node: t.local.node,
         harness_opts: serde_json::Value::Null,
+        max_cost_usd: None,
     }
 }
 

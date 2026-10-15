@@ -113,6 +113,7 @@ async fn session(t: &TestApp, cwd: &Path) -> SessionId {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -284,6 +285,69 @@ async fn pol_027_ac3_evaluate_creates_no_events_approvals_or_state() {
     assert!(state.1.is_empty() && state.0.is_empty(), "{state:?}");
     let inbox = get(t, "/v1/inbox").await.json();
     assert_eq!(inbox["items"], json!([]));
+}
+
+/// API-006 AC4: Das Session-Budget (`max_cost_usd`) ist eine `spend_cap`-Regel der User-Ebene,
+/// die auch `show --effective` und `evaluate` mit Session kennen.
+#[tokio::test]
+async fn api_006_ac4_the_session_budget_is_a_spend_cap_rule() {
+    let s = setup().await;
+    let t = &s.t;
+    let local = t.store.ensure_local().await.unwrap();
+    let id = t
+        .store
+        .create_session(
+            OrgId::LOCAL,
+            NewSession {
+                id: SessionId::new(),
+                owner: UserId::LOCAL,
+                kind: SessionKind::Main,
+                harness: "fake".into(),
+                cwd: s.project.path().display().to_string(),
+                model: None,
+                effort: None,
+                permission_mode: None,
+                agent_ref: None,
+                project_id: None,
+                parent_id: None,
+                trigger: SessionTrigger::User,
+                home_node: local.node,
+                harness_opts: Value::Null,
+                max_cost_usd: Some(0.5),
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+    let shown = get(t, &format!("/v1/policies?session_id={id}"))
+        .await
+        .json();
+    let budget = shown["sets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|set| set["name"] == "session-budget")
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert_eq!(budget["scope"], "user");
+    assert_eq!(budget["rules"][0]["id"], "max-cost");
+    assert_eq!(budget["rules"][0]["rule_type"], "spend_cap");
+    let turn = json!({ "session_id": id.to_string(), "phase": "model_request",
+                       "input": { "request": { "model": "x", "granularity": "turn" } } });
+    let v = post(t, "/v1/policies/evaluate", turn.clone()).await.json();
+    assert_eq!(v["outcome"], "allow", "{v}");
+    append(t, id, vec![cost(1_000_000)]).await;
+    let v = post(t, "/v1/policies/evaluate", turn).await.json();
+    assert_eq!(v["outcome"], "deny", "{v}");
+    assert_eq!(v["decision"]["matched"][0]["rule_id"], "max-cost", "{v}");
+    assert_eq!(v["budget_exhausted"][0]["rule_id"], "max-cost", "{v}");
+    // Ein Budget muss positiv sein.
+    let r = post(
+        t,
+        "/v1/sessions",
+        json!({ "target": "fake", "cwd": s.project.path(), "max_cost_usd": 0 }),
+    )
+    .await;
+    assert_eq!(r.status, 422, "{}", String::from_utf8_lossy(&r.body));
 }
 
 #[tokio::test]

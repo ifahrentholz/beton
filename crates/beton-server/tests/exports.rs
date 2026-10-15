@@ -53,6 +53,7 @@ async fn fixture_with(t: TestApp) -> Fixture {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

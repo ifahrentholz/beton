@@ -145,6 +145,55 @@ async fn api_006_ac3_on_ask_deny_exits_4_without_hanging() {
 }
 
 #[tokio::test]
+async fn api_006_ac4_exceeding_max_cost_exits_5_via_a_spend_cap_rule() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.0 } }]\n",
+    );
+    let script = |max: &str| {
+        run(beton(serve.home())
+            .current_dir(serve.work.path())
+            .args([
+                "run",
+                "fake",
+                "--max-cost",
+                max,
+                "--output-format",
+                "json",
+                "-p",
+                "los",
+                "--scenario",
+            ])
+            .arg(&scenario))
+    };
+    let out = script("0.5");
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(v["status"], "denied", "{v}");
+    assert!(stderr(&out).contains("max-cost"), "{}", stderr(&out));
+    // Durchgesetzt hat es eine `spend_cap`-Regel der Session.
+    let id = v["session_id"].as_str().unwrap();
+    let show = run(beton(serve.home()).current_dir(serve.work.path()).args([
+        "--json",
+        "policy",
+        "show",
+        "--effective",
+        "--session",
+        id,
+    ]));
+    assert!(show.status.success(), "{}", stderr(&show));
+    let text = stdout(&show);
+    assert!(
+        text.contains("max-cost") && text.contains("spend_cap"),
+        "{text}"
+    );
+    // Unter dem Budget endet der Lauf normal; ungültige Budgets sind ein Usage-Fehler.
+    let out = script("5");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(script("0").status.code(), Some(2));
+}
+
+#[tokio::test]
 async fn cli_002_ac2_continue_picks_the_last_session_in_this_directory() {
     let serve = Serve::start();
     let scenario = serve.scenario(

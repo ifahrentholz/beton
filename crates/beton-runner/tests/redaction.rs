@@ -369,6 +369,7 @@ async fn ses_007_ac3_handover_contains_no_secret_values_only_placeholders() {
                 trigger: SessionTrigger::Api,
                 home_node: local.node,
                 harness_opts: json!({ "scenario": scenario }),
+                max_cost_usd: None,
             },
         )
         .await

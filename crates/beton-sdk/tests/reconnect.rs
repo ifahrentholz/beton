@@ -53,6 +53,7 @@ async fn proto_009_ac2_hundred_clients_reconnect_after_restart_spread_out() {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -169,6 +170,7 @@ async fn proto_005_resume_after_restart_has_no_gaps_or_duplicates() {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

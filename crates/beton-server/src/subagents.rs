@@ -520,6 +520,7 @@ impl SessionManager<'_> {
                     trigger: SessionTrigger::Spawn,
                     home_node: self.state().local.node,
                     harness_opts: Value::Null,
+                    max_cost_usd: None,
                 },
             )
             .await;

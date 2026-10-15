@@ -84,6 +84,12 @@ pub struct CreateSessionRequest {
     #[serde(default)]
     #[ts(optional)]
     pub worktree: Option<WorktreeRequest>,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);
+    /// erreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Worktree-Wunsch beim Anlegen einer Session (SES-015).
@@ -144,6 +150,7 @@ pub async fn create_session(
                     base: w.base,
                     fetch: w.fetch.unwrap_or(true),
                 }),
+                max_cost_usd: None,
             },
         )
         .await?;

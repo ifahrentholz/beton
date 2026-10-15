@@ -557,6 +557,7 @@ async fn agt_007_ac2_session_spawn_runs_a_codex_child_and_returns_its_answer() {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

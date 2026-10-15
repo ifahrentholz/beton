@@ -62,6 +62,7 @@ fn boot() -> RunnerBoot {
         snapshots: None,
         fork: None,
         compaction: Default::default(),
+        max_cost_usd: None,
     }
 }
 

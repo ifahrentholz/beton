@@ -246,6 +246,7 @@ async fn create_sessions(t: &TestApp, n: usize) {
                     trigger: SessionTrigger::User,
                     home_node: local.node,
                     harness_opts: serde_json::Value::Null,
+                    max_cost_usd: None,
                 },
             )
             .await

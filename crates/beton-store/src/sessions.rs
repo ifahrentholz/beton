@@ -43,6 +43,9 @@ pub struct NewSession {
     pub home_node: NodeId,
     /// Harness-spezifische Startoptionen (landen in `session.created`).
     pub harness_opts: serde_json::Value,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006); der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (POL-011).
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Eine Session mit ihren Projektionsfeldern (Session-Liste, DATA-005).
@@ -307,6 +310,7 @@ impl Store {
                 parent_session_id: new.parent_id,
                 trigger: new.trigger,
                 harness_opts: new.harness_opts.clone(),
+                max_cost_usd: new.max_cost_usd,
             }),
         );
         let created_at = event.ts.to_string();

@@ -138,6 +138,7 @@ async fn session(t: &TestApp, harness: &str) -> SessionRecord {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -584,6 +585,7 @@ async fn child(t: &TestApp, parent: &SessionRecord) -> SessionRecord {
                 trigger: SessionTrigger::Spawn,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

@@ -799,6 +799,25 @@ async fn pol_011_ac1_one_card_at_the_threshold_and_deny_at_the_limit() {
 }
 
 #[tokio::test]
+async fn api_006_ac4_the_session_budget_denies_the_next_turn() {
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.0 } }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let id = env.create_with(&s, json!({"max_cost_usd": 0.5})).await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "zwei").await;
+    assert_eq!(status, 403, "{body}");
+    let events = env.wait_for(&id, is("budget.exhausted")).await;
+    let d = decisions(&events, "model_request");
+    let last = d.last().unwrap();
+    assert_eq!(last["payload"]["matched"][0]["rule_id"], "max-cost");
+    assert_eq!(last["payload"]["matched"][0]["scope"], "user");
+    assert_eq!(last["payload"]["matched"][0]["set"], "session-budget");
+}
+
+#[tokio::test]
 async fn pol_011_ac2_route_switches_the_model_live_after_the_limit() {
     let env = Env::start().await;
     env.project_policy(
