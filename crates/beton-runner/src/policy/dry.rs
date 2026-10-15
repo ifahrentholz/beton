@@ -627,7 +627,12 @@ rules:
         let _ = gate.decide(bash("c2", "ls -l")).await;
         settle().await;
         assert_eq!(sink.stored.lock().unwrap().len(), 1);
-        std::fs::write(&file, PUSH.replace("Kein Force-Push", "Niemals Force-Push")).unwrap();
+        // Eine verschärfende Änderung gilt sofort (#253: lockernde erst in einer neuen Session).
+        std::fs::write(
+            &file,
+            format!("{PUSH}  - {{ id: no-rebase, on: tool_call, when: 'tool.command.contains(\"rebase\")', action: deny }}\n"),
+        )
+        .unwrap();
         let _ = gate.decide(bash("c3", "ls")).await;
         settle().await;
         let stored = sink.stored.lock().unwrap();
@@ -673,7 +678,7 @@ rules:
     on: tool_call
     when: 'tool.kind == \"shell\"'
     action: modify
-    modify: { args: { timeout: 5 } }
+    modify: { redact: [\"geheim\"] }
   - id: allow-ls
     on: tool_call
     when: 'tool.command == \"ls\"'
@@ -698,7 +703,7 @@ rules:
         assert_eq!(v["modified"], json!(true), "nur ob, nicht was: {v}");
         assert!(v.get("policy_set_hash").is_none(), "{v}");
         let text = v.to_string();
-        for hidden in ["watch-secret", "patch", "allow-ls", "timeout"] {
+        for hidden in ["watch-secret", "patch", "allow-ls", "redact"] {
             assert!(!text.contains(hidden), "`{hidden}` in {v}");
         }
         let v = s.gate.query(&json!({ "action": "rm geheim.txt" })).await;
@@ -809,5 +814,112 @@ rules:
             assert_eq!(v["decision"], "deny", "{args}: {v}");
             assert_eq!(v["rules"], json!(["no-github-pr"]), "{v}");
         }
+    }
+
+    /// Echter Call (PreTool) und Abfrage desselben Calls: gleiches Ergebnis.
+    async fn same_as_real(
+        gate: &PolicyGate,
+        call: &str,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> (bool, serde_json::Value) {
+        let real = gate
+            .decide(GateRequest {
+                call_id: call.into(),
+                tool: tool.into(),
+                args: args.clone(),
+                origin: GateOrigin::PreTool,
+                ..GateRequest::default()
+            })
+            .await;
+        let q = gate
+            .query(&json!({ "action": "geplant", "tool": tool, "args": args }))
+            .await;
+        (matches!(real, GateDecision::Allow { .. }), q)
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_query_equals_real_call_for_writes_to_policy_files() {
+        let s = setup("spec_version: 1\nname: push\nrules: []\n");
+        let file = s.file.display().to_string();
+        for (i, (tool, args)) in [
+            ("Bash", json!({ "command": format!("rm {file}") })),
+            ("Bash", json!({ "command": format!("echo x > {file}") })),
+            (
+                "mcp__fs__write_file",
+                json!({ "path": file, "content": "rules: []" }),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (real_allowed, q) = same_as_real(&s.gate, &format!("p{i}"), tool, args).await;
+            assert!(!real_allowed, "{tool}: echter Call muss abgelehnt werden");
+            assert_eq!(q["decision"], "deny", "{tool}: {q}");
+            assert_eq!(q["rules"], json!(["policy-files"]), "{q}");
+        }
+        // Lesen bleibt erlaubt, auch in der Abfrage.
+        let (real_allowed, q) =
+            same_as_real(&s.gate, "p9", "Read", json!({ "file_path": file })).await;
+        assert!(real_allowed);
+        assert_eq!(q["decision"], "allow", "{q}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_query_equals_real_call_for_a_foreign_beton_server() {
+        let s = setup(
+            "spec_version: 1
+name: push
+rules:
+  - { id: no-foreign-mcp, on: tool_call, when: 'tool.kind == \"mcp\"', action: deny, reason: Fremder Server }
+",
+        );
+        // Kein von beton eingebundener Server: `beton` ist fremd, also `mcp`.
+        let (real_allowed, q) =
+            same_as_real(&s.gate, "b1", "mcp__beton__session_list", json!({})).await;
+        assert!(!real_allowed);
+        assert_eq!(q["decision"], "deny", "{q}");
+        assert_eq!(q["tool"]["kind"], "mcp", "{q}");
+        // Von beton eingebunden: System-Tool, keine `mcp`-Regel.
+        s.gate.set_trusted_servers(vec!["beton".into()]);
+        let (real_allowed, q) =
+            same_as_real(&s.gate, "b2", "mcp__beton__session_list", json!({})).await;
+        assert!(real_allowed);
+        assert_eq!(q["decision"], "allow", "{q}");
+        assert_eq!(q["tool"]["kind"], "system", "{q}");
+    }
+
+    #[tokio::test]
+    async fn agt_007_ac3_query_says_a_human_decides_exit_plan_mode() {
+        let mut s = setup("spec_version: 1\nname: push\nrules: []\n");
+        // Echter Call: die Rückfrage des Vendors geht immer an den Menschen (HAR-027).
+        let g = s.gate.clone();
+        let call = tokio::spawn(async move {
+            g.decide(GateRequest {
+                call_id: "x1".into(),
+                tool: "ExitPlanMode".into(),
+                args: json!({ "plan": "1. Tests" }),
+                origin: GateOrigin::VendorAsk,
+                ..GateRequest::default()
+            })
+            .await
+        });
+        loop {
+            let e = tokio::time::timeout(std::time::Duration::from_secs(10), s.rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(e.payload, EventPayload::ApprovalRequested(_)) {
+                break;
+            }
+        }
+        assert!(s.gate.resolve("x1", Human::default()));
+        call.await.unwrap();
+        let q = s
+            .gate
+            .query(&json!({ "action": "Plan verlassen", "tool": "ExitPlanMode", "args": { "plan": "1. Tests" } }))
+            .await;
+        assert_eq!(q["decision"], "ask", "{q}");
+        assert!(q["reason"].as_str().unwrap().contains("Mensch"), "{q}");
     }
 }

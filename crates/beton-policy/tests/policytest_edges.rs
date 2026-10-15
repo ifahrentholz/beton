@@ -225,7 +225,7 @@ rules:
         d,
         "e.policytest.yaml",
         "spec_version: 1
-layers: { project: [p.yaml] }
+layers: { user: [p.yaml] }
 cases:
   - name: alles falsch
     phase: tool_call
@@ -465,16 +465,22 @@ fn pol_027_explain_renders_every_part_of_a_decision() {
         Scope::Agent,
         "maestra",
         "agents/maestra/agent.yaml",
-        &[
-            json!({ "id": "maestra-no-merge", "type": "git_guard", "params": { "merge": "deny" } }),
-            json!({ "id": "patch-b", "on": "tool_call", "action": "modify", "modify": { "args": { "a": 2 } } }),
-        ],
+        &[json!({ "id": "maestra-no-merge", "type": "git_guard", "params": { "merge": "deny" } })],
+    )
+    .unwrap();
+    // `modify.args` nur ab der User-Ebene (#253): der zweite Schreiber steht auf Team-Ebene.
+    let team = inline_set(
+        Scope::Team,
+        "team",
+        "team",
+        &[json!({ "id": "patch-b", "on": "tool_call", "action": "modify", "modify": { "args": { "a": 2 } } })],
     )
     .unwrap();
     let set = EffectiveSet::new(vec![
         Arc::new(parse_set(Scope::User, "shadow.yaml", SET).unwrap()),
-        Arc::new(parse_set(Scope::Project, "live.yaml", ENFORCED).unwrap()),
+        Arc::new(parse_set(Scope::User, "live.yaml", ENFORCED).unwrap()),
         Arc::new(agent),
+        Arc::new(team),
     ]);
     let act = Activation::new(
         Phase::ToolCall,

@@ -169,9 +169,15 @@ fn qa_004_every_shipped_rule_is_expected_by_some_test() {
         missing.is_empty(),
         "Regeln ohne `expect.rules` in einem Test: {missing:?}"
     );
-    // Der Leser findet die Regeln der Built-in-Agents.
-    let maestra = rule_ids(&root().join("agents/maestra/agent.yaml"));
-    assert_eq!(maestra, ["maestra-no-code", "maestra-no-merge"]);
+    // Der Leser findet `policies:`-Blöcke; auskommentierte Regeln zählen nicht.
+    let dir = tempfile::tempdir().unwrap();
+    let agent = dir.path().join("agent.yaml");
+    std::fs::write(
+        &agent,
+        "name: x\n# - { id: alt }\npolicies:\n  - { id: a, on: tool_call, action: deny }\n  - id: b\n    on: tool_call\n    action: deny\nskills: []\n",
+    )
+    .unwrap();
+    assert_eq!(rule_ids(&agent), ["a", "b"]);
 }
 
 #[test]

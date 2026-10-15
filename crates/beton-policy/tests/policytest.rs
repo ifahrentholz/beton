@@ -387,7 +387,7 @@ rules:
         dir.path(),
         "m.policytest.yaml",
         "spec_version: 1
-layers: { project: [m.yaml] }
+layers: { user: [m.yaml] }
 harness: codex
 cases:
   - name: Codex kann args nicht ändern

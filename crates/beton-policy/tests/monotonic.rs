@@ -88,7 +88,11 @@ fn world() -> impl Strategy<Value = World> {
 }
 
 fn rule_yaml(i: usize, r: &RuleGen) -> String {
-    let action = ACTIONS[r.action];
+    // `modify.args` dürfen nur Ebenen ab User (#253); darunter wird daraus `notify`.
+    let action = match ACTIONS[r.action] {
+        "modify" if SCOPES[r.scope] > Scope::User => "notify",
+        a => a,
+    };
     let modify = if action == "modify" {
         "    modify: { args: { safe: true } }\n"
     } else {
