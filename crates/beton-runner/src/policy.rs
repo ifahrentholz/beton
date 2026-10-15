@@ -150,6 +150,9 @@ const USAGE_FIELDS: [&str; 6] = [
     "user.timezone",
 ];
 
+/// Fenster von `tool.repeat_count` in Tool-Calls (POL-004, POL-018).
+const REPEAT_WINDOW: usize = 10;
+
 /// Startparameter des Gates.
 #[derive(Debug, Clone)]
 pub struct PolicyOptions {
@@ -522,6 +525,10 @@ struct Inner {
     /// Gemerkte Freigaben (`approve_session`, POL-010).
     grants: Mutex<SessionGrants>,
     calls: AtomicI64,
+    /// Identitäten der letzten Tool-Calls (Call-ID, Identität) für `tool.repeat_count`.
+    recent: Mutex<std::collections::VecDeque<(String, String)>>,
+    /// Fehlgeschlagene Tool-Calls in Folge (`tool.consecutive_errors`, POL-018).
+    errors_in_row: AtomicI64,
     granted: AtomicI64,
     denied: AtomicI64,
     started_at: CelTimestamp,
@@ -804,6 +811,8 @@ impl PolicyGate {
                 state_source: None,
                 grants: Mutex::new(SessionGrants::default()),
                 calls: AtomicI64::new(0),
+                recent: Mutex::new(std::collections::VecDeque::new()),
+                errors_in_row: AtomicI64::new(0),
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
@@ -1070,6 +1079,39 @@ impl PolicyGate {
         if let Ok(mut s) = self.inner.settings.lock() {
             s.turns += 1;
         }
+    }
+
+    /// Ein `tool.call.completed` aus dem Event-Strom: zählt fehlgeschlagene Calls in Folge
+    /// (`tool.consecutive_errors`, POL-018). Ein erfolgreicher Call setzt zurück; abgelehnte
+    /// und abgebrochene ändern nichts.
+    pub fn note_completed(&self, status: beton_core::event::ToolStatus) {
+        use beton_core::event::ToolStatus;
+        match status {
+            ToolStatus::Error => {
+                self.inner.errors_in_row.fetch_add(1, Ordering::SeqCst);
+            }
+            ToolStatus::Ok => self.inner.errors_in_row.store(0, Ordering::SeqCst),
+            _ => {}
+        }
+    }
+
+    /// Merkt sich einen Tool-Call im Fenster von `tool.repeat_count` (POL-018) und liefert die
+    /// Zahl identischer Calls darin (einschließlich dieses). Dieselbe Call-ID zählt einmal.
+    fn note_call(&self, call_id: &str, n: &beton_policy::normalize::NormalizedTool) -> i64 {
+        let id = beton_policy::normalize::call_identity(&n.kind, &n.name, &n.args);
+        let Ok(mut recent) = self.inner.recent.lock() else {
+            return 1;
+        };
+        match recent.iter_mut().find(|(c, _)| c == call_id) {
+            Some(entry) => entry.1 = id.clone(),
+            None => {
+                recent.push_back((call_id.to_owned(), id.clone()));
+                while recent.len() > REPEAT_WINDOW {
+                    recent.pop_front();
+                }
+            }
+        }
+        i64::try_from(recent.iter().filter(|(_, i)| *i == id).count()).unwrap_or(i64::MAX)
     }
 
     /// Ein `tool.call.requested` aus dem Event-Strom (Zuordnung im Relay-Hub, Reihenfolge).
@@ -1751,7 +1793,10 @@ impl PolicyGate {
                 if let Some(path) = pre.policy_files {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
-                vars.tool = Some(tool_vars(&n, Some(call_index)));
+                let mut tool = tool_vars(&n, Some(call_index));
+                tool.repeat_count = Some(self.note_call(&req.call_id, &n));
+                tool.consecutive_errors = Some(self.inner.errors_in_row.load(Ordering::SeqCst));
+                vars.tool = Some(tool);
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,

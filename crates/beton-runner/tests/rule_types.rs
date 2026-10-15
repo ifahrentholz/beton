@@ -184,3 +184,46 @@ async fn pol_017_runner_reads_the_current_branch_for_pushes_without_refspec() {
     let d = g.decide(push("p4")).await;
     assert!(denied(&d), "{d:?}");
 }
+
+#[tokio::test]
+async fn pol_018_runner_counts_identical_calls_and_errors_in_a_row() {
+    use beton_core::event::ToolStatus;
+    let env = Env::new();
+    env.policy("  - id: loop\n    type: loop_detection\n    params: { action: deny }\n");
+    let (g, _rx) = env.gate();
+    let npm = |call: &str| {
+        req(
+            call,
+            "Bash",
+            "shell",
+            serde_json::json!({ "command": "npm test" }),
+        )
+    };
+    let other = |call: &str| {
+        req(
+            call,
+            "Bash",
+            "shell",
+            serde_json::json!({ "command": format!("echo {call}") }),
+        )
+    };
+    let allow = GateDecision::Allow { updated_args: None };
+    assert_eq!(g.decide(npm("n1")).await, allow);
+    assert_eq!(g.decide(other("o1")).await, allow);
+    assert_eq!(g.decide(npm("n2")).await, allow);
+    // Dritter identischer Call im Fenster (AC1).
+    let d = g.decide(npm("n3")).await;
+    assert!(denied(&d), "{d:?}");
+    // Fünf Fehler in Folge (AC2); ein erfolgreicher Call setzt zurück.
+    for _ in 0..4 {
+        g.note_completed(ToolStatus::Error);
+    }
+    assert_eq!(g.decide(other("o2")).await, allow);
+    g.note_completed(ToolStatus::Error);
+    let d = g.decide(other("o3")).await;
+    assert!(denied(&d), "{d:?}");
+    g.note_completed(ToolStatus::Denied);
+    assert!(denied(&g.decide(other("o4")).await));
+    g.note_completed(ToolStatus::Ok);
+    assert_eq!(g.decide(other("o5")).await, allow);
+}

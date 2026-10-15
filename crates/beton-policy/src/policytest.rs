@@ -26,7 +26,6 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -703,25 +702,11 @@ fn subset(expected: &Value, actual: &Value) -> bool {
 }
 
 fn identity(tool: &Value) -> String {
-    let canonical = serde_json::to_vec(&canonical(&tool["args"])).unwrap_or_default();
-    format!(
-        "{}:{}:{}",
+    crate::normalize::call_identity(
         tool["kind"].as_str().unwrap_or_default(),
         tool["name"].as_str().unwrap_or_default(),
-        hex::encode(Sha256::digest(&canonical))
+        &tool["args"],
     )
-}
-
-fn canonical(v: &Value) -> Value {
-    match v {
-        Value::Object(m) => {
-            let sorted: BTreeMap<&String, Value> =
-                m.iter().map(|(k, v)| (k, canonical(v))).collect();
-            Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
-        }
-        Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
 }
 
 impl CaseState {

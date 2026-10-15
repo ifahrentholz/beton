@@ -1903,6 +1903,7 @@ fn track_tool_calls(
             );
         }
         EventPayload::ToolCallCompleted(c) => {
+            gate.note_completed(c.status);
             if let Some(req) = unobserved.remove(&c.call_id)
                 && !gate.decided(&c.call_id)
             {

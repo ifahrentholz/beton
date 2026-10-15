@@ -9,6 +9,7 @@
 //! `require_approval` (POL-014) entzuckert [`crate::load`] selbst.
 
 mod git_guard;
+pub(crate) mod loop_detection;
 mod path_guard;
 mod tool_allowlist;
 
@@ -75,6 +76,7 @@ pub(crate) fn desugar(
         RuleType::ToolAllowlist => Some(tool_allowlist::desugar(rule, &params, shadow)),
         RuleType::PathGuard => Some(path_guard::desugar(&params)),
         RuleType::GitGuard => Some(git_guard::desugar(&params)),
+        RuleType::LoopDetection => Some(loop_detection::desugar(&params)),
         _ => None,
     }
 }
@@ -104,6 +106,17 @@ impl Params<'_> {
     /// Liste von Texten (fehlt der Parameter: `None`).
     pub fn strings(&self, name: &str) -> Result<Option<Vec<String>>, ParamError> {
         strings_at(self.0.get(name), name)
+    }
+
+    /// Ganze Zahl (fehlt der Parameter: `None`).
+    pub fn int(&self, name: &str) -> Result<Option<i64>, ParamError> {
+        match self.0.get(name) {
+            None => Ok(None),
+            Some(v) => v
+                .as_i64()
+                .map(Some)
+                .ok_or_else(|| ParamError::new(name, "ganze Zahl erwartet")),
+        }
     }
 
     pub fn text(&self, name: &str) -> Result<Option<String>, ParamError> {

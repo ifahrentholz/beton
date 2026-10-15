@@ -454,6 +454,25 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
     })
 }
 
+/// Identität eines Tool-Calls für `tool.repeat_count` (POL-018): Klasse, Name und SHA-256
+/// der kanonischen Argumente (Schlüssel sortiert). Runner und Policy-Tests zählen gleich.
+pub fn call_identity(kind: &str, name: &str, args: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let sorted: BTreeMap<&String, Value> =
+                    m.iter().map(|(k, v)| (k, canonical(v))).collect();
+                Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    let bytes = serde_json::to_vec(&canonical(args)).unwrap_or_default();
+    format!("{kind}:{name}:{}", hex::encode(Sha256::digest(&bytes)))
+}
+
 /// Das Kommando als String; Listen (`["bash", "-lc", "…"]`) werden shell-gequotet verbunden.
 fn command_string(v: &Value) -> Option<String> {
     match v {
