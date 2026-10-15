@@ -1,0 +1,1 @@
+size(tool.paths) > 0 ? tool.paths[0] : "none"

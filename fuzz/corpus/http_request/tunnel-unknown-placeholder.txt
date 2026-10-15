@@ -1,0 +1,4 @@
+2GET / HTTP/1.1
+Host: api.test
+X-Key: bt_cred_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+

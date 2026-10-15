@@ -1,0 +1,8 @@
+W /tmp/a"))(allow default)(deny ("
+H /tmp/a"))(allow default)(deny ("
+M /tmp/a"))(allow default)
+/b
+K /tmp/$(x)|*"|1
+N *"
+R /tmp/new
+line

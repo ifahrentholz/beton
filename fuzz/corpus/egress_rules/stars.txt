@@ -1,0 +1,2 @@
+R GET api.test/*a*b*c*/**
+Q GET https api.test 443 /aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabc

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "xtask"]
+# Fuzz-Targets (QA-009) sind ein eigener Workspace und brauchen nightly (`cargo fuzz`).
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"

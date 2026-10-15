@@ -1,0 +1,5 @@
+R * api.test/**
+Q TRACE https api.test 443 /
+Q CONNECT https api.test 443 /
+Q BREW https api.test 443 /
+Q OPTIONS https api.test 443 /

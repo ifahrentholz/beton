@@ -1,0 +1,22 @@
+# beton: sichere, editierbare Defaults der User-Ebene (POL-001). `beton setup` legt diese
+# Datei als ~/.beton/policies/defaults.yaml an, wenn es dort noch keine gibt.
+# yaml-language-server: $schema=../schemas/v1/policy.schema.json
+spec_version: 1
+name: defaults
+description: Sichere Defaults für Git-Operationen und festgefahrene Agents
+rules:
+  # Riskante Git-Operationen über Shell und MCP-Tools (POL-017): Push, Merge, Branch löschen
+  # und Verlauf umschreiben fragen nach, main/master sind geschützt. Force-Push fragt hier
+  # ebenfalls nach (Approval-Card, Demo M2) statt des Typ-Defaults `deny`; wer ihn ganz
+  # verbieten will, setzt `force_push: deny`.
+  # `mcp_enforcement: best_effort`: Harnesses, die MCP-Tools nicht vorab prüfen können (z. B.
+  # Codex), starten mit Warnung statt gar nicht (POL-024); die Shell-Teile bleiben `required`.
+  # Ein Merge über das GitHub-MCP-Tool fragt nach (das Ziel ist dort nicht erkennbar).
+  - id: git
+    type: git_guard
+    params: { force_push: ask, mcp_enforcement: best_effort }
+  # Festgefahrene Agents (POL-018): drei identische Calls unter den letzten zehn bzw. fünf
+  # Fehler in Folge fragen nach.
+  - id: loop
+    type: loop_detection
+    enforcement: best_effort
