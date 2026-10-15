@@ -380,7 +380,7 @@ const WRAPPERS: [(&str, &[&str]); 13] = [
 ];
 
 /// Git-Optionen vor dem Unterkommando, die einen Wert nehmen (`git -C dir push`).
-const GIT_VALUE_OPTIONS: [&str; 6] = [
+pub(crate) const GIT_VALUE_OPTIONS: [&str; 6] = [
     "-C",
     "-c",
     "--git-dir",
@@ -390,7 +390,7 @@ const GIT_VALUE_OPTIONS: [&str; 6] = [
 ];
 
 /// Das eigentliche Kommando eines Teilkommandos (Wrapper wie `sudo`/`env` übersprungen).
-fn effective<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
+pub(crate) fn effective<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
     let mut i = 0;
     while i < cmd.len() {
         let w = cmd[i];
@@ -423,6 +423,36 @@ fn effective<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
         }
     }
     &cmd[i.min(cmd.len())..]
+}
+
+/// Datei-Kommandos, die alle ihre Pfad-Argumente schreiben bzw. löschen (POL-016).
+const WRITES_ALL: [&str; 9] = [
+    "tee", "touch", "mkdir", "rm", "rmdir", "mv", "truncate", "chmod", "chown",
+];
+/// Datei-Kommandos, die nur ihr letztes Argument schreiben (Ziel).
+const WRITES_LAST: [&str; 3] = ["cp", "ln", "install"];
+
+/// Argumente eines Teilkommandos, die es als Datei schreibt (best effort, POL-016): alle
+/// Nicht-Options-Argumente von `tee`, `rm`, `mv` …, das letzte von `cp`, `ln`, `install`.
+/// Ob ein Argument ein Pfad ist, entscheidet der Aufrufer.
+pub(crate) fn written_args<'a>(cmd: &'a [&'a str]) -> Vec<&'a str> {
+    let eff = effective(cmd);
+    let Some(first) = eff.first() else {
+        return Vec::new();
+    };
+    let program = basename(first);
+    let args: Vec<&str> = eff[1..]
+        .iter()
+        .copied()
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    if WRITES_ALL.contains(&program) {
+        args
+    } else if WRITES_LAST.contains(&program) {
+        args.last().copied().into_iter().collect()
+    } else {
+        Vec::new()
+    }
 }
 
 /// `shell.has_command(argv, cmd, sub?)`: Kommt `cmd` (Basisname) als Programm eines

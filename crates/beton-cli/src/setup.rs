@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -312,6 +313,34 @@ fn auth_text(status: AuthStatus) -> &'static str {
         AuthStatus::LoggedIn => "angemeldet",
         AuthStatus::LoggedOut => "nicht angemeldet",
         AuthStatus::Unknown | AuthStatus::NotApplicable => "Anmeldung unbekannt",
+    }
+}
+
+/// Legt die sicheren Policy-Defaults der User-Ebene an (POL-001):
+/// `<beton_home>/policies/defaults.yaml` mit [`beton_policy::doc::USER_DEFAULTS`], wenn es die
+/// Datei noch nicht gibt (eine vorhandene, auch geänderte, bleibt unangetastet), und das
+/// Policy-Schema als lokale Datei `<beton_home>/schemas/v1/policy.schema.json`, auf die der
+/// Kopfkommentar zeigt (ADR-0033). Liefert den Pfad, wenn die Datei neu ist.
+pub fn write_policy_defaults(beton_home: &Path) -> std::io::Result<Option<PathBuf>> {
+    let schema = beton_home.join(beton_policy::doc::SCHEMA_PATH);
+    if let Some(dir) = schema.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&schema, beton_policy::doc::schema_json())?;
+    let dir = beton_policy::store::policies_dir(beton_home);
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("defaults.yaml");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file);
+    match created {
+        Ok(mut f) => {
+            f.write_all(beton_policy::doc::USER_DEFAULTS.as_bytes())?;
+            Ok(Some(file))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -631,6 +660,86 @@ mod tests {
             .unwrap();
         assert!(prompt.1.is_empty());
         assert!(imports.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pol_001_setup_writes_policy_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_policy_defaults(dir.path()).unwrap().unwrap();
+        assert_eq!(file, dir.path().join("policies/defaults.yaml"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            beton_policy::doc::USER_DEFAULTS
+        );
+        let schema = dir.path().join("schemas/v1/policy.schema.json");
+        assert_eq!(
+            std::fs::read_to_string(&schema).unwrap(),
+            beton_policy::doc::schema_json()
+        );
+        // Lädt als Policy-Set der User-Ebene, wie der Runner es liest.
+        beton_policy::load::load_file(beton_policy::load::Scope::User, &file).unwrap();
+        // Eine geänderte Datei überschreibt setup nie.
+        std::fs::write(&file, "spec_version: 1\nname: mine\nrules: []\n").unwrap();
+        assert_eq!(write_policy_defaults(dir.path()).unwrap(), None);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("mine"));
+    }
+
+    /// Die Defaults verhindern bei keinem Katalog-Harness den Start (POL-024): Klassen, die ein
+    /// Harness nicht vorab prüfen kann, ergeben nur eine Warnung (`enforcement: best_effort`).
+    #[test]
+    fn pol_001_user_defaults_do_not_refuse_any_catalog_harness() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::User,
+            "defaults.yaml",
+            beton_policy::doc::USER_DEFAULTS,
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        for harness in ["claude", "codex", "fake", "acp:gemini"] {
+            let matrix = crate::policy::matrix_for(harness).unwrap();
+            let check = beton_policy::enforcement::check_start(&effective, &matrix);
+            assert!(check.refused.is_empty(), "{harness}: {check:?}");
+        }
+        // Direkt-Harness (Provider aus der Konfiguration): beton prüft jeden Call selbst.
+        use beton_harness::HarnessAdapter as _;
+        use beton_harness_direct::config::{KeyRef, Provider, WireKind};
+        let direct = beton_harness_direct::DirectAdapter::new(
+            Provider {
+                name: "local".into(),
+                wire: WireKind::Anthropic,
+                base_url: "http://127.0.0.1:1".parse().unwrap(),
+                key: KeyRef::None,
+                prompt_caching: false,
+                models: Vec::new(),
+            },
+            &beton_harness_direct::DirectOptions::default(),
+        );
+        let matrix = direct
+            .capabilities(
+                beton_harness::Mode::Native,
+                &beton_harness::ProbeReport::default(),
+            )
+            .enforcement();
+        let check = beton_policy::enforcement::check_start(&effective, &matrix);
+        assert!(check.is_clean(), "direct: {check:?}");
+    }
+
+    /// Review #285 B2: Eine Allowlist (Default `deny` der Ebene) verweigert unter Codex den
+    /// Start, weil MCP-Tools dort nur beobachtbar sind.
+    #[test]
+    fn pol_024_tool_allowlist_is_refused_under_codex() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::Project,
+            "p.yaml",
+            "spec_version: 1\nname: p\nrules:\n  - id: list\n    type: tool_allowlist\n    params: { allow_kinds: [file_read] }\n",
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        let codex = crate::policy::matrix_for("codex").unwrap();
+        let check = beton_policy::enforcement::check_start(&effective, &codex);
+        assert_eq!(check.refused_rules(), ["list"], "{check:?}");
+        let claude = crate::policy::matrix_for("claude").unwrap();
+        assert!(beton_policy::enforcement::check_start(&effective, &claude).is_clean());
     }
 
     #[test]

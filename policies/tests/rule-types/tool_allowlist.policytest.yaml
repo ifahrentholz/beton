@@ -1,0 +1,28 @@
+# Policy-Test (POL-026 AC4): Regeltyp tool_allowlist (POL-015).
+spec_version: 1
+layers: { project: [tool_allowlist.yaml] }
+cases:
+  - name: Bash ist nicht erlaubt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: ls } } }
+    expect: { outcome: deny, rules: [defaults.tool_call], reason_contains: nur lesende tools }
+  - name: Edit ist nicht erlaubt
+    phase: tool_call
+    input: { tool: { name: Edit, args: { file_path: /repo/a, old_string: a, new_string: b } } }
+    expect: { outcome: deny, rules: [defaults.tool_call] }
+  - name: Read ist erlaubt
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/a } } }
+    expect: { outcome: allow, rules: [read-only] }
+  - name: session_spawn ist erlaubt (Klasse system)
+    phase: tool_call
+    input: { tool: { name: mcp__beton__session_spawn, args: { agent: x } } }
+    expect: { outcome: allow, rules: [read-only] }
+  - name: MCP-Muster erlaubt lesende GitHub-Tools
+    phase: tool_call
+    input: { tool: { name: mcp__github__get_issue, args: { n: 1 } } }
+    expect: { outcome: allow, rules: [read-only] }
+  - name: andere GitHub-Tools nicht
+    phase: tool_call
+    input: { tool: { name: mcp__github__merge_pull_request, args: { n: 1 } } }
+    expect: { outcome: deny, rules: [defaults.tool_call] }
