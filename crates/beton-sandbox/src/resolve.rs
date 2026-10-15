@@ -95,6 +95,9 @@ pub struct ExecAccess {
     pub socket: PathBuf,
     pub shim_dir: PathBuf,
     pub token: Secret,
+    /// Variablen, die `bt-exec` aus Stufe 1 an Stufe 2 weitergeben darf (über die Basis- und
+    /// Werkzeug-Variablen hinaus; #259): die konfigurierten Namen der Stufe 2.
+    pub forward_env: Vec<String>,
 }
 
 /// Kontext der Auflösung.
@@ -885,6 +888,17 @@ pub fn resolve(
         }
     }
     env.retain(|k, _| !env_denied(k) && !controlled_env(k));
+    // Credential-Variablen nur mit Platzhalter (PRX-006, SBX-005 AC3); sie gewinnen gegen
+    // `passthrough`, `set` und die Harness-Familie.
+    for (k, v) in &ctx.credential_env {
+        if env_denied(k) || controlled_env(k) {
+            return Err(SandboxError::invalid(
+                "credentials",
+                format!("`{k}` kann keinen Platzhalter bekommen"),
+            ));
+        }
+        env.insert(k.clone(), v.clone());
+    }
     env.insert("HOME".into(), home.to_string_lossy().into_owned());
     env.insert("TMPDIR".into(), scratch.to_string_lossy().into_owned());
     // `XDG_RUNTIME_DIR` des Hosts nie (SBX-005), stattdessen der Scratch der Stufe.
@@ -906,6 +920,11 @@ pub fn resolve(
                 .into_owned(),
         );
         env.insert("BETON_EXEC_TOKEN".into(), exec.token.expose().to_owned());
+        // Namen der Variablen, die `bt-exec` an Stufe 2 weitergibt (#259); keine Werte.
+        env.insert(
+            crate::broker::ENV_FORWARD.into(),
+            exec.forward_env.join(","),
+        );
     }
 
     // Netz: nur über den Proxy, ohne Proxy gar nicht.
@@ -1000,7 +1019,7 @@ pub fn resolve(
         no_symlinks,
         private,
         env,
-        credential_env: Vec::new(),
+        credential_env: ctx.credential_env.keys().cloned().collect(),
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
@@ -1077,6 +1096,51 @@ pub fn check_credential_file(
     home: &Path,
     policies: &[&ResolvedPolicy],
 ) -> Result<PathBuf, SandboxError> {
-    let _ = (home, policies);
-    Ok(path.to_path_buf())
+    const FIELD: &str = "credentials.source.file";
+    let expanded = crate::paths::expand(&path.to_string_lossy(), home);
+    let canonical = std::fs::canonicalize(&expanded)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", expanded.display())))?;
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", canonical.display())))?;
+    if !meta.is_file() {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist keine Datei", canonical.display()),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.nlink() > 1 {
+            return Err(SandboxError::escape(
+                FIELD,
+                format!(
+                    "{} hat weitere Hardlinks (auch in einer Freigabe möglich)",
+                    canonical.display()
+                ),
+            ));
+        }
+    }
+    if meta.len() > CREDENTIAL_FILE_MAX {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist größer als 64 KiB", canonical.display()),
+        ));
+    }
+    for policy in policies {
+        for root in policy.read_roots.iter().chain(&policy.write_roots) {
+            if canonical.starts_with(root) || expanded.starts_with(root) {
+                return Err(SandboxError::escape(
+                    FIELD,
+                    format!(
+                        "{} liegt in der Freigabe {} der Stufe {}",
+                        canonical.display(),
+                        root.display(),
+                        policy.stage.as_str()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(canonical)
 }

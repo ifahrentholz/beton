@@ -28,6 +28,7 @@ const SIGNALS: [i32; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQ
 pub struct Broker {
     socket: PathBuf,
     token: Secret,
+    forward: Vec<String>,
     started: Arc<std::sync::atomic::AtomicU64>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -50,6 +51,8 @@ impl Drop for Broker {
 struct Shared {
     tools: Sandbox,
     token: Secret,
+    /// Konfigurierte Namen der Stufe 2, die Stufe 1 überschreiben darf (#259).
+    forward: Vec<String>,
     started: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -77,9 +80,11 @@ impl Broker {
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
         let token = token()?;
         let started = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let forward = super::forward_names(tools.policy());
         let shared = Arc::new(Shared {
             tools,
             token: token.clone(),
+            forward: forward.clone(),
             started: started.clone(),
         });
         let task = tokio::spawn(async move {
@@ -99,6 +104,7 @@ impl Broker {
         Ok(Self {
             socket,
             token,
+            forward,
             started,
             task,
         })
@@ -124,6 +130,7 @@ impl Broker {
             socket: self.socket.clone(),
             shim_dir,
             token: self.token.clone(),
+            forward_env: self.forward.clone(),
         }
     }
 }
@@ -197,15 +204,21 @@ fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
     if req.argv.iter().any(|a| a.contains('\0')) {
         return Err(reject("invalid_request", "NUL-Byte in argv"));
     }
+    let policy = shared.tools.policy();
     for (k, v) in &req.env_overrides {
-        if let Some(why) = super::override_rejected(k, &[]) {
+        if policy.credential_env.contains(k) {
+            return Err(reject(
+                "env_denied",
+                format!("`{k}`: trägt den Credential-Platzhalter der Stufe 2"),
+            ));
+        }
+        if let Some(why) = super::override_rejected(k, &shared.forward) {
             return Err(reject("env_denied", format!("`{k}`: {why}")));
         }
         if v.contains('\0') {
             return Err(reject("env_denied", format!("`{k}`: NUL-Byte im Wert")));
         }
     }
-    let policy = shared.tools.policy();
     let denied = || {
         reject(
             "cwd_denied",

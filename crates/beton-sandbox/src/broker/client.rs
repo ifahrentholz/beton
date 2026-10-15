@@ -163,9 +163,16 @@ mod imp {
             Ok(c) => c,
             Err(e) => return fail(&format!("Arbeitsverzeichnis: {e}")),
         };
+        // Allowlist (#259): Basis-, Werkzeug- und die konfigurierten Namen der Stufe 2.
+        let configured: Vec<String> = std::env::var(super::super::ENV_FORWARD)
+            .unwrap_or_default()
+            .split(',')
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .collect();
         let env_overrides = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .filter(|(k, _)| override_rejected(k, &[]).is_none())
+            .filter(|(k, _)| override_rejected(k, &configured).is_none())
             .collect();
         let req = Request {
             v: super::super::proto::VERSION,

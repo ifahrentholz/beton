@@ -1082,6 +1082,7 @@ async fn sbx_002_stage_one_reaches_its_exec_socket_stage_two_does_not() {
             socket: socket.clone(),
             shim_dir: dir.join("bin"),
             token: beton_sandbox::Secret::new("FIXTURE-EXEC-TOKEN".into()),
+            forward_env: Vec::new(),
         });
         let harness = fx.policy_with(p.as_ref(), &format!("read_paths: [{}]\n", exe_grant()), ctx);
         let s = socket.display().to_string();
