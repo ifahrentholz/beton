@@ -127,7 +127,7 @@ pub struct ResolveCtx {
     /// beschreibbar, in Stufe 2 ohne Symlinks.
     pub exchange: Option<PathBuf>,
     /// Verzeichnis der Session (Stufenmodell): In Stufe 2 bis auf die eigenen Wurzeln
-    /// verdeckt. Noch ohne Wirkung.
+    /// verdeckt (Linux: leeres tmpfs; macOS gibt Seatbelt ohnehin nur die Wurzeln frei).
     pub session_dir: Option<PathBuf>,
     /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
     /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
@@ -222,9 +222,12 @@ pub struct ResolvedPolicy {
     /// Verzeichnisse in Schreib-Wurzeln, die nur lesbar sind und nicht entstehen, umbenannt
     /// oder ersetzt werden dürfen (Stufe 2: Projekt-Konfiguration, SBX-002).
     pub read_only: Vec<PathBuf>,
-    /// Schreib-Wurzeln, in denen keine Symlinks entstehen dürfen (Stufe 2: Austausch mit
-    /// Stufe 1, SBX-002).
+    /// Schreib-Wurzeln, in denen keine Symlinks (und unter macOS keine Verzeichnisse) entstehen
+    /// und in die nichts hinein umbenannt werden darf (Stufe 2: Austausch mit Stufe 1, SBX-002).
     pub no_symlinks: Vec<PathBuf>,
+    /// Verzeichnisse, die bis auf die Wurzeln darin unsichtbar sind (Stufe 2: Session-
+    /// Verzeichnis mit Scratch und Sockets der Stufe 1, SBX-002).
+    pub private: Vec<PathBuf>,
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
@@ -266,6 +269,7 @@ impl ResolvedPolicy {
             unix_sockets: Vec::new(),
             read_only: Vec::new(),
             no_symlinks: Vec::new(),
+            private: Vec::new(),
             env: BTreeMap::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
@@ -285,6 +289,19 @@ impl ResolvedPolicy {
 /// Verzeichnisse der Projekt-Konfiguration im Workspace, die Stufe 2 nicht ändern darf
 /// (beton und Claude Code; SBX-002).
 pub const PROJECT_CONFIG_DIRS: [&str; 2] = [".beton", ".claude"];
+
+/// Legt fehlende read-only Verzeichnisse vor dem Start leer an (leere Verzeichnisse sieht Git
+/// nicht): Linux braucht ein Ziel für den read-only Mount, und unter macOS gibt es dann keinen
+/// Namen in anderer Groß-/Kleinschreibung (`.Claude`), der neben der Regel entstehen könnte.
+pub(crate) fn ensure_read_only_dirs(policy: &ResolvedPolicy) -> Result<(), SandboxError> {
+    for d in &policy.read_only {
+        if std::fs::symlink_metadata(d).is_err() {
+            std::fs::create_dir(d)
+                .map_err(|e| SandboxError::spawn(format!("{} anlegen: {e}", d.display())))?;
+        }
+    }
+    Ok(())
+}
 
 const BASE_ENV: [&str; 6] = ["PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG"];
 
@@ -935,6 +952,25 @@ pub fn resolve(
         Vec::new()
     };
 
+    let mut private = Vec::new();
+    if ctx.stage == Stage::Tools
+        && let Some(d) = &ctx.session_dir
+    {
+        let d = std::fs::canonicalize(d)
+            .map_err(|e| SandboxError::invalid("session_dir", format!("{}: {e}", d.display())))?;
+        if read_roots
+            .iter()
+            .chain(&write_roots)
+            .any(|r| d.starts_with(r))
+        {
+            return Err(SandboxError::escape(
+                "session_dir",
+                format!("{} liegt in einer Freigabe der Stufe 2", d.display()),
+            ));
+        }
+        private.push(d);
+    }
+
     let (required, degraded) = if backend == ProviderId::None {
         (CapSet::new(), caps::required_default())
     } else {
@@ -954,6 +990,7 @@ pub fn resolve(
         unix_sockets,
         read_only,
         no_symlinks,
+        private,
         env,
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),

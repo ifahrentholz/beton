@@ -85,9 +85,14 @@ pub struct LaunchPlan {
     /// Verzeichnisse, die read-only gebunden werden (Stufe 2: Projekt-Konfiguration, SBX-002).
     #[serde(default)]
     pub read_only: Vec<PathBuf>,
-    /// Schreib-Wurzeln ohne Recht, Symlinks anzulegen (Stufe 2: Austausch, SBX-002).
+    /// Schreib-Wurzeln ohne Recht, Symlinks anzulegen oder etwas hinein umzubenennen (Stufe 2:
+    /// Austausch, SBX-002).
     #[serde(default)]
     pub no_symlinks: Vec<PathBuf>,
+    /// Verzeichnisse, die ein leeres tmpfs verdeckt; Wurzeln darin werden wieder eingebunden
+    /// (Stufe 2: Session-Verzeichnis, SBX-002).
+    #[serde(default)]
+    pub private: Vec<PathBuf>,
     pub limits: Limits,
     /// Höchste genutzte Landlock-ABI (Tests).
     pub abi_cap: Option<u8>,
@@ -133,6 +138,7 @@ impl LaunchPlan {
             dev_ports: policy.dev_ports.clone(),
             read_only: policy.read_only.clone(),
             no_symlinks: policy.no_symlinks.clone(),
+            private: policy.private.clone(),
             limits: policy.limits,
             abi_cap: None,
             cgroup: None,
@@ -295,6 +301,18 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
     let roots: Vec<&PathBuf> = plan.roots().collect();
     c.dirs.retain(|d| !roots.contains(&d));
     c.files.retain(|f| !roots.contains(&f));
+    // Private Verzeichnisse (Session-Verzeichnis in Stufe 2): wie eine Maske, die Wurzeln
+    // darin (Scratch, Austausch, CA-Bundle) kommen wieder hinein.
+    for p in &plan.private {
+        if p.is_dir() {
+            c.dirs.insert(p.clone());
+        } else {
+            return Err(SandboxError::spawn(format!(
+                "{} fehlt; privat nicht durchsetzbar",
+                p.display()
+            )));
+        }
+    }
     let dirs: Vec<PathBuf> = c.dirs.iter().cloned().collect();
     let mut shadows: Vec<PathBuf> = PRIVATE_TMPFS.iter().map(PathBuf::from).collect();
     shadows.extend(dirs.iter().cloned());
@@ -785,6 +803,24 @@ mod tests {
         assert!(
             rules.contains(&(xchg.clone(), Access::WriteNoSymlink)),
             "{rules:?}"
+        );
+        // Session-Verzeichnis privat: leeres tmpfs, der Austausch kommt wieder hinein.
+        let session = base.path().canonicalize().unwrap();
+        plan.private.push(session.clone());
+        std::fs::create_dir_all(ws.join(".claude")).unwrap();
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::MaskDir {
+                path: session.clone()
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::Rebind {
+                path: xchg.clone(),
+                write: true
+            }),
+            "{ops:?}"
         );
         assert!(rules.contains(&(ws.clone(), Access::Write)), "{rules:?}");
 

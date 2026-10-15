@@ -273,8 +273,14 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
     let mut nosym_lines = Vec::new();
     for d in &policy.no_symlinks {
         let key = b.path("NO_SYMLINKS", d)?;
+        // Auch keine Verzeichnisse: Ein in Stufe 2 vorbereitetes Verzeichnis mit Symlinks
+        // ließe sich sonst als Ganzes in den Austausch umbenennen (Unterverzeichnisse legt
+        // Claude in Stufe 1 an).
         nosym_lines.push(format!(
             "(deny file-write-create (require-all (subpath (param \"{key}\")) (vnode-type SYMLINK)))"
+        ));
+        nosym_lines.push(format!(
+            "(deny file-write-create (require-all (subpath (param \"{key}\")) (vnode-type DIRECTORY)))"
         ));
     }
 

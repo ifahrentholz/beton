@@ -1129,7 +1129,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Gate-Anfrage (beobachtet), Ergebnisse geprüfter Eingaben (SES-004, #101).
     let mut call_events: HashMap<String, beton_core::id::EventId> = HashMap::new();
     let mut unobserved: HashMap<String, GateRequest> = HashMap::new();
-    // SBX-002: Mit `shell_override` muss jeder erfolgreiche Shell-Aufruf über den Exec-Broker
+    // SBX-002: Mit `shell_override` muss jeder abgeschlossene Shell-Aufruf über den Exec-Broker
     // gelaufen sein, sonst endet die Session (fail closed).
     let mut integrity = stages
         .as_ref()

@@ -214,6 +214,7 @@ pub mod macos {
             sink: Option<ViolationSink>,
         ) -> Result<SandboxedChild, SandboxError> {
             crate::resolve::check_caps(&self.probe(), policy)?;
+            crate::resolve::ensure_read_only_dirs(policy)?;
             let profile = profile::render(policy)?;
             let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd).map_err(|e| {
                 SandboxError::SpawnFailed {

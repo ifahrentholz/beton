@@ -92,9 +92,12 @@ pub fn ruleset(
                 w
             }
             Acc::WriteNoSymlink => {
+                // Ohne `Refer`: nichts aus einem anderen Verzeichnis hinein umbenennen oder
+                // verlinken (z. B. ein vorbereitetes Verzeichnis voller Symlinks).
                 let mut w = handled;
                 w.remove(AccessFs::ResolveUnix);
                 w.remove(AccessFs::MakeSym);
+                w.remove(AccessFs::Refer);
                 w
             }
         } & handled;

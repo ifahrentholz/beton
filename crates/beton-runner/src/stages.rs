@@ -158,16 +158,17 @@ impl SessionStages {
 }
 
 /// Integritätsprüfung für Harnesses mit `tool_isolation: shell_override` (Claude Code): Jeder
-/// erfolgreiche Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
+/// abgeschlossene Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
 /// Ignoriert die CLI `CLAUDE_CODE_SHELL` (etwa nach einem Update), liefen ihre Kommandos in
-/// Stufe 1; dann endet die Session (fail closed, Security-Review #228). Gezählt werden nur
-/// erfolgreich abgeschlossene Aufrufe (abgelehnte oder gescheiterte sind vielleicht nie
-/// gestartet); zusätzliche Broker-Starts (Env-Probe, Shell-Snapshot) schaden nicht.
+/// Stufe 1; dann endet die Session (fail closed, Security-Review #228). Gezählt wird jeder
+/// Abschluss außer `denied` (auch ein gescheitertes oder abgebrochenes Kommando ist gelaufen);
+/// zusätzliche Broker-Starts (Env-Probe, Shell-Snapshot) schaden nicht. Der Zähler ist global,
+/// nicht je Tool-Call; Code, der schon in Stufe 1 läuft, kann ihn erhöhen (#270).
 #[derive(Debug, Default)]
 pub struct ShellIntegrity {
     shell_tools: Vec<String>,
     open: std::collections::HashSet<String>,
-    succeeded: u64,
+    completed: u64,
 }
 
 impl ShellIntegrity {
@@ -191,14 +192,14 @@ impl ShellIntegrity {
             }
             EventPayload::ToolCallCompleted(c) => {
                 let shell = self.open.remove(&c.call_id);
-                if shell && c.status == ToolStatus::Ok {
-                    self.succeeded += 1;
-                    if self.succeeded > broker_starts {
+                if shell && c.status != ToolStatus::Denied {
+                    self.completed += 1;
+                    if self.completed > broker_starts {
                         return Err(format!(
                             "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker ({} \
-                             erfolgreiche Aufrufe, {broker_starts} Starts in Stufe 2); die \
+                             abgeschlossene Aufrufe, {broker_starts} Starts in Stufe 2); die \
                              Session endet, weil Kommandos sonst in Stufe 1 liefen",
-                            c.call_id, self.succeeded
+                            c.call_id, self.completed
                         ));
                     }
                 }
@@ -486,6 +487,9 @@ async fn compose_unix(
     // Stufe 2 und der Broker.
     let mut c = ctx(Stage::Tools, &tools_tmp, tools_proxy);
     c.exchange = Some(xchg.clone());
+    // Unter Linux verdeckt ein leeres tmpfs das Session-Verzeichnis (Sockets der Stufe 1,
+    // Broker-Socket; vor Landlock-ABI 9 sonst per `connect` erreichbar).
+    c.session_dir = Some(root.clone());
     let tools_policy = provider.resolve(&spec, &c)?;
     check_session_dir(&root, &[&tools_tmp, &xchg, &ca_dir], &tools_policy)?;
     let tools = Sandbox::new(provider.clone(), tools_policy, input.events.clone());

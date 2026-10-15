@@ -269,6 +269,7 @@ impl LinuxProvider {
             dev_ports: Vec::new(),
             read_only: Vec::new(),
             no_symlinks: Vec::new(),
+            private: Vec::new(),
             limits: Limits::default(),
             abi_cap: self.cfg().abi_cap,
             cgroup: None,
@@ -513,13 +514,7 @@ impl SandboxProvider for LinuxProvider {
             crate::linux::plan::ensure_git_hooks(g)
                 .map_err(|e| SandboxError::spawn(format!("Git-Hooks anlegen: {e}")))?;
         }
-        // Read-only Mounts brauchen ein vorhandenes Ziel (leere Verzeichnisse sieht Git nicht).
-        for d in &policy.read_only {
-            if std::fs::symlink_metadata(d).is_err() {
-                std::fs::create_dir(d)
-                    .map_err(|e| SandboxError::spawn(format!("{} anlegen: {e}", d.display())))?;
-            }
-        }
+        crate::resolve::ensure_read_only_dirs(policy)?;
         let launcher = &self.cfg().launcher;
         let (std_cmd, pending) =
             command(launcher, &cmd.stdin, &cmd.stdout, &cmd.stderr).map_err(|e| {
