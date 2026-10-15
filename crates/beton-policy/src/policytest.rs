@@ -540,6 +540,8 @@ pub fn tool_context(
             .unwrap_or(cwd)
             .to_owned(),
         home: home.map(str::to_owned),
+        // Policy-Tests ohne Session: keine Herkunftsprüfung reservierter Server.
+        trusted_servers: None,
     };
     let normalized = normalize_source(&source, &args).map_err(|e| e.to_string())?;
     let mut ctx = normalized.to_context();

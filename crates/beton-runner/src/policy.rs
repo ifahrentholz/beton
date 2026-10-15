@@ -69,6 +69,10 @@ pub const EVAL_TIMEOUT: Duration = Duration::from_millis(250);
 pub const USAGE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Wartezeit auf eine menschliche Freigabe (wie das Gate der Adapter, HAR-005 AC4).
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Claude-Tool, mit dem das Modell den Plan-Modus verlassen will (HAR-027).
+const EXIT_PLAN_MODE: &str = "ExitPlanMode";
+/// Begründung, wenn eine Rückfrage andere Argumente trägt als der geprüfte Call (#233).
+pub const CHANGED_AFTER_CHECK: &str = "Abgelehnt von beton: Die Argumente wurden nach der Policy-Prüfung verändert (z. B. durch einen weiteren Hook).";
 /// Präfix eigener Call-IDs des Relay-Hubs (Aufruf ohne zugeordnetes `tool.call.requested`).
 const SYNTHETIC: &str = "mcp_unmatched_";
 /// Höchstgröße von `request.prompt` und `result.text` (POL-004).
@@ -81,6 +85,9 @@ pub struct GateEvent {
     pub turn: Option<TurnId>,
     /// Original-Zeile der Rückfrage des Vendors (HAR-001 AC3).
     pub raw: Option<RawJson>,
+    /// Die Session muss enden (fail closed): z. B. eine nach dem Start hinzugekommene, nicht
+    /// durchsetzbare Pflichtregel (#234). Das Event ist dann ein `error`.
+    pub fatal: bool,
 }
 
 /// Wertet ein Set aus; austauschbar für Fehlerinjektion (POL-024 AC3).
@@ -238,6 +245,198 @@ struct Verdict {
     reason: Option<String>,
     /// Vollständige, geänderte Argumente.
     updated_args: Option<Value>,
+    /// Hash des freigegebenen Subjekts (Tool und tatsächlich auszuführende Argumente). Eine
+    /// Rückfrage des Vendors zum selben Call nutzt den Entscheid nur bei gleichem Hash (#233).
+    subject: String,
+}
+
+/// `tool.*` aus einem normalisierten Tool-Call (POL-004).
+fn tool_vars(n: &beton_policy::normalize::NormalizedTool, call_index: Option<i64>) -> ToolVars {
+    let args = match &n.args {
+        Value::Object(m) => Some(m.clone().into_iter().collect()),
+        _ => None,
+    };
+    ToolVars {
+        name: Some(n.name.clone()),
+        native_name: Some(n.native_name.clone()),
+        server: Some(n.server.clone()),
+        kind: Some(n.kind.clone()),
+        args,
+        command: n.command.clone(),
+        argv: Some(n.argv.clone()),
+        cwd: Some(n.cwd.clone()),
+        paths: Some(n.paths.clone()),
+        urls: Some(n.urls.clone()),
+        call_index,
+        is_subagent_spawn: Some(n.is_subagent_spawn),
+        parse_uncertain: Some(n.parse_uncertain),
+        ..ToolVars::default()
+    }
+}
+
+/// Klasse des Adapters, wenn die Abbildungstabelle das Tool nicht kennt (z. B. Fake-Szenario).
+fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateRequest) {
+    if n.kind == "other" && beton_policy::enforcement::KINDS.contains(&req.kind.as_str()) {
+        n.kind.clone_from(&req.kind);
+    }
+}
+
+/// Erkennt Bezüge auf Policy-Verzeichnisse in Pfaden und Shell-Wörtern (#234, Re-Review R1).
+/// Best effort gegen Verschleierung; Backstop sind die Regeln des Stores (gelöschte Dateien
+/// bleiben aktiv, lockernde Änderungen erst in einer neuen Session) und die Sandbox.
+struct PolicyPathGuard {
+    /// Kanonische Policy-Verzeichnisse.
+    dirs: Vec<PathBuf>,
+    cwd: String,
+    home: Option<String>,
+}
+
+impl PolicyPathGuard {
+    /// Absoluter Pfad unter einem Policy-Verzeichnis oder das `.beton`-Verzeichnis darüber
+    /// (`rm -rf .beton`), nicht aber Arbeitsverzeichnis oder Home.
+    fn hits_path(&self, path: &str) -> bool {
+        let real = PathBuf::from(resolve_fs(path));
+        self.dirs
+            .iter()
+            .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
+    }
+
+    fn hits_word(&self, word: &str, vars: &HashMap<String, String>) -> bool {
+        let lower = word.to_lowercase();
+        if lower.contains(".beton") {
+            return true;
+        }
+        let (expanded, unknown) = expand_vars(word, vars, self.home.as_deref());
+        if unknown && mentions_policies(word) {
+            return true;
+        }
+        let expanded_lower = expanded.to_lowercase();
+        if expanded_lower.contains(".beton") {
+            return true;
+        }
+        // Globs wie `.b*` treffen `.beton` (Bash: nur Muster mit führendem Punkt).
+        if expanded.contains(['*', '?', '['])
+            && expanded
+                .split('/')
+                .any(|c| c.starts_with('.') && glob_component(c, ".beton"))
+        {
+            return true;
+        }
+        if expanded.starts_with('-') || expanded.is_empty() {
+            return false;
+        }
+        let candidate = if let Some(rest) = expanded.strip_prefix("~/") {
+            self.home.as_ref().map(|h| format!("{h}/{rest}"))
+        } else if expanded.starts_with('/') {
+            Some(expanded.clone())
+        } else {
+            Some(format!("{}/{expanded}", self.cwd))
+        };
+        candidate
+            .and_then(|c| beton_policy::cel::ext::normalize_path(&c))
+            .is_some_and(|p| self.hits_path(&p))
+    }
+}
+
+fn resolve_fs(p: &str) -> String {
+    FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned())
+}
+
+/// Erwähnt der Text ein Policy-Verzeichnis (für Wörter mit nicht auflösbaren Variablen)?
+fn mentions_policies(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("beton") || lower.contains("polic")
+}
+
+/// `NAME=wert`-Zuweisungen aller Teilkommandos (auch nach `export`).
+fn assignments(argv: &[Vec<String>]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for word in argv.iter().flatten() {
+        if let Some((name, value)) = word.split_once('=')
+            && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+        {
+            out.insert(name.to_owned(), value.to_owned());
+        }
+    }
+    out
+}
+
+/// Setzt `$NAME` und `${NAME}` ein (bekannte Zuweisungen, `HOME`); liefert, ob unbekannte
+/// Expansionen (auch `$(…)`, Backticks) übrig blieben.
+fn expand_vars(word: &str, vars: &HashMap<String, String>, home: Option<&str>) -> (String, bool) {
+    let mut out = String::new();
+    let mut unknown = word.contains('`');
+    let chars: Vec<char> = word.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let braced = chars.get(i + 1) == Some(&'{');
+        let start = if braced { i + 2 } else { i + 1 };
+        let mut end = start;
+        while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+            end += 1;
+        }
+        let name: String = chars[start..end].iter().collect();
+        if name.is_empty() || (braced && chars.get(end) != Some(&'}')) {
+            unknown = true;
+            out.push('$');
+            i += 1;
+            continue;
+        }
+        let value = vars
+            .get(&name)
+            .cloned()
+            .or_else(|| (name == "HOME").then(|| home.map(str::to_owned)).flatten());
+        match value {
+            Some(v) => out.push_str(&v),
+            None => unknown = true,
+        }
+        i = if braced { end + 1 } else { end };
+    }
+    (out, unknown)
+}
+
+/// Passt ein Glob-Muster (`*`, `?`, `[…]` grob als ein Zeichen) auf einen Namen?
+fn glob_component(pattern: &str, name: &str) -> bool {
+    fn go(p: &[char], n: &[char]) -> bool {
+        match p.first() {
+            None => n.is_empty(),
+            Some('*') => (0..=n.len()).any(|k| go(&p[1..], &n[k..])),
+            Some('?') => !n.is_empty() && go(&p[1..], &n[1..]),
+            Some('[') => {
+                let close = p.iter().position(|c| *c == ']').unwrap_or(p.len() - 1);
+                !n.is_empty() && go(&p[(close + 1).min(p.len())..], &n[1..])
+            }
+            Some(c) => n.first() == Some(c) && go(&p[1..], &n[1..]),
+        }
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    go(&p, &n)
+}
+
+/// Alle Zeichenketten eines JSON-Werts (höchstens 1 000).
+fn collect_strings(v: &Value, out: &mut Vec<String>) {
+    if out.len() >= 1000 {
+        return;
+    }
+    match v {
+        Value::String(s) => out.push(s.clone()),
+        Value::Array(items) => items.iter().for_each(|i| collect_strings(i, out)),
+        Value::Object(map) => map.values().for_each(|i| collect_strings(i, out)),
+        _ => {}
+    }
+}
+
+/// Hash des Subjekts eines Tool-Calls (`tool` und `args`), wie in `policy.decision`.
+fn tool_subject(tool: &str, args: &Value) -> String {
+    subject_hash(&json!({"tool": tool, "args": args}))
 }
 
 /// Ergebnis einer Prüfung von `model_request` bzw. `session_start`.
@@ -269,10 +468,18 @@ struct Inner {
     /// Offene menschliche Freigaben: Antwortkanal und Art (Policy, Rückfrage, Frage).
     pending: Mutex<HashMap<String, (oneshot::Sender<Human>, ApprovalKind)>>,
     decided: Mutex<HashMap<String, Verdict>>,
+    /// Von beton eingebundene MCP-Server (#234): nur für sie gelten die Klassen reservierter
+    /// Namen (`beton` → `system`). Bis zur MCP-Vorbereitung keiner (fail closed).
+    trusted_servers: Mutex<Vec<String>>,
+    /// Aufgelöste Policy-Verzeichnisse (Cache für die Regel `policy-files`).
+    policy_dirs: Mutex<Option<Vec<PathBuf>>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
     requested: Mutex<Vec<(String, Option<String>, String)>>,
     /// Reihenfolge im Log: `policy.decision` erst nach dem `tool.call.requested` (POL-025).
     ordered: std::sync::atomic::AtomicBool,
+    /// Reloads werden wie der Start geprüft (#234); vor dem Start nicht (der Runner prüft
+    /// dort selbst).
+    started: std::sync::atomic::AtomicBool,
     seen: tokio::sync::Notify,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
@@ -337,38 +544,6 @@ impl PathResolver for FsResolver {
     }
 }
 
-/// `tool.*` aus dem normalisierten Tool-Call (POL-004, POL-005); auch für `policy_query`.
-fn tool_vars(
-    n: &mut beton_policy::normalize::NormalizedTool,
-    req_kind: &str,
-    call_index: i64,
-) -> ToolVars {
-    // Unbekannt in der Tabelle, aber vom Adapter klassifiziert (z. B. Fake-Szenario).
-    if n.kind == "other" && beton_policy::enforcement::KINDS.contains(&req_kind) {
-        n.kind = req_kind.to_owned();
-    }
-    let args = match &n.args {
-        Value::Object(m) => Some(m.clone().into_iter().collect()),
-        _ => None,
-    };
-    ToolVars {
-        name: Some(n.name.clone()),
-        native_name: Some(n.native_name.clone()),
-        server: Some(n.server.clone()),
-        kind: Some(n.kind.clone()),
-        args,
-        command: n.command.clone(),
-        argv: Some(n.argv.clone()),
-        cwd: Some(n.cwd.clone()),
-        paths: Some(n.paths.clone()),
-        urls: Some(n.urls.clone()),
-        call_index: Some(call_index),
-        is_subagent_spawn: Some(n.is_subagent_spawn),
-        parse_uncertain: Some(n.parse_uncertain),
-        ..ToolVars::default()
-    }
-}
-
 fn truncate(text: &str) -> String {
     let mut end = text.len().min(TEXT_MAX);
     while !text.is_char_boundary(end) {
@@ -394,6 +569,21 @@ fn rule_ids(reasons: &[Reason]) -> Vec<String> {
     }
     out
 }
+
+/// Ablehnung durch eine eingebaute Regel des Gates (ohne Engine, kein Fehler).
+fn builtin_deny(phase: Phase, hash: &str, rule_id: &str, message: String) -> Decision {
+    let mut d = engine_deny(phase, hash, message);
+    d.errors.clear();
+    if let Outcome::Deny { reasons } = &mut d.outcome {
+        for r in reasons {
+            r.rule.rule_id = rule_id.to_owned();
+        }
+    }
+    d
+}
+
+/// Tool-Klassen, die Policy-Dateien lesen, aber nicht ändern können (#234).
+const READ_ONLY_KINDS: [&str; 2] = ["file_read", "search"];
 
 /// Ablehnung ohne Auswertung (Fehler, Zeitüberschreitung): fail closed.
 fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
@@ -429,16 +619,6 @@ fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
         warnings: Vec::new(),
         policy_set_hash: hash.to_owned(),
         eval_us: 0,
-    }
-}
-
-/// Wie streng ein Permission-Mode ist (für `modify` in `session_start`: nur strenger).
-fn strictness(mode: PermissionMode) -> u8 {
-    match mode {
-        PermissionMode::Plan => 0,
-        PermissionMode::Default => 1,
-        PermissionMode::AcceptEdits => 2,
-        PermissionMode::Yolo => 3,
     }
 }
 
@@ -530,6 +710,10 @@ impl PolicyGate {
         for (scope, dir) in &opts.dirs {
             store.add_dir(*scope, dir);
         }
+        // Projekt-Policies liegen in der Hand des Agents bzw. Repos, User-Policies ohne Sandbox
+        // in Reichweite seiner Tools: während der Session nur verschärfen (#253).
+        store.tighten_only(Scope::Project);
+        store.tighten_only(Scope::User);
         Self {
             inner: Arc::new(Inner {
                 opts,
@@ -539,8 +723,11 @@ impl PolicyGate {
                 events,
                 pending: Mutex::new(HashMap::new()),
                 decided: Mutex::new(HashMap::new()),
+                trusted_servers: Mutex::new(Vec::new()),
+                policy_dirs: Mutex::new(None),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
+                started: std::sync::atomic::AtomicBool::new(true),
                 seen: tokio::sync::Notify::new(),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
@@ -767,19 +954,29 @@ impl PolicyGate {
         }
     }
 
+    /// MCP-Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des
+    /// Direkt-Harness; #234).
+    pub fn set_trusted_servers(&self, servers: Vec<String>) {
+        if let Ok(mut t) = self.inner.trusted_servers.lock() {
+            *t = servers;
+        }
+    }
+
     /// Enforcement-Matrix des Harness der Session (POL-024).
     pub fn set_matrix(&self, matrix: Matrix) {
-        if let Ok(mut m) = self.inner.matrix.lock() {
-            *m = matrix;
+        match self.inner.matrix.lock() {
+            Ok(mut m) => *m = matrix,
+            Err(p) => *p.into_inner() = matrix,
         }
     }
 
     fn matrix(&self) -> Matrix {
+        // Vergifteter Mutex: die zuletzt gesetzte Matrix, nie pauschal `full` (#234).
         self.inner
             .matrix
             .lock()
             .map(|m| m.clone())
-            .unwrap_or_else(|_| Matrix::full())
+            .unwrap_or_else(|p| p.into_inner().clone())
     }
 
     /// Modell, Effort und Permission-Mode der Session (für `session.*`).
@@ -862,7 +1059,12 @@ impl PolicyGate {
     }
 
     fn emit(&self, payload: EventPayload, turn: Option<TurnId>, raw: Option<RawJson>) {
-        let _ = self.inner.events.send(GateEvent { payload, turn, raw });
+        let _ = self.inner.events.send(GateEvent {
+            payload,
+            turn,
+            raw,
+            fatal: false,
+        });
     }
 
     /// Liest die Policy-Verzeichnisse neu (POL-001, #182) und liefert das effektive Set.
@@ -879,14 +1081,89 @@ impl PolicyGate {
                 },
             ]));
         };
-        for e in store.refresh() {
+        let events = store.refresh();
+        let changed = !events.is_empty();
+        for e in events {
             let payload = match e {
                 StoreEvent::Changed(c) => EventPayload::PolicySetChanged(c),
                 StoreEvent::Invalid(i) => EventPayload::PolicySetInvalid(i),
             };
             self.emit(payload, turn, None);
         }
-        store.effective()
+        let set = store.effective();
+        drop(store);
+        if changed && self.inner.started.load(Ordering::SeqCst) {
+            self.recheck(&set, turn);
+        }
+        set
+    }
+
+    /// Nach dem Start bei jeder Änderung dieselbe Prüfung wie vor dem Start (#234): Nie gültige
+    /// Dateien und nicht durchsetzbare Pflichtregeln beenden die Session (fail closed).
+    fn recheck(&self, set: &EffectiveSet, turn: Option<TurnId>) {
+        let (code, detail, rules) = if set.never_valid().is_empty() {
+            let check = self.start_check(set);
+            if check.refused.is_empty() {
+                return;
+            }
+            (
+                "policy_enforcement_unavailable",
+                check
+                    .refused
+                    .iter()
+                    .map(beton_policy::enforcement::Gap::describe)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                check.refused_rules(),
+            )
+        } else {
+            (
+                "policy_invalid",
+                set.never_valid()
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "Policy-Datei {} ist ungültig (Zeile {}): {}",
+                            f.file, f.line, f.error
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                Vec::new(),
+            )
+        };
+        let _ = self.inner.events.send(GateEvent {
+            payload: EventPayload::Error(beton_core::event::ErrorEvent {
+                problem: json!({
+                    "type": format!("urn:beton:problem:{code}"),
+                    "code": code,
+                    "title": "Geänderte Policies sind hier nicht durchsetzbar; Session aus Sicherheitsgründen beendet",
+                    "detail": detail,
+                    "rules": rules,
+                }),
+            }),
+            turn,
+            raw: None,
+            fatal: true,
+        });
+    }
+
+    /// Vor dem Start prüft der Runner selbst (Start verweigert statt Session beendet); bis
+    /// [`PolicyGate::mark_started`] lösen Reloads keine Prüfung aus.
+    pub fn defer_rechecks(&self) {
+        self.inner.started.store(false, Ordering::SeqCst);
+    }
+
+    /// Die Session ist gestartet: ab jetzt prüft jeder Reload wie der Start (#234). Prüft
+    /// sofort einmal, damit eine Änderung zwischen Startprüfung und Start nicht durchrutscht.
+    pub fn mark_started(&self) {
+        self.inner.started.store(true, Ordering::SeqCst);
+        let before = self.inner.store.lock().ok().map(|mut s| s.effective());
+        let set = self.refresh(None);
+        // Hat `refresh` eine Änderung gefunden, hat es schon geprüft.
+        if before.is_some_and(|b| Arc::ptr_eq(&b, &set)) {
+            self.recheck(&set, None);
+        }
     }
 
     /// Prüft die Regeln gegen die Matrix (POL-024); Warnungen gehen sofort ins Log.
@@ -1064,7 +1341,10 @@ impl PolicyGate {
                 approval_id: approval,
             },
         );
-        self.emit(EventPayload::PolicyDecision(event), turn, raw);
+        // Die Original-Zeile einer Rückfrage enthält die Argumente im Klartext; sie gehört nicht
+        // an `policy.decision` (POL-025 AC2, #234).
+        let _ = raw;
+        self.emit(EventPayload::PolicyDecision(event), turn, None);
         // `notify` blockiert nie (POL-006 AC2): `inbox` (und bis Web-Push bzw.
         // Desktop-Notifications auch `push`) wird zum Inbox-Eintrag (`policy.notified`, UX-001),
         // `log` zum Hinweis im Verlauf.
@@ -1348,6 +1628,14 @@ impl PolicyGate {
                 .home
                 .as_ref()
                 .map(|h| h.display().to_string()),
+            // Vergifteter Zustand: niemandem vertrauen (fail closed).
+            trusted_servers: Some(
+                self.inner
+                    .trusted_servers
+                    .lock()
+                    .map(|t| t.clone())
+                    .unwrap_or_default(),
+            ),
         })
     }
 
@@ -1373,20 +1661,21 @@ impl PolicyGate {
                         ..DecisionMeta::new(level)
                     },
                 );
-                self.emit(
-                    EventPayload::PolicyDecision(event),
-                    req.turn_id,
-                    req.raw.clone(),
-                );
+                self.emit(EventPayload::PolicyDecision(event), req.turn_id, None);
                 Verdict {
                     allowed: false,
                     human: false,
                     reason: Some(format!("Tool-Call nicht prüfbar: {e}")),
                     updated_args: None,
+                    subject: tool_subject(&req.tool, &req.args),
                 }
             }
             Ok(mut n) => {
-                vars.tool = Some(tool_vars(&mut n, &req.kind, call_index));
+                adapter_kind(&mut n, req);
+                if let Some(path) = self.touches_policy_files(&n) {
+                    return self.policy_files_denied(req, &subject, subject_ref, level, &path);
+                }
+                vars.tool = Some(tool_vars(&n, Some(call_index)));
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,
@@ -1417,6 +1706,7 @@ impl PolicyGate {
                             allowed: true,
                             human: false,
                             reason: None,
+                            subject: tool_subject(&req.tool, updated.as_ref().unwrap_or(&req.args)),
                             updated_args: updated,
                         }
                     }
@@ -1427,6 +1717,7 @@ impl PolicyGate {
                             allowed: true,
                             human: false,
                             reason: None,
+                            subject: tool_subject(&req.tool, updated.as_ref().unwrap_or(&req.args)),
                             updated_args: updated,
                         }
                     }
@@ -1438,6 +1729,7 @@ impl PolicyGate {
                             human: false,
                             reason: Some(reason_text(reasons)),
                             updated_args: None,
+                            subject: tool_subject(&req.tool, &req.args),
                         }
                     }
                     (Outcome::Ask { reasons }, _) => {
@@ -1467,10 +1759,18 @@ impl PolicyGate {
                         self.apply_effects(&ev.decision, answered.outcome, req.turn_id)
                             .await;
                         let human = answered.human;
+                        // Vom Menschen geänderte Argumente prüft die Policy erneut (#234).
+                        let denied = match &human.updated_args {
+                            Some(new) if human.allow => {
+                                self.recheck_human_args(req, level, new).await
+                            }
+                            _ => None,
+                        };
+                        let updated_args = human.updated_args.or(updated);
                         Verdict {
-                            allowed: human.allow,
+                            allowed: human.allow && denied.is_none(),
                             human: true,
-                            reason: human.reason.or_else(|| {
+                            reason: denied.or(human.reason).or_else(|| {
                                 Some(if answered.aborted {
                                     "Freigabe abgelaufen; der Turn wird abgebrochen (beton-Policy)"
                                         .to_owned()
@@ -1478,11 +1778,216 @@ impl PolicyGate {
                                     reason_text(reasons)
                                 })
                             }),
-                            updated_args: human.updated_args.or(updated),
+                            subject: tool_subject(
+                                &req.tool,
+                                updated_args.as_ref().unwrap_or(&req.args),
+                            ),
+                            updated_args,
                         }
                     }
                 }
             }
+        };
+        if let Ok(mut d) = self.inner.decided.lock() {
+            d.insert(req.call_id.clone(), verdict.clone());
+        }
+        verdict
+    }
+
+    /// Integritätsprüfung (HAR-005, #233): Meldet die Matrix für die Klasse des Calls `full`,
+    /// muss er vor der Ausführung das Gate passiert haben. Ein ausgeführter Call ohne
+    /// Entscheidung heißt, dass der Hook umgangen wurde; die Begründung nennt nur Tool und
+    /// Klasse, keine Argumente.
+    pub fn integrity_violation(&self, req: &GateRequest) -> Option<String> {
+        if self.decided(&req.call_id) {
+            return None;
+        }
+        let kind = self.kind_of(req);
+        (self.matrix().level(Phase::ToolCall, Some(&kind)) == Level::Full).then(|| {
+            format!(
+                "Tool-Call `{}` ({kind}) lief ohne Prüfung durch das Policy-Gate, obwohl der Harness volle Durchsetzung meldet; Session aus Sicherheitsgründen beendet",
+                req.tool
+            )
+        })
+    }
+
+    /// Kanonische Policy-Verzeichnisse (einmal aufgelöst; das Ziel eines Symlinks kann sich
+    /// während der Session ändern, deshalb nur, solange es das Verzeichnis gibt).
+    fn policy_dirs(&self) -> Vec<PathBuf> {
+        if let Ok(cache) = self.inner.policy_dirs.lock()
+            && let Some(dirs) = cache.as_ref()
+        {
+            return dirs.clone();
+        }
+        let dirs: Vec<PathBuf> = self
+            .inner
+            .opts
+            .dirs
+            .iter()
+            .map(|(_, d)| PathBuf::from(resolve_fs(&d.display().to_string())))
+            .collect();
+        if self.inner.opts.dirs.iter().all(|(_, d)| d.exists())
+            && let Ok(mut cache) = self.inner.policy_dirs.lock()
+        {
+            *cache = Some(dirs.clone());
+        }
+        dirs
+    }
+
+    /// Kanonische Klasse einer Anfrage: vom Adapter oder aus der Abbildungstabelle. Für
+    /// MCP-Tools entscheidet die Normalisierung mit der Herkunft des Servers (#234): Ein
+    /// fremder Server namens `beton` ist kein System-Tool, auch wenn der Adapter das meint.
+    fn kind_of(&self, req: &GateRequest) -> String {
+        if let Ok(n) = normalize_source(&self.tool_source(req), &req.args)
+            && n.server != "builtin"
+        {
+            return n.kind;
+        }
+        if req.kind.is_empty() {
+            beton_harness::tool_kind(
+                self.inner.opts.harness.as_str(),
+                &req.tool,
+                req.acp_kind.as_deref(),
+                req.mcp_server.as_deref(),
+            )
+        } else {
+            req.kind.clone()
+        }
+    }
+
+    /// Prüft vom Menschen geänderte Argumente erneut (eigenes `policy.decision` mit
+    /// `subject_ref.recheck`); `Some(Begründung)` bei `deny`. Ein `ask` gilt als beantwortet:
+    /// der Mensch hat genau diese Argumente freigegeben (#234).
+    async fn recheck_human_args(
+        &self,
+        req: &GateRequest,
+        level: Level,
+        args: &Value,
+    ) -> Option<String> {
+        let source = self.tool_source(req);
+        let mut n = match normalize_source(&source, args) {
+            Ok(n) => n,
+            Err(e) => return Some(format!("Geänderte Argumente nicht prüfbar: {e}")),
+        };
+        adapter_kind(&mut n, req);
+        if let Some(path) = self.touches_policy_files(&n) {
+            return Some(format!(
+                "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+            ));
+        }
+        let mut vars = self.base_vars("agent");
+        vars.tool = Some(tool_vars(&n, None));
+        let subject = json!({"tool": req.tool, "args": args});
+        let ev = self
+            .evaluate(
+                Phase::ToolCall,
+                vars,
+                Some(source),
+                level,
+                json!({"call_id": req.call_id, "recheck": true}),
+                Some(&subject),
+                req.turn_id,
+                None,
+            )
+            .await;
+        match ev.decision.outcome {
+            Outcome::Deny { reasons } => Some(reason_text(&reasons)),
+            Outcome::Allow | Outcome::Ask { .. } => None,
+        }
+    }
+
+    /// Pfad unter einem Policy-Verzeichnis, den ein nicht nur lesender Tool-Call berührt
+    /// (#234): Policies ändert nur der Mensch, nie ein Agent. Symlinks und Groß-/Kleinschreibung
+    /// löst die Pfadauflösung des Dateisystems auf.
+    fn touches_policy_files(&self, n: &beton_policy::normalize::NormalizedTool) -> Option<String> {
+        if READ_ONLY_KINDS.contains(&n.kind.as_str()) {
+            return None;
+        }
+        let guard = PolicyPathGuard {
+            dirs: self.policy_dirs(),
+            cwd: n.cwd.clone(),
+            home: self
+                .inner
+                .opts
+                .home
+                .as_ref()
+                .map(|h| h.display().to_string()),
+        };
+        if let Some(p) = n.paths.iter().find(|p| guard.hits_path(p)) {
+            return Some(p.clone());
+        }
+        // Shell (Re-Review R1, #253): jedes Wort aller Teilkommandos, nicht nur solche, die
+        // wie ein Pfad aussehen; `$`-Variablen aus Zuweisungen im selben Kommando eingesetzt.
+        if !n.argv.is_empty() {
+            // Der Parser entfernt Zuweisungen aus `argv`; sie stehen im Kommando-Text.
+            let words: Vec<String> = n
+                .command
+                .as_deref()
+                .unwrap_or_default()
+                .split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+                .map(|w| w.trim_matches(|c| c == '"' || c == '\'').to_owned())
+                .collect();
+            let vars = assignments(std::slice::from_ref(&words));
+            for sub in &n.argv {
+                for (i, word) in sub.iter().enumerate() {
+                    // Der Programmname ohne `/` ist kein Pfad (nur auf `.beton` prüfen).
+                    let program = i == 0 && !word.contains('/');
+                    if (program && word.to_lowercase().contains(".beton"))
+                        || (!program && guard.hits_word(word, &vars))
+                    {
+                        return Some(word.clone());
+                    }
+                }
+            }
+            if n.parse_uncertain
+                && let Some(cmd) = &n.command
+                && mentions_policies(cmd)
+            {
+                return Some(cmd.clone());
+            }
+        }
+        // MCP- und unbekannte Tools: alle Zeichenketten der Argumente (ohne Pfad-Abbildung).
+        if matches!(n.kind.as_str(), "mcp" | "other") {
+            let mut strings = Vec::new();
+            collect_strings(&n.args, &mut strings);
+            for word in strings.iter().flat_map(|s| s.split_whitespace()) {
+                if guard.hits_word(word, &HashMap::new()) {
+                    return Some(word.to_owned());
+                }
+            }
+        }
+        None
+    }
+
+    /// `deny` eines Tool-Calls auf Policy-Dateien samt `policy.decision` (#234).
+    fn policy_files_denied(
+        &self,
+        req: &GateRequest,
+        subject: &Value,
+        subject_ref: Value,
+        level: Level,
+        path: &str,
+    ) -> Verdict {
+        let set = self.refresh(req.turn_id);
+        let reason = format!(
+            "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+        );
+        let decision = builtin_deny(Phase::ToolCall, set.hash(), "policy-files", reason.clone());
+        let event = decision_event(
+            &decision,
+            DecisionMeta {
+                subject_ref,
+                subject_hash: Some(subject_hash(subject)),
+                ..DecisionMeta::new(level)
+            },
+        );
+        self.emit(EventPayload::PolicyDecision(event), req.turn_id, None);
+        let verdict = Verdict {
+            allowed: level == Level::ObserveOnly,
+            human: false,
+            reason: Some(reason),
+            updated_args: None,
+            subject: tool_subject(&req.tool, &req.args),
         };
         if let Ok(mut d) = self.inner.decided.lock() {
             d.insert(req.call_id.clone(), verdict.clone());
@@ -1620,15 +2125,17 @@ impl PolicyGate {
             )
             .await;
         let mut modified = ev.decision.modified.clone();
-        if let (Some(new), Some(old)) = (
-            modified
-                .permission_mode
-                .as_deref()
-                .and_then(|m| m.parse::<PermissionMode>().ok()),
-            requested_mode,
-        ) && strictness(new) > strictness(old)
-        {
-            // Lockern ist nicht erlaubt: Änderung verwerfen.
+        // Nur strenger (HAR-027, #231): ohne angefragten Modus ist `default` die Basis; ein
+        // lockernder oder unbekannter Wert wird verworfen.
+        let base = requested_mode.unwrap_or(PermissionMode::Default);
+        let tighter = modified
+            .permission_mode
+            .as_deref()
+            .and_then(|m| m.parse::<PermissionMode>().ok())
+            .is_some_and(|new| {
+                crate::settings::strictness(new) <= crate::settings::strictness(base)
+            });
+        if !tighter {
             modified.permission_mode = None;
         }
         match ev.decision.outcome.clone() {
@@ -1695,16 +2202,14 @@ impl PolicyGate {
 #[async_trait]
 impl Gate for PolicyGate {
     async fn decide(&self, req: GateRequest) -> GateDecision {
-        let kind = if req.kind.is_empty() {
-            beton_harness::tool_kind(
-                self.inner.opts.harness.as_str(),
-                &req.tool,
-                req.acp_kind.as_deref(),
-                req.mcp_server.as_deref(),
-            )
-        } else {
-            req.kind.clone()
-        };
+        // Ohne Call-ID teilten sich Calls gespeicherte Entscheide (#234): fail closed.
+        if req.call_id.trim().is_empty() {
+            tracing::warn!("Policy: Tool-Call ohne Call-ID abgelehnt");
+            return GateDecision::Deny {
+                reason: Some("Abgelehnt von beton: Tool-Call ohne ID.".into()),
+            };
+        }
+        let kind = self.kind_of(&req);
         match req.origin {
             GateOrigin::PreTool => {
                 let v = self.tool_verdict(&req, Level::Full).await;
@@ -1725,6 +2230,18 @@ impl Gate for PolicyGate {
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
                 let v = match prior {
+                    // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
+                    // Argumente nach der Prüfung geändert (z. B. ein weiterer Hook mit
+                    // `updatedInput`), gilt er nicht (fail closed).
+                    Some(v) if v.subject != tool_subject(&req.tool, &req.args) => {
+                        tracing::warn!(
+                            call_id = %req.call_id,
+                            "Policy: Rückfrage mit anderen Argumenten als geprüft; abgelehnt"
+                        );
+                        return GateDecision::Deny {
+                            reason: Some(CHANGED_AFTER_CHECK.into()),
+                        };
+                    }
                     Some(v) => v,
                     None => self.tool_verdict(&req, Level::ApprovalOnly).await,
                 };
@@ -1739,7 +2256,17 @@ impl Gate for PolicyGate {
                     .lock()
                     .map(|s| s.permission_mode == Some(PermissionMode::Yolo))
                     .unwrap_or(false);
-                if req.origin == GateOrigin::AutoApproval || v.human || kind == "system" || yolo {
+                // #151 gilt nur für System-Tools, die beton selbst einbindet (reservierter
+                // Server), nicht für Claude-Builtins der Klasse `system`; `ExitPlanMode`
+                // entscheidet immer ein Mensch (Re-Review R3 zu #253, HAR-027).
+                let beton_system = kind == "system"
+                    && normalize_source(&self.tool_source(&req), &req.args)
+                        .is_ok_and(|n| n.server != "builtin");
+                let plan_exit = req.tool == EXIT_PLAN_MODE;
+                if v.human
+                    || (!plan_exit
+                        && (req.origin == GateOrigin::AutoApproval || beton_system || yolo))
+                {
                     return GateDecision::Allow {
                         updated_args: updated,
                     };
@@ -1772,11 +2299,27 @@ impl Gate for PolicyGate {
                     )
                     .await
                     .human;
+                let denied = match &human.updated_args {
+                    Some(new) if human.allow => {
+                        let level = if had_prior {
+                            Level::Full
+                        } else {
+                            Level::ApprovalOnly
+                        };
+                        self.recheck_human_args(&req, level, new).await
+                    }
+                    _ => None,
+                };
                 if let Ok(mut d) = self.inner.decided.lock()
                     && let Some(entry) = d.get_mut(&req.call_id)
                 {
                     entry.human = true;
-                    entry.allowed = human.allow;
+                    entry.allowed = human.allow && denied.is_none();
+                }
+                if let Some(reason) = denied {
+                    return GateDecision::Deny {
+                        reason: Some(reason),
+                    };
                 }
                 if human.allow {
                     GateDecision::Allow {
@@ -1813,18 +2356,10 @@ impl Gate for PolicyGate {
         let source = self.tool_source(&req.call);
         let mut vars = self.base_vars("agent");
         match normalize_source(&source, &req.call.args) {
-            Ok(n) => {
-                vars.tool = Some(ToolVars {
-                    name: Some(n.name.clone()),
-                    native_name: Some(n.native_name.clone()),
-                    server: Some(n.server.clone()),
-                    kind: Some(n.kind.clone()),
-                    command: n.command.clone(),
-                    argv: Some(n.argv.clone()),
-                    paths: Some(n.paths.clone()),
-                    urls: Some(n.urls.clone()),
-                    ..ToolVars::default()
-                });
+            // Alle `tool.*` wie in `tool_call` (POL-004, #234).
+            Ok(mut n) => {
+                adapter_kind(&mut n, &req.call);
+                vars.tool = Some(tool_vars(&n, None));
             }
             Err(e) => {
                 return GateDecision::Deny {
@@ -2013,6 +2548,7 @@ mod tests {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
         // beton, entscheidet allein die Policy; eine Approval-Card entsteht nicht.
         let (g, mut rx) = gate();
+        g.set_trusted_servers(vec!["beton".into()]);
         let req = GateRequest {
             call_id: "c1".into(),
             tool: "mcp__beton__session_list".into(),

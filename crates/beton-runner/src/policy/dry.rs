@@ -302,7 +302,8 @@ impl PolicyGate {
         if let Some(s) = vars.session.as_mut() {
             s.tool_calls = Some(call_index);
         }
-        vars.tool = Some(tool_vars(&mut n, &req.kind, call_index));
+        super::adapter_kind(&mut n, &req);
+        vars.tool = Some(tool_vars(&n, Some(call_index)));
         self.with_usage_values(&set, Phase::ToolCall, &mut vars)
             .await;
         self.with_state_values(&set, Phase::ToolCall, &mut vars)

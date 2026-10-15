@@ -293,6 +293,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         Ok(Exit::HarnessExited { code }) => {
             ExitCode::from(u8::try_from(code.unwrap_or(1)).unwrap_or(1))
         }
+        Ok(Exit::PolicyViolation) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("beton runner: {e}");
             ExitCode::FAILURE
@@ -459,6 +460,8 @@ pub enum Exit {
     ParentGone,
     /// `executor.timeout` des Agents abgelaufen (AGT-004 AC3).
     TimedOut,
+    /// Integritätsverletzung des Policy-Gates (HAR-005, #233): Session beendet.
+    PolicyViolation,
 }
 
 #[cfg(unix)]
@@ -669,6 +672,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
     .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
+    // Vor dem Start prüft der Runner Policies selbst (Start verweigert, #182, POL-024).
+    gate.defer_rechecks();
     let ctx = AdapterContext {
         gate: Arc::new(gate.clone()),
         launcher: Arc::new(SandboxLauncher::new(sandbox)),
@@ -685,6 +690,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Enforcement-Matrix (POL-024) schon vor dem Start.
     let predicted = predicted_caps(&boot, caps.as_ref(), hook.is_some());
     gate.set_matrix(predicted.enforcement());
+    let harness_gates_all = predicted.tool_call_gate == beton_harness::ToolCallGate::Full;
     let source = match (&snapshot, &boot.agent_ref) {
         (Some(s), _) => mcp::AgentSource::Snapshot(s),
         (None, Some(r)) => mcp::AgentSource::Ref(r),
@@ -715,7 +721,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         None => Ok(mcp::McpSetup::default()),
     };
     let mut setup = match setup {
-        Ok(s) => s,
+        Ok(s) => {
+            // Nur von beton eingebundene Server tragen die Klassen reservierter Namen (#234).
+            let mut trusted = s.injection.names();
+            if boot.harness.as_str().starts_with("direct") {
+                trusted.push("beton-workspace".into());
+            }
+            gate.set_trusted_servers(trusted);
+            s
+        }
         Err(e) => {
             // Fail closed: ohne ladbaren Agent startet die Session nicht.
             let e = beton_harness::HarnessError::StartRefused(format!("Agent: {e}"));
@@ -813,6 +827,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
     }
     let mut pre = PreStart::default();
+    // Von einer Policy beim Start gesetzter Permission-Mode (bindet `plan`, HAR-027).
+    let mut policy_mode: Option<beton_harness::PermissionMode> = None;
     if refusal.is_none() {
         let start = beton_policy::vars::StartVars {
             trigger: Some(
@@ -855,16 +871,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             .await;
         match checked {
             policy::Checked::Allow(m) => {
-                apply_start_modifications(
+                match apply_start_modifications(
                     &mut start_settings,
                     &m,
                     caps.as_ref().unwrap_or(&fallback_caps),
-                );
-                gate.set_settings(
-                    start_settings.model.clone(),
-                    start_settings.effort.clone(),
-                    start_settings.permission_mode,
-                );
+                ) {
+                    Ok(mode) => {
+                        policy_mode = mode;
+                        gate.set_settings(
+                            start_settings.model.clone(),
+                            start_settings.effort.clone(),
+                            start_settings.permission_mode,
+                        );
+                    }
+                    // Fail closed (#231): z. B. `yolo` ohne Sandbox.
+                    Err(r) => {
+                        refusal = Some((vec![format!("{}: {}", r.code, r.detail)], Vec::new()))
+                    }
+                }
             }
             policy::Checked::Deny { reason, rules } => refusal = Some((vec![reason], rules)),
             policy::Checked::AskNeeded => {
@@ -891,10 +915,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         mcp: setup.injection.clone(),
         max_turns: setup.max_turns,
         instructions: setup.instructions.clone(),
-        // Ein Agent mit `permission_mode: plan` verlässt `plan` nicht selbst (AGT-011).
-        plan_locked: settings::plan_bound(
+        // Ein Agent mit `permission_mode: plan` bzw. eine Policy, die `plan` erzwingt, verlässt
+        // `plan` nicht selbst (AGT-011, HAR-027).
+        plan_locked: settings::plan_locked(
             setup.agent_permission_mode,
             start_settings.permission_mode,
+            policy_mode,
         ),
         hook: hook.clone(),
         compaction: boot.compaction,
@@ -942,6 +968,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(beton_harness::HarnessError::StartRefused(reasons.join("; ")).into());
         }
     }
+    // Ab jetzt prüft jeder Reload der Policies wie der Start (#234).
+    gate.mark_started();
     let capabilities = session
         .capabilities()
         .and_then(|c| serde_json::to_value(c).ok())
@@ -1255,8 +1283,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 biased;
                 ge = gate_rx.recv() => {
                     let Some(first) = ge else { continue };
+                    let mut fatal = first.fatal.then(|| fatal_reason(&first));
                     let mut events = vec![gate_event(&boot, first, &call_events)];
-                    events.extend(drain_gate(&boot, &mut gate_rx, &call_events));
+                    while let Ok(ge) = gate_rx.try_recv() {
+                        if ge.fatal && fatal.is_none() {
+                            fatal = Some(fatal_reason(&ge));
+                        }
+                        events.push(gate_event(&boot, ge, &call_events));
+                    }
                     let mut batch = Vec::with_capacity(events.len() + 1);
                     let mut abort = false;
                     for e in events {
@@ -1268,6 +1302,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if let Some(st) = next {
                             tracker.set(&boot, st, &mut batch);
                         }
+                    }
+                    if let Some(why) = fatal {
+                        // Fail closed (#234): Policies nach dem Start nicht durchsetzbar.
+                        end_policy_failure(&boot, &mut lifecycle, &why, &mut batch);
+                        let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                        drain_acks(&mut ws, &mut unacked).await;
+                        let _ = session.shutdown(Shutdown::Kill).await;
+                        return Ok(Exit::PolicyViolation);
                     }
                     if !push(&mut ws, &boot, &mut unacked, batch).await {
                         break None;
@@ -1373,12 +1415,33 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         if done && let Some(context) = held_context.take() {
                             batch.push(to_event(&boot, &actor, context));
                         }
+                        // Integrität (HAR-005, #233): Ein ausgeführter Call ohne Gate-Entscheidung
+                        // bei Matrix `full` heißt, dass der Hook umgangen wurde.
+                        // Nur, wenn der Harness selbst jeden Call durch das Gate schickt (Hook,
+                        // Direkt-API); MCP-Aufrufe über den Relay-Hub prüft der Hub synchron.
+                        let violation = match &ev.payload {
+                            EventPayload::ToolCallCompleted(c) if harness_gates_all && executed(c.status) => unobserved
+                                .get(&c.call_id)
+                                .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
+                            _ => None,
+                        };
                         let observe = track_tool_calls(&gate, &ev, &mut unobserved, done);
                         let event = to_event(&boot, &actor, ev);
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
                         }
                         batch.push(event);
+                        if let Some((req, why)) = violation {
+                            // Audit (genau ein `policy.decision`, POL-025 AC1), dann Ende mit
+                            // Fehler (fail closed).
+                            gate.observe(req).await;
+                            batch.extend(drain_gate(&boot, &mut gate_rx, &call_events));
+                            end_integrity_violation(&boot, &mut lifecycle, &why, &mut batch);
+                            let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                            drain_acks(&mut ws, &mut unacked).await;
+                            let _ = session.shutdown(Shutdown::Kill).await;
+                            return Ok(Exit::PolicyViolation);
+                        }
                         for req in observe {
                             // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
                             let g = gate.clone();
@@ -1753,13 +1816,19 @@ fn predicted_caps(
     predicted
 }
 
-/// `modify` in `session_start` (POL-003): Modell, Effort (gemappt) und Permission-Mode
-/// (nur strenger, schon geprüft) für den Start.
+/// `modify` in `session_start` (POL-003): Modell, Effort (gemappt) und Permission-Mode (nur
+/// strenger als der angefragte, danach erneut gegen die Sandbox geprüft, #231) für den Start.
 fn apply_start_modifications(
     start: &mut settings::Change,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
-) {
+) -> Result<Option<beton_harness::PermissionMode>, settings::Rejected> {
+    let mode = settings::policy_start_mode(
+        start.permission_mode,
+        m.permission_mode.as_deref(),
+        caps,
+        beton_harness::SandboxStatus::current(),
+    )?;
     if let Some(model) = &m.model {
         start.model = Some(model.clone());
     }
@@ -1768,14 +1837,10 @@ fn apply_start_modifications(
     {
         start.effort = Some(mapped);
     }
-    if let Some(mode) = m
-        .permission_mode
-        .as_deref()
-        .and_then(|p| p.parse::<beton_harness::PermissionMode>().ok())
-        && caps.permission_modes.contains(&mode)
-    {
+    if let Some(mode) = mode {
         start.permission_mode = Some(mode);
     }
+    Ok(mode)
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
@@ -2129,6 +2194,70 @@ async fn sleep_until_opt(at: Option<tokio::time::Instant>) {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
     }
+}
+
+/// Events bei einer Integritätsverletzung des Policy-Gates (HAR-005, #233): `error` mit
+/// Problem `policy_integrity_violation`, Runner `failed`, Session `failed`.
+fn end_integrity_violation(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    why: &str,
+    out: &mut Vec<Event>,
+) {
+    out.push(system_event(
+        boot,
+        EventPayload::Error(beton_core::event::ErrorEvent {
+            problem: json!({
+                "type": "urn:beton:problem:policy_integrity_violation",
+                "code": "policy_integrity_violation",
+                "title": "Tool-Call ohne Policy-Prüfung; Session aus Sicherheitsgründen beendet",
+                "detail": why,
+            }),
+        }),
+    ));
+    end_policy_failure(boot, lifecycle, "policy_integrity_violation", out);
+}
+
+/// Wurde ein Tool-Call (womöglich) ausgeführt? Auch ein Fehler (`…; exit 1`, Claude
+/// `is_error`) kann Wirkung gehabt haben (Re-Review R2 zu #253). Nicht ausgeführt sind nur
+/// abgelehnte Calls und solche, die vor der Ausführung abgebrochen wurden: Ein Call ohne
+/// Gate-Entscheidung mit `cancelled` wartete noch auf den Hook (z. B. Interrupt während einer
+/// offenen Freigabe).
+fn executed(status: beton_core::event::ToolStatus) -> bool {
+    !matches!(
+        status,
+        beton_core::event::ToolStatus::Denied | beton_core::event::ToolStatus::Cancelled
+    )
+}
+
+/// Grund eines `fatal`-Gate-Events: der Problem-Code des `error`.
+fn fatal_reason(ge: &policy::GateEvent) -> String {
+    match &ge.payload {
+        EventPayload::Error(e) => e.problem["code"]
+            .as_str()
+            .unwrap_or("policy_failure")
+            .to_owned(),
+        _ => "policy_failure".into(),
+    }
+}
+
+/// Runner und Session `failed` nach einem Policy-Fehler, der die Session beendet.
+fn end_policy_failure(
+    boot: &RunnerBoot,
+    lifecycle: &mut Lifecycle,
+    why: &str,
+    out: &mut Vec<Event>,
+) {
+    if let Ok(s) = lifecycle.go(RunnerState::Failed, Some(why.to_owned())) {
+        out.push(system_event(boot, EventPayload::RunnerStatus(s)));
+    }
+    out.push(system_event(
+        boot,
+        EventPayload::SessionStatus(SessionStatusChanged {
+            status: SessionStatus::Failed,
+            reason: Some(why.to_owned()),
+        }),
+    ));
 }
 
 /// Events am Ende eines Runs mit Zeitüberschreitung: Session `stopped` mit Grund `timed_out`,

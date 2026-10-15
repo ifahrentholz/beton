@@ -63,6 +63,7 @@ fn pol_002_ac4_200_rules_p99_below_2ms() {
         args: &args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     })
     .unwrap();
     let ctx = Activation::new(

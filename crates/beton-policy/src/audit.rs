@@ -20,8 +20,25 @@ pub fn new_decision_id() -> String {
 
 /// `sha256:<hex>` über das kanonische JSON (Schlüssel sortiert) des Subjekts.
 pub fn subject_hash(subject: &Value) -> String {
-    let bytes = serde_json::to_vec(subject).unwrap_or_default();
+    let bytes = serde_json::to_vec(&canonical(subject)).unwrap_or_default();
     format!("sha256:{}", hex::encode(Sha256::digest(&bytes)))
+}
+
+/// Schlüssel rekursiv sortiert (unabhängig davon, ob `serde_json` die Reihenfolge erhält).
+fn canonical(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), canonical(&map[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
 }
 
 /// Was neben der Entscheidung ins Event gehört.

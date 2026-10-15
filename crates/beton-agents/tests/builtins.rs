@@ -92,8 +92,9 @@ fn agt_011_maestra_is_valid_and_matches_the_spec() {
             "investigate".into()
         ]))
     );
-    let ids: Vec<_> = spec.policies.iter().filter_map(|p| p.id.clone()).collect();
-    assert_eq!(ids, ["maestra-no-code", "maestra-no-merge"]);
+    // Agent-Policies wertet beton erst mit WP-49 aus; bis dahin hat maestra keine, weil der
+    // Runner sonst den Start verweigert (#234).
+    assert!(spec.policies.is_empty());
 
     // Implementer schreiben, Reviewer nur lesend; je ein Paar pro Vendor.
     for (name, harness, mode) in [

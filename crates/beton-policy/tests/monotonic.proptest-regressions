@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 155053ee082e5507bdbe14f4226eb6648822d2f2dc2e7fb565569323c1378e09 # shrinks to w = World { rules: [RuleGen { scope: 3, condition: 0, action: 4, dry_run: false }], defaults: [], command: 0, args_supported: false }, scope = 0, condition = 0
+cc a64f1ef32908322643899b11b90ade1d4533e8977f7b543ce7d71e0dae785a9d # shrinks to w = World { rules: [RuleGen { scope: 3, condition: 0, action: 4, dry_run: false }], defaults: [], command: 0, args_supported: false }, scope = 0, condition = 0

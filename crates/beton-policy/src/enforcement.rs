@@ -9,7 +9,9 @@
 //! nicht entzuckerten Regeltyp): Fehlt die Durchsetzung bei einer mutierenden Tool-Klasse und
 //! ist die Regel `required` (Default), verweigert der Runner den Start; Lücken nur bei
 //! lesenden Klassen (`file_read`, `search`, `web_fetch`) und bei `best_effort`-Regeln ergeben
-//! eine Warnung (`policy.enforcement_degraded`), die Sandbox ist dann der Backstop.
+//! eine Warnung (`policy.enforcement_degraded`), die Sandbox ist dann der Backstop. Klassen mit
+//! `approval_only` sind eingeschränkt durchsetzbar (nur an Rückfragen des Vendors) und ergeben
+//! ebenfalls eine Warnung (#234).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -273,6 +275,17 @@ pub fn check_start(set: &EffectiveSet, matrix: &Matrix) -> StartCheck {
                             Some(k) => k.iter().cloned().collect(),
                             None => KINDS.iter().map(|k| (*k).to_owned()).collect(),
                         };
+                        // `approval_only` wirkt nur an Rückfragen des Vendors: eingeschränkt
+                        // durchsetzbar, nie ein Grund zur Startverweigerung (#234).
+                        let mut partial: Vec<String> = kinds
+                            .iter()
+                            .filter(|k| matrix.level(*phase, Some(k)) == Level::ApprovalOnly)
+                            .cloned()
+                            .collect();
+                        if !partial.is_empty() {
+                            partial.sort();
+                            out.degraded.push(gap(partial, Level::ApprovalOnly));
+                        }
                         let mut weak: Vec<String> = kinds
                             .into_iter()
                             .filter(|k| !matrix.level(*phase, Some(k)).enforces())

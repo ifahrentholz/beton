@@ -7,7 +7,11 @@
 //! - geänderte, gültige Datei → neue Version, `policy.set_changed`
 //! - fehlerhafte Datei → letzte gültige Version bleibt aktiv, `policy.set_invalid` mit Datei,
 //!   Zeile und Fehler (AC3)
-//! - gelöschte Datei → Set entfällt, `policy.set_changed` mit Version `deleted`
+//! - gelöschte Datei → die letzte gültige Version bleibt für die Lebensdauer des Stores (der
+//!   Session) aktiv, `policy.set_invalid` meldet die Löschung (fail closed, #234); erst eine
+//!   neue Session liest den Stand ohne die Datei
+//! - nicht lesbares Verzeichnis (außer „existiert nicht“) → bekannte Sets bleiben aktiv,
+//!   `policy.set_invalid`; war es nie lesbar, zählt es als nie gültige Datei (Start verweigert)
 //!
 //! Der Runner ruft `refresh` vor jeder Auswertung auf (WP-35). Das kostet einen
 //! Verzeichnis-Scan und das Hashen weniger kleiner Dateien und garantiert, dass die nächste
@@ -42,6 +46,8 @@ struct FileEntry {
     invalid: bool,
     /// Letzter Ladefehler (für Dateien ohne gültige Fassung, #182).
     error: Option<PolicySetInvalid>,
+    /// Gelöscht; die letzte gültige Fassung bleibt aktiv (#234).
+    deleted: bool,
 }
 
 /// Policy-Sets aller lokalen Ebenen mit Hot-Reload. Eine Kopie erlaubt eine Auswertung mit
@@ -52,6 +58,11 @@ pub struct PolicyStore {
     files: BTreeMap<PathBuf, FileEntry>,
     inline: Vec<Arc<LoadedSet>>,
     effective: Option<Arc<EffectiveSet>>,
+    /// Ebenen, deren Dateien nach dem ersten Durchlauf nur verschärft werden dürfen
+    /// (Re-Review R1 zu #253): lockernde Änderungen gelten erst in einer neuen Session.
+    tighten: Vec<Scope>,
+    /// Der erste Durchlauf ist erfolgt.
+    primed: bool,
 }
 
 /// `~/.beton/policies` bzw. `<repo>/.beton/policies` zu einem beton-Verzeichnis.
@@ -64,11 +75,20 @@ impl PolicyStore {
         Self::default()
     }
 
-    /// Registriert ein Verzeichnis mit `*.yaml`-Policy-Sets (nicht rekursiv;
+    /// Registriert ein Verzeichnis mit `*.yaml`- bzw. `*.yml`-Policy-Sets (nicht rekursiv;
     /// `*.policytest.yaml` sind Tests und keine Sets).
     pub fn add_dir(&mut self, scope: Scope, dir: impl Into<PathBuf>) {
         self.dirs.push((scope, dir.into()));
         self.effective = None;
+    }
+
+    /// Nach dem ersten [`PolicyStore::refresh`] übernimmt der Store Änderungen an Dateien
+    /// dieser Ebene nur, wenn sie verschärfen ([`only_tightens`]); sonst bleibt die bisherige
+    /// Fassung aktiv und `policy.set_invalid` meldet die lockernde Änderung.
+    pub fn tighten_only(&mut self, scope: Scope) {
+        if !self.tighten.contains(&scope) {
+            self.tighten.push(scope);
+        }
     }
 
     /// Ersetzt die Inline-Sets einer Ebene (z. B. `policies:` des Agents).
@@ -82,9 +102,39 @@ impl PolicyStore {
     pub fn refresh(&mut self) -> Vec<StoreEvent> {
         let mut events = Vec::new();
         let mut present: Vec<(Scope, PathBuf)> = Vec::new();
+        // Verzeichnisse, die gerade nicht lesbar sind: ihre Dateien gelten nicht als gelöscht.
+        let mut unreadable: Vec<PathBuf> = Vec::new();
         for (scope, dir) in &self.dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue; // Verzeichnis existiert (noch) nicht
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    // Fail closed (#234): nie still verschwinden lassen.
+                    let error = PolicySetInvalid {
+                        file: dir.display().to_string(),
+                        line: 0,
+                        error: format!("Policy-Verzeichnis nicht lesbar: {e}"),
+                    };
+                    let known = self.files.keys().any(|p| p.starts_with(dir));
+                    let entry = self.files.entry(dir.clone()).or_insert(FileEntry {
+                        scope: *scope,
+                        seen: [0; 32],
+                        valid: None,
+                        invalid: false,
+                        error: None,
+                        deleted: false,
+                    });
+                    if !entry.invalid {
+                        events.push(StoreEvent::Invalid(error.clone()));
+                        self.effective = None;
+                    }
+                    entry.invalid = true;
+                    // Nur ohne bekannte Sets zählt es als nie gültig (Start verweigert).
+                    entry.error = (!known).then_some(error);
+                    unreadable.push(dir.clone());
+                    present.push((*scope, dir.clone()));
+                    continue;
+                }
             };
             let mut files: Vec<PathBuf> = entries
                 .filter_map(Result::ok)
@@ -95,27 +145,38 @@ impl PolicyStore {
             present.extend(files.into_iter().map(|p| (*scope, p)));
         }
 
-        // Gelöschte Dateien
+        // Gelöschte Dateien: Die letzte gültige Fassung bleibt aktiv (fail closed, #234).
         let gone: Vec<PathBuf> = self
             .files
             .keys()
             .filter(|p| !present.iter().any(|(_, q)| q == *p))
+            .filter(|p| !unreadable.iter().any(|d| p.starts_with(d)))
             .cloned()
             .collect();
         for path in gone {
-            if let Some(entry) = self.files.remove(&path)
-                && let Some(set) = entry.valid
+            let keep = self.files.get(&path).is_some_and(|e| e.valid.is_some());
+            if !keep {
+                self.files.remove(&path);
+                self.effective = None;
+                continue;
+            }
+            if let Some(entry) = self.files.get_mut(&path)
+                && !entry.deleted
             {
-                events.push(StoreEvent::Changed(PolicySetChanged {
-                    scope: entry.scope.as_str().into(),
-                    set: set.name.clone(),
-                    version: "deleted".into(),
+                entry.deleted = true;
+                entry.seen = [0; 32];
+                events.push(StoreEvent::Invalid(PolicySetInvalid {
+                    file: path.display().to_string(),
+                    line: 0,
+                    error: "Policy-Datei gelöscht; die letzte gültige Fassung bleibt bis zum Ende der Session aktiv".into(),
                 }));
             }
-            self.effective = None;
         }
 
         for (scope, path) in present {
+            if unreadable.contains(&path) {
+                continue;
+            }
             let origin = path.display().to_string();
             let read = read_limited(&path);
             let hash: [u8; 32] = match &read {
@@ -138,15 +199,32 @@ impl PolicyStore {
                     message,
                 }),
             };
+            let tighten_now = self.primed && self.tighten.contains(&scope);
             let entry = self.files.entry(path).or_insert(FileEntry {
                 scope,
                 seen: hash,
                 valid: None,
                 invalid: false,
                 error: None,
+                deleted: false,
             });
             entry.seen = hash;
             entry.scope = scope;
+            entry.deleted = false;
+            let check = match (&result, tighten_now) {
+                (Ok(set), true) => only_tightens(entry.valid.as_deref(), set).err(),
+                _ => None,
+            };
+            if let Some(why) = check {
+                events.push(StoreEvent::Invalid(PolicySetInvalid {
+                    file: origin.clone(),
+                    line: 0,
+                    error: format!(
+                        "Die Änderung lockert die Policy ({why}); sie gilt erst in einer neuen Session"
+                    ),
+                }));
+                continue;
+            }
             match result {
                 Ok(set) => {
                     events.push(StoreEvent::Changed(PolicySetChanged {
@@ -166,6 +244,7 @@ impl PolicyStore {
                 }
             }
         }
+        self.primed = true;
         events
     }
 
@@ -199,14 +278,83 @@ impl PolicyStore {
     }
 }
 
+/// Verschärft `new` gegenüber `old` (ohne `old`: gegenüber einem leeren Set)? Erlaubt sind:
+/// unveränderte Regeln, neue Regeln mit `deny`, `ask` oder `notify` (bzw. noch nicht
+/// entzuckerte Regeltypen) ohne `effects` und ohne eigenen Freigabe-Timeout bzw.
+/// `on_timeout: allow`, Dry-Run-Regeln und strengere Defaults. `Err` nennt den ersten
+/// lockernden Punkt.
+pub fn only_tightens(old: Option<&LoadedSet>, new: &LoadedSet) -> Result<(), String> {
+    use crate::doc::{Action, DefaultAction, Mode, TimeoutAction};
+    let active = |s: &LoadedSet| s.mode == Mode::Enforce;
+    let old_rules: Vec<&crate::load::LoadedRule> = old
+        .filter(|o| active(o))
+        .map(|o| o.rules.iter().filter(|r| !r.doc.dry_run).collect())
+        .unwrap_or_default();
+    let old_defaults = old
+        .filter(|o| active(o))
+        .map(|o| o.defaults.clone())
+        .unwrap_or_default();
+    if !active(new) {
+        if old_rules.is_empty() && old_defaults.is_empty() {
+            return Ok(());
+        }
+        return Err("mode: dry_run".into());
+    }
+    for (phase, was) in &old_defaults {
+        let now = new
+            .defaults
+            .get(phase)
+            .copied()
+            .unwrap_or(DefaultAction::Allow);
+        if now < *was {
+            return Err(format!("Default für {phase} milder"));
+        }
+    }
+    for rule in &old_rules {
+        if !new.rules.iter().any(|r| r.doc == rule.doc) {
+            return Err(format!("Regel `{}` entfernt oder geändert", rule.id));
+        }
+    }
+    for rule in &new.rules {
+        if rule.doc.dry_run || old_rules.iter().any(|r| r.doc == rule.doc) {
+            continue;
+        }
+        // Wirksame Aktion: entzuckerte Regeltypen (z. B. `require_approval` → `ask`) über ihre
+        // CEL-Fassung; noch nicht entzuckerte wertet die Engine fail closed als `deny`.
+        let action = match &rule.kind {
+            crate::load::RuleKind::Cel { action, .. } => *action,
+            crate::load::RuleKind::Builtin(_) => Action::Deny,
+        };
+        if !matches!(action, Action::Deny | Action::Ask | Action::Notify) {
+            return Err(format!("Regel `{}` neu mit allow oder modify", rule.id));
+        }
+        // Effects können Zähler anderer Regeln zurücksetzen (#253 N1).
+        if !rule.doc.effects.is_empty() {
+            return Err(format!("Regel `{}` neu mit effects", rule.id));
+        }
+        // Der kürzeste Timeout gilt für die ganze Card; `on_timeout: allow` erlaubt (N2).
+        if let Some(a) = &rule.doc.approval
+            && (a.timeout.is_some() || a.on_timeout == Some(TimeoutAction::Allow))
+        {
+            return Err(format!(
+                "Regel `{}` neu mit eigenem Freigabe-Timeout bzw. on_timeout: allow",
+                rule.id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn is_policy_file(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
+    // `.yml` wie `.yaml`: eine Datei mit der anderen Endung bliebe sonst still wirkungslos.
     path.is_file()
-        && name.ends_with(".yaml")
+        && (name.ends_with(".yaml") || name.ends_with(".yml"))
         && !name.ends_with(".policytest.yaml")
+        && !name.ends_with(".policytest.yml")
         && !name.starts_with('.')
 }
 
