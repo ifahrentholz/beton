@@ -301,12 +301,11 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
     let roots: Vec<&PathBuf> = plan.roots().collect();
     c.dirs.retain(|d| !roots.contains(&d));
     c.files.retain(|f| !roots.contains(&f));
-    // Private Verzeichnisse (Session-Verzeichnis in Stufe 2): wie eine Maske, die Wurzeln
-    // darin (Scratch, Austausch, CA-Bundle) kommen wieder hinein.
+    // Private Verzeichnisse (Session-Verzeichnis in Stufe 2): ein leeres tmpfs verdeckt sie
+    // (siehe `mount_ops`), die Wurzeln darin (Scratch, Austausch, CA-Bundle) kommen wieder
+    // hinein.
     for p in &plan.private {
-        if p.is_dir() {
-            c.dirs.insert(p.clone());
-        } else {
+        if !p.is_dir() {
             return Err(SandboxError::spawn(format!(
                 "{} fehlt; privat nicht durchsetzbar",
                 p.display()
@@ -316,6 +315,7 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
     let dirs: Vec<PathBuf> = c.dirs.iter().cloned().collect();
     let mut shadows: Vec<PathBuf> = PRIVATE_TMPFS.iter().map(PathBuf::from).collect();
     shadows.extend(dirs.iter().cloned());
+    shadows.extend(plan.private.iter().cloned());
     let mut rebind: Vec<PathBuf> = roots
         .iter()
         .filter(|r| shadows.iter().any(|s| r.starts_with(s) && **r != s))
@@ -436,6 +436,9 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             }
         }
     }
+    // Private Verzeichnisse wie eine Zwischenebene: leeres tmpfs (durchquerbar, am Ende
+    // read-only), darin nur die wieder eingebundenen Wurzeln.
+    anchors.extend(plan.private.iter().cloned());
     ops.extend(anchors.into_iter().map(|path| MountOp::Anchor { path }));
     for r in &targets.rebind {
         ops.push(MountOp::Rebind {
@@ -810,7 +813,7 @@ mod tests {
         std::fs::create_dir_all(ws.join(".claude")).unwrap();
         let (ops, _) = mount_ops(&plan).unwrap();
         assert!(
-            ops.contains(&MountOp::MaskDir {
+            ops.contains(&MountOp::Anchor {
                 path: session.clone()
             }),
             "{ops:?}"

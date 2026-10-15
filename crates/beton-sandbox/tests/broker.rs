@@ -677,7 +677,7 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
     let _sock = std::os::unix::net::UnixListener::bind(root.join("exec/exec.sock")).unwrap();
     const PROBE: &str = "cat \"$R/harness/geheim\" && echo H1; \
         [ -e \"$R/exec/exec.sock\" ] && echo H2; \
-        ls \"$R\" && echo H3; \
+        [ -e \"$R/harness\" ] && echo H3; [ -e \"$R/exec\" ] && echo H4; \
         printf ok > \"$R/xchg/x\" && echo XCHG_OK; \
         cat \"$R/ca/bundle.pem\" && echo CA_OK; \
         printf ok > \"$TMPDIR/t\" && echo TMP_OK";
@@ -688,7 +688,7 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
         PROBE,
         &[("R", &root), ("TMPDIR", &root.join("tools"))],
     );
-    for w in ["H1", "H2", "H3", "XCHG_OK", "CA_OK", "TMP_OK"] {
+    for w in ["H1", "H2", "H3", "H4", "XCHG_OK", "CA_OK", "TMP_OK"] {
         assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
     }
 
@@ -721,7 +721,7 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    for w in ["H1", "H2", "H3"] {
+    for w in ["H1", "H2", "H3", "H4"] {
         assert!(!out.contains(w), "Stufe 2 {w}: {out}");
     }
     assert!(!out.contains("FIXTURE-HARNESS-SCRATCH"), "{out}");
