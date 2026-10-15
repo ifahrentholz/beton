@@ -1036,7 +1036,15 @@ fn check(expect: &Expect, actual: &Value, reasons: &[Reason]) -> Vec<String> {
     for (field, expected) in [("rules", &expect.rules), ("would", &expect.would)] {
         if let Some(want) = expected {
             let have = list(&actual[field]);
-            let missing: Vec<&String> = want.iter().filter(|r| !have.contains(r)).collect();
+            // Die ID einer Typ-Regel trifft auch ihre Teilregeln (`loop` → `loop/repeat`).
+            let hit = |w: &String| {
+                have.iter().any(|h| {
+                    h == w
+                        || h.strip_prefix(w.as_str())
+                            .is_some_and(|r| r.starts_with('/'))
+                })
+            };
+            let missing: Vec<&String> = want.iter().filter(|r| !hit(r)).collect();
             if !missing.is_empty() {
                 f.push(format!(
                     "{field}: erwartet {}, es fehlt {}; tatsächlich [{}]",
