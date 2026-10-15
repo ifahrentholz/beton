@@ -343,6 +343,16 @@ mod tests {
         assert!(err("betonmischer").is_empty(), "kein Präfix mit Trenner");
     }
 
+    /// Review #285 B1: `builtin` steht in Policies für eingebaute Tools (`tool.server ==
+    /// "builtin"`); ein MCP-Server dieses Namens darf es nicht geben.
+    #[test]
+    fn pol_015_builtin_server_name_is_reserved() {
+        let f = file("servers:\n  builtin:\n    command: x\n");
+        let merged = merge(&McpFile::default(), &f, None);
+        let err = merged[0].endpoint().err().unwrap_or_default();
+        assert!(err.contains("reserviert"), "{err}");
+    }
+
     #[test]
     fn invalid_entries_are_rejected_with_reason() {
         let f = file(

@@ -227,3 +227,30 @@ async fn pol_018_runner_counts_identical_calls_and_errors_in_a_row() {
     g.note_completed(ToolStatus::Ok);
     assert_eq!(g.decide(other("o5")).await, allow);
 }
+
+/// Review #285 B1: `mcp__builtin__Read` (MCP-Server namens `builtin`) passiert eine Allowlist
+/// `allow: [Read]` nicht.
+#[tokio::test]
+async fn pol_015_mcp_server_named_builtin_is_denied_by_the_gate() {
+    let env = Env::new();
+    env.policy("  - id: list\n    type: tool_allowlist\n    params: { allow: [Read] }\n");
+    let (g, _rx) = env.gate();
+    let d = g
+        .decide(req(
+            "b1",
+            "mcp__builtin__Read",
+            "mcp",
+            serde_json::json!({ "file_path": path(&env.wt().join("a")) }),
+        ))
+        .await;
+    assert!(denied(&d), "{d:?}");
+    let d = g
+        .decide(req(
+            "b2",
+            "Read",
+            "file_read",
+            serde_json::json!({ "file_path": path(&env.wt().join("a")) }),
+        ))
+        .await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+}

@@ -1053,3 +1053,95 @@ fn pol_017_branch_switch_in_the_same_command_counts_as_protected() {
     );
     assert_eq!(outcome(&d), "allow", "{d:?}");
 }
+
+// ---------------------------------------------------------------------------------------
+// Security-Review #285
+// ---------------------------------------------------------------------------------------
+
+fn raw<'a>(
+    harness: &'a str,
+    name: &'a str,
+    server: Option<&'a str>,
+    args: &'a Value,
+    trusted: Option<&'a [String]>,
+) -> beton_policy::normalize::RawToolCall<'a> {
+    beton_policy::normalize::RawToolCall {
+        harness,
+        native_name: name,
+        acp_kind: None,
+        mcp_server: server,
+        args,
+        cwd: "/repo",
+        home: None,
+        trusted_servers: trusted,
+    }
+}
+
+/// B1: Ein MCP-Server namens `builtin` gäbe seine Tools als eingebaute aus und passierte damit
+/// Namensmuster der Allowlist (`allow: [Read]`). Die Normalisierung lehnt ihn ab (fail closed),
+/// und Namensmuster gelten zusätzlich nie für die Klasse `mcp`.
+#[test]
+fn pol_015_mcp_server_named_builtin_cannot_pass_the_allowlist() {
+    use beton_policy::normalize::normalize;
+    let args = json!({ "file_path": "/repo/a" });
+    assert!(normalize(&raw("claude", "mcp__builtin__Read", None, &args, None)).is_err());
+    assert!(normalize(&raw("codex", "Read", Some("builtin"), &args, None)).is_err());
+    assert!(normalize(&raw("claude", "Read", Some("builtin"), &args, None)).is_err());
+    let mut input = Map::new();
+    input.insert(
+        "tool".into(),
+        json!({ "name": "mcp__builtin__Read", "args": args }),
+    );
+    assert!(activation(Phase::ToolCall, &json!({}), &input, Some("claude"), None).is_err());
+    // Selbst wenn ein Kontext `server: builtin` mit Klasse `mcp` trüge: kein Treffer.
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: list\n    type: tool_allowlist\n    params: { allow: [Read] }\n",
+    );
+    let act = Activation::new(
+        Phase::ToolCall,
+        json!({ "tool": { "name": "Read", "server": "builtin", "kind": "mcp", "args": {} } }),
+    )
+    .unwrap();
+    let d = eval(vec![s], &act);
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+}
+
+/// B1: Ein reservierter Name (`beton*`), den beton nicht selbst eingebunden hat, heißt nach der
+/// Normalisierung `untrusted:<name>`; `allow_servers: [beton]` trifft ihn nicht.
+#[test]
+fn pol_015_untrusted_beton_server_is_renamed_for_policies() {
+    use beton_policy::normalize::normalize;
+    let args = json!({});
+    let none: Vec<String> = Vec::new();
+    let n = normalize(&raw(
+        "claude",
+        "mcp__beton__session_spawn",
+        None,
+        &args,
+        Some(&none),
+    ))
+    .unwrap();
+    assert_eq!(n.server, "untrusted:beton");
+    assert_eq!(n.kind, "mcp");
+    let trusted = vec!["beton".to_owned()];
+    let n2 = normalize(&raw(
+        "claude",
+        "mcp__beton__session_spawn",
+        None,
+        &args,
+        Some(&trusted),
+    ))
+    .unwrap();
+    assert_eq!(n2.server, "beton");
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: list\n    type: tool_allowlist\n    params: { allow_servers: [beton] }\n",
+    );
+    let act = Activation::new(Phase::ToolCall, json!({ "tool": n.to_context() })).unwrap();
+    assert_eq!(outcome(&eval(vec![s.clone()], &act)), "deny");
+    let act = Activation::new(Phase::ToolCall, json!({ "tool": n2.to_context() })).unwrap();
+    assert_eq!(outcome(&eval(vec![s], &act)), "allow");
+}
