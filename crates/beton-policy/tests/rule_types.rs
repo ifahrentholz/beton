@@ -1189,3 +1189,91 @@ fn pol_024_layer_defaults_are_checked_at_start() {
     );
     assert!(check.is_clean(), "{check:?}");
 }
+
+/// M1 (a): Läuft ein Push bzw. Merge nicht im Worktree der Session (`git -C`, `--git-dir`,
+/// `--work-tree`, `GIT_DIR=`, vorangehendes `cd`, anderes `tool.cwd`), sagt `session.branch`
+/// nichts über den Branch: ohne Ziel der Form `src:dst` gilt er als geschützt.
+#[test]
+fn pol_017_push_or_merge_outside_the_worktree_counts_as_protected() {
+    let s = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ push: allow, merge: allow }}\n"),
+    );
+    for command in [
+        "git -C ../other push",
+        "git --git-dir=/x/.git push origin",
+        "git --work-tree /x push origin feature",
+        "GIT_DIR=/x/.git git push",
+        "cd ../other && git push origin feature",
+        "git -C ../other merge feature",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert_eq!(outcome(&d), "deny", "{command}: {d:?}");
+        assert_eq!(rule_ids(&d), ["git/protected"], "{command}");
+    }
+    let elsewhere = call_with(
+        "Bash",
+        json!({ "command": "git push", "cwd": "/other" }),
+        json!({ "session": { "branch": "feature" } }),
+    );
+    assert_eq!(outcome(&eval(vec![s.clone()], &elsewhere)), "deny");
+    // Mit `src:dst` zählt das Ziel.
+    let d = eval(
+        vec![s],
+        &git_call("git -C ../other push origin HEAD:feature", "feature"),
+    );
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+}
+
+/// M1 (b): Ziele mit `*`, `@`, der Kurzform `heads/…` oder ohne eindeutigen Branch-Namen gelten
+/// als geschützt.
+#[test]
+fn pol_017_unclear_push_targets_count_as_protected() {
+    for (command, targets) in [
+        ("git push origin 'refs/heads/*:refs/heads/*'", r#"["*"]"#),
+        ("git push origin @", r#"["*"]"#),
+        ("git push origin x:heads/main", r#"["*"]"#),
+        ("git push origin x:refs/for/main", r#"["*"]"#),
+        ("git push origin main~1:feature", r#"["feature"]"#),
+        ("git push origin main~1", r#"["*"]"#),
+        ("git push origin v1:refs/tags/v1", r#"["refs/tags/v1"]"#),
+    ] {
+        assert_eq!(
+            shell_value("shell.git_push_targets(tool.argv)", command),
+            targets,
+            "{command}"
+        );
+    }
+}
+
+/// M1 (c), (d): `-c remote.*|push.*|branch.*` ändert, wohin gepusht wird: `uncertain`;
+/// `git send-pack` ist ein Push.
+#[test]
+fn pol_017_push_config_overrides_are_uncertain_and_send_pack_is_a_push() {
+    let s = set(Scope::User, "u", GIT);
+    for command in [
+        "git -c remote.origin.push=refs/heads/main push",
+        "git -c push.default=matching push origin",
+        "git -c branch.feature.merge=refs/heads/main push",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert!(
+            rule_ids(&d).contains(&"git/uncertain".to_owned()),
+            "{command}: {d:?}"
+        );
+    }
+    assert_eq!(
+        shell_value(
+            "shell.git_ops(tool.argv)",
+            "git send-pack --force ../repo.git main"
+        ),
+        r#"["push","force_push"]"#
+    );
+    let d = eval(
+        vec![s],
+        &git_call("git send-pack ../repo.git main", "feature"),
+    );
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+    assert!(rule_ids(&d).contains(&"git/protected".to_owned()));
+}
