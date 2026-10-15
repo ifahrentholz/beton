@@ -304,6 +304,15 @@ impl Ctx<'_, '_> {
             Func::Under => ext::under(self.act.resolver(), s(0)?, s(1)?)
                 .map(Value::Bool)
                 .map_err(fail),
+            Func::Resolve => {
+                let path = s(0)?;
+                self.meter.charge(10 + text_cost(path.len()))?;
+                self.act
+                    .resolver()
+                    .resolve(path)
+                    .map(|p| Value::String(p.into()))
+                    .map_err(fail)
+            }
             Func::DomainMatches => Ok(Value::Bool(ext::domain_matches(s(0)?, s(1)?))),
             Func::BytesHuman => match &args[0] {
                 Value::Int(i) => u64::try_from(*i)

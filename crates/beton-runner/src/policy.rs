@@ -157,6 +157,9 @@ pub struct PolicyOptions {
     pub harness: HarnessId,
     pub workdir: PathBuf,
     pub home: Option<PathBuf>,
+    /// Projektverzeichnis (`session.project_root`, CLI-008); ohne Angabe aus `workdir`
+    /// ermittelt.
+    pub project_root: Option<PathBuf>,
     /// Policy-Verzeichnisse je Ebene (User `$BETON_HOME/policies`, Projekt
     /// `<worktree>/.beton/policies`).
     pub dirs: Vec<(Scope, PathBuf)>,
@@ -171,6 +174,7 @@ impl Default for PolicyOptions {
             harness: HarnessId::FAKE.parse().unwrap_or_else(|_| unreachable!()),
             workdir: PathBuf::from("/"),
             home: None,
+            project_root: None,
             dirs: Vec::new(),
             approval_timeout: APPROVAL_TIMEOUT,
             agent: None,
@@ -268,6 +272,7 @@ fn tool_vars(n: &beton_policy::normalize::NormalizedTool, call_index: Option<i64
         argv: Some(n.argv.clone()),
         cwd: Some(n.cwd.clone()),
         paths: Some(n.paths.clone()),
+        write_paths: Some(n.write_paths.clone()),
         urls: Some(n.urls.clone()),
         call_index,
         is_subagent_spawn: Some(n.is_subagent_spawn),
@@ -730,7 +735,13 @@ struct Evaluated {
 }
 
 impl PolicyGate {
-    pub fn new(opts: PolicyOptions, events: mpsc::UnboundedSender<GateEvent>) -> Self {
+    pub fn new(mut opts: PolicyOptions, events: mpsc::UnboundedSender<GateEvent>) -> Self {
+        if opts.project_root.is_none() {
+            opts.project_root = Some(beton_agents::resolve::project_root(
+                &opts.workdir,
+                Path::new(""),
+            ));
+        }
         let mut store = PolicyStore::new();
         for (scope, dir) in &opts.dirs {
             store.add_dir(*scope, dir);
@@ -1232,6 +1243,12 @@ impl PolicyGate {
                 tool_calls: Some(self.inner.calls.load(Ordering::SeqCst)),
                 started_at: Some(self.inner.started_at.clone()),
                 worktree: Some(self.inner.opts.workdir.display().to_string()),
+                project_root: self
+                    .inner
+                    .opts
+                    .project_root
+                    .as_ref()
+                    .map(|p| p.display().to_string()),
                 ..SessionVars::default()
             }),
             user: Some(UserVars {
@@ -1246,6 +1263,12 @@ impl PolicyGate {
                 os: Some(std::env::consts::OS.into()),
                 arch: Some(std::env::consts::ARCH.into()),
                 local: Some(true),
+                home: self
+                    .inner
+                    .opts
+                    .home
+                    .as_ref()
+                    .map(|h| h.display().to_string()),
                 ..HostVars::default()
             }),
             actor: Some(ActorVars {

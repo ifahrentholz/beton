@@ -819,6 +819,7 @@ impl<'a> Run<'a> {
                     ("argv", serde_json::json!(tool.argv)),
                     ("cwd", serde_json::json!(tool.cwd)),
                     ("paths", serde_json::json!(tool.paths)),
+                    ("write_paths", serde_json::json!(tool.write_paths)),
                     ("urls", serde_json::json!(tool.urls)),
                     ("parse_uncertain", serde_json::json!(tool.parse_uncertain)),
                 ] {

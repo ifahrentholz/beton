@@ -8,6 +8,7 @@
 //!
 //! `require_approval` (POL-014) entzuckert [`crate::load`] selbst.
 
+mod path_guard;
 mod tool_allowlist;
 
 use std::collections::BTreeMap;
@@ -71,6 +72,7 @@ pub(crate) fn desugar(
     let params = Params(rule.params.as_ref().unwrap_or(&empty));
     match t {
         RuleType::ToolAllowlist => Some(tool_allowlist::desugar(rule, &params, shadow)),
+        RuleType::PathGuard => Some(path_guard::desugar(&params)),
         _ => None,
     }
 }
@@ -91,6 +93,10 @@ impl Params<'_> {
             )),
             None => Ok(()),
         }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.0.get(name)
     }
 
     /// Liste von Texten (fehlt der Parameter: `None`).

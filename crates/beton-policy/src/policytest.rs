@@ -551,12 +551,20 @@ pub fn tool_context(
     Ok((ctx, source))
 }
 
+/// `host.home` ist das Home des Testlaufs, solange Fixtures es nicht setzen (POL-016).
+fn with_home(ctx: &mut Value, home: Option<&str>) {
+    if let Some(home) = home {
+        ctx["host"]["home"] = Value::String(home.to_owned());
+    }
+}
+
 /// Grundwerte des Kontexts (überschreibbar durch `fixtures` und `given`).
 fn defaults(harness: &str, now: &str) -> Value {
     json!({
         "now": now,
         "session": { "id": "ses_policytest", "harness": harness, "mode": "native", "cost_usd": 0.0,
-                     "tokens_in": 0, "tokens_out": 0, "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD },
+                     "tokens_in": 0, "tokens_out": 0, "turns": 0, "tool_calls": 0, "worktree": DEFAULT_CWD,
+                     "project_root": DEFAULT_CWD },
         "user": { "id": "usr_local", "timezone": "UTC", "daily_cost_usd": 0.0, "monthly_cost_usd": 0.0 },
         "actor": { "kind": "agent" },
         "approvals": { "granted_in_session": 0, "denied_in_session": 0 },
@@ -575,6 +583,7 @@ pub fn activation(
 ) -> Result<Activation, String> {
     let harness = harness.unwrap_or(DEFAULT_HARNESS);
     let mut ctx = defaults(harness, DEFAULT_NOW);
+    with_home(&mut ctx, home);
     merge(&mut ctx, fixtures);
     let (ctx, source) = with_input(phase, ctx, input, harness, home)?;
     build(phase, ctx, source)
@@ -596,6 +605,9 @@ fn with_input(
             .as_str()
             .unwrap_or(DEFAULT_CWD)
             .to_owned();
+        // `~` wie `host.home` des Kontexts (Fixtures), sonst das Home des Testlaufs.
+        let fixture_home = ctx["host"]["home"].as_str().map(str::to_owned);
+        let home = fixture_home.as_deref().or(home);
         let (t, s) = tool_context(&tool, harness, &cwd, home)?;
         ctx["tool"] = t;
         source = Some(s);
@@ -785,6 +797,7 @@ impl CaseState {
         given.remove("state");
         let now = self.now.format(&Rfc3339).map_err(|e| e.to_string())?;
         let mut vars = defaults(harness, &now);
+        with_home(&mut vars, ctx.home.as_deref());
         merge(&mut vars, &ctx.fixtures);
         vars["now"] = Value::String(now.clone());
         merge(&mut vars, &Value::Object(given.clone()));

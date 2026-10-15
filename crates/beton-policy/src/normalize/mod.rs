@@ -67,6 +67,8 @@ pub struct NormalizedTool {
     pub argv: Vec<Vec<String>>,
     pub cwd: String,
     pub paths: Vec<String>,
+    /// Pfade aus `paths`, in die der Call schreibt (POL-016).
+    pub write_paths: Vec<String>,
     pub urls: Vec<String>,
     pub is_subagent_spawn: bool,
     pub parse_uncertain: bool,
@@ -85,6 +87,7 @@ impl NormalizedTool {
             "argv": self.argv,
             "cwd": self.cwd,
             "paths": self.paths,
+            "write_paths": self.write_paths,
             "urls": self.urls,
             "is_subagent_spawn": self.is_subagent_spawn,
             "parse_uncertain": self.parse_uncertain,
@@ -400,6 +403,12 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         .as_ref()
         .and_then(|key| raw.args.get(key))
         .and_then(command_string);
+    // Datei-Tools, die schreiben: alle ihre Pfade (POL-016).
+    let mut write_paths: Vec<String> = if matches!(spec.kind.as_str(), "file_write" | "file_edit") {
+        paths.clone()
+    } else {
+        Vec::new()
+    };
     let mut argv = Vec::new();
     let mut parse_uncertain = false;
     if let Some(cmd) = &command {
@@ -407,12 +416,19 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         for target in &parsed.redirects {
             if target != "/dev/null" {
                 push(abs(target), &mut paths);
+                push(abs(target), &mut write_paths);
             }
         }
         for sub in &parsed.argv {
             for word in sub.iter().skip(1) {
                 if looks_like_path(word) {
                     push(abs(word), &mut paths);
+                }
+            }
+            let words: Vec<&str> = sub.iter().map(String::as_str).collect();
+            for word in shell::written_args(&words) {
+                if looks_like_path(word) {
+                    push(abs(word), &mut write_paths);
                 }
             }
         }
@@ -430,6 +446,7 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         argv,
         cwd,
         paths,
+        write_paths,
         urls: urls(raw.args),
         is_subagent_spawn: spec.subagent_spawn,
         parse_uncertain,

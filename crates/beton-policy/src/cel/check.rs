@@ -57,6 +57,7 @@ pub(crate) enum Func {
     ToString,
     Glob(Option<Arc<Regex>>),
     Under,
+    Resolve,
     DomainMatches,
     BytesHuman,
     HasCommand,
@@ -679,6 +680,12 @@ impl Checker<'_> {
                     _ => (Func::DomainMatches, Ty::Bool),
                 }
             }
+            "resolve" if n == 1 => {
+                if !is(0, &Ty::String) {
+                    return Err(mismatch());
+                }
+                (Func::Resolve, Ty::String)
+            }
             "bytes_human" if n == 1 => {
                 if !matches!(types[0], Ty::Int | Ty::Uint | Ty::Dyn) {
                     return Err(mismatch());
@@ -711,8 +718,9 @@ impl Checker<'_> {
             }
             known @ ("size" | ".size" | "matches" | ".matches" | ".startsWith" | ".endsWith"
             | ".contains" | "duration" | "timestamp" | "int" | "uint" | "double"
-            | "string" | "glob" | "under" | "domain_matches" | "bytes_human"
-            | "shell.has_command" | "shell.has_flag" | "url.host" | "url.path") => {
+            | "string" | "glob" | "under" | "resolve" | "domain_matches"
+            | "bytes_human" | "shell.has_command" | "shell.has_flag" | "url.host"
+            | "url.path") => {
                 return Err(self.err(
                     id,
                     format!(
