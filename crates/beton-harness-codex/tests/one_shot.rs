@@ -38,6 +38,7 @@ fn launcher() -> ReplayLauncher {
 async fn ses_010_codex_one_shot_fails_closed_without_starting_the_cli() {
     let l = launcher();
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(l.clone()),
         env: HostEnv::default(),

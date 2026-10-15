@@ -402,3 +402,30 @@ fn prx_002_ac1_ca_is_never_in_a_system_trust_store() {
         }
     }
 }
+
+#[test]
+fn prx_001_ca_handover_to_the_runner_roundtrips_and_hides_the_key() {
+    let ca = BetonCa::generate("nod_x", OffsetDateTime::now_utc()).unwrap();
+    let h = ca.handover().unwrap();
+    // `Debug` zeigt weder Schlüssel noch Zertifikat.
+    let dbg = format!("{h:?}");
+    assert!(!dbg.contains(h.expose()) && dbg.len() < 40, "{dbg}");
+    let back = BetonCa::from_handover(h.expose()).unwrap();
+    assert_eq!(back.info(), ca.info());
+    assert_eq!(back.key_pkcs8_der(), ca.key_pkcs8_der());
+}
+
+#[test]
+fn prx_002_handover_fails_closed_when_corrupt_or_expired() {
+    for text in ["", "{}", "kein json", "{\"v\":2}"] {
+        let e = BetonCa::from_handover(text).unwrap_err();
+        assert_eq!(e.code(), "proxy_ca_corrupt", "{text}");
+    }
+    let old = BetonCa::generate(
+        "nod_x",
+        OffsetDateTime::now_utc() - time::Duration::days(800),
+    )
+    .unwrap();
+    let e = BetonCa::from_handover(old.handover().unwrap().expose()).unwrap_err();
+    assert_eq!(e.code(), "proxy_ca_expired");
+}

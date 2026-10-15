@@ -409,6 +409,24 @@ impl Harness {
                 label: "test".into(),
                 rules: RuleSet::compile(rules).unwrap(),
                 allow_private: PrivateAllowList::parse(allow_private).unwrap(),
+                ..InstanceSpec::default()
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Instanz mit Passthrough-Zielen (PRX-005).
+    pub async fn instance_passthrough(
+        &self,
+        rules: &[&str],
+        passthrough: &[&str],
+    ) -> ProxyInstance {
+        self.proxy
+            .start(InstanceSpec {
+                label: "test/harness".into(),
+                rules: RuleSet::compile(rules).unwrap(),
+                passthrough: crate::Passthrough::parse(passthrough).unwrap(),
+                ..InstanceSpec::default()
             })
             .await
             .unwrap()

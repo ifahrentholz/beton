@@ -84,7 +84,9 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
         .layers()?
         .settings()
         .map_err(|e| CliError::new(Exit::General, e))?;
-    let spec = settings.sandbox;
+    // Presets und Herkunft je Feld (SBX-012 AC3).
+    let (spec, origins) =
+        beton_sandbox::SandboxSpec::merged_with_origins(&[("user", &settings.sandbox)]);
     let stage = match args.stage {
         SandboxStageArg::Harness => Stage::Harness,
         SandboxStageArg::Tools => Stage::Tools,
@@ -113,7 +115,7 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
     let policy = beton_sandbox::resolve(provider.id(), &spec, &rctx).map_err(sandbox_error)?;
     let probe = provider.probe();
     let check = beton_sandbox::check_caps(&probe, &policy).err();
-    let mut v = beton_sandbox::explain::explain(&policy);
+    let mut v = beton_sandbox::explain::with_origins(&policy, &origins);
     if let Value::Object(map) = &mut v {
         map.insert("available".into(), json!(check.is_none()));
         if let Some(e) = &check {
@@ -124,7 +126,13 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
     if ctx.global.json {
         return print_json(&v);
     }
-    print!("{}", render(&policy, &probe, check.as_ref(), &rctx.home));
+    let mut text = render(&policy, &probe, check.as_ref(), &rctx.home);
+    let from: Vec<String> = origins
+        .iter()
+        .map(|(field, origin)| format!("{field}: {origin}"))
+        .collect();
+    list(&mut text, "Herkunft", &from);
+    print!("{text}");
     Ok(())
 }
 

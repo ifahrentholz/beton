@@ -50,6 +50,7 @@ async fn start(
         ),
     );
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher: Arc::new(RealLauncher),
         env,

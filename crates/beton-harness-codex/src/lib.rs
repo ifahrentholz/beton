@@ -32,8 +32,8 @@ use beton_harness::{
     ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
     HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, NormalizedEvent,
     OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport, SessionSpec,
-    Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport, UsageReporting,
-    UserInput,
+    Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, ToolIsolation, Transport,
+    UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Notify, mpsc};
@@ -66,6 +66,26 @@ pub fn sandbox_mode(mode: Option<PermissionMode>) -> &'static str {
         Some(PermissionMode::Plan) => "read-only",
         Some(PermissionMode::Yolo) => "danger-full-access",
         _ => SANDBOX_MODE,
+    }
+}
+
+/// Wie [`sandbox_mode`]; in der Stufe-1-Sandbox von beton (`beton_stage`) läuft Codex ohne
+/// eigene Sandbox, weil sich Seatbelt nicht verschachteln lässt (SBX-002). Tools laufen dann
+/// mit den Rechten der Stufe 1 (`tool_isolation: inherited`).
+pub fn sandbox_mode_for(mode: Option<PermissionMode>, beton_stage: bool) -> &'static str {
+    if beton_stage {
+        "danger-full-access"
+    } else {
+        sandbox_mode(mode)
+    }
+}
+
+/// Wie [`sandbox_policy`], in der Stufe-1-Sandbox von beton immer ohne eigene Sandbox.
+pub fn sandbox_policy_for(mode: PermissionMode, beton_stage: bool) -> Value {
+    if beton_stage {
+        json!({"type": "dangerFullAccess"})
+    } else {
+        sandbox_policy(mode)
     }
 }
 
@@ -161,6 +181,9 @@ pub fn capabilities() -> Capabilities {
         // Eingabefenster der GPT-5-Codex-Modelle (Handover-Budget, HAR-018).
         context_window: Some(272_000),
         // Codex liest `AGENTS.md` selbst, `CLAUDE.md` nicht (AGT-005).
+        // codex-cli 0.161.0 startet Kommandos mit der Login-Shell aus der Benutzerdatenbank
+        // (absoluter Pfad); PATH- und SHELL-Shims greifen nicht (SBX-002, WP-45 verifiziert).
+        tool_isolation: ToolIsolation::Inherited,
         native_project_files: vec!["AGENTS.md".into()],
     }
 }
@@ -303,7 +326,8 @@ impl HarnessAdapter for CodexAdapter {
             spec.permission_mode == Some(PermissionMode::Yolo),
         ));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
-        match handshake(&rpc, &spec, self.handshake_timeout).await {
+        let beton_stage = ctx.stage.is_some();
+        match handshake(&rpc, &spec, beton_stage, self.handshake_timeout).await {
             Ok(thread) => {
                 let thread_id = thread.id.clone();
                 let state = Arc::new(Mutex::new(MapState {
@@ -356,6 +380,7 @@ impl HarnessAdapter for CodexAdapter {
                     },
                     accept_edits,
                     yolo,
+                    beton_stage,
                 }))
             }
             Err(e) => {
@@ -404,6 +429,7 @@ pub fn mcp_config(spec: &SessionSpec) -> Option<Value> {
 async fn handshake(
     rpc: &RpcClient,
     spec: &SessionSpec,
+    beton_stage: bool,
     timeout: Duration,
 ) -> Result<Thread, HarnessError> {
     let init = rpc
@@ -441,7 +467,7 @@ async fn handshake(
     let mut params = json!({
         "cwd": spec.workdir.display().to_string(),
         "approvalPolicy": APPROVAL_POLICY,
-        "sandbox": sandbox_mode(spec.permission_mode),
+        "sandbox": sandbox_mode_for(spec.permission_mode, beton_stage),
     });
     if let Some(model) = &spec.model {
         params["model"] = json!(model);
@@ -840,6 +866,8 @@ pub struct CodexSession {
     next: NextTurn,
     accept_edits: Arc<AtomicBool>,
     yolo: Arc<AtomicBool>,
+    /// Läuft in der Stufe-1-Sandbox von beton (ohne eigene Codex-Sandbox, SBX-002).
+    beton_stage: bool,
 }
 
 impl CodexSession {
@@ -965,7 +993,7 @@ impl HarnessSession for CodexSession {
         // Die Freigabe-Politik bleibt `untrusted`; `plan` macht die Codex-Sandbox
         // schreibgeschützt, `accept_edits` gibt Datei-Änderungen im Workspace ohne Rückfrage
         // frei (HAR-027).
-        self.next.sandbox_policy = Some(sandbox_policy(mode));
+        self.next.sandbox_policy = Some(sandbox_policy_for(mode, self.beton_stage));
         self.accept_edits
             .store(mode == PermissionMode::AcceptEdits, Ordering::SeqCst);
         self.yolo
@@ -1032,6 +1060,20 @@ mod tests {
             SANDBOX_MODE
         );
         assert_eq!(sandbox_policy(PermissionMode::Plan)["type"], "readOnly");
+        // SBX-002: in der Stufe-1-Sandbox von beton ohne eigene (nicht verschachtelbare)
+        // Codex-Sandbox.
+        for m in [
+            None,
+            Some(PermissionMode::Plan),
+            Some(PermissionMode::Default),
+        ] {
+            assert_eq!(sandbox_mode_for(m, true), "danger-full-access", "{m:?}");
+            assert_eq!(sandbox_mode_for(m, false), sandbox_mode(m));
+        }
+        assert_eq!(
+            sandbox_policy_for(PermissionMode::Plan, true)["type"],
+            "dangerFullAccess"
+        );
         // `yolo` ohne zweite Sandbox (die beton-Sandbox ist Voraussetzung, HAR-027).
         assert_eq!(
             sandbox_mode(Some(PermissionMode::Yolo)),

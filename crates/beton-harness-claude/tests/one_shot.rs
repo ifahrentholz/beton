@@ -38,6 +38,7 @@ fn replay(line: &str) -> ReplayLauncher {
 
 fn ctx(launcher: ReplayLauncher) -> AdapterContext {
     AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(launcher),
         env: HostEnv::default(),

@@ -16,6 +16,7 @@
 //! verbietet ein Clippy-Lint (`disallowed-methods`) den direkten `Command`-Start (SBX-001 AC2).
 //! Fail closed: Fehlt eine geforderte Capability, startet nichts.
 
+pub mod broker;
 pub mod caps;
 pub mod child;
 pub mod command;
@@ -26,6 +27,7 @@ pub mod linux;
 pub mod masks;
 pub mod none;
 pub mod paths;
+pub mod preset;
 #[cfg(target_os = "macos")]
 mod proctree;
 pub mod provider;
@@ -33,6 +35,18 @@ pub mod registry;
 pub mod resolve;
 pub mod seatbelt;
 pub mod spec;
+
+/// Basis für die Verzeichnisse einer Session mit zweistufiger Sandbox (Scratch beider Stufen,
+/// Austausch, Broker-Socket, CA-Bundle). Unter Linux `/var/tmp`, nicht `/tmp` bzw. `TMPDIR`:
+/// In der Sandbox ist `/tmp` ein privates tmpfs mit Schreibrecht, und Landlock-Regeln erben die
+/// Rechte der Vorfahren; im Austausch ließen sich dort Symlinks nicht sperren (SBX-002). Sonst
+/// das temporäre Verzeichnis des Benutzers. Die Auflösung prüft das zusätzlich (fail closed).
+pub fn session_base() -> std::path::PathBuf {
+    if cfg!(target_os = "linux") && std::path::Path::new("/var/tmp").is_dir() {
+        return std::path::PathBuf::from("/var/tmp");
+    }
+    std::env::temp_dir()
+}
 
 pub use caps::{Cap, CapSet};
 pub use child::{Output, SandboxedChild};
@@ -44,7 +58,7 @@ pub use none::NoneProvider;
 pub use provider::{ProbeReport, ProviderId, SandboxProvider};
 pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
 pub use resolve::{
-    Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Stage, check_caps,
-    mark_unenforced_limits, resolve,
+    ExecAccess, Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Secret, Stage,
+    check_caps, mark_unenforced_limits, resolve,
 };
-pub use spec::{BackendChoice, Limits, SandboxSpec, WorkspaceAccess};
+pub use spec::{BackendChoice, HarnessSandboxConfig, Limits, Preset, SandboxSpec, WorkspaceAccess};

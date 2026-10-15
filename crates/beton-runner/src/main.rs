@@ -6,12 +6,16 @@
 
 use std::process::ExitCode;
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|a| a == "mcp") {
-        return beton_mcp::relay::main(&args[1..]).await;
+fn main() -> ExitCode {
+    // Wie `beton`: Linux-Launcher (`__sandbox-exec`, vor jedem weiteren Thread) und `bt-exec`
+    // (SBX-002), damit Tests das zweistufige Modell mit diesem Binary prüfen können.
+    if let Some(code) = beton_sandbox::linux::launcher_dispatch() {
+        return code;
     }
+    if let Some(code) = beton_sandbox::broker::exec_dispatch() {
+        return code;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
     // Wie `beton hook …` (HAR-005): der Runner schreibt sein eigenes Binary als Kommando des
     // `PreToolUse`-Hooks in die Settings der CLI.
     if args.first().is_some_and(|a| a == "hook") {
@@ -23,5 +27,20 @@ async fn main() -> ExitCode {
         let _ = std::io::stderr().write_all(out.stderr.as_bytes());
         return ExitCode::from(u8::try_from(out.exit).unwrap_or(2));
     }
-    beton_runner::main_from_env().await
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("beton-runner: Laufzeit nicht startbar: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async {
+        if args.first().is_some_and(|a| a == "mcp") {
+            return beton_mcp::relay::main(&args[1..]).await;
+        }
+        beton_runner::main_from_env().await
+    })
 }

@@ -118,6 +118,8 @@ problem_codes! {
     /// Die Redaction-Pipeline ist nicht bereit; nichts wurde geschrieben oder gesendet
     /// (SEC-013, fail closed).
     RedactionUnavailable = "redaction_unavailable", 503, "Redaction nicht bereit";
+    /// Sandbox bzw. Egress-Proxy der Session nicht startbar (SBX-006, PRX-002, PROTO-011).
+    SandboxUnavailable = "sandbox_unavailable", 503, "Sandbox nicht verfügbar";
 }
 
 /// Ein Validierungsfehler mit JSON-Pointer auf das Feld.

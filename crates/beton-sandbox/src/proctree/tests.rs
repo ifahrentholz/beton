@@ -42,7 +42,7 @@ async fn tree_with_setsid_descendant(tag: &str) -> (SandboxedChild, String) {
         "perl -e 'use POSIX; POSIX::setsid(); exec \"sleep\", \"{marker}\"' & sleep {marker}"
     );
     let spec = CommandSpec::new("/bin/sh").stdio(Stdio::Null, Stdio::Null, Stdio::Null);
-    let mut cmd = crate::child::command(std::path::Path::new("/bin/sh"), &spec);
+    let mut cmd = crate::child::command(std::path::Path::new("/bin/sh"), &spec).unwrap();
     cmd.args(["-c", &script]);
     let child = crate::child::spawn(cmd).unwrap();
     let root = child.id().unwrap();

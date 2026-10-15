@@ -712,8 +712,18 @@ fn target_run(
         drop_caps()?;
         util::set_no_new_privs().map_err(|e| StepError::io("landlock", "no_new_privs", e))?;
         let rules = plan::landlock_rules(plan, missing);
-        let unix_dirs = [Path::new("/tmp"), plan.scratch.as_path()];
-        landlock::apply(abi, &rules, proxy_port, &unix_dirs)
+        // Unix-Sockets mit Pfad (ab ABI 9): privates `/tmp`, Scratch und die Verzeichnisse
+        // ausdrücklich freigegebener Sockets (Stufe 1: Exec-Broker, SBX-002).
+        let mut unix_dirs = vec![Path::new("/tmp"), plan.scratch.as_path()];
+        unix_dirs.extend(plan.unix_sockets.iter().filter_map(|s| s.parent()));
+        let tcp = landlock::Tcp {
+            connect: proxy_port
+                .into_iter()
+                .chain(plan.dev_ports.iter().copied())
+                .collect(),
+            bind: plan.dev_ports.clone(),
+        };
+        landlock::apply(abi, &rules, &tcp, &unix_dirs)
             .map_err(|m| StepError::new("landlock", m))?;
         util::cloexec_from(3).map_err(|e| StepError::io("start", "close_range", e))?;
         seccomp::apply(abi).map_err(|m| StepError::new("seccomp", m))?;

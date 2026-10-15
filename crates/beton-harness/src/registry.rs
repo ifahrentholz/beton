@@ -125,9 +125,45 @@ impl HarnessesConfig {
         if text.trim().is_empty() {
             return Ok(Self::default());
         }
-        serde_norway::from_str::<File>(&text)
+        let cfg = serde_norway::from_str::<File>(&text)
             .map(|f| f.harnesses)
-            .map_err(|e| format!("{}: {e}", path.display()))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        cfg.check_project()
+            .map_err(|(key, message)| format!("{}: {key}: {message}", path.display()))?;
+        Ok(cfg)
+    }
+
+    /// Prüft eine Projektebene (SBX-002, #200): Die Projektdatei ist Repo-Inhalt, den auch
+    /// Harness und Tools in der Sandbox schreiben können. Sie darf Harnesses nur verschärfen
+    /// (`isolated: true`, `mcp_bridge`, `default`) und nie wählen, was in Stufe 1 läuft oder
+    /// dorthin gelangt: kein `command`, keine `extra_args`, kein `env_passthrough`, kein
+    /// `isolated: false`, keine ACP-Agents; `auth` nur vom Benutzer (HAR-015). Fehler:
+    /// (Schlüssel, Grund).
+    pub fn check_project(&self) -> Result<(), (String, String)> {
+        const WHY: &str = "nur in der User-Konfiguration erlaubt: die Projektdatei darf die \
+                           Isolation nur verschärfen (SBX-002)";
+        if !self.acp.is_empty() {
+            return Err(("harnesses.acp".into(), WHY.into()));
+        }
+        for (id, e) in &self.entries {
+            let key = |field: &str| format!("harnesses.{id}.{field}");
+            if e.auth.is_some() {
+                return Err((
+                    key("auth"),
+                    "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
+                ));
+            }
+            let loosening = [
+                ("command", e.command.is_some()),
+                ("extra_args", !e.extra_args.is_empty()),
+                ("env_passthrough", !e.env_passthrough.is_empty()),
+                ("isolated", e.isolated == Some(false)),
+            ];
+            if let Some((field, _)) = loosening.into_iter().find(|(_, set)| *set) {
+                return Err((key(field), WHY.into()));
+            }
+        }
+        Ok(())
     }
 
     /// Auth-Herkunft eines Harness; Default `subscription` (ADR-0034).
@@ -165,6 +201,8 @@ pub struct HarnessLayers {
 #[serde(rename_all = "snake_case")]
 pub enum BinarySource {
     Env,
+    // Nicht mehr vergeben: Die Projekt-Config wählt kein Binary (SBX-002); bleibt für die
+    // API erhalten.
     ProjectConfig,
     UserConfig,
     Path,
@@ -177,8 +215,8 @@ pub struct ResolvedBinary {
     pub source: BinarySource,
 }
 
-/// Löst das Binary eines Harness auf: `BETON_<NAME>_PATH` → Projekt-Config → User-Config →
-/// `PATH` (mit `default_command`). Ein Env-Wert, der keine existierende Datei ist, wird an
+/// Löst das Binary eines Harness auf: `BETON_<NAME>_PATH` → User-Config → `PATH` (mit
+/// `default_command`); die Projekt-Config wählt kein Binary (SBX-002). Ein Env-Wert, der keine existierende Datei ist, wird an
 /// Leerzeichen in Programm und Argumente geteilt (z. B. `beton-fake-cli --protocol …`).
 pub fn resolve_binary(
     id: &HarnessId,
@@ -197,19 +235,15 @@ pub fn resolve_binary(
             source: BinarySource::Env,
         });
     }
-    for (config, source) in [
-        (&env.project, BinarySource::ProjectConfig),
-        (&env.user, BinarySource::UserConfig),
-    ] {
-        if let Some(entry) = config.entries.get(id.as_str())
-            && let Some(command) = &entry.command
-        {
-            return Some(ResolvedBinary {
-                program: find_program(command, env)?,
-                args: entry.extra_args.clone(),
-                source,
-            });
-        }
+    // Nie aus der Projektebene (SBX-002): Das Repo wählt nicht, was in Stufe 1 läuft.
+    if let Some(entry) = env.user.entries.get(id.as_str())
+        && let Some(command) = &entry.command
+    {
+        return Some(ResolvedBinary {
+            program: find_program(command, env)?,
+            args: entry.extra_args.clone(),
+            source: BinarySource::UserConfig,
+        });
     }
     Some(ResolvedBinary {
         program: find_program(default_command, env)?,
@@ -515,6 +549,7 @@ mod tests {
         registry.register(std::sync::Arc::new(crate::fake::FakeAdapter));
         let id: HarnessId = HarnessId::FAKE.parse().unwrap();
         let ctx = crate::AdapterContext {
+            stage: None,
             gate: std::sync::Arc::new(crate::AllowAll),
             launcher: std::sync::Arc::new(crate::process::RealLauncher),
             env: crate::HostEnv::default(),
@@ -528,6 +563,43 @@ mod tests {
         assert_eq!(err.code(), "sandbox_required");
     }
 
+    /// Die Projektebene ist Repo-Inhalt, den auch die Sandbox schreiben kann: Sie darf die
+    /// Isolation nur verschärfen und nie wählen, was in Stufe 1 läuft (SBX-002, #200).
+    #[test]
+    fn sbx_002_project_layer_may_only_tighten_harness_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
+        for (yaml, key) in [
+            ("claude:\n    command: ./x\n", "harnesses.claude.command"),
+            (
+                "claude:\n    extra_args: [\"--settings\", \"{}\"]\n",
+                "harnesses.claude.extra_args",
+            ),
+            (
+                "claude:\n    env_passthrough: [AWS_SECRET_ACCESS_KEY]\n",
+                "harnesses.claude.env_passthrough",
+            ),
+            (
+                "claude:\n    isolated: false\n",
+                "harnesses.claude.isolated",
+            ),
+            ("claude:\n    auth: api_key\n", "harnesses.claude.auth"),
+            (
+                "acp:\n    agents:\n      gemini:\n        command: ./x\n",
+                "harnesses.acp",
+            ),
+        ] {
+            std::fs::write(
+                dir.path().join(".beton/config.yaml"),
+                format!("harnesses:\n  {yaml}"),
+            )
+            .unwrap();
+            let err = HarnessesConfig::load_project(dir.path()).unwrap_err();
+            assert!(err.contains(key), "{key}: {err}");
+            assert!(err.contains("config.yaml"), "{err}");
+        }
+    }
+
     #[test]
     fn har_003_project_config_is_read_from_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
@@ -539,15 +611,13 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".beton")).unwrap();
         std::fs::write(
             dir.path().join(".beton/config.yaml"),
-            "events:\n  store_raw: false\nharnesses:\n  claude:\n    command: ./bin/claude\n    isolated: true\n",
+            "events:\n  store_raw: false\nharnesses:\n  default: codex\n  claude:\n    isolated: true\n    mcp_bridge: false\n",
         )
         .unwrap();
         let cfg = HarnessesConfig::load_project(dir.path()).unwrap();
-        assert_eq!(
-            cfg.entries["claude"].command.as_deref(),
-            Some("./bin/claude")
-        );
+        assert_eq!(cfg.default.as_deref(), Some("codex"));
         assert_eq!(cfg.entries["claude"].isolated, Some(true));
+        assert_eq!(cfg.entries["claude"].mcp_bridge, Some(false));
         assert_eq!(cfg.auth("claude"), HarnessAuth::Subscription);
         std::fs::write(
             dir.path().join(".beton/config.yaml"),
@@ -572,7 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn har_003_ac1_binary_precedence_env_project_user_path() {
+    fn har_003_ac1_binary_precedence_env_user_path_never_project() {
         let dir = tempfile::tempdir().unwrap();
         let (env_bin, project_bin, user_bin) = (
             exe(dir.path(), "claude-env", ""),
@@ -602,8 +672,10 @@ mod tests {
         assert_eq!(resolve(&env).program, env_bin);
         assert_eq!(resolve(&env).source, BinarySource::Env);
         env.vars.clear();
-        assert_eq!(resolve(&env).program, project_bin);
-        assert_eq!(resolve(&env).source, BinarySource::ProjectConfig);
+        // Ein Binary aus der Projektebene gilt nie (SBX-002): Das Repo wählt nicht, was in
+        // Stufe 1 läuft.
+        assert_eq!(resolve(&env).program, user_bin);
+        assert_eq!(resolve(&env).source, BinarySource::UserConfig);
         env.project.entries.clear();
         assert_eq!(resolve(&env).program, user_bin);
         assert_eq!(resolve(&env).source, BinarySource::UserConfig);

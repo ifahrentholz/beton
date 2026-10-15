@@ -53,6 +53,13 @@ cap_enum!(UsageReporting {
     TokensAndCost
 });
 cap_enum!(CompactionSupport { None, Native });
+cap_enum!(
+    /// Wie Tool-Ausführungen in Stufe 2 landen (SBX-002): `inherited` – gar nicht, Tools laufen
+    /// im Prozess des Harness (Stufe 1, *degraded*, nur mit `require_tool_isolation: false`);
+    /// `shell_override` – über `bt-exec` als Shell des Harness; `beton` – beton führt die Tools
+    /// selbst aus (Direkt-API, ACP mit `terminal/*`).
+    ToolIsolation { Inherited, ShellOverride, Beton }
+);
 cap_enum!(InstructionsDelivery {
     FirstMessagePrefix,
     AppendSystemPrompt,
@@ -120,6 +127,9 @@ pub struct Capabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub context_window: Option<u64>,
+    /// Wie Tools in Stufe 2 landen (SBX-002).
+    #[serde(default)]
+    pub tool_isolation: ToolIsolation,
     /// Projektdateien, die der Harness selbst liest (z. B. Claude `CLAUDE.md`, Codex
     /// `AGENTS.md`); bei `project_files: auto` liefert beton nur die übrigen (AGT-005).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -161,6 +171,7 @@ impl Capabilities {
             efforts: Vec::new(),
             permission_modes: Vec::new(),
             context_window: None,
+            tool_isolation: ToolIsolation::Inherited,
             native_project_files: Vec::new(),
         }
     }
