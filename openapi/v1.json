@@ -2160,7 +2160,7 @@
             }
           },
           "400": {
-            "description": "Ungültige Anfrage",
+            "description": "`validation_failed`, z. B. `max_cost_usd` nicht positiv",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6259,6 +6259,38 @@
           }
         }
       },
+      "BudgetExhaustedView": {
+        "type": "object",
+        "description": "Ein erreichtes Budget-Limit einer Auswertung.",
+        "required": [
+          "rule_id",
+          "scope",
+          "set",
+          "budget_scope",
+          "action"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "description": "Regel-ID (`max-cost` beim Session-Budget, API-006)."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Ebene des Sets."
+          },
+          "set": {
+            "type": "string"
+          },
+          "budget_scope": {
+            "type": "string",
+            "description": "Kostenbereich: `session`, `run`, `subtree` oder `user`."
+          },
+          "action": {
+            "type": "string",
+            "description": "`deny` oder `ask`."
+          }
+        }
+      },
       "CatalogEntryView": {
         "type": "object",
         "description": "Ein Modell des mitgelieferten Preis-Katalogs (USE-002); USD je 1 Mio. Tokens, wie im\nKatalog angegeben (fehlende Cache-Raten bleiben leer).",
@@ -6513,6 +6545,14 @@
                 "type": "null"
               }
             ]
+          },
+          "max_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);\nerreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab."
           }
         }
       },
@@ -7533,7 +7573,8 @@
           "enforcement",
           "decision",
           "explanation",
-          "explain"
+          "explain",
+          "budget_exhausted"
         ],
         "properties": {
           "outcome": {
@@ -7555,6 +7596,13 @@
           "explain": {
             "type": "string",
             "description": "Erklärung als Text."
+          },
+          "budget_exhausted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetExhaustedView"
+            },
+            "description": "Budget-Limits, die diese Auswertung erreicht (POL-011, POL-012; wie `budget.exhausted`)."
           }
         }
       },

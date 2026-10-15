@@ -60,6 +60,8 @@ pub(crate) enum Func {
     Resolve,
     DomainMatches,
     BytesHuman,
+    /// `priced(model)`: Listenpreis im Preis-Katalog (POL-011).
+    Priced,
     HasCommand,
     HasFlag,
     GitOps,
@@ -683,6 +685,12 @@ impl Checker<'_> {
                     _ => (Func::DomainMatches, Ty::Bool),
                 }
             }
+            "priced" if n == 1 => {
+                if !is(0, &Ty::String) {
+                    return Err(mismatch());
+                }
+                (Func::Priced, Ty::Bool)
+            }
             "resolve" if n == 1 => {
                 if !is(0, &Ty::String) {
                     return Err(mismatch());
@@ -749,6 +757,7 @@ impl Checker<'_> {
             | "resolve"
             | "domain_matches"
             | "bytes_human"
+            | "priced"
             | "shell.has_command"
             | "shell.has_flag"
             | "shell.git_ops"

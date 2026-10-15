@@ -371,6 +371,8 @@ pub struct CreateSession {
     pub harness_opts: Value,
     /// Eigener Worktree (SES-015).
     pub worktree: Option<WorktreeSpec>,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Worktree-Wunsch beim Anlegen einer Session (SES-015).
@@ -570,6 +572,7 @@ impl<'a> SessionManager<'a> {
                     trigger: SessionTrigger::Api,
                     home_node: self.state.local.node,
                     harness_opts: req.harness_opts.clone(),
+                    max_cost_usd: req.max_cost_usd,
                 },
             )
             .await;
@@ -837,6 +840,8 @@ impl<'a> SessionManager<'a> {
                     sandbox,
                     proxy_ca,
                     compaction: self.state.runtime.compaction,
+                    max_cost_usd: created.max_cost_usd,
+                    spawned: created.trigger == SessionTrigger::Spawn,
                 },
             )
             .await

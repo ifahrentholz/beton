@@ -267,6 +267,7 @@ impl SessionManager<'_> {
                     trigger: SessionTrigger::User,
                     home_node: self.state().local.node,
                     harness_opts,
+                    max_cost_usd: None,
                 },
             )
             .await;

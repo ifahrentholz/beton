@@ -40,4 +40,10 @@ harness_opts?: Record<string, unknown>,
  * Eigener `git worktree` mit eigenem Branch für die Session (SES-015). `cwd` muss dann in
  * einem Git-Repository liegen; die Session arbeitet im Worktree.
  */
-worktree?: WorktreeRequest, };
+worktree?: WorktreeRequest, 
+/**
+ * Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+ * `spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);
+ * erreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab.
+ */
+max_cost_usd?: number, };

@@ -77,6 +77,11 @@ pub mod env {
     pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
+    /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
+    /// User-Ebene durch (POL-011).
+    pub const MAX_COST: &str = "BETON_MAX_COST";
+    /// `1`: Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
+    pub const SPAWNED: &str = "BETON_SPAWNED";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -119,6 +124,10 @@ pub struct RunnerBoot {
     pub proxy_ca: Option<stages::CaText>,
     /// Automatische Compaction (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
+    /// Child einer `session_spawn`.
+    pub spawned: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -212,6 +221,15 @@ impl RunnerBoot {
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::COMPACTION)))?,
                 Err(_) => beton_harness::CompactionSettings::default(),
             },
+            // Ein unlesbares Budget ist ein Startfehler, nie „kein Budget“ (fail closed).
+            max_cost_usd: match std::env::var(env::MAX_COST) {
+                Ok(v) => Some(
+                    v.parse()
+                        .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::MAX_COST)))?,
+                ),
+                Err(_) => None,
+            },
+            spawned: std::env::var(env::SPAWNED).is_ok_and(|v| v == "1"),
         })
     }
 
@@ -1005,9 +1023,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         start_settings.effort.clone(),
         start_settings.permission_mode,
     );
-    let set = gate.refresh(None);
+    // Session-Budget (API-006 `--max-cost`): eine `spend_cap`-Regel der User-Ebene (POL-011).
     let mut refusal: Option<(Vec<String>, Vec<String>)> = None;
-    if !set.never_valid().is_empty() {
+    if let Some(max) = boot.max_cost_usd {
+        match beton_policy::budget::session_budget(max) {
+            Ok(budget) => gate.set_inline(beton_policy::load::Scope::User, vec![budget]),
+            Err(e) => {
+                refusal = Some((
+                    vec![format!(
+                        "policy_invalid: Session-Budget ungültig: {}",
+                        e.message
+                    )],
+                    Vec::new(),
+                ));
+            }
+        }
+    }
+    let set = gate.refresh(None);
+    if refusal.is_none() && !set.never_valid().is_empty() {
         // #182: fail closed – Pfad und Ladefehler, nie Inhalte der Datei.
         let reasons = set
             .never_valid()
@@ -1042,6 +1075,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             trigger: Some(
                 if boot.fork.is_some() {
                     "fork"
+                } else if boot.spawned {
+                    "spawn"
                 } else if boot.resume.is_some() {
                     "resume"
                 } else {
@@ -1357,6 +1392,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: false,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             continue;
@@ -1755,11 +1791,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             let waited = answered.remove(&cmd_id);
                             let reply = match checked {
                                 policy::Checked::Allow(m) => {
-                                    if let Err(problem) = apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
-                                        Err(problem)
-                                    } else {
-                                        gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
-                                        deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                    match apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
+                                        Err(problem) => Err(problem),
+                                        Ok(changed) => {
+                                            if let Some(change) = changed {
+                                                // HAR-017: Auch ein Wechsel durch eine Policy steht im
+                                                // Log, ab diesem Turn (POL-011 AC2, POL-013).
+                                                let event = system_event(&boot, EventPayload::SessionSettingsChanged(
+                                                    change.event(Some(beton_core::event::SettingsMechanism::Live), turn.or(next_turn)),
+                                                ));
+                                                if !push(&mut ws, &boot, &mut unacked, vec![event]).await { break None; }
+                                            }
+                                            gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
+                                            deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                        }
                                     }
                                 }
                                 policy::Checked::Deny { reason, .. } => Err(json!({"code": "policy_denied", "detail": reason})),
@@ -2079,33 +2124,43 @@ fn apply_start_modifications(
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
-/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet).
+/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet). Liefert die
+/// angewendete Änderung für `session.settings_changed` (HAR-017).
 async fn apply_turn_modifications(
     session: &mut dyn HarnessSession,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
     spec: &mut SessionSpec,
-) -> Result<(), Value> {
-    let effort = m
+) -> Result<Option<settings::Change>, Value> {
+    let mapped = m
         .reasoning_effort
         .as_deref()
         .and_then(|e| beton_harness::map_effort(e, &caps.efforts));
     let model = m.model.clone().filter(|v| spec.model.as_ref() != Some(v));
-    let effort = effort.filter(|v| spec.effort.as_ref() != Some(v));
+    let effort = mapped.filter(|v| spec.effort.as_ref() != Some(v));
     if model.is_none() && effort.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     session
         .set_model(model.clone(), effort.clone())
         .await
         .map_err(|e| json!({"code": e.code(), "detail": e.to_string()}))?;
+    let change = settings::Change {
+        model: model.clone(),
+        requested_effort: m
+            .reasoning_effort
+            .clone()
+            .filter(|r| effort.is_some() && effort.as_ref() != Some(r)),
+        effort: effort.clone(),
+        permission_mode: None,
+    };
     if model.is_some() {
         spec.model = model;
     }
     if effort.is_some() {
         spec.effort = effort;
     }
-    Ok(())
+    Ok(Some(change))
 }
 
 /// Buchführung für POL-025 AC1: Tool-Calls ohne Gate-Anfrage bis zum Ende merken; liefert die,
@@ -2248,6 +2303,7 @@ impl PreStart {
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: true,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             return false;
@@ -2653,6 +2709,8 @@ async fn report_start_failure(boot: &RunnerBoot, error: &beton_harness::HarnessE
         session_id: boot.session_id,
         epoch: boot.epoch,
         last_acked_rseq: 0,
+        // Nur die Meldung des gescheiterten Starts, keine Kommandos (#218).
+        prestart: true,
     };
     if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
         return;

@@ -525,6 +525,9 @@ payload!(SessionCreated {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[ts(optional, as = "Option<Value>")]
     harness_opts: Value,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] max_cost_usd: Option<f64>,
 });
 payload!(SessionStarted {
     runner_id: RunnerId,
@@ -1058,6 +1061,19 @@ payload!(EventRedacted {
     by: PrincipalId,
     reason: String
 });
+payload!(
+    /// Ersatz für ein Event, das der Server fachlich abgelehnt hat (z. B. Nutzlast über dem
+    /// Blob-Limit): steht an dessen Stelle im Log, damit nichts still verschwindet (PROTO-015,
+    /// #288). Enthält bewusst nicht den abgelehnten Inhalt.
+    EventRejected {
+        /// Typ des abgelehnten Events, z. B. `message.completed`.
+        original_type: String,
+        /// Runner-Sequenz des abgelehnten Events.
+        rseq: u64,
+        /// Problem-Code, z. B. `payload_too_large` oder `validation_failed`.
+        reason: String,
+    }
+);
 payload!(HarnessUnmapped { raw: Value });
 payload!(Notice {
     level: NoticeLevel,
@@ -1229,6 +1245,7 @@ catalog! {
     ShareRevoked = "share.revoked", Durable, ShareChange;
     PresenceUpdated = "presence.updated", Transient, PresenceUpdated;
     EventRedacted = "event.redacted", Durable, EventRedacted;
+    EventRejected = "event.rejected", Durable, EventRejected;
     HarnessUnmapped = "harness.unmapped", Durable, HarnessUnmapped;
     Notice = "notice", Durable, Notice;
     Error = "error", Durable, ErrorEvent;

@@ -184,6 +184,10 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                 body["title"] = Value::String(t.clone());
             }
             merge(&mut body, settings_body(&args));
+            // API-006: Session-Budget als `spend_cap`-Regel der Session (POL-011).
+            if let Some(max) = args.max_cost {
+                body["max_cost_usd"] = json!(max);
+            }
             // SES-015: eigener Worktree, optional mit Branch-Name und Base.
             if let Some(branch) = &args.worktree {
                 let mut wt = json!({});
@@ -246,6 +250,7 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
             on_ask: args.on_ask,
             from_seq,
             quiet: ctx.global.quiet,
+            max_cost: args.max_cost.is_some(),
         },
     )
     .await
@@ -351,6 +356,7 @@ pub async fn resume(ctx: &Ctx, args: ResumeArgs) -> CliResult {
             on_ask: crate::cli::OnAsk::Wait,
             from_seq: 0,
             quiet: ctx.global.quiet,
+            max_cost: false,
         },
     )
     .await
@@ -371,6 +377,7 @@ pub async fn attach(ctx: &Ctx, args: AttachArgs) -> CliResult {
             on_ask: crate::cli::OnAsk::Wait,
             from_seq: 0,
             quiet: ctx.global.quiet,
+            max_cost: false,
         },
     )
     .await

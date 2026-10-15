@@ -64,6 +64,8 @@ fn boot() -> RunnerBoot {
         sandbox: None,
         proxy_ca: None,
         compaction: Default::default(),
+        max_cost_usd: None,
+        spawned: false,
     }
 }
 

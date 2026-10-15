@@ -145,13 +145,17 @@ impl Env {
     }
 
     async fn create(&self, scenario: &Path) -> String {
-        let (status, body) = self
-            .http(
-                "POST",
-                "/v1/sessions",
-                Some(json!({"target": "fake", "cwd": self.work(), "harness_opts": {"scenario": scenario}})),
-            )
-            .await;
+        self.create_with(scenario, json!({})).await
+    }
+
+    /// Wie [`Env::create`], mit weiteren Feldern (z. B. `model`).
+    async fn create_with(&self, scenario: &Path, extra: Value) -> String {
+        let mut body =
+            json!({"target": "fake", "cwd": self.work(), "harness_opts": {"scenario": scenario}});
+        if let (Some(b), Value::Object(e)) = (body.as_object_mut(), extra) {
+            b.extend(e);
+        }
+        let (status, body) = self.http("POST", "/v1/sessions", Some(body)).await;
         assert_eq!(status, 201, "{body}");
         body["id"].as_str().unwrap().to_owned()
     }
@@ -752,6 +756,246 @@ async fn pol_004_ac4_user_timezone_comes_from_the_setting() {
     assert_eq!(status, 403, "{body}");
     assert!(
         body["detail"].as_str().unwrap().contains("Europe/Berlin"),
+        "{body}"
+    );
+}
+
+// ------------------------------------------------------------- POL-011 bis POL-013 (WP-43)
+
+#[tokio::test]
+async fn pol_011_ac1_one_card_at_the_threshold_and_deny_at_the_limit() {
+    let env = Env::start().await;
+    env.project_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { scope: session, limit_usd: 5, ask_at_usd: [3] }\n",
+    );
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"eins\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 3.1 } }]\n  - emit: [{ message: \"zwei\" }]\n  - emit: [{ message: \"drei\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.9 } }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    // 3,10 USD: genau eine Card.
+    env.turn_approving(&id, "zwei").await;
+    env.turn(&id, "drei").await;
+    let events = env.events(&id).await;
+    assert_eq!(
+        of_type(&events, "approval.requested").len(),
+        1,
+        "{events:#?}"
+    );
+    // 5,00 USD: `deny` vor dem nächsten Turn, gemeldet als `budget.exhausted`.
+    let (status, body) = env.input(&id, "vier").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("Kostenlimit"),
+        "{body}"
+    );
+    let events = env.wait_for(&id, is("budget.exhausted")).await;
+    let exhausted = of_type(&events, "budget.exhausted");
+    assert_eq!(exhausted.len(), 1, "{events:#?}");
+    assert_eq!(exhausted[0]["payload"]["scope"], "session");
+    assert_eq!(exhausted[0]["payload"]["action"], "deny");
+}
+
+#[tokio::test]
+async fn api_006_ac4_the_session_budget_denies_the_next_turn() {
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.0 } }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let id = env.create_with(&s, json!({"max_cost_usd": 0.5})).await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "zwei").await;
+    assert_eq!(status, 403, "{body}");
+    let events = env.wait_for(&id, is("budget.exhausted")).await;
+    let d = decisions(&events, "model_request");
+    let last = d.last().unwrap();
+    assert_eq!(last["payload"]["matched"][0]["rule_id"], "max-cost");
+    assert_eq!(last["payload"]["matched"][0]["scope"], "user");
+    assert_eq!(last["payload"]["matched"][0]["set"], "session-budget");
+}
+
+#[tokio::test]
+async fn pol_011_ac2_route_switches_the_model_live_after_the_limit() {
+    let env = Env::start().await;
+    env.project_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 1, on_exceed: route, fallback_model: claude-haiku-4-5 }\n",
+    );
+    let s = env.scenario(
+        "turns:\n  - emit: [{ echo_settings: true }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.5 } }]\n  - emit: [{ echo_settings: true }]\n",
+    );
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
+    env.wait_status(&id, "idle").await;
+    let first = env.turn(&id, "eins").await;
+    assert!(
+        format!("{first:?}").contains("model=claude-sonnet-4-5"),
+        "{first:#?}"
+    );
+    let second = env.turn(&id, "zwei").await;
+    assert!(
+        format!("{second:?}").contains("model=claude-haiku-4-5"),
+        "{second:#?}"
+    );
+    let events = env.events(&id).await;
+    let changed = of_type(&events, "session.settings_changed");
+    assert_eq!(changed.len(), 1, "{events:#?}");
+    assert_eq!(changed[0]["payload"]["model"], "claude-haiku-4-5");
+    assert!(
+        matches!(
+            changed[0]["payload"]["mechanism"].as_str(),
+            Some("live" | "restart")
+        ),
+        "{changed:#?}"
+    );
+    // Umrouten erschöpft kein Budget.
+    assert!(of_type(&events, "budget.exhausted").is_empty());
+}
+
+#[tokio::test]
+async fn pol_012_ac1_ac2_the_daily_budget_spans_all_sessions_of_the_user() {
+    let env = Env::start().await;
+    env.user_policy(
+        "daily",
+        "rules:\n  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50 }\n",
+    );
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 30.0 } }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let a = env.create(&s).await;
+    let b = env.create(&s).await;
+    env.wait_status(&a, "idle").await;
+    env.wait_status(&b, "idle").await;
+    env.turn(&a, "eins").await;
+    env.turn(&b, "eins").await;
+    // 60 USD heute: der nächste Turn beider Sessions wird abgelehnt.
+    for id in [&a, &b] {
+        let (status, body) = env.input(id, "zwei").await;
+        assert_eq!(status, 403, "{body}");
+    }
+    // Neue Sessions lehnt schon `session_start` ab.
+    let c = env.create(&s).await;
+    let events = env.wait_for(&c, is("session.start_denied")).await;
+    assert!(
+        of_type(&events, "session.started").is_empty(),
+        "{events:#?}"
+    );
+    let exhausted = of_type(&events, "budget.exhausted");
+    assert_eq!(exhausted[0]["payload"]["scope"], "user", "{events:#?}");
+}
+
+#[tokio::test]
+async fn pol_013_ac3_model_route_without_model_switch_denies_with_an_explanation() {
+    let env = Env::start().await;
+    env.project_policy(
+        "routing",
+        "rules:\n  - id: cheap\n    type: model_route\n    params: { routes: [{ when: 'request.prompt.contains(\"billig\")', model: claude-haiku-4-5 }] }\n",
+    );
+    let s = env.scenario(
+        "capabilities: { model_switch: none }\nturns:\n  - emit: [{ message: \"eins\" }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "bitte billig").await;
+    assert_eq!(status, 403, "{body}");
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("model"), "{body}");
+    assert!(detail.contains("nicht"), "{body}");
+}
+
+#[tokio::test]
+async fn pol_011_a_subscription_session_stops_at_its_list_price_equivalent() {
+    let env = Env::start().await;
+    env.project_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 1 }\n",
+    );
+    // 1 Mio. Eingabe-Tokens Sonnet 4.5 über ein Abo: kein Geld, aber 3 USD Listenpreis.
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"abo\" }, { usage: { input_tokens: 1000000, output_tokens: 0, model: claude-sonnet-4-5, subscription: true } }]\n  - emit: [{ message: \"nie\" }]\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "zwei").await;
+    assert_eq!(status, 403, "{body}");
+    let events = env.events(&id).await;
+    let cost = of_type(&events, "cost.delta");
+    assert_eq!(
+        cost[0]["payload"]["cost_source"], "subscription",
+        "{cost:#?}"
+    );
+    assert!(cost[0]["payload"].get("cost_micro").is_none(), "{cost:#?}");
+}
+
+#[tokio::test]
+async fn pol_011_without_a_list_price_the_budget_reports_rule_inapplicable() {
+    let env = Env::start().await;
+    env.project_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 1 }\n",
+    );
+    let s = env.scenario(
+        "turns:\n  - emit: [{ message: \"abo\" }, { usage: { input_tokens: 1000000, output_tokens: 0, model: modell-ohne-preis, subscription: true } }]\n  - emit: [{ message: \"weiter\" }]\n  - emit: [{ message: \"noch\" }]\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    // Die Kosten sind unbekannt: Das Budget fragt einmal je Modell nach (`on_unpriced: ask`,
+    // Security-Review #284) und meldet es (einmal je Session).
+    env.turn_approving(&id, "zwei").await;
+    env.turn(&id, "drei").await;
+    let events = env.events(&id).await;
+    let cards = of_type(&events, "approval.requested");
+    assert_eq!(cards.len(), 1, "{events:#?}");
+    assert!(
+        cards[0]["payload"]["subject"]["reasons"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Katalogpreis"),
+        "{cards:#?}"
+    );
+    let issues = of_type(&events, "policy.rule_inapplicable");
+    assert_eq!(issues.len(), 1, "{events:#?}");
+    assert_eq!(issues[0]["payload"]["rule_ids"], json!(["budget"]));
+    assert!(
+        issues[0]["payload"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Preis"),
+        "{issues:#?}"
+    );
+}
+
+#[tokio::test]
+async fn pol_013_a_project_route_to_an_unpriced_model_is_denied_while_a_budget_is_active() {
+    let env = Env::start().await;
+    env.user_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 5 }\n",
+    );
+    env.project_policy(
+        "routing",
+        "rules:\n  - id: free\n    type: model_route\n    params: { routes: [{ when: 'request.prompt.contains(\"gratis\")', model: modell-ohne-preis }] }\n",
+    );
+    let s = env
+        .scenario("turns:\n  - emit: [{ message: \"eins\" }]\n  - emit: [{ message: \"nie\" }]\n");
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "bitte gratis").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("Katalogpreis"),
         "{body}"
     );
 }

@@ -84,6 +84,12 @@ pub struct CreateSessionRequest {
     #[serde(default)]
     #[ts(optional)]
     pub worktree: Option<WorktreeRequest>,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);
+    /// erreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Worktree-Wunsch beim Anlegen einer Session (SES-015).
@@ -109,6 +115,7 @@ pub struct WorktreeRequest {
 #[utoipa::path(post, path = "/v1/sessions", tag = "sessions",
     request_body = CreateSessionRequest,
     responses((status = 201, description = "Session angelegt", body = SessionSummary),
+              (status = 400, description = "`validation_failed`, z. B. `max_cost_usd` nicht positiv", body = Problem, content_type = "application/problem+json"),
               (status = 404, description = "Agent nicht gefunden (`agent_not_found`)", body = Problem, content_type = "application/problem+json"),
               (status = 409, description = "Worktree gewünscht, aber kein Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported`, wenn der Harness Effort bzw. Permission-Mode nicht kennt", body = Problem, content_type = "application/problem+json"),
               (status = 422, description = "Base nicht auflösbar (`base_not_found`), Agent ungültig (`agent_invalid`), Parameter ungültig (`invalid_param`) oder Pflichtparameter fehlen (`params_required`), Harness passt nicht zum Agent (`harness_incompatible`)", body = Problem, content_type = "application/problem+json")))]
@@ -118,6 +125,12 @@ pub async fn create_session(
     ApiJson(req): ApiJson<CreateSessionRequest>,
 ) -> ApiResult<Response> {
     let (user, _) = principal(auth);
+    if let Some(max) = req.max_cost_usd
+        && !(max.is_finite() && max > 0.0)
+    {
+        return Err(Problem::new(ProblemCode::ValidationFailed)
+            .detail("`max_cost_usd` muss ein positiver Betrag in USD sein"));
+    }
     let record = state
         .sessions()
         .create(
@@ -144,6 +157,7 @@ pub async fn create_session(
                     base: w.base,
                     fetch: w.fetch.unwrap_or(true),
                 }),
+                max_cost_usd: req.max_cost_usd,
             },
         )
         .await?;

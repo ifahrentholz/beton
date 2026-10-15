@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ce96094fbc25e78ddfc12b23b62755d3771c4600508f26438c6a25dd2c589991 # shrinks to sessions = [[CostDelta { harness: "direct:gw", model: "llama-3.3-70b-instruct", input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_micro: Some(59), currency: "USD", source: Estimated, auth_source: VendorCli, purpose: None, cost_source: None, pricing_version: None, equivalent_micro: None }]]
