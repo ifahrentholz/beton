@@ -11,6 +11,7 @@ import type { ResumeSupport } from "./ResumeSupport";
 import type { Subagents } from "./Subagents";
 import type { SwitchSupport } from "./SwitchSupport";
 import type { ToolCallGate } from "./ToolCallGate";
+import type { ToolIsolation } from "./ToolIsolation";
 import type { Transport } from "./Transport";
 import type { UsageReporting } from "./UsageReporting";
 
@@ -58,6 +59,10 @@ permission_modes?: Array<PermissionMode>,
  * Handover-Kontexts beim Fork (HAR-018). Ohne Angabe gilt [`DEFAULT_CONTEXT_WINDOW`].
  */
 context_window?: number, 
+/**
+ * Wie Tools in Stufe 2 landen (SBX-002).
+ */
+tool_isolation: ToolIsolation, 
 /**
  * Projektdateien, die der Harness selbst liest (z. B. Claude `CLAUDE.md`, Codex
  * `AGENTS.md`); bei `project_files: auto` liefert beton nur die übrigen (AGT-005).

@@ -284,6 +284,7 @@ pub async fn drive_with_hook(
         requests: Mutex::default(),
     });
     let ctx = AdapterContext {
+        stage: None,
         gate,
         launcher,
         env,

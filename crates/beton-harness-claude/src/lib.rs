@@ -29,8 +29,8 @@ use beton_harness::{
     ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
     HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, ModelRequestGate,
     NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport,
-    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport,
-    UsageReporting, UserInput,
+    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, ToolIsolation,
+    Transport, UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -145,9 +145,46 @@ pub fn capabilities() -> Capabilities {
         context_window: Some(200_000),
         // Mit `--setting-sources user` liest Claude Code weder `CLAUDE.md` noch Skills des
         // Projekts (gegen 2.1.296 geprüft, #233); beton liefert beide (AGT-005, AGT-008).
+        // Bash-Tool über `CLAUDE_CODE_SHELL=<bt-exec-zsh>` in Stufe 2 (SBX-002, gegen 2.1.296
+        // verifiziert; nicht `CLAUDE_CODE_SHELL_PREFIX`, der auch Hooks und MCP-Server umhüllt).
+        tool_isolation: ToolIsolation::ShellOverride,
         native_project_files: Vec::new(),
     }
 }
+
+/// Variablen der zweistufigen Sandbox (SBX-002, verifiziert gegen 2.1.296): Das Bash-Tool
+/// startet `CLAUDE_CODE_SHELL -c <kommando>`, also `bt-exec-<shell>` und damit Stufe 2; die
+/// cwd-Datei (`claude-<id>-cwd`) und Hintergrund-Ausgaben legt Claude in
+/// `CLAUDE_CODE_TMPDIR` ab, dem Austausch mit Stufe 2. Der Pfad der Shell muss `zsh` bzw.
+/// `bash` enthalten; gewählt wird die Familie aus `SHELL`.
+pub fn stage_env(stage: Option<&beton_harness::StageEnv>) -> Vec<(String, String)> {
+    let Some(stage) = stage else {
+        return Vec::new();
+    };
+    let flavor = if std::env::var("SHELL").is_ok_and(|s| s.contains("zsh")) {
+        "zsh"
+    } else {
+        "bash"
+    };
+    vec![
+        (
+            "CLAUDE_CODE_SHELL".into(),
+            stage
+                .shim_dir
+                .join(format!("bt-exec-{flavor}"))
+                .display()
+                .to_string(),
+        ),
+        (
+            "CLAUDE_CODE_TMPDIR".into(),
+            stage.exchange.display().to_string(),
+        ),
+    ]
+}
+
+/// Tools, die Claude über `CLAUDE_CODE_SHELL` startet (Integritätsprüfung des Runners,
+/// SBX-002). `BashOutput`/`KillShell` starten nichts.
+pub const SHELL_TOOLS: [&str; 1] = ["Bash"];
 
 /// Tool-Klassen, für die Claude Code im Modus `default` selbst um Freigabe fragt
 /// (`can_use_tool`); Lesen, Suchen und sichere Shell-Kommandos wie `echo` erlaubt die CLI ohne
@@ -306,9 +343,11 @@ pub fn command_args_with(
         if let Some(dir) = &spec.mcp.skills_dir {
             args.extend(["--plugin-dir".into(), dir.display().to_string()]);
         }
-        if let Some(settings) = settings {
-            args.extend(["--settings".into(), settings.to_owned()]);
-        }
+    }
+    // Isoliert schaltet `--safe-mode` Hooks auch aus `--settings` ab, `env` wirkt weiter
+    // (verifiziert gegen 2.1.296); Hook-Settings gibt es isoliert ohnehin nicht.
+    if let Some(settings) = settings {
+        args.extend(["--settings".into(), settings.to_owned()]);
     }
     args
 }
@@ -510,7 +549,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_env(ctx.stage.as_ref()),
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(request.workdir.clone()),
@@ -580,10 +619,25 @@ impl HarnessAdapter for ClaudeAdapter {
             }
             _ => None,
         };
-        let settings = hook.as_ref().map(|(_, line)| {
-            // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013). Weitere
-            // Einstellungen (z. B. `env`) hier in dasselbe Objekt einfügen.
-            let settings = session_settings(Some((line, self.gate_timeout.as_secs() + 30)));
+        let stage_vars = stage_env(ctx.stage.as_ref());
+        // Ein `--settings`-JSON (die CLI kennt nur eines): Hook (HAR-005, nur nicht isoliert)
+        // und die Variablen des Stufenmodells zusätzlich als `env` (SBX-002). Gegen 2.1.296
+        // verifiziert: Die Prozess-Umgebung gewinnt gegen `env` aus Einstellungen, `--settings`
+        // ist unter den Einstellungen vorrangig und wirkt auch mit `--safe-mode`; so bleibt die
+        // Shell von beton, auch wenn eine spätere Version Einstellungen über die Umgebung stellt.
+        let settings = (hook.is_some() || !stage_vars.is_empty()).then(|| {
+            // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013).
+            let mut settings = session_settings(
+                hook.as_ref()
+                    .map(|(_, line)| (line.as_str(), self.gate_timeout.as_secs() + 30)),
+            );
+            if !stage_vars.is_empty() {
+                let vars: serde_json::Map<String, Value> = stage_vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect();
+                settings.insert("env".into(), Value::Object(vars));
+            }
             Value::Object(settings).to_string()
         });
         args.extend(command_args_with(
@@ -606,7 +660,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_vars,
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),

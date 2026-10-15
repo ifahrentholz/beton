@@ -311,6 +311,8 @@ impl HarnessAdapter for DirectAdapter {
                 .filter_map(|m| m.context_window)
                 .min(),
             // Der Loop liest keine Projektdateien; beton liefert sie mit (AGT-005).
+            // Tools führt beton selbst aus (beton-workspace, MCP-stdio-Server): Stufe 2.
+            tool_isolation: beton_harness::ToolIsolation::Beton,
             native_project_files: Vec::new(),
         }
     }
@@ -345,8 +347,13 @@ impl HarnessAdapter for DirectAdapter {
                 self.provider.name
             )));
         }
-        let (tools, failures) =
-            McpTools::connect(&spec.workdir, &spec.mcp.servers, ctx.launcher.as_ref()).await;
+        let (tools, failures) = McpTools::connect(
+            &spec.workdir,
+            &spec.mcp.servers,
+            ctx.launcher.as_ref(),
+            ctx.stage.as_ref().and_then(|s| s.tools.clone()),
+        )
+        .await;
         let servers = tools.server_names();
         let tools: Arc<dyn ToolHost> = Arc::new(tools);
         match self

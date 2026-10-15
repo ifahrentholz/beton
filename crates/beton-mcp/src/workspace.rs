@@ -8,8 +8,8 @@
 //! Sicherheitsregel (fail closed): Pfade sind relativ zum Arbeitsverzeichnis der Session.
 //! Absolute Pfade, `..`, `.git` und Pfade, die nach Auflösung aller Symlinks außerhalb des
 //! Arbeitsverzeichnisses liegen, werden abgewiesen – auch wenn das Ziel nicht existiert.
-//! `shell_exec` läuft im Arbeitsverzeichnis ohne interne `BETON_*`-Variablen; die
-//! Tool-Sandbox Stufe 2 folgt mit SBX-002 (M2).
+//! `shell_exec` läuft im Arbeitsverzeichnis ohne interne `BETON_*`-Variablen, mit
+//! Stufenmodell in der Stufe-2-Sandbox der Session (SBX-002).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -54,9 +54,19 @@ fn err(msg: impl Into<String>) -> ToolError {
 }
 
 /// Der Server einer Session.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkspaceServer {
     root: PathBuf,
+    /// Startet `shell_exec`; mit Stufenmodell die Stufe-2-Sandbox der Session (SBX-002).
+    launcher: std::sync::Arc<dyn ProcessLauncher>,
+}
+
+impl std::fmt::Debug for WorkspaceServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkspaceServer")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkspaceServer {
@@ -66,7 +76,16 @@ impl WorkspaceServer {
         if !root.is_dir() {
             return Err(std::io::Error::other("Arbeitsverzeichnis fehlt"));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            launcher: std::sync::Arc::new(RealLauncher),
+        })
+    }
+
+    /// `shell_exec` über `launcher` (Stufe-2-Sandbox der Session, SBX-002).
+    pub fn with_launcher(mut self, launcher: std::sync::Arc<dyn ProcessLauncher>) -> Self {
+        self.launcher = launcher;
+        self
     }
 
     pub fn root(&self) -> &Path {
@@ -439,7 +458,8 @@ impl WorkspaceServer {
             .map(|(k, _)| k.to_string_lossy().into_owned())
             .filter(|k| k.starts_with("BETON_"))
             .collect();
-        let mut process = RealLauncher
+        let mut process = self
+            .launcher
             .launch(LaunchSpec {
                 program,
                 args,
@@ -594,6 +614,36 @@ mod tests {
                 .unwrap(),
             "src/lib.rs:2: fn c() {}"
         );
+    }
+
+    #[derive(Default, Clone)]
+    struct Capture(std::sync::Arc<std::sync::Mutex<Vec<LaunchSpec>>>);
+
+    #[async_trait::async_trait]
+    impl ProcessLauncher for Capture {
+        async fn launch(
+            &self,
+            spec: LaunchSpec,
+        ) -> std::io::Result<Box<dyn beton_harness::process::ProcessHandle>> {
+            self.0.lock().unwrap().push(spec);
+            Err(std::io::Error::other("nur Aufzeichnung"))
+        }
+    }
+
+    #[tokio::test]
+    async fn sbx_002_shell_exec_runs_through_the_stage_two_launcher() {
+        let (_dir, s) = ws();
+        let cap = Capture::default();
+        let s = s.with_launcher(std::sync::Arc::new(cap.clone()));
+        let r = s.call("shell_exec", &json!({"command": "echo hi"})).await;
+        assert!(r.is_err(), "{r:?}");
+        let seen = cap.0.lock().unwrap().clone();
+        assert_eq!(
+            seen.len(),
+            1,
+            "shell_exec lief nicht über den Launcher der Stufe 2"
+        );
+        assert!(seen[0].args.iter().any(|a| a.contains("echo hi")));
     }
 
     #[cfg(unix)]

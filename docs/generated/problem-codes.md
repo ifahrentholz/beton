@@ -58,3 +58,4 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unavailable` | 503 | Vorübergehend nicht verfügbar |
 | `secrets_unavailable` | 503 | Secret-Store nicht verfügbar |
 | `redaction_unavailable` | 503 | Redaction nicht bereit |
+| `sandbox_unavailable` | 503 | Sandbox nicht verfügbar |

@@ -80,6 +80,22 @@ pub struct CaInfo {
     pub not_after: beton_core::time::Timestamp,
 }
 
+/// Übergabeform einer CA (JSON mit Zertifikat und PKCS#8-Schlüssel); `Debug` zeigt nichts,
+/// der Speicher wird beim Fallenlassen überschrieben.
+pub struct CaHandover(Zeroizing<String>);
+
+impl CaHandover {
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CaHandover {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CaHandover(***)")
+    }
+}
+
 /// Die beton-CA mit privatem Schlüssel (nur im Speicher des Proxys).
 pub struct BetonCa {
     cn: String,
@@ -114,6 +130,18 @@ struct Stored {
     not_after: i64,
     cert: String,
     key: String,
+}
+
+/// Ein Zertifikat (DER) als PEM.
+pub(crate) fn pem_certificate(der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+    for chunk in b64.as_bytes().chunks(64) {
+        pem.push_str(&String::from_utf8_lossy(chunk));
+        pem.push('\n');
+    }
+    pem.push_str("-----END CERTIFICATE-----\n");
+    pem
 }
 
 fn gen_err(e: impl fmt::Display) -> CaError {
@@ -181,14 +209,26 @@ impl BetonCa {
 
     /// Zertifikat als PEM (für das CA-Bundle der Sandbox, PRX-008).
     pub fn cert_pem(&self) -> String {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&self.cert_der);
-        let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
-        for chunk in b64.as_bytes().chunks(64) {
-            pem.push_str(&String::from_utf8_lossy(chunk));
-            pem.push('\n');
+        pem_certificate(&self.cert_der)
+    }
+
+    /// Übergabe an den Runner der Session (Stufe 0, PRX-001): Zertifikat und Schlüssel in der
+    /// gespeicherten Form. Der Daemon lädt die CA über [`ProxyCap`] und reicht sie nur über
+    /// stdin weiter, nie über Env, argv oder eine Datei.
+    pub fn handover(&self) -> Result<CaHandover, CaError> {
+        let value = self.to_secret()?;
+        let text = std::str::from_utf8(value.expose()).map_err(|_| CaError::Corrupt)?;
+        Ok(CaHandover(Zeroizing::new(text.to_owned())))
+    }
+
+    /// Gegenstück zu [`BetonCa::handover`] im Runner; kaputt → `proxy_ca_corrupt`, abgelaufen →
+    /// `proxy_ca_expired` (fail closed).
+    pub fn from_handover(text: &str) -> Result<Self, CaError> {
+        let ca = Self::from_secret(&SecretValue::from_bytes(text.as_bytes().to_vec()))?;
+        if ca.not_after <= OffsetDateTime::now_utc() {
+            return Err(CaError::Expired);
         }
-        pem.push_str("-----END CERTIFICATE-----\n");
-        pem
+        Ok(ca)
     }
 
     pub fn info(&self) -> CaInfo {

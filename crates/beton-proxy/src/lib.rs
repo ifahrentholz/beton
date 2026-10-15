@@ -9,6 +9,8 @@
 //!   Vorrang (PRX-003),
 //! - prüft bei HTTP/2 jeden Stream einzeln und reicht WebSockets nach geprüftem Upgrade
 //!   durch (PRX-004),
+//! - tunnelt die Vendor-Hosts eines Harness ohne TLS-Terminierung, prüft dabei nur Host, Port,
+//!   Private-IP-Sperre und SNI (Passthrough, PRX-005),
 //! - löst Hostnamen selbst auf, prüft alle Adressen und verbindet sich nur mit einer geprüften
 //!   IP; private Ziele sind gesperrt, außer sie sind ausdrücklich freigegeben (PRX-007).
 //!
@@ -19,14 +21,19 @@ pub mod ca;
 pub mod ip;
 mod net;
 pub mod normalize;
+pub mod passthrough;
 pub mod proxy;
 pub mod rules;
 
 #[cfg(test)]
 mod tests;
 
-pub use ca::{BetonCa, CaError, CaInfo, CaStore, LeafIssuer};
+pub use ca::{BetonCa, CaError, CaHandover, CaInfo, CaStore, LeafIssuer};
 pub use ip::{AllowListError, PrivateAllowList};
 pub use normalize::{Host, InvalidHost, InvalidPath, Scheme, normalize_path};
-pub use proxy::{EgressProxy, InstanceSpec, ProxyError, ProxyInstance, ProxyOptions, ProxyToken};
+pub use passthrough::{Passthrough, PassthroughError};
+pub use proxy::{
+    EgressProxy, InstanceSpec, ProxyError, ProxyInstance, ProxyOptions, ProxyToken,
+    check_extra_ca_files,
+};
 pub use rules::{Decision, DenyReason, Request, RuleError, RuleSet};

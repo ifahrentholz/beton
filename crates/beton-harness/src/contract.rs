@@ -106,6 +106,7 @@ impl ContractSubject for AdapterSubject {
         gate: Arc<dyn Gate>,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
         let ctx = AdapterContext {
+            stage: None,
             gate,
             launcher: self.launcher.clone(),
             env: (self.env)(scenario),

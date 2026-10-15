@@ -124,6 +124,9 @@ pub struct HubOptions {
     /// Policy-Prüfung für `tools/call`; `None`, wenn der Harness jeden Tool-Call selbst durch
     /// das Gate schickt (z. B. Claude mit `PreToolUse`-Hook).
     pub gate: Option<Arc<dyn McpGate>>,
+    /// Stufe-2-Sandbox der Session für stdio-Server (SBX-002); `None`: ausdrücklich ohne
+    /// Isolation (`backend: none`, bis SBX-006).
+    pub tools: Option<beton_sandbox::Sandbox>,
 }
 
 /// Laufender Hub. Beim Drop werden Socket und Token-Datei entfernt.
@@ -153,6 +156,7 @@ struct Shared {
     system: Option<Arc<SystemServer>>,
     events: mpsc::UnboundedSender<EventPayload>,
     pub(crate) gate: Option<Arc<dyn McpGate>>,
+    tools: Option<beton_sandbox::Sandbox>,
 }
 
 fn random_hex(n: usize) -> std::io::Result<String> {
@@ -234,6 +238,7 @@ impl Hub {
             system: opts.system,
             events,
             gate: opts.gate,
+            tools: opts.tools,
         });
         let task = tokio::spawn(async move {
             loop {
@@ -608,13 +613,19 @@ where
     cmd.env.set = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     // MCP-stdio-Server sind Tools (Stufe 2, SBX-002 ab WP-45); bis SBX-006 ausdrücklich ohne
     // Isolation. Jeder Start meldet `sandbox.started` (SBX-001 AC4).
-    let events = shared.events.clone();
-    let sandbox = beton_sandbox::Sandbox::unsandboxed(
-        beton_sandbox::Stage::Tools,
-        Some(Arc::new(move |ev| {
-            let _ = events.send(EventPayload::SandboxStarted(ev));
-        })),
-    );
+    let sandbox = match &shared.tools {
+        // Stufe-2-Sandbox der Session; sie meldet `sandbox.started` selbst.
+        Some(tools) => tools.clone(),
+        None => {
+            let events = shared.events.clone();
+            beton_sandbox::Sandbox::unsandboxed(
+                beton_sandbox::Stage::Tools,
+                Some(Arc::new(move |ev| {
+                    let _ = events.send(EventPayload::SandboxStarted(ev));
+                })),
+            )
+        }
+    };
     let mut child = match sandbox.spawn(cmd) {
         Ok(c) => c,
         Err(e) => {

@@ -276,7 +276,7 @@ fn sbx_003_net_only_via_proxy_and_none_without_proxy() {
         resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap().net,
         NetMode::None
     );
-    ctx.proxy = Some(ProxyEndpoint { port: 4711 });
+    ctx.proxy = Some(ProxyEndpoint::port(4711));
     assert_eq!(
         resolve(ProviderId::Seatbelt, &spec, &ctx).unwrap().net,
         NetMode::ProxyOnly { port: 4711 }

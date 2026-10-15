@@ -157,7 +157,7 @@ fn problem(file: Option<&Path>, slug: &str, message: String) -> ConfigProblem {
     }
 }
 
-/// Alle Agents aus Presets, User- und Projekt-Konfiguration, sortiert nach Slug, und die
+/// Alle Agents aus Presets und User-Konfiguration, sortiert nach Slug, und die
 /// übersprungenen Einträge.
 pub fn agents(layers: &HarnessLayers) -> (Vec<AcpAgent>, Vec<ConfigProblem>) {
     let mut out: BTreeMap<String, AcpAgent> = PRESETS
@@ -178,14 +178,11 @@ pub fn agents(layers: &HarnessLayers) -> (Vec<AcpAgent>, Vec<ConfigProblem>) {
         })
         .collect();
     let mut problems = Vec::new();
-    let levels: [(&HarnessesConfig, Option<&PathBuf>, Origin); 2] = [
-        (&layers.user, layers.user_file.as_ref(), Origin::User),
-        (
-            &layers.project,
-            layers.project_file.as_ref(),
-            Origin::Project,
-        ),
-    ];
+    // Nur aus der User-Konfiguration (SBX-002): Ein ACP-Agent aus der Projektdatei wäre ein
+    // vom Repo gewähltes Programm in Stufe 1; `HarnessesConfig::load_project` lehnt
+    // `harnesses.acp` ab, hier zählt die Projektebene zusätzlich nie.
+    let levels: [(&HarnessesConfig, Option<&PathBuf>, Origin); 1] =
+        [(&layers.user, layers.user_file.as_ref(), Origin::User)];
     for (config, file, origin) in levels {
         for (slug, raw) in &config.acp.agents {
             match parse_entry(slug, raw) {

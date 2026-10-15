@@ -56,6 +56,62 @@ impl Net {
     }
 }
 
+/// Test-Zugang (Feature `test-net`): Namen lösen auf virtuelle, öffentlich wirkende Adressen
+/// auf, der Dialer bildet nur diese auf lokale Test-Upstreams ab.
+#[cfg(any(test, feature = "test-net"))]
+struct TestHosts {
+    names: std::collections::HashMap<String, IpAddr>,
+    real: std::collections::HashMap<IpAddr, SocketAddr>,
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Net {
+    pub(crate) fn test_hosts(hosts: &[(&str, SocketAddr)]) -> Self {
+        let mut names = std::collections::HashMap::new();
+        let mut real = std::collections::HashMap::new();
+        for (i, (name, addr)) in hosts.iter().enumerate() {
+            // 93.184.216.0/24: global, nie privat; erreicht wird nur der eingetragene Upstream.
+            let n = u8::try_from(i + 1).unwrap_or_else(|_| panic!("höchstens 254 Test-Hosts"));
+            let ip = IpAddr::from([93, 184, 216, n]);
+            names.insert(name.to_ascii_lowercase(), ip);
+            real.insert(ip, *addr);
+        }
+        let hosts = Arc::new(TestHosts { names, real });
+        Self {
+            resolver: hosts.clone(),
+            dialer: hosts,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Resolve for TestHosts {
+    fn resolve<'a>(&'a self, host: &'a str) -> BoxFuture<'a, io::Result<Vec<IpAddr>>> {
+        let r = self
+            .names
+            .get(host)
+            .map(|ip| vec![*ip])
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "NXDOMAIN (Test-Hosts)"));
+        Box::pin(async move { r })
+    }
+}
+
+#[cfg(any(test, feature = "test-net"))]
+impl Dial for TestHosts {
+    fn dial(&self, addr: SocketAddr) -> BoxFuture<'_, io::Result<TcpStream>> {
+        let real = self.real.get(&addr.ip()).copied();
+        Box::pin(async move {
+            match real {
+                Some(real) => TcpStream::connect(real).await,
+                None => Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "kein Test-Upstream eingetragen",
+                )),
+            }
+        })
+    }
+}
+
 struct SystemResolver;
 
 impl Resolve for SystemResolver {
@@ -117,56 +173,62 @@ pub(crate) struct Connector {
     pub(crate) allow_private: Arc<PrivateAllowList>,
 }
 
+/// Löst `host` auf, prüft **alle** Adressen gegen die Private-IP-Sperre und verbindet sich nur
+/// mit einer geprüften Adresse (keine zweite Auflösung).
+pub(crate) async fn dial_checked(
+    net: &Net,
+    allow_private: &PrivateAllowList,
+    host: &Host,
+    port: u16,
+) -> Result<TcpStream, ConnectError> {
+    let addrs = match host {
+        Host::Ip(ip) => vec![*ip],
+        Host::Domain(name) => net
+            .resolver
+            .resolve(name)
+            .await
+            .map_err(ConnectError::Dns)?,
+    };
+    if addrs.is_empty() {
+        return Err(ConnectError::Dns(io::Error::new(
+            io::ErrorKind::NotFound,
+            "keine Adresse",
+        )));
+    }
+    // Erst alle Adressen prüfen, dann verbinden: Eine einzige private Adresse in der Antwort
+    // sperrt das Ziel (DNS-Rebinding, gemischte Antworten).
+    let addrs: Vec<SocketAddr> = addrs
+        .into_iter()
+        .map(|ip| SocketAddr::new(canonical(ip), port))
+        .collect();
+    if let Some(bad) = addrs
+        .iter()
+        .find(|a| !destination_allowed(**a, allow_private))
+    {
+        return Err(ConnectError::PrivateDestination(bad.ip()));
+    }
+    let mut last = None;
+    for addr in addrs {
+        match net.dialer.dial(addr).await {
+            Ok(s) => {
+                let _ = s.set_nodelay(true);
+                return Ok(s);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(ConnectError::Connect(last.unwrap_or_else(|| {
+        io::Error::other("keine Verbindung möglich")
+    })))
+}
+
 impl Connector {
     async fn connect(self, uri: Uri) -> Result<UpstreamIo, ConnectError> {
         let https = uri.scheme_str() == Some("https");
         let host = Host::parse(uri.host().ok_or(ConnectError::InvalidHost)?)
             .map_err(|_| ConnectError::InvalidHost)?;
         let port = uri.port_u16().unwrap_or(if https { 443 } else { 80 });
-        let addrs = match &host {
-            Host::Ip(ip) => vec![*ip],
-            Host::Domain(name) => self
-                .net
-                .resolver
-                .resolve(name)
-                .await
-                .map_err(ConnectError::Dns)?,
-        };
-        if addrs.is_empty() {
-            return Err(ConnectError::Dns(io::Error::new(
-                io::ErrorKind::NotFound,
-                "keine Adresse",
-            )));
-        }
-        // Erst alle Adressen prüfen, dann verbinden: Eine einzige private Adresse in der
-        // Antwort sperrt das Ziel (DNS-Rebinding, gemischte Antworten).
-        let addrs: Vec<SocketAddr> = addrs
-            .into_iter()
-            .map(|ip| SocketAddr::new(canonical(ip), port))
-            .collect();
-        if let Some(bad) = addrs
-            .iter()
-            .find(|a| !destination_allowed(**a, &self.allow_private))
-        {
-            return Err(ConnectError::PrivateDestination(bad.ip()));
-        }
-        let mut last = None;
-        let mut tcp = None;
-        for addr in addrs {
-            match self.net.dialer.dial(addr).await {
-                Ok(s) => {
-                    tcp = Some(s);
-                    break;
-                }
-                Err(e) => last = Some(e),
-            }
-        }
-        let tcp = tcp.ok_or_else(|| {
-            ConnectError::Connect(
-                last.unwrap_or_else(|| io::Error::other("keine Verbindung möglich")),
-            )
-        })?;
-        let _ = tcp.set_nodelay(true);
+        let tcp = dial_checked(&self.net, &self.allow_private, &host, port).await?;
         let io = Idle::new(tcp, IDLE_TIMEOUT);
         if !https {
             return Ok(UpstreamIo {
