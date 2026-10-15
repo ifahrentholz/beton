@@ -3253,6 +3253,38 @@ mod tests {
         }
     }
 
+    /// Security-Review #284 (Minor 2): Scheitert das Neuladen von `user_day`/`user`, nimmt das
+    /// Gate nicht still den alten Stand, sondern behandelt ihn als nicht verfügbar (POL-009).
+    #[tokio::test]
+    async fn pol_009_a_failed_reload_of_user_state_fails_closed() {
+        struct Once(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl StateSource for Once {
+            async fn load(&self) -> Result<LoadedState, String> {
+                if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Ok(LoadedState::default())
+                } else {
+                    Err("weg".into())
+                }
+            }
+            async fn apply(&self, _: &beton_policy::state::StateOp) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let p = with_policy_state(
+            "rules:\n  - id: daily\n    on: tool_call\n    when: 'has(state.user_day.pushes)'\n    action: deny\n",
+            Some(Arc::new(Once(std::sync::atomic::AtomicUsize::new(0)))),
+        );
+        // Erster Load (Zustand der Session) gelingt, das Neuladen von `user_day` nicht.
+        assert!(
+            matches!(
+                p.gate.decide(pre("c1", "ls")).await,
+                GateDecision::Deny { .. }
+            ),
+            "ohne frischen user_day fail closed"
+        );
+    }
+
     #[test]
     fn pol_010_long_summaries_are_marked_as_shortened() {
         let long = "x".repeat(600);

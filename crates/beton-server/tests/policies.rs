@@ -351,6 +351,61 @@ async fn api_006_ac4_the_session_budget_is_a_spend_cap_rule() {
     assert_eq!(r.json()["code"], "validation_failed");
 }
 
+/// Security-Review #284 (Minor 3): Ein ungültiges Session-Budget fällt bei `evaluate` und
+/// `show --effective` nicht still weg.
+#[tokio::test]
+async fn api_006_an_invalid_session_budget_is_an_error_not_dropped() {
+    let s = setup().await;
+    let t = &s.t;
+    let local = t.store.ensure_local().await.unwrap();
+    let id = t
+        .store
+        .create_session(
+            OrgId::LOCAL,
+            NewSession {
+                id: SessionId::new(),
+                owner: UserId::LOCAL,
+                kind: SessionKind::Main,
+                harness: "fake".into(),
+                cwd: s.project.path().display().to_string(),
+                model: None,
+                effort: None,
+                permission_mode: None,
+                agent_ref: None,
+                project_id: None,
+                parent_id: None,
+                trigger: SessionTrigger::User,
+                home_node: local.node,
+                harness_opts: Value::Null,
+                max_cost_usd: Some(-1.0),
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+    let r = post(
+        t,
+        "/v1/policies/evaluate",
+        json!({ "session_id": id.to_string(), "phase": "model_request",
+                "input": { "request": { "model": "x", "granularity": "turn" } } }),
+    )
+    .await;
+    assert!(r.status >= 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(
+        r.json()["code"],
+        "internal",
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let r = get(t, &format!("/v1/policies?session_id={id}")).await;
+    assert_eq!(
+        r.json()["code"],
+        "internal",
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+}
+
 #[tokio::test]
 async fn pol_027_evaluate_with_fixtures_without_session() {
     let s = setup().await;

@@ -672,6 +672,14 @@ async fn pol_011_subscription_usage_counts_its_list_price_equivalent() {
     assert_eq!(v["session_without_price"], 1);
     assert_eq!(v["user_daily_without_price"], 1);
     assert_eq!(v["subtree_without_price"], 1);
+    // Welche Modelle ohne Preis genutzt wurden (`on_unpriced`, Security-Review #284).
+    for key in [
+        "session_unpriced_models",
+        "user_daily_unpriced_models",
+        "subtree_unpriced_models",
+    ] {
+        assert_eq!(v[key], json!(["claude-unbekannt-9"]), "{key}: {v}");
+    }
 }
 
 /// POL-012 AC3: Um 00:00 in der Zeitzone des Users ist das Tagesbudget wieder verfügbar –

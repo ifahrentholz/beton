@@ -822,27 +822,29 @@ async fn pol_011_ac2_route_switches_the_model_live_after_the_limit() {
     let env = Env::start().await;
     env.project_policy(
         "budget",
-        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 1, on_exceed: route, fallback_model: fake-small }\n",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 1, on_exceed: route, fallback_model: claude-haiku-4-5 }\n",
     );
     let s = env.scenario(
         "turns:\n  - emit: [{ echo_settings: true }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.5 } }]\n  - emit: [{ echo_settings: true }]\n",
     );
-    let id = env.create_with(&s, json!({"model": "fake-large"})).await;
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
     env.wait_status(&id, "idle").await;
     let first = env.turn(&id, "eins").await;
     assert!(
-        format!("{first:?}").contains("model=fake-large"),
+        format!("{first:?}").contains("model=claude-sonnet-4-5"),
         "{first:#?}"
     );
     let second = env.turn(&id, "zwei").await;
     assert!(
-        format!("{second:?}").contains("model=fake-small"),
+        format!("{second:?}").contains("model=claude-haiku-4-5"),
         "{second:#?}"
     );
     let events = env.events(&id).await;
     let changed = of_type(&events, "session.settings_changed");
     assert_eq!(changed.len(), 1, "{events:#?}");
-    assert_eq!(changed[0]["payload"]["model"], "fake-small");
+    assert_eq!(changed[0]["payload"]["model"], "claude-haiku-4-5");
     assert!(
         matches!(
             changed[0]["payload"]["mechanism"].as_str(),
@@ -891,12 +893,14 @@ async fn pol_013_ac3_model_route_without_model_switch_denies_with_an_explanation
     let env = Env::start().await;
     env.project_policy(
         "routing",
-        "rules:\n  - id: cheap\n    type: model_route\n    params: { routes: [{ when: 'request.prompt.contains(\"billig\")', model: fake-small }] }\n",
+        "rules:\n  - id: cheap\n    type: model_route\n    params: { routes: [{ when: 'request.prompt.contains(\"billig\")', model: claude-haiku-4-5 }] }\n",
     );
     let s = env.scenario(
         "capabilities: { model_switch: none }\nturns:\n  - emit: [{ message: \"eins\" }]\n  - emit: [{ message: \"nie\" }]\n",
     );
-    let id = env.create_with(&s, json!({"model": "fake-large"})).await;
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
     env.wait_status(&id, "idle").await;
     env.turn(&id, "eins").await;
     let (status, body) = env.input(&id, "bitte billig").await;
@@ -944,10 +948,20 @@ async fn pol_011_without_a_list_price_the_budget_reports_rule_inapplicable() {
     let id = env.create(&s).await;
     env.wait_status(&id, "idle").await;
     env.turn(&id, "eins").await;
-    // Die Kosten sind unbekannt: die Regel greift nicht, sie meldet das (einmal je Session).
-    env.turn(&id, "zwei").await;
+    // Die Kosten sind unbekannt: Das Budget fragt einmal je Modell nach (`on_unpriced: ask`,
+    // Security-Review #284) und meldet es (einmal je Session).
+    env.turn_approving(&id, "zwei").await;
     env.turn(&id, "drei").await;
     let events = env.events(&id).await;
+    let cards = of_type(&events, "approval.requested");
+    assert_eq!(cards.len(), 1, "{events:#?}");
+    assert!(
+        cards[0]["payload"]["reasons"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Katalogpreis"),
+        "{cards:#?}"
+    );
     let issues = of_type(&events, "policy.rule_inapplicable");
     assert_eq!(issues.len(), 1, "{events:#?}");
     assert_eq!(issues[0]["payload"]["rule_ids"], json!(["budget"]));
@@ -957,6 +971,32 @@ async fn pol_011_without_a_list_price_the_budget_reports_rule_inapplicable() {
             .unwrap()
             .contains("Preis"),
         "{issues:#?}"
+    );
+}
+
+#[tokio::test]
+async fn pol_013_a_project_route_to_an_unpriced_model_is_denied_while_a_budget_is_active() {
+    let env = Env::start().await;
+    env.user_policy(
+        "budget",
+        "rules:\n  - id: budget\n    type: spend_cap\n    params: { limit_usd: 5 }\n",
+    );
+    env.project_policy(
+        "routing",
+        "rules:\n  - id: free\n    type: model_route\n    params: { routes: [{ when: 'request.prompt.contains(\"gratis\")', model: modell-ohne-preis }] }\n",
+    );
+    let s = env
+        .scenario("turns:\n  - emit: [{ message: \"eins\" }]\n  - emit: [{ message: \"nie\" }]\n");
+    let id = env
+        .create_with(&s, json!({"model": "claude-sonnet-4-5"}))
+        .await;
+    env.wait_status(&id, "idle").await;
+    env.turn(&id, "eins").await;
+    let (status, body) = env.input(&id, "bitte gratis").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("Katalogpreis"),
+        "{body}"
     );
 }
 
