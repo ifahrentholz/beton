@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -312,6 +313,34 @@ fn auth_text(status: AuthStatus) -> &'static str {
         AuthStatus::LoggedIn => "angemeldet",
         AuthStatus::LoggedOut => "nicht angemeldet",
         AuthStatus::Unknown | AuthStatus::NotApplicable => "Anmeldung unbekannt",
+    }
+}
+
+/// Legt die sicheren Policy-Defaults der User-Ebene an (POL-001):
+/// `<beton_home>/policies/defaults.yaml` mit [`beton_policy::doc::USER_DEFAULTS`], wenn es die
+/// Datei noch nicht gibt (eine vorhandene, auch geänderte, bleibt unangetastet), und das
+/// Policy-Schema als lokale Datei `<beton_home>/schemas/v1/policy.schema.json`, auf die der
+/// Kopfkommentar zeigt (ADR-0033). Liefert den Pfad, wenn die Datei neu ist.
+pub fn write_policy_defaults(beton_home: &Path) -> std::io::Result<Option<PathBuf>> {
+    let schema = beton_home.join(beton_policy::doc::SCHEMA_PATH);
+    if let Some(dir) = schema.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&schema, beton_policy::doc::schema_json())?;
+    let dir = beton_policy::store::policies_dir(beton_home);
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("defaults.yaml");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file);
+    match created {
+        Ok(mut f) => {
+            f.write_all(beton_policy::doc::USER_DEFAULTS.as_bytes())?;
+            Ok(Some(file))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -631,6 +660,46 @@ mod tests {
             .unwrap();
         assert!(prompt.1.is_empty());
         assert!(imports.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pol_001_setup_writes_policy_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_policy_defaults(dir.path()).unwrap().unwrap();
+        assert_eq!(file, dir.path().join("policies/defaults.yaml"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            beton_policy::doc::USER_DEFAULTS
+        );
+        let schema = dir.path().join("schemas/v1/policy.schema.json");
+        assert_eq!(
+            std::fs::read_to_string(&schema).unwrap(),
+            beton_policy::doc::schema_json()
+        );
+        // Lädt als Policy-Set der User-Ebene, wie der Runner es liest.
+        beton_policy::load::load_file(beton_policy::load::Scope::User, &file).unwrap();
+        // Eine geänderte Datei überschreibt setup nie.
+        std::fs::write(&file, "spec_version: 1\nname: mine\nrules: []\n").unwrap();
+        assert_eq!(write_policy_defaults(dir.path()).unwrap(), None);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("mine"));
+    }
+
+    /// Die Defaults verhindern bei keinem Katalog-Harness den Start (POL-024): Klassen, die ein
+    /// Harness nicht vorab prüfen kann, ergeben nur eine Warnung (`enforcement: best_effort`).
+    #[test]
+    fn pol_001_user_defaults_do_not_refuse_any_catalog_harness() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::User,
+            "defaults.yaml",
+            beton_policy::doc::USER_DEFAULTS,
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        for harness in ["claude", "codex", "fake"] {
+            let matrix = crate::policy::matrix_for(harness).unwrap();
+            let check = beton_policy::enforcement::check_start(&effective, &matrix);
+            assert!(check.refused.is_empty(), "{harness}: {check:?}");
+        }
     }
 
     #[test]

@@ -213,6 +213,14 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
             Ok(())
         };
     }
+    // Sichere Policy-Defaults der User-Ebene (POL-001); `--check` ändert nichts.
+    if !args.check {
+        match crate::setup::write_policy_defaults(&ctx.home) {
+            Ok(Some(path)) => ctx.note(format!("Policy-Defaults angelegt: {}", path.display())),
+            Ok(None) => {}
+            Err(e) => ctx.note(format!("Policy-Defaults nicht angelegt: {e}")),
+        }
+    }
     // Ohne Terminal keine Rückfragen (wie --non-interactive).
     let interactive = !args.non_interactive && !args.check && std::io::stdin().is_terminal();
     let mut out = std::io::stdout().lock();
