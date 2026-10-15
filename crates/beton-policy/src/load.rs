@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::Phase;
 use crate::cel::{CompileError, Program, compile_bool, compile_expr, ext};
 use crate::doc::{
-    Action, ApprovalDoc, DefaultAction, Mode, PolicySetDoc, Remember, RuleDoc, RuleType,
-    SPEC_VERSION, TimeoutAction, modifiable,
+    Action, ApprovalDoc, DefaultAction, Enforcement, Mode, PolicySetDoc, Remember, RuleDoc,
+    RuleType, SPEC_VERSION, TimeoutAction, modifiable,
 };
 use crate::types::Ty;
 use crate::yaml::{self, Document, Style};
@@ -93,8 +93,9 @@ pub enum RuleKind {
         action: Action,
     },
     /// Eingebauter Regeltyp ohne Entzuckerung. `require_approval` (POL-014) wird beim Laden
-    /// zu einer `ask`-Regel; die übrigen folgen mit ihren Regeltyp-Paketen (WP-42, WP-43) und
-    /// gelten bis dahin in ihren Phasen als Fehler (fail closed).
+    /// zu einer `ask`-Regel, die Typen aus WP-42 über [`crate::sugar`] zu CEL-Regeln; die
+    /// übrigen folgen mit ihren Regeltyp-Paketen und gelten bis dahin in ihren Phasen als
+    /// Fehler (fail closed).
     Builtin(RuleType),
 }
 
@@ -132,6 +133,17 @@ impl LoadedRule {
     }
 }
 
+/// Ein Default der Ebene, den ein Regeltyp gesetzt hat (`tool_allowlist`, POL-015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDefault {
+    /// ID der Typ-Regel (für die Start-Prüfung, POL-024).
+    pub rule_id: String,
+    /// Begründung der Ablehnung (`deny_reason`).
+    pub reason: String,
+    /// `enforcement` der Typ-Regel; ohne Angabe `required`.
+    pub enforcement: Option<Enforcement>,
+}
+
 /// Ein geladenes Policy-Set.
 #[derive(Debug, Clone)]
 pub struct LoadedSet {
@@ -142,7 +154,10 @@ pub struct LoadedSet {
     /// `sha256:<hex>` über den Inhalt.
     pub version: String,
     pub mode: Mode,
+    /// `defaults` der Datei, verschärft um die Defaults entzuckerter Regeltypen (POL-015).
     pub defaults: BTreeMap<Phase, DefaultAction>,
+    /// Defaults, die ein Regeltyp gesetzt hat (POL-015), mit Herkunft.
+    pub type_defaults: BTreeMap<Phase, TypeDefault>,
     pub rules: Vec<LoadedRule>,
     /// Inhalt, aus dem das Set geladen wurde; `version` ist sein SHA-256 (POL-027 AC2).
     pub format: SourceFormat,
@@ -323,15 +338,18 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
             format!("name `{}` muss [a-z0-9-] sein (max. 64)", set.name),
         ));
     }
-    let rules = check_rules(scope, &set.rules, &loc)?;
+    let checked = check_rules(scope, &set.rules, &loc, set.mode == Mode::DryRun)?;
+    let mut defaults = set.defaults;
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: set.name,
         origin: origin.to_owned(),
         version: version_of(text.as_bytes()),
         mode: set.mode,
-        defaults: set.defaults,
-        rules,
+        defaults,
+        type_defaults,
+        rules: checked.rules,
         format: SourceFormat::Yaml,
         source: Arc::from(text.as_bytes()),
     })
@@ -384,37 +402,76 @@ pub fn inline_set(
             })
         })
         .collect::<Result<_, _>>()?;
-    let checked = check_rules_with(scope, &docs, &loc, |i| format!("[{i}]"))?;
+    let checked = check_rules_with(scope, &docs, &loc, false, |i| format!("[{i}]"))?;
     let canonical = serde_json::to_vec(rules).unwrap_or_default();
+    let mut defaults = BTreeMap::new();
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: name.to_owned(),
         origin: origin.to_owned(),
         version: version_of(&canonical),
         mode: Mode::Enforce,
-        defaults: BTreeMap::new(),
-        rules: checked,
+        defaults,
+        type_defaults,
+        rules: checked.rules,
         format: SourceFormat::Inline,
         source: Arc::from(canonical),
     })
+}
+
+/// Geprüfte Regeln eines Sets und die Defaults, die entzuckerte Regeltypen setzen.
+struct Checked {
+    rules: Vec<LoadedRule>,
+    defaults: Vec<(Phase, DefaultAction, TypeDefault)>,
+}
+
+impl Checked {
+    /// Verschärft `defaults` um die Defaults der Regeltypen; liefert deren Herkunft. Ein Default,
+    /// den schon die Datei (`defaults:`) so streng setzt, bleibt einer der Datei (`required`);
+    /// setzen mehrere Typ-Regeln denselben, gilt das strengere `enforcement`.
+    fn merge_defaults(
+        &self,
+        defaults: &mut BTreeMap<Phase, DefaultAction>,
+    ) -> BTreeMap<Phase, TypeDefault> {
+        let mut out: BTreeMap<Phase, TypeDefault> = BTreeMap::new();
+        for (phase, default, origin) in &self.defaults {
+            let current = defaults.get(phase).copied().unwrap_or(DefaultAction::Allow);
+            if *default > current {
+                defaults.insert(*phase, *default);
+                out.insert(*phase, origin.clone());
+            } else if *default == current
+                && let Some(existing) = out.get_mut(phase)
+                && origin.enforcement != Some(Enforcement::BestEffort)
+            {
+                existing.enforcement = None;
+            }
+        }
+        out
+    }
 }
 
 fn check_rules(
     scope: Scope,
     rules: &[RuleDoc],
     loc: &Locator,
-) -> Result<Vec<LoadedRule>, LoadError> {
-    check_rules_with(scope, rules, loc, |i| format!("rules[{i}]"))
+    shadow: bool,
+) -> Result<Checked, LoadError> {
+    check_rules_with(scope, rules, loc, shadow, |i| format!("rules[{i}]"))
 }
 
 fn check_rules_with(
     scope: Scope,
     rules: &[RuleDoc],
     loc: &Locator,
+    shadow: bool,
     base: impl Fn(usize) -> String,
-) -> Result<Vec<LoadedRule>, LoadError> {
+) -> Result<Checked, LoadError> {
     let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(rules.len());
+    let mut out = Checked {
+        rules: Vec::with_capacity(rules.len()),
+        defaults: Vec::new(),
+    };
     for (i, rule) in rules.iter().enumerate() {
         let at = base(i);
         let field = |f: &str| format!("{at}.{f}");
@@ -427,7 +484,130 @@ fn check_rules_with(
         if !seen.insert(rule.id.as_str()) {
             return Err(loc.at(&field("id"), format!("Regel-ID `{}` ist doppelt", rule.id)));
         }
-        out.push(check_rule(scope, rule, loc, &at)?);
+        if let Some(rule_type) = rule.rule_type
+            && let Some(sugar) = crate::sugar::desugar(rule_type, rule, shadow || rule.dry_run)
+        {
+            check_type_fields(rule, rule_type, loc, &at)?;
+            let sugar = sugar.map_err(|e| {
+                let path = if e.field.is_empty() {
+                    format!("{at}.params")
+                } else {
+                    format!("{at}.params.{}", e.field)
+                };
+                loc.at(&path, e.message)
+            })?;
+            out.rules.extend(sugar_rules(rule, sugar.rules, loc, &at)?);
+            out.defaults
+                .extend(sugar.defaults.into_iter().map(|(phase, default, reason)| {
+                    (
+                        phase,
+                        default,
+                        TypeDefault {
+                            rule_id: rule.id.clone(),
+                            reason,
+                            enforcement: rule.enforcement,
+                        },
+                    )
+                }));
+            continue;
+        }
+        out.rules.push(check_rule(scope, rule, loc, &at)?);
+    }
+    Ok(out)
+}
+
+/// Felder, die neben `type` nicht erlaubt sind (sie gehören zu den entzuckerten Regeln).
+fn check_type_fields(
+    rule: &RuleDoc,
+    rule_type: RuleType,
+    loc: &Locator,
+    at: &str,
+) -> Result<(), LoadError> {
+    let field = |f: &str| format!("{at}.{f}");
+    let forbidden = [
+        ("on", rule.on.is_some()),
+        ("when", rule.when.is_some()),
+        ("action", rule.action.is_some()),
+        ("modify", rule.modify.is_some()),
+        ("notify", rule.notify.is_some()),
+        ("approval", rule.approval.is_some()),
+        ("effects", !rule.effects.is_empty()),
+        ("remember_key", rule.remember_key.is_some()),
+    ];
+    if let Some((name, _)) = forbidden.iter().find(|(_, set)| *set) {
+        return Err(loc.at(
+            &field(name),
+            format!(
+                "`{name}` ist mit `type` ({}) nicht erlaubt",
+                rule_type.as_str()
+            ),
+        ));
+    }
+    for (j, kind) in rule.kinds.iter().flatten().enumerate() {
+        if !KINDS.contains(&kind.as_str()) {
+            return Err(loc.at(
+                &field(&format!("kinds[{j}]")),
+                format!(
+                    "unbekannte Tool-Klasse `{kind}` (erlaubt: {})",
+                    KINDS.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Kompiliert die entzuckerten Regeln eines Regeltyps (`<id>` bzw. `<id>/<teil>`). Eigene
+/// `reason` und `kinds` der Typ-Regel gelten für alle Teile.
+fn sugar_rules(
+    rule: &RuleDoc,
+    parts: Vec<crate::sugar::SugarRule>,
+    loc: &Locator,
+    at: &str,
+) -> Result<Vec<LoadedRule>, LoadError> {
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        let id = match part.part {
+            Some(p) => format!("{}/{p}", rule.id),
+            None => rule.id.clone(),
+        };
+        // Der CEL-Text stammt aus der Entzuckerung; ein Fehler darin betrifft die Parameter.
+        let when = compile_bool(&part.when, part.phase).map_err(|e| {
+            loc.at(
+                &format!("{at}.params"),
+                format!("Entzuckerung zu `{id}` fehlgeschlagen: {}", e.message),
+            )
+        })?;
+        let mut doc = rule.clone();
+        doc.reason.get_or_insert(part.reason);
+        if doc.kinds.is_none() {
+            doc.kinds = part.kinds;
+        }
+        if doc.enforcement.is_none() {
+            doc.enforcement = part.enforcement;
+        }
+        let mut notify_exprs = Vec::new();
+        if let Some(message) = part.notify.as_ref().and_then(|n| n.message.as_ref()) {
+            for expr in template_exprs(message) {
+                notify_exprs.push(
+                    compile_expr(expr, part.phase, Ty::Dyn)
+                        .map_err(|e| loc.at(&format!("{at}.params"), &e))?,
+                );
+            }
+        }
+        doc.notify = part.notify;
+        out.push(LoadedRule {
+            id,
+            kind: RuleKind::Cel {
+                phase: part.phase,
+                when: Some(when),
+                action: part.action,
+            },
+            doc,
+            notify_exprs,
+            effect_values: Vec::new(),
+            remember_key: None,
+        });
     }
     Ok(out)
 }

@@ -10,7 +10,7 @@ use time::format_description::well_known::Rfc3339;
 use super::check::{Compr, Func, Node};
 use super::{EvalError, Meter, ext};
 use crate::context::Activation;
-use crate::normalize::shell;
+use crate::normalize::{git, shell};
 use crate::value::{Key, Value, numeric_cmp};
 
 type Res = Result<Value, EvalError>;
@@ -304,6 +304,15 @@ impl Ctx<'_, '_> {
             Func::Under => ext::under(self.act.resolver(), s(0)?, s(1)?)
                 .map(Value::Bool)
                 .map_err(fail),
+            Func::Resolve => {
+                let path = s(0)?;
+                self.meter.charge(10 + text_cost(path.len()))?;
+                self.act
+                    .resolver()
+                    .resolve(path)
+                    .map(|p| Value::String(p.into()))
+                    .map_err(fail)
+            }
             Func::DomainMatches => Ok(Value::Bool(ext::domain_matches(s(0)?, s(1)?))),
             Func::BytesHuman => match &args[0] {
                 Value::Int(i) => u64::try_from(*i)
@@ -327,6 +336,39 @@ impl Ctx<'_, '_> {
                     }
                     _ => shell::has_flag(&refs, s(1)?),
                 }))
+            }
+            Func::GitOps | Func::GitPushTargets | Func::GitElsewhere => {
+                let argv = argv(&args[0])?;
+                self.meter
+                    .charge(argv.iter().map(|c| c.len() as u64).sum::<u64>())?;
+                let refs: Vec<Vec<&str>> = argv
+                    .iter()
+                    .map(|c| c.iter().map(String::as_str).collect())
+                    .collect();
+                if matches!(func, Func::GitElsewhere) {
+                    return Ok(Value::Bool(git::git_elsewhere(&refs)));
+                }
+                let elsewhere = match args.get(1) {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(other) => {
+                        return Err(fail(format!(
+                            "shell.git_push_targets(): bool erwartet, gefunden {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let items: Vec<Value> = match func {
+                    Func::GitOps => git::git_ops(&refs)
+                        .into_iter()
+                        .map(|op| Value::String(op.into()))
+                        .collect(),
+                    _ => git::git_push_targets(&refs, elsewhere)
+                        .into_iter()
+                        .map(|b| Value::String(b.into()))
+                        .collect(),
+                };
+                Ok(Value::list(items))
             }
             Func::UrlHost => ext::url_host(s(0)?)
                 .map(|h| Value::String(h.into()))

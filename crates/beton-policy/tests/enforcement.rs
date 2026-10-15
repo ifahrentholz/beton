@@ -145,9 +145,21 @@ fn pol_024_other_phases_use_their_level() {
 
 #[test]
 fn pol_024_builtin_rule_types_are_checked_for_all_classes_of_their_phases() {
-    let body = "  - id: guard\n    type: git_guard\n";
+    // Noch nicht entzuckert (POL-019): alle Klassen seiner Phasen.
+    let body = "  - id: guard\n    type: pii_redaction\n";
     let check = check_start(&EffectiveSet::new(vec![set(body)]), &codex_like());
     assert_eq!(check.refused_rules(), vec!["guard".to_owned()]);
+    // Entzuckert (WP-42): über die Klassen der Teilregeln. `git_guard` betrifft Shell
+    // (`approval_only`: Warnung) und MCP (`full`).
+    let body = "  - id: guard\n    type: git_guard\n";
+    let check = check_start(&EffectiveSet::new(vec![set(body)]), &codex_like());
+    assert!(check.refused.is_empty(), "{check:?}");
+    assert!(
+        check
+            .degraded_rules()
+            .contains(&"guard/force-push".to_owned()),
+        "{check:?}"
+    );
 }
 
 #[test]

@@ -22,8 +22,13 @@ pub const SYSTEM_SERVER: &str = "beton";
 /// Namen, die beton für eigene Server reserviert: `beton`, `beton-*`, `beton_*` (System-Tools,
 /// Workspace-Tools des Direkt-Harness, Browser). Die Abbildungstabelle ordnet ihnen Klassen wie
 /// `system` zu (POL-005, #234).
+/// `builtin` ist ebenfalls reserviert: Policies erkennen eingebaute Tools an
+/// `tool.server == "builtin"` (Review #285 B1).
 pub fn reserved_name(name: &str) -> bool {
-    name == SYSTEM_SERVER || name.starts_with("beton-") || name.starts_with("beton_")
+    name == SYSTEM_SERVER
+        || name == "builtin"
+        || name.starts_with("beton-")
+        || name.starts_with("beton_")
 }
 
 /// Inhalt von `~/.beton/mcp.yaml` bzw. `.beton/mcp.yaml`.
@@ -31,7 +36,7 @@ pub fn reserved_name(name: &str) -> bool {
 #[serde(deny_unknown_fields)]
 #[schemars(title = "beton MCP-Server (mcp.yaml)")]
 pub struct McpFile {
-    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*` und `beton_*` sind reserviert).
+    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*`, `beton_*` und `builtin` sind reserviert).
     #[serde(default)]
     pub servers: BTreeMap<String, McpServer>,
 }
@@ -174,7 +179,7 @@ impl ConfiguredServer {
         }
         if reserved_name(&self.name) {
             return Err(format!(
-                "der Name „{}“ ist für Server von beton reserviert (`beton`, `beton-*`, `beton_*`)",
+                "der Name „{}“ ist für Server von beton reserviert (`beton`, `beton-*`, `beton_*`, `builtin`)",
                 self.name
             ));
         }
@@ -458,6 +463,16 @@ mod tests {
             assert!(err(name).contains("reserviert"), "{name}");
         }
         assert!(err("betonmischer").is_empty(), "kein Präfix mit Trenner");
+    }
+
+    /// Review #285 B1: `builtin` steht in Policies für eingebaute Tools (`tool.server ==
+    /// "builtin"`); ein MCP-Server dieses Namens darf es nicht geben.
+    #[test]
+    fn pol_015_builtin_server_name_is_reserved() {
+        let f = file("servers:\n  builtin:\n    command: x\n");
+        let merged = merge(&McpFile::default(), &f, None);
+        let err = merged[0].endpoint().err().unwrap_or_default();
+        assert!(err.contains("reserviert"), "{err}");
     }
 
     #[test]

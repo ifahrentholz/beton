@@ -21,6 +21,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.parent_id` | `string` | alle | Eltern-Session eines Sub-Agents. |
 | `session.permission_mode` | `string` | alle | Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`). |
 | `session.project` | `string` | alle | Projekt der Session. |
+| `session.project_root` | `string` | alle | Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`. |
 | `session.reasoning_effort` | `string` | alle | Aktueller Reasoning-Effort. |
 | `session.started_at` | `timestamp` | alle | Start der Session. |
 | `session.title` | `string` | alle | Titel der Session. |
@@ -50,6 +51,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `agent.source` | `string` | alle | Herkunft (`builtin`, `project`, `user`, Pfad). |
 | `agent.version` | `string` | alle | Version des Agents. |
 | `host.arch` | `string` | alle | Architektur (`aarch64`, `x86_64`). |
+| `host.home` | `string` | alle | Home-Verzeichnis des Users auf dem Host (absolut); `~` und `${home}` in `path_guard`. |
 | `host.id` | `string` | alle | ID (`hst_…`). |
 | `host.labels` | `list(string)` | alle | Labels des Hosts. |
 | `host.local` | `bool` | alle | Lokaler Host (derselbe Rechner wie der Server). |
@@ -101,6 +103,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `tool.repeat_count` | `int` | `tool_call`, `tool_result` | Wiederholungen eines identischen Calls im Fenster (POL-018). |
 | `tool.server` | `string` | `tool_call`, `tool_result` | MCP-Server oder `builtin`. |
 | `tool.urls` | `list(string)` | `tool_call`, `tool_result` | URLs in den Argumenten. |
+| `tool.write_paths` | `list(string)` | `tool_call`, `tool_result` | Pfade aus `paths`, in die der Call schreibt: Datei-Tools der Klassen `file_write` und `file_edit`, bei Shell-Kommandos Umleitungsziele und Ziele bekannter Datei-Kommandos (best effort, POL-016). |
 | `result.bytes` | `int` | `tool_result` | Größe in Bytes. |
 | `result.duration_ms` | `int` | `tool_result` | Dauer in Millisekunden. |
 | `result.error` | `string` | `tool_result` | Fehlertext. |
