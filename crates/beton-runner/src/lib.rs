@@ -347,6 +347,145 @@ impl policy::UsageSource for TunnelUsage {
     }
 }
 
+/// Frist für Credential-Aufrufe über den Tunnel; danach scheitert der Request (fail closed).
+const CREDENTIAL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Credentials des Stufenmodells über den Tunnel (PRX-006, SEC-001): Werte holt der Daemon
+/// (`credential.resolve`, Secret-Store über die Proxy-Capability, Env, Datei, Kommando), jede
+/// Nutzung und jeder Fehlgebrauch geht ins Audit-Log (`credential.used`, `credential.misuse`).
+/// Werte liegen nur im Speicher, bis zu ihrer `ttl`; danach wird neu geholt und bei einem
+/// Fehler nie der alte Wert genutzt (PRX-006 AC5). Egress-Events gehen ins Session-Log.
+struct TunnelCredentials {
+    calls: mpsc::UnboundedSender<mcp::SystemRequest>,
+    events: mpsc::UnboundedSender<EventPayload>,
+    cache: tokio::sync::Mutex<HashMap<String, CachedCredential>>,
+}
+
+struct CachedCredential {
+    value: zeroize::Zeroizing<Vec<u8>>,
+    until: Option<tokio::time::Instant>,
+}
+
+impl TunnelCredentials {
+    fn new(
+        calls: mpsc::UnboundedSender<mcp::SystemRequest>,
+        events: mpsc::UnboundedSender<EventPayload>,
+    ) -> Self {
+        Self {
+            calls,
+            events,
+            cache: tokio::sync::Mutex::default(),
+        }
+    }
+
+    async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        self.calls
+            .send(mcp::SystemRequest {
+                tool: tool.into(),
+                args,
+                reply,
+            })
+            .map_err(|_| "Runner beendet".to_owned())?;
+        match tokio::time::timeout(CREDENTIAL_TIMEOUT, rx).await {
+            Ok(Ok(Ok(v))) => Ok(v),
+            Ok(Ok(Err(p))) => Err(format!(
+                "{}: {}",
+                p["code"].as_str().unwrap_or("failed"),
+                p["detail"].as_str().unwrap_or_default()
+            )),
+            Ok(Err(_)) => Err("keine Antwort des Daemons".into()),
+            Err(_) => Err("Daemon antwortet nicht (Zeitüberschreitung)".into()),
+        }
+    }
+}
+
+impl beton_proxy::CredentialSource for TunnelCredentials {
+    fn value<'a>(
+        &'a self,
+        binding: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, Result<beton_proxy::SecretBytes, String>> {
+        Box::pin(async move {
+            let mut cache = self.cache.lock().await;
+            let now = tokio::time::Instant::now();
+            if let Some(c) = cache.get(binding)
+                && c.until.is_none_or(|u| u > now)
+            {
+                return Ok(beton_proxy::SecretBytes::new(c.value.to_vec()));
+            }
+            // Abgelaufen oder neu: nie den alten Wert weiterverwenden.
+            cache.remove(binding);
+            let v = self
+                .call("credential.resolve", json!({ "binding": binding }))
+                .await?;
+            let mut encoded = zeroize::Zeroizing::new(
+                v["value_b64"]
+                    .as_str()
+                    .ok_or("Antwort ohne Wert")?
+                    .to_owned(),
+            );
+            let value = zeroize::Zeroizing::new(
+                base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    encoded.as_bytes(),
+                )
+                .map_err(|_| "Wert nicht lesbar")?,
+            );
+            zeroize::Zeroize::zeroize(&mut *encoded);
+            let until = v["ttl_s"].as_u64().map(|s| now + Duration::from_secs(s));
+            let out = beton_proxy::SecretBytes::new(value.to_vec());
+            cache.insert(binding.to_owned(), CachedCredential { value, until });
+            Ok(out)
+        })
+    }
+}
+
+impl beton_proxy::CredentialAudit for TunnelCredentials {
+    fn used<'a>(
+        &'a self,
+        binding: &'a str,
+        host: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.call(
+                "credential.used",
+                json!({ "binding": binding, "host": host }),
+            )
+            .await
+            .map(|_| ())
+        })
+    }
+
+    fn misuse<'a>(
+        &'a self,
+        binding: Option<&'a str>,
+        host: &'a str,
+        reason: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if let Err(e) = self
+                .call(
+                    "credential.misuse",
+                    json!({ "binding": binding, "host": host, "reason": reason }),
+                )
+                .await
+            {
+                tracing::warn!(reason, "credential.misuse nicht auditiert: {e}");
+            }
+        })
+    }
+}
+
+impl beton_proxy::EgressEvents for TunnelCredentials {
+    fn blocked(&self, event: beton_core::event::EgressBlocked) {
+        let _ = self.events.send(EventPayload::EgressBlocked(event));
+    }
+
+    fn summary(&self, summary: beton_core::event::EgressSummary) {
+        let _ = self.events.send(EventPayload::EgressSummary(summary));
+    }
+}
+
 /// Zustand der Policies über den Tunnel (System-Calls `policy.state`, `policy.state.apply`,
 /// POL-009/POL-010).
 struct TunnelState {
@@ -694,7 +833,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         calls: usage_tx.clone(),
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
-    .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
+    .with_snapshots(Arc::new(TunnelState {
+        calls: usage_tx.clone(),
+    }));
+    // Credentials und Egress-Events des Stufenmodells (PRX-006, PRX-009): Werte und Audit über
+    // den Tunnel, Events ins Session-Log.
+    let credentials = Arc::new(TunnelCredentials::new(usage_tx, stage_tx.clone()));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
     let stages = match &boot.sandbox {
@@ -733,6 +877,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .map(|b| b.program),
                 events: Some(events),
             };
+            // HAR-015 AC4: Mit `auth: api_key` sieht die Vendor-CLI nur einen Platzhalter.
+            let harness_key = (boot.harnesses.user.auth(boot.harness.as_str())
+                == beton_harness::registry::HarnessAuth::ApiKey)
+                .then(|| stages::vendor_key(boot.harness.as_str()))
+                .flatten()
+                .map(|(var, hosts)| stages::HarnessKey {
+                    binding: format!("harness:{}", boot.harness),
+                    var: var.to_owned(),
+                    hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
+                });
             let opts = stages::StageOptions {
                 spec: sb.spec.clone(),
                 proxy_ca: ca,
@@ -740,6 +894,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     extra_ca_files: sb.extra_ca_files.clone(),
                 },
                 exe: std::env::current_exe().unwrap_or_default(),
+                services: Some(stages::StageServices {
+                    source: credentials.clone(),
+                    audit: credentials.clone(),
+                    events: Some(credentials.clone()),
+                }),
+                harness_key,
             };
             match stages::compose(input, opts).await {
                 Ok(s) => s,

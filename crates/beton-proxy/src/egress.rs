@@ -20,6 +20,9 @@ use hyper::body::{Body, Frame, SizeHint};
 /// Empfänger der Egress-Events einer Instanz (im Runner: das Session-Log).
 pub trait EgressEvents: Send + Sync {
     fn blocked(&self, event: EgressBlocked);
+
+    /// Zusammenfassung des erlaubten Verkehrs (über [`spawn_summaries`]).
+    fn summary(&self, _summary: EgressSummary) {}
 }
 
 /// Erlaubter Verkehr einer Session je Host; mehrere Instanzen können sich einen Zähler teilen.

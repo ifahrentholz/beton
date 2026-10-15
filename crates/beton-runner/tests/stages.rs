@@ -69,7 +69,136 @@ fn opts(yaml: &str, ca: bool) -> StageOptions {
         }),
         proxy: beton_proxy::ProxyOptions::default(),
         exe: exe(),
+        services: Some(services()),
+        harness_key: None,
     }
+}
+
+/// Dienste ohne Daemon: Werte und Audit gibt es hier nicht (Komposition, kein Netzverkehr).
+struct NoDaemon;
+
+impl beton_proxy::CredentialSource for NoDaemon {
+    fn value<'a>(
+        &'a self,
+        _binding: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, Result<beton_proxy::SecretBytes, String>> {
+        Box::pin(async { Err("kein Daemon".into()) })
+    }
+}
+
+impl beton_proxy::CredentialAudit for NoDaemon {
+    fn used<'a>(
+        &'a self,
+        _b: &'a str,
+        _h: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Err("kein Daemon".into()) })
+    }
+
+    fn misuse<'a>(
+        &'a self,
+        _b: Option<&'a str>,
+        _h: &'a str,
+        _r: &'a str,
+    ) -> beton_proxy::credentials::BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+}
+
+fn services() -> beton_runner::stages::StageServices {
+    let d = Arc::new(NoDaemon);
+    beton_runner::stages::StageServices {
+        source: d.clone(),
+        audit: d,
+        events: None,
+    }
+}
+
+const GH: &str = "backend: auto\ncredentials:\n  - { name: github, type: github, source: { secret: \"secret://user/github.com/me\" }, env: [GH_TOKEN, GITHUB_TOKEN] }\n";
+
+#[tokio::test]
+async fn sbx_005_ac3_credential_variables_in_stage_two_hold_only_the_placeholder() {
+    let fx = fx();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env
+        .insert("GH_TOKEN".into(), "ghp_FIXTURE-REAL".into());
+    let s = compose(inp, opts(GH, true)).await.unwrap().unwrap();
+    let env = &s.tools.policy().env;
+    let p = s.placeholder("github").unwrap().to_string();
+    assert!(p.starts_with("bt_cred_") && p.len() == 40, "{p}");
+    assert_eq!(env["GH_TOKEN"], p);
+    assert_eq!(env["GITHUB_TOKEN"], p);
+    assert!(!env.values().any(|v| v.contains("FIXTURE")));
+    // Stufe 1 bekommt die Credentials der Tools nicht.
+    assert!(!s.harness.policy().env.contains_key("GH_TOKEN"));
+    // Neue Session, neuer Platzhalter.
+    let t = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts(GH, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_ne!(t.placeholder("github").unwrap().to_string(), p);
+}
+
+#[tokio::test]
+async fn prx_006_credentials_without_stage_zero_services_fail_closed() {
+    let fx = fx();
+    let mut o = opts(GH, true);
+    o.services = None;
+    let err = compose(input(&fx, "claude", ToolIsolation::ShellOverride), o)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+    assert!(err.to_string().contains("credentials_unavailable"), "{err}");
+}
+
+#[tokio::test]
+async fn prx_006_ac4_file_source_inside_a_grant_prevents_the_start() {
+    let fx = fx();
+    std::fs::write(fx.ws.join("token"), "FIXTURE").unwrap();
+    let yaml = format!(
+        "backend: auto\ncredentials:\n  - {{ name: f, type: bearer, hosts: [api.test], source: {{ file: \"{}\" }} }}\n",
+        fx.ws.join("token").display()
+    );
+    let err = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts(&yaml, true),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err.code(), "path_escape", "{err}");
+}
+
+#[tokio::test]
+async fn har_015_ac4_api_key_harness_sees_only_a_placeholder_and_its_host_via_mitm() {
+    let fx = fx();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env
+        .insert("ANTHROPIC_API_KEY".into(), "sk-ant-FIXTURE".into());
+    let mut o = opts("backend: auto\n", true);
+    o.harness_key = Some(beton_runner::stages::HarnessKey {
+        binding: "harness:claude".into(),
+        var: "ANTHROPIC_API_KEY".into(),
+        hosts: vec!["api.anthropic.com".into()],
+    });
+    let s = compose(inp, o).await.unwrap().unwrap();
+    let env = &s.harness.policy().env;
+    assert!(env["ANTHROPIC_API_KEY"].starts_with("bt_cred_"), "{env:?}");
+    assert!(!env.values().any(|v| v.contains("FIXTURE")));
+    // Der Model-API-Host läuft über MITM (Ersetzung), die übrigen Vendor-Hosts weiter als
+    // Passthrough.
+    let pass = s.passthrough(Stage::Harness);
+    assert!(
+        !pass.iter().any(|p| p.starts_with("api.anthropic.com")),
+        "{pass:?}"
+    );
+    assert!(
+        pass.iter().any(|p| p.starts_with("platform.claude.com")),
+        "{pass:?}"
+    );
+    assert!(!s.tools.policy().env.contains_key("ANTHROPIC_API_KEY"));
 }
 
 #[tokio::test]
