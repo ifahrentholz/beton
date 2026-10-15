@@ -48,8 +48,17 @@ fn call_with(name: &str, args: Value, fixtures: Value) -> Activation {
     .unwrap()
 }
 
+/// Auswertung mit großzügigem Zeitbudget: Die Tests prüfen Entscheidungen, keine Laufzeit
+/// (unter Last in der CI überschreitet eine Debug-Auswertung sonst die 10 ms, vgl. #273).
 fn eval(sets: Vec<Arc<LoadedSet>>, act: &Activation) -> Decision {
-    EffectiveSet::new(sets).evaluate(act, &EvalOptions::default())
+    let opts = EvalOptions {
+        limits: beton_policy::cel::Limits {
+            eval_budget_us: 10_000_000,
+            ..beton_policy::cel::Limits::default()
+        },
+        ..EvalOptions::default()
+    };
+    EffectiveSet::new(sets).evaluate(act, &opts)
 }
 
 fn outcome(d: &Decision) -> &'static str {
