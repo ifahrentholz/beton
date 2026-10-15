@@ -57,6 +57,9 @@ const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 /// unverändert durch (Restrisiko).
 pub const REDACT_LIMIT: usize = 1024 * 1024;
 
+/// Kürzere Werte werden in Antworten nicht gesucht (Restrisiko, wie SEC-013).
+pub const REDACT_MIN_LEN: usize = 8;
+
 fn is_base32(b: u8) -> bool {
     b.is_ascii_lowercase() || (b'2'..=b'7').contains(&b)
 }
@@ -816,6 +819,10 @@ impl ResponseRedactor {
         let mut patterns: Vec<Zeroizing<Vec<u8>>> = Vec::new();
         let mut replacements = Vec::new();
         for (value, placeholder) in pairs {
+            // Kürzere Werte ergäben zu viele Fehltreffer (wie die Redaction, SEC-013).
+            if value.len() < REDACT_MIN_LEN {
+                continue;
+            }
             let mut forms = vec![Zeroizing::new(value.to_vec())];
             // JSON-Escape-Form (z. B. ein Wert mit `/` oder `"` in einer JSON-Antwort).
             if let Ok(s) = std::str::from_utf8(value)
