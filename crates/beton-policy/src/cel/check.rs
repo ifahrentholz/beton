@@ -64,6 +64,7 @@ pub(crate) enum Func {
     HasFlag,
     GitOps,
     GitPushTargets,
+    GitElsewhere,
     UrlHost,
     UrlPath,
 }
@@ -707,16 +708,17 @@ impl Checker<'_> {
                 }
                 (Func::HasFlag, Ty::Bool)
             }
-            "shell.git_ops" | "shell.git_push_targets" if n == 1 => {
-                if !is(0, &Ty::list(Ty::list(Ty::String))) {
+            "shell.git_ops" | "shell.git_push_targets" | "shell.git_elsewhere"
+                if n == 1 || (n == 2 && name == "shell.git_push_targets") =>
+            {
+                if !is(0, &Ty::list(Ty::list(Ty::String))) || (n == 2 && !is(1, &Ty::Bool)) {
                     return Err(mismatch());
                 }
-                let f = if name == "shell.git_ops" {
-                    Func::GitOps
-                } else {
-                    Func::GitPushTargets
-                };
-                (f, Ty::list(Ty::String))
+                match name {
+                    "shell.git_ops" => (Func::GitOps, Ty::list(Ty::String)),
+                    "shell.git_push_targets" => (Func::GitPushTargets, Ty::list(Ty::String)),
+                    _ => (Func::GitElsewhere, Ty::Bool),
+                }
             }
             "url.host" | "url.path" if n == 1 => {
                 if !is(0, &Ty::String) {
@@ -751,6 +753,7 @@ impl Checker<'_> {
             | "shell.has_flag"
             | "shell.git_ops"
             | "shell.git_push_targets"
+            | "shell.git_elsewhere"
             | "url.host"
             | "url.path") => {
                 return Err(self.err(

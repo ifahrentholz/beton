@@ -11,8 +11,15 @@ use super::shell::{GIT_VALUE_OPTIONS, basename, effective};
 /// Optionen von `git push`, die einen Wert nehmen.
 const PUSH_VALUE_OPTIONS: [&str; 5] = ["-o", "--push-option", "--repo", "--receive-pack", "--exec"];
 
-/// Unterkommando und dessen Argumente, wenn das Teilkommando `git` aufruft.
-fn invocation<'a>(cmd: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
+/// Ein `git`-Aufruf: Optionen vor dem Unterkommando, Unterkommando, dessen Argumente.
+struct Invocation<'a> {
+    global: &'a [&'a str],
+    sub: &'a str,
+    args: &'a [&'a str],
+}
+
+/// Der `git`-Aufruf eines Teilkommandos.
+fn git<'a>(cmd: &'a [&'a str]) -> Option<Invocation<'a>> {
     let eff = effective(cmd);
     if basename(eff.first()?) != "git" {
         return None;
@@ -31,7 +38,85 @@ fn invocation<'a>(cmd: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
         break;
     }
     let sub = *eff.get(i)?;
-    Some((sub, &eff[i + 1..]))
+    Some(Invocation {
+        global: &eff[1..i.min(eff.len())],
+        sub,
+        args: &eff[i + 1..],
+    })
+}
+
+/// Unterkommando und dessen Argumente, wenn das Teilkommando `git` aufruft.
+fn invocation<'a>(cmd: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
+    git(cmd).map(|g| (g.sub, g.args))
+}
+
+/// Unterkommandos, die pushen (`send-pack` ist der Push ohne Porcelain).
+fn is_push(sub: &str) -> bool {
+    matches!(sub, "push" | "send-pack")
+}
+
+/// Optionen vor dem Unterkommando, die ein anderes Repository bzw. einen anderen Worktree
+/// wählen.
+const RELOCATING: [&str; 3] = ["-C", "--git-dir", "--work-tree"];
+
+/// Umgebungsvariablen, die ein anderes Repository bzw. einen anderen Worktree wählen.
+const RELOCATING_ENV: [&str; 3] = ["GIT_DIR=", "GIT_WORK_TREE=", "GIT_COMMON_DIR="];
+
+/// Konfiguration, die bestimmt, wohin gepusht wird (`-c remote.*`, `push.*`, `branch.*`).
+fn push_config(global: &[&str]) -> bool {
+    let affects = |kv: &str| {
+        let key = kv.to_ascii_lowercase();
+        ["remote.", "push.", "branch."]
+            .iter()
+            .any(|p| key.starts_with(p))
+    };
+    let mut i = 0;
+    while i < global.len() {
+        let a = global[i];
+        if (a == "-c" || a == "--config-env") && global.get(i + 1).is_some_and(|v| affects(v)) {
+            return true;
+        }
+        if let Some(v) = a.strip_prefix("--config-env=")
+            && affects(v)
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Läuft ein Git-Aufruf möglicherweise nicht im Arbeitsverzeichnis des Calls (`git -C`,
+/// `--git-dir`, `--work-tree`, `GIT_DIR=` …, ein `cd`/`pushd` davor)? Dann sagt
+/// `session.branch` nichts über seinen Branch.
+pub fn git_elsewhere(argv: &[Vec<&str>]) -> bool {
+    if argv
+        .iter()
+        .flatten()
+        .any(|w| RELOCATING_ENV.iter().any(|e| w.starts_with(e)))
+    {
+        return true;
+    }
+    let mut moved = false;
+    for cmd in argv {
+        let first = effective(cmd).first().map(|w| basename(w));
+        if matches!(first, Some("cd" | "pushd" | "popd")) {
+            moved = true;
+            continue;
+        }
+        if let Some(g) = git(cmd) {
+            let relocated = g.global.iter().any(|a| {
+                RELOCATING.contains(a)
+                    || a.starts_with("--git-dir=")
+                    || a.starts_with("--work-tree=")
+                    || (a.starts_with("-C") && a.len() > 2)
+            });
+            if moved || relocated {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Options-Argumente bis `--`.
@@ -60,6 +145,8 @@ struct Push {
     force: bool,
     delete: bool,
     targets: Vec<String>,
+    /// Ziele aus Refspecs der Form `src:dst`.
+    explicit: Vec<String>,
 }
 
 fn push(args: &[&str]) -> Push {
@@ -109,17 +196,20 @@ fn push(args: &[&str]) -> Push {
             }
             None => spec,
         };
-        let dst = match spec.split_once(':') {
+        let (dst, explicit) = match spec.split_once(':') {
             Some(("", dst)) => {
                 p.delete = true;
-                dst
+                (dst, true)
             }
-            Some((src, "")) => src,
-            Some((_, dst)) => dst,
-            None => spec,
+            Some((src, "")) => (src, false),
+            Some((_, dst)) => (dst, true),
+            None => (spec, false),
         };
-        let dst = dst.strip_prefix("refs/heads/").unwrap_or(dst);
-        p.targets.push(dst.to_owned());
+        let target = branch_target(dst);
+        if explicit {
+            p.explicit.push(target.clone());
+        }
+        p.targets.push(target);
     }
     if positional.len() <= 1 && !all && !tags {
         // Ohne Refspec: der aktuelle Branch (`session.branch`).
@@ -128,20 +218,49 @@ fn push(args: &[&str]) -> Push {
     p
 }
 
+/// Ziel-Branch einer Refspec: `refs/heads/` entfernt, Tags (`refs/tags/…`) unverändert; alles
+/// ohne eindeutigen Branch-Namen (`*`, `@`, `heads/…`, andere `refs/…`, Zeichen wie `~`, `^`)
+/// wird `*` (geschützt, Review #285 M1).
+fn branch_target(dst: &str) -> String {
+    if dst == "HEAD" {
+        return dst.to_owned();
+    }
+    if dst.starts_with("refs/tags/") {
+        return dst.to_owned();
+    }
+    let name = match dst.strip_prefix("refs/heads/") {
+        Some(rest) => rest,
+        None if dst.starts_with("refs/") || dst.starts_with("heads/") => return "*".into(),
+        None => dst,
+    };
+    let valid = !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
+        && !name.contains("..");
+    if valid { name.to_owned() } else { "*".into() }
+}
+
 /// Operationen eines Teilkommandos: `push`, `force_push`, `delete_branch`, `merge`,
 /// `history_rewrite`.
 fn ops_of(cmd: &[&str], out: &mut Vec<&'static str>) {
-    let Some((sub, args)) = invocation(cmd) else {
+    let Some(g) = git(cmd) else {
         return;
     };
+    let (sub, args) = (g.sub, g.args);
     let mut add = |op: &'static str| {
         if !out.contains(&op) {
             out.push(op);
         }
     };
     let has = |names: &[&str]| options(args).any(|a| names.contains(&a));
+    // Konfiguration, die das Push-Ziel ändert: nicht sicher beurteilbar.
+    if push_config(g.global) {
+        add("uncertain");
+    }
     match sub {
-        "push" => {
+        "push" | "send-pack" => {
             let p = push(args);
             add("push");
             if p.force {
@@ -174,13 +293,30 @@ pub fn git_ops(argv: &[Vec<&str>]) -> Vec<&'static str> {
     out
 }
 
-/// `shell.git_push_targets(argv)`: Ziel-Branches aller `git push` (`refs/heads/` entfernt);
-/// `HEAD` für den aktuellen Branch (ohne Refspec), `*` für `--all`/`--mirror`.
-pub fn git_push_targets(argv: &[Vec<&str>]) -> Vec<String> {
+/// `shell.git_push_targets(argv, elsewhere?)`: Ziel-Branches aller `git push` bzw.
+/// `git send-pack` (`refs/heads/` entfernt); `HEAD` für den aktuellen Branch (ohne Refspec),
+/// `*` für `--all`/`--mirror` und unklare Ziele. Mit `elsewhere` (der Push läuft womöglich in
+/// einem anderen Repository, siehe [`git_elsewhere`]) zählen nur Ziele der Form `src:dst`;
+/// alles andere wird `*`.
+pub fn git_push_targets(argv: &[Vec<&str>], elsewhere: bool) -> Vec<String> {
     let mut out = Vec::new();
     for cmd in argv {
-        if let Some(("push", args)) = invocation(cmd) {
-            out.extend(push(args).targets);
+        if let Some((sub, args)) = invocation(cmd)
+            && is_push(sub)
+        {
+            let p = push(args);
+            if elsewhere {
+                let explicit = p.explicit;
+                out.extend(p.targets.into_iter().map(|t| {
+                    if t != "*" && explicit.contains(&t) {
+                        t
+                    } else {
+                        "*".into()
+                    }
+                }));
+            } else {
+                out.extend(p.targets);
+            }
         }
     }
     out

@@ -337,7 +337,7 @@ impl Ctx<'_, '_> {
                     _ => shell::has_flag(&refs, s(1)?),
                 }))
             }
-            Func::GitOps | Func::GitPushTargets => {
+            Func::GitOps | Func::GitPushTargets | Func::GitElsewhere => {
                 let argv = argv(&args[0])?;
                 self.meter
                     .charge(argv.iter().map(|c| c.len() as u64).sum::<u64>())?;
@@ -345,12 +345,25 @@ impl Ctx<'_, '_> {
                     .iter()
                     .map(|c| c.iter().map(String::as_str).collect())
                     .collect();
+                if matches!(func, Func::GitElsewhere) {
+                    return Ok(Value::Bool(git::git_elsewhere(&refs)));
+                }
+                let elsewhere = match args.get(1) {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(other) => {
+                        return Err(fail(format!(
+                            "shell.git_push_targets(): bool erwartet, gefunden {}",
+                            other.type_name()
+                        )));
+                    }
+                };
                 let items: Vec<Value> = match func {
                     Func::GitOps => git::git_ops(&refs)
                         .into_iter()
                         .map(|op| Value::String(op.into()))
                         .collect(),
-                    _ => git::git_push_targets(&refs)
+                    _ => git::git_push_targets(&refs, elsewhere)
                         .into_iter()
                         .map(|b| Value::String(b.into()))
                         .collect(),
