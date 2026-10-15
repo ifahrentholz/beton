@@ -203,6 +203,7 @@ fn sbx_005_ac3_credential_variables_hold_only_the_placeholder() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn prx_006_ac4_file_source_inside_a_sandbox_grant_is_rejected() {
     let e = env();
