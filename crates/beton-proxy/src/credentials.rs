@@ -1120,6 +1120,16 @@ mod tests {
     }
 
     #[test]
+    fn prx_010_short_values_do_not_redact_arbitrary_text() {
+        // Ein sehr kurzer Wert (z. B. "a") würde sonst jedes Vorkommen im Body ersetzen.
+        let p = Placeholder::generate().unwrap();
+        let short = ResponseRedactor::new([(&b"abc"[..], &p)].into_iter());
+        assert!(short.redact(b"abc abc").is_none());
+        let long = ResponseRedactor::new([(&b"ghp_0123456789"[..], &p)].into_iter());
+        assert!(long.redact(b"x ghp_0123456789 y").is_some());
+    }
+
+    #[test]
     fn prx_006_host_patterns() {
         let p = HostPattern::parse("*.example.com").unwrap();
         assert!(p.matches(&Host::parse("a.example.com").unwrap()));
