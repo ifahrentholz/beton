@@ -458,6 +458,45 @@ mod tests {
         })
     }
 
+    /// PRX-003: `*` und `**` backtracken nicht exponentiell; ein Agent kann mit einem Pfad
+    /// gegen eine Regel mit vielen Wildcards keinen Proxy-Worker blockieren (Befund des
+    /// Fuzz-Targets `egress_rules`, QA-009). Jede Entscheidung braucht unter 10 ms.
+    #[test]
+    fn prx_003_wildcards_do_not_backtrack_exponentially() {
+        use std::time::{Duration, Instant};
+        let cases = [
+            (
+                "GET api.test/*a*a*a*a*a*a*a*b/**",
+                format!("https://api.test/{}", "a".repeat(60)),
+            ),
+            (
+                "GET api.test/**/a/**/a/**/a/**/a/**/a/**/b",
+                format!("https://api.test/{}c", "a/".repeat(80)),
+            ),
+        ];
+        let n = cases.len();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (rule, url) in cases {
+                let set = rules(&[rule]);
+                let mut best = Duration::MAX;
+                for _ in 0..3 {
+                    let t = Instant::now();
+                    let d = decide(&set, "GET", &url);
+                    best = best.min(t.elapsed());
+                    assert!(!d.is_allowed(), "{rule}");
+                }
+                tx.send((rule, best)).unwrap();
+            }
+        });
+        for _ in 0..n {
+            let (rule, took) = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Matching hängt (exponentielles Backtracking)");
+            assert!(took < Duration::from_millis(10), "{rule}: {took:?}");
+        }
+    }
+
     #[test]
     fn prx_003_ac2_repo_glob() {
         let set = rules(&["GET api.github.com/repos/a/**"]);
