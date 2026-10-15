@@ -877,9 +877,11 @@ impl ResponseRedactor {
         }
     }
 
-    /// Wie der Body der Antwort behandelt wird: textartige Bodies bis [`REDACT_LIMIT`]
-    /// unkomprimiert im Strom, gzip/br gepuffert und dekodiert; alles andere unverändert.
-    pub(crate) fn body<B>(self, headers: &mut HeaderMap, body: B) -> RedactBody<B> {
+    /// Wie der Body der Antwort behandelt wird (PRX-010): textartige Bodies bis
+    /// [`REDACT_LIMIT`] unkomprimiert im Strom, gzip/br gepuffert und dekodiert; Binäres und
+    /// Größeres unverändert. Im Strom entfällt `Content-Length` (Platzhalter und Wert sind
+    /// unterschiedlich lang).
+    pub(crate) fn treatment(&self, headers: &mut HeaderMap) -> Treatment {
         let textual = headers
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -905,57 +907,45 @@ impl ResponseRedactor {
             .get(CONTENT_ENCODING)
             .and_then(|v| v.to_str().ok())
             .map(|v| v.trim().to_ascii_lowercase());
-        let small = length.is_none_or(|l| l <= REDACT_LIMIT as u64);
-        let mode = match (textual && small, encoding.as_deref()) {
-            (true, None | Some("identity")) => {
-                headers.remove(CONTENT_LENGTH);
-                Mode::Stream {
-                    carry: BytesMut::new(),
-                    seen: 0,
-                }
-            }
-            (true, Some(enc @ ("gzip" | "br"))) => Mode::Buffer {
-                buf: BytesMut::new(),
-                gzip: enc == "gzip",
-                decided: None,
-            },
-            _ => Mode::Pass,
-        };
-        if matches!(mode, Mode::Buffer { .. }) {
-            // Länge und Kodierung stehen erst nach dem Dekodieren fest.
-            headers.remove(CONTENT_LENGTH);
+        if !textual || length.is_some_and(|l| l > REDACT_LIMIT as u64) {
+            return Treatment::Pass;
         }
+        match encoding.as_deref() {
+            None | Some("identity") => {
+                headers.remove(CONTENT_LENGTH);
+                Treatment::Stream
+            }
+            Some("gzip") => Treatment::Buffer { gzip: true },
+            Some("br") => Treatment::Buffer { gzip: false },
+            Some(_) => Treatment::Pass,
+        }
+    }
+
+    /// Unkomprimierter Body im Strom.
+    pub(crate) fn stream<B>(self: Arc<Self>, body: B) -> RedactBody<B> {
         RedactBody {
             inner: body,
-            redactor: Arc::new(self),
-            mode,
+            redactor: self,
+            carry: BytesMut::new(),
+            seen: 0,
             pending: None,
             done: false,
         }
     }
+
+    /// Gepufferter, komprimierter Body: dekodiert und redigiert; `None`, wenn er sich nicht
+    /// (innerhalb von [`REDACT_LIMIT`]) dekodieren lässt.
+    pub(crate) fn decoded(&self, encoded: &[u8], gzip: bool) -> Option<Vec<u8>> {
+        let plain = decode(encoded, gzip)?;
+        Some(self.redact(&plain).unwrap_or(plain))
+    }
 }
 
-enum Mode {
-    /// Unverändert durchreichen.
+/// Behandlung eines Antwort-Bodys.
+pub(crate) enum Treatment {
     Pass,
-    /// Unkomprimiert im Strom; `carry` hält das Ende, das ein Wert über eine Frame-Grenze
-    /// haben könnte.
-    Stream { carry: BytesMut, seen: usize },
-    /// gzip/br: bis [`REDACT_LIMIT`] puffern, dann dekodiert redigieren; größer → unverändert.
-    Buffer {
-        buf: BytesMut,
-        gzip: bool,
-        decided: Option<bool>,
-    },
-}
-
-/// Body einer Antwort mit Redaction (PRX-010).
-pub(crate) struct RedactBody<B> {
-    inner: B,
-    redactor: Arc<ResponseRedactor>,
-    mode: Mode,
-    pending: Option<Frame<Bytes>>,
-    done: bool,
+    Stream,
+    Buffer { gzip: bool },
 }
 
 fn decode(buf: &[u8], gzip: bool) -> Option<Vec<u8>> {
@@ -974,6 +964,27 @@ fn decode(buf: &[u8], gzip: bool) -> Option<Vec<u8>> {
             .is_ok()
     };
     (ok && out.len() <= REDACT_LIMIT).then_some(out)
+}
+
+/// Body einer Antwort mit Redaction im Strom (PRX-010): `carry` hält das Ende, das ein Wert
+/// über eine Frame-Grenze haben könnte; nach [`REDACT_LIMIT`] fließt der Rest unverändert.
+pub(crate) struct RedactBody<B> {
+    inner: B,
+    redactor: Arc<ResponseRedactor>,
+    carry: BytesMut,
+    seen: usize,
+    pending: Option<Frame<Bytes>>,
+    done: bool,
+}
+
+impl<B> RedactBody<B> {
+    fn flush(&mut self) -> Option<Bytes> {
+        let rest = self.carry.split().freeze();
+        if rest.is_empty() {
+            return None;
+        }
+        Some(self.redactor.redact(&rest).map_or(rest, Bytes::from))
+    }
 }
 
 impl<B> Body for RedactBody<B>
@@ -995,98 +1006,49 @@ where
             if this.done {
                 return Poll::Ready(None);
             }
-            let next = match Pin::new(&mut this.inner).poll_frame(cx) {
+            let frame = match Pin::new(&mut this.inner).poll_frame(cx) {
                 Poll::Pending => return Poll::Pending,
-                Poll::Ready(n) => n,
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => {
+                    this.done = true;
+                    return Poll::Ready(this.flush().map(|b| Ok(Frame::data(b))));
+                }
+                Poll::Ready(Some(Ok(frame))) => frame,
             };
-            let redactor = this.redactor.clone();
-            match (&mut this.mode, next) {
-                (_, Some(Err(e))) => return Poll::Ready(Some(Err(e))),
-                (Mode::Pass, other) => return Poll::Ready(other),
-                (Mode::Stream { carry, seen }, Some(Ok(frame))) => {
-                    let frame = match frame.into_data() {
-                        Ok(data) => data,
-                        Err(other) => {
-                            // Trailer: erst den Rest ausgeben.
-                            let rest = carry.split().freeze();
-                            this.pending = Some(other);
-                            if !rest.is_empty() {
-                                let out = redactor.redact(&rest).map_or(rest, Bytes::from);
-                                return Poll::Ready(Some(Ok(Frame::data(out))));
-                            }
-                            continue;
-                        }
-                    };
-                    if *seen >= REDACT_LIMIT {
-                        let mut out = carry.split();
-                        out.extend_from_slice(&frame);
-                        return Poll::Ready(Some(Ok(Frame::data(out.freeze()))));
+            let data = match frame.into_data() {
+                Ok(data) => data,
+                Err(trailers) => {
+                    // Trailer: erst den Rest ausgeben.
+                    this.pending = Some(trailers);
+                    if let Some(b) = this.flush() {
+                        return Poll::Ready(Some(Ok(Frame::data(b))));
                     }
-                    *seen += frame.len();
-                    carry.extend_from_slice(&frame);
-                    let keep = redactor.longest.saturating_sub(1);
-                    if carry.len() <= keep {
-                        continue;
-                    }
-                    // Bis `cut` ausgeben, aber nie mitten in einem Treffer schneiden.
-                    let mut cut = carry.len() - keep;
-                    if let Some(m) = redactor.matcher.as_ref() {
-                        for mat in m.find_iter(carry.as_ref()) {
-                            if mat.start() < cut && mat.end() > cut {
-                                cut = mat.end();
-                            }
-                        }
-                    }
-                    let head = carry.split_to(cut).freeze();
-                    let out = redactor.redact(&head).map_or(head, Bytes::from);
-                    return Poll::Ready(Some(Ok(Frame::data(out))));
+                    continue;
                 }
-                (Mode::Stream { carry, .. }, None) => {
-                    this.done = true;
-                    let rest = carry.split().freeze();
-                    if rest.is_empty() {
-                        return Poll::Ready(None);
+            };
+            if this.seen >= REDACT_LIMIT {
+                let mut out = this.carry.split();
+                out.extend_from_slice(&data);
+                return Poll::Ready(Some(Ok(Frame::data(out.freeze()))));
+            }
+            this.seen += data.len();
+            this.carry.extend_from_slice(&data);
+            let keep = this.redactor.longest.saturating_sub(1);
+            if this.carry.len() <= keep {
+                continue;
+            }
+            // Bis `cut` ausgeben, aber nie mitten in einem Treffer schneiden.
+            let mut cut = this.carry.len() - keep;
+            if let Some(m) = this.redactor.matcher.as_ref() {
+                for mat in m.find_iter(this.carry.as_ref()) {
+                    if mat.start() < cut && mat.end() > cut {
+                        cut = mat.end();
                     }
-                    let out = redactor.redact(&rest).map_or(rest, Bytes::from);
-                    return Poll::Ready(Some(Ok(Frame::data(out))));
-                }
-                (Mode::Buffer { buf, decided, .. }, Some(Ok(frame))) => {
-                    if *decided == Some(false) {
-                        return Poll::Ready(Some(Ok(frame)));
-                    }
-                    let data = match frame.into_data() {
-                        Ok(d) => d,
-                        Err(other) => {
-                            this.pending = Some(other);
-                            *decided = Some(false);
-                            let all = buf.split().freeze();
-                            if all.is_empty() {
-                                continue;
-                            }
-                            return Poll::Ready(Some(Ok(Frame::data(all))));
-                        }
-                    };
-                    buf.extend_from_slice(&data);
-                    if buf.len() > REDACT_LIMIT {
-                        // Zu groß: unverändert (kodiert) weiter.
-                        *decided = Some(false);
-                        return Poll::Ready(Some(Ok(Frame::data(buf.split().freeze()))));
-                    }
-                }
-                (Mode::Buffer { buf, gzip, decided }, None) => {
-                    this.done = true;
-                    if *decided == Some(false) || buf.is_empty() {
-                        return Poll::Ready(None);
-                    }
-                    let all = buf.split().freeze();
-                    let out = match decode(&all, *gzip) {
-                        Some(plain) => Bytes::from(redactor.redact(&plain).unwrap_or(plain)),
-                        // Nicht dekodierbar: unverändert (der Client scheitert selbst daran).
-                        None => all,
-                    };
-                    return Poll::Ready(Some(Ok(Frame::data(out))));
                 }
             }
+            let head = this.carry.split_to(cut).freeze();
+            let out = this.redactor.redact(&head).map_or(head, Bytes::from);
+            return Poll::Ready(Some(Ok(Frame::data(out))));
         }
     }
 
@@ -1095,10 +1057,45 @@ where
     }
 
     fn size_hint(&self) -> SizeHint {
-        match self.mode {
-            Mode::Pass => self.inner.size_hint(),
-            _ => SizeHint::default(),
+        SizeHint::default()
+    }
+}
+
+/// Bereits gelesener Anfang plus der Rest eines Bodys (zu große, gepufferte Antworten).
+pub(crate) struct Prefixed<B> {
+    head: Option<Bytes>,
+    rest: B,
+}
+
+impl<B> Prefixed<B> {
+    pub(crate) fn new(head: Bytes, rest: B) -> Self {
+        Self {
+            head: (!head.is_empty()).then_some(head),
+            rest,
         }
+    }
+}
+
+impl<B> Body for Prefixed<B>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
+    type Data = Bytes;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(h) = this.head.take() {
+            return Poll::Ready(Some(Ok(Frame::data(h))));
+        }
+        Pin::new(&mut this.rest).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.head.is_none() && self.rest.is_end_stream()
     }
 }
 

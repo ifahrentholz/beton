@@ -686,15 +686,27 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+/// Prozessweiter Mitschnitt aller Logs (alle Crates, TRACE): Ein Log-Subscriber nur für
+/// diesen Thread verpasst Aufrufstellen, die parallel laufende Tests schon ohne Subscriber
+/// besucht haben (Interest-Cache von `tracing`). So prüft der Test zugleich, dass kein
+/// anderer Test dieses Binaries den Fixture-Wert loggt.
+fn global_logs() -> &'static Captured {
+    static LOGS: std::sync::OnceLock<Captured> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| {
+        let logs = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).expect("globaler Subscriber");
+        logs
+    })
+}
+
+#[tokio::test]
 async fn prx_009_ac2_logs_and_events_never_contain_header_cookie_or_query_values() {
-    let logs = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .with_writer(logs.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    let logs = global_logs();
     let fx = fx().await;
     let traffic = Traffic::default();
     let credentials = Credentials::new(
@@ -752,6 +764,7 @@ async fn prx_009_ac2_logs_and_events_never_contain_header_cookie_or_query_values
     drop(i);
     let summary = traffic.take();
     let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
+    assert!(text.contains("Egress erlaubt"), "Logs fehlen: {text}");
     let events = format!("{:?} {summary:?}", fx.events.0.lock().unwrap());
     assert!(text.contains("Egress"), "Logs fehlen: {text}");
     for marker in [

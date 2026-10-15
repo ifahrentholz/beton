@@ -99,9 +99,25 @@ impl<B> Counted<B> {
         }
     }
 
+    /// Bytes, die außerhalb von `poll_frame` gelesen wurden (gepufferte Antworten).
+    pub(crate) fn add(&mut self, bytes: usize) {
+        self.bytes += bytes as u64;
+    }
+
     fn finish(&mut self) {
         if let Some((t, host, requests)) = self.report.take() {
             t.record(&host, requests, self.bytes);
+        }
+    }
+}
+
+impl Counted<()> {
+    /// Übernimmt Zähler und bisherige Bytes für einen Body.
+    pub(crate) fn around<C>(mut self, inner: C) -> Counted<C> {
+        Counted {
+            inner,
+            report: self.report.take(),
+            bytes: self.bytes,
         }
     }
 }
