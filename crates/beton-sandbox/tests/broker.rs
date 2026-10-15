@@ -555,37 +555,37 @@ fn on_host(cwd: &Path, script: &str, vars: &[(&str, &Path)]) -> String {
 /// Sonst liefe beim nächsten Start Code des Tools in Stufe 1 (Security-Review #228).
 #[tokio::test]
 async fn sbx_002_stage_two_cannot_change_the_project_configuration() {
-    const ATTACK: &str = "echo evil >> .beton/config.yaml && echo W1; \
-        ln .beton/config.yaml hart && echo evil >> hart && echo W7; \
-        mkdir -p .CLAUDE; echo '{\"hooks\":{}}' > .CLAUDE/settings.json && echo W8; \
-        mkdir -p .claude; echo '{\"hooks\":{}}' > .claude/settings.json && echo W2; \
-        ln -s /etc/hosts .claude/link && echo W6; \
-        mv .beton .beton-alt && echo W3; \
-        rm -rf .beton && echo W4; \
-        mkdir -p .beton/agents; echo x > .beton/agents/evil.yaml && echo W5; \
-        echo ok > src/neu.rs && echo SRC_OK";
+    const ATTACK: &str = "echo evil >> .beton/config.yaml && echo =W1=; \
+        ln .beton/config.yaml hart && echo evil >> hart && echo =W7=; \
+        mkdir -p .CLAUDE; echo '{\"hooks\":{}}' > .CLAUDE/settings.json && echo =W8=; \
+        mkdir -p .claude; echo '{\"hooks\":{}}' > .claude/settings.json && echo =W2=; \
+        ln -s /etc/hosts .claude/link && echo =W6=; \
+        mv .beton .beton-alt && echo =W3=; \
+        rm -rf .beton && echo =W4=; \
+        mkdir -p .beton/agents; echo x > .beton/agents/evil.yaml && echo =W5=; \
+        echo ok > src/neu.rs && echo =SRC_OK=";
     // Kontrollgruppe: Ohne Sandbox gelingt jeder Schritt.
     let host = fx();
     write(&host.ws.join(".beton/config.yaml"), "harnesses: {}\n");
     let out = on_host(&host.ws, ATTACK, &[]);
     for w in ["W1", "W2", "W3", "W5", "W6", "W7", "W8", "SRC_OK"] {
-        assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
+        assert!(out.contains(&format!("={w}=")), "Kontrollgruppe {w}: {out}");
     }
 
     let fx = fx();
     write(&fx.ws.join(".beton/config.yaml"), "harnesses: {}\n");
     let (_, out) = in_stage(ctx(&fx, Stage::Tools), ATTACK, &[]).await;
     for w in ["W1", "W2", "W3", "W4", "W5", "W6", "W7"] {
-        assert!(!out.contains(w), "Stufe 2 {w}: {out}");
+        assert!(!out.contains(&format!("={w}=")), "Stufe 2 {w}: {out}");
     }
     // `.CLAUDE` ist auf einem Dateisystem ohne Groß-/Kleinschreibung (APFS-Standard) dasselbe
     // wie `.claude` und darf dort nicht entstehen; unter Linux ist es ein anderes, harmloses
     // Verzeichnis. Entscheidend ist, was Claude als `.claude/settings.json` läse (unten).
     if cfg!(target_os = "macos") {
-        assert!(!out.contains("W8"), "Stufe 2 W8: {out}");
+        assert!(!out.contains("=W8="), "Stufe 2 W8: {out}");
     }
     assert!(
-        out.contains("SRC_OK"),
+        out.contains("=SRC_OK="),
         "Workspace bleibt beschreibbar: {out}"
     );
     assert_eq!(
@@ -601,15 +601,15 @@ async fn sbx_002_stage_two_cannot_change_the_project_configuration() {
 /// Modell geben: In Stufe 2 entstehen im Austausch keine Symlinks, auch nicht per Umbenennen.
 #[tokio::test]
 async fn sbx_002_stage_two_cannot_plant_symlinks_in_the_exchange() {
-    const ATTACK: &str = "ln -s \"$HOME/.claude/.credentials.json\" \"$X/claude-cwd\" && echo L1; \
-        ln -s /etc/hosts \"$X/l2\" && echo L2; \
-        ln -s /etc/hosts \"$WS/link\" && echo WS_LINK; mv \"$WS/link\" \"$X/moved\" && echo L3; \
-        mkdir -p \"$X/sub\"; ln -s /etc/hosts \"$X/sub/l4\" && echo L4; \
-        printf ok > \"$X/regular\" && echo REGULAR_OK; \
+    const ATTACK: &str = "ln -s \"$HOME/.claude/.credentials.json\" \"$X/claude-cwd\" && echo =L1=; \
+        ln -s /etc/hosts \"$X/l2\" && echo =L2=; \
+        ln -s /etc/hosts \"$WS/link\" && echo =WS_LINK=; mv \"$WS/link\" \"$X/moved\" && echo =L3=; \
+        mkdir -p \"$X/sub\"; ln -s /etc/hosts \"$X/sub/l4\" && echo =L4=; \
+        printf ok > \"$X/regular\" && echo =REGULAR_OK=; \
         mkdir -p \"$TMPDIR/d/tasks\"; ln -s \"$HOME/.claude/.credentials.json\" \"$TMPDIR/d/tasks/1.output\"; \
-        mv \"$X/vorhanden\" \"$X/alt\"; mv \"$TMPDIR/d\" \"$X/vorhanden\" && echo L5; \
-        ln -s /etc/hosts \"$TMPDIR/s\"; ln -P \"$TMPDIR/s\" \"$X/hart\" && echo L6; \
-        ln -s /etc/hosts \"$TMPDIR/eigener\" && echo TMP_LINK_OK";
+        mv \"$X/vorhanden\" \"$X/alt\"; mv \"$TMPDIR/d\" \"$X/vorhanden\" && echo =L5=; \
+        ln -s /etc/hosts \"$TMPDIR/s\"; ln -P \"$TMPDIR/s\" \"$X/hart\" && echo =L6=; \
+        ln -s /etc/hosts \"$TMPDIR/eigener\" && echo =TMP_LINK_OK=";
     let base = tempfile::tempdir_in(beton_sandbox::session_base()).unwrap();
     let base = base.path().canonicalize().unwrap();
     // Kontrollgruppe ohne Sandbox.
@@ -623,7 +623,7 @@ async fn sbx_002_stage_two_cannot_plant_symlinks_in_the_exchange() {
         &[("X", &hx), ("WS", &host.ws), ("HOME", &host.home)],
     );
     for w in ["L1", "L2", "L3", "L4", "L5", "L6", "REGULAR_OK"] {
-        assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
+        assert!(out.contains(&format!("={w}=")), "Kontrollgruppe {w}: {out}");
     }
 
     let fx = fx();
@@ -633,7 +633,7 @@ async fn sbx_002_stage_two_cannot_plant_symlinks_in_the_exchange() {
     c.exchange = Some(xchg.clone());
     let (_, out) = in_stage(c, ATTACK, &[("X", &xchg), ("WS", &fx.ws)]).await;
     for w in ["L1", "L2", "L3", "L4", "L5", "L6"] {
-        assert!(!out.contains(w), "Stufe 2 {w}: {out}");
+        assert!(!out.contains(&format!("={w}=")), "Stufe 2 {w}: {out}");
     }
     // Nirgends im Austausch ein Symlink, auch nicht in Unterverzeichnissen.
     fn no_links(d: &Path) {
@@ -651,7 +651,7 @@ async fn sbx_002_stage_two_cannot_plant_symlinks_in_the_exchange() {
     }
     no_links(&xchg);
     for w in ["WS_LINK", "REGULAR_OK", "TMP_LINK_OK"] {
-        assert!(out.contains(w), "Stufe 2 {w}: {out}");
+        assert!(out.contains(&format!("={w}=")), "Stufe 2 {w}: {out}");
     }
     assert_eq!(std::fs::read_to_string(xchg.join("regular")).unwrap(), "ok");
     for name in ["claude-cwd", "l2", "moved", "sub/l4"] {
@@ -675,12 +675,12 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
     std::fs::write(root.join("harness/geheim"), "FIXTURE-HARNESS-SCRATCH").unwrap();
     std::fs::write(root.join("ca/bundle.pem"), "FIXTURE-CA").unwrap();
     let _sock = std::os::unix::net::UnixListener::bind(root.join("exec/exec.sock")).unwrap();
-    const PROBE: &str = "cat \"$R/harness/geheim\" && echo H1; \
-        [ -e \"$R/exec/exec.sock\" ] && echo H2; \
-        [ -e \"$R/harness\" ] && echo H3; [ -e \"$R/exec\" ] && echo H4; \
-        printf ok > \"$R/xchg/x\" && echo XCHG_OK; \
-        cat \"$R/ca/bundle.pem\" && echo CA_OK; \
-        printf ok > \"$TMPDIR/t\" && echo TMP_OK";
+    const PROBE: &str = "cat \"$R/harness/geheim\" && echo =H1=; \
+        [ -e \"$R/exec/exec.sock\" ] && echo =H2=; \
+        [ -e \"$R/harness\" ] && echo =H3=; [ -e \"$R/exec\" ] && echo =H4=; \
+        printf ok > \"$R/xchg/x\" && echo =XCHG_OK=; \
+        cat \"$R/ca/bundle.pem\" && echo =CA_OK=; \
+        printf ok > \"$TMPDIR/t\" && echo =TMP_OK=";
     // Kontrollgruppe ohne Sandbox.
     let host = fx();
     let out = on_host(
@@ -689,7 +689,7 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
         &[("R", &root), ("TMPDIR", &root.join("tools"))],
     );
     for w in ["H1", "H2", "H3", "H4", "XCHG_OK", "CA_OK", "TMP_OK"] {
-        assert!(out.contains(w), "Kontrollgruppe {w}: {out}");
+        assert!(out.contains(&format!("={w}=")), "Kontrollgruppe {w}: {out}");
     }
 
     let fx = fx();
@@ -722,10 +722,10 @@ async fn sbx_002_stage_two_sees_only_its_part_of_the_session_directory() {
         String::from_utf8_lossy(&out.stderr)
     );
     for w in ["H1", "H2", "H3", "H4"] {
-        assert!(!out.contains(w), "Stufe 2 {w}: {out}");
+        assert!(!out.contains(&format!("={w}=")), "Stufe 2 {w}: {out}");
     }
     assert!(!out.contains("FIXTURE-HARNESS-SCRATCH"), "{out}");
     for w in ["XCHG_OK", "CA_OK", "TMP_OK"] {
-        assert!(out.contains(w), "Stufe 2 {w}: {out}");
+        assert!(out.contains(&format!("={w}=")), "Stufe 2 {w}: {out}");
     }
 }
