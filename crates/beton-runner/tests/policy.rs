@@ -31,6 +31,11 @@ struct Env {
 
 impl Env {
     async fn start() -> Self {
+        Self::start_in(None).await
+    }
+
+    /// Daemon mit `user.timezone` (POL-004 AC4); `None` = Default UTC.
+    async fn start_in(timezone: Option<beton_core::timezone::UserTimeZone>) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("bt")
             .tempdir_in("/tmp")
@@ -60,6 +65,9 @@ impl Env {
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
             r.sessions.dev = true;
+            if let Some(tz) = timezone {
+                r.timezone = tz;
+            }
             r
         })
         .await
@@ -716,6 +724,26 @@ async fn pol_004_ac3_session_cost_reflects_logged_cost_deltas() {
     let (status, body) = env.input(&id, "zwei").await;
     assert_eq!(status, 403, "{body}");
     assert!(body["detail"].as_str().unwrap().contains("Budget"));
+}
+
+#[tokio::test]
+async fn pol_004_ac4_user_timezone_comes_from_the_setting() {
+    let berlin = beton_core::timezone::UserTimeZone::parse("Europe/Berlin").unwrap();
+    let env = Env::start_in(Some(berlin)).await;
+    // Nur `user.timezone`, ohne Kostenfeld: der Wert kommt trotzdem vom Daemon.
+    env.project_policy(
+        "zeitzone",
+        "rules:\n  - id: tz\n    on: model_request\n    when: 'user.timezone == \"Europe/Berlin\" && user.daily_cost_usd == 0.0'\n    action: deny\n    reason: \"Zeitzone Europe/Berlin\"\n",
+    );
+    let s = env.scenario("turns:\n  - emit: [{ message: \"nie\" }]\n");
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let (status, body) = env.input(&id, "eins").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("Europe/Berlin"),
+        "{body}"
+    );
 }
 
 // ---------------------------------------------------------------------- SES-004 (#101)

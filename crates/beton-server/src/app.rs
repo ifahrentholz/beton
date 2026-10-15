@@ -100,6 +100,9 @@ pub struct Runtime {
     pub usage_notices: Arc<crate::usage_notice::NoticeLog>,
     /// `compaction.*` (USE-009): Automatik vor dem nächsten Turn bzw. im Direkt-API-Loop.
     pub compaction: beton_harness::CompactionSettings,
+    /// `user.timezone` (POL-004 AC4): Tages- und Monatsgrenzen der Policy-Kosten, Tag von
+    /// `user_day` (POL-009) und Default von `tz` der Usage-API (USE-005). Default UTC.
+    pub timezone: beton_core::timezone::UserTimeZone,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
@@ -157,6 +160,7 @@ impl Runtime {
             title_jobs: Arc::default(),
             usage: crate::usage_notice::UsageConfig::default(),
             compaction: beton_harness::CompactionSettings::default(),
+            timezone: beton_core::timezone::UserTimeZone::utc(),
             usage_notices: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),

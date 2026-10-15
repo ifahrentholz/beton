@@ -128,13 +128,15 @@ pub trait UsageSource: Send + Sync {
     async fn usage(&self) -> Result<Usage, String>;
 }
 
-/// Felder, für die das Gate Verbrauchswerte vom Server holt.
-const USAGE_FIELDS: [&str; 5] = [
+/// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
+/// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
+const USAGE_FIELDS: [&str; 6] = [
     "session.cost_usd",
     "session.tokens_in",
     "session.tokens_out",
     "user.daily_cost_usd",
     "user.monthly_cost_usd",
+    "user.timezone",
 ];
 
 /// Startparameter des Gates.
@@ -892,7 +894,6 @@ impl PolicyGate {
             }),
             user: Some(UserVars {
                 id: Some(UserId::LOCAL.to_string()),
-                timezone: Some("UTC".into()),
                 ..UserVars::default()
             }),
             org: Some(OrgVars {
@@ -940,9 +941,7 @@ impl PolicyGate {
         if let Some(user) = vars.user.as_mut() {
             user.daily_cost_usd = u.user_daily_cost_usd;
             user.monthly_cost_usd = u.user_monthly_cost_usd;
-            if let Some(tz) = u.timezone {
-                user.timezone = Some(tz);
-            }
+            user.timezone = u.timezone;
         }
     }
 

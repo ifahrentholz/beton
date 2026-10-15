@@ -108,6 +108,11 @@
       "default": {
         "rate_limit_notice": true
       }
+    },
+    "user": {
+      "description": "Angaben zum User, z. B. `timezone` (POL-004 AC4); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/UserSettings",
+      "default": {}
     }
   },
   "additionalProperties": false,
@@ -878,6 +883,32 @@
         }
       },
       "additionalProperties": false
+    },
+    "UserSettings": {
+      "description": "Angaben zum User (POL-004 AC4).",
+      "type": "object",
+      "properties": {
+        "timezone": {
+          "description": "Zeitzone des Users als IANA-Name (z. B. `Europe/Berlin`, mit Sommerzeit), `UTC` oder\nfester Versatz (`+02:00`). Bestimmt Tages- und Monatsgrenzen von\n`user.daily_cost_usd`/`user.monthly_cost_usd`, den Tag von `user_day` (POL-009) und\nden Default von `tz` in `GET /v1/usage`; `beton usage` rechnet damit statt mit dem\nlokalen Versatz. Ohne Angabe gilt UTC. Ein unbekannter Name ist ein\nKonfigurationsfehler.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserTimeZone"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "UserTimeZone": {
+      "description": "IANA-Zeitzone (z. B. `Europe/Berlin`), `UTC` oder fester Versatz (`+02:00`).",
+      "type": "string",
+      "examples": [
+        "Europe/Berlin",
+        "UTC"
+      ]
     },
     "WireKind": {
       "description": "Wire-Familie eines Providers.",

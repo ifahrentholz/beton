@@ -8,18 +8,21 @@
 //! Harness, ob er Tokens bzw. Fenster meldet (sonst „nicht gemeldet“ statt 0, USE-004 AC4).
 //!
 //! `beton usage` ohne Daemon (USE-007 AC3) nutzt dieselben Funktionen
-//! ([`UsageParams::to_query`], [`UsageReportView::new`]) direkt auf der Datenbank.
+//! ([`UsageParams::to_query`], [`UsageReportView::new`]) direkt auf der Datenbank. Tage und
+//! Datumsangaben gelten in `tz` (IANA-Name mit Sommerzeit oder fester Versatz), ohne Angabe in
+//! `user.timezone` (POL-004 AC4, Default UTC).
 
 use axum::extract::{Path, State};
 use beton_core::id::{ProjectId, SessionId, UserId};
 use beton_core::time::Timestamp;
+use beton_core::timezone::UserTimeZone;
 use beton_store::{
     Billing, HarnessReporting, SubscriptionWindow, UsageDimension, UsageGroup, UsageQuery,
     UsageRecord, UsageReport,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use time::{Date, OffsetDateTime, Time, UtcOffset};
+use time::{Date, OffsetDateTime};
 use ts_rs::TS;
 use utoipa::{IntoParams, ToSchema};
 
@@ -40,8 +43,8 @@ pub struct UsageParams {
     /// Ende, exklusiv: RFC 3339 oder `YYYY-MM-DD` (dieser Tag zählt noch mit). Default: jetzt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
-    /// Zeitzone des Users als Versatz (`+02:00`, `-05:00`, `Z`); bestimmt Tagesgrenzen von
-    /// `day` und Datumsangaben. Default UTC.
+    /// Zeitzone der Tagesgrenzen von `day` und Datumsangaben: IANA-Name (`Europe/Berlin`, mit
+    /// Sommerzeit je Tag), `UTC` oder fester Versatz (`+02:00`). Default: `user.timezone`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tz: Option<String>,
     /// Komma-Liste aus `day`, `session`, `project`, `harness`, `model`, `auth_source`
@@ -62,33 +65,7 @@ pub struct UsageParams {
     pub session_id: Option<String>,
 }
 
-/// Versatz `+02:00`, `-0530`, `Z` bzw. `UTC`.
-pub fn parse_offset(raw: &str) -> Result<UtcOffset, String> {
-    let s = raw.trim();
-    if s.eq_ignore_ascii_case("z") || s.eq_ignore_ascii_case("utc") {
-        return Ok(UtcOffset::UTC);
-    }
-    let invalid = || format!("tz `{raw}` ist ungültig (erwartet z. B. +02:00 oder Z)");
-    let (sign, rest) = match s.as_bytes().first() {
-        Some(b'+') => (1, &s[1..]),
-        Some(b'-') => (-1, &s[1..]),
-        _ => return Err(invalid()),
-    };
-    let digits: String = rest.chars().filter(|c| *c != ':').collect();
-    if digits.len() != 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return Err(invalid());
-    }
-    let h: i8 = digits[..2].parse().map_err(|_| invalid())?;
-    let m: i8 = digits[2..].parse().map_err(|_| invalid())?;
-    UtcOffset::from_hms(sign * h, sign * m, 0).map_err(|_| invalid())
-}
-
-/// Versatz als Text, z. B. `+02:00`.
-pub fn format_offset(o: UtcOffset) -> String {
-    let (h, m, _) = o.as_hms();
-    let sign = if o.is_negative() { '-' } else { '+' };
-    format!("{sign}{:02}:{:02}", h.unsigned_abs(), m.unsigned_abs())
-}
+pub use beton_core::timezone::{format_offset, parse_offset};
 
 fn date(raw: &str) -> Option<Date> {
     let format = time::macros::format_description!("[year]-[month]-[day]");
@@ -96,14 +73,10 @@ fn date(raw: &str) -> Option<Date> {
 }
 
 /// Zeitpunkt aus RFC 3339 oder Datum; `end` nimmt bei einem Datum den Folgetag 00:00.
-fn instant(raw: &str, offset: UtcOffset, end: bool, name: &str) -> Result<OffsetDateTime, String> {
+fn instant(raw: &str, tz: &UserTimeZone, end: bool, name: &str) -> Result<OffsetDateTime, String> {
     if let Some(d) = date(raw) {
-        let start = d.with_time(Time::MIDNIGHT).assume_offset(offset);
-        return Ok(if end {
-            start + time::Duration::DAY
-        } else {
-            start
-        });
+        let d = if end { d.next_day().unwrap_or(d) } else { d };
+        return Ok(tz.start_of(d));
     }
     raw.parse::<Timestamp>()
         .map(|t| t.as_offset_date_time())
@@ -111,18 +84,25 @@ fn instant(raw: &str, offset: UtcOffset, end: bool, name: &str) -> Result<Offset
 }
 
 impl UsageParams {
-    /// Auswahl für den Store; Fehlermeldungen nennen den Parameter.
-    pub fn to_query(&self, now: OffsetDateTime) -> Result<UsageQuery, String> {
-        let offset = match &self.tz {
-            Some(t) => parse_offset(t)?,
-            None => UtcOffset::UTC,
-        };
+    /// Zeitzone aus `tz`, ohne Angabe `default` (`user.timezone`).
+    pub fn timezone(&self, default: &UserTimeZone) -> Result<UserTimeZone, String> {
+        match &self.tz {
+            Some(t) => UserTimeZone::parse(t).map_err(|_| {
+                format!("tz `{t}` ist ungültig (erwartet z. B. Europe/Berlin, +02:00 oder Z)")
+            }),
+            None => Ok(default.clone()),
+        }
+    }
+
+    /// Auswahl für den Store in der Zeitzone `tz` ([`Self::timezone`]); Fehlermeldungen
+    /// nennen den Parameter.
+    pub fn to_query(&self, now: OffsetDateTime, tz: &UserTimeZone) -> Result<UsageQuery, String> {
         let to = match &self.to {
-            Some(t) => instant(t, offset, true, "to")?,
+            Some(t) => instant(t, tz, true, "to")?,
             None => now,
         };
         let from = match &self.from {
-            Some(f) => instant(f, offset, false, "from")?,
+            Some(f) => instant(f, tz, false, "from")?,
             None => to - time::Duration::days(DEFAULT_DAYS),
         };
         if from >= to {
@@ -165,7 +145,12 @@ impl UsageParams {
         Ok(UsageQuery {
             from: from.into(),
             to: to.into(),
-            utc_offset_s: offset.whole_seconds(),
+            utc_offset_s: tz.offset_at(from).whole_seconds(),
+            offset_changes: tz
+                .offset_changes(from, to)
+                .into_iter()
+                .map(|(at, o)| (at.into(), o.whole_seconds()))
+                .collect(),
             group_by,
             project: parse_id("project", &self.project)?
                 .map(|p| {
@@ -368,7 +353,7 @@ pub struct UsageReportView {
     pub from: String,
     /// Ende (exklusiv), RFC 3339 UTC.
     pub to: String,
-    /// Zeitzone der Tagesgrenzen, z. B. `+02:00`.
+    /// Zeitzone der Tagesgrenzen, z. B. `Europe/Berlin` oder `+02:00`.
     pub tz: String,
     pub group_by: Vec<String>,
     /// Version des eingebauten Preis-Katalogs (USE-002); Records tragen ihre eigene.
@@ -382,12 +367,16 @@ pub struct UsageReportView {
 }
 
 impl UsageReportView {
-    pub fn new(q: &UsageQuery, report: &UsageReport, now: OffsetDateTime) -> Self {
-        let tz = UtcOffset::from_whole_seconds(q.utc_offset_s).unwrap_or(UtcOffset::UTC);
+    pub fn new(
+        q: &UsageQuery,
+        report: &UsageReport,
+        now: OffsetDateTime,
+        tz: &UserTimeZone,
+    ) -> Self {
         Self {
             from: q.from.to_string(),
             to: q.to.to_string(),
-            tz: format_offset(tz),
+            tz: tz.name().to_owned(),
             group_by: q.group_by.iter().map(|d| d.as_str().to_owned()).collect(),
             pricing_version: beton_core::pricing::Catalog::embedded()
                 .version()
@@ -631,9 +620,10 @@ pub async fn get_usage(
     ApiQuery(params): ApiQuery<UsageParams>,
 ) -> ApiResult<axum::Json<UsageReportView>> {
     let now = OffsetDateTime::now_utc();
-    let q = params.to_query(now).map_err(invalid)?;
+    let tz = params.timezone(&state.runtime.timezone).map_err(invalid)?;
+    let q = params.to_query(now, &tz).map_err(invalid)?;
     let report = state.store.usage_report(state.local.org, &q).await?;
-    Ok(axum::Json(UsageReportView::new(&q, &report, now)))
+    Ok(axum::Json(UsageReportView::new(&q, &report, now, &tz)))
 }
 
 /// Preise, mit denen der Server bewertet (USE-002, USE-003): eigene Preise in
@@ -686,29 +676,67 @@ mod tests {
         p
     }
 
+    fn utc() -> UserTimeZone {
+        UserTimeZone::utc()
+    }
+
+    fn query(p: &UsageParams, now: OffsetDateTime) -> Result<UsageQuery, String> {
+        let tz = p.timezone(&utc())?;
+        p.to_query(now, &tz)
+    }
+
     #[test]
     fn use_005_dates_are_whole_days_in_the_users_timezone() {
         let now = datetime!(2026-10-03 12:00 UTC);
-        let q = params(&[
-            ("from", "2026-10-01"),
-            ("to", "2026-10-02"),
-            ("tz", "+02:00"),
-        ])
-        .to_query(now)
+        let q = query(
+            &params(&[
+                ("from", "2026-10-01"),
+                ("to", "2026-10-02"),
+                ("tz", "+02:00"),
+            ]),
+            now,
+        )
         .unwrap();
         assert_eq!(q.from.to_string(), "2026-09-30T22:00:00.000Z");
         assert_eq!(q.to.to_string(), "2026-10-02T22:00:00.000Z");
         assert_eq!(q.utc_offset_s, 7200);
-        let q = params(&[]).to_query(now).unwrap();
+        assert!(q.offset_changes.is_empty());
+        let q = query(&params(&[]), now).unwrap();
         assert_eq!(q.to.to_string(), "2026-10-03T12:00:00.000Z");
         assert_eq!(q.from.to_string(), "2026-09-03T12:00:00.000Z");
-        let q = params(&[
-            ("from", "2026-10-03T10:00:00Z"),
-            ("group_by", "day, harness,day"),
-        ])
-        .to_query(now)
+        let q = query(
+            &params(&[
+                ("from", "2026-10-03T10:00:00Z"),
+                ("group_by", "day, harness,day"),
+            ]),
+            now,
+        )
         .unwrap();
         assert_eq!(q.group_by, [UsageDimension::Day, UsageDimension::Harness]);
+    }
+
+    #[test]
+    fn pol_004_ac4_usage_days_follow_daylight_saving_time_in_the_users_timezone() {
+        let now = datetime!(2026-11-01 12:00 UTC);
+        // Ohne `tz` gilt `user.timezone`.
+        let berlin = UserTimeZone::parse("Europe/Berlin").unwrap();
+        let p = params(&[("from", "2026-10-24"), ("to", "2026-10-26")]);
+        let tz = p.timezone(&berlin).unwrap();
+        assert_eq!(tz.name(), "Europe/Berlin");
+        let q = p.to_query(now, &tz).unwrap();
+        // Beginn mit Sommerzeit (+02:00), Ende mit Winterzeit (+01:00).
+        assert_eq!(q.from.to_string(), "2026-10-23T22:00:00.000Z");
+        assert_eq!(q.to.to_string(), "2026-10-26T23:00:00.000Z");
+        assert_eq!(q.utc_offset_s, 7200);
+        assert_eq!(
+            q.offset_changes,
+            vec![("2026-10-25T01:00:00.000Z".parse().unwrap(), 3600)]
+        );
+        // Ein angegebenes `tz` gilt vor `user.timezone`.
+        let p = params(&[("tz", "europe/berlin")]);
+        assert_eq!(p.timezone(&utc()).unwrap(), berlin);
+        let p = params(&[("tz", "+05:30")]);
+        assert_eq!(p.timezone(&berlin).unwrap().name(), "+05:30");
     }
 
     #[test]
@@ -719,24 +747,18 @@ mod tests {
             params(&[("group_by", "model,team")]),
             params(&[("team", "t1")]),
         ] {
-            let err = p.to_query(now).unwrap_err();
+            let err = query(&p, now).unwrap_err();
             assert!(err.contains("ab M4"), "{err}");
         }
-        assert!(params(&[("group_by", "farbe")]).to_query(now).is_err());
-        assert!(params(&[("tz", "Europe/Berlin")]).to_query(now).is_err());
+        assert!(query(&params(&[("group_by", "farbe")]), now).is_err());
+        let err = query(&params(&[("tz", "Europe/Berln")]), now).unwrap_err();
+        assert!(err.contains("tz `Europe/Berln` ist ungültig"), "{err}");
         assert!(
-            params(&[("from", "2026-10-03"), ("to", "2026-10-01")])
-                .to_query(now)
-                .is_err()
+            query(
+                &params(&[("from", "2026-10-03"), ("to", "2026-10-01")]),
+                now
+            )
+            .is_err()
         );
-    }
-
-    #[test]
-    fn offsets_round_trip() {
-        for s in ["+02:00", "-05:30", "+00:00"] {
-            assert_eq!(format_offset(parse_offset(s).unwrap()), s);
-        }
-        assert_eq!(parse_offset("Z").unwrap(), UtcOffset::UTC);
-        assert_eq!(format_offset(parse_offset("+0530").unwrap()), "+05:30");
     }
 }
