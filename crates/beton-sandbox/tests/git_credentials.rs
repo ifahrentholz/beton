@@ -503,8 +503,10 @@ async fn prx_006_ac1_sec_011_ac1_git_clone_push_and_github_api_only_via_the_plac
     {
         reads.push(r.display().to_string());
     }
-    let mut spec = SandboxSpec::default();
-    spec.read_paths = Some(reads);
+    let spec = SandboxSpec {
+        read_paths: Some(reads),
+        ..SandboxSpec::default()
+    };
     let policy = provider().resolve(&spec, &ctx).unwrap();
     assert_eq!(policy.env["GH_TOKEN"], placeholder.as_str());
 

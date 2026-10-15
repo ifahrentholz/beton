@@ -125,7 +125,7 @@ pub fn find_source(cfg: &SessionsConfig, harness: &str, binding: &str) -> Result
         (None, None, Some(f), None) => Source::File(f.clone()),
         (None, None, None, Some(argv)) => Source::Command {
             argv: argv.clone(),
-            ttl: s.ttl_secs().map_err(|e| failed(e))?,
+            ttl: s.ttl_secs().map_err(failed)?,
         },
         _ => return Err(failed("Binding ohne eindeutige Quelle")),
     })
