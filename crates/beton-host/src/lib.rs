@@ -82,6 +82,9 @@ pub struct Provisioned {
     pub workdir: PathBuf,
 }
 
+/// Übergabe des Stufenmodells an den Runner (SBX-002, #191).
+pub use beton_runner::stages::{CaText, SandboxBoot, active as stages_active};
+
 /// Startdaten für den Runner (RUN-002, AUTH-011).
 #[derive(Debug, Clone)]
 pub struct RunnerBoot {
@@ -111,6 +114,11 @@ pub struct RunnerBoot {
     pub snapshots: Option<PathBuf>,
     /// Session mit übernommenem Verlauf (Fork bzw. Resume eines Imports, HAR-018, HAR-019).
     pub fork: Option<ForkBoot>,
+    /// Zweistufige Sandbox (SBX-002, #191): `sandbox:` und `proxy.extra_ca_files`; geht als
+    /// JSON in die Umgebung des Runners (keine Secrets).
+    pub sandbox: Option<beton_runner::stages::SandboxBoot>,
+    /// beton-CA für die Proxy-Instanzen (PRX-002); nur über stdin (dritte Zeile).
+    pub proxy_ca: Option<beton_runner::stages::CaText>,
     /// `compaction:` der User-Konfiguration (USE-009).
     pub compaction: beton_harness::CompactionSettings,
     /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
@@ -265,6 +273,8 @@ macro_rules! runner_provider_contract {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    sandbox: None,
+                    proxy_ca: None,
                     compaction: Default::default(),
                     max_cost_usd: None,
                 }

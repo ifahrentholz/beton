@@ -363,6 +363,34 @@ async fn sbx_007_writes_outside_the_workspace_fail() {
 }
 
 #[tokio::test]
+async fn sbx_012_ac2_readonly_preset_blocks_every_write_in_the_workspace() {
+    let fx = fx();
+    let c = control(&fx, "test -w src/main.rs && test -w .").await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    let policy = fx.policy("preset: readonly\n", Stage::Tools);
+    for attack in [
+        "echo x > neu.txt",
+        "echo x >> src/main.rs",
+        "mkdir neu",
+        "rm src/main.rs",
+        "mv src/main.rs src/umbenannt.rs",
+        "touch src/main.rs",
+        "ln -s /etc/hosts link",
+    ] {
+        let out = sh(&policy, attack).await;
+        assert!(!out.ok, "{attack}: {out:?}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(fx.ws.join("src/main.rs")).unwrap(),
+        "fn main() {}\n"
+    );
+    assert!(!fx.ws.join("neu.txt").exists() && !fx.ws.join("neu").exists());
+    // Lesen bleibt erlaubt, Scratch bleibt beschreibbar.
+    let out = sh(&policy, "cat src/main.rs && echo y > \"$TMPDIR/t\"").await;
+    assert!(out.ok && out.stdout.contains("fn main"), "{out:?}");
+}
+
+#[tokio::test]
 async fn sbx_007_signals_only_reach_the_own_tree() {
     let fx = fx();
     let policy = fx.policy("{}\n", Stage::Tools);
@@ -622,6 +650,159 @@ async fn sbx_003_ac4_commits_in_a_worktree_reach_the_object_db_but_not_hooks() {
     );
 }
 
+#[tokio::test]
+async fn ses_015_ac2_worktree_under_beton_home_writes_only_itself() {
+    let fx = fx();
+    let (git, prefix) = git_binary();
+    let repo = fx.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_host(&git, &repo, &["init", "-q"]);
+    git_host(
+        &git,
+        &repo,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    // Wie beton (SES-015): Worktree unter `~/.beton/worktrees/<repo>-<hash>/<branch>`.
+    write(&fx.home.join(".beton/run/token"), "FIXTURE-BETON-TOKEN");
+    let wt = fx.home.join(".beton/worktrees/repo-1234abcd/beton-x");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    git_host(
+        &git,
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "beton/x",
+            wt.to_str().unwrap(),
+        ],
+    );
+    let wt = wt.canonicalize().unwrap();
+    let mut ctx = ResolveCtx::new(Stage::Tools, &wt, &fx.home, &fx.scratch);
+    ctx.adapters = beton_sandbox::masks::builtin_harness_grants();
+    ctx.git = GitLayout::discover(&wt).unwrap();
+    let spec =
+        SandboxSpec::from_yaml(&format!("read_paths: [\"{}\"]\n", prefix.display())).unwrap();
+    let policy = seatbelt().resolve(&spec, &ctx).unwrap();
+    let g = git.display();
+    let out = sh(
+        &policy,
+        &format!(
+            "{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m im-worktree && pwd"
+        ),
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    let c = control(
+        &fx,
+        &format!(
+            "echo x > {}/main.txt && rm {}/main.txt",
+            repo.display(),
+            repo.display()
+        ),
+    )
+    .await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    for attack in [
+        // Aus dem Worktree heraus ins Haupt-Checkout schreiben (SES-015 AC2).
+        format!("echo x > {}/main.txt", repo.display()),
+        "echo x > ../../../../../repo/main.txt".to_owned(),
+        // Der Rest von `~/.beton` bleibt maskiert.
+        "cat \"$HOME/.beton/run/token\"".to_owned(),
+        "ls \"$HOME/.beton\"".to_owned(),
+        "echo x > \"$HOME/.beton/worktrees/repo-1234abcd/neu\"".to_owned(),
+    ] {
+        let out = sh(&policy, &attack).await;
+        assert!(!out.ok, "{attack}: {out:?}");
+        assert!(!out.stdout.contains("FIXTURE"), "{attack}: {out:?}");
+    }
+    assert!(!repo.join("main.txt").exists());
+}
+
+#[tokio::test]
+async fn sbx_002_stage_one_reaches_only_its_exec_socket() {
+    let fx = fx();
+    let dir = fx.root.join("exec");
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    let listen = |path: &Path| {
+        let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                drop(c);
+            }
+        });
+    };
+    let socket = dir.join("exec.sock");
+    let other = dir.join("other.sock");
+    listen(&socket);
+    listen(&other);
+    let connect = |p: &Path| format!("nc -U '{}' </dev/null", p.display());
+    let c = control(&fx, &connect(&other)).await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    let mut ctx = fx.ctx(Stage::Harness);
+    ctx.harness = beton_sandbox::masks::harness_grants("claude");
+    ctx.exec = Some(beton_sandbox::ExecAccess {
+        socket: socket.clone(),
+        shim_dir: dir.join("bin"),
+        token: beton_sandbox::Secret::new("FIXTURE-EXEC-TOKEN".into()),
+    });
+    let harness = fx.policy_with("{}\n", ctx);
+    let out = sh(&harness, &connect(&socket)).await;
+    assert!(out.ok, "Broker-Socket aus Stufe 1: {out:?}");
+    let out = sh(&harness, &connect(&other)).await;
+    assert!(!out.ok, "fremder Socket aus Stufe 1: {out:?}");
+    let tools = fx.policy("{}\n", Stage::Tools);
+    let out = sh(&tools, &connect(&socket)).await;
+    assert!(!out.ok, "Broker-Socket aus Stufe 2: {out:?}");
+}
+
+#[tokio::test]
+async fn prx_008_ac3_dev_ports_on_macos_open_only_the_named_loopback_port() {
+    let fx = fx();
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    };
+    let dev = free();
+    let host_service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host_port = host_service.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for c in host_service.incoming() {
+            drop(c);
+        }
+    });
+    let serve = format!(
+        "(nc -l 127.0.0.1 {dev} > /dev/null &) ; sleep 1; echo hi | nc -w 2 127.0.0.1 {dev}"
+    );
+    // Ohne dev_ports: kein eigener Dienst (bind/listen gesperrt, SBX-007).
+    let none = fx.policy("{}\n", Stage::Tools);
+    let out = sh(
+        &none,
+        &format!("nc -l 127.0.0.1 {dev} & pid=$!; sleep 1; kill $pid 2>/dev/null; wait $pid"),
+    )
+    .await;
+    assert!(out.stderr.contains("Operation not permitted"), "{out:?}");
+    let policy = fx.policy(&format!("dev_ports: [{dev}]\n"), Stage::Tools);
+    let out = sh(&policy, &serve).await;
+    assert!(out.ok, "Dev-Server auf {dev}: {out:?}");
+    let out = sh(&policy, &format!("nc -z -w 3 127.0.0.1 {host_port}")).await;
+    assert!(!out.ok, "Host-Dienst erreichbar: {out:?}");
+}
+
 /// Lokaler TLS-Upstream, der auf jeden Request mit `ok` antwortet.
 struct Upstream {
     addr: std::net::SocketAddr,
@@ -717,6 +898,7 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
             rules: beton_proxy::RuleSet::compile(&[format!("GET 127.0.0.1:{port}/**")]).unwrap(),
             allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")])
                 .unwrap(),
+            ..beton_proxy::InstanceSpec::default()
         })
         .await
         .unwrap();
@@ -726,9 +908,7 @@ async fn sbx_007_ac2_network_only_through_the_proxy() {
     std::fs::copy(&upstream_ca, fx.scratch.join("upstream-ca.pem")).unwrap();
 
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.proxy = Some(ProxyEndpoint {
-        port: instance.addr().port(),
-    });
+    ctx.proxy = Some(ProxyEndpoint::port(instance.addr().port()));
     let policy = fx.policy_with("egress_rules: [\"GET 127.0.0.1/**\"]\n", ctx);
     let url = format!("https://127.0.0.1:{port}/ok");
     let run = |script: String| {
@@ -799,7 +979,7 @@ async fn sbx_007_ac5_other_localhost_ports_are_unreachable() {
         }
     });
     let mut ctx = fx.ctx(Stage::Tools);
-    ctx.proxy = Some(ProxyEndpoint { port: proxy_port });
+    ctx.proxy = Some(ProxyEndpoint::port(proxy_port));
     let policy = fx.policy_with("{}\n", ctx);
     let c = control(&fx, &format!("nc -z -w 3 127.0.0.1 {service_port}")).await;
     assert!(c.ok, "Kontrollgruppe: {c:?}");

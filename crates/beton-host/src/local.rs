@@ -236,6 +236,12 @@ impl RunnerProvider for LocalProvider {
         if let Some(max) = boot.max_cost_usd {
             vars.push((beton_runner::env::MAX_COST.into(), max.to_string()));
         }
+        if let Some(sb) = &boot.sandbox {
+            vars.push((
+                beton_runner::env::SANDBOX.into(),
+                serde_json::to_string(sb).unwrap_or_default(),
+            ));
+        }
         if boot.compaction != beton_harness::CompactionSettings::default() {
             vars.push((
                 beton_runner::env::COMPACTION.into(),
@@ -268,9 +274,16 @@ impl RunnerProvider for LocalProvider {
             stdin
                 .write_all(format!("{}\n", boot.token).as_bytes())
                 .await?;
-            if !secrets.is_empty() {
+            // Zweite Zeile: API-Keys (HAR-011); dritte: beton-CA (PRX-002). Beide nur über
+            // stdin, nie über Env oder argv.
+            if !secrets.is_empty() || boot.proxy_ca.is_some() {
                 let line = serde_json::to_string(&secrets).unwrap_or_default();
                 stdin.write_all(format!("{line}\n").as_bytes()).await?;
+            }
+            if let Some(ca) = &boot.proxy_ca {
+                let mut line = zeroize::Zeroizing::new(ca.expose().to_owned());
+                line.push('\n');
+                stdin.write_all(line.as_bytes()).await?;
             }
             stdin.flush().await?;
             drop(stdin);

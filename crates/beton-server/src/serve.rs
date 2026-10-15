@@ -116,7 +116,7 @@ pub async fn start_with(
         .unwrap_or_else(|| "localhost".into());
 
     let (stop, stop_rx) = watch::channel(false);
-    let runtime = customize(
+    let mut runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
     // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
@@ -127,6 +127,12 @@ pub async fn start_with(
     if let Some(redactor) = &runtime.redactor {
         caps.redaction.attach(&secrets, redactor.clone()).await?;
     }
+    // Die Proxy-Capability bekommt nur die Quelle der beton-CA für die Runner (PRX-002, #191).
+    runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+        store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+        cap: caps.proxy,
+        host_id: runtime.host.id.to_string(),
+    }));
     let store_for_tunnel = store.clone();
     let janitor = tokio::spawn(crate::sessions::worktree_janitor(
         store.clone(),

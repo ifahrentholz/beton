@@ -26,6 +26,7 @@ beton-host.workspace = true
 beton-mcp.workspace = true
 beton-policy.workspace = true
 beton-proxy.workspace = true
+beton-sandbox.workspace = true
 beton-secrets.workspace = true
 beton-store.workspace = true
 getrandom.workspace = true

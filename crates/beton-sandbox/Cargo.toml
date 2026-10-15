@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 beton-core.workspace = true
+getrandom.workspace = true
 process-wrap.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -19,6 +20,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -35,7 +37,7 @@ test = false
 doc = false
 
 [dev-dependencies]
-beton-proxy.workspace = true
+beton-proxy = { workspace = true, features = ["test-net"] }
 libc = "0.2"
 proptest.workspace = true
 rcgen.workspace = true

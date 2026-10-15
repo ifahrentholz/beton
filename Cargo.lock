@@ -561,6 +561,7 @@ dependencies = [
  "beton-policy",
  "serde",
  "serde_json",
+ "serde_norway",
  "tempfile",
  "time",
  "tokio",
@@ -638,6 +639,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utoipa",
+ "zeroize",
 ]
 
 [[package]]
@@ -737,6 +739,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower-service",
  "tracing",
+ "tracing-subscriber",
  "zeroize",
 ]
 
@@ -758,6 +761,7 @@ dependencies = [
  "beton-mcp",
  "beton-policy",
  "beton-proto",
+ "beton-proxy",
  "beton-sandbox",
  "beton-secrets",
  "beton-server",
@@ -773,6 +777,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -781,6 +786,7 @@ version = "0.0.0"
 dependencies = [
  "beton-core",
  "beton-proxy",
+ "getrandom 0.4.3",
  "landlock",
  "libc",
  "process-wrap",
@@ -799,6 +805,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -870,6 +877,7 @@ dependencies = [
  "beton-policy",
  "beton-proto",
  "beton-proxy",
+ "beton-sandbox",
  "beton-secrets",
  "beton-store",
  "futures-util",

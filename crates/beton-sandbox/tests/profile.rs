@@ -57,7 +57,7 @@ fn template_lines() -> Vec<&'static str> {
 
 #[test]
 fn sbx_007_template_is_versioned_deny_default() {
-    assert_eq!(PROFILE_VERSION, 1);
+    assert_eq!(PROFILE_VERSION, 2);
     assert!(TEMPLATE.starts_with("(version 1)"));
     assert!(TEMPLATE.contains("\n(deny default)\n"));
     // Kein DNS-Dienst, kein Keychain im festen Teil.

@@ -141,6 +141,11 @@
         "tool_call_gate": {
           "$ref": "#/$defs/ToolCallGate"
         },
+        "tool_isolation": {
+          "description": "Wie Tools in Stufe 2 landen (SBX-002).",
+          "$ref": "#/$defs/ToolIsolation",
+          "default": "inherited"
+        },
         "tool_result_gate": {
           "description": "Phase `tool_result`: `full` heißt, das Ergebnis lässt sich vor dem Modell ersetzen.",
           "$ref": "#/$defs/ToolCallGate",
@@ -360,6 +365,15 @@
         "observe_only",
         "approval_only",
         "full"
+      ]
+    },
+    "ToolIsolation": {
+      "description": "Wie Tool-Ausführungen in Stufe 2 landen (SBX-002): `inherited` – gar nicht, Tools laufen\nim Prozess des Harness (Stufe 1, *degraded*, nur mit `require_tool_isolation: false`);\n`shell_override` – über `bt-exec` als Shell des Harness; `beton` – beton führt die Tools\nselbst aus (Direkt-API, ACP mit `terminal/*`).",
+      "type": "string",
+      "enum": [
+        "inherited",
+        "shell_override",
+        "beton"
       ]
     },
     "Transport": {

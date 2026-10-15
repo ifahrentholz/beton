@@ -276,7 +276,7 @@ impl Sandbox {
             stage: self.policy.stage.event(),
             backend: self.policy.backend.as_str().to_owned(),
             caps: serde_json::json!(caps),
-            degraded: !self.policy.degraded.is_empty(),
+            degraded: !self.policy.degraded.is_empty() || self.policy.inherited_tools,
         }
     }
 

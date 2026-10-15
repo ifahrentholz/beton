@@ -61,6 +61,8 @@ fn boot() -> RunnerBoot {
         agent_snapshot: None,
         snapshots: None,
         fork: None,
+        sandbox: None,
+        proxy_ca: None,
         compaction: Default::default(),
         max_cost_usd: None,
     }
@@ -172,6 +174,52 @@ async fn har_011_ac5_api_key_goes_via_stdin_not_env() {
             .any(|l| l.contains("MARKER") || l.starts_with("OPENROUTER_API_KEY")),
         "{env:?}"
     );
+}
+
+/// #191, PRX-002: Die beton-CA kommt als dritte stdin-Zeile (nie Env oder argv), die
+/// Sandbox-Konfiguration als JSON in der Umgebung.
+#[tokio::test]
+async fn prx_002_proxy_ca_goes_via_stdin_and_sandbox_config_via_env() {
+    let (state, work) = (ws(), ws());
+    let out = work.path().join("aus.txt");
+    let p = beton_host::LocalProvider::new(
+        vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "read t; read k; read c; echo \"$k\" > '{0}'; echo \"$c\" >> '{0}'; env >> '{0}'",
+                out.display()
+            ),
+        ],
+        state.path().to_path_buf(),
+    )
+    .with_inherited_env(BTreeMap::from([(
+        "PATH".to_owned(),
+        std::env::var("PATH").unwrap(),
+    )]));
+    let prov = p.provision(&spec(work.path())).await.unwrap();
+    let mut b = boot();
+    b.sandbox = Some(beton_runner::stages::SandboxBoot {
+        spec: beton_sandbox::SandboxSpec::from_yaml("backend: auto\n").unwrap(),
+        extra_ca_files: Vec::new(),
+    });
+    b.proxy_ca = Some(beton_runner::stages::CaText::new(
+        "{\"v\":1,\"key\":\"FIXTURE-CA-KEY\"}".into(),
+    ));
+    let h = p.start(&prov, &b).await.unwrap();
+    wait_exit(&p, &h).await;
+    let text = std::fs::read_to_string(&out).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("{}"), "Zeile 2: keine Keys");
+    assert_eq!(lines.next(), Some("{\"v\":1,\"key\":\"FIXTURE-CA-KEY\"}"));
+    let env: Vec<&str> = lines.collect();
+    assert!(!env.iter().any(|l| l.contains("FIXTURE-CA-KEY")), "{env:?}");
+    let sandbox = env
+        .iter()
+        .find_map(|l| l.strip_prefix("BETON_RUNNER_SANDBOX="))
+        .expect("BETON_RUNNER_SANDBOX");
+    let parsed: beton_runner::stages::SandboxBoot = serde_json::from_str(sandbox).unwrap();
+    assert!(parsed.spec.backend.is_some());
 }
 
 #[tokio::test]

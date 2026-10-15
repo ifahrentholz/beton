@@ -82,6 +82,7 @@ async fn hub_with_gate(
             prefix: Vec::new(),
         },
         gate,
+        tools: None,
     })
     .await
     .unwrap()
@@ -252,6 +253,7 @@ async fn har_009_run_dir_must_be_private() {
             prefix: Vec::new(),
         },
         gate: None,
+        tools: None,
     })
     .await
     .unwrap_err();
@@ -551,4 +553,45 @@ async fn pol_024_system_tools_pass_the_policy_in_the_hub() {
     let list = c.recv().await.unwrap();
     assert!(list["result"]["tools"].is_array());
     assert_eq!(gate.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sbx_002_stdio_servers_start_in_the_stage_two_sandbox() {
+    let dir = private_dir();
+    let s = SessionId::new();
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = started.clone();
+    // Die Stufe-2-Sandbox der Session meldet ihre Starts selbst.
+    let tools = beton_sandbox::Sandbox::unsandboxed(
+        beton_sandbox::Stage::Tools,
+        Some(Arc::new(move |_| {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })),
+    );
+    let (h, mut events) = Hub::start(HubOptions {
+        session_id: s,
+        run_dir: dir.path().to_owned(),
+        workdir: dir.path().to_owned(),
+        servers: servers("servers:\n  stirbt:\n    command: sh\n    args: [\"-c\", \"exit 3\"]\n"),
+        system: Some(system()),
+        relay: RelayCommand {
+            program: PathBuf::from("/opt/beton/bin/beton"),
+            prefix: Vec::new(),
+        },
+        gate: None,
+        tools: Some(tools),
+    })
+    .await
+    .unwrap();
+    let (mut c, _) = Client::connect(h.socket(), &s.to_string(), &token(&h), "stirbt").await;
+    c.send(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}))
+        .await;
+    let _ = c.recv().await.unwrap();
+    assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // Der Hub meldet kein eigenes `sandbox.started` mehr, nur den Fehler.
+    let ev = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(ev, EventPayload::McpServerFailed(_)), "{ev:?}");
 }

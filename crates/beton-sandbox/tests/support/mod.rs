@@ -229,6 +229,37 @@ mod probes {
                     Err(e) => format!("err:{}", e.raw_os_error().unwrap_or(0)),
                 }
             }
+            "unix" => match std::os::unix::net::UnixStream::connect(&args[0]) {
+                Ok(_) => "ok".into(),
+                Err(e) => format!("err:{}", e.raw_os_error().unwrap_or(0)),
+            },
+            "devserver" => {
+                // Dev-Server in derselben Sandbox: bind + listen auf 127.0.0.1:<port>, dann
+                // eine Verbindung zu sich selbst (PRX-008 AC3).
+                use std::io::{Read as _, Write as _};
+                let l = match std::net::TcpListener::bind((
+                    "127.0.0.1",
+                    args[0].parse::<u16>().unwrap(),
+                )) {
+                    Ok(l) => l,
+                    Err(e) => return format!("err:bind:{}", e.raw_os_error().unwrap_or(0)),
+                };
+                let addr = l.local_addr().unwrap();
+                std::thread::spawn(move || {
+                    if let Ok((mut c, _)) = l.accept() {
+                        let _ = c.write_all(b"dev-ok");
+                    }
+                });
+                match std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3))
+                {
+                    Ok(mut c) => {
+                        let mut b = String::new();
+                        let _ = c.read_to_string(&mut b);
+                        format!("ok:{b}")
+                    }
+                    Err(e) => format!("err:connect:{}", e.raw_os_error().unwrap_or(0)),
+                }
+            }
             "udp" => {
                 let s = std::net::UdpSocket::bind("0.0.0.0:0");
                 match s.and_then(|s| s.send_to(b"FIXTURE-UDP", args[0].as_str())) {

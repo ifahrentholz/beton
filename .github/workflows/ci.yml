@@ -59,6 +59,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-llvm-cov
+      # PRX-008 AC1: Node-fetch nutzt den Proxy erst ab Node 24 (NODE_USE_ENV_PROXY).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Tests bauen (mit Netzwerk für die Paket-Registry)
         # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
         # offline aus den bereits geladenen Abhängigkeiten kompiliert.
@@ -233,6 +237,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # PRX-008 AC1: Node-fetch nutzt den Proxy erst ab Node 24 (NODE_USE_ENV_PROXY).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       # covers: SEC-002 AC1, SEC-002 AC3 (echter Keychain, aber ein temporärer des Runners;
       # Tests berühren nie den Keychain eines Entwicklers, lokal bleiben sie aus)
       - name: Temporären Keychain als Standard anlegen (SEC-002)

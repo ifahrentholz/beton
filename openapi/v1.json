@@ -7701,7 +7701,8 @@
           "secrets_corrupt",
           "unavailable",
           "secrets_unavailable",
-          "redaction_unavailable"
+          "redaction_unavailable",
+          "sandbox_unavailable"
         ]
       },
       "ProviderInfo": {
