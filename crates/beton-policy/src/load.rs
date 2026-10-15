@@ -13,8 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::Phase;
 use crate::cel::{CompileError, Program, compile_bool, compile_expr, ext};
 use crate::doc::{
-    Action, ApprovalDoc, DefaultAction, Mode, PolicySetDoc, Remember, RuleDoc, RuleType,
-    SPEC_VERSION, TimeoutAction, modifiable,
+    Action, ApprovalDoc, DefaultAction, Enforcement, Mode, PolicySetDoc, Remember, RuleDoc,
+    RuleType, SPEC_VERSION, TimeoutAction, modifiable,
 };
 use crate::types::Ty;
 use crate::yaml::{self, Document, Style};
@@ -133,6 +133,17 @@ impl LoadedRule {
     }
 }
 
+/// Ein Default der Ebene, den ein Regeltyp gesetzt hat (`tool_allowlist`, POL-015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDefault {
+    /// ID der Typ-Regel (für die Start-Prüfung, POL-024).
+    pub rule_id: String,
+    /// Begründung der Ablehnung (`deny_reason`).
+    pub reason: String,
+    /// `enforcement` der Typ-Regel; ohne Angabe `required`.
+    pub enforcement: Option<Enforcement>,
+}
+
 /// Ein geladenes Policy-Set.
 #[derive(Debug, Clone)]
 pub struct LoadedSet {
@@ -145,8 +156,8 @@ pub struct LoadedSet {
     pub mode: Mode,
     /// `defaults` der Datei, verschärft um die Defaults entzuckerter Regeltypen (POL-015).
     pub defaults: BTreeMap<Phase, DefaultAction>,
-    /// Begründung eines Defaults, den ein Regeltyp gesetzt hat (`deny_reason`, POL-015).
-    pub default_reasons: BTreeMap<Phase, String>,
+    /// Defaults, die ein Regeltyp gesetzt hat (POL-015), mit Herkunft.
+    pub type_defaults: BTreeMap<Phase, TypeDefault>,
     pub rules: Vec<LoadedRule>,
     /// Inhalt, aus dem das Set geladen wurde; `version` ist sein SHA-256 (POL-027 AC2).
     pub format: SourceFormat,
@@ -329,7 +340,7 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
     }
     let checked = check_rules(scope, &set.rules, &loc, set.mode == Mode::DryRun)?;
     let mut defaults = set.defaults;
-    let default_reasons = checked.merge_defaults(&mut defaults);
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: set.name,
@@ -337,7 +348,7 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
         version: version_of(text.as_bytes()),
         mode: set.mode,
         defaults,
-        default_reasons,
+        type_defaults,
         rules: checked.rules,
         format: SourceFormat::Yaml,
         source: Arc::from(text.as_bytes()),
@@ -394,7 +405,7 @@ pub fn inline_set(
     let checked = check_rules_with(scope, &docs, &loc, false, |i| format!("[{i}]"))?;
     let canonical = serde_json::to_vec(rules).unwrap_or_default();
     let mut defaults = BTreeMap::new();
-    let default_reasons = checked.merge_defaults(&mut defaults);
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: name.to_owned(),
@@ -402,7 +413,7 @@ pub fn inline_set(
         version: version_of(&canonical),
         mode: Mode::Enforce,
         defaults,
-        default_reasons,
+        type_defaults,
         rules: checked.rules,
         format: SourceFormat::Inline,
         source: Arc::from(canonical),
@@ -412,26 +423,31 @@ pub fn inline_set(
 /// Geprüfte Regeln eines Sets und die Defaults, die entzuckerte Regeltypen setzen.
 struct Checked {
     rules: Vec<LoadedRule>,
-    defaults: Vec<(Phase, DefaultAction, String)>,
+    defaults: Vec<(Phase, DefaultAction, TypeDefault)>,
 }
 
 impl Checked {
-    /// Verschärft `defaults` um die Defaults der Regeltypen; liefert deren Begründungen.
+    /// Verschärft `defaults` um die Defaults der Regeltypen; liefert deren Herkunft. Ein Default,
+    /// den schon die Datei (`defaults:`) so streng setzt, bleibt einer der Datei (`required`);
+    /// setzen mehrere Typ-Regeln denselben, gilt das strengere `enforcement`.
     fn merge_defaults(
         &self,
         defaults: &mut BTreeMap<Phase, DefaultAction>,
-    ) -> BTreeMap<Phase, String> {
-        let mut reasons = BTreeMap::new();
-        for (phase, default, reason) in &self.defaults {
+    ) -> BTreeMap<Phase, TypeDefault> {
+        let mut out: BTreeMap<Phase, TypeDefault> = BTreeMap::new();
+        for (phase, default, origin) in &self.defaults {
             let current = defaults.get(phase).copied().unwrap_or(DefaultAction::Allow);
             if *default > current {
                 defaults.insert(*phase, *default);
-                reasons.insert(*phase, reason.clone());
-            } else if *default == current && current != DefaultAction::Allow {
-                reasons.entry(*phase).or_insert_with(|| reason.clone());
+                out.insert(*phase, origin.clone());
+            } else if *default == current
+                && let Some(existing) = out.get_mut(phase)
+                && origin.enforcement != Some(Enforcement::BestEffort)
+            {
+                existing.enforcement = None;
             }
         }
-        reasons
+        out
     }
 }
 
@@ -481,7 +497,18 @@ fn check_rules_with(
                 loc.at(&path, e.message)
             })?;
             out.rules.extend(sugar_rules(rule, sugar.rules, loc, &at)?);
-            out.defaults.extend(sugar.defaults);
+            out.defaults
+                .extend(sugar.defaults.into_iter().map(|(phase, default, reason)| {
+                    (
+                        phase,
+                        default,
+                        TypeDefault {
+                            rule_id: rule.id.clone(),
+                            reason,
+                            enforcement: rule.enforcement,
+                        },
+                    )
+                }));
             continue;
         }
         out.rules.push(check_rule(scope, rule, loc, &at)?);

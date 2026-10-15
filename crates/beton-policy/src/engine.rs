@@ -947,7 +947,7 @@ impl<'a> Run<'a> {
             }
             // Begründung eines Regeltyps (`deny_reason` einer Allowlist, POL-015), sonst
             // allgemein.
-            let text = set.default_reasons.get(&self.phase).cloned();
+            let text = set.type_defaults.get(&self.phase).map(|d| d.reason.clone());
             let reason = Reason {
                 rule: set.rule_ref(&format!("defaults.{}", self.phase)),
                 reason: text.unwrap_or_else(|| {
