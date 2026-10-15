@@ -37,6 +37,7 @@ test = false
 doc = false
 
 [dev-dependencies]
+base64.workspace = true
 beton-proxy = { workspace = true, features = ["test-net"] }
 libc = "0.2"
 proptest.workspace = true

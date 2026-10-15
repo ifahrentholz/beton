@@ -756,6 +756,7 @@ async fn sbx_002_stage_one_reaches_only_its_exec_socket() {
         socket: socket.clone(),
         shim_dir: dir.join("bin"),
         token: beton_sandbox::Secret::new("FIXTURE-EXEC-TOKEN".into()),
+        forward_env: Vec::new(),
     });
     let harness = fx.policy_with("{}\n", ctx);
     let out = sh(&harness, &connect(&socket)).await;

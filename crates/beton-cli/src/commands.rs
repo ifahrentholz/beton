@@ -243,6 +243,17 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
     )
     .await
     .context("stdout")?;
+    // SEC-011 AC2: Logins von gh/glab nur nach ausdrücklicher Bestätigung übernehmen.
+    crate::setup::offer_git_token_import(
+        &crate::setup::GIT_CLIS,
+        &crate::setup::RealSpawner,
+        interactive,
+        &mut crate::setup::TerminalPrompt,
+        &DaemonImporter { ctx },
+        &mut out,
+    )
+    .await
+    .context("stdout")?;
     if code == 0 {
         Ok(())
     } else {

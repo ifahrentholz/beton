@@ -31,7 +31,7 @@ pub const NO_EXCEPTIONS: [&str; 4] = [
 pub const SPAWN_CRATES: [&str; 2] = ["crates/beton-sandbox/", "crates/beton-pty/"];
 
 /// Beton-eigene Prozesse (Stufe 0) außerhalb der Sandbox, jeweils mit Grund.
-pub const STAGE0_EXCEPTIONS: [(&str, &str); 7] = [
+pub const STAGE0_EXCEPTIONS: [(&str, &str); 8] = [
     (
         "crates/beton-cli/src/commands.rs",
         "Browser und Editor des Benutzers",
@@ -51,6 +51,10 @@ pub const STAGE0_EXCEPTIONS: [(&str, &str); 7] = [
     (
         "crates/beton-server/src/workspace.rs",
         "git der Workspace-API (Stufe 0)",
+    ),
+    (
+        "crates/beton-server/src/credentials.rs",
+        "Credential-Quelle `command` des Proxys (PRX-006, Stufe 0)",
     ),
     (
         "crates/beton-fake-cli/src/mcp.rs",

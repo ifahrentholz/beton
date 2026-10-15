@@ -206,6 +206,7 @@ fn sbx_002_stage_one_gets_exec_access_xdg_and_session_marker() {
         socket: socket.clone(),
         shim_dir: exec_dir.join("bin"),
         token: Secret::new("FIXTURE-EXEC-TOKEN".into()),
+        forward_env: Vec::new(),
     });
     ctx.host_env = BTreeMap::from([
         ("CLAUDE_CONFIG_DIR".to_owned(), "/x".to_owned()),

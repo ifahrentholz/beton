@@ -738,6 +738,9 @@ pub enum SecretsCommand {
     Rm(SecretsRmArgs),
     /// Neuen Wert für ein vorhandenes Secret setzen.
     Rotate(SecretsRotateArgs),
+    /// Secret beim Provider prüfen (GitHub `/user`, GitLab Token-Scopes) über den Proxy-Pfad,
+    /// ohne den Wert auszugeben; meldet fehlende Scopes (SEC-004, SEC-011 AC3).
+    Test(SecretsTestArgs),
     /// Verschlüsselten Datei-Store entsperren (beim ersten Mal anlegen) oder die Passphrase
     /// wechseln.
     Unlock(SecretsUnlockArgs),
@@ -799,6 +802,10 @@ pub struct SecretsAddArgs {
     /// Zusätzlicher Name, falls es mehrere Secrets je Account gibt.
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// Host des Git-Providers, z. B. `github.com`, ein GitHub Enterprise Server oder ein
+    /// self-hosted GitLab (SEC-011); wird zum Provider der SecretRef.
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
     /// Art des Secrets.
     #[arg(long = "type", value_enum, default_value_t = SecretKindArg::Token)]
     pub kind: SecretKindArg,
@@ -814,6 +821,16 @@ pub struct SecretsRmArgs {
     /// SecretRef, z. B. `secret://user/openai/default`.
     #[arg(value_name = "REF")]
     pub secret_ref: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsTestArgs {
+    /// SecretRef, z. B. `secret://user/github.com/default`.
+    #[arg(value_name = "REF")]
+    pub secret_ref: String,
+    /// Art des Providers, falls der Host sie nicht verrät (`github` oder `gitlab`).
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -853,6 +870,10 @@ pub struct AuditListArgs {
     /// Nur diese Aktion, z. B. `secret.used`.
     #[arg(long, value_name = "ACTION")]
     pub action: Option<String>,
+    /// Nur diese Art des Ziels: `credential` (Nutzung und Fehlgebrauch von
+    /// Credential-Bindings des Proxys), `secret`, `session` …
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]

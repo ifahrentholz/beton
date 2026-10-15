@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+mod credentials;
 pub mod fork;
 pub mod mcp;
 pub mod policy;
@@ -240,10 +241,66 @@ impl RunnerBoot {
             &beton_harness_direct::DirectOptions {
                 keys: Arc::new(self.credentials.clone()),
                 discover_models: false,
+                egress: None,
             },
         )
         .0
     }
+}
+
+/// Proxy-Weg des Direkt-API-Harness dieser Session (HAR-011 AC2): nur für Provider mit Key.
+fn direct_route(boot: &RunnerBoot) -> Option<stages::DirectRoute> {
+    let name = boot.harness.as_str().strip_prefix("direct:")?;
+    let p = beton_harness_direct::config::parse_provider(name, boot.harnesses.providers.get(name)?)
+        .ok()?;
+    p.key.lookup()?;
+    // Nur https: Loopback-Endpunkte über `http` behalten den Key über stdin (HAR-011).
+    if p.base_url.scheme() != "https" {
+        return None;
+    }
+    Some(stages::DirectRoute {
+        binding: format!("provider:{name}"),
+        host: p.base_url.host_str()?.to_owned(),
+        port: p.base_url.port_or_known_default()?,
+    })
+}
+
+/// Der Direkt-API-Harness der Session mit Platzhalter statt Key und Weg über den Proxy.
+fn direct_via_proxy(boot: &RunnerBoot, registry: &mut Registry, egress: &stages::DirectEgress) {
+    let Some(name) = boot.harness.as_str().strip_prefix("direct:") else {
+        return;
+    };
+    let Some(Ok(p)) = boot
+        .harnesses
+        .providers
+        .get(name)
+        .map(|v| beton_harness_direct::config::parse_provider(name, v))
+    else {
+        return;
+    };
+    let Some(lookup) = p.key.lookup().map(str::to_owned) else {
+        return;
+    };
+    let keys = beton_harness_direct::secret::KeyMap::new(
+        [(
+            lookup,
+            beton_harness_direct::secret::ApiKey::new(egress.placeholder.as_str()),
+        )]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect(),
+    );
+    registry.register(Arc::new(beton_harness_direct::DirectAdapter::new(
+        p,
+        &beton_harness_direct::DirectOptions {
+            keys: Arc::new(keys),
+            discover_models: false,
+            egress: Some(beton_harness_direct::Egress {
+                proxy_url: egress.proxy_url.to_string(),
+                ca_pem: egress.ca_pem.clone(),
+            }),
+        },
+    )));
 }
 
 /// Eingebaute Adapter mit den Optionen aus der Konfiguration; der Fake nur mit `dev`
@@ -320,6 +377,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         &beton_harness_direct::DirectOptions {
             keys: Arc::new(boot.credentials.clone()),
             discover_models: false,
+            egress: None,
         },
     );
     for p in problems {
@@ -603,6 +661,7 @@ fn parent_alive(pid: Option<u32>) -> bool {
 
 /// Führt die Session aus, bis der Server stoppt, der Harness endet oder der Daemon stirbt.
 pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerError> {
+    let mut registry = registry;
     let mut env = HostEnv::from_process();
     env.user = boot.harnesses.user.clone();
     env.project = boot.harnesses.project.clone();
@@ -716,10 +775,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         calls: usage_tx.clone(),
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
-    .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
+    .with_snapshots(Arc::new(TunnelState {
+        calls: usage_tx.clone(),
+    }));
+    // Credentials und Egress-Events des Stufenmodells (PRX-006, PRX-009): Werte und Audit über
+    // den Tunnel, Events ins Session-Log.
+    let credentials = Arc::new(credentials::TunnelCredentials::new(
+        credentials::channel_calls(usage_tx),
+        stage_tx.clone(),
+    ));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
-    let stages = match &boot.sandbox {
+    let mut stages = match &boot.sandbox {
         Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
             let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
                 Ok(ca) => ca,
@@ -755,13 +822,33 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .map(|b| b.program),
                 events: Some(events),
             };
+            // HAR-015 AC4: Mit `auth: api_key` sieht die Vendor-CLI nur einen Platzhalter.
+            let harness_key = (boot.harnesses.user.auth(boot.harness.as_str())
+                == beton_harness::registry::HarnessAuth::ApiKey)
+                .then(|| stages::vendor_key(boot.harness.as_str()))
+                .flatten()
+                .map(|(var, hosts)| stages::HarnessKey {
+                    binding: format!("harness:{}", boot.harness),
+                    var: var.to_owned(),
+                    hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
+                });
+            // HAR-011 AC2: Der Loop des Direkt-API-Harness erreicht seinen Anbieter nur über
+            // eine eigene Proxy-Instanz, die den Key einsetzt.
+            let direct = direct_route(&boot);
             let opts = stages::StageOptions {
+                direct,
                 spec: sb.spec.clone(),
                 proxy_ca: ca,
                 proxy: beton_proxy::ProxyOptions {
                     extra_ca_files: sb.extra_ca_files.clone(),
                 },
                 exe: std::env::current_exe().unwrap_or_default(),
+                services: Some(stages::StageServices {
+                    source: credentials.clone(),
+                    audit: credentials.clone(),
+                    events: Some(credentials.clone()),
+                }),
+                harness_key,
             };
             match stages::compose(input, opts).await {
                 Ok(s) => s,
@@ -774,6 +861,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
+        direct_via_proxy(&boot, &mut registry, egress);
+    }
+    // PRX-005: Passthrough in Stufe 2 ist ausdrücklich konfiguriert und steht im Audit-Log.
+    if let Some(hosts) = stages
+        .as_ref()
+        .map(|s| s.passthrough(beton_sandbox::Stage::Tools))
+        .filter(|h| !h.is_empty())
+    {
+        let c = credentials.clone();
+        tokio::spawn(async move { c.audit_passthrough(hosts).await });
+    }
     let in_proc = caps
         .as_ref()
         .is_some_and(|c| c.transport == beton_harness::Transport::InProc);
@@ -840,6 +939,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 stages.as_ref().map(|s| s.tools.clone()),
                 // `policy_query` wertet wie ein echter Call aus, ohne Seiteneffekte (AGT-007 AC3).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::PolicyOracle>),
+                // `${secret:…}` → Platzhalter, HTTP-Server mit Credential über den Proxy.
+                stages.as_mut(),
             )
             .await
         }

@@ -47,11 +47,27 @@ use crate::secret::{ApiKey, KeySource};
 use crate::session::{Conversation, DirectSession, LoopSettings, Shared};
 use crate::tools::{McpTools, ToolHost};
 
+/// Weg des Loops über den Egress-Proxy der Session (HAR-011 AC2, PRX-006): Proxy-URL mit
+/// Token der Instanz und die beton-CA als einziger Vertrauensanker. `Debug` zeigt beides nicht.
+#[derive(Clone)]
+pub struct Egress {
+    pub proxy_url: String,
+    pub ca_pem: String,
+}
+
+impl std::fmt::Debug for Egress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Egress(***)")
+    }
+}
+
 /// Der Adapter für einen Provider (`direct:<name>`).
 #[derive(Clone)]
 pub struct DirectAdapter {
     pub provider: Provider,
     keys: Arc<dyn KeySource>,
+    /// Über den Egress-Proxy statt direkt (Stufenmodell).
+    egress: Option<Egress>,
     /// Modell-Discovery (nur im Daemon); `None` im Runner.
     discovery: Option<Arc<ModelCache>>,
     pub http: HttpOptions,
@@ -72,6 +88,8 @@ pub struct DirectOptions {
     pub keys: Arc<dyn KeySource>,
     /// `GET /models` im Katalog (Daemon).
     pub discover_models: bool,
+    /// Model-Requests über den Egress-Proxy der Session; `keys` liefert dann nur Platzhalter.
+    pub egress: Option<Egress>,
 }
 
 impl Default for DirectOptions {
@@ -79,6 +97,7 @@ impl Default for DirectOptions {
         Self {
             keys: Arc::new(secret::ProcessEnv),
             discover_models: false,
+            egress: None,
         }
     }
 }
@@ -96,6 +115,7 @@ impl DirectAdapter {
         Self {
             provider,
             keys: options.keys.clone(),
+            egress: options.egress.clone(),
             discovery: options
                 .discover_models
                 .then(|| Arc::new(ModelCache::default())),
@@ -106,16 +126,29 @@ impl DirectAdapter {
 
     fn auth_source(&self) -> AuthSource {
         match self.provider.key {
-            KeyRef::Env(_) => AuthSource::ApiKey,
+            KeyRef::Env(_) | KeyRef::Secret(_) => AuthSource::ApiKey,
             KeyRef::None => AuthSource::Gateway,
         }
     }
 
     fn key(&self) -> Option<ApiKey> {
-        match &self.provider.key {
-            KeyRef::Env(var) => self.keys.get(var),
-            KeyRef::None => None,
-        }
+        self.provider.key.lookup().and_then(|k| self.keys.get(k))
+    }
+
+    /// Fehlender Key: Hinweis auf die Quelle (nie ein Wert).
+    fn missing_key(&self) -> HarnessError {
+        HarnessError::StartRefused(match &self.provider.key {
+            KeyRef::Secret(r) => format!(
+                "API-Key {r} gibt es nur über den Egress-Proxy der Session \
+                 (Stufenmodell mit sandbox.backend; HAR-011, PRX-006)"
+            ),
+            KeyRef::Env(_) | KeyRef::None => format!(
+                "API-Key fehlt: Die Umgebungsvariable {var} des Daemons ist nicht gesetzt \
+                 (providers.{}.api_key_env).",
+                self.provider.name,
+                var = self.provider.key.lookup().unwrap_or_default()
+            ),
+        })
     }
 
     /// Modelle für den Picker: konfigurierte zuerst, dann entdeckte; `stale`, wenn die
@@ -148,7 +181,7 @@ impl DirectAdapter {
         if !cache.due(now) {
             return;
         }
-        let result = match Client::new(self.http) {
+        let result = match Client::new(self.http, self.egress.as_ref()) {
             Ok(client) => client
                 .list_models(
                     &self.provider,
@@ -182,13 +215,9 @@ impl DirectAdapter {
         }
         let key = match &self.provider.key {
             KeyRef::None => None,
-            KeyRef::Env(var) => Some(self.keys.get(var).ok_or_else(|| {
-                HarnessError::StartRefused(format!(
-                    "API-Key fehlt: Die Umgebungsvariable {var} des Daemons ist nicht gesetzt \
-                     (providers.{}.api_key_env).",
-                    self.provider.name
-                ))
-            })?),
+            KeyRef::Env(_) | KeyRef::Secret(_) => {
+                Some(self.key().ok_or_else(|| self.missing_key())?)
+            }
         };
         let model = spec
             .model
@@ -201,7 +230,8 @@ impl DirectAdapter {
                     self.provider.name
                 ))
             })?;
-        let client = Client::new(self.http).map_err(HarnessError::StartRefused)?;
+        let client =
+            Client::new(self.http, self.egress.as_ref()).map_err(HarnessError::StartRefused)?;
         let (tx, rx) = mpsc::channel(4096);
         let settings = LoopSettings {
             max_turns: spec.max_turns.unwrap_or(self.settings.max_turns).max(1),
@@ -338,14 +368,8 @@ impl HarnessAdapter for DirectAdapter {
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
         // Key und Modell vor dem Start der MCP-Server prüfen (fail closed, ohne Seiteneffekte).
-        if let KeyRef::Env(var) = &self.provider.key
-            && self.keys.get(var).is_none()
-        {
-            return Err(HarnessError::StartRefused(format!(
-                "API-Key fehlt: Die Umgebungsvariable {var} des Daemons ist nicht gesetzt \
-                 (providers.{}.api_key_env).",
-                self.provider.name
-            )));
+        if self.provider.key != KeyRef::None && self.key().is_none() {
+            return Err(self.missing_key());
         }
         let (tools, failures) = McpTools::connect(
             &spec.workdir,
@@ -373,8 +397,8 @@ impl DirectAdapter {
     fn auth_status_now(&self) -> AuthStatus {
         match &self.provider.key {
             KeyRef::None => AuthStatus::NotApplicable,
-            KeyRef::Env(var) => {
-                if self.keys.get(var).is_some() {
+            KeyRef::Env(_) | KeyRef::Secret(_) => {
+                if self.key().is_some() {
                     AuthStatus::LoggedIn
                 } else {
                     AuthStatus::LoggedOut

@@ -127,12 +127,27 @@ pub async fn start_with(
     if let Some(redactor) = &runtime.redactor {
         caps.redaction.attach(&secrets, redactor.clone()).await?;
     }
-    // Die Proxy-Capability bekommt nur die Quelle der beton-CA für die Runner (PRX-002, #191).
+    // Die Proxy-Capability teilen sich die Quelle der beton-CA (PRX-002, #191) und die
+    // Credentials der Proxy-Instanzen (PRX-006); beide gehören zum Egress-Proxy.
+    let proxy_cap = Arc::new(caps.proxy);
     runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
         store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
-        cap: caps.proxy,
+        cap: proxy_cap.clone(),
         host_id: runtime.host.id.to_string(),
     }));
+    runtime.sessions.secret_tester = Some(Arc::new(crate::secret_test::SecretTester::new(
+        beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+        proxy_cap.clone(),
+        runtime.host.id.to_string(),
+        runtime.sessions.proxy_extra_ca_files.clone(),
+    )));
+    runtime.sessions.credentials = Some(Arc::new(crate::credentials::CredentialService::new(
+        secrets.clone(),
+        proxy_cap,
+        runtime.host.id.to_string(),
+        store.clone(),
+        local,
+    )));
     let store_for_tunnel = store.clone();
     let janitor = tokio::spawn(crate::sessions::worktree_janitor(
         store.clone(),

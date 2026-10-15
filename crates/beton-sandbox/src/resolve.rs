@@ -95,6 +95,9 @@ pub struct ExecAccess {
     pub socket: PathBuf,
     pub shim_dir: PathBuf,
     pub token: Secret,
+    /// Variablen, die `bt-exec` aus Stufe 1 an Stufe 2 weitergeben darf (über die Basis- und
+    /// Werkzeug-Variablen hinaus; #259): die konfigurierten Namen der Stufe 2.
+    pub forward_env: Vec<String>,
 }
 
 /// Kontext der Auflösung.
@@ -134,6 +137,9 @@ pub struct ResolveCtx {
     pub untrusted_path: Vec<PathBuf>,
     /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
     pub programs: Vec<PathBuf>,
+    /// Credential-Variablen dieser Stufe mit ihrem Platzhalter (PRX-006, SBX-005); gewinnen
+    /// gegen `passthrough` und `set`.
+    pub credential_env: BTreeMap<String, String>,
 }
 
 impl ResolveCtx {
@@ -155,6 +161,7 @@ impl ResolveCtx {
             session_dir: None,
             untrusted_path: Vec::new(),
             programs: Vec::new(),
+            credential_env: BTreeMap::new(),
         }
     }
 }
@@ -231,6 +238,9 @@ pub struct ResolvedPolicy {
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
+    /// Variablen mit Credential-Platzhalter (nur Namen; PRX-006). Der Exec-Broker lässt sie
+    /// nicht überschreiben.
+    pub credential_env: Vec<String>,
     pub net: NetMode,
     pub egress_rules: Vec<String>,
     pub egress_allow_private: Vec<String>,
@@ -271,6 +281,7 @@ impl ResolvedPolicy {
             no_symlinks: Vec::new(),
             private: Vec::new(),
             env: BTreeMap::new(),
+            credential_env: Vec::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
             egress_allow_private: Vec::new(),
@@ -304,6 +315,24 @@ pub(crate) fn ensure_read_only_dirs(policy: &ResolvedPolicy) -> Result<(), Sandb
 }
 
 const BASE_ENV: [&str; 6] = ["PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG"];
+
+/// Locale-Kategorien (POSIX und glibc), die als `LC_*` in eine Sandbox gelangen; kein Präfix
+/// für beliebige Namen (SBX-005).
+pub const LOCALE_ENV: [&str; 13] = [
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+];
 
 /// Proxy-Variablen (PRX-008), groß und klein.
 pub const PROXY_ENV: [&str; 6] = [
@@ -843,7 +872,7 @@ pub fn resolve(
             .join(":");
     }
     for (k, v) in &ctx.host_env {
-        if k.starts_with("LC_") || k == "TZ" {
+        if LOCALE_ENV.contains(&k.as_str()) || k == "TZ" {
             env.insert(k.clone(), v.clone());
         }
     }
@@ -877,6 +906,17 @@ pub fn resolve(
         }
     }
     env.retain(|k, _| !env_denied(k) && !controlled_env(k));
+    // Credential-Variablen nur mit Platzhalter (PRX-006, SBX-005 AC3); sie gewinnen gegen
+    // `passthrough`, `set` und die Harness-Familie.
+    for (k, v) in &ctx.credential_env {
+        if env_denied(k) || controlled_env(k) {
+            return Err(SandboxError::invalid(
+                "credentials",
+                format!("`{k}` kann keinen Platzhalter bekommen"),
+            ));
+        }
+        env.insert(k.clone(), v.clone());
+    }
     env.insert("HOME".into(), home.to_string_lossy().into_owned());
     env.insert("TMPDIR".into(), scratch.to_string_lossy().into_owned());
     // `XDG_RUNTIME_DIR` des Hosts nie (SBX-005), stattdessen der Scratch der Stufe.
@@ -898,6 +938,11 @@ pub fn resolve(
                 .into_owned(),
         );
         env.insert("BETON_EXEC_TOKEN".into(), exec.token.expose().to_owned());
+        // Namen der Variablen, die `bt-exec` an Stufe 2 weitergibt (#259); keine Werte.
+        env.insert(
+            crate::broker::ENV_FORWARD.into(),
+            exec.forward_env.join(","),
+        );
     }
 
     // Netz: nur über den Proxy, ohne Proxy gar nicht.
@@ -992,6 +1037,7 @@ pub fn resolve(
         no_symlinks,
         private,
         env,
+        credential_env: ctx.credential_env.keys().cloned().collect(),
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
@@ -1054,4 +1100,65 @@ pub fn check_caps(probe: &ProbeReport, policy: &ResolvedPolicy) -> Result<(), Sa
         missing,
         hint,
     })
+}
+
+/// Größte Credential-Datei (PRX-006).
+pub const CREDENTIAL_FILE_MAX: u64 = 64 * 1024;
+
+/// Prüft eine Credential-Datei (`source.file`, PRX-006 AC4) gegen die aufgelösten Policies
+/// aller Stufen: Sie muss existieren, außerhalb jeder Lese- und Schreib-Wurzel liegen (auch
+/// über Symlinks), darf keine weiteren Hardlinks haben und höchstens 64 KiB groß sein.
+/// Liefert den kanonischen Pfad.
+pub fn check_credential_file(
+    path: &Path,
+    home: &Path,
+    policies: &[&ResolvedPolicy],
+) -> Result<PathBuf, SandboxError> {
+    const FIELD: &str = "credentials.source.file";
+    let expanded = crate::paths::expand(&path.to_string_lossy(), home);
+    let canonical = std::fs::canonicalize(&expanded)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", expanded.display())))?;
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", canonical.display())))?;
+    if !meta.is_file() {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist keine Datei", canonical.display()),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.nlink() > 1 {
+            return Err(SandboxError::escape(
+                FIELD,
+                format!(
+                    "{} hat weitere Hardlinks (auch in einer Freigabe möglich)",
+                    canonical.display()
+                ),
+            ));
+        }
+    }
+    if meta.len() > CREDENTIAL_FILE_MAX {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist größer als 64 KiB", canonical.display()),
+        ));
+    }
+    for policy in policies {
+        for root in policy.read_roots.iter().chain(&policy.write_roots) {
+            if canonical.starts_with(root) || expanded.starts_with(root) {
+                return Err(SandboxError::escape(
+                    FIELD,
+                    format!(
+                        "{} liegt in der Freigabe {} der Stufe {}",
+                        canonical.display(),
+                        root.display(),
+                        policy.stage.as_str()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(canonical)
 }

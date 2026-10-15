@@ -21,6 +21,7 @@ beton-harness-direct.workspace = true
 beton-mcp.workspace = true
 beton-policy.workspace = true
 beton-proto.workspace = true
+base64.workspace = true
 beton-proxy.workspace = true
 beton-sandbox.workspace = true
 getrandom.workspace = true
@@ -48,6 +49,7 @@ beton-server.workspace = true
 beton-store.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
