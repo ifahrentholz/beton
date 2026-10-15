@@ -39,7 +39,7 @@ pub(super) fn desugar(rule: &RuleDoc, params: &Params, shadow: bool) -> Result<S
                 lit(pattern)
             )),
             None => parts.push(format!(
-                "(tool.server == \"builtin\" && glob(tool.name, {p})) || glob(tool.kind, {p})",
+                "(tool.server == \"builtin\" && tool.kind != \"mcp\" && glob(tool.name, {p})) || glob(tool.kind, {p})",
                 p = lit(pattern)
             )),
         }
