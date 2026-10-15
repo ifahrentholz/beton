@@ -213,7 +213,9 @@ jobs:
             if [ -d "crates/$c" ]; then pkgs="$pkgs -p $c"; fi
           done
           mkdir -p target/coverage
-          cargo llvm-cov $pkgs --json --output-path target/coverage/llvm-cov.json
+          # Tests wie SEC-003 AC4 beenden instrumentierte Prozesse per SIGKILL mitten im Schreiben;
+          # deren halb geschriebene .profraw überspringen statt den Merge scheitern zu lassen.
+          cargo llvm-cov $pkgs --failure-mode all --json --output-path target/coverage/llvm-cov.json
           cargo xtask coverage-gate --input target/coverage/llvm-cov.json \
             --baseline target/coverage/main.json --out target/coverage/current.json \
             --markdown "$GITHUB_STEP_SUMMARY"
