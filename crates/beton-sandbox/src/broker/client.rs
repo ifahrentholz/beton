@@ -173,6 +173,15 @@ mod imp {
         let env_overrides = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .filter(|(k, _)| override_rejected(k, &configured).is_none())
+            // `PATH` nur mit absoluten Einträgen (SBX-002); leer → die Vorgabe der Stufe 2.
+            .filter_map(|(k, v)| {
+                if k == "PATH" {
+                    let p = super::super::absolute_path(&v);
+                    (!p.is_empty()).then_some((k, p))
+                } else {
+                    Some((k, v))
+                }
+            })
             .collect();
         let req = Request {
             v: super::super::proto::VERSION,

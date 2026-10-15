@@ -158,7 +158,7 @@ fn prx_006_credentials_are_loaded_and_validated() {
 #[test]
 fn prx_006_source_variable_must_not_be_passed_through() {
     // Sonst stünde der echte Wert der Quelle unter ihrem eigenen Namen in Stufe 1/2.
-    for pass in ["GH_PAT", "GH_*", "*"] {
+    for pass in ["GH_PAT", "GH_*", "GH_P*"] {
         let (path, message) = invalid(&format!(
             "env:\n  passthrough: [\"{pass}\"]\ncredentials: [{{ name: gh, type: github, source: {{ env: GH_PAT }}, env: [GH_TOKEN] }}]\n"
         ));

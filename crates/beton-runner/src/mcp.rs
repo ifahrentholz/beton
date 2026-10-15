@@ -348,7 +348,7 @@ pub async fn resolve_secrets(
     servers: Vec<beton_mcp::config::ConfiguredServer>,
     session_id: beton_core::id::SessionId,
     stages: Option<&mut crate::stages::SessionStages>,
-    _agent_trusted: bool,
+    agent_trusted: bool,
 ) -> (Vec<beton_mcp::config::ConfiguredServer>, Vec<EventPayload>) {
     let mut stages = stages;
     let mut kept = Vec::with_capacity(servers.len());
@@ -357,6 +357,23 @@ pub async fn resolve_secrets(
         let refs = server.secret_refs();
         if refs.is_empty() {
             kept.push(server);
+            continue;
+        }
+        // Bis #200 entschieden ist, ob Repo-Inhalt Credentials referenzieren darf: nur Server der
+        // User-Ebene und von User- bzw. eingebauten Agents (fail closed, Review #291). Sonst
+        // bestimmte das Repository Pfad und Methode, mit denen ein Credential an einen
+        // gebundenen Host geht, an den `egress_rules` des Benutzers vorbei.
+        let trusted = match server.layer {
+            beton_mcp::config::Layer::User => true,
+            beton_mcp::config::Layer::Agent => agent_trusted,
+            beton_mcp::config::Layer::Project => false,
+        };
+        if !trusted {
+            failures.push(failed(
+                &server.name,
+                "${secret:…} gilt nur für MCP-Server der User-Konfiguration bzw. von User- und \
+                 eingebauten Agents; Projekt-Dateien und Projekt-Agents sind Repo-Inhalt (#200)",
+            ));
             continue;
         }
         let resolved = match stages.as_deref() {
@@ -426,6 +443,11 @@ pub async fn prepare(
     stages: Option<&mut crate::stages::SessionStages>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
+    // Agents aus der User-Ebene oder eingebaute dürfen `${secret:…}` nutzen (Review #291).
+    let agent_trusted = matches!(
+        source,
+        AgentSource::Snapshot(snap) if snap.source == "user" || snap.source == "builtin"
+    );
     let loaded = load(source, workdir, paths)?;
     // AGT-014 (#234): `policies` des Agents wertet beton erst mit WP-49 aus. Bis dahin startet
     // ein solcher Agent nicht, statt seine Regeln still zu ignorieren (fail closed).
@@ -501,8 +523,13 @@ pub async fn prepare(
     }));
 
     // AGT-001 AC3, AGT-006 AC3: `${secret:<name>}` → Platzhalter, nie der Wert.
-    let (servers, failures) =
-        resolve_secrets(std::mem::take(&mut plan.servers), session_id, stages, false).await;
+    let (servers, failures) = resolve_secrets(
+        std::mem::take(&mut plan.servers),
+        session_id,
+        stages,
+        agent_trusted,
+    )
+    .await;
     plan.servers = servers;
     setup.initial.extend(failures);
 

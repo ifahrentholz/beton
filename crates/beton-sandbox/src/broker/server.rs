@@ -215,6 +215,12 @@ fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
         if let Some(why) = super::override_rejected(k, &shared.forward) {
             return Err(reject("env_denied", format!("`{k}`: {why}")));
         }
+        if k == "PATH" && !super::path_ok(v) {
+            return Err(reject(
+                "env_denied",
+                "`PATH`: nur absolute Einträge (SBX-002)",
+            ));
+        }
         if v.contains('\0') {
             return Err(reject("env_denied", format!("`{k}`: NUL-Byte im Wert")));
         }

@@ -316,6 +316,24 @@ pub(crate) fn ensure_read_only_dirs(policy: &ResolvedPolicy) -> Result<(), Sandb
 
 const BASE_ENV: [&str; 6] = ["PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG"];
 
+/// Locale-Kategorien (POSIX und glibc), die als `LC_*` in eine Sandbox gelangen; kein Präfix
+/// für beliebige Namen (SBX-005).
+pub const LOCALE_ENV: [&str; 13] = [
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+];
+
 /// Proxy-Variablen (PRX-008), groß und klein.
 pub const PROXY_ENV: [&str; 6] = [
     "HTTP_PROXY",
@@ -854,7 +872,7 @@ pub fn resolve(
             .join(":");
     }
     for (k, v) in &ctx.host_env {
-        if k.starts_with("LC_") || k == "TZ" {
+        if LOCALE_ENV.contains(&k.as_str()) || k == "TZ" {
             env.insert(k.clone(), v.clone());
         }
     }

@@ -365,6 +365,26 @@ fn validate_credentials(
                     format!("`{v}`: kein gültiger Variablenname bzw. `BETON_*`"),
                 ));
             }
+            // Sonst stünde der echte Wert unter dem Namen der Quelle in der Sandbox.
+            let passed = spec
+                .env
+                .as_ref()
+                .and_then(|e| e.passthrough.as_ref())
+                .into_iter()
+                .flatten()
+                .any(|p| match p.strip_suffix('*') {
+                    Some(prefix) => v.starts_with(prefix),
+                    None => p == v,
+                });
+            if passed {
+                return Err(SandboxError::invalid(
+                    f("source.env"),
+                    format!(
+                        "`{v}` steht auch in `env.passthrough`; der echte Wert käme so in die \
+                         Sandbox (nur der Platzhalter über `credentials[].env`)"
+                    ),
+                ));
+            }
         }
         if let Some(path) = &src.file {
             check_syntax(&f("source.file"), path)?;

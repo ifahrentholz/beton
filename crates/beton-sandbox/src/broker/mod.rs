@@ -41,7 +41,8 @@ pub const ENV_FORWARD: &str = "BETON_EXEC_ENV";
 
 /// Basis- und Werkzeug-Variablen, die `bt-exec` von Stufe 1 an Stufe 2 weitergibt (#259):
 /// Shell- und Terminal-Zustand, Editoren, Git-Identität (keine Credential-Helfer). Dazu kommen
-/// `LC_*` und die konfigurierten Namen der Stufe 2 ([`ENV_FORWARD`]).
+/// die Locale-Kategorien ([`crate::resolve::LOCALE_ENV`]) und die konfigurierten Namen der
+/// Stufe 2 ([`ENV_FORWARD`]).
 pub const TOOL_ENV: [&str; 34] = [
     "PATH",
     "USER",
@@ -80,7 +81,7 @@ pub const TOOL_ENV: [&str; 34] = [
 ];
 
 /// Warum der Broker eine Variable aus `env_overrides` ablehnt (bzw. `bt-exec` sie nicht
-/// weitergibt). Allowlist (SBX-005, #259): erlaubt sind nur [`TOOL_ENV`], `LC_*` und die
+/// weitergibt). Allowlist (SBX-005, #259): erlaubt sind nur [`TOOL_ENV`], die Locale-Kategorien und die
 /// konfigurierten Namen der Stufe 2 (`configured`) – nie gesperrte (SBX-005), von beton je
 /// Stufe gesetzte oder Variablen einer Harness-Familie. `None`: erlaubt.
 pub fn override_rejected(name: &str, configured: &[String]) -> Option<&'static str> {
@@ -103,8 +104,9 @@ pub fn override_rejected(name: &str, configured: &[String]) -> Option<&'static s
     if family {
         return Some("gehört zur Stufe 1 eines Harness");
     }
-    let allowed =
-        TOOL_ENV.contains(&name) || name.starts_with("LC_") || configured.iter().any(|c| c == name);
+    let allowed = TOOL_ENV.contains(&name)
+        || crate::resolve::LOCALE_ENV.contains(&name)
+        || configured.iter().any(|c| c == name);
     if !allowed {
         return Some(
             "nicht in der Allowlist (Basis-, Werkzeug- und konfigurierte Variablen der Stufe 2)",
@@ -113,14 +115,18 @@ pub fn override_rejected(name: &str, configured: &[String]) -> Option<&'static s
     None
 }
 
-/// Nur die absoluten Einträge eines `PATH` (Platzhalter bis zur Umsetzung).
+/// Nur die absoluten Einträge eines `PATH` (`bt-exec` vor der Weitergabe, SBX-002).
 pub fn absolute_path(path: &str) -> String {
-    path.to_owned()
+    path.split(':')
+        .filter(|d| d.starts_with('/'))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
-/// Besteht ein `PATH` nur aus absoluten Einträgen (Platzhalter bis zur Umsetzung)?
-pub fn path_ok(_path: &str) -> bool {
-    true
+/// Besteht ein `PATH` nur aus absoluten Einträgen? Ein relativer oder leerer Eintrag hinge
+/// vom Arbeitsverzeichnis ab, also vom Workspace (SBX-002).
+pub fn path_ok(path: &str) -> bool {
+    !path.is_empty() && path.split(':').all(|d| d.starts_with('/'))
 }
 
 /// Konfigurierte Namen der Stufe 2, die Stufe 1 überschreiben darf: das Environment der
@@ -130,7 +136,9 @@ pub fn forward_names(policy: &crate::ResolvedPolicy) -> Vec<String> {
         .env
         .keys()
         .filter(|k| !policy.credential_env.contains(k))
-        .filter(|k| !TOOL_ENV.contains(&k.as_str()) && !k.starts_with("LC_"))
+        .filter(|k| {
+            !TOOL_ENV.contains(&k.as_str()) && !crate::resolve::LOCALE_ENV.contains(&k.as_str())
+        })
         .filter(|k| override_rejected(k, std::slice::from_ref(*k)).is_none())
         .cloned()
         .collect()
