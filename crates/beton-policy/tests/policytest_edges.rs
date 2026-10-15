@@ -517,7 +517,8 @@ fn pol_027_explain_renders_every_part_of_a_decision() {
         "Fehler (fail closed",
         "Grants: grt_1",
         "git_guard",
-        "maestra-no-merge (tool_call) git_guard",
+        // Entzuckerter Regeltyp mit Typ und CEL-Bedingung (POL-017, WP-42).
+        "maestra-no-merge/merge (tool_call) deny [git_guard]  when: tool.kind == \"shell\"",
         "tool.args.n > 1 → Fehler",
     ] {
         assert!(text.contains(needle), "`{needle}` fehlt in\n{text}");

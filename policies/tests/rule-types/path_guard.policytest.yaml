@@ -1,0 +1,39 @@
+# Policy-Test (POL-026 AC4): Regeltyp path_guard (POL-016).
+spec_version: 1
+layers: { project: [path_guard.yaml] }
+fixtures:
+  session: { worktree: /repo, project_root: /repo }
+  host: { home: /home/u }
+cases:
+  - name: Schreiben im Worktree ist erlaubt
+    phase: tool_call
+    input: { tool: { name: Write, args: { file_path: /repo/src/a.rs, content: x } } }
+    expect: { outcome: allow }
+  - name: Schreiben außerhalb des Worktrees (nach Normalisierung)
+    phase: tool_call
+    input: { tool: { name: Write, args: { file_path: /repo/../other/x, content: x } } }
+    expect: { outcome: deny, rules: [worktree-only/write], reason_contains: worktree }
+  - name: Umleitung nach /etc/hosts in einem Shell-Call
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "echo x > /etc/hosts" } } }
+    expect: { outcome: deny, rules: [worktree-only/write] }
+  - name: Lesen sensibler Dateien
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/.env } } }
+    expect: { outcome: deny, rules: [worktree-only/read], reason_contains: sensibl }
+  - name: Lesen über die Shell mit ~
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cat ~/.ssh/id_ed25519" } } }
+    expect: { outcome: deny, rules: [worktree-only/read] }
+  - name: Lesen außerhalb des Worktrees ist frei
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /etc/hosts } } }
+    expect: { outcome: allow }
+  - name: on_violation ask beim Lesen
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/private/plan.md } } }
+    expect: { outcome: ask, rules: [docs-ask/read] }
+  - name: on_violation ask beim Schreiben
+    phase: tool_call
+    input: { tool: { name: Edit, args: { file_path: /repo/docs/a.md, old_string: a, new_string: b } } }
+    expect: { outcome: ask, rules: [docs-ask/write] }
