@@ -546,6 +546,16 @@ impl Client {
             .await
     }
 
+    /// `POST /v1/secrets/test`: Prüfung beim Provider über den Proxy-Pfad (SEC-004, SEC-011).
+    pub async fn test_secret(&self, secret_ref: &str, kind: Option<&str>) -> Result<Value> {
+        let mut body = serde_json::json!({ "secret_ref": secret_ref });
+        if let Some(k) = kind {
+            body["kind"] = Value::String(k.to_owned());
+        }
+        self.send(self.http.post(self.url("/v1/secrets/test")).json(&body))
+            .await
+    }
+
     /// `GET /v1/audit/verify`: Prüfung der Hash-Kette.
     pub async fn audit_verify(&self) -> Result<Value> {
         self.get("/v1/audit/verify").await

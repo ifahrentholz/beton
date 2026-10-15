@@ -137,6 +137,8 @@ pub struct SessionsConfig {
     /// Werte und Audit der Credential-Bindings (PRX-006); `None`: Sessions mit Credentials
     /// bekommen keine Werte (fail closed).
     pub credentials: Option<Arc<crate::credentials::CredentialService>>,
+    /// `beton secrets test` über den Proxy-Pfad (SEC-004, SEC-011 AC3).
+    pub secret_tester: Option<Arc<crate::secret_test::SecretTester>>,
     /// Umgebung des Daemons beim Start: Quelle `env` der Credentials (PRX-006) und `HOME` für
     /// `~` in `file`. Geht nie an Runner oder Sandbox.
     pub daemon_env: Arc<std::collections::BTreeMap<String, String>>,
@@ -1626,6 +1628,7 @@ mod stage_tests {
             proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
             proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
             credentials: None,
+            secret_tester: None,
             daemon_env: Arc::default(),
             connect_timeout: CONNECT_TIMEOUT,
             start_budget: START_BUDGET,

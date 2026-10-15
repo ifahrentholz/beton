@@ -56,6 +56,10 @@ rustix.workspace = true
 
 [dev-dependencies]
 beton-harness.workspace = true
+beton-proxy = { workspace = true, features = ["test-net"] }
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 beton-host.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true

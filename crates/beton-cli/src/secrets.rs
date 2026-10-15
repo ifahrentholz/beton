@@ -134,6 +134,7 @@ pub async fn run(ctx: &Ctx, cmd: SecretsCommand) -> CliResult {
             )
         }
         SecretsCommand::Rotate(args) => rotate(ctx, args).await,
+        SecretsCommand::Test(args) => test(ctx, args).await,
         SecretsCommand::Unlock(args) => unlock(ctx, args).await,
     }
 }
@@ -152,7 +153,22 @@ async fn add(ctx: &Ctx, args: SecretsAddArgs) -> CliResult {
     if args.source.has_argument_value() {
         return Err(CliError::usage(ARGUMENT_REJECTED));
     }
-    let r = resolve_ref(&args.target, args.account.as_deref(), args.name.as_deref())?;
+    let target = match &args.host {
+        Some(host) => {
+            let valid = !host.is_empty()
+                && host
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+            if !valid || args.target.starts_with("secret://") {
+                return Err(CliError::usage(
+                    "--host erwartet einen Hostnamen (z. B. github.com) und einen Provider statt einer Ref",
+                ));
+            }
+            host.to_ascii_lowercase()
+        }
+        None => args.target.clone(),
+    };
+    let r = resolve_ref(&target, args.account.as_deref(), args.name.as_deref())?;
     let (kind, value) = match args.kind {
         SecretKindArg::Token => ("token", read_value(&args.source, "Wert")?),
         SecretKindArg::Basic => {
@@ -173,6 +189,52 @@ async fn add(ctx: &Ctx, args: SecretsAddArgs) -> CliResult {
     drop(value);
     let backend = meta["backend"].as_str().unwrap_or_default().to_owned();
     done(ctx, meta, &format!("{r} angelegt ({kind}, {backend})"))
+}
+
+/// `beton secrets test` (SEC-004, SEC-011 AC3): Prüfung beim Provider über den Proxy-Pfad des
+/// Daemons; Exit 1, wenn der Provider ablehnt oder Scopes fehlen.
+async fn test(ctx: &Ctx, args: crate::cli::SecretsTestArgs) -> CliResult {
+    let r = resolve_ref(&args.secret_ref, None, None)?;
+    let client = crate::daemon::ensure_running(ctx).await?;
+    let report = client
+        .test_secret(&r.to_string(), args.kind.as_deref())
+        .await?;
+    let ok = report["ok"].as_bool() == Some(true);
+    if ctx.global.json {
+        print_json(&report)?;
+    } else {
+        let list = |k: &str| {
+            report[k]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "–".into())
+        };
+        println!(
+            "{r}: {} (HTTP {}, {})",
+            if ok { "gültig" } else { "Problem" },
+            report["status"],
+            report["provider"].as_str().unwrap_or("?")
+        );
+        println!("  Scopes: {}", list("scopes"));
+        println!("  Fehlende Scopes: {}", list("missing"));
+        if let Some(hint) = report["hint"].as_str() {
+            println!("  {hint}");
+        }
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!("Secret-Prüfung nicht bestanden"),
+        ))
+    }
 }
 
 async fn rotate(ctx: &Ctx, args: SecretsRotateArgs) -> CliResult {

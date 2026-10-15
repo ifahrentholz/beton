@@ -293,6 +293,64 @@ pub async fn delete_secret(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Anfrage an `POST /v1/secrets/test`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TestSecretRequest {
+    pub secret_ref: String,
+    /// `github` oder `gitlab`, falls der Provider der Ref die Art nicht verrät.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// Ergebnis der Prüfung beim Provider; enthält nie den Wert.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct TestSecretView {
+    pub secret_ref: String,
+    /// Host der geprüften API.
+    pub provider: String,
+    pub kind: String,
+    /// HTTP-Status der Antwort des Providers.
+    pub status: u16,
+    /// Gültig und alle nötigen Scopes vorhanden.
+    pub ok: bool,
+    pub login: Option<String>,
+    /// Scopes laut Provider; `null`, wenn er keine nennt (z. B. fine-grained PAT).
+    pub scopes: Option<Vec<String>>,
+    /// Fehlende Scopes für Git und API (GitHub `repo`, GitLab `api`).
+    pub missing: Vec<String>,
+    pub hint: Option<String>,
+}
+
+/// Secret beim Provider prüfen (SEC-004, SEC-011 AC3): über den Egress-Proxy des Daemons,
+/// der den Wert nur für die API des Providers einsetzt; die Antwort nennt nie den Wert.
+#[utoipa::path(post, path = "/v1/secrets/test", tag = "secrets",
+    request_body = TestSecretRequest,
+    responses((status = 200, description = "Ergebnis der Prüfung", body = TestSecretView),
+              (status = 404, description = "Unbekannte Ref", body = Problem, content_type = "application/problem+json"),
+              (status = 423, description = "Datei-Store gesperrt (`secrets_locked`)", body = Problem, content_type = "application/problem+json"),
+              (status = 503, description = "Provider bzw. Proxy nicht erreichbar", body = Problem, content_type = "application/problem+json")))]
+pub async fn test_secret(
+    State(state): State<AppState>,
+    SecretJson(req): SecretJson<TestSecretRequest>,
+) -> ApiResult<axum::Json<TestSecretView>> {
+    let cfg = &state.runtime.sessions;
+    let (Some(tester), Some(credentials)) = (&cfg.secret_tester, &cfg.credentials) else {
+        return Err(Problem::new(ProblemCode::SandboxUnavailable)
+            .detail("Prüfung über den Proxy-Pfad ist nicht verfügbar"));
+    };
+    let report = tester
+        .test(
+            credentials,
+            &cfg.daemon_env,
+            &req.secret_ref,
+            req.kind.as_deref(),
+        )
+        .await?;
+    let view: TestSecretView = serde_json::from_value(report).map_err(|e| Problem::internal(&e))?;
+    Ok(axum::Json(view))
+}
+
 /// Datei-Store entsperren, anlegen oder die Passphrase wechseln.
 #[utoipa::path(post, path = "/v1/secrets/unlock", tag = "secrets",
     request_body = UnlockRequest,

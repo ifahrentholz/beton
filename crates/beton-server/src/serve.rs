@@ -135,6 +135,12 @@ pub async fn start_with(
         cap: proxy_cap.clone(),
         host_id: runtime.host.id.to_string(),
     }));
+    runtime.sessions.secret_tester = Some(Arc::new(crate::secret_test::SecretTester::new(
+        beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+        proxy_cap.clone(),
+        runtime.host.id.to_string(),
+        runtime.sessions.proxy_extra_ca_files.clone(),
+    )));
     runtime.sessions.credentials = Some(Arc::new(crate::credentials::CredentialService::new(
         secrets.clone(),
         proxy_cap,

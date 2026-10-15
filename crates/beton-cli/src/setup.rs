@@ -128,6 +128,134 @@ impl Spawner for RealSpawner {
     }
 }
 
+/// Fragt eine CLI ab und liefert Erfolg und stdout (im Test ersetzbar, damit kein Test die
+/// echten `gh`-/`glab`-Konfigurationen des Entwicklers liest).
+#[async_trait]
+pub trait CliOutput: Send + Sync {
+    /// Liegt das Programm im `PATH`? Startet nichts.
+    fn installed(&self, program: &str) -> bool;
+    /// `None`: Programm nicht startbar.
+    async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)>;
+}
+
+#[async_trait]
+impl CliOutput for RealSpawner {
+    fn installed(&self, program: &str) -> bool {
+        std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Stufe 0: Token einer Git-CLI nach Zustimmung des Benutzers übernehmen (SEC-011)"
+    )]
+    async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+        let run = tokio::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(Duration::from_secs(10), run).await {
+            Ok(Ok(out)) => Some((out.status.success(), out.stdout)),
+            _ => None,
+        }
+    }
+}
+
+/// Eine Git-CLI, deren Login `beton setup` übernehmen kann (SEC-011).
+#[derive(Debug, Clone, Copy)]
+pub struct GitCli {
+    pub command: &'static str,
+    pub host: &'static str,
+    /// Typ des Credential-Bindings (`sandbox.credentials[].type`).
+    pub kind: &'static str,
+    /// Variable der Stufe 2, die den Platzhalter bekommt.
+    pub env: &'static str,
+    /// Gibt den Token auf stdout aus (ohne Netzzugriff); läuft erst nach Zustimmung.
+    pub token: &'static [&'static str],
+}
+
+pub const GIT_CLIS: [GitCli; 2] = [
+    GitCli {
+        command: "gh",
+        host: "github.com",
+        kind: "github",
+        env: "GH_TOKEN",
+        token: &["auth", "token", "--hostname", "github.com"],
+    },
+    GitCli {
+        command: "glab",
+        host: "gitlab.com",
+        kind: "gitlab",
+        env: "GITLAB_TOKEN",
+        token: &["config", "get", "token", "--host", "gitlab.com"],
+    },
+];
+
+/// Bietet an, den Login installierter `gh`-/`glab`-CLIs in den Secret-Store zu übernehmen
+/// (SEC-011 AC2): nie still und nie im nicht-interaktiven Modus. Die CLI wird erst nach der
+/// Zustimmung gefragt (ohne Netzzugriff, ADR-0033); der Token wird nie ausgegeben.
+pub async fn offer_git_token_import(
+    clis: &[GitCli],
+    probe: &dyn CliOutput,
+    interactive: bool,
+    prompt: &mut dyn Prompt,
+    importer: &dyn KeyImporter,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    for cli in clis {
+        if !probe.installed(cli.command) {
+            continue;
+        }
+        let secret_ref = format!("secret://user/{}/default", cli.host);
+        if !interactive {
+            writeln!(
+                out,
+                "{} gefunden; Login übernehmen: beton setup (interaktiv) oder `{} {} | beton secrets add {} --stdin`",
+                cli.command,
+                cli.command,
+                cli.token.join(" "),
+                cli.host
+            )?;
+            continue;
+        }
+        if !prompt.confirm(&format!(
+            "{} ist installiert: dessen Login ({}) als {secret_ref} in den Secret-Store übernehmen?",
+            cli.command, cli.host
+        )) {
+            writeln!(out, "  {}: nicht übernommen", cli.command)?;
+            continue;
+        }
+        let token = match probe.output(cli.command, cli.token).await {
+            Some((true, stdout)) => SecretValue::from_bytes(stdout.trim_ascii().to_vec()),
+            _ => SecretValue::from_bytes(Vec::new()),
+        };
+        if token.is_empty() {
+            writeln!(
+                out,
+                "  {}: nicht übernommen (kein Login für {})",
+                cli.command, cli.host
+            )?;
+            continue;
+        }
+        match importer.import(&secret_ref, &token).await {
+            Ok(()) => {
+                writeln!(out, "  {}: übernommen als {secret_ref}", cli.command)?;
+                writeln!(
+                    out,
+                    "  Für Tools in der Sandbox (nur als Platzhalter) in ~/.beton/config.yaml unter \
+                     sandbox.credentials eintragen:\n    - {{ name: {}, type: {}, source: {{ secret: \"{secret_ref}\" }}, env: [{}] }}",
+                    cli.kind, cli.kind, cli.env
+                )?;
+            }
+            Err(e) => writeln!(out, "  {}: nicht übernommen: {e}", cli.command)?,
+        }
+    }
+    Ok(())
+}
+
 /// `[y/N]` auf stderr, Antwort von stdin.
 #[derive(Debug, Default)]
 pub struct TerminalPrompt;
@@ -631,6 +759,88 @@ mod tests {
             .unwrap();
         assert!(prompt.1.is_empty());
         assert!(imports.0.lock().unwrap().is_empty());
+    }
+
+    /// `gh`/`glab`-Attrappe: zeichnet Aufrufe auf; liest nie echte Konfigurationen.
+    struct FakeGit {
+        logged_in: bool,
+        calls: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl CliOutput for FakeGit {
+        fn installed(&self, program: &str) -> bool {
+            program == "gh"
+        }
+
+        async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{program} {}", args.join(" ")));
+            match (program, self.logged_in) {
+                ("gh", true) => Some((true, b"gho_FIXTUREgh0123456789\n".to_vec())),
+                ("gh", false) => Some((false, Vec::new())),
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sec_011_ac2_gh_token_is_taken_over_only_after_explicit_confirmation() {
+        let git = FakeGit {
+            logged_in: true,
+            calls: Mutex::default(),
+        };
+        // Ohne Zustimmung: nichts gespeichert, gh nicht einmal gefragt.
+        let imports = Imports::default();
+        let mut prompt = Answer(false, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert_eq!(prompt.1.len(), 1, "genau eine Rückfrage für gh");
+        assert!(git.calls.lock().unwrap().is_empty());
+        // Nicht interaktiv: keine Rückfrage, nichts gelesen, nichts gespeichert.
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, false, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(prompt.1.is_empty());
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert!(git.calls.lock().unwrap().is_empty());
+        assert!(String::from_utf8(out).unwrap().contains("gh auth token"));
+        // Mit Zustimmung: genau dieser Token unter secret://user/github.com/default.
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert_eq!(
+            *imports.0.lock().unwrap(),
+            vec![(
+                "secret://user/github.com/default".to_owned(),
+                "gho_FIXTUREgh0123456789".to_owned()
+            )]
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("FIXTURE"), "{text}");
+        assert!(text.contains("sandbox.credentials"), "{text}");
+        // Nicht angemeldet: nichts gespeichert.
+        let git = FakeGit {
+            logged_in: false,
+            calls: Mutex::default(),
+        };
+        let mut prompt = Answer(true, Vec::new());
+        let imports = Imports::default();
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert!(String::from_utf8(out).unwrap().contains("kein Login"));
     }
 
     #[test]
