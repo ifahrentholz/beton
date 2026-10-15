@@ -342,6 +342,12 @@ fn pol_011_params_are_checked_on_load() {
             "fallback_effort",
         ),
         ("{ limit_usd: 5, kinds: [shell] }", "kinds"),
+        ("{ limit_usd: 5, scope: 3 }", "scope"),
+        ("{ limit_usd: 5, ask_at_usd: [drei] }", "ask_at_usd[0]"),
+        (
+            "{ limit_usd: 5, on_exceed: route, fallback_model: \"\" }",
+            "fallback_model",
+        ),
     ] {
         let e = load_err(&rule(params));
         assert!(e.contains(needle), "{params}: {e}");
@@ -430,12 +436,49 @@ fn pol_012_on_exceed_ask_asks_at_every_turn() {
     assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
     // Ohne Merken: keine Effects, also beim nächsten Turn wieder.
     assert!(d.effects.is_empty());
+    // Ein `ask` ab dem Limit ist ein erreichtes Budget (`budget.exhausted`, action ask).
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, on_exceed: ask }\n",
+    );
+    let effective = EffectiveSet::new(vec![s]);
+    let d = effective.evaluate(&user_request(51.0, 0.0), &EvalOptions::default());
+    let found = beton_policy::budget::exhausted(&d, &effective);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].action, beton_core::event::BudgetAction::Ask);
+    assert_eq!(found[0].scope.as_str(), "user");
+}
+
+#[test]
+fn pol_011_dry_run_budgets_are_neither_counted_nor_exhausted() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: shadow\n    type: spend_cap\n    dry_run: true\n    params: { scope: run, limit_usd: 1 }\n",
+    );
+    let effective = EffectiveSet::new(vec![s]);
+    assert!(beton_policy::budget::budget_rules(&effective).is_empty());
+    let d = effective.evaluate(
+        &act(
+            Phase::ModelRequest,
+            json!({
+                "run": { "cost_usd": 2.0, "equivalent_usd": 0.0 },
+                "request": { "model": "m", "granularity": "turn" },
+            }),
+        ),
+        &EvalOptions::default(),
+    );
+    assert_eq!(d.outcome, Outcome::Allow);
+    assert_eq!(d.would.len(), 1, "{d:#?}");
+    assert!(beton_policy::budget::exhausted(&d, &effective).is_empty());
 }
 
 #[test]
 fn pol_012_team_scope_and_own_timezone_follow_with_m4() {
     let rule = |params: &str| format!("  - id: x\n    type: daily_budget\n    params: {params}\n");
     assert!(load_err(&rule("{ scope: team, limit_usd: 5 }")).contains("M4"));
+    assert!(load_err(&rule("{ scope: org, limit_usd: 5 }")).contains("scope"));
     assert!(load_err(&rule("{ limit_usd: 5, timezone: Europe/Berlin }")).contains("timezone"));
     assert!(
         load_err(&rule(
@@ -612,6 +655,14 @@ fn pol_013_params_are_checked_on_load() {
         (
             "{ allowed_models: [x], fallback_model: y }",
             "fallback_model",
+        ),
+        ("{ allowed_models: [1] }", "allowed_models[0]"),
+        ("{ routes: claude }", "routes"),
+        ("{ routes: [x] }", "routes[0]"),
+        ("{ routes: [{ model: 1 }] }", "routes[0].model"),
+        (
+            "{ allowed_models: [x], on_unsupported: 1 }",
+            "on_unsupported",
         ),
     ] {
         let e = load_err(&rule(params));
