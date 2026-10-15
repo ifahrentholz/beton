@@ -995,3 +995,52 @@ fn pol_001_new_guards_count_as_tightening_and_changes_as_loosening() {
     );
     assert!(only_tightens(Some(&strict), &lax).is_err());
 }
+
+/// POL-016: Auch geschriebene Pfade unterliegen den Leseregeln (`mv` liest die Quelle, bevor
+/// es sie entfernt); sonst verschöbe ein Kommando eine sensible Datei an den Leseregeln
+/// vorbei.
+#[test]
+fn pol_016_read_rules_apply_to_written_paths_too() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: paths\n    type: path_guard\n    params: { write: { allow: [\"**\"], deny: [] } }\n",
+    );
+    let d = eval(
+        vec![s.clone()],
+        &call_with("Bash", json!({ "command": "mv ~/.ssh/id_rsa ./x" }), ws()),
+    );
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+    assert_eq!(rule_ids(&d), ["paths/read"]);
+    let d = eval(
+        vec![s],
+        &call_with("Bash", json!({ "command": "mv ./a ./b" }), ws()),
+    );
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+}
+
+/// POL-017: Wechselt dasselbe Kommando vorher den Branch (`git checkout`, `git switch`), ist
+/// der aktuelle Branch bei der Auswertung nicht der beim Push bzw. Merge: geschützt.
+#[test]
+fn pol_017_branch_switch_in_the_same_command_counts_as_protected() {
+    let s = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ push: allow, merge: allow }}\n"),
+    );
+    for command in [
+        "git checkout main && git push",
+        "git switch main && git merge feature",
+        "git -C . checkout main; git push origin",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert_eq!(outcome(&d), "deny", "{command}: {d:?}");
+        assert_eq!(rule_ids(&d), ["git/protected"], "{command}");
+    }
+    // Mit ausdrücklichem Ziel zählt das Ziel.
+    let d = eval(
+        vec![s],
+        &git_call("git switch -c topic && git push -u origin topic", "feature"),
+    );
+    assert_eq!(outcome(&d), "allow", "{d:?}");
+}
