@@ -130,6 +130,7 @@ impl Fixture {
                     fork: None,
                     sandbox: None,
                     proxy_ca: None,
+                    compaction: Default::default(),
                 },
             )
             .await
@@ -481,6 +482,7 @@ async fn runner_token_only_opens_its_own_session() {
                 fork: None,
                 sandbox: None,
                 proxy_ca: None,
+                compaction: Default::default(),
             },
         )
         .await

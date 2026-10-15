@@ -437,6 +437,8 @@ pub struct TunnelState {
     pub observer: Option<Arc<dyn EventObserver>>,
     /// Herunterfahren: Verbindungen enden mit 4503, Runner verbinden sich neu (POL-010 AC4).
     pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Automatische Compaction vor dem nächsten Turn aus der Queue (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
 
 impl TunnelState {
@@ -447,6 +449,7 @@ impl TunnelState {
             runners: self.runners.clone(),
             cmd_timeout: self.config.cmd_timeout,
             queues: self.queues.clone(),
+            compaction: self.compaction,
         }
     }
 }

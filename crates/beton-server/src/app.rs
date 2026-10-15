@@ -63,6 +63,7 @@ impl AppState {
             runners: self.runtime.runners.clone(),
             cmd_timeout: self.runtime.tunnel.cmd_timeout,
             queues: self.runtime.queues.clone(),
+            compaction: self.runtime.compaction,
         }
     }
 }
@@ -97,6 +98,8 @@ pub struct Runtime {
     /// `usage.*` (USE-004 AC3): Inbox-Hinweis bei fast aufgebrauchtem Abo-Fenster.
     pub usage: crate::usage_notice::UsageConfig,
     pub usage_notices: Arc<crate::usage_notice::NoticeLog>,
+    /// `compaction.*` (USE-009): Automatik vor dem nächsten Turn bzw. im Direkt-API-Loop.
+    pub compaction: beton_harness::CompactionSettings,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
@@ -156,6 +159,7 @@ impl Runtime {
             titles: crate::titles::TitlesConfig::default(),
             title_jobs: Arc::default(),
             usage: crate::usage_notice::UsageConfig::default(),
+            compaction: beton_harness::CompactionSettings::default(),
             usage_notices: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
@@ -359,6 +363,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_inbox::get_inbox_item))
         .routes(routes!(crate::api_inbox::resolve_inbox_item))
         .routes(routes!(crate::api_usage::get_usage))
+        .routes(routes!(crate::api_usage::get_pricing))
         .routes(routes!(crate::api_usage::get_session_usage))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(crate::attachments::routes())

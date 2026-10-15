@@ -119,6 +119,8 @@ pub struct RunnerBoot {
     pub sandbox: Option<beton_runner::stages::SandboxBoot>,
     /// beton-CA für die Proxy-Instanzen (PRX-002); nur über stdin (dritte Zeile).
     pub proxy_ca: Option<beton_runner::stages::CaText>,
+    /// `compaction:` der User-Konfiguration (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
@@ -271,6 +273,7 @@ macro_rules! runner_provider_contract {
                     fork: None,
                     sandbox: None,
                     proxy_ca: None,
+                    compaction: Default::default(),
                 }
             }
 

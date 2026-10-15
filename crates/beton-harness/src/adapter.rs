@@ -101,6 +101,70 @@ impl HostEnv {
 /// Pfade, keine Zugangsdaten.
 pub const VENDOR_DIR_VARS: [&str; 3] = ["HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
 
+/// Wer automatisch kompaktiert (`compaction.auto`, USE-009).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoCompaction {
+    /// Der Harness entscheidet selbst (Vendor-CLIs; Direkt-API-Harness ab `threshold`).
+    #[default]
+    Harness,
+    /// beton kompaktiert vor dem nächsten Turn, wenn der zuletzt gemeldete Kontext über
+    /// `threshold` liegt – einmal je Überschreitung, bei Harnesses mit `compaction: native`.
+    Beton,
+    /// Nie automatisch, nur über den Button, `/compact` oder die API.
+    Off,
+}
+
+/// `compaction:` in der User-Konfiguration (USE-009).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct CompactionSettings {
+    /// `harness` (Default), `beton` oder `off`.
+    pub auto: AutoCompaction,
+    /// Anteil des Kontextfensters (größer 0, höchstens 1), ab dem automatisch kompaktiert
+    /// wird; Default 0,8.
+    pub threshold: f64,
+}
+
+/// Default-Schwelle für automatische Compaction (SES-011, USE-009).
+pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
+
+impl Default for CompactionSettings {
+    fn default() -> Self {
+        Self {
+            auto: AutoCompaction::Harness,
+            threshold: DEFAULT_COMPACTION_THRESHOLD,
+        }
+    }
+}
+
+impl CompactionSettings {
+    /// Prüft die Schwelle; der Fehler nennt den Grund.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.threshold.is_finite() && self.threshold > 0.0 && self.threshold <= 1.0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "compaction.threshold {} liegt nicht in (0, 1]",
+                self.threshold
+            ))
+        }
+    }
+
+    /// Schwelle der harness-eigenen Automatik (Direkt-API-Harness): nur bei `auto: harness`;
+    /// bei `beton` löst der Server aus, bei `off` niemand.
+    pub fn harness_threshold(&self) -> Option<f64> {
+        (self.auto == AutoCompaction::Harness).then_some(self.threshold)
+    }
+
+    /// Soll beton vor dem nächsten Turn kompaktieren (`auto: beton`)?
+    pub fn beton_due(&self, used_tokens: u64, window_tokens: u64) -> bool {
+        self.auto == AutoCompaction::Beton
+            && window_tokens > 0
+            && used_tokens as f64 > window_tokens as f64 * self.threshold
+    }
+}
+
 /// Was eine neue Harness-Session braucht.
 #[derive(Debug, Clone, Default)]
 pub struct SessionSpec {
@@ -136,6 +200,8 @@ pub struct SessionSpec {
     /// Vendor-Hooks über die Hook-Brücke (HAR-005 ab M2): Kommando und Laufzeitverzeichnis.
     /// Ohne Angabe installiert der Adapter keinen Hook (Durchsetzung nur an Rückfragen).
     pub hook: Option<crate::hook::HookSetup>,
+    /// Automatische Compaction (USE-009); nur Harnesses mit eigenem Loop werten sie aus.
+    pub compaction: CompactionSettings,
 }
 
 /// Erste Nachricht mit vorangestellten Instructions (`instructions_delivery:
@@ -663,4 +729,42 @@ pub trait HarnessSession: Send {
         None
     }
     async fn shutdown(self: Box<Self>, how: Shutdown) -> Result<ExitInfo, HarnessError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// USE-009: Wer bei welcher Einstellung automatisch kompaktiert.
+    #[test]
+    fn compaction_settings_decide_who_compacts() {
+        let harness = CompactionSettings::default();
+        assert_eq!(harness.harness_threshold(), Some(0.8));
+        assert!(!harness.beton_due(190_000, 200_000));
+        let beton = CompactionSettings {
+            auto: AutoCompaction::Beton,
+            threshold: 0.8,
+        };
+        assert_eq!(beton.harness_threshold(), None);
+        assert!(beton.beton_due(170_000, 200_000));
+        assert!(
+            !beton.beton_due(160_000, 200_000),
+            "genau 80 % ist nicht darüber"
+        );
+        assert!(!beton.beton_due(170_000, 0), "ohne Fenster keine Automatik");
+        let off = CompactionSettings {
+            auto: AutoCompaction::Off,
+            ..CompactionSettings::default()
+        };
+        assert_eq!(off.harness_threshold(), None);
+        assert!(!off.beton_due(199_000, 200_000));
+        for bad in [0.0, -0.1, 1.5, f64::NAN] {
+            let s = CompactionSettings {
+                threshold: bad,
+                ..CompactionSettings::default()
+            };
+            assert!(s.validate().is_err(), "{bad}");
+        }
+        assert!(beton.validate().is_ok());
+    }
 }

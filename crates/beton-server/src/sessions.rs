@@ -744,6 +744,7 @@ impl<'a> SessionManager<'a> {
                     fork,
                     sandbox,
                     proxy_ca,
+                    compaction: self.state.runtime.compaction,
                 },
             )
             .await

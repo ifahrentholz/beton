@@ -205,6 +205,8 @@ impl DirectAdapter {
         let (tx, rx) = mpsc::channel(4096);
         let settings = LoopSettings {
             max_turns: spec.max_turns.unwrap_or(self.settings.max_turns).max(1),
+            // `compaction.auto` und `compaction.threshold` der Konfiguration (USE-009).
+            compaction_threshold: spec.compaction.harness_threshold(),
             ..self.settings
         };
         let capabilities = self.capabilities(Mode::Native, &ProbeReport::default());

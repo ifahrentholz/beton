@@ -63,6 +63,7 @@ fn boot() -> RunnerBoot {
         fork: None,
         sandbox: None,
         proxy_ca: None,
+        compaction: Default::default(),
     }
 }
 

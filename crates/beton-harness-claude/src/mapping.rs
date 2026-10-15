@@ -121,10 +121,12 @@ fn map_system(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
                 EventPayload::CompactionStarted(Compaction {
                     before_tokens: before,
                     after_tokens: None,
+                    trigger: None,
                 }),
                 EventPayload::CompactionCompleted(Compaction {
                     before_tokens: before,
                     after_tokens: post,
+                    trigger: None,
                 }),
             ]
         }
@@ -387,6 +389,7 @@ fn map_compaction_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
         out.push(EventPayload::CompactionCompleted(Compaction {
             before_tokens: before,
             after_tokens: None,
+            trigger: None,
         }));
         return out;
     }
@@ -395,6 +398,7 @@ fn map_compaction_result(v: &Value, st: &mut MapState) -> Vec<EventPayload> {
     out.push(EventPayload::CompactionCompleted(Compaction {
         before_tokens: before,
         after_tokens: after,
+        trigger: None,
     }));
     if let (Some(used), Some(window)) = (after, st.context_window) {
         st.last_context = Some(used);

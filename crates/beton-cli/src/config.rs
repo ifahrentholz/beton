@@ -52,6 +52,8 @@ pub struct Settings {
     pub pricing: PricingSettings,
     /// Usage-Anzeige und -Hinweise (USE-004).
     pub usage: UsageSettings,
+    /// Automatische Compaction (USE-009): `auto: harness | beton | off`, `threshold` (0,8).
+    pub compaction: beton_harness::CompactionSettings,
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
@@ -605,6 +607,14 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
             message,
         })?;
     }
+    settings
+        .compaction
+        .validate()
+        .map_err(|message| ConfigError::Invalid {
+            origin: origin.to_owned(),
+            key: "compaction.threshold".into(),
+            message,
+        })?;
     validate_sandbox(&settings.sandbox).map_err(|(key, message)| ConfigError::Invalid {
         origin: origin.to_owned(),
         key,
@@ -871,6 +881,25 @@ mod tests {
                 .usage
                 .rate_limit_notice
         );
+    }
+
+    /// USE-009: `compaction.auto` und `compaction.threshold` aus der User-Konfiguration; eine
+    /// Schwelle außerhalb von (0, 1] wird mit Schlüssel abgelehnt.
+    #[test]
+    fn use_009_compaction_settings_load_and_are_checked() {
+        let f = fixture();
+        let default = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(
+            default.compaction,
+            beton_harness::CompactionSettings::default()
+        );
+        f.write_user("compaction:\n  auto: beton\n  threshold: 0.7\n");
+        let set = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(set.compaction.auto, beton_harness::AutoCompaction::Beton);
+        assert!((set.compaction.threshold - 0.7).abs() < f64::EPSILON);
+        f.write_user("compaction:\n  threshold: 1.5\n");
+        let err = f.load(&[]).and_then(|c| c.daemon_settings()).unwrap_err();
+        assert!(err.to_string().contains("compaction.threshold"), "{err}");
     }
 
     #[test]

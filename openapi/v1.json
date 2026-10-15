@@ -5529,6 +5529,67 @@
         }
       }
     },
+    "/v1/usage/pricing": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Preise, mit denen der Server bewertet (USE-002, USE-003): eigene Preise in\nPrüfreihenfolge und der mitgelieferte Katalog.",
+        "operationId": "get_pricing",
+        "responses": {
+          "200": {
+            "description": "Eigene Preise und Preis-Katalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/ws": {
       "get": {
         "tags": [
@@ -5787,6 +5848,67 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "CatalogEntryView": {
+        "type": "object",
+        "description": "Ein Modell des mitgelieferten Preis-Katalogs (USE-002); USD je 1 Mio. Tokens, wie im\nKatalog angegeben (fehlende Cache-Raten bleiben leer).",
+        "required": [
+          "model",
+          "aliases",
+          "provider",
+          "input_per_mtok",
+          "output_per_mtok",
+          "valid_from"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Weitere IDs desselben Modells, z. B. datierte Snapshots."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "input_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "output_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_read_per_mtok": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "cache_write_per_mtok": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "valid_from": {
+            "type": "string",
+            "description": "Ab wann der Preis gilt (`YYYY-MM-DD`)."
           }
         }
       },
@@ -6887,6 +7009,104 @@
         "properties": {
           "pinned": {
             "type": "boolean"
+          }
+        }
+      },
+      "PriceOverrideView": {
+        "type": "object",
+        "description": "Ein eigener Preis (USE-003) in Prüfreihenfolge: `pricing.overrides`, danach die Preise der\nProvider-Konfiguration. Raten wirksam, d. h. fehlende Cache-Raten geschätzt.",
+        "required": [
+          "position",
+          "free",
+          "input_per_mtok",
+          "output_per_mtok",
+          "cache_read_per_mtok",
+          "cache_write_per_mtok",
+          "cache_estimated"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in der Prüfreihenfolge, ab 1; der erste Treffer gewinnt.",
+            "minimum": 0
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Glob auf den Provider; fehlt = jeder."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Glob auf das Modell; fehlt = jedes."
+          },
+          "free": {
+            "type": "boolean",
+            "description": "Kostenlos (z. B. lokales Ollama)."
+          },
+          "input_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "output_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_read_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_write_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_estimated": {
+            "type": "boolean",
+            "description": "Die Cache-Raten sind geschätzt (0,1 × bzw. 1,25 × Eingabe, USE-003 AC2)."
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PricingView": {
+        "type": "object",
+        "description": "Antwort von `GET /v1/usage/pricing`: womit der Server neue Turns bewertet (USE-002,\nUSE-003); Ziel des Hinweises „ohne Preis“ der Usage-Seite (USE-006 AC4).",
+        "required": [
+          "catalog_version",
+          "currency",
+          "overrides",
+          "catalog"
+        ],
+        "properties": {
+          "catalog_version": {
+            "type": "string",
+            "description": "Version des eingebauten Katalogs; kommt mit jedem beton-Release, kein Online-Abruf."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceOverrideView"
+            }
+          },
+          "catalog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogEntryView"
+            }
           }
         }
       },

@@ -209,6 +209,7 @@ pub async fn start_with(
                 Arc::new(crate::usage_notice::UsageNoticeObserver(system_state)),
             ]))),
             shutdown: Some(stop_rx.clone()),
+            compaction: runtime.compaction,
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),
