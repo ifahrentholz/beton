@@ -35,6 +35,8 @@ harnesses:
       WebFetch: { kind: web_fetch }
       WebSearch: { kind: web_fetch }
       Task: { kind: system, subagent_spawn: true }
+      # Seit 2.1.29x heißt das Sub-Agent-Tool `Agent` (gegen 2.1.296 geprüft, #233).
+      Agent: { kind: system, subagent_spawn: true }
       TodoWrite: { kind: system }
       ExitPlanMode: { kind: system }
   codex:

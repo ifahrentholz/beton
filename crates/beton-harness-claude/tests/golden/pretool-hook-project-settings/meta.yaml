@@ -1,0 +1,6 @@
+harness: claude
+cli_version: 2.1.296
+recorded_at: 2026-10-14T21:11:06.623Z
+scenario: 'Projekt-Settings mit disableAllHooks und eigenem PreToolUse-Hook (updatedInput) wirken nicht; der beton-Hook prüft echo (HAR-005, #233)'
+platform: macos-aarch64
+exit_code: 0

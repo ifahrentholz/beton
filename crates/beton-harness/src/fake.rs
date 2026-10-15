@@ -729,7 +729,7 @@ impl Player {
             let mut allowed = true;
             let mut updated = None;
             let mut denial = None;
-            if self.tool_call_gate == ToolCallGate::Full {
+            if self.tool_call_gate == ToolCallGate::Full && !step.skip_gate {
                 match self.gate.decide(request.clone()).await {
                     GateDecision::Allow { updated_args } => updated = updated_args,
                     GateDecision::Deny { reason } => {

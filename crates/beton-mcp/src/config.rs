@@ -19,12 +19,19 @@ pub use beton_agents::spec::McpServer;
 /// Name des eingebauten Servers mit den System-Tools (AGT-007); für eigene Server reserviert.
 pub const SYSTEM_SERVER: &str = "beton";
 
+/// Namen, die beton für eigene Server reserviert: `beton`, `beton-*`, `beton_*` (System-Tools,
+/// Workspace-Tools des Direkt-Harness, Browser). Die Abbildungstabelle ordnet ihnen Klassen wie
+/// `system` zu (POL-005, #234).
+pub fn reserved_name(name: &str) -> bool {
+    name == SYSTEM_SERVER || name.starts_with("beton-") || name.starts_with("beton_")
+}
+
 /// Inhalt von `~/.beton/mcp.yaml` bzw. `.beton/mcp.yaml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "beton MCP-Server (mcp.yaml)")]
 pub struct McpFile {
-    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton` ist reserviert).
+    /// MCP-Server nach Name (`[a-z0-9_-]`, höchstens 64 Zeichen; `beton`, `beton-*` und `beton_*` sind reserviert).
     #[serde(default)]
     pub servers: BTreeMap<String, McpServer>,
 }
@@ -87,9 +94,10 @@ impl ConfiguredServer {
                 self.name
             ));
         }
-        if self.name == SYSTEM_SERVER {
+        if reserved_name(&self.name) {
             return Err(format!(
-                "der Name „{SYSTEM_SERVER}“ ist für die System-Tools reserviert"
+                "der Name „{}“ ist für Server von beton reserviert (`beton`, `beton-*`, `beton_*`)",
+                self.name
             ));
         }
         let s = &self.server;
@@ -310,6 +318,29 @@ mod tests {
         assert!(merged[0].allows("get"));
         assert!(!merged[0].allows("delete"));
         assert!(merged[1].allows("anything"));
+    }
+
+    /// M1 (#234): Namen mit `beton` (`beton`, `beton-*`, `beton_*`) sind beton-eigenen Servern
+    /// vorbehalten; die Abbildungstabelle ordnet ihnen Klassen wie `system` zu (POL-005).
+    #[test]
+    fn pol_005_beton_server_names_are_reserved() {
+        let f = file(
+            "servers:\n  beton-workspace:\n    command: x\n  beton-browser:\n    command: x\n  beton_x:\n    command: x\n  betonmischer:\n    command: x\n",
+        );
+        let merged = merge(&McpFile::default(), &f, None);
+        let err = |n: &str| {
+            merged
+                .iter()
+                .find(|s| s.name == n)
+                .unwrap()
+                .endpoint()
+                .err()
+                .unwrap_or_default()
+        };
+        for name in ["beton-workspace", "beton-browser", "beton_x"] {
+            assert!(err(name).contains("reserviert"), "{name}");
+        }
+        assert!(err("betonmischer").is_empty(), "kein Präfix mit Trenner");
     }
 
     #[test]
