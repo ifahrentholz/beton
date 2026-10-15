@@ -96,6 +96,10 @@ pub struct UsageTotals {
     pub equivalent_micro: i64,
     /// Records mit `cost_source: none` („ohne Preis“).
     pub unpriced: u64,
+    /// Records ohne Geldbetrag und ohne Listenpreis-Äquivalent (API-Nutzung ohne Preis bzw.
+    /// Subscription-Nutzung eines Modells ohne Katalogpreis): Budgets kennen ihre Kosten
+    /// nicht (POL-011, `policy.rule_inapplicable`).
+    pub without_price: u64,
 }
 
 /// Auswahl für [`Store::usage_totals`].
@@ -108,6 +112,9 @@ pub enum UsageScope {
     /// Records eines Users im Zeitraum `[from, to)`, z. B. ein Kalendertag in seiner
     /// Zeitzone (`user.daily_cost_usd`).
     UserBetween(UserId, Timestamp, Timestamp),
+    /// Records einer Session und aller Nachfahren über `parent_id` (`run.subtree_cost_usd`,
+    /// POL-011 `scope: subtree`).
+    Subtree(SessionId),
 }
 
 /// Wendet ein dauerhaftes Event auf die Projektionen an.
@@ -464,6 +471,15 @@ impl Store {
                 " AND user_id = ? AND ts >= ? AND ts < ?",
                 vec![user.to_string(), from.to_string(), to.to_string()],
             ),
+            UsageScope::Subtree(root) => (
+                " AND session_id IN (WITH RECURSIVE tree (id) AS ( \
+                   SELECT id FROM sessions WHERE org_id = ? AND id = ? \
+                   UNION ALL \
+                   SELECT c.id FROM sessions c JOIN tree t ON c.parent_id = t.id \
+                   WHERE c.org_id = ? \
+                 ) SELECT id FROM tree)",
+                vec![org.to_string(), root.to_string(), org.to_string()],
+            ),
         };
         let sql = format!(
             "SELECT COUNT(*) AS records, \
@@ -474,7 +490,10 @@ impl Store {
              COALESCE(SUM(CASE WHEN auth_source <> 'vendor_cli' THEN cost_micro END), 0) \
                AS cost_micro, \
              COALESCE(SUM(equivalent_micro), 0) AS equivalent_micro, \
-             COALESCE(SUM(CASE WHEN cost_source = 'none' THEN 1 ELSE 0 END), 0) AS unpriced \
+             COALESCE(SUM(CASE WHEN cost_source = 'none' THEN 1 ELSE 0 END), 0) AS unpriced, \
+             COALESCE(SUM(CASE WHEN (auth_source = 'vendor_cli' AND equivalent_micro IS NULL) \
+               OR (auth_source <> 'vendor_cli' AND cost_micro IS NULL) THEN 1 ELSE 0 END), 0) \
+               AS without_price \
              FROM usage_records WHERE org_id = ?{filter}"
         );
         let mut query = sqlx::query(&sql).bind(org.to_string());
@@ -491,6 +510,7 @@ impl Store {
             cost_micro: row.try_get("cost_micro")?,
             equivalent_micro: row.try_get("equivalent_micro")?,
             unpriced: to_u64(row.try_get("unpriced")?)?,
+            without_price: to_u64(row.try_get("without_price")?)?,
         })
     }
 

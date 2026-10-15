@@ -4,6 +4,10 @@
 //! `user.daily_cost_usd`, `user.timezone` o. Ä. benutzt. Geld zählt ohne Subscriptions
 //! (USE-001 AC3); Tag und Monat beginnen um 00:00 in `user.timezone` (Default UTC), mit dem
 //! Versatz zum Auswertungszeitpunkt (Sommerzeit, [`UserTimeZone`]).
+//!
+//! Für Budgets (POL-011, POL-012) kommen das Listenpreis-Äquivalent der Subscription-Nutzung
+//! (`*_equivalent_usd`, ADR-0034), die Kosten des Teilbaums (Session samt Nachfahren) und die
+//! Zahl der Records ohne Preis (`*_without_price`, `policy.rule_inapplicable`) hinzu.
 
 use beton_core::id::{OrgId, SessionId};
 use beton_core::timezone::UserTimeZone;
@@ -51,11 +55,21 @@ pub async fn usage_values(
     let month = store
         .usage_totals(org, UsageScope::UserBetween(user, from.into(), to.into()))
         .await?;
+    let tree = store
+        .usage_totals(org, UsageScope::Subtree(session))
+        .await?;
     Ok(json!({
         "session_cost_usd": usd(s.cost_micro),
+        "session_equivalent_usd": usd(s.equivalent_micro),
+        "session_without_price": s.without_price,
         "session_tokens_in": s.input_tokens,
         "session_tokens_out": s.output_tokens,
+        "subtree_cost_usd": usd(tree.cost_micro),
+        "subtree_equivalent_usd": usd(tree.equivalent_micro),
+        "subtree_without_price": tree.without_price,
         "user_daily_cost_usd": usd(day.cost_micro),
+        "user_daily_equivalent_usd": usd(day.equivalent_micro),
+        "user_daily_without_price": day.without_price,
         "user_monthly_cost_usd": usd(month.cost_micro),
         "timezone": tz.name(),
     }))

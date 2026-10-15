@@ -273,6 +273,7 @@ async fn session_fixtures(
             "model": created.model,
             "permission_mode": created.permission_mode,
             "cost_usd": usage["session_cost_usd"],
+            "equivalent_usd": usage["session_equivalent_usd"],
             "tokens_in": usage["session_tokens_in"],
             "tokens_out": usage["session_tokens_out"],
             "worktree": worktree.display().to_string(),
@@ -282,7 +283,15 @@ async fn session_fixtures(
             "id": record.owner.to_string(),
             "timezone": usage["timezone"],
             "daily_cost_usd": usage["user_daily_cost_usd"],
+            "daily_equivalent_usd": usage["user_daily_equivalent_usd"],
             "monthly_cost_usd": usage["user_monthly_cost_usd"],
+        },
+        // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
+        "run": {
+            "cost_usd": usage["session_cost_usd"],
+            "equivalent_usd": usage["session_equivalent_usd"],
+            "subtree_cost_usd": usage["subtree_cost_usd"],
+            "subtree_equivalent_usd": usage["subtree_equivalent_usd"],
         },
         "state": {
             "session": policy["session"],

@@ -435,6 +435,12 @@ fn expected(events: &[Event]) -> UsageTotals {
         }
         t.equivalent_micro += c.equivalent_micro.unwrap_or(0);
         t.unpriced += u64::from(c.cost_source == Some(PriceSource::None));
+        // Weder Geld noch Listenpreis-Äquivalent (POL-011).
+        t.without_price += u64::from(if c.auth_source == AuthSource::VendorCli {
+            c.equivalent_micro.is_none()
+        } else {
+            c.cost_micro.is_none()
+        });
     }
     t
 }
