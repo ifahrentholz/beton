@@ -202,11 +202,11 @@ pub fn explain(event: &PolicyDecision, set: Option<&EffectiveSet>) -> Explanatio
                 same_id()
                     .find(|r| {
                         let (action, _) = action_str(r);
-                        phases_of(r).iter().any(|p| *p == event.phase)
+                        phases_of(r).contains(&event.phase)
                             && action == verdict
                             && r.doc.reason.as_deref() == reason
                     })
-                    .or_else(|| same_id().find(|r| phases_of(r).iter().any(|p| *p == event.phase)))
+                    .or_else(|| same_id().find(|r| phases_of(r).contains(&event.phase)))
                     .or_else(|| same_id().next())
             });
             VerdictView {
