@@ -1145,3 +1145,47 @@ fn pol_015_untrusted_beton_server_is_renamed_for_policies() {
     let act = Activation::new(Phase::ToolCall, json!({ "tool": n2.to_context() })).unwrap();
     assert_eq!(outcome(&eval(vec![s], &act)), "allow");
 }
+
+/// Matrix wie Codex nativ: MCP-Tools nur beobachtbar, Shell und Bearbeiten nur an Rückfragen.
+fn codex_matrix() -> beton_policy::enforcement::Matrix {
+    use beton_policy::enforcement::{Level, Matrix};
+    let mut m = Matrix::full();
+    m.tool_call.insert("mcp".into(), Level::ObserveOnly);
+    m.tool_call.insert("shell".into(), Level::ApprovalOnly);
+    m.tool_call.insert("file_edit".into(), Level::ApprovalOnly);
+    m
+}
+
+/// B2: Ein Default `deny`/`ask` (auch der einer Allowlist) wirkt auf alle Klassen seiner Phase;
+/// kann der Harness eine mutierende Klasse nicht vorab prüfen, verweigert der Start (bzw. warnt
+/// mit `enforcement: best_effort` der Typ-Regel).
+#[test]
+fn pol_024_layer_defaults_are_checked_at_start() {
+    use beton_policy::enforcement::check_start;
+    let start = |text: &str| {
+        let s = parse_set(Scope::Project, "p.yaml", text).unwrap();
+        check_start(&EffectiveSet::new(vec![Arc::new(s)]), &codex_matrix())
+    };
+    let check = start(&format!("spec_version: 1\nname: p\nrules:\n{READ_ONLY}"));
+    assert_eq!(check.refused_rules(), ["read-only"], "{check:?}");
+    assert!(check.refused[0].kinds.contains(&"mcp".to_owned()));
+    let check = start(&format!(
+        "spec_version: 1\nname: p\nrules:\n{READ_ONLY}    enforcement: best_effort\n"
+    ));
+    assert!(check.refused.is_empty(), "{check:?}");
+    assert!(check.degraded_rules().contains(&"read-only".to_owned()));
+    let check = start("spec_version: 1\nname: p\ndefaults: { tool_call: ask }\n");
+    assert_eq!(check.refused_rules(), ["defaults.tool_call"], "{check:?}");
+    // Volle Durchsetzung: keine Lücke.
+    let s = parse_set(
+        Scope::Project,
+        "p.yaml",
+        &format!("spec_version: 1\nname: p\nrules:\n{READ_ONLY}"),
+    )
+    .unwrap();
+    let check = check_start(
+        &EffectiveSet::new(vec![Arc::new(s)]),
+        &beton_policy::enforcement::Matrix::full(),
+    );
+    assert!(check.is_clean(), "{check:?}");
+}

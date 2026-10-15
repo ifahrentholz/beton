@@ -702,6 +702,24 @@ mod tests {
         }
     }
 
+    /// Review #285 B2: Eine Allowlist (Default `deny` der Ebene) verweigert unter Codex den
+    /// Start, weil MCP-Tools dort nur beobachtbar sind.
+    #[test]
+    fn pol_024_tool_allowlist_is_refused_under_codex() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::Project,
+            "p.yaml",
+            "spec_version: 1\nname: p\nrules:\n  - id: list\n    type: tool_allowlist\n    params: { allow_kinds: [file_read] }\n",
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        let codex = crate::policy::matrix_for("codex").unwrap();
+        let check = beton_policy::enforcement::check_start(&effective, &codex);
+        assert_eq!(check.refused_rules(), ["list"], "{check:?}");
+        let claude = crate::policy::matrix_for("claude").unwrap();
+        assert!(beton_policy::enforcement::check_start(&effective, &claude).is_clean());
+    }
+
     #[test]
     fn codex_login_text_is_parsed() {
         assert_eq!(
