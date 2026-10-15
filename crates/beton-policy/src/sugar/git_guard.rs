@@ -15,7 +15,9 @@
 //! | `<id>/mcp-<op>` | MCP-Tools aus `mcp_tools.<op>` (`server/tool`, Glob) | Aktion von `<op>` |
 //!
 //! Das Push-Ziel kommt aus der Refspec bzw. ohne Refspec aus `session.branch`; ist der Branch
-//! unbekannt, scheitert die Regel und lehnt ab (fail closed). `commit --amend` zählt immer,
+//! unbekannt, scheitert die Regel und lehnt ab (fail closed). Wechselt dasselbe Kommando den
+//! Branch (`git checkout`, `git switch`), gilt ein Push ohne Refspec bzw. ein Merge als
+//! geschützt. `commit --amend` zählt immer,
 //! weil beton nicht erkennt, ob der Commit schon gepusht ist.
 
 use serde_json::Value;
@@ -127,11 +129,13 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
         rules.push(SugarRule {
                 part: Some("protected"),
                 phase: Phase::ToolCall,
+                // Wechselt dasselbe Kommando den Branch, ist `session.branch` nicht der Branch
+                // beim Push bzw. Merge: dann gilt der aktuelle Branch als geschützt.
                 when: format!(
-                    "tool.kind == \"shell\" && (shell.git_push_targets(tool.argv).exists(b, b == \"*\" || {} || (b == \"HEAD\" && {})) || (\"merge\" in shell.git_ops(tool.argv) && {}))",
-                    protected("b"),
-                    protected("session.branch"),
-                    protected("session.branch"),
+                    "tool.kind == \"shell\" && (shell.git_push_targets(tool.argv).exists(b, b == \"*\" || {p} || (b == \"HEAD\" && ({switch} || {current}))) || (\"merge\" in shell.git_ops(tool.argv) && ({switch} || {current})))",
+                    p = protected("b"),
+                    current = protected("session.branch"),
+                    switch = "shell.has_command(tool.argv, \"git\", \"checkout\") || shell.has_command(tool.argv, \"git\", \"switch\")",
                 ),
                 action: a,
                 reason: "Push bzw. Merge auf einen geschützten Branch (git_guard)".into(),

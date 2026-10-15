@@ -3,7 +3,8 @@
 //! Entzuckerung zu bis zu zwei Regeln in Phase `tool_call` mit der Aktion `on_violation`
 //! (`deny` oder `ask`):
 //!
-//! - `<id>/read`: ein Pfad aus `tool.paths`, der nicht geschrieben wird, verletzt `read`;
+//! - `<id>/read`: ein Pfad aus `tool.paths` verletzt `read` – auch ein geschriebener, weil
+//!   Schreiben oft Lesen einschließt (`mv` liest die Quelle);
 //! - `<id>/write`: ein Pfad aus `tool.write_paths` verletzt `write`.
 //!
 //! Ein Pfad verletzt eine Seite, wenn er auf ein `deny`-Muster passt oder `allow` nicht leer
@@ -61,10 +62,16 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
         rules.push(SugarRule {
             part: Some("read"),
             phase: Phase::ToolCall,
-            when: format!("tool.paths.exists(p, !(p in tool.write_paths) && ({violation}))"),
+            when: format!("tool.paths.exists(p, {violation})"),
             action,
             reason: "Lesen eines geschützten bzw. sensiblen Pfads (path_guard)".into(),
-            kinds: Some(vec!["file_read".into(), "search".into(), "shell".into()]),
+            kinds: Some(vec![
+                "file_read".into(),
+                "search".into(),
+                "shell".into(),
+                "file_write".into(),
+                "file_edit".into(),
+            ]),
             notify: None,
         });
     }
