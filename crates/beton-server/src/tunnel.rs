@@ -481,6 +481,14 @@ fn problem_msg(p: Problem) -> Message {
     Message::Text(serde_json::to_string(&msg).unwrap_or_default().into())
 }
 
+/// Antwort auf einen Push, den der Store vorübergehend nicht speichern konnte (5xx, z. B.
+/// `database is locked`). Fachliche Ablehnungen (4xx) wiederholen sich beim erneuten Senden
+/// und trennen deshalb nicht.
+fn unsaved_push(reply: &TunnelDown) -> bool {
+    matches!(reply, TunnelDown::Problem { problem }
+        if problem["status"].as_u64().is_some_and(|s| s >= 500))
+}
+
 fn close_msg(code: u16, reason: &str) -> Message {
     Message::Close(Some(CloseFrame {
         code,
@@ -649,7 +657,15 @@ async fn connection(
                         let Ok(up) = TunnelUp::from_json(&text) else { continue };
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
+                            let unsaved = unsaved_push(&reply);
                             if sink.send(Message::Text(serde_json::to_string(&reply).unwrap_or_default().into())).await.is_err() || stale {
+                                break;
+                            }
+                            if unsaved {
+                                // Spätere Pushes dieser Verbindung dürfen die Lücke nicht
+                                // überspringen: trennen, der Runner sendet nach dem Reconnect
+                                // alles Unbestätigte erneut (PROTO-015, #278).
+                                let _ = sink.send(close_msg(close::INTERNAL, "Events nicht gespeichert")).await;
                                 break;
                             }
                         }
@@ -773,13 +789,15 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                     problem: serde_json::to_value(Problem::new(ProblemCode::Forbidden)).ok()?,
                 });
             }
-            let current = state
-                .events
-                .store
-                .session(state.local.org, session)
-                .await
-                .ok()?
-                .epoch;
+            let current = match state.events.store.session(state.local.org, session).await {
+                Ok(record) => record.epoch,
+                // Ohne Antwort bliebe der Push unbestätigt, und ein späterer überspränge ihn.
+                Err(e) => {
+                    return Some(TunnelDown::Problem {
+                        problem: serde_json::to_value(Problem::from(e)).ok()?,
+                    });
+                }
+            };
             if epoch != current {
                 // PROTO-015 AC2: veraltete Epoch → Runner hört auf zu schreiben.
                 return Some(TunnelDown::Problem {
@@ -818,7 +836,8 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                             Ok(w) => w,
                             Err(problem) => {
                                 // Nicht still verwerfen: ohne Ack behält der Runner die Events,
-                                // und das Problem wird sichtbar.
+                                // und das Problem wird sichtbar (bei 5xx trennt die Verbindung
+                                // danach, siehe `unsaved_push`).
                                 tracing::warn!(%session, "Events nicht gespeichert");
                                 return Some(TunnelDown::Problem {
                                     problem: serde_json::to_value(problem).ok()?,

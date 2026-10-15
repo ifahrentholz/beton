@@ -46,6 +46,7 @@ futures-util.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
+sqlx.workspace = true
 tempfile.workspace = true
 
 [lints]
