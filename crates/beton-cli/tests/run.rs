@@ -196,6 +196,7 @@ async fn api_006_ac4_exceeding_max_cost_exits_5_via_a_spend_cap_rule() {
 /// Security-Review #284 (M2): `--max-cost` gilt für den Lauf samt Sub-Agents. Ein Agent
 /// (Codex) startet einen teuren Sub-Agent (Claude über ein Abo, Listenpreis 3 USD); der Lauf
 /// endet mit Exit-Code 5, und das Child erbt das verbleibende Budget.
+#[cfg(unix)]
 #[tokio::test]
 async fn api_006_ac4_max_cost_counts_the_sub_agents_of_the_run() {
     let vendor = tempfile::tempdir().unwrap();
