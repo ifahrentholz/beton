@@ -508,7 +508,7 @@ fn log_path(path: &str) -> &str {
 
 /// Entfernt Hop-by-Hop-Header (RFC 9110 §7.6.1), auch die in `Connection` genannten.
 /// `TE: trailers` bleibt (gRPC); bei Upgrades bleiben `Upgrade` und `Connection: upgrade`.
-fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
+pub(crate) fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     let listed: Vec<HeaderName> = headers
         .get_all(CONNECTION)
         .iter()
@@ -549,7 +549,7 @@ fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     }
 }
 
-fn is_upgrade<B>(req: &Request<B>) -> bool {
+pub(crate) fn is_upgrade<B>(req: &Request<B>) -> bool {
     req.version() == Version::HTTP_11
         && req.headers().contains_key(UPGRADE)
         && req.headers().get_all(CONNECTION).iter().any(|v| {
@@ -562,7 +562,7 @@ fn is_upgrade<B>(req: &Request<B>) -> bool {
 
 /// Host und Port eines Requests im Tunnel: `:authority`/absolute URI und `Host`-Header; beide
 /// müssen, wenn vorhanden, übereinstimmen.
-fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
+pub(crate) fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
     let mut out = Vec::new();
     if let Some(a) = req.uri().authority() {
         out.push((Host::parse(a.host()).map_err(|_| ())?, a.port_u16()));
