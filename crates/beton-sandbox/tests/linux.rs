@@ -1395,7 +1395,11 @@ async fn sbx_005_ac4_cmdlines_hold_no_secret_values_or_proxy_tokens() {
             };
             let argv = String::from_utf8_lossy(&argv).replace('\0', " ");
             for leak in ["FIXTURE", token.as_str(), "bt_cred_"] {
-                assert!(!argv.contains(leak), "{}: `{leak}` in argv von {pid}: {argv}", p.id());
+                assert!(
+                    !argv.contains(leak),
+                    "{}: `{leak}` in argv von {pid}: {argv}",
+                    p.id()
+                );
             }
         }
         drop(child);

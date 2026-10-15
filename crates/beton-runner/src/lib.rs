@@ -236,6 +236,10 @@ fn direct_route(boot: &RunnerBoot) -> Option<stages::DirectRoute> {
     let p = beton_harness_direct::config::parse_provider(name, boot.harnesses.providers.get(name)?)
         .ok()?;
     p.key.lookup()?;
+    // Nur https: Loopback-Endpunkte über `http` behalten den Key über stdin (HAR-011).
+    if p.base_url.scheme() != "https" {
+        return None;
+    }
     Some(stages::DirectRoute {
         binding: format!("provider:{name}"),
         host: p.base_url.host_str()?.to_owned(),

@@ -288,6 +288,48 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
     }
 }
 
+/// Variablen aus `sandbox.env.passthrough`, die der Runner erben muss, damit die Auflösung sie
+/// in die Sandbox übernehmen kann (SBX-005): Namen bzw. Präfixe (`LC_*`) gegen die Umgebung
+/// des Daemons, nie gesperrte (SSH_AUTH_SOCK, LD_PRELOAD, …) oder `BETON_*`.
+pub fn passthrough_names(
+    spec: &beton_sandbox::SandboxSpec,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let patterns = spec
+        .env
+        .as_ref()
+        .and_then(|e| e.passthrough.clone())
+        .unwrap_or_default();
+    let mut out: Vec<String> = env
+        .keys()
+        .filter(|k| {
+            patterns.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => k.starts_with(prefix),
+                None => *k == p,
+            })
+        })
+        .filter(|k| !beton_sandbox::spec::env_denied(k) && !k.starts_with("BETON_"))
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// Geht der Loop des Direkt-API-Harness im Stufenmodell über den Proxy (https mit Key)?
+/// Loopback-Endpunkte über `http` behalten den Key über stdin (HAR-011).
+pub fn direct_via_proxy(
+    harness: &str,
+    providers: &std::collections::BTreeMap<String, Value>,
+) -> bool {
+    let Some(name) = harness.strip_prefix("direct:") else {
+        return false;
+    };
+    providers
+        .get(name)
+        .and_then(|v| beton_harness_direct::config::parse_provider(name, v).ok())
+        .is_some_and(|p| p.key.lookup().is_some() && p.base_url.scheme() == "https")
+}
+
 /// `credential.*` aus dem Runner einer Session; ohne Credential-Dienst nie ein Wert.
 async fn credential_call(
     state: &AppState,
@@ -742,11 +784,17 @@ impl<'a> SessionManager<'a> {
             session_id: session.id,
             harness: session.harness.clone(),
             workspace,
-            env_allowlist: Vec::new(),
+            // `sandbox.env.passthrough` (SBX-005): Der Runner erbt nur diese Variablen, damit
+            // die Auflösung sie in die Sandbox übernehmen kann.
+            env_allowlist: if sandbox.is_some() {
+                passthrough_names(&cfg.sandbox, &cfg.daemon_env)
+            } else {
+                Vec::new()
+            },
             // API-Keys für `direct:*` (HAR-011) gehen über stdin, nie in die Runner-Umgebung.
-            // Im Stufenmodell gar nicht: Dort sieht der Loop nur einen Platzhalter, den der
-            // Proxy ersetzt (HAR-011 AC2, PRX-006).
-            secret_env: if sandbox.is_some() {
+            // Im Stufenmodell nicht für https-Provider: Dort sieht der Loop nur einen
+            // Platzhalter, den der Proxy ersetzt (HAR-011 AC2, PRX-006).
+            secret_env: if sandbox.is_some() && direct_via_proxy(&session.harness, &cfg.providers) {
                 Vec::new()
             } else {
                 beton_harness_direct::key_vars(&session.harness, &cfg.providers)
@@ -1592,6 +1640,46 @@ mod stage_tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn sbx_005_runner_inherits_only_configured_passthrough_variables() {
+        let spec = beton_sandbox::SandboxSpec::from_yaml(
+            "env:\n  passthrough: [RUST_LOG, \"LC_*\", NODE_OPTIONS]\n",
+        )
+        .unwrap();
+        let env: std::collections::BTreeMap<String, String> = [
+            ("RUST_LOG", "debug"),
+            ("LC_ALL", "C"),
+            ("LC_CTYPE", "C"),
+            ("AWS_SECRET_ACCESS_KEY", "FIXTURE"),
+            ("SSH_AUTH_SOCK", "/tmp/agent"),
+            ("BETON_TOKEN", "x"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        assert_eq!(
+            passthrough_names(&spec, &env),
+            ["LC_ALL", "LC_CTYPE", "RUST_LOG"]
+        );
+        assert!(passthrough_names(&beton_sandbox::SandboxSpec::default(), &env).is_empty());
+    }
+
+    #[test]
+    fn har_011_ac2_only_https_providers_with_key_go_via_the_proxy() {
+        let providers: std::collections::BTreeMap<String, Value> = [
+            ("or", json!({"kind": "openai", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OR_KEY"})),
+            ("local", json!({"kind": "openai", "base_url": "http://127.0.0.1:4000/v1", "api_key_env": "L_KEY"})),
+            ("ollama", json!({"kind": "openai", "base_url": "http://127.0.0.1:11434/v1", "api_key": "none"})),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        assert!(direct_via_proxy("direct:or", &providers));
+        assert!(!direct_via_proxy("direct:local", &providers));
+        assert!(!direct_via_proxy("direct:ollama", &providers));
+        assert!(!direct_via_proxy("claude", &providers));
+    }
 
     struct FixedCa(Result<(), String>);
 
