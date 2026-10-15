@@ -293,6 +293,30 @@ fn pol_011_ac4_explain_shows_the_desugared_cel_rules() {
 }
 
 #[test]
+fn pol_027_ac1_explain_names_the_part_of_a_rule_type_that_matched() {
+    // Mehrere Teile tragen dieselbe Regel-ID: Explain zeigt die Bedingung des gegriffenen
+    // Teils (Phase, Verdikt), nicht die des ersten Teils.
+    let s = set(Scope::Project, "b", SPEND_CAP);
+    let effective = EffectiveSet::new(vec![s]);
+    let d = effective.evaluate(
+        &request(json!({ "cost_usd": 6.0, "equivalent_usd": 0.0 })),
+        &EvalOptions::default(),
+    );
+    let event = beton_policy::audit::decision_event(
+        &d,
+        beton_policy::audit::DecisionMeta::new(beton_policy::enforcement::Level::Full),
+    );
+    let ex = beton_policy::explain::explain(&event, Some(&effective));
+    let v = &ex.verdicts[0];
+    assert_eq!(v.verdict, "deny");
+    assert_eq!(
+        v.when.as_deref(),
+        Some("session.cost_usd + session.equivalent_usd >= 5.0"),
+        "{ex:#?}"
+    );
+}
+
+#[test]
 fn pol_011_subscription_sessions_count_the_list_price_equivalent() {
     // ADR-0034: Subscription-Nutzung hat kein Geld, zählt fürs Budget aber mit dem
     // Listenpreis-Äquivalent laut Katalog.
