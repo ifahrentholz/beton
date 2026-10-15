@@ -760,7 +760,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     ));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
-    let stages = match &boot.sandbox {
+    let mut stages = match &boot.sandbox {
         Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
             let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
                 Ok(ca) => ca,
@@ -904,6 +904,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 stages.as_ref().map(|s| s.tools.clone()),
                 // `policy_query` wertet wie ein echter Call aus, ohne Seiteneffekte (AGT-007 AC3).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::PolicyOracle>),
+                // `${secret:…}` → Platzhalter, HTTP-Server mit Credential über den Proxy.
+                stages.as_mut(),
             )
             .await
         }

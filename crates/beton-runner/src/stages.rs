@@ -178,6 +178,12 @@ pub struct SessionStages {
     placeholders: BTreeMap<String, Placeholder>,
     /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
     direct: Option<DirectEgress>,
+    /// Für weitere Instanzen des Runners (Stufe 0): Proxy, Dienste, Zähler und die Bindings
+    /// der Stufe 2 (gleiche Platzhalter).
+    egress_proxy: Option<EgressProxy>,
+    services: Option<StageServices>,
+    traffic: Traffic,
+    tools_binding_list: Vec<Binding>,
     _summaries: Option<AbortOnDrop>,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
@@ -204,6 +210,51 @@ impl Drop for AbortOnDrop {
 }
 
 impl SessionStages {
+    /// Weitere Proxy-Instanz für Verbindungen des Runners (Stufe 0) mit Credentials, z. B.
+    /// HTTP-MCP-Server mit `${secret:…}` in `headers` (AGT-006 AC3): Regeln nur für `targets`
+    /// (`host` bzw. `host:port`), Bindings nur die genannten der Stufe 2 (gleiche Platzhalter,
+    /// ohne implizite Injektion). Liefert Proxy-URL (mit Token) und beton-CA.
+    pub async fn runner_egress(
+        &mut self,
+        label: &str,
+        targets: &[String],
+        bindings: &[String],
+    ) -> Result<(zeroize::Zeroizing<String>, String), String> {
+        let (Some(proxy), Some(sv)) = (&self.egress_proxy, &self.services) else {
+            return Err("kein Egress-Proxy in dieser Session (allow_network bzw. CA)".into());
+        };
+        let chosen: Vec<Binding> = self
+            .tools_binding_list
+            .iter()
+            .filter(|b| bindings.contains(&b.name))
+            .cloned()
+            .map(|mut b| {
+                b.implicit = false;
+                b
+            })
+            .collect();
+        if chosen.len() != bindings.len() {
+            return Err("unbekanntes Credential-Binding".into());
+        }
+        let rules: Vec<String> = targets.iter().map(|t| format!("* {t}/**")).collect();
+        let instance = proxy
+            .start(InstanceSpec {
+                label: format!("{label}/runner"),
+                rules: RuleSet::compile(&rules).map_err(|e| e.to_string())?,
+                credentials: Credentials::new(chosen, sv.source.clone(), sv.audit.clone())
+                    .map_err(|e| e.to_string())?,
+                source: EgressSource::Harness,
+                events: sv.events.clone(),
+                traffic: Some(self.traffic.clone()),
+                ..InstanceSpec::default()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let out = (instance.proxy_url(), proxy.ca_pem());
+        self._proxies.push(instance);
+        Ok(out)
+    }
+
     /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
     pub fn direct(&self) -> Option<&DirectEgress> {
         self.direct.as_ref()
@@ -519,7 +570,7 @@ async fn compose_unix(
             kind: std::io::ErrorKind::Other,
         })
     };
-    let mut tools_bindings = Vec::new();
+    let mut tools_bindings: Vec<Binding> = Vec::new();
     let mut tools_env = BTreeMap::new();
     let mut placeholders = BTreeMap::new();
     for c in &tools_creds {
@@ -581,6 +632,8 @@ async fn compose_unix(
             ))
         });
     let mut direct = None;
+    let mut egress_proxy = None;
+    let tools_binding_list = tools_bindings.clone();
     if tools_net || harness_net || opts.direct.is_some() {
         let ca = opts.proxy_ca.ok_or_else(|| {
             unavailable(
@@ -706,6 +759,7 @@ async fn compose_unix(
             });
             proxies.push(instance);
         }
+        egress_proxy = Some(proxy);
     }
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
@@ -780,6 +834,10 @@ async fn compose_unix(
         passthrough,
         placeholders,
         direct,
+        egress_proxy,
+        services: opts.services.clone(),
+        traffic,
+        tools_binding_list,
         _summaries: summaries,
         _broker: broker,
         _proxies: proxies,

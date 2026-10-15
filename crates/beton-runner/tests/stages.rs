@@ -521,3 +521,48 @@ async fn har_011_ac2_direct_loop_gets_its_own_proxy_instance_with_a_placeholder(
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn agt_001_ac3_agt_006_ac3_secret_refs_in_mcp_servers_become_placeholders() {
+    let fx = fx();
+    let mut s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts(GH, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let p = s.placeholder("github").unwrap().to_string();
+    let file = beton_mcp::config::parse(
+        "servers:\n  gh:\n    command: gh-mcp\n    env: { GITHUB_TOKEN: \"${secret:github}\" }\n  web:\n    url: https://mcp.example.test/mcp\n    headers: { Authorization: \"Bearer ${secret:github}\" }\n  plain:\n    url: http://mcp.example.test/mcp\n    headers: { Authorization: \"Bearer ${secret:github}\" }\n  nope:\n    command: x\n    env: { T: \"${secret:unbekannt}\" }\n  ohne:\n    command: y\n",
+        std::path::Path::new("mcp.yaml"),
+    )
+    .unwrap();
+    let servers = beton_mcp::config::merge(&file, &beton_mcp::config::McpFile::default(), None);
+    let session = beton_core::id::SessionId::new();
+    let (kept, failures) =
+        beton_runner::mcp::resolve_secrets(servers.clone(), session, Some(&mut s)).await;
+    let names: Vec<&str> = kept.iter().map(|k| k.name.as_str()).collect();
+    assert_eq!(names, ["gh", "ohne", "web"], "{failures:?}");
+    let gh = kept.iter().find(|k| k.name == "gh").unwrap();
+    assert_eq!(gh.server.env["GITHUB_TOKEN"], p);
+    assert!(gh.egress.is_none(), "stdio-Server laufen in Stufe 2");
+    let web = kept.iter().find(|k| k.name == "web").unwrap();
+    assert_eq!(web.server.headers["Authorization"], format!("Bearer {p}"));
+    let egress = web.egress.as_ref().unwrap();
+    assert!(egress.proxy_url.starts_with("http://bt:"));
+    assert_eq!(
+        failures.len(),
+        2,
+        "plain (http) und nope (unbekannt): {failures:?}"
+    );
+    // Nirgends ein Ausdruck oder Wert, nur Platzhalter.
+    assert!(!format!("{kept:?}").contains("${secret:"));
+    // Ohne Stufenmodell startet keiner der Server mit Referenz.
+    let (kept, failures) = beton_runner::mcp::resolve_secrets(servers, session, None).await;
+    assert_eq!(
+        kept.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(),
+        ["ohne"]
+    );
+    assert_eq!(failures.len(), 4);
+}

@@ -51,6 +51,43 @@ pub struct ConfiguredServer {
     pub name: String,
     pub layer: Layer,
     pub server: McpServer,
+    /// HTTP-Server mit Credential in `headers`: Verbindung über die Proxy-Instanz des Runners,
+    /// die den Platzhalter ersetzt (AGT-006 AC3, PRX-006).
+    pub egress: Option<HttpEgress>,
+}
+
+/// Weg eines HTTP-Servers über den Egress-Proxy: Proxy-URL (mit Token) und beton-CA als
+/// einziger Vertrauensanker. `Debug` zeigt beides nicht.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HttpEgress {
+    pub proxy_url: String,
+    pub ca_pem: String,
+}
+
+impl std::fmt::Debug for HttpEgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HttpEgress(***)")
+    }
+}
+
+/// Präfix einer Secret-Referenz in `env`/`headers` (AGT-001, AGT-006).
+pub const SECRET_REF: &str = "${secret:";
+
+/// Namen der Secret-Referenzen `${secret:<name>}` in `text`.
+pub fn secret_names(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(SECRET_REF) {
+        let after = &rest[i + SECRET_REF.len()..];
+        match after.find('}') {
+            Some(end) => {
+                out.push(after[..end].to_owned());
+                rest = &after[end + 1..];
+            }
+            None => break,
+        }
+    }
+    out
 }
 
 /// Wie der Runner einen Server erreicht.
@@ -86,6 +123,47 @@ impl ConfiguredServer {
             .is_none_or(|allow| allow.iter().any(|t| t == tool))
     }
 
+    /// Alle Secret-Referenzen in `env` und `headers`.
+    pub fn secret_refs(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .server
+            .env
+            .values()
+            .chain(self.server.headers.values())
+            .flat_map(|v| secret_names(v))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Ersetzt `${secret:<name>}` in `env` und `headers` durch den Platzhalter des
+    /// Credential-Bindings `<name>` (AGT-001 AC3, AGT-006 AC3); nie durch einen Wert. Fehlt
+    /// ein Binding, scheitert der Server (fail closed).
+    pub fn resolve_secrets(
+        &mut self,
+        placeholder: impl Fn(&str) -> Option<String>,
+    ) -> Result<(), String> {
+        for name in self.secret_refs() {
+            let Some(p) = placeholder(&name) else {
+                return Err(format!(
+                    "${{secret:{name}}}: kein Credential-Binding `{name}` in sandbox.credentials \
+                     (Platzhalter gibt es nur im Stufenmodell mit sandbox.backend, PRX-006)"
+                ));
+            };
+            let token = format!("{SECRET_REF}{name}}}");
+            for v in self
+                .server
+                .env
+                .values_mut()
+                .chain(self.server.headers.values_mut())
+            {
+                *v = v.replace(&token, &p);
+            }
+        }
+        Ok(())
+    }
+
     /// Prüft den Eintrag; ein ungültiger Server wird nicht gestartet (`mcp.server_failed`).
     pub fn endpoint(&self) -> Result<Endpoint<'_>, String> {
         if !valid_name(&self.name) {
@@ -101,16 +179,14 @@ impl ConfiguredServer {
             ));
         }
         let s = &self.server;
-        // Secret-Referenzen löst erst SEC-001/PRX-006 (ab M2) in Platzhalter auf; bis dahin
-        // wird der Server nicht mit dem Klartext-Ausdruck gestartet (fail closed).
-        let secret = s
-            .env
-            .values()
-            .chain(s.headers.values())
-            .any(|v| v.contains("${secret:"));
-        if secret {
+        // Secret-Referenzen löst der Runner vor dem Start in Platzhalter auf
+        // ([`Self::resolve_secrets`]); ist noch eine übrig, startet der Server nicht mit dem
+        // Ausdruck (fail closed).
+        if !self.secret_refs().is_empty() {
             return Err(
-                "Secret-Referenzen (${secret:…}) werden erst ab M2 aufgelöst (SEC-001)".into(),
+                "Secret-Referenzen (${secret:…}) sind nicht aufgelöst: Platzhalter gibt es nur \
+                 im Stufenmodell mit Credential-Bindings (sandbox.credentials, PRX-006)"
+                    .into(),
             );
         }
         match (&s.command, &s.url) {
@@ -158,6 +234,7 @@ pub fn merge(user: &McpFile, project: &McpFile, agent: Option<&Tools>) -> Vec<Co
                     name: name.clone(),
                     layer,
                     server: server.clone(),
+                    egress: None,
                 },
             );
         }
@@ -262,6 +339,46 @@ mod tests {
     }
 
     #[test]
+    fn agt_006_ac3_secret_refs_become_placeholders_never_values() {
+        let f = file(
+            "servers:\n  gh:\n    command: gh-mcp\n    env: { GITHUB_TOKEN: \"${secret:github}\", X: \"a-${secret:github}-b\" }\n  web:\n    url: https://mcp.test/mcp\n    headers: { Authorization: \"Bearer ${secret:api}\" }\n",
+        );
+        let mut servers = merge(&f, &McpFile::default(), None);
+        let ph = |n: &str| {
+            (n == "github").then(|| "bt_cred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned())
+        };
+        let gh = servers.iter_mut().find(|s| s.name == "gh").unwrap();
+        assert_eq!(gh.secret_refs(), vec!["github".to_owned()]);
+        // Ohne Auflösung startet der Server nicht.
+        assert!(gh.endpoint().unwrap_err().contains("nicht aufgelöst"));
+        gh.resolve_secrets(ph).unwrap();
+        assert_eq!(
+            gh.server.env["GITHUB_TOKEN"],
+            "bt_cred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            gh.server.env["X"],
+            "a-bt_cred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-b"
+        );
+        assert!(gh.endpoint().is_ok());
+        // Ein Name ohne Binding: Fehler, nichts ersetzt (fail closed).
+        let web = servers.iter_mut().find(|s| s.name == "web").unwrap();
+        let err = web.resolve_secrets(ph).unwrap_err();
+        assert!(err.contains("`api`"), "{err}");
+        assert!(web.endpoint().is_err());
+        assert!(
+            format!(
+                "{:?}",
+                HttpEgress {
+                    proxy_url: "http://bt:tok@x".into(),
+                    ca_pem: String::new()
+                }
+            )
+            .contains("***")
+        );
+    }
+
+    #[test]
     fn agt_006_ac2_project_server_replaces_user_server_completely() {
         let user = file(
             "servers:\n  github:\n    command: gh-mcp\n    args: [stdio]\n    env: { A: \"1\" }\n    allow: [a, b]\n  docs:\n    url: https://docs.example.invalid/mcp\n",
@@ -363,7 +480,7 @@ mod tests {
         assert!(err("none").contains("fehlt"));
         assert!(err("ftp").contains("http://"));
         assert!(err("Bad.Name").contains("Server-Name"));
-        assert!(err("secret").contains("M2"));
+        assert!(err("secret").contains("nicht aufgelöst"));
         assert!(
             merged
                 .iter()
