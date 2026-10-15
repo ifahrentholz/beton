@@ -562,6 +562,207 @@ async fn pol_004_ac4_daily_and_monthly_cost_in_the_users_timezone() {
     assert_eq!(v["user_monthly_cost_usd"], 3.5);
 }
 
+// ------------------------------------------------- POL-011/POL-012 (Budgets, ADR-0034)
+
+async fn child(t: &TestApp, parent: &SessionRecord) -> SessionRecord {
+    let local = t.store.ensure_local().await.unwrap();
+    t.store
+        .create_session(
+            OrgId::LOCAL,
+            NewSession {
+                id: SessionId::new(),
+                owner: UserId::LOCAL,
+                kind: SessionKind::Subagent,
+                harness: "codex".into(),
+                cwd: "/tmp".into(),
+                model: None,
+                effort: None,
+                permission_mode: None,
+                agent_ref: None,
+                project_id: None,
+                parent_id: Some(parent.id),
+                trigger: SessionTrigger::Spawn,
+                home_node: local.node,
+                harness_opts: Value::Null,
+            },
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pol_011_ac3_subtree_costs_count_the_parent_and_both_children() {
+    use crate::usage_policy::usage_values;
+    use time::macros::datetime;
+
+    let t = app().await;
+    let parent = session(&t, "codex").await;
+    let a = child(&t, &parent).await;
+    let b = child(&t, &parent).await;
+    let other = session(&t, "codex").await;
+    for s in [&parent, &a, &b, &b, &other] {
+        append(&t, s, "2026-07-01T10:00:00.000Z", vec![metered()]).await;
+    }
+    let utc = beton_core::timezone::UserTimeZone::utc();
+    let now = datetime!(2026-07-01 12:00 UTC);
+    let v = usage_values(&t.store, OrgId::LOCAL, parent.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["session_cost_usd"], 1.75);
+    // Parent 1,75 + Child A 1,75 + Child B 3,50; die fremde Session zählt nicht.
+    assert_eq!(v["subtree_cost_usd"], 7.0);
+    assert_eq!(v["subtree_equivalent_usd"], 0.0);
+    let v = usage_values(&t.store, OrgId::LOCAL, b.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["subtree_cost_usd"], 3.5);
+}
+
+#[tokio::test]
+async fn pol_011_subscription_usage_counts_its_list_price_equivalent() {
+    use crate::usage_policy::usage_values;
+    use time::macros::datetime;
+
+    let t = app().await;
+    let s = session(&t, "claude").await;
+    // 1 Mio. Eingabe-Tokens Sonnet 4.5 zum Listenpreis: 3 USD, aber kein Geld (ADR-0034).
+    append(
+        &t,
+        &s,
+        "2026-07-01T10:00:00.000Z",
+        vec![cost(
+            "claude",
+            "claude-sonnet-4-5",
+            AuthSource::VendorCli,
+            1_000_000,
+            0,
+        )],
+    )
+    .await;
+    let utc = beton_core::timezone::UserTimeZone::utc();
+    let now = datetime!(2026-07-01 12:00 UTC);
+    let v = usage_values(&t.store, OrgId::LOCAL, s.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["session_cost_usd"], 0.0);
+    assert_eq!(v["session_equivalent_usd"], 3.0);
+    assert_eq!(v["user_daily_equivalent_usd"], 3.0);
+    assert_eq!(v["subtree_equivalent_usd"], 3.0);
+    assert_eq!(v["session_without_price"], 0);
+    // Ein Modell ohne Katalogpreis: weder Geld noch Äquivalent, die Budgets wissen es nicht.
+    append(
+        &t,
+        &s,
+        "2026-07-01T10:05:00.000Z",
+        vec![cost(
+            "claude",
+            "claude-unbekannt-9",
+            AuthSource::VendorCli,
+            1_000,
+            0,
+        )],
+    )
+    .await;
+    let v = usage_values(&t.store, OrgId::LOCAL, s.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["session_equivalent_usd"], 3.0);
+    assert_eq!(v["session_without_price"], 1);
+    assert_eq!(v["user_daily_without_price"], 1);
+    assert_eq!(v["subtree_without_price"], 1);
+}
+
+/// POL-012 AC3: Um 00:00 in der Zeitzone des Users ist das Tagesbudget wieder verfügbar –
+/// auch an den Tagen mit 23 bzw. 25 Stunden (Sommerzeit, simulierte Uhr).
+#[tokio::test]
+async fn pol_012_ac3_the_daily_budget_is_available_again_at_local_midnight() {
+    use std::sync::Arc;
+
+    use beton_core::timezone::UserTimeZone;
+    use beton_policy::Phase;
+    use beton_policy::context::Activation;
+    use beton_policy::engine::{EffectiveSet, EvalOptions, Outcome};
+    use beton_policy::load::{Scope, parse_set};
+    use time::macros::datetime;
+
+    use crate::usage_policy::usage_values;
+
+    let t = app().await;
+    let s = session(&t, "codex").await;
+    let berlin = UserTimeZone::parse("Europe/Berlin").unwrap();
+    // 28.03.2026 23:30 MEZ (Tag vor der Umstellung) und 25.10.2026 23:30 MEZ (25-Stunden-Tag).
+    append(&t, &s, "2026-03-28T22:30:00.000Z", vec![metered()]).await;
+    append(&t, &s, "2026-10-25T22:30:00.000Z", vec![metered()]).await;
+    let set = Arc::new(
+        parse_set(
+            Scope::User,
+            "daily.yaml",
+            "spec_version: 1\nname: daily\nrules:\n  - id: daily\n    type: daily_budget\n    params: { limit_usd: 1.5 }\n",
+        )
+        .unwrap(),
+    );
+    let effective = EffectiveSet::new(vec![set]);
+    let check = |v: &Value| {
+        let act = Activation::new(
+            Phase::ModelRequest,
+            json!({
+                "user": { "daily_cost_usd": v["user_daily_cost_usd"],
+                          "daily_equivalent_usd": v["user_daily_equivalent_usd"],
+                          "timezone": v["timezone"] },
+                "request": { "model": "gpt-5.3-codex", "granularity": "turn" },
+                "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+            }),
+        )
+        .unwrap();
+        effective.evaluate(&act, &EvalOptions::default()).outcome
+    };
+    for (before, midnight) in [
+        // 29.03.: 00:00 MEZ = 23:00 UTC am Vortag; der Tag hat 23 Stunden.
+        (
+            datetime!(2026-03-28 22:59:59 UTC),
+            datetime!(2026-03-28 23:00 UTC),
+        ),
+        // 26.10.: 00:00 MEZ = 23:00 UTC; der 25.10. hatte 25 Stunden.
+        (
+            datetime!(2026-10-25 22:59:59 UTC),
+            datetime!(2026-10-25 23:00 UTC),
+        ),
+    ] {
+        let v = usage_values(&t.store, OrgId::LOCAL, s.id, &berlin, before)
+            .await
+            .unwrap();
+        assert_eq!(v["user_daily_cost_usd"], 1.75, "{before}");
+        assert!(matches!(check(&v), Outcome::Deny { .. }), "{before}");
+        let v = usage_values(&t.store, OrgId::LOCAL, s.id, &berlin, midnight)
+            .await
+            .unwrap();
+        assert_eq!(v["user_daily_cost_usd"], 0.0, "{midnight}");
+        assert_eq!(check(&v), Outcome::Allow, "{midnight}");
+    }
+    // Der 29.03. endet nach 23 Stunden um 22:00 UTC, nicht um 23:00 UTC.
+    append(&t, &s, "2026-03-29T21:30:00.000Z", vec![metered()]).await;
+    let v = usage_values(
+        &t.store,
+        OrgId::LOCAL,
+        s.id,
+        &berlin,
+        datetime!(2026-03-29 21:59 UTC),
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["user_daily_cost_usd"], 1.75);
+    let v = usage_values(
+        &t.store,
+        OrgId::LOCAL,
+        s.id,
+        &berlin,
+        datetime!(2026-03-29 22:00 UTC),
+    )
+    .await
+    .unwrap();
+    assert_eq!(v["user_daily_cost_usd"], 0.0);
+}
+
 #[tokio::test]
 async fn pol_004_ac4_usage_api_defaults_to_the_users_timezone() {
     let berlin = beton_core::timezone::UserTimeZone::parse("Europe/Berlin").unwrap();
