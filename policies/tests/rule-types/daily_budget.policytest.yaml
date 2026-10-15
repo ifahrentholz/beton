@@ -7,20 +7,20 @@ cases:
   - name: Unter dem Tagesbudget ist alles frei
     phase: model_request
     given: { user: { daily_cost_usd: 12.0 } }
-    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    input: { request: { model: claude-opus-4-5, granularity: turn } }
     expect: { outcome: allow }
   - name: Die Schwelle fragt einmal am Tag
     steps:
       - { cost_delta_usd: 41.0 }
-      - { phase: model_request, input: { request: { model: claude-opus-4-1, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-opus-4-5, granularity: turn } },
           expect: { outcome: ask, rules: [daily-cap], reason_contains: "40 USD" }, resolve: { decision: allow } }
-      - { phase: model_request, input: { request: { model: claude-opus-4-1, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-opus-4-5, granularity: turn } },
           expect: { outcome: allow } }
     expect_state: { user_day: { "daily_budget/user/daily/daily-cap/asked": 40.0 } }
   - name: Zwei Sessions mit je 30 USD überschreiten 50 USD
     phase: model_request
     given: { user: { daily_cost_usd: 60.0 } }
-    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    input: { request: { model: claude-opus-4-5, granularity: turn } }
     expect: { outcome: deny, rules: [daily-cap], reason_contains: Kostenlimit }
   - name: Subscription-Nutzung zählt mit dem Listenpreis-Äquivalent
     phase: model_request

@@ -31,7 +31,19 @@ fn load_err(rules: &str) -> String {
         .to_string()
 }
 
-fn act(phase: Phase, ctx: Value) -> Activation {
+fn act(phase: Phase, mut ctx: Value) -> Activation {
+    // Ohne Angabe: keine Nutzung ohne Preis (die Werte liefert sonst `policy.usage`).
+    for (object, fields) in [
+        ("session", &["unpriced_models"][..]),
+        ("run", &["unpriced_models", "subtree_unpriced_models"][..]),
+        ("user", &["daily_unpriced_models"][..]),
+    ] {
+        if let Some(o) = ctx.get_mut(object).and_then(Value::as_object_mut) {
+            for f in fields {
+                o.entry(*f).or_insert(json!([]));
+            }
+        }
+    }
     Activation::new(phase, ctx).unwrap_or_else(|e| panic!("{e}"))
 }
 
@@ -41,7 +53,7 @@ fn request(session: Value) -> Activation {
         Phase::ModelRequest,
         json!({
             "session": session,
-            "request": { "model": "claude-opus-4-1", "granularity": "turn" },
+            "request": { "model": "claude-opus-4-5", "granularity": "turn" },
             "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
         }),
     )
@@ -101,26 +113,26 @@ layers: { project: [b.yaml] }
 cases:
   - name: Schwelle fragt genau einmal, das Limit lehnt ab
     steps:
-      - { phase: model_request, input: { request: { model: m, granularity: turn } }, expect: { outcome: allow } }
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } }, expect: { outcome: allow } }
       - { cost_delta_usd: 3.1 }
-      - { phase: model_request, input: { request: { model: m, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } },
           expect: { outcome: ask, rules: [budget], reason_contains: "3" }, resolve: { decision: allow } }
-      - { phase: model_request, input: { request: { model: m, granularity: turn } }, expect: { outcome: allow } }
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } }, expect: { outcome: allow } }
       - { cost_delta_usd: 2.0 }
-      - { phase: model_request, input: { request: { model: m, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } },
           expect: { outcome: deny, rules: [budget], reason_contains: "5" } }
     expect_state: { session: { "spend_cap/project/b/budget/asked": 3.0 } }
   - name: Abgelehnte Schwelle fragt beim nächsten Turn erneut
     given: { session: { cost_usd: 3.5 } }
     steps:
-      - { phase: model_request, input: { request: { model: m, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } },
           expect: { outcome: ask, rules: [budget] }, resolve: { decision: deny } }
-      - { phase: model_request, input: { request: { model: m, granularity: turn } },
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } },
           expect: { outcome: ask, rules: [budget] } }
   - name: Genau 5,00 USD lehnt vor dem nächsten Turn ab
     phase: model_request
     given: { session: { cost_usd: 5.0 }, state: { session: { "spend_cap/project/b/budget/asked": 3.0 } } }
-    input: { request: { model: m, granularity: turn } }
+    input: { request: { model: claude-sonnet-4-5, granularity: turn } }
     expect: { outcome: deny, rules: [budget] }
   - name: Auch session_start prüft das Limit
     phase: session_start
@@ -202,7 +214,7 @@ fn pol_011_ac3_subtree_counts_the_costs_of_child_sessions() {
                 "session": { "cost_usd": 1.0, "equivalent_usd": 0.0 },
                 "run": { "cost_usd": 1.0, "equivalent_usd": 0.0,
                          "subtree_cost_usd": subtree, "subtree_equivalent_usd": 0.0 },
-                "request": { "model": "m", "granularity": "turn" },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
             }),
         )
     };
@@ -225,7 +237,7 @@ fn pol_011_run_scope_reads_the_run_costs() {
             Phase::ModelRequest,
             json!({
                 "run": { "cost_usd": 1.5, "equivalent_usd": 0.0 },
-                "request": { "model": "m", "granularity": "turn" },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
                 "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
             }),
         ),
@@ -315,7 +327,7 @@ fn pol_011_without_state_threshold_rules_fail_closed() {
             Phase::ModelRequest,
             json!({
                 "session": { "cost_usd": 3.5, "equivalent_usd": 0.0 },
-                "request": { "model": "m", "granularity": "turn" },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
             }),
         ),
     );
@@ -371,7 +383,7 @@ fn user_request(daily: f64, equivalent: f64) -> Activation {
         Phase::ModelRequest,
         json!({
             "user": { "daily_cost_usd": daily, "daily_equivalent_usd": equivalent, "timezone": "Europe/Berlin" },
-            "request": { "model": "m", "granularity": "turn" },
+            "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
             "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
         }),
     )
@@ -404,7 +416,7 @@ fn pol_012_ac2_new_sessions_are_denied_or_routed_at_session_start() {
             Phase::SessionStart,
             json!({
                 "user": { "daily_cost_usd": daily, "daily_equivalent_usd": 0.0 },
-                "start": { "trigger": "interactive", "harness": "claude", "model": "claude-opus-4-1" },
+                "start": { "trigger": "interactive", "harness": "claude", "model": "claude-opus-4-5" },
                 "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
             }),
         )
@@ -464,7 +476,7 @@ fn pol_011_dry_run_budgets_are_neither_counted_nor_exhausted() {
             Phase::ModelRequest,
             json!({
                 "run": { "cost_usd": 2.0, "equivalent_usd": 0.0 },
-                "request": { "model": "m", "granularity": "turn" },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
             }),
         ),
         &EvalOptions::default(),
@@ -519,7 +531,7 @@ fn pol_013_ac1_a_start_with_a_model_outside_the_allowlist_is_denied_with_a_reaso
     let s = set(Scope::User, "u", ROUTING);
     let d = eval(
         vec![s.clone()],
-        &start_with(Some("claude-opus-4-1"), false, 0.0),
+        &start_with(Some("claude-opus-4-5"), false, 0.0),
     );
     assert_eq!(reason_ids(&d), ["routing"]);
     assert!(matches!(d.outcome, Outcome::Deny { .. }));
@@ -542,7 +554,7 @@ fn pol_013_ac1_a_start_with_a_model_outside_the_allowlist_is_denied_with_a_reaso
     let turn = act(
         Phase::ModelRequest,
         json!({ "session": { "is_async": false }, "user": { "daily_cost_usd": 0.0 },
-                "request": { "model": "claude-opus-4-1", "granularity": "turn" } }),
+                "request": { "model": "claude-opus-4-5", "granularity": "turn" } }),
     );
     assert!(matches!(eval(vec![s], &turn).outcome, Outcome::Deny { .. }));
 }
@@ -550,7 +562,7 @@ fn pol_013_ac1_a_start_with_a_model_outside_the_allowlist_is_denied_with_a_reaso
 #[test]
 fn pol_013_ac2_an_async_session_uses_the_routed_model_and_effort() {
     let s = set(Scope::User, "u", ROUTING);
-    let d = eval(vec![s], &start_with(Some("claude-opus-4-1"), true, 0.0));
+    let d = eval(vec![s], &start_with(Some("claude-opus-4-5"), true, 0.0));
     // Pass 2 sieht das umgeroutete Modell: die Allowlist lässt es zu.
     assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
     assert_eq!(d.modified.model.as_deref(), Some("claude-sonnet-4-5"));
@@ -585,7 +597,7 @@ fn pol_013_ac3_without_model_switch_on_unsupported_denies_with_an_explanation() 
     };
     let turn = act(
         Phase::ModelRequest,
-        json!({ "request": { "model": "claude-opus-4-1", "granularity": "turn" } }),
+        json!({ "request": { "model": "claude-opus-4-5", "granularity": "turn" } }),
     );
     let d = EffectiveSet::new(vec![s]).evaluate(&turn, &opts);
     assert_eq!(reason_ids(&d), ["cheap"]);
@@ -622,7 +634,7 @@ fn pol_013_routes_may_use_phase_specific_variables() {
     assert_eq!(phases, [Phase::ModelRequest]);
     let turn = act(
         Phase::ModelRequest,
-        json!({ "request": { "model": "claude-opus-4-1", "granularity": "turn" } }),
+        json!({ "request": { "model": "claude-opus-4-5", "granularity": "turn" } }),
     );
     assert_eq!(
         eval(vec![s], &turn).modified.model.as_deref(),
@@ -728,30 +740,37 @@ fn pol_009_handwritten_effects_cannot_write_keys_of_rule_types() {
 
 #[test]
 fn api_006_ac4_the_session_budget_is_a_user_level_spend_cap() {
-    use beton_policy::budget::{SESSION_BUDGET_RULE, SESSION_BUDGET_SET, session_budget};
+    use beton_policy::budget::{
+        BudgetScope, SESSION_BUDGET_RULE, SESSION_BUDGET_SET, budget_rules, session_budget,
+    };
     let set = Arc::new(session_budget(0.5).unwrap());
     assert_eq!(set.scope, Scope::User);
     assert_eq!(set.name, SESSION_BUDGET_SET);
     assert!(set.rules.iter().all(|r| r.id == SESSION_BUDGET_RULE
         && r.doc.rule_type == Some(beton_policy::doc::RuleType::SpendCap)));
-    let d = eval(
-        vec![set.clone()],
-        &request(json!({ "cost_usd": 0.6, "equivalent_usd": 0.0 })),
-    );
+    // Der Lauf samt Sub-Agents zählt (Security-Review #284, M2): `scope: subtree`.
+    let effective = EffectiveSet::new(vec![set.clone()]);
+    assert_eq!(budget_rules(&effective)[0].scope, BudgetScope::Subtree);
+    let turn = |session: f64, tree: f64| {
+        act(
+            Phase::ModelRequest,
+            json!({
+                "session": { "cost_usd": session, "equivalent_usd": 0.0 },
+                "run": { "cost_usd": session, "equivalent_usd": 0.0,
+                         "subtree_cost_usd": tree, "subtree_equivalent_usd": 0.0 },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
+                "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+            }),
+        )
+    };
+    let d = eval(vec![set.clone()], &turn(0.1, 0.6));
     assert_eq!(reason_ids(&d), [SESSION_BUDGET_RULE]);
     assert!(
         reason_text(&d).contains("--max-cost"),
         "{}",
         reason_text(&d)
     );
-    assert_eq!(
-        eval(
-            vec![set],
-            &request(json!({ "cost_usd": 0.4, "equivalent_usd": 0.0 }))
-        )
-        .outcome,
-        Outcome::Allow
-    );
+    assert_eq!(eval(vec![set], &turn(0.1, 0.4)).outcome, Outcome::Allow);
     for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(session_budget(bad).is_err(), "{bad}");
     }
@@ -774,7 +793,7 @@ fn pol_011_budget_exhaustion_is_recognized_from_the_decision() {
             json!({
                 "session": { "cost_usd": 6.0, "equivalent_usd": 0.0 },
                 "user": { "daily_cost_usd": 41.0, "daily_equivalent_usd": 0.0 },
-                "request": { "model": "m", "granularity": "turn" },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
                 "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
             }),
         ),
@@ -811,4 +830,283 @@ fn pol_011_budget_rules_name_their_cost_scope() {
             ("tree", BudgetScope::Subtree),
         ]
     );
+}
+
+// ------------------------------------- Security-Review #284: Modelle ohne Preis (M1, M2)
+
+#[test]
+fn pol_002_priced_knows_the_list_prices_of_the_catalog() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: p\n    on: model_request\n    when: 'priced(request.model)'\n    action: deny\n",
+    );
+    let turn = |model: &str| {
+        act(
+            Phase::ModelRequest,
+            json!({ "request": { "model": model, "granularity": "turn" } }),
+        )
+    };
+    for (model, priced) in [
+        ("claude-sonnet-4-5", true),
+        ("claude-sonnet-4-5-20250929", true),
+        ("gpt-5.3-codex", true),
+        ("modell-ohne-preis", false),
+        ("fake-large", false),
+    ] {
+        let d = eval(vec![s.clone()], &turn(model));
+        assert_eq!(matches!(d.outcome, Outcome::Deny { .. }), priced, "{model}");
+    }
+}
+
+fn unpriced_turn(model: &str, session: Value) -> Activation {
+    let mut session = session;
+    session["cost_usd"] = json!(0.0);
+    session["equivalent_usd"] = json!(0.0);
+    act(
+        Phase::ModelRequest,
+        json!({
+            "session": session,
+            "request": { "model": model, "granularity": "turn" },
+            "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+        }),
+    )
+}
+
+#[test]
+fn pol_011_on_unpriced_asks_once_per_session_and_model() {
+    policytest(
+        &format!("spec_version: 1\nname: b\nrules:\n{SPEND_CAP}"),
+        r#"spec_version: 1
+layers: { project: [b.yaml] }
+cases:
+  - name: Ein Modell ohne Katalogpreis fragt einmal, ein zweites wieder
+    steps:
+      - { phase: model_request, input: { request: { model: modell-ohne-preis, granularity: turn } },
+          expect: { outcome: ask, rules: [budget], reason_contains: Katalogpreis }, resolve: { decision: allow } }
+      - { phase: model_request, input: { request: { model: modell-ohne-preis, granularity: turn } },
+          expect: { outcome: allow } }
+      - { phase: model_request, input: { request: { model: noch-eins-ohne-preis, granularity: turn } },
+          expect: { outcome: ask, rules: [budget] }, resolve: { decision: allow } }
+      - { phase: model_request, input: { request: { model: claude-sonnet-4-5, granularity: turn } },
+          expect: { outcome: allow } }
+  - name: Schon genutzte Modelle ohne Preis zählen auch bei einem Modell mit Preis
+    phase: model_request
+    given: { session: { unpriced_models: [modell-ohne-preis] } }
+    input: { request: { model: claude-sonnet-4-5, granularity: turn } }
+    expect: { outcome: ask, rules: [budget], reason_contains: Katalogpreis }
+  - name: Ein abgelehntes Modell fragt beim nächsten Turn erneut
+    steps:
+      - { phase: model_request, input: { request: { model: modell-ohne-preis, granularity: turn } },
+          expect: { outcome: ask }, resolve: { decision: deny } }
+      - { phase: model_request, input: { request: { model: modell-ohne-preis, granularity: turn } },
+          expect: { outcome: ask } }
+"#,
+    );
+}
+
+#[test]
+fn pol_011_on_unpriced_deny_and_ignore() {
+    let rule = |mode: &str| {
+        set(
+            Scope::User,
+            "u",
+            &format!(
+                "  - id: budget\n    type: spend_cap\n    params: {{ limit_usd: 5, on_unpriced: {mode} }}\n"
+            ),
+        )
+    };
+    let d = eval(
+        vec![rule("deny")],
+        &unpriced_turn("modell-ohne-preis", json!({})),
+    );
+    assert!(matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");
+    assert!(reason_text(&d).contains("Katalogpreis"));
+    let d = eval(
+        vec![rule("ignore")],
+        &unpriced_turn("modell-ohne-preis", json!({})),
+    );
+    assert_eq!(d.outcome, Outcome::Allow);
+    // `ask` (Default) merkt sich das Modell bei der Freigabe.
+    let d = eval(
+        vec![rule("ask")],
+        &unpriced_turn("modell-ohne-preis", json!({})),
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }));
+    assert!(
+        d.effects[0].ops[0].key.ends_with("/unpriced"),
+        "{:?}",
+        d.effects
+    );
+    assert_eq!(
+        d.effects[0].ops[0].value,
+        Some(json!(["modell-ohne-preis"]))
+    );
+    assert!(
+        load_err(
+            "  - id: x\n    type: spend_cap\n    params: { limit_usd: 5, on_unpriced: never }\n"
+        )
+        .contains("on_unpriced")
+    );
+    // Auch `daily_budget` kennt den Parameter (Bereich: genutzte Modelle des Tages).
+    let daily = set(
+        Scope::User,
+        "u",
+        "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50 }\n",
+    );
+    let d = eval(
+        vec![daily],
+        &act(
+            Phase::ModelRequest,
+            json!({
+                "user": { "daily_cost_usd": 0.0, "daily_equivalent_usd": 0.0,
+                          "daily_unpriced_models": ["modell-ohne-preis"] },
+                "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
+                "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+            }),
+        ),
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
+}
+
+#[test]
+fn pol_013_routes_below_the_user_level_to_unpriced_models_are_denied_while_a_budget_is_active() {
+    let budget = set(Scope::User, "u", SPEND_CAP);
+    let route = |scope: Scope, model: &str| {
+        set(
+            scope,
+            "r",
+            &format!(
+                "  - id: cheap\n    type: model_route\n    params: {{ routes: [{{ model: {model} }}] }}\n"
+            ),
+        )
+    };
+    let turn = unpriced_turn("claude-sonnet-4-5", json!({}));
+    // Projekt-Route auf ein Modell ohne Preis: abgelehnt, solange ein Budget gilt.
+    let d = eval(
+        vec![budget.clone(), route(Scope::Project, "modell-ohne-preis")],
+        &turn,
+    );
+    assert_eq!(reason_ids(&d), ["cheap"], "{d:#?}");
+    assert!(matches!(d.outcome, Outcome::Deny { .. }));
+    assert!(
+        reason_text(&d).contains("Katalogpreis"),
+        "{}",
+        reason_text(&d)
+    );
+    // Ebenso auf Agent-Ebene.
+    let d = eval(
+        vec![budget.clone(), route(Scope::Agent, "modell-ohne-preis")],
+        &turn,
+    );
+    assert!(matches!(d.outcome, Outcome::Deny { .. }));
+    // Eine Route der User-Ebene fragt wie jedes Modell ohne Preis (`on_unpriced: ask`).
+    let d = eval(
+        vec![budget.clone(), route(Scope::User, "modell-ohne-preis")],
+        &turn,
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
+    // Mit Katalogpreis bzw. ohne Budget bleibt die Projekt-Route erlaubt.
+    let d = eval(
+        vec![budget, route(Scope::Project, "claude-haiku-4-5")],
+        &turn,
+    );
+    assert_eq!(d.outcome, Outcome::Allow);
+    assert_eq!(d.modified.model.as_deref(), Some("claude-haiku-4-5"));
+    let d = eval(vec![route(Scope::Project, "modell-ohne-preis")], &turn);
+    assert_eq!(d.outcome, Outcome::Allow);
+    // Auch ein `on_exceed: route` eines Repos auf ein Modell ohne Preis gilt als Umgehung.
+    let repo = set(
+        Scope::Project,
+        "p",
+        "  - id: repo-cap\n    type: spend_cap\n    params: { limit_usd: 0.01, on_exceed: route, fallback_model: modell-ohne-preis }\n",
+    );
+    let d = eval(
+        vec![repo],
+        &unpriced_turn("claude-sonnet-4-5", json!({ "cost_usd": 1.0 })),
+    );
+    assert!(matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");
+}
+
+#[test]
+fn pol_011_an_unpriced_start_model_of_a_repo_agent_or_spawn_is_denied() {
+    let budget = set(Scope::User, "u", SPEND_CAP);
+    let start = |extra: Value| {
+        let mut ctx = json!({
+            "session": { "cost_usd": 0.0, "equivalent_usd": 0.0 },
+            "start": { "trigger": "interactive", "harness": "claude", "model": "modell-ohne-preis" },
+            "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+        });
+        if let (Some(c), Value::Object(e)) = (ctx.as_object_mut(), extra) {
+            for (k, v) in e {
+                if let (Some(Value::Object(dst)), Value::Object(src)) = (c.get_mut(&k), &v) {
+                    dst.extend(src.clone());
+                } else {
+                    c.insert(k, v);
+                }
+            }
+        }
+        act(Phase::SessionStart, ctx)
+    };
+    for extra in [
+        json!({ "agent": { "name": "repo", "source": "project" } }),
+        json!({ "agent": { "name": "x", "source": "path" } }),
+        json!({ "agent": { "name": "kind", "source": "subagent" } }),
+        json!({ "start": { "trigger": "spawn" } }),
+    ] {
+        let d = eval(vec![budget.clone()], &start(extra.clone()));
+        assert!(matches!(d.outcome, Outcome::Deny { .. }), "{extra}: {d:#?}");
+        assert!(reason_text(&d).contains("Katalogpreis"), "{extra}");
+    }
+    // Vom User gewählt (eigener Agent, Built-in oder ohne Agent): Rückfrage.
+    for extra in [
+        json!({ "agent": { "name": "mine", "source": "user" } }),
+        json!({ "agent": { "name": "maestra", "source": "builtin" } }),
+        json!({}),
+    ] {
+        let d = eval(vec![budget.clone()], &start(extra.clone()));
+        assert!(matches!(d.outcome, Outcome::Ask { .. }), "{extra}: {d:#?}");
+    }
+}
+
+#[test]
+fn pol_012_threshold_keys_below_the_user_level_carry_the_project_identity() {
+    let text = "spec_version: 1\nname: daily\nrules:\n  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, ask_at_usd: [40] }\n";
+    let a =
+        Arc::new(parse_set(Scope::Project, "/repo-a/.beton/policies/daily.yaml", text).unwrap());
+    let b =
+        Arc::new(parse_set(Scope::Project, "/repo-b/.beton/policies/daily.yaml", text).unwrap());
+    let key = |s: &Arc<LoadedSet>| {
+        let d = eval(vec![s.clone()], &user_request(41.0, 0.0));
+        d.effects[0].ops[0].key.clone()
+    };
+    let (ka, kb) = (key(&a), key(&b));
+    assert!(ka.starts_with("daily_budget/project/"), "{ka}");
+    assert_ne!(ka, kb, "Schwellen eines Repos gelten nicht für ein anderes");
+    // Die User-Ebene bleibt repo-übergreifend (ein Tagesbudget für alle Sessions).
+    let u = set(
+        Scope::User,
+        "daily",
+        "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, ask_at_usd: [40] }\n",
+    );
+    assert_eq!(key(&u), "daily_budget/user/daily/daily/asked");
+    // Hot-Reload erkennt die eigenen Keys weiter als eigene.
+    let base = "  - id: keep\n    on: tool_call\n    action: deny\n";
+    let old = Arc::new(
+        parse_set(
+            Scope::Project,
+            "/repo-a/.beton/policies/daily.yaml",
+            &format!("spec_version: 1\nname: daily\nrules:\n{base}"),
+        )
+        .unwrap(),
+    );
+    let new = Arc::new(
+        parse_set(
+            Scope::Project,
+            "/repo-a/.beton/policies/daily.yaml",
+            &format!("{text}{base}"),
+        )
+        .unwrap(),
+    );
+    assert_eq!(only_tightens(Some(&old), &new), Ok(()));
 }
