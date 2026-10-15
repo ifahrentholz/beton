@@ -937,6 +937,29 @@ mod tests {
         );
     }
 
+    /// SBX-010: `doctor` bindet die Probe ein; die Angaben stehen in `details` des Checks
+    /// `sandbox.<os>` (wie `beton sandbox probe --json`).
+    #[test]
+    fn sbx_010_doctor_sandbox_check_carries_the_probe() {
+        use beton_sandbox::{Os, ProbeReport, ProviderId};
+        let reports = [
+            ProbeReport::unavailable(ProviderId::Landlock, "Landlock ist nicht aktiv"),
+            ProbeReport::unavailable(ProviderId::Bwrap, "bwrap fehlt"),
+        ];
+        for (os, abi) in [(Os::Linux, None), (Os::Linux, Some(4)), (Os::MacOs, None)] {
+            let c = sandbox_check(os, &reports, abi);
+            let details = c.details.unwrap_or_else(|| panic!("{os:?}: keine details"));
+            let ids: Vec<&str> = details["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, ["landlock", "bwrap"], "{details}");
+            assert_eq!(details["providers"][1]["available"], false);
+        }
+    }
+
     #[test]
     fn human_sizes() {
         assert_eq!(human_size(512), "512 B");

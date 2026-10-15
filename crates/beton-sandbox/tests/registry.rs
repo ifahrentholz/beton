@@ -232,3 +232,33 @@ fn sbx_001_missing_required_cap_is_unavailable_with_reasons() {
         other => panic!("{other}"),
     }
 }
+
+/// SBX-010 AC1: Die Probe liefert je Backend `available`, `caps` und `degraded_reasons`; unter
+/// Linux haben `landlock` und `bwrap` zusätzlich `landlock_abi` (ABI des Kernels, `null` ohne
+/// Landlock) und `kernel`, auch wenn das Backend nicht verfügbar ist (z. B. ABI 1).
+#[test]
+fn sbx_010_ac1_probe_has_fields_per_backend_and_kernel_info_on_linux() {
+    for r in Registry::platform().probe_all() {
+        let v = serde_json::to_value(&r).unwrap();
+        for key in ["available", "caps", "degraded_reasons"] {
+            assert!(v.get(key).is_some(), "{}: {key} fehlt: {v}", r.id);
+        }
+        let linux =
+            cfg!(target_os = "linux") && matches!(r.id, ProviderId::Landlock | ProviderId::Bwrap);
+        if linux {
+            assert!(v.get("landlock_abi").is_some(), "{v}");
+            assert_eq!(
+                v["landlock_abi"],
+                serde_json::json!(beton_sandbox::linux::kernel_landlock_abi()),
+                "{v}"
+            );
+            assert!(v["kernel"].as_str().is_some_and(|k| !k.is_empty()), "{v}");
+        } else {
+            assert!(
+                v.get("landlock_abi").is_none() && v.get("kernel").is_none(),
+                "{}: Kernel-Angaben nur für die Linux-Backends: {v}",
+                r.id
+            );
+        }
+    }
+}
