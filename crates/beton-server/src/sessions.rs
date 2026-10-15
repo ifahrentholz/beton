@@ -420,7 +420,7 @@ impl<'a> SessionManager<'a> {
                     trigger: SessionTrigger::Api,
                     home_node: self.state.local.node,
                     harness_opts: req.harness_opts.clone(),
-                    max_cost_usd: None,
+                    max_cost_usd: req.max_cost_usd,
                 },
             )
             .await;
@@ -673,7 +673,7 @@ impl<'a> SessionManager<'a> {
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
                     compaction: self.state.runtime.compaction,
-                    max_cost_usd: None,
+                    max_cost_usd: created.max_cost_usd,
                 },
             )
             .await

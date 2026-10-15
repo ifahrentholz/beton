@@ -629,6 +629,29 @@ pub(crate) fn desugar(
     })
 }
 
+/// Name des Sets mit dem Session-Budget (`beton run --max-cost`, API-006).
+pub const SESSION_BUDGET_SET: &str = "session-budget";
+/// Regel-ID des Session-Budgets.
+pub const SESSION_BUDGET_RULE: &str = "max-cost";
+
+/// Das Session-Budget aus `session.created.max_cost_usd` (API-006 AC4) als Inline-Set der
+/// User-Ebene: eine `spend_cap`-Regel `max-cost` mit `scope: session` und `on_exceed: deny`.
+/// Ein ungültiger Betrag ist ein Ladefehler (der Runner startet dann nicht, fail closed).
+pub fn session_budget(max_cost_usd: f64) -> Result<crate::load::LoadedSet, crate::load::LoadError> {
+    let rule = serde_json::json!({
+        "id": SESSION_BUDGET_RULE,
+        "type": "spend_cap",
+        "params": { "scope": "session", "limit_usd": max_cost_usd, "on_exceed": "deny" },
+        "reason": format!("Session-Budget von {} erreicht (--max-cost)", usd(max_cost_usd)),
+    });
+    crate::load::inline_set(
+        Scope::User,
+        SESSION_BUDGET_SET,
+        "session.created (max_cost_usd)",
+        &[rule],
+    )
+}
+
 /// Eine Budget-Regel des effektiven Sets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BudgetRule {

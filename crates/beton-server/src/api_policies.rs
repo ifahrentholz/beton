@@ -112,6 +112,22 @@ pub struct PolicyEvaluation {
     pub explanation: Value,
     /// Erklärung als Text.
     pub explain: String,
+    /// Budget-Limits, die diese Auswertung erreicht (POL-011, POL-012; wie `budget.exhausted`).
+    pub budget_exhausted: Vec<BudgetExhaustedView>,
+}
+
+/// Ein erreichtes Budget-Limit einer Auswertung.
+#[derive(Debug, Serialize, Deserialize, ToSchema, TS)]
+pub struct BudgetExhaustedView {
+    /// Regel-ID (`max-cost` beim Session-Budget, API-006).
+    pub rule_id: String,
+    /// Ebene des Sets.
+    pub scope: String,
+    pub set: String,
+    /// Kostenbereich: `session`, `run`, `subtree` oder `user`.
+    pub budget_scope: String,
+    /// `deny` oder `ask`.
+    pub action: String,
 }
 
 /// Explain einer gespeicherten Entscheidung.
@@ -189,15 +205,28 @@ async fn readable(
     Ok(record)
 }
 
-/// Effektives Set für User-Ebene und (optional) das Projekt in `workdir`.
-fn effective(beton_home: &Path, workdir: Option<&Path>) -> std::sync::Arc<EffectiveSet> {
+/// Effektives Set für User-Ebene und (optional) das Projekt in `workdir`; mit Session-Budget
+/// (`max_cost_usd`, API-006) dessen `spend_cap`-Regel auf der User-Ebene wie im Runner.
+fn effective(
+    beton_home: &Path,
+    workdir: Option<&Path>,
+    max_cost_usd: Option<f64>,
+) -> std::sync::Arc<EffectiveSet> {
     let mut store = PolicyStore::new();
     store.add_dir(Scope::User, policies_dir(beton_home));
     if let Some(w) = workdir {
         store.add_dir(Scope::Project, policies_dir(&w.join(".beton")));
     }
+    if let Some(Ok(budget)) = max_cost_usd.map(beton_policy::budget::session_budget) {
+        store.set_inline(Scope::User, vec![budget]);
+    }
     let _ = store.refresh();
     store.effective()
+}
+
+/// Session-Budget aus `session.created` (API-006).
+async fn session_budget(state: &AppState, record: &SessionRecord) -> Result<Option<f64>, Problem> {
+    Ok(state.sessions().created(record.id).await?.max_cost_usd)
 }
 
 fn sets_json(set: &EffectiveSet) -> Vec<Value> {
@@ -221,15 +250,18 @@ pub async fn list_policies(
     Extension(auth): Extension<Authenticated>,
     ApiQuery(p): ApiQuery<PoliciesParams>,
 ) -> ApiResult<axum::Json<EffectivePolicies>> {
-    let workdir = match &p.session_id {
+    let (workdir, budget) = match &p.session_id {
         Some(id) => {
             let record = readable(&state, auth, id).await?;
-            Some(state.sessions().workspace_root(&record).await?)
+            (
+                Some(state.sessions().workspace_root(&record).await?),
+                session_budget(&state, &record).await?,
+            )
         }
-        None => None,
+        None => (None, None),
     };
     let home = state.runtime.sessions.beton_home.clone();
-    let set = tokio::task::spawn_blocking(move || effective(&home, workdir.as_deref()))
+    let set = tokio::task::spawn_blocking(move || effective(&home, workdir.as_deref(), budget))
         .await
         .map_err(|e| Problem::internal(&e))?;
     Ok(axum::Json(EffectivePolicies {
@@ -337,6 +369,7 @@ pub async fn evaluate(
     let mut grants = SessionGrants::default();
     let mut harness = req.harness.clone();
     let mut workdir = None;
+    let mut budget = None;
     if let Some(id) = &req.session_id {
         let record = readable(&state, auth, id).await?;
         let (f, g) = session_fixtures(&state, &record).await?;
@@ -344,6 +377,7 @@ pub async fn evaluate(
         grants = g;
         harness.get_or_insert_with(|| record.harness.clone());
         workdir = Some(state.sessions().workspace_root(&record).await?);
+        budget = session_budget(&state, &record).await?;
     }
     if let Some(extra) = &req.fixtures {
         if !extra.is_object() {
@@ -363,7 +397,7 @@ pub async fn evaluate(
     let home = state.runtime.sessions.beton_home.clone();
     let input = input.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let set = effective(&home, workdir.as_deref());
+        let set = effective(&home, workdir.as_deref(), budget);
         let act =
             beton_policy::policytest::activation(phase, &fixtures, &input, Some(&harness), None)?;
         let decision = set.evaluate(
@@ -379,17 +413,31 @@ pub async fn evaluate(
             _ => None,
         };
         let level = matrix.level(phase, kind.as_deref());
+        let exhausted: Vec<BudgetExhaustedView> = beton_policy::budget::exhausted(&decision, &set)
+            .into_iter()
+            .map(|e| BudgetExhaustedView {
+                rule_id: e.rule.rule_id,
+                scope: e.rule.scope.as_str().to_owned(),
+                set: e.rule.set,
+                budget_scope: e.scope.as_str().to_owned(),
+                action: match e.action {
+                    beton_core::event::BudgetAction::Ask => "ask".into(),
+                    beton_core::event::BudgetAction::Deny => "deny".into(),
+                },
+            })
+            .collect();
         let mut event = decision_event(&decision, DecisionMeta::new(level));
         event.decision_id.clear();
         let mut ex = explain(&event, Some(&set));
         ex.context = context_values(&set, phase, &act);
-        Ok::<_, String>((event, ex, level))
+        Ok::<_, String>((event, ex, level, exhausted))
     })
     .await
     .map_err(|e| Problem::internal(&e))?
     .map_err(invalid)?;
-    let (event, ex, level) = result;
+    let (event, ex, level, budget_exhausted) = result;
     Ok(axum::Json(PolicyEvaluation {
+        budget_exhausted,
         outcome: ex.outcome.clone(),
         enforcement: level.as_str().to_owned(),
         decision: serde_json::to_value(&event).unwrap_or(Value::Null),

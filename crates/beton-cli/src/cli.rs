@@ -214,6 +214,15 @@ pub struct RunArgs {
     /// Abbruch nach dieser Dauer, z. B. `90s`, `5m` (Skript-Modus).
     #[arg(long, value_name = "DUR", value_parser = parse_duration)]
     pub timeout: Option<std::time::Duration>,
+    /// Session-Budget in USD (API-006): eine `spend_cap`-Regel der Session (POL-011). Bei
+    /// Subscriptions zählt das Listenpreis-Äquivalent; erreicht, endet der Lauf mit Exit-Code 5.
+    #[arg(
+        long,
+        value_name = "USD",
+        value_parser = parse_usd,
+        conflicts_with_all = ["continue_last", "resume", "fork"]
+    )]
+    pub max_cost: Option<f64>,
     /// Szenario-Datei, nur für den Harness `fake` (HAR-026).
     #[arg(long, value_name = "FILE")]
     pub scenario: Option<std::path::PathBuf>,
@@ -305,6 +314,16 @@ pub enum OnAsk {
 }
 
 /// `90s`, `5m`, `1h` oder Sekunden.
+/// Positiver Betrag in USD (`--max-cost`).
+pub fn parse_usd(raw: &str) -> Result<f64, String> {
+    match raw.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!(
+            "`{raw}` ist kein positiver Betrag in USD (z. B. 0.50)"
+        )),
+    }
+}
+
 pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
     let raw = raw.trim();
     let (num, unit) = raw

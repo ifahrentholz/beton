@@ -347,7 +347,8 @@ async fn api_006_ac4_the_session_budget_is_a_spend_cap_rule() {
         json!({ "target": "fake", "cwd": s.project.path(), "max_cost_usd": 0 }),
     )
     .await;
-    assert_eq!(r.status, 422, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["code"], "validation_failed");
 }
 
 #[tokio::test]

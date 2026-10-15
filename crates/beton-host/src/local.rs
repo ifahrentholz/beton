@@ -233,6 +233,9 @@ impl RunnerProvider for LocalProvider {
                 vars.push((beton_runner::env::FORK_LOGGED.into(), "1".into()));
             }
         }
+        if let Some(max) = boot.max_cost_usd {
+            vars.push((beton_runner::env::MAX_COST.into(), max.to_string()));
+        }
         if boot.compaction != beton_harness::CompactionSettings::default() {
             vars.push((
                 beton_runner::env::COMPACTION.into(),

@@ -73,6 +73,9 @@ pub mod env {
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
+    /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
+    /// User-Ebene durch (POL-011).
+    pub const MAX_COST: &str = "BETON_MAX_COST";
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -111,6 +114,8 @@ pub struct RunnerBoot {
     pub fork_logged: bool,
     /// Automatische Compaction (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +192,14 @@ impl RunnerBoot {
                 Ok(json) => serde_json::from_str(&json)
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::COMPACTION)))?,
                 Err(_) => beton_harness::CompactionSettings::default(),
+            },
+            // Ein unlesbares Budget ist ein Startfehler, nie „kein Budget“ (fail closed).
+            max_cost_usd: match std::env::var(env::MAX_COST) {
+                Ok(v) => Some(
+                    v.parse()
+                        .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::MAX_COST)))?,
+                ),
+                Err(_) => None,
             },
         })
     }
@@ -797,9 +810,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         start_settings.effort.clone(),
         start_settings.permission_mode,
     );
-    let set = gate.refresh(None);
+    // Session-Budget (API-006 `--max-cost`): eine `spend_cap`-Regel der User-Ebene (POL-011).
     let mut refusal: Option<(Vec<String>, Vec<String>)> = None;
-    if !set.never_valid().is_empty() {
+    if let Some(max) = boot.max_cost_usd {
+        match beton_policy::budget::session_budget(max) {
+            Ok(budget) => gate.set_inline(beton_policy::load::Scope::User, vec![budget]),
+            Err(e) => {
+                refusal = Some((
+                    vec![format!(
+                        "policy_invalid: Session-Budget ungültig: {}",
+                        e.message
+                    )],
+                    Vec::new(),
+                ));
+            }
+        }
+    }
+    let set = gate.refresh(None);
+    if refusal.is_none() && !set.never_valid().is_empty() {
         // #182: fail closed – Pfad und Ladefehler, nie Inhalte der Datei.
         let reasons = set
             .never_valid()

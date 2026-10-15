@@ -673,6 +673,39 @@ fn pol_009_handwritten_effects_cannot_write_keys_of_rule_types() {
     assert!(e.contains("reserviert"), "{e}");
 }
 
+// ------------------------------------------------------------------ API-006 AC4
+
+#[test]
+fn api_006_ac4_the_session_budget_is_a_user_level_spend_cap() {
+    use beton_policy::budget::{SESSION_BUDGET_RULE, SESSION_BUDGET_SET, session_budget};
+    let set = Arc::new(session_budget(0.5).unwrap());
+    assert_eq!(set.scope, Scope::User);
+    assert_eq!(set.name, SESSION_BUDGET_SET);
+    assert!(set.rules.iter().all(|r| r.id == SESSION_BUDGET_RULE
+        && r.doc.rule_type == Some(beton_policy::doc::RuleType::SpendCap)));
+    let d = eval(
+        vec![set.clone()],
+        &request(json!({ "cost_usd": 0.6, "equivalent_usd": 0.0 })),
+    );
+    assert_eq!(reason_ids(&d), [SESSION_BUDGET_RULE]);
+    assert!(
+        reason_text(&d).contains("--max-cost"),
+        "{}",
+        reason_text(&d)
+    );
+    assert_eq!(
+        eval(
+            vec![set],
+            &request(json!({ "cost_usd": 0.4, "equivalent_usd": 0.0 }))
+        )
+        .outcome,
+        Outcome::Allow
+    );
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(session_budget(bad).is_err(), "{bad}");
+    }
+}
+
 // ------------------------------------------------------------ Meldungen des Runners
 
 #[test]

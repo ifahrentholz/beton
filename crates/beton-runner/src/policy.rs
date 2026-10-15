@@ -1020,6 +1020,13 @@ impl PolicyGate {
 
     /// MCP-Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des
     /// Direkt-Harness; #234).
+    /// Inline-Sets einer Ebene, z. B. das Session-Budget (API-006, POL-011).
+    pub fn set_inline(&self, scope: Scope, sets: Vec<beton_policy::load::LoadedSet>) {
+        if let Ok(mut store) = self.inner.store.lock() {
+            store.set_inline(scope, sets);
+        }
+    }
+
     pub fn set_trusted_servers(&self, servers: Vec<String>) {
         if let Ok(mut t) = self.inner.trusted_servers.lock() {
             *t = servers;

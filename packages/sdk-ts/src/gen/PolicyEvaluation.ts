@@ -1,4 +1,6 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { BudgetExhaustedView } from "./BudgetExhaustedView";
+
 /**
  * Ergebnis einer seiteneffektfreien Auswertung.
  */
@@ -22,4 +24,8 @@ explanation: unknown,
 /**
  * Erklärung als Text.
  */
-explain: string, };
+explain: string, 
+/**
+ * Budget-Limits, die diese Auswertung erreicht (POL-011, POL-012; wie `budget.exhausted`).
+ */
+budget_exhausted: Array<BudgetExhaustedView>, };
