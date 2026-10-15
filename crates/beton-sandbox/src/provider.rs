@@ -75,6 +75,20 @@ pub struct ProbeReport {
     pub unavailable_reason: Option<String>,
     /// Version des Backends bzw. des Profil-Formats.
     pub version: String,
+    /// Nur Linux-Backends (`landlock`, `bwrap`): Landlock-ABI und Kernel (SBX-010 AC1), auch
+    /// wenn das Backend nicht verfügbar ist.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<KernelInfo>,
+}
+
+/// Kernel-Angaben der Linux-Probe (SBX-010 AC1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KernelInfo {
+    /// Landlock-ABI des Kernels (`null`: Landlock fehlt oder ist nicht aktiv). Eine per
+    /// Konfiguration begrenzte ABI steht in `version`.
+    pub landlock_abi: Option<u32>,
+    /// Kernel-Release (`uname -r`).
+    pub kernel: String,
 }
 
 impl ProbeReport {
@@ -88,6 +102,7 @@ impl ProbeReport {
             degraded_reasons: Cap::ALL.iter().map(|c| (*c, reason.clone())).collect(),
             unavailable_reason: Some(reason),
             version: String::new(),
+            kernel: None,
         }
     }
 }

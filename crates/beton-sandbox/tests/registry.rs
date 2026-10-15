@@ -215,6 +215,7 @@ fn sbx_001_missing_required_cap_is_unavailable_with_reasons() {
             .collect(),
         unavailable_reason: None,
         version: String::new(),
+        kernel: None,
     };
     let mut policy = ResolvedPolicy::unsandboxed(Stage::Tools);
     policy.backend = ProviderId::Seatbelt;

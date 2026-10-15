@@ -29,6 +29,7 @@ impl SandboxProvider for NoneProvider {
             degraded_reasons: Cap::ALL.iter().map(|c| (*c, REASON.to_owned())).collect(),
             unavailable_reason: None,
             version: String::new(),
+            kernel: None,
         }
     }
 

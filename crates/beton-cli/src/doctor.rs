@@ -603,7 +603,18 @@ pub fn pricing(settings: Option<&crate::config::Settings>, central: bool) -> Che
 
 /// Sandbox-Fähigkeiten (OBS-005, ab M2; SBX-008, SBX-009): Linux braucht Landlock (Kernel
 /// ≥ 5.19, ABI ≥ 2) und dazu unprivilegierte User-Namespaces oder bwrap; macOS `sandbox-exec`.
+/// Die Probe aller Backends (SBX-010, wie `beton sandbox probe --json`) steht in `details`.
 pub fn sandbox_check(
+    os: beton_sandbox::Os,
+    reports: &[beton_sandbox::ProbeReport],
+    landlock_abi: Option<u32>,
+) -> Check {
+    let mut c = sandbox_status(os, reports, landlock_abi);
+    c.details = Some(json!({ "providers": reports }));
+    c
+}
+
+fn sandbox_status(
     os: beton_sandbox::Os,
     reports: &[beton_sandbox::ProbeReport],
     landlock_abi: Option<u32>,

@@ -114,7 +114,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
         Command::Proxy(cmd) => crate::secrets::proxy(&ctx, cmd).await,
-        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd),
+        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd).await,
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }
