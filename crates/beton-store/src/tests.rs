@@ -1560,6 +1560,65 @@ async fn data_002_concurrent_writers_do_not_fail_with_busy() {
     }
 }
 
+/// #288: Ein Event, das die Prüfung nicht besteht (Nutzlast über dem Blob-Limit), ersetzt
+/// `append_replacing` an derselben Stelle; ohne Ersatz scheitert der Append wie bisher.
+#[tokio::test]
+async fn proto_015_ac5_append_replacing_keeps_position_of_rejected_event() {
+    let t = store_with(StoreOptions {
+        max_blob_bytes: 100 * 1024,
+        ..StoreOptions::default()
+    })
+    .await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let batch = || {
+        vec![
+            notice(s.id, "vorher"),
+            notice(s.id, &"x".repeat(200 * 1024)),
+            notice(s.id, "nachher"),
+        ]
+    };
+    let err = t
+        .store
+        .append(s.org_id, s.id, 1, 1, batch())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::BlobTooLarge { .. }), "{err}");
+    assert!(err.rejects_event());
+    assert_eq!(t.store.session(s.org_id, s.id).await.unwrap().head_seq, 1);
+
+    let replace = |i: usize, original: &Event, error: &Error| {
+        assert_eq!(i, 1);
+        assert!(matches!(error, Error::BlobTooLarge { .. }));
+        Some(notice(s.id, &format!("ersetzt: {}", original.type_name())))
+    };
+    let written = t
+        .store
+        .append_replacing(s.org_id, s.id, 1, 1, batch(), &replace)
+        .await
+        .unwrap();
+    let texts: Vec<String> = t
+        .store
+        .events(s.org_id, s.id, 1, 10)
+        .await
+        .unwrap()
+        .iter()
+        .map(|e| match e.payload() {
+            Some(EventPayload::Notice(n)) => n.text.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, ["vorher", "ersetzt: notice", "nachher"]);
+    assert_eq!(written.iter().map(|e| e.seq).collect::<Vec<_>>(), [2, 3, 4]);
+    assert!(
+        !db_contains(&t, &"x".repeat(1024)),
+        "abgelehnter Inhalt nicht im Log"
+    );
+}
+
 /// #287: Dauerschreiber (Tunnel-Sessions mit 256er-Batches) greifen die Schreibsperre sofort
 /// wieder. Ein paralleler, interaktiver Schreiber (REST: Session anlegen, Idempotency-Lookup,
 /// Eingabe) bekommt sie trotzdem binnen fester Frist, statt im SQLite-Busy-Handler zu pollen
