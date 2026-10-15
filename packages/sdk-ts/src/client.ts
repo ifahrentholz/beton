@@ -9,6 +9,11 @@ import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
 import type { InboxItemView } from './gen/InboxItemView.js'
 import type { InboxPage } from './gen/InboxPage.js'
+import type { DecisionExplain } from './gen/DecisionExplain.js'
+import type { EffectivePolicies } from './gen/EffectivePolicies.js'
+import type { EvaluateRequest } from './gen/EvaluateRequest.js'
+import type { PolicyEvaluation } from './gen/PolicyEvaluation.js'
+import type { ShadowReport } from './gen/ShadowReport.js'
 import type { ResolveApprovalRequest } from './gen/ResolveApprovalRequest.js'
 import type { SessionPage } from './gen/SessionPage.js'
 import type { SubagentTree } from './gen/SubagentTree.js'
@@ -138,6 +143,21 @@ export class BetonClient {
     /** Freigabe oder Frage entscheiden, ohne die Session zu öffnen (UX-001 AC2). */
     resolve: (id: string, req: ResolveApprovalRequest): Promise<void> =>
       this.request('POST', `/v1/inbox/${enc(id)}/resolve`, req),
+  }
+
+  /** Policies (POL-027): geltende Regeln, Auswertung ohne Seiteneffekte, Explain, Shadow-Modus. */
+  readonly policies = {
+    /** Effektives Set; mit `sessionId` samt Projekt-Policies der Session. */
+    effective: (sessionId?: string): Promise<EffectivePolicies> =>
+      this.request('GET', `/v1/policies${sessionId ? `?session_id=${enc(sessionId)}` : ''}`),
+    /** Hypothetische Anfrage auswerten: keine Events, keine Freigaben, kein Zustand. */
+    evaluate: (req: EvaluateRequest): Promise<PolicyEvaluation> => this.request('POST', '/v1/policies/evaluate', req),
+    /** Erklärung einer Entscheidung (`seq` eines `policy.decision` oder Tool-Calls). */
+    explain: (sessionId: string, seq: number): Promise<DecisionExplain> =>
+      this.request('GET', `/v1/sessions/${enc(sessionId)}/policy-decisions/${seq}`),
+    /** Treffer der Regeln im Shadow-Betrieb je Regel und Tag (Default 7 Tage). */
+    shadow: (days?: number): Promise<ShadowReport> =>
+      this.request('GET', `/v1/policies/shadow${days !== undefined ? `?days=${days}` : ''}`),
   }
 
   /** Verbrauch (USE-005, USE-006): Summen je Gruppe und Abrechnungsart, Abo-Fenster. */

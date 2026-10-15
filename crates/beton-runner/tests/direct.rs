@@ -531,7 +531,8 @@ async fn agt_008_ac2_har_009_ac1_skill_load_and_policy_query_on_the_direct_harne
     assert!(!skill.contains("description: Behebt CI"), "{skill}");
     let policy = done[1]["payload"]["result"].as_str().unwrap();
     assert!(
-        policy.contains("decision") && policy.contains("ask"),
+        // Ohne Policies erlaubt die Engine (POL-027, AGT-007 AC3).
+        policy.contains("decision") && policy.contains("allow") && policy.contains("beton-policy"),
         "{policy}"
     );
     // Das Modell bekam den Skill-Text als Tool-Ergebnis.

@@ -1,0 +1,11 @@
+# Testdaten für die Policy-Tests (QA-004): destruktive Shell-Kommandos fragen nach.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: dangerous-shell
+rules:
+  - id: rm-rf
+    on: tool_call
+    when: 'tool.kind == "shell" && tool.command.matches("rm\\s+-([a-zA-Z]*r[a-zA-Z]*f|[a-zA-Z]*f[a-zA-Z]*r)")'
+    action: ask
+    reason: Rekursives Löschen bestätigen
+    approval: { timeout: 30m, on_timeout: deny, remember: session }

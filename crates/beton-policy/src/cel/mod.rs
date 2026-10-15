@@ -16,6 +16,7 @@ mod analyze;
 mod check;
 mod eval;
 pub mod ext;
+mod trace;
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -26,6 +27,7 @@ use crate::types::Ty;
 use crate::value::Value;
 
 pub(crate) use check::Node;
+pub use trace::TracePart;
 
 /// Ladefehler eines Ausdrucks mit 1-basierter Position im Ausdruck.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -208,6 +210,13 @@ impl Program {
         let mut out = BTreeSet::new();
         analyze::fields(&self.node, &mut out);
         out
+    }
+
+    /// Spur für Explain (POL-027): die Teilausdrücke einer `&&`- bzw. `||`-Verknüpfung auf
+    /// oberster Ebene mit ihren Ergebnissen; sonst der ganze Ausdruck. Jeder Teil wird mit
+    /// eigenem Kostenbudget ausgewertet, das Zeitbudget gilt weiter.
+    pub fn trace(&self, act: &Activation, meter: &mut Meter) -> Vec<TracePart> {
+        trace::trace(&self.source, &self.node, act, meter)
     }
 
     /// Wie [`Program::eval`], erwartet aber `bool`.

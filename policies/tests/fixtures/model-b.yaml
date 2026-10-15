@@ -1,0 +1,6 @@
+# Testdaten für die Policy-Tests (QA-004): abweichendes Modell-Routing einer niedrigeren Ebene.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: model-b
+rules:
+  - { id: route-b, on: model_request, action: modify, modify: { model: claude-haiku-4-5 } }

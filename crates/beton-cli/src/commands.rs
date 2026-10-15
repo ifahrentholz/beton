@@ -109,6 +109,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Config(cmd) => config(&ctx, cmd),
         Command::Usage(args) => crate::usage::run(&ctx, args).await,
         Command::Agent(cmd) => crate::agent::run(&ctx, cmd),
+        Command::Policy(cmd) => crate::policy::run(&ctx, cmd).await,
         Command::Auth(AuthCommand::RotateLocal) => rotate_local(&ctx),
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
@@ -148,6 +149,7 @@ fn cli_logs(command: &Command) -> bool {
             | Command::Config(_)
             | Command::Usage(_)
             | Command::Agent(_)
+            | Command::Policy(crate::cli::PolicyCommand::Test(_))
             | Command::Sandbox(_)
             | Command::Completion(_)
             | Command::Version

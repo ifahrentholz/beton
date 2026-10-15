@@ -92,6 +92,9 @@ pub enum Command {
     /// Agent-Definitionen auflisten, anzeigen, prüfen und anlegen.
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Policies testen, auswerten und Entscheidungen erklären.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
     /// Lokale Anmeldung verwalten.
     #[command(subcommand)]
     Auth(AuthCommand),
@@ -551,6 +554,67 @@ pub struct ConfigSetArgs {
     pub value: String,
     #[command(flatten)]
     pub scope: ConfigScopeArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PolicyCommand {
+    /// Deklarative Policy-Tests (`*.policytest.yaml`) ausführen; Exit 0 bestanden, 1 Fehlschlag.
+    Test(PolicyTestArgs),
+    /// Eine hypothetische Anfrage auswerten, ohne Events, Freigaben oder Zustand.
+    Eval(PolicyEvalArgs),
+    /// Eine Entscheidung einer Session erklären (Regeln, Teilausdrücke, Set-Version).
+    Explain(PolicyExplainArgs),
+    /// Geltende Regeln mit Ebene und Herkunft anzeigen.
+    Show(PolicyShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyTestArgs {
+    /// Testdateien oder Verzeichnisse (rekursiv); Default `.beton/policies/tests/`.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+    /// Ergebnis zusätzlich als JUnit-XML schreiben.
+    #[arg(long, value_name = "FILE")]
+    pub junit: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyEvalArgs {
+    /// Phase: session_start, model_request, tool_call, tool_result, browser_navigate, browser_action.
+    #[arg(long)]
+    pub phase: String,
+    /// Eingabe als JSON-Datei (`-` = stdin), z. B. `{"tool": {"name": "Bash", "args": {"command": "git push"}}}`.
+    #[arg(long, value_name = "FILE")]
+    pub input: PathBuf,
+    /// Kontext dieser Session (Projekt-Policies, Kosten, Zustand); sonst lokal mit Fixtures.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+    /// Harness für Normalisierung und Durchsetzung (Default: der der Session bzw. claude).
+    #[arg(long)]
+    pub harness: Option<String>,
+    /// Kontextwerte als JSON-Datei wie `fixtures` in Policy-Tests.
+    #[arg(long, value_name = "FILE")]
+    pub fixtures: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyExplainArgs {
+    /// Session-ID.
+    #[arg(long, value_name = "ID")]
+    pub session: String,
+    /// Seq des `policy.decision` oder des Tool-Calls.
+    #[arg(long)]
+    pub seq: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyShowArgs {
+    /// Effektives Set aller Ebenen (Default).
+    #[arg(long)]
+    pub effective: bool,
+    /// Projekt-Policies dieser Session statt des aktuellen Verzeichnisses.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

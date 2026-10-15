@@ -1,0 +1,22 @@
+# Policy-Test (POL-026, QA-004): Built-in-Agent maestra (AGT-011). Seine Agent-Policies
+# (`maestra-no-code`, `maestra-no-merge`) kommen mit WP-49 zurück (#172, #234); bis dahin
+# bringt maestra keine eigenen Regeln mit, und es gelten die höheren Ebenen unverändert.
+spec_version: 1
+layers:
+  user: [../fixtures/dangerous-shell.yaml]
+  project: [../fixtures/deny-push.yaml]
+  agent: [../../../agents/maestra/agent.yaml]
+harness: claude
+cases:
+  - name: Lesende Kommandos sind erlaubt
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git status" } } }
+    expect: { outcome: allow }
+  - name: User-Regel fragt auch unter maestra nach
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "rm -rf build" } } }
+    expect: { outcome: ask, rules: [rm-rf] }
+  - name: Projekt-deny gilt auch unter maestra
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin main" } } }
+    expect: { outcome: deny, rules: [no-push] }

@@ -24,7 +24,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::Phase;
-use crate::cel::{Clock, EvalError, Limits, Meter, SystemClock};
+use crate::cel::{Clock, EvalError, Limits, Meter, SystemClock, TracePart};
 use crate::context::Activation;
 use crate::doc::{
     Action, ApprovalDoc, Channel, DefaultAction, EffectDoc, Mode, OnUnsupported, Severity,
@@ -138,6 +138,9 @@ pub struct Match {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub dry_run: bool,
+    /// Teilausdrücke der Bedingung mit Ergebnis (POL-027 AC1); leer ohne `when`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<TracePart>,
 }
 
 /// Ein Grund für `deny` oder `ask`.
@@ -435,6 +438,14 @@ impl<'a> Run<'a> {
         }
     }
 
+    /// Spur der Bedingung einer gegriffenen Regel (Explain, POL-027 AC1).
+    fn trace(&mut self, rule: &LoadedRule, ctx: &Activation) -> Vec<TracePart> {
+        match &rule.kind {
+            RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut self.meter),
+            _ => Vec::new(),
+        }
+    }
+
     fn deadline_deny(&mut self) -> Outcome {
         let rule = RuleRef {
             scope: Scope::Org,
@@ -676,6 +687,7 @@ impl<'a> Run<'a> {
                 verdict: Verdict::Modify,
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
+                trace: self.trace(rule, ctx),
             };
             if dry {
                 self.decision.would.push(entry);
@@ -857,6 +869,7 @@ impl<'a> Run<'a> {
                 verdict: Verdict::of(action),
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
+                trace: self.trace(rule, ctx),
             };
             if dry {
                 self.decision.would.push(entry);
