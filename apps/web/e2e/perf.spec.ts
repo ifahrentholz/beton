@@ -50,7 +50,18 @@ test('WEB-015 AC1: Budgets für Streaming, Session-Wechsel, Bundle, Speicher und
   const steps = Array.from({ length: 10_000 }, (_, i) => `      - { message: "Nachricht ${i}" }`).join('\n')
   const big = await daemon.session(`turns:\n  - expect_input: "viel"\n    emit:\n${steps}\n`, 'Groß')
   await daemon.api('POST', `/v1/sessions/${big}/input`, { text: 'viel' })
-  await daemon.waitStatus(big, 'idle')
+  // Gemessen wird erst, wenn alle 10 000 Events im Log stehen. `idle` allein genügt nicht: Direkt
+  // nach der Eingabe ist die Session noch `idle`, und der Turn schriebe sonst parallel zu den
+  // Messungen und dem Start der nächsten Sessions (#278).
+  await expect
+    .poll(
+      async () => {
+        const s = await daemon.api<{ status: string; head_seq: number }>('GET', `/v1/sessions/${big}`)
+        return s.status === 'idle' && s.head_seq > 10_000
+      },
+      { timeout: 120_000 },
+    )
+    .toBe(true)
   const small = await daemon.session('turns: []', 'Klein')
 
   // Start bis bedienbar ≤ 1,5 s.
