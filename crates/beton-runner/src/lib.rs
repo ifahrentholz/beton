@@ -838,6 +838,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
         direct_via_proxy(&boot, &mut registry, egress);
     }
+    // PRX-005: Passthrough in Stufe 2 ist ausdrücklich konfiguriert und steht im Audit-Log.
+    if let Some(hosts) = stages
+        .as_ref()
+        .map(|s| s.passthrough(beton_sandbox::Stage::Tools))
+        .filter(|h| !h.is_empty())
+    {
+        let c = credentials.clone();
+        tokio::spawn(async move { c.audit_passthrough(hosts).await });
+    }
     let in_proc = caps
         .as_ref()
         .is_some_and(|c| c.transport == beton_harness::Transport::InProc);

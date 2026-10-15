@@ -71,6 +71,15 @@ impl TunnelCredentials {
     }
 }
 
+impl TunnelCredentials {
+    /// Passthrough in Stufe 2 (`sandbox.egress_passthrough`, PRX-005) ins Audit-Log.
+    pub async fn audit_passthrough(&self, hosts: Vec<String>) {
+        if let Err(e) = (self.calls)("egress.passthrough", json!({ "hosts": hosts })).await {
+            tracing::warn!("egress.passthrough nicht auditiert: {e}");
+        }
+    }
+}
+
 impl beton_proxy::CredentialSource for TunnelCredentials {
     fn value<'a>(
         &'a self,

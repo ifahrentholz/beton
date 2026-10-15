@@ -276,9 +276,8 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
             // Credentials der Proxy-Instanzen des Runners (PRX-006, PRX-009 AC4).
-            "credential.resolve" | "credential.used" | "credential.misuse" => {
-                credential_call(&self.0, session, tool, &args).await
-            }
+            "credential.resolve" | "credential.used" | "credential.misuse"
+            | "egress.passthrough" => credential_call(&self.0, session, tool, &args).await,
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
@@ -306,6 +305,7 @@ async fn credential_call(
             service.resolve(cfg, session, &record.harness, args).await
         }
         "credential.used" => service.used(session, args).await,
+        "egress.passthrough" => service.passthrough(session, args).await,
         _ => service.misuse(session, args).await,
     }
 }

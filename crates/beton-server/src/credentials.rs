@@ -285,6 +285,40 @@ impl CredentialService {
     }
 }
 
+impl CredentialService {
+    /// `egress.passthrough {hosts}`: Passthrough in Stufe 2 (PRX-005) ins Audit-Log.
+    pub async fn passthrough(&self, session: SessionId, args: &Value) -> Result<Value, Problem> {
+        let hosts: Vec<&str> = args["hosts"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let ok = !hosts.is_empty()
+            && hosts.len() <= 64
+            && hosts
+                .iter()
+                .all(|h| !h.is_empty() && h.len() <= 260 && !h.chars().any(char::is_control));
+        if !ok {
+            return Err(Problem::new(ProblemCode::ValidationFailed).detail("`hosts` fehlt"));
+        }
+        self.store
+            .append_audit(
+                self.local.org,
+                NewAuditEntry {
+                    at: Timestamp::now(),
+                    actor: PrincipalId::User(self.local.user),
+                    action: "egress.passthrough".into(),
+                    target_kind: "egress".into(),
+                    target_id: hosts.join(","),
+                    session_id: Some(session),
+                    host_id: None,
+                    details: json!({ "stage": "tools", "hosts": hosts }),
+                },
+            )
+            .await?;
+        Ok(Value::Null)
+    }
+}
+
 /// Kurzer Text ohne Steuerzeichen (Namen, Hosts, Gründe; nie Werte).
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, Problem> {
     match args.get(key).and_then(Value::as_str) {
@@ -620,5 +654,23 @@ mod tests {
         assert_eq!(misuse.host_id.as_deref(), Some("evil.test"));
         assert_eq!(misuse.session_id, Some(s));
         assert_eq!(misuse.details["reason"], "host_mismatch");
+        // PRX-005: Passthrough in Stufe 2 steht im Audit-Log.
+        f.service
+            .passthrough(s, &json!({"hosts": ["db.test:5432"]}))
+            .await
+            .unwrap();
+        assert!(
+            f.service
+                .passthrough(s, &json!({"hosts": []}))
+                .await
+                .is_err()
+        );
+        let all = f.store.audit_entries(f.local.org, 100).await.unwrap();
+        let p = all
+            .iter()
+            .find(|e| e.action == "egress.passthrough")
+            .unwrap();
+        assert_eq!(p.target_id, "db.test:5432");
+        assert_eq!(p.session_id, Some(s));
     }
 }
