@@ -965,3 +965,33 @@ fn pol_026_expected_rule_id_of_a_rule_type_matches_its_parts() {
     assert_eq!(run("loo"), 1);
     assert_eq!(run("loop/errors"), 1);
 }
+
+/// Hot-Reload (POL-001): Neue `path_guard`-, `git_guard`- und `loop_detection`-Regeln erzeugen
+/// nur `deny`/`ask`/`notify` und gelten sofort; eine geänderte bzw. entfernte erst in einer
+/// neuen Session.
+#[test]
+fn pol_001_new_guards_count_as_tightening_and_changes_as_loosening() {
+    let base = set(
+        Scope::User,
+        "u",
+        "  - id: keep\n    on: tool_call\n    action: notify\n",
+    );
+    for added in [
+        GUARD.to_owned(),
+        GIT.to_owned(),
+        format!("{GIT}    params: {{ force_push: ask }}\n"),
+        "  - id: loop\n    type: loop_detection\n    params: { action: notify }\n".to_owned(),
+    ] {
+        let rules = format!("  - id: keep\n    on: tool_call\n    action: notify\n{added}");
+        let new = set(Scope::User, "u", &rules);
+        assert!(only_tightens(Some(&base), &new).is_ok(), "{added}");
+        assert!(only_tightens(Some(&new), &base).is_err(), "{added}");
+    }
+    let strict = set(Scope::User, "u", GIT);
+    let lax = set(
+        Scope::User,
+        "u",
+        &format!("{GIT}    params: {{ push: allow }}\n"),
+    );
+    assert!(only_tightens(Some(&strict), &lax).is_err());
+}
