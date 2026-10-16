@@ -1740,9 +1740,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         // Kommandos liefen in Stufe 1: sofort beenden, Session `failed`.
                         tracing::error!("Integritätsprüfung der Sandbox: {reason}");
                         let _ = session.shutdown(Shutdown::Kill).await;
+                        // Erst beenden, dann (erneut) zurücksetzen: Prozesse der Stufe 2 enden
+                        // mit ihren `bt-exec`-Verbindungen (SBX-003, #209).
+                        if let Some(s) = stages.as_ref() { s.restore_git(); }
                         end_sandbox_integrity_violation(&boot, &mut lifecycle, title, &reason, &mut batch);
                         let _ = push(&mut ws, &boot, &mut unacked, batch).await;
                         drain_acks(&mut ws, &mut unacked).await;
+                        if let Some(s) = stages.as_ref() { s.restore_git(); }
                         return Ok(Exit::PolicyViolation);
                     }
                     if run_over {

@@ -654,6 +654,11 @@ async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
         "/x/wt2/.git\n"
     );
     assert_eq!(s.check_git(), Ok(()));
+    // Schreibt ein Prozess bis zum Ende der Sandbox noch einmal, setzt der Runner nach dem
+    // Beenden erneut zurück.
+    std::fs::write(git.join("commondir"), "/tmp/x\n").unwrap();
+    s.restore_git();
+    assert!(!git.join("commondir").exists());
 
     // In Stufe 2 entsteht `commondir` nicht (Seatbelt sperrt; unter Linux beendet der Launcher
     // die Sandbox, entfernt die Datei und meldet es, dann endet die Session).

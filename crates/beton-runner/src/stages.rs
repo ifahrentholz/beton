@@ -353,6 +353,16 @@ impl GitGuard {
         }
     }
 
+    /// Setzt neue oder geänderte Steuerdateien erneut zurück (nach dem Beenden der Sandbox).
+    fn restore(&self) {
+        let changed = self.before.changes();
+        if !changed.is_empty()
+            && let Err(e) = self.before.restore(&changed)
+        {
+            tracing::error!("Git-Steuerdateien nicht zurückgesetzt: {e}");
+        }
+    }
+
     fn check(&self) -> Result<(), String> {
         let mut hits: Vec<PathBuf> = self
             .reported
@@ -389,6 +399,14 @@ impl SessionStages {
     /// entfernt bzw. zurückgesetzt.
     pub fn check_git(&self) -> Result<(), String> {
         self.git.as_ref().map_or(Ok(()), GitGuard::check)
+    }
+
+    /// Nach dem Beenden der Session wegen eines Verstoßes: setzt Steuerdateien erneut zurück,
+    /// falls Prozesse der Sandbox sie bis zu ihrem Ende noch einmal geschrieben haben.
+    pub fn restore_git(&self) {
+        if let Some(g) = &self.git {
+            g.restore();
+        }
     }
 }
 
