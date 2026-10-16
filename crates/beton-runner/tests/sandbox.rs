@@ -131,6 +131,15 @@ async fn daemon(dir: &Path) -> D {
 }
 
 async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::SandboxSpec) -> D {
+    daemon_env(dir, scenario, sandbox, &[]).await
+}
+
+async fn daemon_env(
+    dir: &Path,
+    scenario: &str,
+    sandbox: beton_sandbox::SandboxSpec,
+    extra: &[(&str, &str)],
+) -> D {
     // Im Workspace der Sessions (`<dir>/work`): Die Fake-CLI liest ihr Szenario dort auch aus
     // der Sandbox (Stufe 1).
     let sc = dir.join("work/.scenario.yaml");
@@ -139,6 +148,9 @@ async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::Sandbox
     let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| !k.ends_with("_API_KEY") && k != "ANTHROPIC_AUTH_TOKEN")
         .collect();
+    for (k, v) in extra {
+        inherit.insert((*k).into(), (*v).into());
+    }
     inherit.insert(
         "BETON_CLAUDE_PATH".into(),
         format!(
@@ -308,5 +320,85 @@ async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denie
     );
     assert!(!text.contains("policy_integrity_violation"), "{text}");
     assert!(!text.contains("sandbox_integrity"), "{text}");
+    d.daemon.shutdown().await;
+}
+
+/// SBX-006 AC3: Endet der Egress-Proxy während der Session (Test-Schalter der Testbuilds), geht
+/// die Session auf `paused` mit `sandbox.violation {kind: proxy_down}`, und neue
+/// Tool-Ausführungen werden abgelehnt.
+#[tokio::test]
+async fn sbx_006_ac3_proxy_down_pauses_the_session_and_rejects_new_tool_calls() {
+    let dir = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo hallo\" } }, gate: true }\n      - { on_gate: { allow: [{ tool_result: \"hallo\" }], deny: [{ message: \"abgelehnt\" }] } }\n";
+    let d = daemon_env(
+        dir.path(),
+        scenario,
+        beton_sandbox::SandboxSpec::from_yaml("{}").unwrap(),
+        &[("BETON_TEST_SANDBOX_PROXY_DOWN", "1")],
+    )
+    .await;
+    let work = dir.path().join("work");
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "fake", "cwd": work, "harness_opts": {"scenario": work.join(".scenario.yaml")}})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    // Der Verlust des Proxys pausiert die Session.
+    let start = Instant::now();
+    loop {
+        let events = d.events(&id).await;
+        let violation = events
+            .iter()
+            .any(|e| e["type"] == "sandbox.violation" && e["payload"]["kind"] == "proxy_down");
+        let paused = events
+            .iter()
+            .any(|e| e["type"] == "session.status" && e["payload"]["status"] == "paused");
+        if violation && paused {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{:#?}", events);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Eine neue Tool-Ausführung wird abgelehnt.
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "los"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let start = Instant::now();
+    let events = loop {
+        let events = d.events(&id).await;
+        if events.iter().any(|e| e["type"] == "tool.call.completed") {
+            break events;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{events:#?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let text = serde_json::to_string(&events).unwrap();
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "tool.call.completed")
+        .unwrap();
+    assert_eq!(completed["payload"]["status"], "denied", "{text}");
+    assert!(
+        events.iter().any(|e| e["type"] == "policy.decision"
+            && e["payload"]["phase"] == "tool_call"
+            && e["payload"]["outcome"] == "deny"
+            && e["payload"].to_string().contains("proxy_down")),
+        "{text}"
+    );
+    // Die Session bleibt pausiert.
+    let s = d.http("GET", &format!("/v1/sessions/{id}"), None).await.1;
+    assert_eq!(s["status"], "paused", "{s}");
     d.daemon.shutdown().await;
 }

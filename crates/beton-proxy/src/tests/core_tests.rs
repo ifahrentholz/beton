@@ -144,6 +144,32 @@ async fn prx_001_dropped_instance_stops_listening() {
     }
 }
 
+/// SBX-006 AC3: Endet eine Instanz (hier ausdrücklich beendet, wie ein abgestürzter Proxy),
+/// meldet `down()` das, und niemand erreicht sie mehr.
+#[tokio::test]
+async fn sbx_006_ac3_stopped_instance_reports_down_and_stops_listening() {
+    let h = Harness::new();
+    let a = h.instance(&[]).await;
+    let addr = a.addr();
+    let down = a.down();
+    let mut early = Box::pin(a.down());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut early)
+            .await
+            .is_err(),
+        "läuft noch"
+    );
+    a.shutdown();
+    tokio::time::timeout(Duration::from_secs(5), down)
+        .await
+        .expect("down() meldet das Ende");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tokio::net::TcpStream::connect(addr).await.is_ok() {
+        assert!(Instant::now() < deadline, "Instanz lauscht weiter");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// Lastprofil aus PRX-001 AC3: `conns` parallele HTTPS-Verbindungen durch eine Instanz, je
 /// Verbindung ein Aufwärm-Request und `requests` gemessene Requests.
 async fn load(conns: usize, requests: usize) -> (Vec<Duration>, Vec<Duration>) {
