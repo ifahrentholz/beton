@@ -15,6 +15,7 @@
 //! Verbindung ab, beendet der Broker den Prozessbaum.
 
 pub mod client;
+pub mod git_shim;
 pub mod proto;
 
 #[cfg(unix)]
@@ -23,7 +24,7 @@ mod fdpass;
 pub mod server;
 
 #[cfg(unix)]
-pub use server::Broker;
+pub use server::{Broker, GitCheck};
 
 /// Socket des Brokers im Environment der Stufe 1.
 pub const ENV_SOCKET: &str = "BETON_EXEC_SOCKET";

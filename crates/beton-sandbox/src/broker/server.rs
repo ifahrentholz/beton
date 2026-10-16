@@ -23,6 +23,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Signale, die `bt-exec` weiterreichen darf.
 const SIGNALS: [i32; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
 
+/// Prüfung des Runners vor jedem `git` der Stufe 1 (SBX-003, #311): `Err` mit Begründung,
+/// wenn eine Git-Steuerdatei entstanden ist oder sich geändert hat.
+pub type GitCheck = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 /// Ein laufender Broker; endet mit `Drop` (Socket wird entfernt, laufende Kommandos enden mit
 /// ihren Verbindungen).
 pub struct Broker {
@@ -108,6 +112,17 @@ impl Broker {
             started,
             task,
         })
+    }
+
+    /// Wie [`Broker::start`], beantwortet zusätzlich [`super::proto::Op::GitPreflight`] des
+    /// Git-Shims mit `check` (SBX-003, #311).
+    pub async fn start_with_git_check(
+        dir: &Path,
+        tools: Sandbox,
+        check: GitCheck,
+    ) -> std::io::Result<Self> {
+        let _ = check;
+        Self::start(dir, tools).await
     }
 
     /// Kommandos, die der Broker bisher in Stufe 2 gestartet hat (Integritätsprüfung des

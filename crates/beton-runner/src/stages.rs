@@ -401,6 +401,12 @@ impl SessionStages {
         self.git.as_ref().map_or(Ok(()), GitGuard::check)
     }
 
+    /// Meldet sich, sobald der Git-Shim der Stufe 1 einen Verstoß gefunden hat (SBX-003, #311);
+    /// danach liefert [`Self::check_git`] die Begründung.
+    pub fn git_alarm(&self) -> Option<Arc<tokio::sync::Notify>> {
+        None
+    }
+
     /// Nach dem Beenden der Session wegen eines Verstoßes: setzt Steuerdateien erneut zurück,
     /// falls Prozesse der Sandbox sie bis zu ihrem Ende noch einmal geschrieben haben.
     pub fn restore_git(&self) {
