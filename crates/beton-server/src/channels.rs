@@ -44,12 +44,20 @@ pub trait ChannelBackend: Send + Sync {
     fn input(&self, payload: Vec<u8>) -> bool;
 }
 
+/// Höchstens so viele Bytes stehen je Client in seiner Ausgangswarteschlange, auch wenn er
+/// mehr Kredit gewährt (der Server bleibt beschränkt, wenn TCP stockt).
+pub const CLIENT_BACKLOG: usize = 1024 * 1024;
+
 /// Ausgang zu einem Client.
 pub trait ClientSink: Send + Sync {
     /// Ein Binärframe senden (mit der Kanal-ID des Clients).
     fn frame(&self, frame: Frame) -> bool;
     /// Kanal beendet.
     fn closed(&self, channel_id: u32, reason: &str);
+    /// Bytes, die zu diesem Client noch nicht gesendet sind.
+    fn backlog(&self) -> usize {
+        0
+    }
 }
 
 /// Kennung eines Zuschauers innerhalb eines Relays.
@@ -276,7 +284,10 @@ impl Relay {
                     s.sync == Phase::Synced
                 }
             };
-            if st.subs.values().any(|s| wanted(s) && s.window < len) {
+            let blocked = |s: &Sub| {
+                wanted(s) && (s.window < len || s.sink.backlog() + len as usize > CLIENT_BACKLOG)
+            };
+            if st.subs.values().any(blocked) {
                 st.blocked_since.get_or_insert_with(Instant::now);
                 return;
             }
@@ -313,9 +324,16 @@ impl Relay {
         }
     }
 
+    /// Erneut weiterleiten, z. B. wenn die Warteschlange eines Clients leer gelaufen ist.
+    pub fn kick(&self) {
+        let mut st = lock(&self.state);
+        self.pump(&mut st);
+    }
+
     /// Entfernt Zuschauer, die den Sender länger als `timeout` aufhalten.
     fn evict_stalled(&self, timeout: Duration) {
         let mut st = lock(&self.state);
+        self.pump(&mut st);
         let Some(since) = st.blocked_since else {
             return;
         };
@@ -335,7 +353,7 @@ impl Relay {
                     s.sync == Phase::Receiving
                 } else {
                     s.sync == Phase::Synced
-                }) && s.window < len
+                }) && (s.window < len || s.sink.backlog() + len as usize > CLIENT_BACKLOG)
             })
             .map(|(id, _)| *id)
             .collect();

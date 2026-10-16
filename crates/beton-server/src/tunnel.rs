@@ -331,6 +331,18 @@ impl RunnerRegistry {
         args: Value,
         timeout: Duration,
     ) -> Result<Value, Problem> {
+        self.deliver_as(session, name, args, None, timeout).await
+    }
+
+    /// Wie [`Self::deliver`], mit dem auslösenden Akteur (z. B. für `terminal.opened`).
+    pub async fn deliver_as(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: Value,
+        actor: Option<Actor>,
+        timeout: Duration,
+    ) -> Result<Value, Problem> {
         let (tx, rx) = oneshot::channel();
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
@@ -349,7 +361,7 @@ impl RunnerRegistry {
                 cmd_id,
                 name: name.to_owned(),
                 args,
-                actor: None,
+                actor,
             });
         }
         match tokio::time::timeout(timeout, rx).await {
@@ -395,6 +407,8 @@ fn runner_code(problem: &Value) -> ProblemCode {
     match problem["code"].as_str().unwrap_or_default() {
         "capability_unsupported" => ProblemCode::CapabilityUnsupported,
         "sandbox_required" => ProblemCode::SandboxRequired,
+        "sandbox_unavailable" => ProblemCode::SandboxUnavailable,
+        "rate_limited" => ProblemCode::RateLimited,
         "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
         "not_found" => ProblemCode::NotFound,
         "no_active_turn" => ProblemCode::NoActiveTurn,
@@ -447,6 +461,38 @@ pub struct TunnelState {
     pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     /// Automatische Compaction vor dem nächsten Turn aus der Queue (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Binärkanäle der Runner (PROTO-007): Terminals.
+    pub channels: Arc<crate::channels::ChannelHub>,
+}
+
+/// Gegenstelle eines Kanals im Runner: Kredit und Keyframes als Steuernachricht, Eingaben als
+/// Binärframe mit der Kanal-ID des Runners.
+struct RunnerBackend {
+    tx: mpsc::UnboundedSender<TunnelDown>,
+    bin: mpsc::UnboundedSender<Vec<u8>>,
+    channel_id: u32,
+}
+
+impl crate::channels::ChannelBackend for RunnerBackend {
+    fn credit(&self, bytes: u64) {
+        let _ = self.tx.send(TunnelDown::ChannelCredit {
+            channel_id: self.channel_id,
+            bytes,
+        });
+    }
+
+    fn keyframe(&self) {
+        let _ = self.tx.send(TunnelDown::ChannelKeyframe {
+            channel_id: self.channel_id,
+        });
+    }
+
+    fn input(&self, payload: Vec<u8>) -> bool {
+        use beton_proto::channel::{Frame, flags};
+        self.bin
+            .send(Frame::new(self.channel_id, flags::INPUT | flags::FIN, payload).encode())
+            .is_ok()
+    }
 }
 
 impl TunnelState {
@@ -642,6 +688,17 @@ async fn connection(
     }
 
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
+    let down = tx.clone();
+    // Binärframes an den Runner (Eingaben der Terminals, PROTO-007).
+    let (bin_tx, mut bin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let mut channels: HashMap<
+        u32,
+        (
+            beton_proto::channel::ChannelKind,
+            String,
+            Arc<crate::channels::Relay>,
+        ),
+    > = HashMap::new();
     let conn_id = state.runners.next_conn.fetch_add(1, Ordering::Relaxed);
     lock(&state.runners.expected).remove(&session_id);
     // Offene Freigaben aus der Projektion: ein übernommener Runner meldet sie nicht erneut
@@ -695,11 +752,48 @@ async fn connection(
                     break;
                 }
             }
+            bin = bin_rx.recv() => {
+                let Some(bin) = bin else { continue };
+                if sink.send(Message::Binary(bin.into())).await.is_err() {
+                    break;
+                }
+            }
             msg = stream.next() => {
                 let Some(Ok(msg)) = msg else { break };
                 match msg {
+                    Message::Binary(bytes) => {
+                        // Ausgabe eines Kanals des Runners (PROTO-007); unbekannte Kanäle und
+                        // kaputte Frames verwirft der Server.
+                        match beton_proto::channel::Frame::decode(&bytes) {
+                            Ok(frame) => {
+                                if let Some((_, _, relay)) = channels.get(&frame.channel_id) {
+                                    relay.push(frame);
+                                }
+                            }
+                            Err(e) => tracing::warn!(%session_id, "Binärframe des Runners verworfen: {e}"),
+                        }
+                    }
                     Message::Text(text) => {
                         let Ok(up) = TunnelUp::from_json(&text) else { continue };
+                        match up {
+                            TunnelUp::ChannelOpen { channel_id, kind, target } => {
+                                let backend = Arc::new(RunnerBackend {
+                                    tx: down.clone(),
+                                    bin: bin_tx.clone(),
+                                    channel_id,
+                                });
+                                let relay = state.channels.register(session_id, kind, &target, backend);
+                                channels.insert(channel_id, (kind, target, relay));
+                                continue;
+                            }
+                            TunnelUp::ChannelClose { channel_id, reason } => {
+                                if let Some((kind, target, _)) = channels.remove(&channel_id) {
+                                    state.channels.close(session_id, kind, &target, reason.as_deref().unwrap_or("closed"));
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
                             let unsaved = unsaved_push(&reply);
@@ -736,10 +830,19 @@ async fn connection(
         state.runners.revoke_token(&token);
     }
     // Abmelden (nur wenn die Verbindung noch die aktuelle ist).
-    {
+    let current = {
         let mut conns = lock(&state.runners.conns);
-        if conns.get(&session_id).is_some_and(|c| c.id == conn_id) {
+        let current = conns.get(&session_id).is_some_and(|c| c.id == conn_id);
+        if current {
             conns.remove(&session_id);
+        }
+        current
+    };
+    // Kanäle dieser Verbindung enden mit ihr; Clients öffnen sie neu, sobald der Runner sie
+    // nach dem Reconnect wieder anmeldet (PROTO-007).
+    if current {
+        for (_, (kind, target, _)) in channels.drain() {
+            state.channels.close(session_id, kind, &target, "detached");
         }
     }
     let stopped = lock(&state.runners.stopping).remove(&session_id);
@@ -967,6 +1070,8 @@ pub async fn idle_reaper(
                 c.idle(state.config.idle_timeout)
                     && hub.subscribers(**s) == 0
                     && !state.runners.has_open_approvals(**s)
+                    // Offene Terminals laufen weiter, auch ohne Client (SES-019 AC1).
+                    && state.channels.open_terminals(**s) == 0
             })
             .map(|(s, _)| *s)
             .collect();

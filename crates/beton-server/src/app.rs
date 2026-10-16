@@ -231,6 +231,7 @@ impl Runtime {
     pub fn with_default_commands(mut self) -> Self {
         let mut reg = (*self.commands).clone();
         crate::api_sessions::register_commands(&mut reg);
+        crate::terminals::register_commands(&mut reg);
         self.commands = Arc::new(reg);
         self
     }
@@ -383,6 +384,16 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_policies::shadow))
         .routes(routes!(crate::api_policies::explain_decision))
         .routes(routes!(crate::api_sessions::get_blob))
+        // Workspace-Terminals (SES-019, WEB-010).
+        .routes(routes!(
+            crate::terminals::open_terminal,
+            crate::terminals::list_terminals
+        ))
+        .routes(routes!(
+            crate::terminals::rename_terminal,
+            crate::terminals::close_terminal
+        ))
+        .routes(routes!(crate::terminals::resize_terminal))
         .routes(crate::attachments::routes())
         .routes(routes!(crate::session_skills::list))
         .routes(routes!(crate::api_sessions::list_tombstones))

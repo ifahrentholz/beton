@@ -228,6 +228,7 @@ pub async fn start_with(
             ]))),
             shutdown: Some(stop_rx.clone()),
             compaction: runtime.compaction,
+            channels: runtime.channels.clone(),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

@@ -252,7 +252,13 @@ async fn proto_007_owner_opens_a_terminal_channel_and_drives_it() {
     }
     // Schließen: Bestätigung, danach keine Frames mehr.
     send(&mut ws, json!({"t": "close_channel", "channel_id": cid})).await;
-    let closed = text(&mut ws).await;
+    let closed = loop {
+        let m = text(&mut ws).await;
+        if m["t"] != "credit" {
+            break m;
+        }
+        assert_eq!(m["bytes"], 3, "Kredit für die Eingabe zurück");
+    };
     assert_eq!(closed["t"], "channel_closed");
     assert_eq!(relay.subscribers(), 0);
 }
@@ -416,7 +422,10 @@ async fn proto_007_ac1_slow_client_bounds_server_memory() {
     let f = fixture(|r| r).await;
     let (source, relay) = f.source(ChannelKind::Terminal, "term_1");
     let hub = f.daemon.runtime.channels.clone();
-    // Produzent: sendet nur im gewährten Kredit (16 KiB je Frame), wie der Runner.
+    let mut ws = f.hello().await;
+    let opened = f.open(&mut ws, "terminal", "term_1").await;
+    let cid = opened["channel_id"].as_u64().unwrap() as u32;
+    // Produzent (startet mit dem Zuschauer): sendet nur im gewährten Kredit (16 KiB je Frame), wie der Runner.
     let producer = {
         let source = source.clone();
         let relay = relay.clone();
@@ -442,9 +451,6 @@ async fn proto_007_ac1_slow_client_bounds_server_memory() {
             }
         })
     };
-    let mut ws = f.hello().await;
-    let opened = f.open(&mut ws, "terminal", "term_1").await;
-    let cid = opened["channel_id"].as_u64().unwrap() as u32;
     let mut received = 0u64;
     let mut peak = 0usize;
     // 5 s lang 100 KB/s: alle 100 ms 10 KB Kredit.
@@ -487,7 +493,12 @@ async fn proto_007_ac1_slow_client_bounds_server_memory() {
                 peak = peak.max(hub.buffered_bytes());
             }
             Ok(Some(Ok(_))) => {}
-            other => panic!("Strom endete bei {received}: {other:?}"),
+            other => panic!(
+                "Strom endete bei {received}: {other:?}; Kredit des Senders {}, wartend {}, Zuschauer {}",
+                source.credit.load(Ordering::SeqCst),
+                relay.queued_bytes(),
+                relay.subscribers()
+            ),
         }
     }
     producer.await.unwrap();

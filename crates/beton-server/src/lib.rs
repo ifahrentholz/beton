@@ -46,6 +46,7 @@ pub mod sessions;
 pub mod settings;
 pub mod sse;
 pub mod subagents;
+pub mod terminals;
 pub mod titles;
 pub mod tunnel;
 pub mod usage_notice;
