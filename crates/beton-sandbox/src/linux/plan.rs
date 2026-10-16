@@ -588,7 +588,12 @@ fn modules(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             continue;
         }
         let name = e.file_name();
-        if name == "hooks" || name == "config" {
+        // Steuerdateien nur als Datei (ein Submodul darf `commondir` heißen).
+        let control = ft.is_file()
+            && name
+                .to_str()
+                .is_some_and(|n| crate::git::CONTROL_FILES.contains(&n));
+        if name == "hooks" || name == "config" || control {
             out.push(p);
         } else if ft.is_dir() {
             modules(&p, out, depth + 1);

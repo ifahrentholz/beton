@@ -3,8 +3,8 @@
 //! Eine fehlende Datei lässt sich nicht per Mount sperren, und Landlock unterscheidet keine
 //! Dateinamen; `git` muss im Git-Dir aber beliebige Lock-Dateien anlegen. Der Launcher (L,
 //! außerhalb der Sandbox) beobachtet deshalb die Git-Verzeichnisse per inotify. Entsteht dort
-//! eine Steuerdatei, die beim Start fehlte, beendet er die Sandbox, entfernt die Datei nach
-//! deren Ende und meldet einen `Fs`-Verstoß. Ereignisse werden nicht ausgewertet, nur als
+//! eine Steuerdatei, die beim Start fehlte, entfernt er sie sofort, beendet die Sandbox, räumt
+//! nach deren Ende ein zweites Mal auf und meldet einen `Fs`-Verstoß. Ereignisse werden nicht ausgewertet, nur als
 //! Anlass genommen, nachzusehen; ein Überlauf der Ereignis-Warteschlange schadet daher nicht.
 
 use std::os::fd::RawFd;
@@ -79,7 +79,7 @@ impl GitWatch {
         self.guarded.iter().filter(|p| exists(p)).cloned().collect()
     }
 
-    /// Nach dem Ende der Sandbox: entfernt entstandene Steuerdateien und liefert ihre Pfade.
+    /// Entfernt entstandene Steuerdateien und liefert ihre Pfade.
     pub fn sweep(&self) -> Vec<PathBuf> {
         let found = self.check();
         for p in &found {

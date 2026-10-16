@@ -269,9 +269,10 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
         if let Some(w) = &git_watch
             && git_hits.is_empty()
         {
-            git_hits = w.check();
+            // Eine Git-Steuerdatei entstand: sofort entfernen, dann die Sandbox beenden (fail
+            // closed); nach deren Ende räumt `sweep` ein zweites Mal auf.
+            git_hits = w.sweep();
             if !git_hits.is_empty() {
-                // Eine Git-Steuerdatei entstand: Sandbox sofort beenden (fail closed).
                 util::kill(child, libc::SIGKILL);
             }
         }
