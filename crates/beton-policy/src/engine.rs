@@ -154,8 +154,8 @@ pub struct Reason {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalDoc>,
     /// Grant-Fingerprint einer merkbaren `ask`-Regel in Phase `tool_call` (POL-010):
-    /// `remember_key` der Regel, sonst `kind:server/name@cwd:command` (Shell) bzw.
-    /// `kind:server/name:sha256:…` über die kanonischen Argumente.
+    /// `remember_key` der Regel, sonst das JSON-Array `[kind, server, name, cwd, command]`
+    /// (Shell) bzw. `[kind, server, name, "sha256:…"]` über die kanonischen Argumente.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
 }
@@ -607,27 +607,26 @@ impl<'a> Run<'a> {
             _ => None,
         };
         // Bindung an Klasse, Server und Tool (Security-Review B1): ein Grant gilt nie für ein
-        // anderes Tool mit denselben Argumenten.
-        let kind = text("kind").unwrap_or_else(|| "other".into());
-        let tool = format!(
-            "{}/{}",
+        // anderes Tool mit denselben Argumenten. Die Teile stehen als JSON-Array im
+        // Fingerprint, damit kein Trennzeichen in einem Teil zwei Calls gleich macht (#242).
+        let mut parts = vec![
+            text("kind").unwrap_or_else(|| "other".into()),
             text("server").unwrap_or_else(|| "builtin".into()),
-            text("name").unwrap_or_default()
-        );
+            text("name").unwrap_or_default(),
+        ];
         if let Some(command) = text("command") {
             // Shell: der ausgeführte Befehl im selben Arbeitsverzeichnis.
-            let cwd = text("cwd").unwrap_or_default();
-            return Some(format!("{kind}:{tool}@{cwd}:{command}"));
+            parts.push(text("cwd").unwrap_or_default());
+            parts.push(command);
+        } else {
+            let args = ctx
+                .field("tool", "args")
+                .map(|a| a.to_json())
+                .unwrap_or(Value::Null);
+            let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
+            parts.push(format!("sha256:{}", hex::encode(Sha256::digest(&canonical))));
         }
-        let args = ctx
-            .field("tool", "args")
-            .map(|a| a.to_json())
-            .unwrap_or(Value::Null);
-        let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
-        Some(format!(
-            "{kind}:{tool}:sha256:{}",
-            hex::encode(Sha256::digest(&canonical))
-        ))
+        serde_json::to_string(&parts).ok()
     }
 
     fn is_dry(set: &LoadedSet, rule: &LoadedRule) -> bool {
