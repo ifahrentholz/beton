@@ -910,6 +910,12 @@ payload!(TerminalOpened {
     cmd: String,
     cols: u16,
     rows: u16,
+    /// Anzeigename des Terminal-Tabs (SES-019, WEB-010); ändert sich mit `terminal.renamed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] name: Option<String>,
+});
+payload!(TerminalRenamed {
+    terminal_id: String,
+    name: String
 });
 payload!(
     /// Metadaten zum Binärkanal; die Bytes laufen über den Kanal (PROTO-007).
@@ -1215,6 +1221,7 @@ catalog! {
     TerminalOpened = "terminal.opened", Durable, TerminalOpened;
     TerminalOutput = "terminal.output", Transient, TerminalOutput;
     TerminalSnapshot = "terminal.snapshot", Durable, TerminalSnapshot;
+    TerminalRenamed = "terminal.renamed", Durable, TerminalRenamed;
     TerminalClosed = "terminal.closed", Durable, TerminalClosed;
     BrowserOpened = "browser.opened", Durable, BrowserOpened;
     BrowserFrame = "browser.frame", Transient, BrowserFrame;

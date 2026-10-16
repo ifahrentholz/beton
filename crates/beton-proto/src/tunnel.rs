@@ -4,15 +4,18 @@
 //! `~/.beton/run/tunnel.sock`. Runner liefern Events ohne `seq` mit eigener Folgenummer
 //! `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`.
 
-use beton_core::event::Event;
+use beton_core::event::{Actor, Event};
 use beton_core::id::SessionId;
+
+use crate::channel::ChannelKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
 pub const SUBPROTOCOL: &str = "beton.tunnel.v1";
-pub const PROTOCOL: &str = "1.0";
+/// `1.1`: Binärkanäle (`channel.*`, Binärframes, PROTO-007) und `actor` in `cmd.deliver`.
+pub const PROTOCOL: &str = "1.1";
 
 /// Wer sich verbindet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -72,6 +75,25 @@ pub enum TunnelUp {
         #[serde(default)]
         args: Value,
     },
+    /// Kanal des Runners anmelden (PROTO-007), z. B. das PTY eines Terminals. Nach jedem
+    /// (Wieder-)Verbinden meldet der Runner alle offenen Kanäle erneut; der Server antwortet
+    /// mit Kredit (`channel.credit`), erst dann sendet der Runner Frames.
+    #[serde(rename = "channel.open")]
+    ChannelOpen {
+        channel_id: u32,
+        kind: ChannelKind,
+        #[serde(rename = "ref")]
+        #[ts(rename = "ref")]
+        target: String,
+    },
+    /// Kanal des Runners beendet.
+    #[serde(rename = "channel.close")]
+    ChannelClose {
+        channel_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<String>,
+    },
     #[serde(rename = "cmd.result")]
     CmdResult {
         cmd_id: String,
@@ -115,7 +137,19 @@ pub enum TunnelDown {
         name: String,
         #[serde(default)]
         args: Value,
+        /// Wer das Kommando ausgelöst hat (z. B. für `terminal.opened` bzw. `fs.changed` mit
+        /// `actor: user`, SES-019, #93); fehlt bei älteren Servern.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        actor: Option<Actor>,
     },
+    /// Kredit für Frames des Runners auf einem Kanal (Bytes, PROTO-007).
+    #[serde(rename = "channel.credit")]
+    ChannelCredit { channel_id: u32, bytes: u64 },
+    /// Ein Keyframe anfordern (neuer Zuschauer): Der Runner schickt den vollständigen Zustand
+    /// (Terminal: Scrollback und Bildschirm) als Frames mit `KEYFRAME`, das letzte mit `FIN`.
+    #[serde(rename = "channel.keyframe")]
+    ChannelKeyframe { channel_id: u32 },
     /// Ergebnis eines `system.call`: `result` oder `problem` (`{code, detail}`).
     #[serde(rename = "system.result")]
     SystemResult {
@@ -244,6 +278,35 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn proto_007_tunnel_channel_messages() {
+        let up = serde_json::to_value(TunnelUp::ChannelOpen {
+            channel_id: 1,
+            kind: ChannelKind::Terminal,
+            target: "term_1".into(),
+        })
+        .unwrap();
+        assert_eq!(up["t"], "channel.open");
+        assert_eq!(up["ref"], "term_1");
+        let down: TunnelDown = serde_json::from_value(
+            serde_json::json!({"t": "channel.credit", "channel_id": 1, "bytes": 65536}),
+        )
+        .unwrap();
+        assert!(matches!(
+            down,
+            TunnelDown::ChannelCredit {
+                channel_id: 1,
+                bytes: 65536
+            }
+        ));
+        // `actor` fehlt bei älteren Servern.
+        let cmd: TunnelDown = serde_json::from_value(
+            serde_json::json!({"t": "cmd.deliver", "cmd_id": "c1", "name": "terminal.open"}),
+        )
+        .unwrap();
+        assert!(matches!(cmd, TunnelDown::CmdDeliver { actor: None, .. }));
     }
 }
 

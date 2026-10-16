@@ -107,9 +107,10 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `cr.linked` / `cr.unlinked` | D | `url, provider, number, origin: created\|attached\|inferred` |
 | | `git.conflicts_detected` | D | `base, base_sha, head_sha, files[{path, kind: content\|delete_modify\|rename\|binary}], source: local\|provider` |
 | | `git.conflict_resolution` | D | `phase: started\|hunk_resolved\|completed\|aborted, strategy?: merge\|rebase, path?, hunk?, resolution?: ours\|theirs\|both\|edited\|agent, actor` |
-| Terminal | `terminal.opened` | D | `terminal_id, channel_id, kind: harness_pty\|user\|tool, cmd, cols, rows` |
+| Terminal | `terminal.opened` | D | `terminal_id, channel_id, kind: harness_pty\|user\|tool, cmd, cols, rows, name?` |
 | | `terminal.output` | T | Binärkanal (Bytes) |
 | | `terminal.snapshot` | D | `terminal_id, blob_ref, cols, rows, cursor` |
+| | `terminal.renamed` | D | `terminal_id, name` (SES-019, WEB-010) |
 | | `terminal.closed` | D | `terminal_id, exit_code?` |
 | Browser | `browser.opened` | D | `browser_id, channel_id, mode: embedded\|window` |
 | | `browser.frame` | T | Binärkanal (Bild + Metadaten) |
