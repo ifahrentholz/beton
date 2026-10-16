@@ -17,10 +17,10 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use beton_sandbox::broker::proto::{Reply, Request, VERSION};
+use beton_sandbox::broker::proto::{Op, Reply, Request, VERSION};
 use beton_sandbox::broker::{Broker, client};
 use beton_sandbox::{
     BackendChoice, CommandSpec, Registry, ResolveCtx, ResolvedPolicy, Sandbox, SandboxProvider,
@@ -143,6 +143,7 @@ fn tools(fx: &Fx, ctx: ResolveCtx) -> (Sandbox, Arc<AtomicUsize>) {
 fn request(fx: &Fx, token: &str, argv: &[&str]) -> Request {
     Request {
         v: VERSION,
+        op: Op::Exec,
         token: token.to_owned(),
         argv: argv.iter().map(|s| (*s).to_owned()).collect(),
         cwd: fx.ws.clone(),
@@ -248,6 +249,202 @@ async fn sbx_002_ac3_broker_rejects_foreign_cwd_denied_env_and_bad_requests() {
     // Nichts davon wurde gestartet.
     assert_eq!(started.load(Ordering::SeqCst), 1);
     assert_eq!(broker.started(), 1, "Zähler für die Integritätsprüfung");
+}
+
+/// `<exec>/git/git` → Test-Binary: der Git-Shim der Stufe 1 (SBX-003, #311).
+fn git_shim(fx: &Fx) -> PathBuf {
+    let dir = fx.exec_dir.join("git");
+    std::fs::create_dir_all(&dir).unwrap();
+    let link = dir.join("git");
+    if !link.exists() {
+        std::os::unix::fs::symlink(launcher(), &link).unwrap();
+    }
+    link
+}
+
+/// Prüfung der Git-Steuerdateien, die per Schalter einen Verstoß meldet.
+fn git_check(changed: &Arc<AtomicBool>) -> beton_sandbox::broker::GitCheck {
+    let changed = changed.clone();
+    Arc::new(move || {
+        if changed.load(Ordering::SeqCst) {
+            Err("Git-Steuerdatei geändert: .git/commondir".into())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+/// Vor jedem `git` der Stufe 1 fragt der Shim den Broker (Stufe 0), ob die Git-Steuerdateien
+/// dem Schnappschuss entsprechen (SBX-003, #311). Der Broker startet dabei nichts; ohne
+/// gültiges Token oder ohne Prüfung lehnt er ab (fail closed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_003_git_preflight_asks_stage_zero_and_fails_closed() {
+    let fx = fx();
+    let (sandbox, started) = tools(&fx, ctx(&fx, Stage::Tools));
+    let changed = Arc::new(AtomicBool::new(false));
+    let broker = Broker::start_with_git_check(&fx.exec_dir, sandbox, git_check(&changed))
+        .await
+        .unwrap();
+    let token = broker.token().expose().to_owned();
+    let mut pre = request(&fx, &token, &[]);
+    pre.op = Op::GitPreflight;
+    // Kontrollgruppe: unverändert → git darf starten.
+    assert_eq!(ask(&broker, &pre), Reply::Allowed);
+    changed.store(true, Ordering::SeqCst);
+    match ask(&broker, &pre) {
+        Reply::Error { code, message } => {
+            assert_eq!(code, "git_control_changed");
+            assert!(message.contains(".git/commondir"), "{message}");
+        }
+        other => panic!("Ablehnung erwartet: {other:?}"),
+    }
+    changed.store(false, Ordering::SeqCst);
+    let mut wrong = pre.clone();
+    wrong.token = "falsch".into();
+    assert_eq!(error_code(&ask(&broker, &wrong)), "unauthorized");
+    let mut old = pre.clone();
+    old.v = VERSION + 1;
+    assert_eq!(error_code(&ask(&broker, &old)), "invalid_request");
+    // Die Vorabprüfung startet nichts und zählt nicht als Start in Stufe 2.
+    assert_eq!(started.load(Ordering::SeqCst), 0);
+    assert_eq!(broker.started(), 0);
+    drop(broker);
+
+    // Ohne Prüfung des Runners: kein git (fail closed).
+    let (sandbox, _) = tools(&fx, ctx(&fx, Stage::Tools));
+    let broker = Broker::start(&fx.exec_dir, sandbox).await.unwrap();
+    let mut pre = request(&fx, broker.token().expose(), &[]);
+    pre.op = Op::GitPreflight;
+    assert_eq!(error_code(&ask(&broker, &pre)), "unsupported");
+}
+
+/// Der Shim startet das echte git (absoluter Pfad aus Stufe 0) mit unveränderten Argumenten
+/// und unveränderter Umgebung, aber nur nach erfolgreicher Prüfung; sonst endet er mit 126,
+/// ohne git zu starten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_003_git_shim_starts_the_real_git_unchanged_only_after_the_check() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = fx();
+    let (sandbox, _) = tools(&fx, ctx(&fx, Stage::Tools));
+    let changed = Arc::new(AtomicBool::new(false));
+    let broker = Broker::start_with_git_check(&fx.exec_dir, sandbox, git_check(&changed))
+        .await
+        .unwrap();
+    // Attrappe des echten git: hält Aufrufpfad, Argumente und eine Variable fest.
+    let marker = fx.root.join("git-aufgerufen");
+    let real = fx.root.join("echt/git");
+    write(
+        &real,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" \"FOO=$FOO\" > '{}'\nexit 3\n",
+            marker.display()
+        ),
+    );
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Eine zweite Attrappe im `PATH`: Der Shim sucht nie selbst im `PATH`.
+    let decoy = fx.root.join("lockvogel/git");
+    write(
+        &decoy,
+        &format!("#!/bin/sh\necho lockvogel > '{}'\n", marker.display()),
+    );
+    std::fs::set_permissions(&decoy, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let shim = git_shim(&fx);
+    let run = |real: Option<&str>| {
+        let mut c = std::process::Command::new(&shim);
+        c.args(["status", "--porcelain", "a b"])
+            .current_dir(&fx.ws)
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", decoy.parent().unwrap().display()),
+            )
+            .env("BETON_EXEC_SOCKET", broker.socket())
+            .env("BETON_EXEC_TOKEN", broker.token().expose())
+            .env("FOO", "bar baz");
+        if let Some(r) = real {
+            c.env(beton_sandbox::broker::git_shim::ENV_GIT, r);
+        }
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            c.env("LLVM_PROFILE_FILE", profile);
+        }
+        c.output().unwrap()
+    };
+    let real_str = real.to_str().unwrap();
+
+    // Kontrollgruppe: unverändert → das echte git, Argumente und Umgebung unverändert,
+    // Exit-Code durchgereicht.
+    let out = run(Some(real_str));
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    let got = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(
+        got.lines().collect::<Vec<_>>(),
+        [real_str, "status", "--porcelain", "a b", "FOO=bar baz"]
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    // Verändert → kein git, Exit ≠ 0 mit Meldung auf stderr.
+    changed.store(true, Ordering::SeqCst);
+    let out = run(Some(real_str));
+    assert_eq!(out.status.code(), Some(126), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(".git/commondir"), "{stderr}");
+    assert!(!marker.exists(), "git darf nicht starten");
+    changed.store(false, Ordering::SeqCst);
+
+    // Fail closed: ohne bzw. mit relativem Pfad des echten git, ohne Broker, mit falschem
+    // Token; nie über den `PATH`.
+    for real in [None, Some("git"), Some("echt/git")] {
+        let out = run(real);
+        assert_eq!(out.status.code(), Some(126), "{real:?}: {out:?}");
+        assert!(!marker.exists(), "{real:?}");
+    }
+    let out = {
+        let mut c = std::process::Command::new(&shim);
+        c.env_clear()
+            .env("BETON_EXEC_SOCKET", fx.root.join("gibt-es-nicht.sock"))
+            .env("BETON_EXEC_TOKEN", broker.token().expose())
+            .env(beton_sandbox::broker::git_shim::ENV_GIT, real_str);
+        c.output().unwrap()
+    };
+    assert_eq!(out.status.code(), Some(126), "{out:?}");
+    let out = {
+        let mut c = std::process::Command::new(&shim);
+        c.env_clear()
+            .env("BETON_EXEC_SOCKET", broker.socket())
+            .env("BETON_EXEC_TOKEN", "falsch")
+            .env(beton_sandbox::broker::git_shim::ENV_GIT, real_str);
+        c.output().unwrap()
+    };
+    assert_eq!(out.status.code(), Some(126), "{out:?}");
+    assert!(!marker.exists());
+}
+
+/// Shims der Stufe 1 (Verzeichnis des Brokers) gehören nicht in den `PATH` der Stufe 2: Dort
+/// sind sie nicht lesbar, und `execvp` bräche an ihnen ab, statt weiterzusuchen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_002_broker_keeps_stage_one_shims_out_of_the_stage_two_path() {
+    let fx = fx();
+    let (sandbox, _) = tools(&fx, ctx(&fx, Stage::Tools));
+    let broker = Broker::start(&fx.exec_dir, sandbox).await.unwrap();
+    let shim_dir = git_shim(&fx).parent().unwrap().to_path_buf();
+    let echo = |path: String| {
+        let out = bt_exec(&fx, &broker, &["/bin/sh", "-c", "echo \"$PATH\""])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        echo(format!("{}:/usr/bin:/bin", shim_dir.display())),
+        "/usr/bin:/bin"
+    );
+    // Nur Shims: Stufe 2 behält ihren eigenen `PATH`.
+    let only = echo(shim_dir.display().to_string());
+    assert!(
+        !only.is_empty() && !only.contains(fx.exec_dir.to_str().unwrap()),
+        "{only}"
+    );
 }
 
 /// `bt-exec` mit dem Broker-Zugang im Environment.

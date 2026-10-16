@@ -121,8 +121,13 @@ pub fn kernel_landlock_abi() -> Option<u32> {
 /// `unshare(CLONE_NEWUSER)` verlangt einen Prozess mit nur einem Thread.
 pub fn launcher_dispatch() -> Option<std::process::ExitCode> {
     let mut args = std::env::args_os();
-    let _ = args.next();
-    if args.next().as_deref() != Some(std::ffi::OsStr::new(LAUNCHER_ARG)) {
+    let argv0 = args.next();
+    // Als Git-Shim aufgerufen (SBX-003, #311) gehen alle Argumente unverändert an git.
+    let git_shim = argv0
+        .as_deref()
+        .and_then(|a| std::path::Path::new(a).file_name())
+        .is_some_and(|n| n == crate::broker::git_shim::NAME);
+    if git_shim || args.next().as_deref() != Some(std::ffi::OsStr::new(LAUNCHER_ARG)) {
         return None;
     }
     let rest: Vec<std::ffi::OsString> = args.collect();
