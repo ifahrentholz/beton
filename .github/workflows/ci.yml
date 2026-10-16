@@ -170,19 +170,23 @@ jobs:
         run: cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored --nocapture
 
       # covers: SEC-013 AC3 (≥ 50 MB/s pro Kern bei 1 000 bekannten Werten im Release-Build;
-      # Regression > 20 % gegenüber main schlägt fehl). Basis wie bei der Coverage: der letzte
-      # Stand von main im Actions-Cache, geschrieben von Pushes auf main.
+      # Regression > 20 % gegenüber main schlägt fehl). Basis ist der Median der letzten fünf
+      # Messungen von main (#296): Die Basis-Datei im Actions-Cache führt die Messreihe
+      # (`history`); jeder Push auf main lädt die letzte Datei, hängt seinen Wert an
+      # (`BETON_BENCH_RECORD`, ohne Vergleich) und speichert sie unter seinem SHA. PRs
+      # vergleichen gegen den Median dieser Reihe; eine alte Datei ohne `history` gilt als
+      # Reihe mit einem Wert.
       - name: Benchmark-Basis der Redaction von main laden
-        if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v4
         with:
           path: target/bench/redaction-main.json
-          key: bench-redaction-main-${{ github.event.pull_request.base.sha }}
+          key: bench-redaction-main-${{ github.event.pull_request.base.sha || github.event.before }}
           restore-keys: bench-redaction-main-
       - name: Benchmark Redaction
         env:
           BETON_BENCH_BASELINE: ${{ github.workspace }}/target/bench/redaction-main.json
           BETON_BENCH_OUT: ${{ github.workspace }}/target/bench/redaction.json
+          BETON_BENCH_RECORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '' }}
         run: cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
       - name: Benchmark-Basis der Redaction für PRs speichern
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
