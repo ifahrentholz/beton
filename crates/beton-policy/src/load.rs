@@ -166,6 +166,11 @@ pub struct LoadedSet {
 }
 
 impl LoadedSet {
+    /// Hinweise zu handgeschriebenen Regeln (kein Ladefehler): `(Regel-ID, Text)`.
+    pub fn lints(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     pub fn rule_ref(&self, rule_id: &str) -> RuleRef {
         RuleRef {
             scope: self.scope,
