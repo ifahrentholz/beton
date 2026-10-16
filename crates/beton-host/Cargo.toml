@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Testbudget der Policy-Engine (#298, #304): nur als dev-dependency aktivieren, nie in
+# ausgelieferten Builds.
+test-budget = ["beton-runner/test-budget"]
+
 [dependencies]
 async-trait.workspace = true
 beton-core.workspace = true
@@ -24,6 +29,7 @@ tracing.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
+beton-host = { workspace = true, features = ["test-budget"] }
 tempfile.workspace = true
 
 [lints]

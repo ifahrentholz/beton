@@ -60,7 +60,7 @@ beton-proxy = { workspace = true, features = ["test-net"] }
 rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
-beton-host.workspace = true
+beton-host = { workspace = true, features = ["test-budget"] }
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
 http-body-util.workspace = true
