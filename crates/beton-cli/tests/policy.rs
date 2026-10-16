@@ -262,3 +262,47 @@ async fn pol_027_ac1_ac2_explain_a_real_decision_with_the_runner_snapshot() {
     assert!(stdout(&show).contains("no-force-push"), "{}", stdout(&show));
     assert_eq!(common::events(&client, &id).await.len(), before);
 }
+
+/// Liest eine Log-Datei unter `$BETON_HOME/logs`, bis `pred` gilt (höchstens 10 s).
+fn wait_log(home: &Path, name: &str, pred: impl Fn(&str) -> bool) -> String {
+    let path = home.join("logs").join(name);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if pred(&text) || Instant::now() > deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// #304: Ist das Testbudget der Policy-Engine aktiv (Feature `test-budget`, nur in Testläufen),
+/// schreiben Daemon und Runner beim Start eine `warn`-Zeile; mit `0` (echtes Budget) nicht.
+#[test]
+fn pol_002_active_test_budget_warns_at_daemon_and_runner_start() {
+    const HELLO: &str = "turns:\n  - emit:\n      - { message: \"Hallo!\" }\n";
+    const MARK: &str = "Testbudget der Policy-Engine aktiv";
+    for (value, warns) in [("1234", true), ("0", false)] {
+        let mut serve = Serve::start_with(&[("BETON_TEST_POLICY_BUDGET_MS", value)]);
+        let scenario = serve.scenario(HELLO);
+        let out = run(common::beton(serve.home())
+            .current_dir(serve.work.path())
+            .args(["run", "fake", "-p", "hallo", "--scenario"])
+            .arg(&scenario));
+        assert!(out.status.success(), "{}", stderr(&out));
+        // Nach dem Ende von Daemon und Runner ist alles geschrieben.
+        serve.terminate();
+        for name in ["daemon.log", "runner.log"] {
+            let text = wait_log(serve.home(), name, |t| !warns || t.contains(MARK));
+            assert!(!text.is_empty(), "{name} fehlt");
+            let line = text.lines().find(|l| l.contains(MARK));
+            if warns {
+                let line = line.unwrap_or_else(|| panic!("{name} ohne Warnung: {text}"));
+                assert!(line.contains("WARN"), "{line}");
+                assert!(line.contains("1234"), "{line}");
+            } else {
+                assert!(line.is_none(), "{name}: {text}");
+            }
+        }
+    }
+}

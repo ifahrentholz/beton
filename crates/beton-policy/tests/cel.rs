@@ -414,6 +414,16 @@ mod test_budget {
     }
 }
 
+/// #304: Ohne das Feature `test-budget` gelten im Betrieb immer die Grenzen aus POL-002, auch
+/// wenn `BETON_TEST_POLICY_BUDGET_MS` gesetzt ist (in Testläufen über `.cargo/config.toml`).
+/// Das Feature schalten nur Dev-Dependencies ein; die CI prüft diesen Test zusätzlich im
+/// Release-Build mit gesetzter Variable.
+#[cfg(not(feature = "test-budget"))]
+#[test]
+fn pol_002_without_the_test_budget_feature_runtime_limits_are_the_defaults() {
+    assert_eq!(Limits::runtime(), Limits::default());
+}
+
 #[test]
 fn pol_002_default_time_budget_stays_10_ms() {
     assert_eq!(Limits::default().eval_budget_us, 10_000);
