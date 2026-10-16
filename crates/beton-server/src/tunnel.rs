@@ -349,6 +349,7 @@ impl RunnerRegistry {
                 cmd_id,
                 name: name.to_owned(),
                 args,
+                actor: None,
             });
         }
         match tokio::time::timeout(timeout, rx).await {
@@ -943,6 +944,8 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
             None
         }
         TunnelUp::Hello { .. } | TunnelUp::SessionBind { .. } => None,
+        // Binärkanäle folgen (PROTO-007).
+        TunnelUp::ChannelOpen { .. } | TunnelUp::ChannelClose { .. } => None,
     }
 }
 

@@ -64,10 +64,29 @@ impl Default for WsConfig {
     }
 }
 
-/// Wer Events einer Session lesen darf. Lokal (M0) gehört alles dem einen Benutzer;
-/// Freigaben (COL-001) ersetzen das in M4.
+/// Wer Events einer Session lesen und sie steuern darf. Lokal gehört alles dem einen
+/// Benutzer (Owner); Freigaben mit Rollen (COL-001) ersetzen das in M4. Die Defaults leiten
+/// alles aus `can_read` ab: wer lesen darf, ist lokal der Owner und darf steuern.
 pub trait Authorizer: Send + Sync {
     fn can_read(&self, auth: Authenticated, session: &beton_store::SessionRecord) -> bool;
+
+    /// Recht auf einem Binärkanal (PROTO-007 AC2); `None`: Kanal nicht öffnen. Ab M4 bilden
+    /// `view` und `comment_approve` auf `read` ab, `drive` auf `drive`.
+    fn channel_access(
+        &self,
+        auth: Authenticated,
+        session: &beton_store::SessionRecord,
+        kind: beton_proto::channel::ChannelKind,
+    ) -> Option<beton_proto::channel::ChannelAccess> {
+        let _ = kind;
+        self.can_read(auth, session)
+            .then_some(beton_proto::channel::ChannelAccess::Drive)
+    }
+
+    /// Darf Terminals öffnen, schließen, umbenennen und ihre Größe setzen (SES-019 AC2)?
+    fn can_drive(&self, auth: Authenticated, session: &beton_store::SessionRecord) -> bool {
+        self.can_read(auth, session)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -361,6 +380,11 @@ impl Conn {
                 self.command(id, session_id, name, args, idempotency_key)
                     .await;
             }
+            // Binärkanäle folgen (PROTO-007).
+            ClientMsg::OpenChannel { id, .. } => {
+                nack(&self.out, &id, Problem::new(ProblemCode::BadRequest));
+            }
+            ClientMsg::CloseChannel { .. } | ClientMsg::Credit { .. } => {}
         }
         None
     }

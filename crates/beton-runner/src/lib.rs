@@ -2082,7 +2082,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     match down {
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
-                        TunnelDown::CmdDeliver { cmd_id, name, args } if name == ONE_SHOT_CMD => {
+                        TunnelDown::CmdDeliver { cmd_id, name, args, .. } if name == ONE_SHOT_CMD => {
                             // Kann dauern (Modellaufruf): nicht im Lese-Loop warten.
                             let adapter = one_shot_adapter.clone();
                             let ctx = one_shot_ctx.clone();
@@ -2093,7 +2093,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 let _ = tx.send((cmd_id, reply));
                             });
                         }
-                        TunnelDown::CmdDeliver { cmd_id, name, args } => {
+                        TunnelDown::CmdDeliver { cmd_id, name, args, .. } => {
                             // Stand vor dem Turn festhalten, bevor der Harness die Eingabe sieht.
                             if name == "input.submit"
                                 && turn_tx.borrow().is_none()
@@ -2196,6 +2196,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                         }
                         TunnelDown::Welcome { .. } => {}
+                        TunnelDown::ChannelCredit { .. } | TunnelDown::ChannelKeyframe { .. } => {}
                     }
                 }
                 Some((cmd_id, reply)) = one_shot_rx.recv() => {
@@ -2654,7 +2655,7 @@ impl PreStart {
                                 });
                             }
                         }
-                        TunnelDown::CmdDeliver { cmd_id, name, args } => {
+                        TunnelDown::CmdDeliver { cmd_id, name, args, .. } => {
                             let (result, problem) = if name == "approval.resolve" {
                                 let key = args["call_id"].as_str().unwrap_or_default();
                                 if gate.resolve(key, gate_decision(&args)) {
