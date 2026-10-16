@@ -1,0 +1,7 @@
+# Testdaten zum Regeltyp git_guard (POL-017, POL-026 AC4): Standardwerte.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: git
+rules:
+  - id: git
+    type: git_guard

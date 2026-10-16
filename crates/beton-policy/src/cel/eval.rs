@@ -314,6 +314,7 @@ impl Ctx<'_, '_> {
                     .map_err(fail)
             }
             Func::DomainMatches => Ok(Value::Bool(ext::domain_matches(s(0)?, s(1)?))),
+            Func::Priced => Ok(Value::Bool(ext::priced(s(0)?))),
             Func::BytesHuman => match &args[0] {
                 Value::Int(i) => u64::try_from(*i)
                     .map(|n| Value::String(ext::bytes_human(n).into()))

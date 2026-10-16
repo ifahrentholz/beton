@@ -1,0 +1,1 @@
+tool.command.matches("(a+)+b") || tool.command.matches("^(.*)*$")

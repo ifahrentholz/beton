@@ -390,6 +390,7 @@ async fn import_one(
                 trigger: SessionTrigger::User,
                 home_node: state.local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await?;

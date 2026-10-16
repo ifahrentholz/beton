@@ -171,6 +171,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Nur diese Art des Ziels, z. B. `credential` (Nutzung und Fehlgebrauch von\nCredential-Bindings, PRX-009 AC4) oder `secret`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1803,6 +1812,107 @@
         }
       }
     },
+    "/v1/secrets/test": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Secret beim Provider prüfen (SEC-004, SEC-011 AC3): über den Egress-Proxy des Daemons,\nder den Wert nur für die API des Providers einsetzt; die Antwort nennt nie den Wert.",
+        "operationId": "test_secret",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ergebnis der Prüfung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSecretView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unbekannte Ref",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Datei-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider bzw. Proxy nicht erreichbar",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/secrets/unlock": {
       "post": {
         "tags": [
@@ -2050,7 +2160,7 @@
             }
           },
           "400": {
-            "description": "Ungültige Anfrage",
+            "description": "`validation_failed`, z. B. `max_cost_usd` nicht positiv",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6149,6 +6259,38 @@
           }
         }
       },
+      "BudgetExhaustedView": {
+        "type": "object",
+        "description": "Ein erreichtes Budget-Limit einer Auswertung.",
+        "required": [
+          "rule_id",
+          "scope",
+          "set",
+          "budget_scope",
+          "action"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "description": "Regel-ID (`max-cost` beim Session-Budget, API-006)."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Ebene des Sets."
+          },
+          "set": {
+            "type": "string"
+          },
+          "budget_scope": {
+            "type": "string",
+            "description": "Kostenbereich: `session`, `run`, `subtree` oder `user`."
+          },
+          "action": {
+            "type": "string",
+            "description": "`deny` oder `ask`."
+          }
+        }
+      },
       "CatalogEntryView": {
         "type": "object",
         "description": "Ein Modell des mitgelieferten Preis-Katalogs (USE-002); USD je 1 Mio. Tokens, wie im\nKatalog angegeben (fehlende Cache-Raten bleiben leer).",
@@ -6403,6 +6545,14 @@
                 "type": "null"
               }
             ]
+          },
+          "max_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);\nerreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab."
           }
         }
       },
@@ -7423,7 +7573,8 @@
           "enforcement",
           "decision",
           "explanation",
-          "explain"
+          "explain",
+          "budget_exhausted"
         ],
         "properties": {
           "outcome": {
@@ -7445,6 +7596,13 @@
           "explain": {
             "type": "string",
             "description": "Erklärung als Text."
+          },
+          "budget_exhausted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetExhaustedView"
+            },
+            "description": "Budget-Limits, die diese Auswertung erreicht (POL-011, POL-012; wie `budget.exhausted`)."
           }
         }
       },
@@ -7654,7 +7812,8 @@
           "unavailable",
           "secrets_unavailable",
           "redaction_unavailable",
-          "sandbox_unavailable"
+          "sandbox_unavailable",
+          "credential_source_error"
         ]
       },
       "ProviderInfo": {
@@ -8678,6 +8837,89 @@
           "expired": {
             "type": "boolean",
             "description": "Reset-Zeitpunkt liegt in der Vergangenheit: der Wert ist überholt."
+          }
+        }
+      },
+      "TestSecretRequest": {
+        "type": "object",
+        "description": "Anfrage an `POST /v1/secrets/test`.",
+        "required": [
+          "secret_ref"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`github` oder `gitlab`, falls der Provider der Ref die Art nicht verrät."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TestSecretView": {
+        "type": "object",
+        "description": "Ergebnis der Prüfung beim Provider; enthält nie den Wert.",
+        "required": [
+          "secret_ref",
+          "provider",
+          "kind",
+          "status",
+          "ok",
+          "missing"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Host der geprüften API."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP-Status der Antwort des Providers.",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Gültig und alle nötigen Scopes vorhanden."
+          },
+          "login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes laut Provider; `null`, wenn er keine nennt (z. B. fine-grained PAT)."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fehlende Scopes für Git und API (GitHub `repo`, GitLab `api`)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

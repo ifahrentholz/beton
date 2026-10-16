@@ -306,29 +306,87 @@ fn parse_rule(text: &str) -> Result<Rule, RuleError> {
     })
 }
 
-/// Passt ein Segment-Muster auf ein Pfadsegment?
-fn segment_matches(tokens: &[Token], seg: &[char]) -> bool {
-    match tokens.split_first() {
-        None => seg.is_empty(),
-        Some((Token::Literal(l), rest)) => {
-            let l: Vec<char> = l.chars().collect();
-            seg.starts_with(&l) && segment_matches(rest, &seg[l.len()..])
-        }
-        Some((Token::Question, rest)) => !seg.is_empty() && segment_matches(rest, &seg[1..]),
-        Some((Token::Star, rest)) => (0..=seg.len()).any(|i| segment_matches(rest, &seg[i..])),
-    }
+/// Zeichen eines Segment-Musters (für [`segment_matches`]).
+enum Pat {
+    Char(char),
+    One,
+    Star,
 }
 
-/// Passt der Glob auf die Pfadsegmente? `**` verschluckt null oder mehr Segmente.
-fn path_matches(glob: &[Segment], path: &[Vec<char>]) -> bool {
-    match glob.split_first() {
-        None => path.is_empty(),
-        Some((Segment::Any, rest)) => (0..=path.len()).any(|i| path_matches(rest, &path[i..])),
-        Some((Segment::Pattern(tokens), rest)) => match path.split_first() {
-            Some((seg, path_rest)) => segment_matches(tokens, seg) && path_matches(rest, path_rest),
-            None => false,
-        },
+/// Passt ein Segment-Muster auf ein Pfadsegment? Greedy mit Rücksprung auf das letzte `*`:
+/// höchstens `O(|Muster| · |Segment|)` Schritte statt exponentiellem Backtracking (PRX-003;
+/// ein Agent bestimmt den Pfad).
+fn segment_matches(tokens: &[Token], seg: &[char]) -> bool {
+    let pat: Vec<Pat> = tokens
+        .iter()
+        .flat_map(|t| match t {
+            Token::Literal(l) => l.chars().map(Pat::Char).collect::<Vec<_>>(),
+            Token::Question => vec![Pat::One],
+            Token::Star => vec![Pat::Star],
+        })
+        .collect();
+    let (mut p, mut s) = (0, 0);
+    // Position nach dem letzten `*` und die Segmentposition, ab der es zuletzt griff.
+    let mut back: Option<(usize, usize)> = None;
+    while s < seg.len() {
+        match pat.get(p) {
+            Some(Pat::Star) => {
+                back = Some((p + 1, s));
+                p += 1;
+            }
+            Some(Pat::One) => {
+                p += 1;
+                s += 1;
+            }
+            Some(Pat::Char(c)) if *c == seg[s] => {
+                p += 1;
+                s += 1;
+            }
+            _ => match back {
+                // Das letzte `*` verschluckt ein Zeichen mehr.
+                Some((bp, bs)) => {
+                    back = Some((bp, bs + 1));
+                    p = bp;
+                    s = bs + 1;
+                }
+                None => return false,
+            },
+        }
     }
+    pat[p..].iter().all(|x| matches!(x, Pat::Star))
+}
+
+/// Passt der Glob auf die Pfadsegmente? `**` verschluckt null oder mehr Segmente. Dynamische
+/// Programmierung über die Glob-Segmente: höchstens `|Glob| · |Pfad|` Segmentvergleiche statt
+/// exponentiellem Backtracking (PRX-003).
+fn path_matches(glob: &[Segment], path: &[Vec<char>]) -> bool {
+    // reach[j]: Die bisherigen Glob-Segmente passen auf die ersten `j` Pfadsegmente.
+    let mut reach = vec![false; path.len() + 1];
+    reach[0] = true;
+    for g in glob {
+        let mut next = vec![false; path.len() + 1];
+        match g {
+            Segment::Any => {
+                let mut any = false;
+                for (j, r) in reach.iter().enumerate() {
+                    any |= *r;
+                    next[j] = any;
+                }
+            }
+            Segment::Pattern(tokens) => {
+                for (j, seg) in path.iter().enumerate() {
+                    if reach[j] && segment_matches(tokens, seg) {
+                        next[j + 1] = true;
+                    }
+                }
+            }
+        }
+        if !next.contains(&true) {
+            return false;
+        }
+        reach = next;
+    }
+    reach[path.len()]
 }
 
 impl Target {
@@ -456,6 +514,120 @@ mod tests {
             port: uri.port_u16().unwrap_or(scheme.default_port()),
             path: &path,
         })
+    }
+
+    /// PRX-003: `*` und `**` backtracken nicht exponentiell; ein Agent kann mit einem Pfad
+    /// gegen eine Regel mit vielen Wildcards keinen Proxy-Worker blockieren (Befund des
+    /// Fuzz-Targets `egress_rules`, QA-009). Jede Entscheidung braucht unter 10 ms.
+    #[test]
+    fn prx_003_wildcards_do_not_backtrack_exponentially() {
+        use std::time::{Duration, Instant};
+        let cases = [
+            (
+                "GET api.test/*a*a*a*a*a*a*a*b/**",
+                format!("https://api.test/{}", "a".repeat(60)),
+            ),
+            (
+                "GET api.test/**/a/**/a/**/a/**/a/**/a/**/b",
+                format!("https://api.test/{}c", "a/".repeat(80)),
+            ),
+        ];
+        let n = cases.len();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (rule, url) in cases {
+                let set = rules(&[rule]);
+                let mut best = Duration::MAX;
+                for _ in 0..3 {
+                    let t = Instant::now();
+                    let d = decide(&set, "GET", &url);
+                    best = best.min(t.elapsed());
+                    assert!(!d.is_allowed(), "{rule}");
+                }
+                tx.send((rule, best)).unwrap();
+            }
+        });
+        for _ in 0..n {
+            let (rule, took) = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("Matching hängt (exponentielles Backtracking)");
+            assert!(took < Duration::from_millis(10), "{rule}: {took:?}");
+        }
+    }
+
+    /// Die frühere, rekursive Implementierung als Referenz für die Semantik.
+    fn reference_segment(tokens: &[Token], seg: &[char]) -> bool {
+        match tokens.split_first() {
+            None => seg.is_empty(),
+            Some((Token::Literal(l), rest)) => {
+                let l: Vec<char> = l.chars().collect();
+                seg.starts_with(&l) && reference_segment(rest, &seg[l.len()..])
+            }
+            Some((Token::Question, rest)) => !seg.is_empty() && reference_segment(rest, &seg[1..]),
+            Some((Token::Star, rest)) => {
+                (0..=seg.len()).any(|i| reference_segment(rest, &seg[i..]))
+            }
+        }
+    }
+
+    fn reference_path(glob: &[Segment], path: &[Vec<char>]) -> bool {
+        match glob.split_first() {
+            None => path.is_empty(),
+            Some((Segment::Any, rest)) => {
+                (0..=path.len()).any(|i| reference_path(rest, &path[i..]))
+            }
+            Some((Segment::Pattern(tokens), rest)) => match path.split_first() {
+                Some((seg, path_rest)) => {
+                    reference_segment(tokens, seg) && reference_path(rest, path_rest)
+                }
+                None => false,
+            },
+        }
+    }
+
+    mod matcher_props {
+        use super::*;
+        use proptest::collection::vec;
+        use proptest::prelude::*;
+
+        fn token() -> impl Strategy<Value = Token> {
+            prop_oneof![
+                "[ab]{1,2}".prop_map(Token::Literal),
+                Just(Token::Star),
+                Just(Token::Question),
+            ]
+        }
+
+        fn segment() -> impl Strategy<Value = Segment> {
+            prop_oneof![
+                1 => Just(Segment::Any),
+                3 => vec(token(), 0..5).prop_map(Segment::Pattern),
+            ]
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(2000))]
+
+            /// PRX-003: Das lineare Matching entscheidet wie die frühere Implementierung.
+            #[test]
+            fn prx_003_matcher_agrees_with_the_backtracking_reference(
+                glob in vec(segment(), 0..6),
+                path in vec("[ab]{0,4}", 0..6),
+            ) {
+                let path: Vec<Vec<char>> = path.iter().map(|s| s.chars().collect()).collect();
+                prop_assert_eq!(path_matches(&glob, &path), reference_path(&glob, &path));
+                for g in &glob {
+                    if let Segment::Pattern(tokens) = g {
+                        for seg in &path {
+                            prop_assert_eq!(
+                                segment_matches(tokens, seg),
+                                reference_segment(tokens, seg)
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

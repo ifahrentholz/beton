@@ -64,6 +64,8 @@ fn boot() -> RunnerBoot {
         sandbox: None,
         proxy_ca: None,
         compaction: Default::default(),
+        max_cost_usd: None,
+        spawned: false,
     }
 }
 
@@ -128,6 +130,45 @@ async fn run_002_ac4_env_outside_allowlist_is_not_visible() {
     assert!(env.contains("PATH="));
     assert!(!env.contains("AWS_SECRET_ACCESS_KEY"), "{env}");
     assert!(!env.contains("ANTHROPIC_API_KEY"));
+}
+
+/// #298: Debug-Builds reichen das großzügige Zeitbudget der Policy-Engine für
+/// Integrationstests an den Runner weiter, aus der geerbten Umgebung oder, weil die
+/// Test-Helfer `BETON_*` herausfiltern, aus der des Daemons (`.cargo/config.toml`).
+#[cfg(debug_assertions)]
+#[tokio::test]
+async fn pol_002_debug_builds_pass_the_test_policy_budget_to_the_runner() {
+    let var = beton_runner::env::TEST_POLICY_BUDGET;
+    for (inherited, expected) in [
+        (Some("1234"), Some("1234".to_owned())),
+        (None, std::env::var(var).ok()),
+    ] {
+        let (state, work) = (ws(), ws());
+        let out = work.path().join("env.txt");
+        let mut inherit = BTreeMap::new();
+        inherit.insert("PATH".to_owned(), std::env::var("PATH").unwrap());
+        if let Some(v) = inherited {
+            inherit.insert(var.to_owned(), v.to_owned());
+        }
+        let p = beton_host::LocalProvider::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("read t; env > '{}'", out.display()),
+            ],
+            state.path().to_path_buf(),
+        )
+        .with_inherited_env(inherit);
+        let prov = p.provision(&spec(work.path())).await.unwrap();
+        let h = p.start(&prov, &boot()).await.unwrap();
+        wait_exit(&p, &h).await;
+        let env = std::fs::read_to_string(&out).unwrap();
+        let got = env
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{var}=")))
+            .map(str::to_owned);
+        assert_eq!(got, expected, "{inherited:?}: {env}");
+    }
 }
 
 /// HAR-011 AC5: Der API-Key einer Session kommt als zweite stdin-Zeile, nie als

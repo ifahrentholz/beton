@@ -83,7 +83,7 @@ pub struct Provisioned {
 }
 
 /// Übergabe des Stufenmodells an den Runner (SBX-002, #191).
-pub use beton_runner::stages::{CaText, SandboxBoot, active as stages_active};
+pub use beton_runner::stages::{CaText, SandboxBoot, active as stages_active, vendor_key};
 
 /// Startdaten für den Runner (RUN-002, AUTH-011).
 #[derive(Debug, Clone)]
@@ -121,6 +121,10 @@ pub struct RunnerBoot {
     pub proxy_ca: Option<beton_runner::stages::CaText>,
     /// `compaction:` der User-Konfiguration (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
+    /// Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
+    pub spawned: bool,
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
@@ -274,6 +278,8 @@ macro_rules! runner_provider_contract {
                     sandbox: None,
                     proxy_ca: None,
                     compaction: Default::default(),
+                    max_cost_usd: None,
+                    spawned: false,
                 }
             }
 

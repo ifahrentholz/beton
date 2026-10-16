@@ -1,25 +1,28 @@
-//! `beton sandbox probe|explain` (SBX-001 AC1, SBX-003 AC5). Beide ändern nichts und brauchen
-//! keinen Daemon; `exec` und `test` folgen mit SBX-010/SBX-011.
+//! `beton sandbox probe|explain|exec` (SBX-001 AC1, SBX-003 AC5, SBX-010). Keins braucht einen
+//! Daemon; `probe` und `explain` ändern nichts, `exec` startet ein Kommando in der Sandbox
+//! einer Stufe (ohne Netz). `test` folgt mit der Escape-Suite (SBX-011).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use beton_sandbox::{
-    BackendChoice, GitLayout, Mask, NetMode, ProbeReport, Registry, ResolveCtx, ResolvedPolicy,
-    Stage,
+    BackendChoice, CommandSpec, GitLayout, Mask, NetMode, ProbeReport, Registry, ResolveCtx,
+    ResolvedPolicy, SandboxProvider, Stage, Stdio,
 };
 use serde_json::{Value, json};
 
-use crate::cli::{SandboxCommand, SandboxExplainArgs, SandboxStageArg};
+use crate::cli::{SandboxCommand, SandboxExecArgs, SandboxExplainArgs, SandboxStageArg};
 use crate::commands::{Ctx, print_json};
 use crate::exit::{CliError, CliResult, Exit};
 
-pub fn run(ctx: &Ctx, cmd: SandboxCommand) -> CliResult {
+pub async fn run(ctx: &Ctx, cmd: SandboxCommand) -> CliResult {
     match cmd {
         SandboxCommand::Probe => probe(ctx),
         SandboxCommand::Explain(args) => explain(ctx, args),
+        SandboxCommand::Exec(args) => exec(ctx, args).await,
     }
 }
 
@@ -46,6 +49,7 @@ fn line(out: &mut String, r: &ProbeReport, auto: bool) {
     };
     let mark = if auto { " (auto)" } else { "" };
     let _ = writeln!(out, "{}{mark}: {state}", r.id);
+    kernel_line(out, r);
     if let Some(reason) = &r.unavailable_reason {
         let _ = writeln!(out, "  Grund: {reason}");
         return;
@@ -68,6 +72,16 @@ fn line(out: &mut String, r: &ProbeReport, auto: bool) {
     }
 }
 
+/// Kernel-Angaben der Linux-Backends (SBX-010 AC1), auch für nicht verfügbare.
+fn kernel_line(out: &mut String, r: &ProbeReport) {
+    if let Some(k) = &r.kernel {
+        let abi = k
+            .landlock_abi
+            .map_or_else(|| "fehlt".to_owned(), |a| a.to_string());
+        let _ = writeln!(out, "  Kernel: {}, Landlock-ABI: {abi}", k.kernel);
+    }
+}
+
 fn home_dir() -> CliResult<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
@@ -79,7 +93,17 @@ fn sandbox_error(e: beton_sandbox::SandboxError) -> CliError {
     CliError::new(Exit::General, anyhow::anyhow!("{e}"))
 }
 
-fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
+/// Spezifikation, Provider und Auflösungskontext einer Stufe für das aktuelle Verzeichnis.
+struct Resolved {
+    spec: beton_sandbox::SandboxSpec,
+    origins: BTreeMap<String, String>,
+    provider: Arc<dyn SandboxProvider>,
+    rctx: ResolveCtx,
+    /// Scratch der Stufe; lebt, solange die Auflösung gebraucht wird.
+    _scratch: tempfile::TempDir,
+}
+
+fn resolve_ctx(ctx: &Ctx, stage: SandboxStageArg, harness: Option<&str>) -> CliResult<Resolved> {
     let settings = ctx
         .layers()?
         .settings()
@@ -87,7 +111,7 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
     // Presets und Herkunft je Feld (SBX-012 AC3).
     let (spec, origins) =
         beton_sandbox::SandboxSpec::merged_with_origins(&[("user", &settings.sandbox)]);
-    let stage = match args.stage {
+    let stage = match stage {
         SandboxStageArg::Harness => Stage::Harness,
         SandboxStageArg::Tools => Stage::Tools,
     };
@@ -101,7 +125,7 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
     let mut rctx = ResolveCtx::new(stage, &workspace, &home_dir()?, scratch.path());
     rctx.git = GitLayout::discover(&workspace).map_err(sandbox_error)?;
     rctx.adapters = beton_sandbox::masks::builtin_harness_grants();
-    if let Some(h) = &args.harness {
+    if let Some(h) = harness {
         rctx.harness = Some(beton_sandbox::masks::harness_grants(h).ok_or_else(|| {
             CliError::new(
                 Exit::Usage,
@@ -110,6 +134,23 @@ fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
         })?);
     }
     rctx.host_env = std::env::vars().collect::<BTreeMap<_, _>>();
+    Ok(Resolved {
+        spec,
+        origins,
+        provider,
+        rctx,
+        _scratch: scratch,
+    })
+}
+
+fn explain(ctx: &Ctx, args: SandboxExplainArgs) -> CliResult {
+    let Resolved {
+        spec,
+        origins,
+        provider,
+        rctx,
+        _scratch,
+    } = resolve_ctx(ctx, args.stage, args.harness.as_deref())?;
     // Auflösen auch, wenn das Backend hier nicht isolieren kann: `explain` zeigt dann, was
     // verlangt wäre, und warum der Start scheitern würde.
     let policy = beton_sandbox::resolve(provider.id(), &spec, &rctx).map_err(sandbox_error)?;
@@ -238,4 +279,85 @@ fn render(
     }
     list(&mut out, "Hinweise", &p.notes);
     out
+}
+
+/// Programm wie die Shell finden: mit `/` relativ zum Arbeitsverzeichnis, sonst über `PATH`
+/// der Sandbox (nicht des Hosts).
+fn program(name: &str, cwd: &Path, policy: &ResolvedPolicy) -> CliResult<PathBuf> {
+    if name.contains('/') {
+        return Ok(cwd.join(name));
+    }
+    let path = policy
+        .env
+        .get("PATH")
+        .map(|v| v.as_str())
+        .unwrap_or_default();
+    std::env::split_paths(path)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            CliError::new(
+                Exit::Usage,
+                anyhow::anyhow!("`{name}` nicht im PATH der Sandbox gefunden ({path})"),
+            )
+        })
+}
+
+/// SBX-010 AC2: ein Kommando von Hand in der Sandbox einer Stufe, ohne Netz. Kann das Backend
+/// die Sandbox nicht vollständig erzwingen (auch `backend: none` oder *degraded*), startet
+/// nichts (fail closed).
+async fn exec(ctx: &Ctx, args: SandboxExecArgs) -> CliResult {
+    let Resolved {
+        spec,
+        provider,
+        rctx,
+        _scratch,
+        ..
+    } = resolve_ctx(ctx, args.stage, args.harness.as_deref())?;
+    let stage = rctx.stage.as_str();
+    let policy = provider.resolve(&spec, &rctx).map_err(|e| {
+        CliError::new(
+            Exit::General,
+            anyhow::anyhow!(
+                "Sandbox {} (Stufe {stage}) ist nicht nutzbar, nichts gestartet: {e}; Details: \
+                 `beton sandbox explain --stage {stage}`",
+                provider.id()
+            ),
+        )
+    })?;
+    // Fail closed: `exec` ist zum Prüfen der Sandbox da; ohne volle Isolation (`backend:
+    // none` oder ausdrücklich nicht erzwungene Capabilities) startet nichts.
+    if policy.backend == beton_sandbox::ProviderId::None || !policy.degraded.is_empty() {
+        let degraded: Vec<&str> = policy.degraded.iter().map(|c| c.as_str()).collect();
+        return Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!(
+                "Sandbox {} (Stufe {stage}) isoliert nicht vollständig (nicht erzwungen: {}), \
+                 nichts gestartet; Details: `beton sandbox explain --stage {stage}`",
+                policy.backend,
+                degraded.join(", ")
+            ),
+        ));
+    }
+    let (name, rest) = args
+        .command
+        .split_first()
+        .ok_or_else(|| CliError::usage("Kommando fehlt (nach `--`)"))?;
+    let cmd = CommandSpec::new(program(name, &policy.workspace, &policy)?)
+        .args(rest.iter().cloned())
+        .cwd(&policy.workspace)
+        .stdio(Stdio::Inherit, Stdio::Inherit, Stdio::Inherit);
+    let mut child = provider.spawn(&policy, cmd).map_err(sandbox_error)?;
+    let status = child.wait().await.context("auf das Kommando warten")?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(CliError::new(
+        Exit::General,
+        anyhow::anyhow!(
+            "`{name}` scheiterte in der Sandbox {} (Stufe {stage}, {status}); was die Sandbox \
+             erlaubt, zeigt `beton sandbox explain --stage {stage}`",
+            provider.id()
+        ),
+    ))
 }

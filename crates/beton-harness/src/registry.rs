@@ -30,6 +30,11 @@ pub struct HarnessCommandConfig {
     /// Auth-Herkunft (HAR-015); ohne Angabe `subscription`. Nur in der User-Konfiguration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<HarnessAuth>,
+    /// Key für `auth: api_key` als SecretRef (`secret://…`, HAR-015 AC4); ohne Angabe die
+    /// Variable der Vendor-CLI aus der Umgebung des Daemons. Die CLI sieht nur einen
+    /// Platzhalter `bt_cred_*`, der Proxy setzt den Wert ein. Nur in der User-Konfiguration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
     /// Benutzer-Anpassungen der Vendor-CLI (Hooks, Skills, Plugins, MCP) abschalten (HAR-004).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolated: Option<bool>,
@@ -147,9 +152,10 @@ impl HarnessesConfig {
         }
         for (id, e) in &self.entries {
             let key = |field: &str| format!("harnesses.{id}.{field}");
-            if e.auth.is_some() {
+            if e.auth.is_some() || e.api_key.is_some() {
+                let field = if e.auth.is_some() { "auth" } else { "api_key" };
                 return Err((
-                    key("auth"),
+                    key(field),
                     "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
                 ));
             }
@@ -584,6 +590,10 @@ mod tests {
                 "harnesses.claude.isolated",
             ),
             ("claude:\n    auth: api_key\n", "harnesses.claude.auth"),
+            (
+                "claude:\n    api_key: \"secret://user/anthropic/default\"\n",
+                "harnesses.claude.api_key",
+            ),
             (
                 "acp:\n    agents:\n      gemini:\n        command: ./x\n",
                 "harnesses.acp",

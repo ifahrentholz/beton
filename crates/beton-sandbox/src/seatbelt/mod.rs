@@ -187,6 +187,7 @@ pub mod macos {
             .collect(),
             unavailable_reason: None,
             version: format!("profile v{PROFILE_VERSION}, macOS {}", macos_version()),
+            kernel: None,
         }
     }
 

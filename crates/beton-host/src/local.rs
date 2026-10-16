@@ -233,6 +233,12 @@ impl RunnerProvider for LocalProvider {
                 vars.push((beton_runner::env::FORK_LOGGED.into(), "1".into()));
             }
         }
+        if let Some(max) = boot.max_cost_usd {
+            vars.push((beton_runner::env::MAX_COST.into(), max.to_string()));
+        }
+        if boot.spawned {
+            vars.push((beton_runner::env::SPAWNED.into(), "1".into()));
+        }
         if let Some(sb) = &boot.sandbox {
             vars.push((
                 beton_runner::env::SANDBOX.into(),
@@ -250,6 +256,18 @@ impl RunnerProvider for LocalProvider {
                 beton_runner::env::HARNESSES.into(),
                 serde_json::to_string(&boot.harnesses).unwrap_or_default(),
             ));
+        }
+        // Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298): nur
+        // Debug-Builds reichen die Variable weiter. Sie kommt aus der Umgebung des Daemons,
+        // weil die Test-Helfer die geerbte Umgebung ohne `BETON_*` übergeben.
+        #[cfg(debug_assertions)]
+        if let Some(v) = self
+            .inherit
+            .get(beton_runner::env::TEST_POLICY_BUDGET)
+            .cloned()
+            .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
+        {
+            vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
         }
         let (program, args) = self
             .command

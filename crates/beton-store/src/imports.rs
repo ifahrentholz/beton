@@ -76,6 +76,7 @@ impl Store {
         at: Timestamp,
         replace: bool,
     ) -> Result<()> {
+        let _writer = self.write_guard().await?;
         let sql = if replace {
             "INSERT INTO session_imports (org_id, host_id, harness, vendor_session_id, \
              session_id, imported_at) VALUES (?, ?, ?, ?, ?, ?) \
@@ -138,6 +139,7 @@ mod tests {
                     trigger: SessionTrigger::User,
                     home_node: t.local.node,
                     harness_opts: serde_json::Value::Null,
+                    max_cost_usd: None,
                 },
             )
             .await

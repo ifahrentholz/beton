@@ -1082,6 +1082,7 @@ async fn sbx_002_stage_one_reaches_its_exec_socket_stage_two_does_not() {
             socket: socket.clone(),
             shim_dir: dir.join("bin"),
             token: beton_sandbox::Secret::new("FIXTURE-EXEC-TOKEN".into()),
+            forward_env: Vec::new(),
         });
         let harness = fx.policy_with(p.as_ref(), &format!("read_paths: [{}]\n", exe_grant()), ctx);
         let s = socket.display().to_string();
@@ -1324,5 +1325,83 @@ async fn sbx_008_ac6_runner_sigkill_leaves_no_sandbox_process_within_one_second(
         let _ = runner.wait();
         let left = gone_within(&marker, Duration::from_secs(1)).await;
         assert!(left.is_ok(), "{}: nach 1 s noch da: {left:?}", p.id());
+    }
+}
+
+/// SBX-005 AC4: Weder der Launcher außerhalb noch die Prozesse in der Sandbox tragen Secret-
+/// Werte, Proxy-Tokens oder Platzhalter in `/proc/<pid>/cmdline`; alles steht nur im
+/// Environment des Kindes.
+#[tokio::test]
+async fn sbx_005_ac4_cmdlines_hold_no_secret_values_or_proxy_tokens() {
+    let fx = fx();
+    let ca = beton_proxy::BetonCa::generate("sbx-005", time::OffsetDateTime::now_utc()).unwrap();
+    let proxy = beton_proxy::EgressProxy::new(
+        ca,
+        &beton_proxy::ProxyOptions {
+            extra_ca_files: Vec::new(),
+        },
+    )
+    .unwrap();
+    let instance = proxy
+        .start(beton_proxy::InstanceSpec::default())
+        .await
+        .unwrap();
+    let token = instance.token().expose().to_owned();
+    let placeholder = "bt_cred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    for p in backends() {
+        let mut ctx = fx.ctx(Stage::Tools);
+        ctx.host_env
+            .insert("GH_TOKEN".into(), "FIXTURE-HOST-SECRET".into());
+        ctx.credential_env
+            .insert("NPM_TOKEN".into(), placeholder.into());
+        ctx.proxy = Some(ProxyEndpoint {
+            port: instance.addr().port(),
+            url: Some(beton_sandbox::Secret::new(instance.proxy_url().to_string())),
+            ca_bundle: None,
+        });
+        let spec = SandboxSpec::from_yaml("env:\n  passthrough: [GH_TOKEN]\n").unwrap();
+        let policy = p.resolve(&spec, &ctx).unwrap();
+        // Die Werte stehen im Environment des Kindes …
+        assert_eq!(policy.env["NPM_TOKEN"], placeholder);
+        assert!(policy.env["HTTPS_PROXY"].contains(&token));
+        let marker = format!("1005.{}", std::process::id());
+        let child = p
+            .spawn(
+                &policy,
+                CommandSpec::new("/bin/sleep")
+                    .arg(&marker)
+                    .cwd(&policy.workspace)
+                    .stdio(
+                        beton_sandbox::Stdio::Null,
+                        beton_sandbox::Stdio::Null,
+                        beton_sandbox::Stdio::Null,
+                    ),
+            )
+            .unwrap();
+        let mut pids = Vec::new();
+        for _ in 0..100 {
+            pids = processes_with(&marker);
+            if !pids.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!pids.is_empty(), "{}: sleep nicht gefunden", p.id());
+        pids.extend(child.id());
+        // … aber in keiner Kommandozeile (Launcher, Relay, Kind).
+        for pid in pids {
+            let Ok(argv) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            let argv = String::from_utf8_lossy(&argv).replace('\0', " ");
+            for leak in ["FIXTURE", token.as_str(), "bt_cred_"] {
+                assert!(
+                    !argv.contains(leak),
+                    "{}: `{leak}` in argv von {pid}: {argv}",
+                    p.id()
+                );
+            }
+        }
+        drop(child);
     }
 }

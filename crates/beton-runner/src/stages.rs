@@ -13,10 +13,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use beton_core::event::EgressSource;
 use beton_harness::{StageEnv, ToolIsolation};
 use beton_proxy::{
-    BetonCa, EgressProxy, InstanceSpec, Passthrough, PrivateAllowList, ProxyOptions, RuleSet,
+    BetonCa, Binding, CredentialAudit, CredentialKind, CredentialSource, Credentials, EgressEvents,
+    EgressProxy, InstanceSpec, Passthrough, Placeholder, PrivateAllowList, ProxyOptions, RuleSet,
+    Traffic,
 };
 use beton_sandbox::registry::EventSink;
 use beton_sandbox::{
@@ -60,6 +64,67 @@ impl std::fmt::Debug for CaText {
     }
 }
 
+/// Dienste der Stufe 0 für Credentials und Egress-Events (PRX-006, PRX-009): Werte und Audit
+/// über den Tunnel zum Daemon, Events ins Session-Log.
+#[derive(Clone)]
+pub struct StageServices {
+    pub source: Arc<dyn CredentialSource>,
+    pub audit: Arc<dyn CredentialAudit>,
+    pub events: Option<Arc<dyn EgressEvents>>,
+}
+
+impl std::fmt::Debug for StageServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("StageServices")
+    }
+}
+
+/// API-Key der Vendor-CLI bei `auth: api_key` (HAR-015 AC4): Die Variable in Stufe 1 bekommt
+/// nur einen Platzhalter; die Hosts laufen statt Passthrough über MITM, damit der Proxy den
+/// Wert einsetzen kann.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HarnessKey {
+    /// Binding-Name, z. B. `harness:claude`.
+    pub binding: String,
+    /// Variable, z. B. `ANTHROPIC_API_KEY`.
+    pub var: String,
+    pub hosts: Vec<String>,
+}
+
+/// Model-API des Direkt-API-Harness (Stufe 0) über eine eigene Proxy-Instanz (HAR-011 AC2):
+/// Der Loop sendet nur den Platzhalter, der Proxy setzt den Key ein.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectRoute {
+    /// Binding-Name, z. B. `provider:openrouter`.
+    pub binding: String,
+    pub host: String,
+    pub port: u16,
+}
+
+/// Zugang des Loops zu seiner Proxy-Instanz.
+pub struct DirectEgress {
+    pub proxy_url: zeroize::Zeroizing<String>,
+    pub ca_pem: String,
+    pub placeholder: Placeholder,
+}
+
+impl std::fmt::Debug for DirectEgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirectEgress")
+            .field("placeholder", &self.placeholder)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Variable und Model-API-Hosts der Vendor-CLIs für `auth: api_key` (HAR-015, PRX-005).
+pub fn vendor_key(harness: &str) -> Option<(&'static str, &'static [&'static str])> {
+    match harness {
+        "claude" => Some(("ANTHROPIC_API_KEY", &["api.anthropic.com"])),
+        "codex" => Some(("OPENAI_API_KEY", &["api.openai.com"])),
+        _ => None,
+    }
+}
+
 /// Einstellungen des Daemons für das Stufenmodell.
 pub struct StageOptions {
     /// `sandbox:` der User-Konfiguration (Projekt- und Agent-Ebene folgen mit #200).
@@ -71,6 +136,13 @@ pub struct StageOptions {
     pub proxy: ProxyOptions,
     /// beton selbst: `bt-exec` in Stufe 1 und Launcher unter Linux.
     pub exe: PathBuf,
+    /// Credentials und Egress-Events; ohne Dienste startet keine Session mit Credentials
+    /// (fail closed).
+    pub services: Option<StageServices>,
+    /// API-Key der Vendor-CLI (`auth: api_key`, HAR-015 AC4).
+    pub harness_key: Option<HarnessKey>,
+    /// Model-API des Direkt-API-Harness über den Proxy (HAR-011 AC2).
+    pub direct: Option<DirectRoute>,
 }
 
 impl std::fmt::Debug for StageOptions {
@@ -102,6 +174,17 @@ pub struct SessionStages {
     pub tools: Sandbox,
     pub env: StageEnv,
     passthrough: [Vec<String>; 2],
+    /// Platzhalter der Credentials der Stufe 2 je Binding (für `${secret:<name>}`, AGT-001).
+    placeholders: BTreeMap<String, Placeholder>,
+    /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
+    direct: Option<DirectEgress>,
+    /// Für weitere Instanzen des Runners (Stufe 0): Proxy, Dienste, Zähler und die Bindings
+    /// der Stufe 2 (gleiche Platzhalter).
+    egress_proxy: Option<EgressProxy>,
+    services: Option<StageServices>,
+    traffic: Traffic,
+    tools_binding_list: Vec<Binding>,
+    _summaries: Option<AbortOnDrop>,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
     _proxies: Vec<beton_proxy::ProxyInstance>,
@@ -117,7 +200,71 @@ impl std::fmt::Debug for SessionStages {
     }
 }
 
+/// Beendet eine Aufgabe beim Fallenlassen.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 impl SessionStages {
+    /// Weitere Proxy-Instanz für Verbindungen des Runners (Stufe 0) mit Credentials, z. B.
+    /// HTTP-MCP-Server mit `${secret:…}` in `headers` (AGT-006 AC3): Regeln nur für `targets`
+    /// (`host` bzw. `host:port`), Bindings nur die genannten der Stufe 2 (gleiche Platzhalter,
+    /// ohne implizite Injektion). Liefert Proxy-URL (mit Token) und beton-CA.
+    pub async fn runner_egress(
+        &mut self,
+        label: &str,
+        targets: &[String],
+        bindings: &[String],
+    ) -> Result<(zeroize::Zeroizing<String>, String), String> {
+        let (Some(proxy), Some(sv)) = (&self.egress_proxy, &self.services) else {
+            return Err("kein Egress-Proxy in dieser Session (allow_network bzw. CA)".into());
+        };
+        let chosen: Vec<Binding> = self
+            .tools_binding_list
+            .iter()
+            .filter(|b| bindings.contains(&b.name))
+            .cloned()
+            .map(|mut b| {
+                b.implicit = false;
+                b
+            })
+            .collect();
+        if chosen.len() != bindings.len() {
+            return Err("unbekanntes Credential-Binding".into());
+        }
+        let rules: Vec<String> = targets.iter().map(|t| format!("* {t}/**")).collect();
+        let instance = proxy
+            .start(InstanceSpec {
+                label: format!("{label}/runner"),
+                rules: RuleSet::compile(&rules).map_err(|e| e.to_string())?,
+                credentials: Credentials::new(chosen, sv.source.clone(), sv.audit.clone())
+                    .map_err(|e| e.to_string())?,
+                source: EgressSource::Harness,
+                events: sv.events.clone(),
+                traffic: Some(self.traffic.clone()),
+                ..InstanceSpec::default()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        let out = (instance.proxy_url(), proxy.ca_pem());
+        self._proxies.push(instance);
+        Ok(out)
+    }
+
+    /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
+    pub fn direct(&self) -> Option<&DirectEgress> {
+        self.direct.as_ref()
+    }
+
+    /// Platzhalter des Credentials `name` der Stufe 2 (`${secret:name}`, AGT-001, AGT-006).
+    pub fn placeholder(&self, name: &str) -> Option<&Placeholder> {
+        self.placeholders.get(name)
+    }
+
     /// Passthrough-Ziele der Proxy-Instanz einer Stufe.
     pub fn passthrough(&self, stage: Stage) -> Vec<String> {
         match stage {
@@ -233,6 +380,17 @@ fn check_session_dir(
         }
     }
     Ok(())
+}
+
+fn credential_kind(t: beton_sandbox::CredentialType) -> CredentialKind {
+    use beton_sandbox::CredentialType as T;
+    match t {
+        T::Bearer => CredentialKind::Bearer,
+        T::Basic => CredentialKind::Basic,
+        T::GitHttps => CredentialKind::GitHttps,
+        T::Github => CredentialKind::Github,
+        T::Gitlab => CredentialKind::Gitlab,
+    }
 }
 
 /// Ist das Stufenmodell konfiguriert? Bis WP-49 nur mit ausdrücklichem Backend außer `none`.
@@ -391,8 +549,66 @@ async fn compose_unix(
         .map(|g| g.passthrough.clone())
         .unwrap_or_default();
     harness_pass.extend(harness_cfg.egress_passthrough.clone().unwrap_or_default());
-    let harness_extra = harness_cfg.egress_extra.clone().unwrap_or_default();
+    let mut harness_extra = harness_cfg.egress_extra.clone().unwrap_or_default();
     let tools_net = spec.allow_network.unwrap_or(true);
+
+    // Credentials (PRX-006): je Binding ein Platzhalter (160 bit, je Session neu); ohne
+    // Dienste der Stufe 0 startet keine Session mit Credentials (fail closed).
+    let tools_creds = spec.credentials.clone().unwrap_or_default();
+    if (!tools_creds.is_empty() || opts.harness_key.is_some() || opts.direct.is_some())
+        && opts.services.is_none()
+    {
+        return Err(unavailable(
+            id,
+            &[Cap::Net],
+            "credentials_unavailable: keine Quelle für Credentials (Tunnel zum Daemon)",
+        ));
+    }
+    let placeholder = || {
+        Placeholder::generate().map_err(|e| SandboxError::SpawnFailed {
+            message: e.to_string(),
+            kind: std::io::ErrorKind::Other,
+        })
+    };
+    let mut tools_bindings: Vec<Binding> = Vec::new();
+    let mut tools_env = BTreeMap::new();
+    let mut placeholders = BTreeMap::new();
+    for c in &tools_creds {
+        let p = placeholder()?;
+        for var in &c.env {
+            tools_env.insert(var.clone(), p.to_string());
+        }
+        tools_bindings.push(Binding {
+            name: c.name.clone(),
+            kind: credential_kind(c.kind),
+            hosts: c.hosts.clone().unwrap_or_default(),
+            username: c.username.clone(),
+            placeholder: p.clone(),
+            implicit: true,
+        });
+        placeholders.insert(c.name.clone(), p);
+    }
+    // HAR-015 AC4: Der Key der Vendor-CLI steht in Stufe 1 nur als Platzhalter; ihre
+    // Model-API-Hosts laufen dafür über MITM statt Passthrough (Präzisierung PRX-005).
+    let mut harness_bindings = Vec::new();
+    let mut harness_env = BTreeMap::new();
+    if let Some(k) = &opts.harness_key {
+        let p = placeholder()?;
+        harness_env.insert(k.var.clone(), p.to_string());
+        harness_pass.retain(|entry| {
+            let host = entry.split(':').next().unwrap_or(entry);
+            !k.hosts.iter().any(|h| h == host)
+        });
+        harness_extra.extend(k.hosts.iter().map(|h| format!("* {h}/**")));
+        harness_bindings.push(Binding {
+            name: k.binding.clone(),
+            kind: CredentialKind::Bearer,
+            hosts: k.hosts.clone(),
+            username: None,
+            placeholder: p,
+            implicit: false,
+        });
+    }
     let harness_net = !harness_pass.is_empty() || !harness_extra.is_empty();
     let mut harness_spec = spec.clone();
     harness_spec.allow_network = Some(harness_net);
@@ -401,7 +617,24 @@ async fn compose_unix(
     let mut proxies = Vec::new();
     let mut endpoints: [Option<ProxyEndpoint>; 2] = [None, None];
     let mut passthrough: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-    if tools_net || harness_net {
+    // Erlaubter Verkehr der Session für `egress.summary` (PRX-009 AC3), höchstens einmal je
+    // Minute.
+    let traffic = Traffic::default();
+    let summaries = opts
+        .services
+        .as_ref()
+        .and_then(|s| s.events.clone())
+        .map(|ev| {
+            AbortOnDrop(beton_proxy::spawn_summaries(
+                traffic.clone(),
+                std::time::Duration::from_secs(60),
+                move |summary| ev.summary(summary),
+            ))
+        });
+    let mut direct = None;
+    let mut egress_proxy = None;
+    let tools_binding_list = tools_bindings.clone();
+    if tools_net || harness_net || opts.direct.is_some() {
         let ca = opts.proxy_ca.ok_or_else(|| {
             unavailable(
                 id,
@@ -435,6 +668,8 @@ async fn compose_unix(
                 harness_pass,
                 Vec::new(),
                 "harness.egress_extra",
+                std::mem::take(&mut harness_bindings),
+                EgressSource::Harness,
             ),
             (
                 tools_net,
@@ -443,12 +678,21 @@ async fn compose_unix(
                 tools_pass,
                 spec.egress_allow_private.clone().unwrap_or_default(),
                 "egress_rules",
+                std::mem::take(&mut tools_bindings),
+                EgressSource::Tools,
             ),
         ];
-        for (i, (needed, stage, rules, pass, private, field)) in specs.into_iter().enumerate() {
+        for (i, (needed, stage, rules, pass, private, field, bindings, source)) in
+            specs.into_iter().enumerate()
+        {
             if !needed {
                 continue;
             }
+            let credentials = match &opts.services {
+                Some(sv) => Credentials::new(bindings, sv.source.clone(), sv.audit.clone())
+                    .map_err(|e| invalid("credentials", e.to_string()))?,
+                None => Credentials::default(),
+            };
             let instance = proxy
                 .start(InstanceSpec {
                     label: format!("{}/{}", input.session_id, stage.as_str()),
@@ -457,6 +701,10 @@ async fn compose_unix(
                         .map_err(|e| invalid("egress_allow_private", e.to_string()))?,
                     passthrough: Passthrough::parse(&pass)
                         .map_err(|e| invalid("egress_passthrough", e.to_string()))?,
+                    credentials,
+                    source,
+                    events: opts.services.as_ref().and_then(|s| s.events.clone()),
+                    traffic: Some(traffic.clone()),
                 })
                 .await
                 .map_err(|e| unavailable(id, &[Cap::Net], e.to_string()))?;
@@ -470,6 +718,48 @@ async fn compose_unix(
             });
             proxies.push(instance);
         }
+        // HAR-011 AC2: eigene Instanz für den Loop des Direkt-API-Harness (Stufe 0).
+        if let (Some(route), Some(sv)) = (&opts.direct, &opts.services) {
+            let p = placeholder()?;
+            let target = if route.port == 443 {
+                route.host.clone()
+            } else {
+                format!("{}:{}", route.host, route.port)
+            };
+            let credentials = Credentials::new(
+                vec![Binding {
+                    name: route.binding.clone(),
+                    kind: CredentialKind::Bearer,
+                    hosts: vec![route.host.clone()],
+                    username: None,
+                    placeholder: p.clone(),
+                    implicit: false,
+                }],
+                sv.source.clone(),
+                sv.audit.clone(),
+            )
+            .map_err(|e| invalid("providers", e.to_string()))?;
+            let instance = proxy
+                .start(InstanceSpec {
+                    label: format!("{}/loop", input.session_id),
+                    rules: RuleSet::compile(&[format!("* {target}/**")])
+                        .map_err(|e| invalid("providers", e.to_string()))?,
+                    credentials,
+                    source: EgressSource::Harness,
+                    events: sv.events.clone(),
+                    traffic: Some(traffic.clone()),
+                    ..InstanceSpec::default()
+                })
+                .await
+                .map_err(|e| unavailable(id, &[Cap::Net], e.to_string()))?;
+            direct = Some(DirectEgress {
+                proxy_url: instance.proxy_url(),
+                ca_pem: proxy.ca_pem(),
+                placeholder: p,
+            });
+            proxies.push(instance);
+        }
+        egress_proxy = Some(proxy);
     }
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
@@ -487,6 +777,9 @@ async fn compose_unix(
     // Stufe 2 und der Broker.
     let mut c = ctx(Stage::Tools, &tools_tmp, tools_proxy);
     c.exchange = Some(xchg.clone());
+    if tools_net {
+        c.credential_env = tools_env;
+    }
     // Unter Linux verdeckt ein leeres tmpfs das Session-Verzeichnis (Sockets der Stufe 1,
     // Broker-Socket; vor Landlock-ABI 9 sonst per `connect` erreichbar).
     c.session_dir = Some(root.clone());
@@ -516,8 +809,19 @@ async fn compose_unix(
             }
         }
     }
+    c.credential_env = harness_env;
     let mut harness_policy = provider.resolve(&harness_spec, &c)?;
     harness_policy.inherited_tools = inherited;
+    // PRX-006 AC4: Credential-Dateien liegen außerhalb aller Freigaben beider Stufen.
+    for cred in &tools_creds {
+        if let Some(file) = &cred.source.file {
+            beton_sandbox::check_credential_file(
+                Path::new(file),
+                &input.home,
+                &[tools.policy(), &harness_policy],
+            )?;
+        }
+    }
     let harness = Sandbox::new(provider, harness_policy, input.events);
     Ok(SessionStages {
         harness,
@@ -528,6 +832,13 @@ async fn compose_unix(
             tools: None,
         },
         passthrough,
+        placeholders,
+        direct,
+        egress_proxy,
+        services: opts.services.clone(),
+        traffic,
+        tools_binding_list,
+        _summaries: summaries,
         _broker: broker,
         _proxies: proxies,
         _dir: dir,

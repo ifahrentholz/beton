@@ -2,6 +2,7 @@
 
 pub mod approval;
 pub mod audit;
+pub mod budget;
 pub mod cel;
 pub mod context;
 pub mod doc;

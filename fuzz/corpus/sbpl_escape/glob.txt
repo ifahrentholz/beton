@@ -1,0 +1,10 @@
+G *.env
+G .env.?
+G secret*
+G a[b]c
+N .env
+N prod.env
+N .env.1
+N secretX
+N a[b]c
+N abc

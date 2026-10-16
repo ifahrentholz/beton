@@ -342,6 +342,7 @@ async fn ses_016_ac3_doctor_lists_orphaned_worktrees_with_path_and_size() {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

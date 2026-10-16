@@ -144,6 +144,39 @@ pub struct Store {
     pool: SqlitePool,
     blobs: BlobStore,
     options: StoreOptions,
+    /// Schreibsperre des Prozesses (#287), siehe [`Store::write_guard`].
+    writer: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Wie lange ein Schreiber höchstens auf die Schreibsperre des Prozesses wartet; entspricht
+/// `busy_timeout` (DATA-003).
+const WRITE_LOCK_TIMEOUT: Duration = Duration::from_millis(5000);
+
+/// Schreib-Transaktion mit gehaltener Schreibsperre des Prozesses (siehe [`Store::write_tx`]).
+/// Ohne `commit` rollt sie beim Drop zurück und gibt die Sperre frei.
+pub(crate) struct WriteTx {
+    // Reihenfolge: erst die Transaktion, dann die Sperre freigeben.
+    tx: sqlx::Transaction<'static, sqlx::Sqlite>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl WriteTx {
+    pub(crate) async fn commit(self) -> Result<()> {
+        Ok(self.tx.commit().await?)
+    }
+}
+
+impl std::ops::Deref for WriteTx {
+    type Target = sqlx::SqliteConnection;
+    fn deref(&self) -> &Self::Target {
+        &self.tx
+    }
+}
+
+impl std::ops::DerefMut for WriteTx {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.tx
+    }
 }
 
 impl std::fmt::Debug for Store {
@@ -178,14 +211,33 @@ impl Store {
             pool,
             blobs,
             options,
+            writer: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
-    /// Schreib-Transaktion mit `BEGIN IMMEDIATE`: nimmt die Schreibsperre sofort. Bei
-    /// `DEFERRED` scheitert ein Lesen-dann-Schreiben im WAL-Modus sofort mit `SQLITE_BUSY`,
-    /// sobald ein anderer Schreiber dazwischen committet; der Busy-Timeout greift dort nicht.
-    pub(crate) async fn write_tx(&self) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
-        Ok(self.pool.begin_with("BEGIN IMMEDIATE").await?)
+    /// Schreibsperre des Prozesses (#287): Alle Schreibzugriffe dieses Stores laufen
+    /// nacheinander in Ankunftsreihenfolge (`tokio::sync::Mutex` ist fair, FIFO). SQLite
+    /// selbst kennt keine Warteschlange: Wartende pollen im Busy-Handler (Schlafphasen bis
+    /// 100 ms), und ein Dauerschreiber, der die Sperre direkt nach dem Commit wieder nimmt,
+    /// gewinnt fast immer. Andere Prozesse auf derselben Datei regelt weiter `busy_timeout`.
+    ///
+    /// Wartet höchstens [`WRITE_LOCK_TIMEOUT`] (wie `busy_timeout`); danach ein
+    /// Datenbankfehler wie bei `SQLITE_BUSY`.
+    pub(crate) async fn write_guard(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        tokio::time::timeout(WRITE_LOCK_TIMEOUT, self.writer.clone().lock_owned())
+            .await
+            .map_err(|_| Error::Db(sqlx::Error::PoolTimedOut))
+    }
+
+    /// Schreib-Transaktion unter der Schreibsperre des Prozesses ([`Store::write_guard`]) mit
+    /// `BEGIN IMMEDIATE`: nimmt die SQLite-Schreibsperre sofort. Bei `DEFERRED` scheitert ein
+    /// Lesen-dann-Schreiben im WAL-Modus sofort mit `SQLITE_BUSY`, sobald ein anderer
+    /// Schreiber dazwischen committet; der Busy-Timeout greift dort nicht.
+    pub(crate) async fn write_tx(&self) -> Result<WriteTx> {
+        // Erst die Sperre, dann die Verbindung: Wartende belegen keine Pool-Verbindung.
+        let guard = self.write_guard().await?;
+        let tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        Ok(WriteTx { tx, _guard: guard })
     }
 
     pub fn blobs(&self) -> &BlobStore {

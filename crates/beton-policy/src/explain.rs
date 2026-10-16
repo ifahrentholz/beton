@@ -193,8 +193,22 @@ pub fn explain(event: &PolicyDecision, set: Option<&EffectiveSet>) -> Explanatio
             let (scope, name, version) = (text(m, "scope"), text(m, "set"), text(m, "set_version"));
             let rule_id = text(m, "rule_id");
             let loaded = find(&scope, &name, &version);
-            let rule = loaded.and_then(|s| s.rules.iter().find(|r| r.id == rule_id));
             let verdict = text(m, "verdict");
+            // Regeltypen haben mehrere Teile mit derselben ID (POL-011 bis POL-013): der Teil
+            // dieser Phase mit diesem Verdikt und dieser Begründung, sonst der erste mit der ID.
+            let reason = m["reason"].as_str();
+            let rule = loaded.and_then(|s| {
+                let same_id = || s.rules.iter().filter(|r| r.id == rule_id);
+                same_id()
+                    .find(|r| {
+                        let (action, _) = action_str(r);
+                        phases_of(r).contains(&event.phase)
+                            && action == verdict
+                            && r.doc.reason.as_deref() == reason
+                    })
+                    .or_else(|| same_id().find(|r| phases_of(r).contains(&event.phase)))
+                    .or_else(|| same_id().next())
+            });
             VerdictView {
                 pass: if verdict == "modify" { 1 } else { 2 },
                 origin: loaded.map(|s| s.origin.clone()),

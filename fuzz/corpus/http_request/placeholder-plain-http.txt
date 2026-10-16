@@ -1,0 +1,4 @@
+0GET http://api.test/?k={A} HTTP/1.1
+Proxy-Authorization: @@AUTH@@
+Authorization: Bearer {A}
+

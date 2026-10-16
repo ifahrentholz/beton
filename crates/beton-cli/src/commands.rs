@@ -114,7 +114,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Secrets(cmd) => crate::secrets::run(&ctx, cmd).await,
         Command::Audit(cmd) => crate::secrets::audit(&ctx, cmd).await,
         Command::Proxy(cmd) => crate::secrets::proxy(&ctx, cmd).await,
-        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd),
+        Command::Sandbox(cmd) => crate::sandbox::run(&ctx, cmd).await,
         Command::Admin(AdminCommand::Projections(ProjectionsCommand::Rebuild(args))) => {
             rebuild_projections(&ctx, args.session.as_deref()).await
         }
@@ -236,6 +236,17 @@ async fn setup(ctx: &Ctx, args: crate::cli::SetupArgs) -> CliResult {
     // HAR-016 AC3: gefundene API-Keys nur nach Zustimmung in den Secret-Store übernehmen.
     crate::setup::offer_key_import(
         &crate::setup::found_env_keys(),
+        interactive,
+        &mut crate::setup::TerminalPrompt,
+        &DaemonImporter { ctx },
+        &mut out,
+    )
+    .await
+    .context("stdout")?;
+    // SEC-011 AC2: Logins von gh/glab nur nach ausdrücklicher Bestätigung übernehmen.
+    crate::setup::offer_git_token_import(
+        &crate::setup::GIT_CLIS,
+        &crate::setup::RealSpawner,
         interactive,
         &mut crate::setup::TerminalPrompt,
         &DaemonImporter { ctx },

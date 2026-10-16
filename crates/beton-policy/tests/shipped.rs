@@ -195,10 +195,7 @@ fn qa_004_hierarchy_cases_are_part_of_the_gate() {
 
 /// Regeltypen, die noch nicht zu CEL entzuckert werden (mit ihrem Arbeitspaket). Wird ein Typ
 /// entzuckert, schlägt dieser Test fehl, bis er hier entfernt ist und seine Testdatei hat.
-const PENDING: [(RuleType, &str); 5] = [
-    (RuleType::SpendCap, "WP-43, #166"),
-    (RuleType::DailyBudget, "WP-43, #166"),
-    (RuleType::ModelRoute, "WP-43, #166"),
+const PENDING: [(RuleType, &str); 2] = [
     (RuleType::PiiRedaction, "WP-42, #165"),
     (RuleType::BrowserGuard, "M3"),
 ];

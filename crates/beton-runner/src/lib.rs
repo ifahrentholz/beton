@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+mod credentials;
 pub mod fork;
 pub mod mcp;
 pub mod policy;
@@ -76,6 +77,15 @@ pub mod env {
     pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
+    /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
+    /// User-Ebene durch (POL-011).
+    pub const MAX_COST: &str = "BETON_MAX_COST";
+    /// `1`: Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
+    pub const SPAWNED: &str = "BETON_SPAWNED";
+    /// Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298); nur
+    /// Debug-Builds reichen es an den Runner weiter und lesen es.
+    #[cfg(debug_assertions)]
+    pub const TEST_POLICY_BUDGET: &str = beton_policy::cel::TEST_BUDGET_ENV;
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv
@@ -118,6 +128,10 @@ pub struct RunnerBoot {
     pub proxy_ca: Option<stages::CaText>,
     /// Automatische Compaction (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
+    /// Child einer `session_spawn`.
+    pub spawned: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -211,6 +225,15 @@ impl RunnerBoot {
                     .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::COMPACTION)))?,
                 Err(_) => beton_harness::CompactionSettings::default(),
             },
+            // Ein unlesbares Budget ist ein Startfehler, nie „kein Budget“ (fail closed).
+            max_cost_usd: match std::env::var(env::MAX_COST) {
+                Ok(v) => Some(
+                    v.parse()
+                        .map_err(|e| RunnerError::Boot(format!("{}: {e}", env::MAX_COST)))?,
+                ),
+                Err(_) => None,
+            },
+            spawned: std::env::var(env::SPAWNED).is_ok_and(|v| v == "1"),
         })
     }
 
@@ -222,10 +245,66 @@ impl RunnerBoot {
             &beton_harness_direct::DirectOptions {
                 keys: Arc::new(self.credentials.clone()),
                 discover_models: false,
+                egress: None,
             },
         )
         .0
     }
+}
+
+/// Proxy-Weg des Direkt-API-Harness dieser Session (HAR-011 AC2): nur für Provider mit Key.
+fn direct_route(boot: &RunnerBoot) -> Option<stages::DirectRoute> {
+    let name = boot.harness.as_str().strip_prefix("direct:")?;
+    let p = beton_harness_direct::config::parse_provider(name, boot.harnesses.providers.get(name)?)
+        .ok()?;
+    p.key.lookup()?;
+    // Nur https: Loopback-Endpunkte über `http` behalten den Key über stdin (HAR-011).
+    if p.base_url.scheme() != "https" {
+        return None;
+    }
+    Some(stages::DirectRoute {
+        binding: format!("provider:{name}"),
+        host: p.base_url.host_str()?.to_owned(),
+        port: p.base_url.port_or_known_default()?,
+    })
+}
+
+/// Der Direkt-API-Harness der Session mit Platzhalter statt Key und Weg über den Proxy.
+fn direct_via_proxy(boot: &RunnerBoot, registry: &mut Registry, egress: &stages::DirectEgress) {
+    let Some(name) = boot.harness.as_str().strip_prefix("direct:") else {
+        return;
+    };
+    let Some(Ok(p)) = boot
+        .harnesses
+        .providers
+        .get(name)
+        .map(|v| beton_harness_direct::config::parse_provider(name, v))
+    else {
+        return;
+    };
+    let Some(lookup) = p.key.lookup().map(str::to_owned) else {
+        return;
+    };
+    let keys = beton_harness_direct::secret::KeyMap::new(
+        [(
+            lookup,
+            beton_harness_direct::secret::ApiKey::new(egress.placeholder.as_str()),
+        )]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| (k, v)))
+        .collect(),
+    );
+    registry.register(Arc::new(beton_harness_direct::DirectAdapter::new(
+        p,
+        &beton_harness_direct::DirectOptions {
+            keys: Arc::new(keys),
+            discover_models: false,
+            egress: Some(beton_harness_direct::Egress {
+                proxy_url: egress.proxy_url.to_string(),
+                ca_pem: egress.ca_pem.clone(),
+            }),
+        },
+    )));
 }
 
 /// Eingebaute Adapter mit den Optionen aus der Konfiguration; der Fake nur mit `dev`
@@ -302,6 +381,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         &beton_harness_direct::DirectOptions {
             keys: Arc::new(boot.credentials.clone()),
             discover_models: false,
+            egress: None,
         },
     );
     for p in problems {
@@ -585,6 +665,7 @@ fn parent_alive(pid: Option<u32>) -> bool {
 
 /// Führt die Session aus, bis der Server stoppt, der Harness endet oder der Daemon stirbt.
 pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerError> {
+    let mut registry = registry;
     let mut env = HostEnv::from_process();
     env.user = boot.harnesses.user.clone();
     env.project = boot.harnesses.project.clone();
@@ -698,10 +779,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         calls: usage_tx.clone(),
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
-    .with_snapshots(Arc::new(TunnelState { calls: usage_tx }));
+    .with_snapshots(Arc::new(TunnelState {
+        calls: usage_tx.clone(),
+    }));
+    // Credentials und Egress-Events des Stufenmodells (PRX-006, PRX-009): Werte und Audit über
+    // den Tunnel, Events ins Session-Log.
+    let credentials = Arc::new(credentials::TunnelCredentials::new(
+        credentials::channel_calls(usage_tx),
+        stage_tx.clone(),
+    ));
     // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
     // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
-    let stages = match &boot.sandbox {
+    let mut stages = match &boot.sandbox {
         Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
             let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
                 Ok(ca) => ca,
@@ -737,13 +826,33 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .map(|b| b.program),
                 events: Some(events),
             };
+            // HAR-015 AC4: Mit `auth: api_key` sieht die Vendor-CLI nur einen Platzhalter.
+            let harness_key = (boot.harnesses.user.auth(boot.harness.as_str())
+                == beton_harness::registry::HarnessAuth::ApiKey)
+                .then(|| stages::vendor_key(boot.harness.as_str()))
+                .flatten()
+                .map(|(var, hosts)| stages::HarnessKey {
+                    binding: format!("harness:{}", boot.harness),
+                    var: var.to_owned(),
+                    hosts: hosts.iter().map(|h| (*h).to_owned()).collect(),
+                });
+            // HAR-011 AC2: Der Loop des Direkt-API-Harness erreicht seinen Anbieter nur über
+            // eine eigene Proxy-Instanz, die den Key einsetzt.
+            let direct = direct_route(&boot);
             let opts = stages::StageOptions {
+                direct,
                 spec: sb.spec.clone(),
                 proxy_ca: ca,
                 proxy: beton_proxy::ProxyOptions {
                     extra_ca_files: sb.extra_ca_files.clone(),
                 },
                 exe: std::env::current_exe().unwrap_or_default(),
+                services: Some(stages::StageServices {
+                    source: credentials.clone(),
+                    audit: credentials.clone(),
+                    events: Some(credentials.clone()),
+                }),
+                harness_key,
             };
             match stages::compose(input, opts).await {
                 Ok(s) => s,
@@ -756,6 +865,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
+        direct_via_proxy(&boot, &mut registry, egress);
+    }
+    // PRX-005: Passthrough in Stufe 2 ist ausdrücklich konfiguriert und steht im Audit-Log.
+    if let Some(hosts) = stages
+        .as_ref()
+        .map(|s| s.passthrough(beton_sandbox::Stage::Tools))
+        .filter(|h| !h.is_empty())
+    {
+        let c = credentials.clone();
+        tokio::spawn(async move { c.audit_passthrough(hosts).await });
+    }
     let in_proc = caps
         .as_ref()
         .is_some_and(|c| c.transport == beton_harness::Transport::InProc);
@@ -822,6 +943,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 stages.as_ref().map(|s| s.tools.clone()),
                 // `policy_query` wertet wie ein echter Call aus, ohne Seiteneffekte (AGT-007 AC3).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::PolicyOracle>),
+                // `${secret:…}` → Platzhalter, HTTP-Server mit Credential über den Proxy.
+                stages.as_mut(),
             )
             .await
         }
@@ -904,9 +1027,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         start_settings.effort.clone(),
         start_settings.permission_mode,
     );
-    let set = gate.refresh(None);
+    // Session-Budget (API-006 `--max-cost`): eine `spend_cap`-Regel der User-Ebene (POL-011).
     let mut refusal: Option<(Vec<String>, Vec<String>)> = None;
-    if !set.never_valid().is_empty() {
+    if let Some(max) = boot.max_cost_usd {
+        match beton_policy::budget::session_budget(max) {
+            Ok(budget) => gate.set_inline(beton_policy::load::Scope::User, vec![budget]),
+            Err(e) => {
+                refusal = Some((
+                    vec![format!(
+                        "policy_invalid: Session-Budget ungültig: {}",
+                        e.message
+                    )],
+                    Vec::new(),
+                ));
+            }
+        }
+    }
+    let set = gate.refresh(None);
+    if refusal.is_none() && !set.never_valid().is_empty() {
         // #182: fail closed – Pfad und Ladefehler, nie Inhalte der Datei.
         let reasons = set
             .never_valid()
@@ -941,6 +1079,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             trigger: Some(
                 if boot.fork.is_some() {
                     "fork"
+                } else if boot.spawned {
+                    "spawn"
                 } else if boot.resume.is_some() {
                     "resume"
                 } else {
@@ -1256,6 +1396,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: false,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             continue;
@@ -1654,11 +1795,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             let waited = answered.remove(&cmd_id);
                             let reply = match checked {
                                 policy::Checked::Allow(m) => {
-                                    if let Err(problem) = apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
-                                        Err(problem)
-                                    } else {
-                                        gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
-                                        deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                    match apply_turn_modifications(&mut *session, &m, &session_caps, &mut spec).await {
+                                        Err(problem) => Err(problem),
+                                        Ok(changed) => {
+                                            if let Some(change) = changed {
+                                                // HAR-017: Auch ein Wechsel durch eine Policy steht im
+                                                // Log, ab diesem Turn (POL-011 AC2, POL-013).
+                                                let event = system_event(&boot, EventPayload::SessionSettingsChanged(
+                                                    change.event(Some(beton_core::event::SettingsMechanism::Live), turn.or(next_turn)),
+                                                ));
+                                                if !push(&mut ws, &boot, &mut unacked, vec![event]).await { break None; }
+                                            }
+                                            gate.set_settings(spec.model.clone(), spec.effort.clone(), spec.permission_mode);
+                                            deliver(&mut *session, &gate, &name, args, turn_running, &mut handover, &mut next_turn, &mut pending_attachments).await
+                                        }
                                     }
                                 }
                                 policy::Checked::Deny { reason, .. } => Err(json!({"code": "policy_denied", "detail": reason})),
@@ -1978,33 +2128,43 @@ fn apply_start_modifications(
 }
 
 /// `modify` in `model_request` je Turn: Modell und Effort live vor dem Turn (POL-024: nur mit
-/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet).
+/// `model_switch: live`, sonst hat die Engine `on_unsupported` angewendet). Liefert die
+/// angewendete Änderung für `session.settings_changed` (HAR-017).
 async fn apply_turn_modifications(
     session: &mut dyn HarnessSession,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
     spec: &mut SessionSpec,
-) -> Result<(), Value> {
-    let effort = m
+) -> Result<Option<settings::Change>, Value> {
+    let mapped = m
         .reasoning_effort
         .as_deref()
         .and_then(|e| beton_harness::map_effort(e, &caps.efforts));
     let model = m.model.clone().filter(|v| spec.model.as_ref() != Some(v));
-    let effort = effort.filter(|v| spec.effort.as_ref() != Some(v));
+    let effort = mapped.filter(|v| spec.effort.as_ref() != Some(v));
     if model.is_none() && effort.is_none() {
-        return Ok(());
+        return Ok(None);
     }
     session
         .set_model(model.clone(), effort.clone())
         .await
         .map_err(|e| json!({"code": e.code(), "detail": e.to_string()}))?;
+    let change = settings::Change {
+        model: model.clone(),
+        requested_effort: m
+            .reasoning_effort
+            .clone()
+            .filter(|r| effort.is_some() && effort.as_ref() != Some(r)),
+        effort: effort.clone(),
+        permission_mode: None,
+    };
     if model.is_some() {
         spec.model = model;
     }
     if effort.is_some() {
         spec.effort = effort;
     }
-    Ok(())
+    Ok(Some(change))
 }
 
 /// Buchführung für POL-025 AC1: Tool-Calls ohne Gate-Anfrage bis zum Ende merken; liefert die,
@@ -2147,6 +2307,7 @@ impl PreStart {
             session_id: boot.session_id,
             epoch: boot.epoch,
             last_acked_rseq: unacked.acked(),
+            prestart: true,
         };
         if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
             return false;
@@ -2552,6 +2713,8 @@ async fn report_start_failure(boot: &RunnerBoot, error: &beton_harness::HarnessE
         session_id: boot.session_id,
         epoch: boot.epoch,
         last_acked_rseq: 0,
+        // Nur die Meldung des gescheiterten Starts, keine Kommandos (#218).
+        prestart: true,
     };
     if !send(&mut ws, &hello).await || !send(&mut ws, &bind).await {
         return;

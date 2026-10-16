@@ -63,6 +63,13 @@ impl Error {
         }
     }
 
+    /// Der Fehler betrifft nur dieses eine Event (fachliche Ablehnung, z. B. Nutzlast über dem
+    /// Blob-Limit oder ungültiges Event), nicht den Store oder die Session: Erneutes Senden
+    /// scheiterte wieder gleich (PROTO-015, #288).
+    pub fn rejects_event(&self) -> bool {
+        matches!(self, Self::InvalidEvent(_) | Self::BlobTooLarge { .. })
+    }
+
     pub(crate) fn corrupt(what: impl std::fmt::Display) -> Self {
         Self::Corrupt(what.to_string())
     }

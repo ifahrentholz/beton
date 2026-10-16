@@ -120,6 +120,8 @@ problem_codes! {
     RedactionUnavailable = "redaction_unavailable", 503, "Redaction nicht bereit";
     /// Sandbox bzw. Egress-Proxy der Session nicht startbar (SBX-006, PRX-002, PROTO-011).
     SandboxUnavailable = "sandbox_unavailable", 503, "Sandbox nicht verfügbar";
+    /// Die Quelle eines Credentials scheiterte (Secret-Store, Env, Datei, Kommando; PRX-006).
+    CredentialSourceError = "credential_source_error", 502, "Credential-Quelle gescheitert";
 }
 
 /// Ein Validierungsfehler mit JSON-Pointer auf das Feld.

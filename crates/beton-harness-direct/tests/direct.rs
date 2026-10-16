@@ -51,6 +51,7 @@ fn keys() -> DirectOptions {
     DirectOptions {
         keys: Arc::new(KeyMap::new(map)),
         discover_models: false,
+        egress: None,
     }
 }
 

@@ -159,6 +159,10 @@ impl Shared {
                 "API-Key in der Umgebungsvariable {var} des Daemons prüfen (providers.{}.api_key_env)",
                 self.provider.name
             ),
+            KeyRef::Secret(r) => format!(
+                "API-Key im Secret-Store prüfen ({r}, `beton secrets rotate`; providers.{}.api_key)",
+                self.provider.name
+            ),
             KeyRef::None => format!(
                 "Der Endpunkt verlangt einen API-Key: providers.{}.api_key_env setzen",
                 self.provider.name

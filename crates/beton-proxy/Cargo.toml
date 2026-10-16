@@ -12,13 +12,19 @@ authors.workspace = true
 # Test-Zugang für Netz-Tests anderer Crates (Namen → lokale Test-Upstreams); nur als
 # dev-dependency aktivieren, nie in Produktionsbuilds (ADR-0033).
 test-net = []
+# Zugänge für die Fuzz-Targets unter `fuzz/` (QA-009): reicht interne Parser unverändert
+# durch; nur vom Fuzz-Crate aktiviert, nie in Produktionsbuilds.
+fuzzing = []
 
 [dependencies]
+aho-corasick.workspace = true
 base64.workspace = true
 beton-core.workspace = true
 beton-secrets.workspace = true
 beton-store.workspace = true
+brotli-decompressor.workspace = true
 bytes = "1"
+flate2.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 http.workspace = true

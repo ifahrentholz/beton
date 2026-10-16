@@ -1,0 +1,17 @@
+R /usr/lib
+W /Users/me/work/repo "x")
+A .gitconfig
+H /Users/me/work/repo "x")
+M /Users/me/.ssh
+K /Users/me/work/repo "x")|*.env|1
+K /Users/me|id_?sa|0
+N .env
+N id_rsa
+N x.env
+O /Users/me/work/repo "x")/.beton
+Y /tmp/exchange
+U /tmp/broker.sock
+D 3000
+X 8080
+C
+T /Users/me/work/repo "x")/.git|/Users/me/work/repo "x")/.git|/Users/me/work/repo "x")/.git|0

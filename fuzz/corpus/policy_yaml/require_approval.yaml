@@ -1,0 +1,14 @@
+# Testdaten zum Regeltyp require_approval (POL-014, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: approvals
+rules:
+  - id: approve-writes
+    type: require_approval
+    params: { kinds: [file_write, file_edit], timeout: 30m, on_timeout: deny }
+  - id: approve-github-pr
+    type: require_approval
+    params: { tools: ["mcp:github/create_pull_request"], remember: none }
+  - id: approve-deploy
+    type: require_approval
+    params: { match: 'tool.kind == "shell" && tool.command.startsWith("make deploy")' }

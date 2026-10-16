@@ -571,10 +571,10 @@ fn pol_007_builtin_rule_types_fail_closed_until_implemented() {
     let s = set(
         Scope::User,
         "u",
-        "rules:\n  - id: budget\n    type: spend_cap\n    params: { scope: session, limit_usd: 25 }\n",
+        "rules:\n  - id: browser\n    type: browser_guard\n    params: { allow_hosts: [docs.rs] }\n",
     );
-    let d = eval(vec![s.clone()], &model_request("opus"));
-    assert_eq!(deny_reasons(&d), ["budget"]);
+    let d = eval(vec![s.clone()], &navigate("docs.rs"));
+    assert_eq!(deny_reasons(&d), ["browser"]);
     // in anderen Phasen wirkt der Regeltyp nicht
     assert_eq!(
         eval(vec![s], &tool("shell", json!({}))).outcome,

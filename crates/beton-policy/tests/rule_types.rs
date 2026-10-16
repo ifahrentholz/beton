@@ -48,14 +48,12 @@ fn call_with(name: &str, args: Value, fixtures: Value) -> Activation {
     .unwrap()
 }
 
-/// Auswertung mit großzügigem Zeitbudget: Die Tests prüfen Entscheidungen, keine Laufzeit
-/// (unter Last in der CI überschreitet eine Debug-Auswertung sonst die 10 ms, vgl. #273).
+/// Auswertung mit den Grenzen des Betriebs: Die Tests prüfen Entscheidungen, keine Laufzeit;
+/// das großzügige Zeitbudget der Testläufe kommt zentral aus `BETON_TEST_POLICY_BUDGET_MS`
+/// (`.cargo/config.toml`, #298).
 fn eval(sets: Vec<Arc<LoadedSet>>, act: &Activation) -> Decision {
     let opts = EvalOptions {
-        limits: beton_policy::cel::Limits {
-            eval_budget_us: 10_000_000,
-            ..beton_policy::cel::Limits::default()
-        },
+        limits: beton_policy::cel::Limits::runtime(),
         ..EvalOptions::default()
     };
     EffectiveSet::new(sets).evaluate(act, &opts)

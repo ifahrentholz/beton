@@ -1,0 +1,7 @@
+1.1
+Host: api.test
+Connection: keep-alive, Upgrade
+Upgrade: websocket
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Proxy-Authorization: Basic eA==

@@ -1,0 +1,7 @@
+R GET api.test/a/**
+Q GET https API.Test. 443 /a/./b/../c//d
+Q GET https api.test 443 /b/%2e%2e/a/x
+Q GET https api.test 443 /a/%41%2f
+Q GET https api.test 443 /a/%7e%25
+Q GET https xn--bcher-kva.test 443 /
+Q GET https bücher.test 443 /

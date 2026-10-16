@@ -293,6 +293,7 @@ async fn fixture(customize: impl FnOnce(Runtime) -> Runtime) -> Fixture {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

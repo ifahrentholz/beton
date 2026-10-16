@@ -66,6 +66,7 @@ async fn session(store: &Store) -> SessionRecord {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

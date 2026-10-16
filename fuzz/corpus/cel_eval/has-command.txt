@@ -1,0 +1,1 @@
+shell.has_command(tool.argv, "git", "push") && shell.has_flag(tool.argv, "--force")

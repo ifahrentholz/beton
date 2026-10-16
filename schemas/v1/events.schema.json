@@ -2750,6 +2750,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/EventRejected"
+            },
+            "type": {
+              "type": "string",
+              "const": "event.rejected"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/HarnessUnmapped"
             },
             "type": {
@@ -2814,6 +2830,31 @@
       "required": [
         "target_seq",
         "by",
+        "reason"
+      ]
+    },
+    "EventRejected": {
+      "description": "Ersatz für ein Event, das der Server fachlich abgelehnt hat (z. B. Nutzlast über dem\nBlob-Limit): steht an dessen Stelle im Log, damit nichts still verschwindet (PROTO-015,\n#288). Enthält bewusst nicht den abgelehnten Inhalt.",
+      "type": "object",
+      "properties": {
+        "original_type": {
+          "description": "Typ des abgelehnten Events, z. B. `message.completed`.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Problem-Code, z. B. `payload_too_large` oder `validation_failed`.",
+          "type": "string"
+        },
+        "rseq": {
+          "description": "Runner-Sequenz des abgelehnten Events.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "original_type",
+        "rseq",
         "reason"
       ]
     },
@@ -2921,6 +2962,7 @@
         "share.revoked",
         "presence.updated",
         "event.redacted",
+        "event.rejected",
         "harness.unmapped",
         "notice",
         "error"
@@ -3871,6 +3913,14 @@
         },
         "kind": {
           "$ref": "#/$defs/SessionKind"
+        },
+        "max_cost_usd": {
+          "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
         },
         "model": {
           "type": [

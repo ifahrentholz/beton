@@ -137,6 +137,7 @@ impl Store {
         secret_ref: &str,
         at: Timestamp,
     ) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("UPDATE secrets SET last_used_at = ? WHERE org_id = ? AND secret_ref = ?")
             .bind(at.to_string())
             .bind(org.to_string())

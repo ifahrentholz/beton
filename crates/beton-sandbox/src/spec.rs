@@ -221,6 +221,99 @@ impl Limits {
     }
 }
 
+/// Typ eines Credential-Bindings (PRX-006): Injektionsformat im Proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialType {
+    /// `Authorization: Bearer <wert>`; `hosts` ist Pflicht.
+    Bearer,
+    /// `Authorization: Basic base64(username:<wert>)`; `hosts` und `username` sind Pflicht.
+    Basic,
+    /// Git über HTTPS (Platzhalter als Passwort); `hosts` ist Pflicht.
+    GitHttps,
+    /// GitHub (Default-Hosts `github.com`, `api.github.com`, `uploads.github.com`,
+    /// `objects.githubusercontent.com`; GHE über `hosts`).
+    Github,
+    /// GitLab (Default-Host `gitlab.com`; self-hosted über `hosts`).
+    Gitlab,
+}
+
+impl CredentialType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::Basic => "basic",
+            Self::GitHttps => "git_https",
+            Self::Github => "github",
+            Self::Gitlab => "gitlab",
+        }
+    }
+}
+
+/// Quelle eines Credentials (PRX-006): genau eines der Felder. Gelesen wird nur in Stufe 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSourceSpec {
+    /// SecretRef im Secret-Store (SEC-001), z. B. `secret://user/github.com/me`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Variable im Environment des Daemons beim Session-Start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    /// Datei außerhalb aller Sandbox-Grants (keine Hardlinks, höchstens 64 KiB, 0600
+    /// empfohlen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Kommando (argv, ohne Shell) in Stufe 0; Timeout 30 s, stdout ohne Leerraum am Rand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Gültigkeit eines Kommando-Ergebnisses, z. B. `15m` (`s`, `m`, `h`); danach läuft es neu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
+}
+
+impl CredentialSourceSpec {
+    /// `ttl` in Sekunden (`None` ohne Angabe).
+    pub fn ttl_secs(&self) -> Result<Option<u64>, String> {
+        let Some(raw) = &self.ttl else {
+            return Ok(None);
+        };
+        let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+        let factor = match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            _ => return Err(format!("`{raw}`: erwartet z. B. `30s`, `15m` oder `1h`")),
+        };
+        match num.parse::<u64>() {
+            Ok(n) if n > 0 => Ok(Some(n * factor)),
+            _ => Err(format!("`{raw}`: erwartet z. B. `30s`, `15m` oder `1h`")),
+        }
+    }
+}
+
+/// Ein Credential-Binding (PRX-006): Die Sandbox sieht nur einen Platzhalter `bt_cred_*`
+/// (in den Variablen aus `env`), der Proxy setzt den Wert für die gebundenen Hosts ein.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSpec {
+    /// Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: CredentialType,
+    /// Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und
+    /// `git_https`, sonst Override der Default-Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<Vec<String>>,
+    /// Benutzername für `basic` (Pflicht) bzw. `git_https`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub source: CredentialSourceSpec,
+    /// Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+}
+
 /// Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der
 /// weniger spezifischen Ebene.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -281,6 +374,9 @@ pub struct SandboxSpec {
     /// Stufe-1-Overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness: Option<HarnessSandboxConfig>,
+    /// Credential-Bindings der Stufe 2 (PRX-006); Grant der spezifischsten Ebene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialSpec>>,
 }
 
 /// Environment-Variablen, die nie in eine Sandbox gelangen, auch nicht per `passthrough`
@@ -382,7 +478,8 @@ impl SandboxSpec {
                 egress_rules,
                 egress_allow_private,
                 egress_passthrough,
-                dev_ports
+                dev_ports,
+                credentials
             );
             if let Some(l) = &layer.limits {
                 for (field, present) in [

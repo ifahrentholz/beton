@@ -5,6 +5,7 @@
 //! cargo xtask coverage-gate --input <llvm-cov.json> [--baseline <f>] [--out <f>] [--markdown <f>]
 //! cargo xtask commit-lint [--range <base>..<head>] [--title <text>]
 //! cargo xtask dco [--range <base>..<head>]
+//! cargo xtask fuzz-targets [--affected --range <base>..<head>]
 //! cargo xtask golden-scan
 //! cargo xtask security-tests-touched --range <base>..<head> [--no-test-needed]
 //! cargo xtask security-review-label --range <base>..<head> [--has-label]
@@ -17,6 +18,7 @@ mod codegen;
 mod commits;
 mod cov_gate;
 mod coverage;
+mod fuzz;
 mod golden_scan;
 mod security_tests;
 mod spawn_lint;
@@ -59,6 +61,7 @@ fn run() -> Result<bool> {
         "commit-lint" => commit_lint(&root, &rest),
         "coverage-gate" => coverage_gate(&root, &rest),
         "dco" => dco(&rest),
+        "fuzz-targets" => fuzz_targets(&rest),
         "golden-scan" => golden_scan(&root),
         "security-tests-touched" => security_tests_touched(&rest),
         "security-review-label" => security_review_label(&rest),
@@ -67,7 +70,7 @@ fn run() -> Result<bool> {
         "spawn-lint" => spawn_lint(&root),
         _ => {
             eprintln!(
-                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|golden-scan|security-tests-touched|security-review-label|spawn-lint|spec-check|spec-coverage> [Optionen]\n\
+                "Verwendung: cargo xtask <codegen|commit-lint|coverage-gate|dco|fuzz-targets|golden-scan|security-tests-touched|security-review-label|spawn-lint|spec-check|spec-coverage> [Optionen]\n\
                  Siehe xtask/src/main.rs."
             );
             Ok(false)
@@ -193,6 +196,20 @@ fn pr_changes(args: &[String]) -> Result<Vec<security_tests::Change>> {
     Ok(security_tests::parse_name_status(&String::from_utf8(
         out.stdout,
     )?))
+}
+
+/// QA-009: Fuzz-Targets, eines je Zeile; mit `--affected` nur die vom Diff betroffenen
+/// (QA-009 AC2: die CI lässt sie in PRs je 60 s laufen).
+fn fuzz_targets(args: &[String]) -> Result<bool> {
+    let names: Vec<&str> = if args.iter().any(|a| a == "--affected") {
+        fuzz::affected(&pr_changes(args)?)
+    } else {
+        fuzz::TARGETS.iter().map(|t| t.name).collect()
+    };
+    for n in names {
+        println!("{n}");
+    }
+    Ok(true)
 }
 
 /// QA-013 AC1 (ADR-0036): PRs an sicherheitskritischen Pfaden brauchen `security-review`.
