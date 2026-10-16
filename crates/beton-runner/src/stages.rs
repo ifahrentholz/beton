@@ -615,6 +615,22 @@ fn program_roots(program: &Path, path: Option<&str>) -> Vec<PathBuf> {
     out
 }
 
+/// Stufe 1 muss den Shim ausführen können (sonst liefe kein git); fail closed.
+fn check_git_shim_dir(
+    id: ProviderId,
+    policy: &beton_sandbox::ResolvedPolicy,
+    dir: &Path,
+) -> Result<(), SandboxError> {
+    if !policy.read_roots.iter().any(|r| dir.starts_with(r)) {
+        return Err(unavailable(
+            id,
+            &[Cap::FsRead],
+            "git-Shim liegt außerhalb der Lese-Wurzeln der Stufe 1",
+        ));
+    }
+    Ok(())
+}
+
 /// Stellt den Git-Shim vorn in den `PATH` der Stufe 1 und hinterlegt das echte git als
 /// absoluten Pfad (SBX-003, #311): das erste ausführbare `git` im aufgelösten `PATH` der
 /// Stufe 1, einmal beim Start in Stufe 0 ermittelt. Ohne git verweigert der Shim jeden Aufruf.
@@ -1011,18 +1027,7 @@ async fn compose_unix(
     c.credential_env = harness_env;
     let mut harness_policy = provider.resolve(&harness_spec, &c)?;
     harness_policy.inherited_tools = inherited;
-    // Stufe 1 muss den Shim ausführen können (fail closed, sonst liefe kein git).
-    if !harness_policy
-        .read_roots
-        .iter()
-        .any(|r| git_shim.starts_with(r))
-    {
-        return Err(unavailable(
-            id,
-            &[Cap::FsRead],
-            "git-Shim liegt außerhalb der Lese-Wurzeln der Stufe 1",
-        ));
-    }
+    check_git_shim_dir(id, &harness_policy, &git_shim)?;
     install_git_shim(&mut harness_policy, &git_shim);
     // PRX-006 AC4: Credential-Dateien liegen außerhalb aller Freigaben beider Stufen.
     for cred in &tools_creds {
@@ -1060,4 +1065,32 @@ async fn compose_unix(
         _proxies: proxies,
         _dir: dir,
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// SBX-003 (#311): Das Verzeichnis des Git-Shims muss für Stufe 1 lesbar sein und darf in
+    /// keiner ihrer Schreib-Wurzeln liegen (sonst tauschte Stufe 1 den Shim aus); fail closed.
+    #[test]
+    fn sbx_003_git_shim_dir_is_readable_but_not_writable_by_stage_one() {
+        let dir = Path::new("/s/exec/git");
+        let mut policy = beton_sandbox::ResolvedPolicy::unsandboxed(Stage::Harness);
+        policy.read_roots = vec![PathBuf::from("/s/exec")];
+        assert!(check_git_shim_dir(ProviderId::Seatbelt, &policy, dir).is_ok());
+        policy.read_roots.clear();
+        assert!(check_git_shim_dir(ProviderId::Seatbelt, &policy, dir).is_err());
+        policy.read_roots = vec![PathBuf::from("/s/exec")];
+        for w in ["/s", "/s/exec", "/s/exec/git"] {
+            policy.write_roots = vec![PathBuf::from(w)];
+            assert!(
+                check_git_shim_dir(ProviderId::Seatbelt, &policy, dir).is_err(),
+                "{w}"
+            );
+        }
+        policy.write_roots = vec![PathBuf::from("/s/harness")];
+        assert!(check_git_shim_dir(ProviderId::Seatbelt, &policy, dir).is_ok());
+    }
 }

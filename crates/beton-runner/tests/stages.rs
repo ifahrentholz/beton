@@ -894,3 +894,63 @@ async fn sbx_003_git_in_stage_one_stops_when_commondir_changed() {
     let err = s.check_git().unwrap_err();
     assert!(err.contains(".git/commondir"), "{err}");
 }
+
+/// SBX-003 (#311): Ohne Git-Repo beim Start gibt es keinen Schnappschuss. Entsteht während der
+/// Session ein `.git` im Workspace, startet `git` in Stufe 1 nicht (Kontrollgruppe: vorher
+/// läuft git).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_003_git_in_stage_one_refuses_a_git_dir_created_during_the_session() {
+    let fx = fx();
+    let (git, prefix) = git_binary();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env.insert(
+        "PATH".into(),
+        format!(
+            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+            git.parent().unwrap().display()
+        ),
+    );
+    let read = prefix
+        .map(|p| format!("read_paths: [\"{}\"]\n", p.display()))
+        .unwrap_or_default();
+    let s = compose(
+        inp,
+        opts(
+            &format!("backend: auto\nallow_network: false\n{read}"),
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let trace = PathBuf::from(&s.harness.policy().env["TMPDIR"]).join("git-trace");
+    let git_version = || async {
+        let out = s
+            .harness
+            .spawn(
+                CommandSpec::new("/bin/sh")
+                    .args(["-c", "GIT_TRACE=\"$TMPDIR/git-trace\" git --version"])
+                    .cwd(&fx.ws)
+                    .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+            )
+            .unwrap()
+            .output(Duration::from_secs(60))
+            .await
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    // Kontrollgruppe: kein `.git` → git läuft.
+    let (code, stderr) = git_version().await;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(trace.exists());
+    std::fs::remove_file(&trace).unwrap();
+    // Während der Session entstanden (hier von Stufe 0 vorbereitet).
+    git_init(&git, &fx.ws);
+    let (code, stderr) = git_version().await;
+    assert_eq!(code, Some(126), "{stderr}");
+    assert!(stderr.contains(".git"), "{stderr}");
+    assert!(!trace.exists(), "git darf nicht starten");
+}
