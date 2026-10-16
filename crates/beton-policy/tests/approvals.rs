@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +53,7 @@ fn shell(command: &str) -> Activation {
 }
 
 fn eval(sets: &[Arc<LoadedSet>], act: &Activation) -> Decision {
-    EffectiveSet::new(sets.to_vec()).evaluate(act, &EvalOptions::default())
+    EffectiveSet::new(sets.to_vec()).evaluate(act, &common::opts())
 }
 
 fn ask_reasons(d: &Decision) -> Vec<Reason> {
@@ -233,7 +235,7 @@ fn pol_010_ac2_grant_allows_same_command_only() {
     let id = grants.add(&reasons[0].rule, &fp);
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let effective = EffectiveSet::new(sets.to_vec());
     let same = effective.evaluate(&shell("git push origin feature/x"), &opts);
@@ -265,7 +267,7 @@ fn pol_010_grant_survives_a_new_set_version() {
     );
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![v2]).evaluate(&shell("git push"), &opts);
     assert_eq!(d.outcome, Outcome::Allow);
@@ -665,7 +667,7 @@ fn granted_after(sets: &[Arc<LoadedSet>], first: &Activation) -> SessionGrants {
 fn outcome_with(sets: &[Arc<LoadedSet>], grants: &SessionGrants, act: &Activation) -> Outcome {
     let opts = EvalOptions {
         grants: Some(grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     EffectiveSet::new(sets.to_vec())
         .evaluate(act, &opts)

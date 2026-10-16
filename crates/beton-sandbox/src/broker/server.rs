@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 
 use super::fdpass;
-use super::proto::{ClientMsg, MAX_FRAME, Reply, Request, VERSION};
+use super::proto::{ClientMsg, MAX_FRAME, Op, Reply, Request, VERSION};
 use crate::command::{CommandSpec, EnvSpec, Stdio};
 use crate::registry::Sandbox;
 use crate::resolve::{ExecAccess, Mask, Secret};
@@ -22,6 +22,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Signale, die `bt-exec` weiterreichen darf.
 const SIGNALS: [i32; 4] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT];
+
+/// Prüfung des Runners vor jedem `git` der Stufe 1 (SBX-003, #311): `Err` mit Begründung,
+/// wenn eine Git-Steuerdatei entstanden ist oder sich geändert hat.
+pub type GitCheck = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 /// Ein laufender Broker; endet mit `Drop` (Socket wird entfernt, laufende Kommandos enden mit
 /// ihren Verbindungen).
@@ -54,6 +58,12 @@ struct Shared {
     /// Konfigurierte Namen der Stufe 2, die Stufe 1 überschreiben darf (#259).
     forward: Vec<String>,
     started: Arc<std::sync::atomic::AtomicU64>,
+    /// Verzeichnis des Brokers (Socket, Shims der Stufe 1), wie übergeben und kanonisch;
+    /// gehört nie in den `PATH` der Stufe 2.
+    dirs: [PathBuf; 2],
+    /// Prüfung vor jedem `git` der Stufe 1 (SBX-003, #311); ohne sie lehnt der Broker die
+    /// Vorabprüfung ab (fail closed).
+    git_check: Option<GitCheck>,
 }
 
 fn token() -> std::io::Result<Secret> {
@@ -68,6 +78,24 @@ impl Broker {
     /// Startet den Broker mit dem Socket `dir/exec.sock` (Verzeichnis 0700, Socket 0600) für
     /// die Stufe-2-Sandbox `tools`.
     pub async fn start(dir: &Path, tools: Sandbox) -> std::io::Result<Self> {
+        Self::start_inner(dir, tools, None).await
+    }
+
+    /// Wie [`Broker::start`], beantwortet zusätzlich [`Op::GitPreflight`] des Git-Shims der
+    /// Stufe 1 mit `check` (SBX-003, #311).
+    pub async fn start_with_git_check(
+        dir: &Path,
+        tools: Sandbox,
+        check: GitCheck,
+    ) -> std::io::Result<Self> {
+        Self::start_inner(dir, tools, Some(check)).await
+    }
+
+    async fn start_inner(
+        dir: &Path,
+        tools: Sandbox,
+        git_check: Option<GitCheck>,
+    ) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         let socket = dir.join("exec.sock");
@@ -86,6 +114,8 @@ impl Broker {
             token: token.clone(),
             forward: forward.clone(),
             started: started.clone(),
+            dirs: [dir.to_path_buf(), dir.canonicalize()?],
+            git_check,
         });
         let task = tokio::spawn(async move {
             loop {
@@ -172,8 +202,8 @@ fn reject(code: &str, message: impl Into<String>) -> Reply {
     }
 }
 
-/// Prüft eine Anfrage gegen Token und Stufe-2-Policy (AC3); liefert das kanonische `cwd`.
-fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
+/// Token der Session und Protokollversion (jede Anfrage).
+fn authorize(req: &Request, shared: &Shared) -> Result<(), Reply> {
     if !super::same(req.token.as_bytes(), shared.token.expose().as_bytes()) {
         return Err(reject(
             "unauthorized",
@@ -186,6 +216,40 @@ fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
             format!("Protokollversion {} (erwartet {VERSION})", req.v),
         ));
     }
+    Ok(())
+}
+
+/// Vorabprüfung des Git-Shims (SBX-003, #311): startet nichts.
+fn git_preflight(req: &Request, shared: &Shared) -> Reply {
+    if let Err(reply) = authorize(req, shared) {
+        return reply;
+    }
+    match &shared.git_check {
+        None => reject(
+            "unsupported",
+            "keine Prüfung der Git-Steuerdateien in dieser Session",
+        ),
+        Some(check) => match check() {
+            Ok(()) => Reply::Allowed,
+            Err(why) => reject("git_control_changed", why),
+        },
+    }
+}
+
+/// `PATH` für Stufe 2 ohne Einträge im Verzeichnis des Brokers (Shims der Stufe 1): Stufe 2
+/// sieht es nicht, und `execvp` bräche an einem nicht lesbaren Eintrag ab, statt weiter zu
+/// suchen. `None`: nichts übrig, Stufe 2 behält ihren eigenen `PATH`.
+fn stage_two_path(path: &str, dirs: &[PathBuf]) -> Option<String> {
+    let kept: Vec<&str> = path
+        .split(':')
+        .filter(|d| !dirs.iter().any(|dir| Path::new(d).starts_with(dir)))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(":"))
+}
+
+/// Prüft eine Anfrage gegen Token und Stufe-2-Policy (AC3); liefert das kanonische `cwd`.
+fn validate(req: &Request, shared: &Shared) -> Result<PathBuf, Reply> {
+    authorize(req, shared)?;
     if req.tty {
         return Err(reject(
             "unsupported",
@@ -270,6 +334,15 @@ async fn serve(mut conn: UnixStream, shared: Arc<Shared>) {
         Ok(Ok((fds, Some(req)))) => (fds, req),
         Ok(Ok((_, None))) | Ok(Err(_)) | Err(_) => return,
     };
+    if req.op == Op::GitPreflight {
+        drop(fds);
+        let reply = git_preflight(&req, &shared);
+        if let Reply::Error { code, .. } = &reply {
+            tracing::debug!(code = %code, "Exec-Broker: git in Stufe 1 abgelehnt");
+        }
+        let _ = write_frame(&mut conn, &reply).await;
+        return;
+    }
     let cwd = match validate(&req, &shared) {
         Ok(cwd) => cwd,
         Err(reply) => {
@@ -284,12 +357,23 @@ async fn serve(mut conn: UnixStream, shared: Arc<Shared>) {
     let (Some(stdin), Some(stdout), Some(stderr)) = (fds.next(), fds.next(), fds.next()) else {
         return;
     };
+    let set = req
+        .env_overrides
+        .iter()
+        .filter_map(|(k, v)| {
+            if k == "PATH" {
+                stage_two_path(v, &shared.dirs).map(|p| (k.clone(), p))
+            } else {
+                Some((k.clone(), v.clone()))
+            }
+        })
+        .collect();
     let cmd = CommandSpec {
         program: PathBuf::from(&req.argv[0]),
         args: req.argv[1..].to_vec(),
         env: EnvSpec {
             clear: true,
-            set: req.env_overrides.clone().into_iter().collect(),
+            set,
             remove: Vec::new(),
         },
         cwd: Some(cwd),

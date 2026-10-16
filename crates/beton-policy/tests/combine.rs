@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,7 +24,7 @@ fn set(scope: Scope, name: &str, body: &str) -> Arc<LoadedSet> {
 }
 
 fn eval(sets: Vec<Arc<LoadedSet>>, act: &Activation) -> Decision {
-    EffectiveSet::new(sets).evaluate(act, &EvalOptions::default())
+    EffectiveSet::new(sets).evaluate(act, &common::opts())
 }
 
 fn tool(kind: &str, args: Value) -> Activation {
@@ -532,7 +534,7 @@ fn pol_007_grants_turn_ask_into_allow() {
     let grants = GrantFor("confirm");
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![s]).evaluate(&tool("shell", json!({})), &opts);
     assert_eq!(d.outcome, Outcome::Allow);
@@ -552,7 +554,7 @@ fn pol_007_unsupported_modification() {
     };
     let opts = EvalOptions {
         capabilities: caps,
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let run = |s: &str| {
         EffectiveSet::new(vec![set(Scope::User, "u", &body(s))])
@@ -821,7 +823,7 @@ fn pol_006_no_capabilities_means_every_modification_is_unsupported() {
     );
     let opts = EvalOptions {
         capabilities: Capabilities::none(),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![s]).evaluate(&model_request("opus"), &opts);
     assert_eq!(deny_reasons(&d), ["route"]);

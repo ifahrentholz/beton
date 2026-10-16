@@ -24,8 +24,8 @@ fn set(body: &str) -> Arc<LoadedSet> {
 
 const SECRET_ARG: &str = "rm -rf /geheimes-verzeichnis-4711";
 
-/// Stehende Uhr: Die Tests zu Fehlertexten prüfen nicht das Zeitbudget (POL-002); unter fremder
-/// Last auf dem CI-Runner darf es sie nicht verfälschen (#273). Die Engine bleibt unverändert.
+/// Stehende Uhr: Die Audit-Tests prüfen nicht das Zeitbudget (POL-002); unter fremder Last auf
+/// dem CI-Runner darf es sie nicht verfälschen (#273, #314). Die Engine bleibt unverändert.
 struct FrozenClock;
 
 impl Clock for FrozenClock {
@@ -54,7 +54,7 @@ fn pol_025_ac2_event_has_no_tool_arguments_only_a_hash() {
     let effective = EffectiveSet::new(vec![set(
         "  - id: no-rm\n    on: tool_call\n    when: 'tool.command.contains(\"rm -rf\")'\n    action: deny\n    reason: kein rm\n",
     )]);
-    let decision = effective.evaluate(&shell(SECRET_ARG), &EvalOptions::default());
+    let decision = effective.evaluate(&shell(SECRET_ARG), &frozen());
     let subject = json!({ "tool": "Bash", "args": { "command": SECRET_ARG } });
     let hash = subject_hash(&subject);
     assert!(hash.starts_with("sha256:"), "{hash}");
@@ -88,7 +88,7 @@ fn pol_025_ac3_dry_run_hits_are_listed_but_do_not_change_the_outcome() {
     let effective = EffectiveSet::new(vec![set(
         "  - id: shadow\n    on: tool_call\n    when: 'tool.kind == \"shell\"'\n    action: deny\n    dry_run: true\n",
     )]);
-    let decision = effective.evaluate(&shell("ls"), &EvalOptions::default());
+    let decision = effective.evaluate(&shell("ls"), &frozen());
     let event = decision_event(&decision, DecisionMeta::new(Level::ApprovalOnly));
     assert_eq!(event.outcome, PolicyOutcome::Allow);
     assert_eq!(event.matched.len(), 1, "{:?}", event.matched);
@@ -103,13 +103,13 @@ fn pol_025_allow_without_match_and_errors_are_audited() {
     let effective = EffectiveSet::new(vec![set(
         "  - id: broken\n    on: tool_call\n    when: 'tool.args.n > 1'\n    action: ask\n",
     )]);
-    let ok = effective.evaluate(&shell("ls"), &EvalOptions::default());
+    let ok = effective.evaluate(&shell("ls"), &frozen());
     // `tool.args.n` fehlt: Fehler in einer ask-Regel → deny (fail closed), im Event als Fehler.
     let event = decision_event(&ok, DecisionMeta::new(Level::Full));
     assert_eq!(event.outcome, PolicyOutcome::Deny);
     assert_eq!(event.errors.len(), 1);
     assert_eq!(event.errors[0]["rule_id"], "broken");
-    let empty = EffectiveSet::new(vec![]).evaluate(&shell("ls"), &EvalOptions::default());
+    let empty = EffectiveSet::new(vec![]).evaluate(&shell("ls"), &frozen());
     let event = decision_event(&empty, DecisionMeta::new(Level::ObserveOnly));
     assert_eq!(event.outcome, PolicyOutcome::Allow);
     assert!(event.matched.is_empty());
