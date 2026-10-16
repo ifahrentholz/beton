@@ -1183,6 +1183,72 @@ async fn ses_015_ac2_worktree_under_beton_home_writes_only_itself() {
     }
 }
 
+/// #206: Stufe 1 erreicht die Sockets in ihrem Laufzeitverzeichnis (Hook, MCP-Hub), liest die
+/// Token-Datei, schreibt dort nicht; Stufe 2 sieht das Verzeichnis nicht.
+#[tokio::test]
+async fn sbx_002_stage_one_reaches_sockets_of_its_runtime_dir_stage_two_does_not() {
+    let abi = beton_sandbox::linux::kernel_landlock_abi().unwrap_or(0);
+    for p in backends() {
+        let fx = fx();
+        let runtime = fx.root.join("run");
+        std::fs::create_dir_all(runtime.join("hook-1")).unwrap();
+        let elsewhere = fx.root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let hook = runtime.join("hook-1/hook.sock");
+        let hub = runtime.join("mcp-1.sock");
+        let other = elsewhere.join("other.sock");
+        for path in [&hook, &hub, &other] {
+            let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+            std::thread::spawn(move || {
+                for c in l.incoming() {
+                    drop(c);
+                }
+            });
+        }
+        std::fs::write(runtime.join("hook-1/hook.token"), "FIXTURE-HOOK-TOKEN").unwrap();
+        let mut ctx = fx.ctx(Stage::Harness);
+        ctx.harness = beton_sandbox::masks::harness_grants("claude");
+        ctx.runtime = Some(runtime.clone());
+        let harness = fx.policy_with(p.as_ref(), &format!("read_paths: [{}]\n", exe_grant()), ctx);
+        for s in [&hook, &hub] {
+            let s = s.display().to_string();
+            let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&s])).await;
+            assert_eq!(
+                probe_result(&out),
+                "ok",
+                "{}: {s} aus Stufe 1: {out:?}",
+                p.id()
+            );
+        }
+        let token = runtime.join("hook-1/hook.token").display().to_string();
+        let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "read", &[&token])).await;
+        assert_eq!(probe_result(&out), "ok", "{}: Token-Datei: {out:?}", p.id());
+        if abi >= 9 {
+            let o = other.display().to_string();
+            let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&o])).await;
+            assert!(
+                probe_result(&out).starts_with("err:"),
+                "{}: fremder Socket aus Stufe 1: {out:?}",
+                p.id()
+            );
+        }
+        let tools = fx.policy(
+            p.as_ref(),
+            &format!("read_paths: [{}]\n", exe_grant()),
+            Stage::Tools,
+        );
+        for s in [&hook, &hub] {
+            let s = s.display().to_string();
+            let out = run_with(p.as_ref(), &tools, probe_cmd(&tools, "unix", &[&s])).await;
+            assert!(
+                probe_result(&out).starts_with("err:"),
+                "{}: {s} aus Stufe 2: {out:?}",
+                p.id()
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn sbx_002_stage_one_reaches_its_exec_socket_stage_two_does_not() {
     let abi = beton_sandbox::linux::kernel_landlock_abi().unwrap_or(0);

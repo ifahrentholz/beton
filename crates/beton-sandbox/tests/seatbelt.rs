@@ -908,6 +908,65 @@ async fn sbx_002_stage_one_reaches_only_its_exec_socket() {
     assert!(!out.ok, "Broker-Socket aus Stufe 2: {out:?}");
 }
 
+/// #206: Stufe 1 erreicht die Sockets in ihrem Laufzeitverzeichnis (Hook, MCP-Hub, auch in
+/// Unterverzeichnissen), aber keinen anderen Unix-Socket; Stufe 2 erreicht keinen davon.
+#[tokio::test]
+async fn sbx_002_stage_one_reaches_sockets_of_its_runtime_dir_only() {
+    let fx = fx();
+    let runtime = fx.root.join("run");
+    std::fs::create_dir_all(runtime.join("hook-1")).unwrap();
+    let elsewhere = fx.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let listen = |path: &Path| {
+        let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                drop(c);
+            }
+        });
+    };
+    let hook = runtime.join("hook-1/hook.sock");
+    let hub = runtime.join("mcp-1.sock");
+    let other = elsewhere.join("other.sock");
+    for s in [&hook, &hub, &other] {
+        listen(s);
+    }
+    std::fs::write(runtime.join("hook-1/hook.token"), "FIXTURE-HOOK-TOKEN").unwrap();
+    let connect = |p: &Path| format!("nc -U '{}' </dev/null", p.display());
+    let c = control(&fx, &connect(&other)).await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    let mut ctx = fx.ctx(Stage::Harness);
+    ctx.harness = beton_sandbox::masks::harness_grants("claude");
+    ctx.runtime = Some(runtime.clone());
+    let harness = fx.policy_with("{}\n", ctx);
+    for s in [&hook, &hub] {
+        let out = sh(&harness, &connect(s)).await;
+        assert!(out.ok, "{} aus Stufe 1: {out:?}", s.display());
+    }
+    let out = sh(
+        &harness,
+        &format!("cat '{}'", runtime.join("hook-1/hook.token").display()),
+    )
+    .await;
+    assert!(
+        out.stdout.contains("FIXTURE-HOOK-TOKEN"),
+        "Token-Datei: {out:?}"
+    );
+    let out = sh(
+        &harness,
+        &format!("touch '{}'", runtime.join("neu").display()),
+    )
+    .await;
+    assert!(!out.ok, "Stufe 1 schreibt ins Laufzeitverzeichnis: {out:?}");
+    let out = sh(&harness, &connect(&other)).await;
+    assert!(!out.ok, "fremder Socket aus Stufe 1: {out:?}");
+    let tools = fx.policy("{}\n", Stage::Tools);
+    for s in [&hook, &hub] {
+        let out = sh(&tools, &connect(s)).await;
+        assert!(!out.ok, "{} aus Stufe 2: {out:?}", s.display());
+    }
+}
+
 #[tokio::test]
 async fn prx_008_ac3_dev_ports_on_macos_open_only_the_named_loopback_port() {
     let fx = fx();

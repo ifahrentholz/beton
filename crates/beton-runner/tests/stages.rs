@@ -459,6 +459,36 @@ async fn prx_005_prx_008_one_proxy_instance_per_stage_passthrough_only_in_stage_
     assert!(s.env.shim_dir.join("bt-exec-bash").exists());
 }
 
+/// #206: Hook-Socket, MCP-Hub, Token-Dateien und Session-Skills liegen im Laufzeitverzeichnis
+/// der Stufe 1 im Session-Verzeichnis; Stufe 1 liest es und erreicht Sockets darin, Stufe 2
+/// sieht es nicht.
+#[tokio::test]
+async fn sbx_002_runtime_dir_of_stage_one_for_hook_and_mcp() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let runtime = s.runtime_dir().to_path_buf();
+    assert!(runtime.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&runtime).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    }
+    let h = s.harness.policy();
+    assert!(h.read_roots.contains(&runtime), "{:?}", h.read_roots);
+    assert!(!h.write_roots.iter().any(|w| runtime.starts_with(w)));
+    assert_eq!(h.unix_socket_dirs, vec![runtime.clone()]);
+    let t = s.tools.policy();
+    assert!(!t.read_roots.iter().any(|r| runtime.starts_with(r)));
+    assert!(t.unix_socket_dirs.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_bt_exec_from_stage_one_runs_in_stage_two() {
     let fx = fx();

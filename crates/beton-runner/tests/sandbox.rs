@@ -205,3 +205,94 @@ async fn sbx_001_ac4_harness_start_emits_exactly_one_sandbox_started() {
     assert_eq!(p["degraded"], true);
     d.daemon.shutdown().await;
 }
+/// #206, HAR-005: Claude (Fake-CLI) läuft in Stufe 1, der `PreToolUse`-Hook erreicht seinen
+/// Socket und entscheidet; Bash läuft über `bt-exec` in Stufe 2. HAR-027 AC2: Im Modus `yolo`
+/// setzt beton eine `deny`-Policy auf `git push --force` weiter durch.
+#[tokio::test]
+async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denied() {
+    let dir = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo stufe=$BETON_STAGE\" } }, gate: true, run: true }\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"git push --force origin main\" } }, gate: true, run: true }\n      - { message: \"fertig\" }\n";
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(work.join(".beton/policies")).unwrap();
+    std::fs::write(
+        work.join(".beton/policies/git.yaml"),
+        "spec_version: 1\nname: git\nrules:\n  - id: no-force\n    type: git_guard\n    params: { force_push: deny, push: allow }\n",
+    )
+    .unwrap();
+    let d = daemon_with(
+        dir.path(),
+        scenario,
+        beton_sandbox::SandboxSpec::from_yaml("allow_network: false").unwrap(),
+    )
+    .await;
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "claude", "cwd": work, "permission_mode": "yolo"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    d.wait_status(&id, "idle").await;
+    let (status, _) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "los"})),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let start = Instant::now();
+    let events = loop {
+        let events = d.events(&id).await;
+        if events
+            .iter()
+            .any(|e| e["type"] == "turn.completed" || e["type"] == "turn.failed")
+        {
+            break events;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            events.iter().map(|e| e["type"].clone()).collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let text = serde_json::to_string(&events).unwrap();
+    // Harness in Stufe 1 mit echtem Backend, das erlaubte Kommando lief in Stufe 2.
+    assert!(
+        events.iter().any(|e| e["type"] == "sandbox.started"
+            && e["payload"]["stage"] == "harness"
+            && e["payload"]["backend"] != "none"),
+        "{text}"
+    );
+    let completed: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "tool.call.completed")
+        .collect();
+    assert_eq!(completed.len(), 2, "{text}");
+    assert_eq!(completed[0]["payload"]["status"], "ok", "{text}");
+    assert!(
+        completed[0]["payload"].to_string().contains("stufe=tools"),
+        "{text}"
+    );
+    // Der Force-Push: vom Hook (volles Gate) per Policy abgelehnt, nicht ausgeführt.
+    assert_eq!(completed[1]["payload"]["status"], "denied", "{text}");
+    let decisions: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "policy.decision" && e["payload"]["phase"] == "tool_call")
+        .collect();
+    assert!(
+        decisions.iter().any(|d| d["payload"]["outcome"] == "deny"
+            && d["payload"]["enforcement"] == "full"
+            && d["payload"].to_string().contains("no-force")),
+        "{text}"
+    );
+    assert!(!text.contains("policy_integrity_violation"), "{text}");
+    assert!(!text.contains("sandbox_integrity"), "{text}");
+    d.daemon.shutdown().await;
+}

@@ -197,6 +197,11 @@ pub struct Step {
     /// Hook ausgehebelt wurde (Integritätsprüfung, HAR-005, #233).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_gate: bool,
+    /// Einen erlaubten `Bash`-Aufruf wirklich ausführen, wie Claude Code über
+    /// `$CLAUDE_CODE_SHELL -c <command>` (im Stufenmodell `bt-exec`, also Stufe 2, SBX-002);
+    /// Ausgabe und Exit-Code sind das Ergebnis. Nur die Fake-CLI (`stream-json`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run: bool,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,
