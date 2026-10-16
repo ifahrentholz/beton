@@ -579,6 +579,17 @@ impl HarnessAdapter for ClaudeAdapter {
         spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        Ok(Box::new(self.launch(spec, ctx).await?))
+    }
+}
+
+impl ClaudeAdapter {
+    /// Startet die CLI und liefert die konkrete Session (für [`HarnessAdapter::start`]).
+    async fn launch(
+        &self,
+        spec: SessionSpec,
+        ctx: AdapterContext,
+    ) -> Result<ClaudeSession, HarnessError> {
         // Installiert-Prüfung macht `Registry::start` über den Probe; ohne Auflösung bleibt
         // der Name, damit Replays (Golden-Tests) ohne CLI laufen.
         let (program, mut args) = match resolve_binary(&harness_id(), "claude", &ctx.env) {
@@ -696,7 +707,7 @@ impl HarnessAdapter for ClaudeAdapter {
                 closing: closing.clone(),
             },
         ));
-        Ok(Box::new(ClaudeSession {
+        Ok(ClaudeSession {
             stdin,
             state,
             tx,
@@ -707,7 +718,7 @@ impl HarnessAdapter for ClaudeAdapter {
             _instructions: instructions.map(|(dir, _)| dir),
             _hook: hook.map(|(server, _)| server),
             caps,
-        }))
+        })
     }
 }
 
@@ -1570,6 +1581,90 @@ mod attachment_tests {
         assert_eq!(
             user_content(&UserInput::from("nur Text")),
             vec![json!({"type": "text", "text": "nur Text"})]
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_ref_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::golden::{RawLine, ReplayLauncher};
+    use beton_harness::{AllowAll, HostEnv};
+
+    async fn launch(spec: SessionSpec, lines: Vec<RawLine>) -> ClaudeSession {
+        let ctx = AdapterContext {
+            stage: None,
+            gate: Arc::new(AllowAll),
+            launcher: Arc::new(ReplayLauncher::new(lines, 0)),
+            env: HostEnv::default(),
+        };
+        ClaudeAdapter::default()
+            .launch(
+                SessionSpec {
+                    workdir: std::env::temp_dir(),
+                    ..spec
+                },
+                ctx,
+            )
+            .await
+            .unwrap()
+    }
+
+    /// #305: Der Runner liest die Referenz für `session.started` direkt nach dem Start, während
+    /// die Leseschleife schon Zeilen der CLI verarbeitet und dafür den Zustand sperrt. Die
+    /// Referenz darf davon nicht abhängen (HAR-020 AC2, Grundlage für das Resume aus AC1).
+    #[tokio::test]
+    async fn har_020_ac2_session_ref_is_readable_while_the_reader_holds_the_state() {
+        let s = launch(SessionSpec::default(), Vec::new()).await;
+        let held = s.state.lock().await;
+        let id = s.native_session_ref().expect("eigene --session-id");
+        drop(held);
+        assert_eq!(s.native_session_ref().as_deref(), Some(id.as_str()));
+
+        let resumed = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                ..SessionSpec::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let _held = resumed.state.lock().await;
+        assert_eq!(
+            resumed.native_session_ref().as_deref(),
+            Some("2b1c5d1e-0000-4000-8000-000000000001")
+        );
+    }
+
+    /// Beim Abzweigen vergibt die CLI die Referenz; sie gilt, sobald `system/init` gelesen ist.
+    #[tokio::test]
+    async fn har_020_ac2_forked_session_ref_comes_from_init() {
+        let init = r#"{"type":"system","subtype":"init","session_id":"9f0e8d7c-0000-4000-8000-000000000002","model":"m","tools":[],"mcp_servers":[]}"#;
+        let mut s = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                fork_session: true,
+                ..SessionSpec::default()
+            },
+            vec![RawLine {
+                ms: 0,
+                after_stdin: 0,
+                out: init.into(),
+            }],
+        )
+        .await;
+        let mut rx = s.events().unwrap();
+        while let Some(e) = rx.recv().await {
+            if matches!(e.payload, EventPayload::HarnessReady(_)) {
+                break;
+            }
+        }
+        let _held = s.state.lock().await;
+        assert_eq!(
+            s.native_session_ref().as_deref(),
+            Some("9f0e8d7c-0000-4000-8000-000000000002")
         );
     }
 }
