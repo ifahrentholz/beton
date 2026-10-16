@@ -201,6 +201,17 @@ async fn pol_027_ac1_ac2_explain_a_real_decision_with_the_runner_snapshot() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    // Den Snapshot legt der Runner erst nach dem Start im Hintergrund ab, ohne die Auswertung
+    // aufzuhalten (POL-027, WP-40); `policy.decision` kann ihm vorauseilen (#318). Warten, bis
+    // er gespeichert ist; was danach `explain` zeigt, prüft der Test unten.
+    loop {
+        let ex = client.explain_decision(&id, seq).await.unwrap();
+        if ex["explanation"]["snapshot"] != "missing" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "kein Set-Snapshot: {ex}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let out = run(common::beton(serve.home()).args([
         "--json",
         "policy",
