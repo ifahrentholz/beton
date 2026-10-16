@@ -187,6 +187,16 @@ pub async fn stage_boot(
     cfg: &SessionsConfig,
     session: SessionId,
 ) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
+    stage_boot_for(cfg, session, true).await
+}
+
+/// Wie [`stage_boot`]; `harness_net = false`: Der Harness läuft im Runner (Fake-Harness) und
+/// braucht ohne Netz der Tools keinen Proxy, also auch keine CA.
+pub async fn stage_boot_for(
+    cfg: &SessionsConfig,
+    session: SessionId,
+    harness_net: bool,
+) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
     let spec = beton_sandbox::SandboxSpec::merged(&[&cfg.sandbox]);
     let boot = beton_host::SandboxBoot {
         spec: cfg.sandbox.clone(),
@@ -199,6 +209,9 @@ pub async fn stage_boot(
     // Vendor-Hosts (Passthrough): Die CA geht mit, wenn es eine Quelle gibt; fehlt sie, entscheidet
     // der Runner (in-process Harnesses brauchen keine, alle anderen starten nicht).
     let tools_offline = spec.allow_network == Some(false);
+    if tools_offline && !harness_net {
+        return Ok((Some(boot), None));
+    }
     let Some(source) = cfg.proxy_ca.as_ref() else {
         if tools_offline {
             return Ok((Some(boot), None));
@@ -911,7 +924,12 @@ impl<'a> SessionManager<'a> {
         let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
         let agent_snapshot = self.snapshot_file(session.id).await?;
-        let (sandbox, proxy_ca) = stage_boot(cfg, session.id).await?;
+        let (sandbox, proxy_ca) = stage_boot_for(
+            cfg,
+            session.id,
+            session.harness != beton_harness::HarnessId::FAKE,
+        )
+        .await?;
         // Die Bestätigung von `backend: none` steht im Audit-Log und gilt für die ganze
         // Session, auch nach Resume (SBX-006).
         let unsandboxed_confirmed = self
