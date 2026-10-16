@@ -2,6 +2,7 @@
 
 mod core_tests;
 mod credential_tests;
+mod fuzzing_tests;
 mod h2_tests;
 mod passthrough_tests;
 mod private_ip_tests;

@@ -1,0 +1,4 @@
+M /Users/me/.beton
+W /Users/me/.beton/worktrees/s1
+R /Users/me/.beton/worktrees/s1/.git
+T /Users/me/.beton/worktrees/s1/.git|/r/.git/worktrees/s1|/r/.git|1

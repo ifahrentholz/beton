@@ -1,0 +1,9 @@
+0PUT http://api.test/c HTTP/1.1
+Host: api.test
+Proxy-Authorization: @@AUTH@@
+Transfer-Encoding: chunked
+
+5
+hello
+0
+

@@ -20,6 +20,10 @@
 pub mod ca;
 pub mod credentials;
 pub mod egress;
+/// Zugänge für die Fuzz-Targets (QA-009); nur mit Feature `fuzzing`.
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod ip;
 mod net;
 pub mod normalize;

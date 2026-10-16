@@ -1,0 +1,1 @@
+session.cost_usd > 3.5 && tool.kind in ["file_write", "file_edit"]

@@ -1,0 +1,1 @@
+has(tool.args.command) && tool.args.command.contains("token")

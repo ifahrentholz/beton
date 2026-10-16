@@ -1,0 +1,1 @@
+tool.name == "Bash" || tool.native_name.startsWith("mcp__evil")

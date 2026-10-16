@@ -1,0 +1,4 @@
+T api.test
+H Authorization: Bearer {A}
+P /v1/{A}
+Q key={A}&x=1

@@ -55,7 +55,7 @@ pub use error::SandboxError;
 pub use git::GitLayout;
 pub use masks::HarnessGrants;
 pub use none::NoneProvider;
-pub use provider::{ProbeReport, ProviderId, SandboxProvider};
+pub use provider::{KernelInfo, ProbeReport, ProviderId, SandboxProvider};
 pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
 pub use resolve::{
     ExecAccess, Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Secret, Stage,

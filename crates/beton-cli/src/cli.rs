@@ -695,6 +695,23 @@ pub enum SandboxCommand {
     /// Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln
     /// und die Namen der Environment-Variablen (nie ihre Werte).
     Explain(SandboxExplainArgs),
+    /// Ein Kommando von Hand in der Sandbox einer Stufe ausführen (ohne Netz): z. B. `beton
+    /// sandbox exec --stage tools -- cat ~/.ssh/config` scheitert. Ein Kommando, das scheitert,
+    /// endet mit Exit-Code 1 und einem Hinweis auf `beton sandbox explain`.
+    Exec(SandboxExecArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SandboxExecArgs {
+    /// Stufe: `harness` (Vendor-CLI, Stufe 1) oder `tools` (Tool-Ausführung, Stufe 2).
+    #[arg(long, value_enum, default_value_t = SandboxStageArg::Tools)]
+    pub stage: SandboxStageArg,
+    /// Harness, dessen eigene Credential- und State-Pfade Stufe 1 bekommt (`claude`, `codex`).
+    #[arg(long, value_name = "HARNESS")]
+    pub harness: Option<String>,
+    /// Kommando und Argumente nach `--`.
+    #[arg(last = true, required = true, value_name = "KOMMANDO")]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Args)]

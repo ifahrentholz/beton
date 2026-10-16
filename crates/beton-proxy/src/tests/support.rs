@@ -262,13 +262,16 @@ async fn handle(
             }
         });
         let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
-        return Ok(Response::builder()
+        let mut res = Response::builder()
             .status(StatusCode::SWITCHING_PROTOCOLS)
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
-            .header("sec-websocket-accept", accept)
-            .body(full(""))
-            .unwrap());
+            .header("sec-websocket-accept", accept);
+        // Spiegelt `Authorization` in einem Header der `101`-Antwort (PRX-010).
+        if let Some(auth) = req.headers().get("authorization") {
+            res = res.header("x-echo-auth", auth.clone());
+        }
+        return Ok(res.body(full("")).unwrap());
     }
     if path == "/echo-body" {
         let body = req.into_body().collect().await.unwrap().to_bytes();

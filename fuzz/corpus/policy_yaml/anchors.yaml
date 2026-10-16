@@ -1,0 +1,9 @@
+spec_version: 1
+name: a
+rules:
+  - &r
+    id: r1
+    on: tool_call
+    when: 'tool.kind == "shell"'
+    action: deny
+  - *r

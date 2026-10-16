@@ -1,0 +1,1 @@
+{spec_version: 1, name: c, rules: [{id: x, on: model_request, when: 'true', action: ask}]}

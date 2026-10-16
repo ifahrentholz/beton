@@ -1,0 +1,10 @@
+0POST http://api.test/s HTTP/1.1
+Host: api.test
+Proxy-Authorization: @@AUTH@@
+Content-Length: 4
+Transfer-Encoding: chunked
+
+0
+
+GET http://denied.test/ HTTP/1.1
+

@@ -1,0 +1,5 @@
+target/
+artifacts/
+coverage/
+# libFuzzer legt neue Korpus-Einträge neben die Seeds; übernommen wird nur von Hand.
+corpus/*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*

@@ -508,7 +508,7 @@ fn log_path(path: &str) -> &str {
 
 /// Entfernt Hop-by-Hop-Header (RFC 9110 §7.6.1), auch die in `Connection` genannten.
 /// `TE: trailers` bleibt (gRPC); bei Upgrades bleiben `Upgrade` und `Connection: upgrade`.
-fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
+pub(crate) fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     let listed: Vec<HeaderName> = headers
         .get_all(CONNECTION)
         .iter()
@@ -549,7 +549,7 @@ fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     }
 }
 
-fn is_upgrade<B>(req: &Request<B>) -> bool {
+pub(crate) fn is_upgrade<B>(req: &Request<B>) -> bool {
     req.version() == Version::HTTP_11
         && req.headers().contains_key(UPGRADE)
         && req.headers().get_all(CONNECTION).iter().any(|v| {
@@ -562,7 +562,7 @@ fn is_upgrade<B>(req: &Request<B>) -> bool {
 
 /// Host und Port eines Requests im Tunnel: `:authority`/absolute URI und `Host`-Header; beide
 /// müssen, wenn vorhanden, übereinstimmen.
-fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
+pub(crate) fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
     let mut out = Vec::new();
     if let Some(a) = req.uri().authority() {
         out.push((Host::parse(a.host()).map_err(|_| ())?, a.port_u16()));
@@ -1076,12 +1076,16 @@ impl Instance {
         }
         let traffic = (!switching).then(|| self.traffic.clone()).flatten();
         let host = host.to_string();
-        let Some(r) = redactor.filter(|_| !switching) else {
+        let Some(r) = redactor else {
             return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
         };
-        // PRX-010: zurückgespiegelte Werte durch die Platzhalter ersetzen.
-        let r = Arc::new(r);
+        // PRX-010: zurückgespiegelte Werte durch die Platzhalter ersetzen. Header immer, auch
+        // bei `101`; der Byte-Strom nach dem Upgrade bleibt unberührt.
         r.headers(res.headers_mut());
+        if switching {
+            return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
+        }
+        let r = Arc::new(r);
         let (mut parts, body) = res.into_parts();
         match r.treatment(&mut parts.headers) {
             Treatment::Pass => {
