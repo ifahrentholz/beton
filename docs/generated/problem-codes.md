@@ -59,3 +59,4 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `secrets_unavailable` | 503 | Secret-Store nicht verfügbar |
 | `redaction_unavailable` | 503 | Redaction nicht bereit |
 | `sandbox_unavailable` | 503 | Sandbox nicht verfügbar |
+| `credential_source_error` | 502 | Credential-Quelle gescheitert |

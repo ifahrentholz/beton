@@ -126,6 +126,7 @@ impl LinuxProvider {
                 "Launcher v{PLAN_VERSION}, Landlock-ABI {abi}, Kernel {}, seccomp{extra}",
                 util::kernel_release()
             ),
+            kernel: None,
         }
     }
 
@@ -476,10 +477,16 @@ impl SandboxProvider for LinuxProvider {
     }
 
     fn probe(&self) -> ProbeReport {
-        match self.id {
+        let mut report = match self.id {
             ProviderId::Bwrap => self.probe_bwrap(),
             _ => self.probe_landlock(),
-        }
+        };
+        // SBX-010 AC1: ABI und Kernel auch für nicht verfügbare Backends.
+        report.kernel = Some(crate::provider::KernelInfo {
+            landlock_abi: probe::landlock_abi(),
+            kernel: util::kernel_release(),
+        });
+        report
     }
 
     fn spawn(

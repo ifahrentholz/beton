@@ -1,0 +1,7 @@
+R GET [::1]:8443/**
+R GET 10.0.0.1/**
+R GET http://127.0.0.1:3000/api/**
+Q GET https ::1 8443 /
+Q GET https 0x0a000001 443 /
+Q GET http 2130706433 3000 /api/v1
+Q GET https [::ffff:10.0.0.1] 443 /

@@ -202,6 +202,9 @@ pub(crate) fn validate_spec(spec: &SandboxSpec) -> Result<(), SandboxError> {
             }
         }
     }
+    if let Some(creds) = &spec.credentials {
+        validate_credentials(spec, creds)?;
+    }
     if let Some(limits) = &spec.limits {
         limits.validate()?;
     }
@@ -236,6 +239,188 @@ pub(crate) fn validate_spec(spec: &SandboxSpec) -> Result<(), SandboxError> {
                 format!("dev_ports[{i}]"),
                 "Port 0 ist kein gültiger Port",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Hostname eines Credential-Bindings (PRX-006): exakt oder `*.domain`, ohne Port, Pfad oder
+/// IP-Literal; die genaue Prüfung übernimmt der Proxy beim Start der Instanz.
+fn check_credential_host(field: &str, raw: &str) -> Result<(), SandboxError> {
+    let host = raw.strip_prefix("*.").unwrap_or(raw);
+    let ip_like = host.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let bad = host.is_empty()
+        || host.len() > 253
+        || ip_like
+        || host.starts_with('.')
+        || host.ends_with('.')
+        || !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+    if bad {
+        return Err(SandboxError::invalid(
+            field,
+            format!("`{raw}`: erwartet wird ein Hostname oder `*.domain` (ohne Port, ohne IP)"),
+        ));
+    }
+    Ok(())
+}
+
+/// `sandbox.credentials` (PRX-006): Namen, Hosts, genau eine Quelle, Variablen.
+fn validate_credentials(
+    spec: &SandboxSpec,
+    creds: &[crate::spec::CredentialSpec],
+) -> Result<(), SandboxError> {
+    use crate::spec::CredentialType;
+    let set: Vec<&String> = spec
+        .env
+        .as_ref()
+        .map(|e| e.set.keys().collect())
+        .unwrap_or_default();
+    let mut names: Vec<&str> = Vec::new();
+    let mut vars: Vec<&str> = Vec::new();
+    for (i, c) in creds.iter().enumerate() {
+        let f = |s: &str| format!("credentials[{i}].{s}");
+        let name_ok = !c.name.is_empty()
+            && c.name.len() <= 64
+            && c.name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-');
+        if !name_ok {
+            return Err(SandboxError::invalid(
+                f("name"),
+                format!(
+                    "`{}`: erlaubt sind a-z, 0-9, `_` und `-` (höchstens 64)",
+                    c.name
+                ),
+            ));
+        }
+        if names.contains(&c.name.as_str()) {
+            return Err(SandboxError::invalid(
+                f("name"),
+                format!("`{}` ist doppelt", c.name),
+            ));
+        }
+        names.push(&c.name);
+        let hosts = c.hosts.clone().unwrap_or_default();
+        let needs_hosts = matches!(
+            c.kind,
+            CredentialType::Bearer | CredentialType::Basic | CredentialType::GitHttps
+        );
+        if needs_hosts && hosts.is_empty() {
+            return Err(SandboxError::invalid(
+                f("hosts"),
+                format!("Typ `{}` braucht gebundene Hosts", c.kind.as_str()),
+            ));
+        }
+        for (j, h) in hosts.iter().enumerate() {
+            check_credential_host(&f(&format!("hosts[{j}]")), h)?;
+        }
+        match &c.username {
+            None if c.kind == CredentialType::Basic => {
+                return Err(SandboxError::invalid(
+                    f("username"),
+                    "Typ `basic` braucht `username`",
+                ));
+            }
+            Some(u) if u.is_empty() || u.contains(':') || u.chars().any(char::is_control) => {
+                return Err(SandboxError::invalid(
+                    f("username"),
+                    "leer, mit `:` oder Steuerzeichen",
+                ));
+            }
+            _ => {}
+        }
+        let src = &c.source;
+        let count = [
+            src.secret.is_some(),
+            src.env.is_some(),
+            src.file.is_some(),
+            src.command.is_some(),
+        ]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+        if count != 1 {
+            return Err(SandboxError::invalid(
+                f("source"),
+                "genau eine Quelle: `secret`, `env`, `file` oder `command`",
+            ));
+        }
+        if let Some(r) = &src.secret
+            && (!r.starts_with("secret://") || r.len() <= "secret://".len())
+        {
+            return Err(SandboxError::invalid(
+                f("source.secret"),
+                "erwartet wird eine SecretRef `secret://…`",
+            ));
+        }
+        if let Some(v) = &src.env {
+            let valid = !v.is_empty()
+                && !v.starts_with(|ch: char| ch.is_ascii_digit())
+                && v.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+            if !valid || v.starts_with("BETON_") {
+                return Err(SandboxError::invalid(
+                    f("source.env"),
+                    format!("`{v}`: kein gültiger Variablenname bzw. `BETON_*`"),
+                ));
+            }
+            // Sonst stünde der echte Wert unter dem Namen der Quelle in der Sandbox.
+            let passed = spec
+                .env
+                .as_ref()
+                .and_then(|e| e.passthrough.as_ref())
+                .into_iter()
+                .flatten()
+                .any(|p| match p.strip_suffix('*') {
+                    Some(prefix) => v.starts_with(prefix),
+                    None => p == v,
+                });
+            if passed {
+                return Err(SandboxError::invalid(
+                    f("source.env"),
+                    format!(
+                        "`{v}` steht auch in `env.passthrough`; der echte Wert käme so in die \
+                         Sandbox (nur der Platzhalter über `credentials[].env`)"
+                    ),
+                ));
+            }
+        }
+        if let Some(path) = &src.file {
+            check_syntax(&f("source.file"), path)?;
+        }
+        if let Some(argv) = &src.command
+            && (argv.first().is_none_or(String::is_empty) || argv.iter().any(|a| a.contains('\0')))
+        {
+            return Err(SandboxError::invalid(
+                f("source.command"),
+                "erwartet wird ein nicht leeres argv ohne NUL-Bytes",
+            ));
+        }
+        if src.ttl.is_some() && src.command.is_none() {
+            return Err(SandboxError::invalid(
+                f("source.ttl"),
+                "`ttl` gilt nur für `command`",
+            ));
+        }
+        src.ttl_secs()
+            .map_err(|e| SandboxError::invalid(f("source.ttl"), e))?;
+        for (j, var) in c.env.iter().enumerate() {
+            let field = f(&format!("env[{j}]"));
+            check_env_name(&field, var, false)?;
+            if vars.contains(&var.as_str()) {
+                return Err(SandboxError::invalid(
+                    field,
+                    format!("`{var}` bekommt schon ein anderes Credential"),
+                ));
+            }
+            if set.iter().any(|s| s.as_str() == var) {
+                return Err(SandboxError::invalid(
+                    field,
+                    format!("`{var}` steht auch in `env.set`"),
+                ));
+            }
+            vars.push(var);
         }
     }
     Ok(())

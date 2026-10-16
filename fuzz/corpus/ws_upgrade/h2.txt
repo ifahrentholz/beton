@@ -1,0 +1,4 @@
+2
+Upgrade: h2c
+Connection: Upgrade, HTTP2-Settings
+HTTP2-Settings: AAMAAABkAAQAAP__

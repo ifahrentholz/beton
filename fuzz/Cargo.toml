@@ -1,0 +1,121 @@
+# Fuzz-Targets für sicherheitskritische Parser (QA-009), Layout von cargo-fuzz.
+#
+# Eigener Workspace, im Wurzel-Workspace ausgeschlossen (`exclude = ["fuzz"]`): Der normale
+# Build braucht so nie nightly. Bauen und starten mit `cargo +nightly fuzz run <target>`;
+# die Liste der Targets und ihrer Quellpfade steht in `xtask/src/fuzz.rs`
+# (`cargo xtask fuzz-targets`). Lokal ohne nightly lässt sich das Crate mit stable bauen
+# (`cargo build --manifest-path fuzz/Cargo.toml`) und ein Target über seinen Korpus laufen
+# lassen (`fuzz/target/debug/<target> fuzz/corpus/<target> -runs=0`).
+
+[package]
+name = "beton-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+arbitrary = "1"
+base64 = "0.23"
+beton-policy = { path = "../crates/beton-policy", version = "0.0.0" }
+beton-proto = { path = "../crates/beton-proto", version = "0.0.0" }
+# `fuzzing`: interne Parser des Proxys; `test-net`: Test-Resolver und -Dialer, damit der
+# End-to-End-Harness nie ein echtes Netz erreicht (ADR-0033).
+beton-proxy = { path = "../crates/beton-proxy", version = "0.0.0", features = [
+    "fuzzing",
+    "test-net",
+] }
+beton-sandbox = { path = "../crates/beton-sandbox", version = "0.0.0" }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "http2", "server", "server-auto", "tokio"] }
+libc = "0.2"
+libfuzzer-sys = "0.4"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+regex = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+time = "0.3"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cel_eval"
+path = "fuzz_targets/cel_eval.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "credential_placeholders"
+path = "fuzz_targets/credential_placeholders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egress_rules"
+path = "fuzz_targets/egress_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_connect"
+path = "fuzz_targets/http_connect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_request"
+path = "fuzz_targets/http_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_yaml"
+path = "fuzz_targets/policy_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sbpl_escape"
+path = "fuzz_targets/sbpl_escape.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tls_client_hello"
+path = "fuzz_targets/tls_client_hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_client_msg"
+path = "fuzz_targets/ws_client_msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_upgrade"
+path = "fuzz_targets/ws_upgrade.rs"
+test = false
+doc = false
+bench = false

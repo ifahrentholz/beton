@@ -163,9 +163,25 @@ mod imp {
             Ok(c) => c,
             Err(e) => return fail(&format!("Arbeitsverzeichnis: {e}")),
         };
+        // Allowlist (#259): Basis-, Werkzeug- und die konfigurierten Namen der Stufe 2.
+        let configured: Vec<String> = std::env::var(super::super::ENV_FORWARD)
+            .unwrap_or_default()
+            .split(',')
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned)
+            .collect();
         let env_overrides = std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-            .filter(|(k, _)| override_rejected(k).is_none())
+            .filter(|(k, _)| override_rejected(k, &configured).is_none())
+            // `PATH` nur mit absoluten Einträgen (SBX-002); leer → die Vorgabe der Stufe 2.
+            .filter_map(|(k, v)| {
+                if k == "PATH" {
+                    let p = super::super::absolute_path(&v);
+                    (!p.is_empty()).then_some((k, p))
+                } else {
+                    Some((k, v))
+                }
+            })
             .collect();
         let req = Request {
             v: super::super::proto::VERSION,
@@ -329,8 +345,71 @@ mod tests {
     }
 
     #[test]
-    fn sbx_002_overrides_drop_stage_one_and_denied_variables() {
+    fn sbx_002_bt_exec_forwards_only_absolute_path_entries() {
+        assert_eq!(
+            super::super::absolute_path("bin:/usr/bin::./x:/bin"),
+            "/usr/bin:/bin"
+        );
+        assert!(super::super::path_ok("/usr/bin:/bin"));
+        for bad in ["bin:/usr/bin", "/usr/bin::/bin", "", "./x", "/usr/bin:"] {
+            assert!(!super::super::path_ok(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn sbx_005_overrides_are_an_allowlist() {
+        // #259: Nur Basis-, Werkzeug- und ausdrücklich konfigurierte Variablen gehen von
+        // Stufe 1 nach Stufe 2; ein Token unter neuem Namen nicht.
         use super::super::override_rejected as r;
+        let configured = vec!["RUST_LOG".to_owned(), "NODE_OPTIONS".to_owned()];
+        for bad in [
+            "FOO_TOKEN",
+            "GITHUB_TOKEN",
+            "NPM_TOKEN",
+            "GIT_ASKPASS",
+            "GIT_CONFIG_PARAMETERS",
+            "SSH_ASKPASS",
+            "AWS_SECRET_ACCESS_KEY",
+        ] {
+            assert!(r(bad, &configured).is_some(), "{bad}");
+        }
+        for ok in [
+            "PATH",
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "PWD",
+            "OLDPWD",
+            "TERM",
+            "COLUMNS",
+            "GIT_EDITOR",
+            "GIT_AUTHOR_NAME",
+            "RUST_LOG",
+            "NODE_OPTIONS",
+        ] {
+            assert!(r(ok, &configured).is_none(), "{ok}");
+        }
+        // `LC_*` nur mit POSIX- bzw. glibc-Kategorien, nicht als Präfix für beliebige Namen.
+        for bad in ["LC_FOO_TOKEN", "LC_", "LC_SECRET"] {
+            assert!(r(bad, &configured).is_some(), "{bad}");
+        }
+        for ok in ["LC_CTYPE", "LC_MESSAGES", "LC_TIME", "LC_PAPER"] {
+            assert!(r(ok, &configured).is_none(), "{ok}");
+        }
+        // Konfigurierte Namen heben Sperren nie auf.
+        let bad = vec![
+            "LD_PRELOAD".to_owned(),
+            "HOME".to_owned(),
+            "CLAUDE_X".to_owned(),
+        ];
+        for name in &bad {
+            assert!(r(name, &bad).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn sbx_002_overrides_drop_stage_one_and_denied_variables() {
+        let r = |name: &str| super::super::override_rejected(name, &[]);
         for bad in [
             "LD_PRELOAD",
             "DYLD_INSERT_LIBRARIES",
@@ -352,7 +431,7 @@ mod tests {
         ] {
             assert!(r(bad).is_some(), "{bad}");
         }
-        for ok in ["PATH", "LANG", "PWD", "GIT_EDITOR", "NODE_OPTIONS", "CI"] {
+        for ok in ["PATH", "LANG", "PWD", "GIT_EDITOR", "CI"] {
             assert!(r(ok).is_none(), "{ok}");
         }
     }

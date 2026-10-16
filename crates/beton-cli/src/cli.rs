@@ -695,6 +695,23 @@ pub enum SandboxCommand {
     /// Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln
     /// und die Namen der Environment-Variablen (nie ihre Werte).
     Explain(SandboxExplainArgs),
+    /// Ein Kommando von Hand in der Sandbox einer Stufe ausführen (ohne Netz): z. B. `beton
+    /// sandbox exec --stage tools -- cat ~/.ssh/config` scheitert. Ein Kommando, das scheitert,
+    /// endet mit Exit-Code 1 und einem Hinweis auf `beton sandbox explain`.
+    Exec(SandboxExecArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SandboxExecArgs {
+    /// Stufe: `harness` (Vendor-CLI, Stufe 1) oder `tools` (Tool-Ausführung, Stufe 2).
+    #[arg(long, value_enum, default_value_t = SandboxStageArg::Tools)]
+    pub stage: SandboxStageArg,
+    /// Harness, dessen eigene Credential- und State-Pfade Stufe 1 bekommt (`claude`, `codex`).
+    #[arg(long, value_name = "HARNESS")]
+    pub harness: Option<String>,
+    /// Kommando und Argumente nach `--`.
+    #[arg(last = true, required = true, value_name = "KOMMANDO")]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -738,6 +755,9 @@ pub enum SecretsCommand {
     Rm(SecretsRmArgs),
     /// Neuen Wert für ein vorhandenes Secret setzen.
     Rotate(SecretsRotateArgs),
+    /// Secret beim Provider prüfen (GitHub `/user`, GitLab Token-Scopes) über den Proxy-Pfad,
+    /// ohne den Wert auszugeben; meldet fehlende Scopes (SEC-004, SEC-011 AC3).
+    Test(SecretsTestArgs),
     /// Verschlüsselten Datei-Store entsperren (beim ersten Mal anlegen) oder die Passphrase
     /// wechseln.
     Unlock(SecretsUnlockArgs),
@@ -799,6 +819,10 @@ pub struct SecretsAddArgs {
     /// Zusätzlicher Name, falls es mehrere Secrets je Account gibt.
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// Host des Git-Providers, z. B. `github.com`, ein GitHub Enterprise Server oder ein
+    /// self-hosted GitLab (SEC-011); wird zum Provider der SecretRef.
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
     /// Art des Secrets.
     #[arg(long = "type", value_enum, default_value_t = SecretKindArg::Token)]
     pub kind: SecretKindArg,
@@ -814,6 +838,16 @@ pub struct SecretsRmArgs {
     /// SecretRef, z. B. `secret://user/openai/default`.
     #[arg(value_name = "REF")]
     pub secret_ref: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsTestArgs {
+    /// SecretRef, z. B. `secret://user/github.com/default`.
+    #[arg(value_name = "REF")]
+    pub secret_ref: String,
+    /// Art des Providers, falls der Host sie nicht verrät (`github` oder `gitlab`).
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -853,6 +887,10 @@ pub struct AuditListArgs {
     /// Nur diese Aktion, z. B. `secret.used`.
     #[arg(long, value_name = "ACTION")]
     pub action: Option<String>,
+    /// Nur diese Art des Ziels: `credential` (Nutzung und Fehlgebrauch von
+    /// Credential-Bindings des Proxys), `secret`, `session` …
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]

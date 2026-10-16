@@ -1,0 +1,5 @@
+R * *.npmjs.org/**
+R GET http://*.local.test:8080/a?/b*c/**
+Q GET https registry.npmjs.org 443 /x
+Q GET https npmjs.org 443 /x
+Q GET http a.local.test 8080 /ab/bxxc/d

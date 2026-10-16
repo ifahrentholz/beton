@@ -1,0 +1,5 @@
+R GET,POST api.github.com/repos/*/x/**
+R !* api.github.com/repos/*/x/admin/**
+Q GET https api.github.com 443 /repos/a/x/pulls
+Q POST https api.github.com 443 /repos/a/x/admin/hooks
+Q DELETE https api.github.com 443 /repos/a/x

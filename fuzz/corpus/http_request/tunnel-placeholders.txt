@@ -1,0 +1,4 @@
+2GET /v1/{A}?t={A} HTTP/1.1
+Host: api.test
+X-Token: {A}
+

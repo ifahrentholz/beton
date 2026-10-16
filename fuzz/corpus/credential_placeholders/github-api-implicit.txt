@@ -1,0 +1,2 @@
+T api.github.com
+P /user

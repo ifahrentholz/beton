@@ -1,0 +1,7 @@
+P api.anthropic.com
+P chatgpt.com:8443
+P API.OpenAI.com.
+P 1.2.3.4
+P *.x.com
+R GET api.anthropic.com/**
+Q GET https api.anthropic.com 443 /v1/messages

@@ -1,0 +1,12 @@
+# Testdaten zum Regeltyp model_route (POL-013, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: routing
+rules:
+  - id: routing
+    type: model_route
+    params:
+      allowed_models: ["claude-sonnet-*", "claude-haiku-*", "gpt-5*"]
+      routes:
+        - { when: "session.is_async", model: claude-sonnet-4-5, reasoning_effort: medium }
+        - { when: "user.daily_cost_usd > 30.0", model: claude-haiku-4-5 }

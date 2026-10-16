@@ -286,6 +286,57 @@ async fn sec_012_ac1_audit_list_export_verify() {
     assert_eq!(json["first_invalid"], 2);
 }
 
+#[tokio::test]
+async fn prx_009_ac4_credential_audit_entries_via_audit_list_kind_credential() {
+    let d = file_daemon(true);
+    let home = d.serve.home().to_path_buf();
+    let o = with_stdin(
+        beton(&home).args(["secrets", "add", "github", "--stdin"]),
+        VALUE,
+    );
+    assert!(o.status.success(), "{}", stderr(&o));
+    // Ein abgelaufenes Nutzungsfenster des Proxys (wie `credential.used` aus dem Runner) und
+    // ein Fehlgebrauch.
+    let db = home.join("beton.db");
+    let mut conn = <sqlx::SqliteConnection as sqlx::Connection>::connect(&format!(
+        "sqlite://{}",
+        db.display()
+    ))
+    .await
+    .unwrap();
+    let (org, actor): (String, String) =
+        sqlx::query_as("SELECT org_id, actor_id FROM audit_entries LIMIT 1")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO audit_usage_windows (org_id, secret_ref, session_id, host_id, actor_id, \
+         purpose, window_start, last_at, count) VALUES (?, 'credential:github', '', \
+         'api.github.com', ?, 'proxy', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 42)",
+    )
+    .bind(&org)
+    .bind(&actor)
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let o = run(beton(&home).args(["--json", "audit", "list", "--kind", "credential"]));
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_no_value(&o);
+    let items: Vec<serde_json::Value> = serde_json::from_str(&stdout(&o)).unwrap();
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(items[0]["action"], "credential.used");
+    assert_eq!(items[0]["target_kind"], "credential");
+    assert_eq!(items[0]["target_id"], "github");
+    assert_eq!(items[0]["host_id"], "api.github.com");
+    assert_eq!(items[0]["count"], 42);
+    // Ohne Filter auch die Secret-Einträge.
+    let o = run(beton(&home).args(["audit", "list"]));
+    assert!(stdout(&o).contains("secret.created") && stdout(&o).contains("credential.used"));
+    let o = run(beton(&home).args(["audit", "list", "--kind", "credential"]));
+    assert!(!stdout(&o).contains("secret.created"), "{}", stdout(&o));
+}
+
 /// SEC-002 AC1 und AC3 mit echtem Keychain: nur mit `BETON_TEST_KEYCHAIN=1` (macOS-CI mit
 /// temporärem Keychain als Standard); lokal übersprungen.
 #[test]

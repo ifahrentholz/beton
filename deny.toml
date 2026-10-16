@@ -30,6 +30,12 @@ allow = [
     "Unicode-3.0",
 ]
 
+# libFuzzer (NCSA, permissiv, BSD-artig) nur für `libfuzzer-sys` im Fuzz-Crate `fuzz/` (QA-009);
+# im Workspace selbst kommt es nicht vor.
+[[licenses.exceptions]]
+allow = ["NCSA"]
+crate = "libfuzzer-sys"
+
 [licenses.private]
 ignore = true
 

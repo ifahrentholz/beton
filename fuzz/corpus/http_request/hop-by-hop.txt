@@ -1,0 +1,8 @@
+0GET http://api.test/h HTTP/1.1
+Proxy-Authorization: @@AUTH@@
+Connection: x-secret, close
+X-Secret: 1
+Keep-Alive: 5
+Proxy-Connection: keep-alive
+TE: trailers, gzip
+

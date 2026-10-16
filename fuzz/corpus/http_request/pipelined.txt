@@ -1,0 +1,9 @@
+0GET http://api.test/1 HTTP/1.1
+Proxy-Authorization: @@AUTH@@
+
+GET http://api.test/2 HTTP/1.1
+Proxy-Authorization: @@AUTH@@
+
+GET http://denied.test/ HTTP/1.1
+Proxy-Authorization: @@AUTH@@
+

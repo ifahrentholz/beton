@@ -1,0 +1,11 @@
+1.1
+Connection: X-Secret, te, upgrade
+X-Secret: 1
+TE: trailers, gzip
+TE: deflate
+Trailer: X-T
+Transfer-Encoding: chunked
+Keep-Alive: 5
+Proxy-Connection: keep-alive
+X-Keep: 1
+X-Keep: 2

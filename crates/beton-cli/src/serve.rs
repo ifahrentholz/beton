@@ -331,6 +331,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         &beton_harness_direct::DirectOptions {
             keys: Arc::new(beton_harness_direct::secret::ProcessEnv),
             discover_models: true,
+            egress: None,
         },
     );
     for p in problems {

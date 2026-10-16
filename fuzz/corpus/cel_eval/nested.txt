@@ -1,0 +1,1 @@
+tool.argv.map(c, c.map(a, a + a)).exists(c, c.exists(a, a.size() > 10))

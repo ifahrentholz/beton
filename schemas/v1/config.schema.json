@@ -272,6 +272,127 @@
       },
       "additionalProperties": false
     },
+    "CredentialSourceSpec": {
+      "description": "Quelle eines Credentials (PRX-006): genau eines der Felder. Gelesen wird nur in Stufe 0.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Kommando (argv, ohne Shell) in Stufe 0; Timeout 30 s, stdout ohne Leerraum am Rand.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "description": "Variable im Environment des Daemons beim Session-Start.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Datei außerhalb aller Sandbox-Grants (keine Hardlinks, höchstens 64 KiB, 0600\nempfohlen).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret": {
+          "description": "SecretRef im Secret-Store (SEC-001), z. B. `secret://user/github.com/me`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ttl": {
+          "description": "Gültigkeit eines Kommando-Ergebnisses, z. B. `15m` (`s`, `m`, `h`); danach läuft es neu.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CredentialSpec": {
+      "description": "Ein Credential-Binding (PRX-006): Die Sandbox sieht nur einen Platzhalter `bt_cred_*`\n(in den Variablen aus `env`), der Proxy setzt den Wert für die gebundenen Hosts ein.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "description": "Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und\n`git_https`, sonst Override der Default-Hosts.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialSourceSpec"
+        },
+        "type": {
+          "$ref": "#/$defs/CredentialType"
+        },
+        "username": {
+          "description": "Benutzername für `basic` (Pflicht) bzw. `git_https`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "source"
+      ]
+    },
+    "CredentialType": {
+      "description": "Typ eines Credential-Bindings (PRX-006): Injektionsformat im Proxy.",
+      "oneOf": [
+        {
+          "description": "`Authorization: Bearer <wert>`; `hosts` ist Pflicht.",
+          "type": "string",
+          "const": "bearer"
+        },
+        {
+          "description": "`Authorization: Basic base64(username:<wert>)`; `hosts` und `username` sind Pflicht.",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "Git über HTTPS (Platzhalter als Passwort); `hosts` ist Pflicht.",
+          "type": "string",
+          "const": "git_https"
+        },
+        {
+          "description": "GitHub (Default-Hosts `github.com`, `api.github.com`, `uploads.github.com`,\n`objects.githubusercontent.com`; GHE über `hosts`).",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab (Default-Host `gitlab.com`; self-hosted über `hosts`).",
+          "type": "string",
+          "const": "gitlab"
+        }
+      ]
+    },
     "EventsSettings": {
       "type": "object",
       "properties": {
@@ -295,6 +416,13 @@
       "description": "Ein Eintrag unter `harnesses.<id>` in `.beton/config.yaml` bzw. `~/.beton/config.yaml`.",
       "type": "object",
       "properties": {
+        "api_key": {
+          "description": "Key für `auth: api_key` als SecretRef (`secret://…`, HAR-015 AC4); ohne Angabe die\nVariable der Vendor-CLI aus der Umgebung des Daemons. Die CLI sieht nur einen\nPlatzhalter `bt_cred_*`, der Proxy setzt den Wert ein. Nur in der User-Konfiguration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "auth": {
           "description": "Auth-Herkunft (HAR-015); ohne Angabe `subscription`. Nur in der User-Konfiguration.",
           "anyOf": [
@@ -766,6 +894,16 @@
               "type": "null"
             }
           ]
+        },
+        "credentials": {
+          "description": "Credential-Bindings der Stufe 2 (PRX-006); Grant der spezifischsten Ebene.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CredentialSpec"
+          }
         },
         "dev_ports": {
           "description": "Loopback-Ports für Dev-Server in der Sandbox (PRX-008 AC3, #210): `bind` und `connect`\nnur auf diesen Ports. Linux: im eigenen Net-Namespace; macOS: Loopback des Hosts.",

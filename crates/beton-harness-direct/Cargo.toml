@@ -30,6 +30,10 @@ ulid.workspace = true
 
 [dev-dependencies]
 beton-harness-direct = { workspace = true, features = ["mock"] }
+beton-proxy = { workspace = true, features = ["test-net"] }
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
 serde_norway.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true

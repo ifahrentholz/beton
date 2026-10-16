@@ -1,0 +1,11 @@
+# Testdaten zum Regeltyp spend_cap (POL-011, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: budgets
+rules:
+  - id: session-cap
+    type: spend_cap
+    params: { scope: session, limit_usd: 5, ask_at_usd: [3] }
+  - id: tree-cap
+    type: spend_cap
+    params: { scope: subtree, limit_usd: 20, on_exceed: route, fallback_model: claude-haiku-4-5 }

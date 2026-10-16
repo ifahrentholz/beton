@@ -530,6 +530,7 @@ impl Client {
         cursor: Option<&str>,
         limit: u32,
         action: Option<&str>,
+        kind: Option<&str>,
     ) -> Result<Page<Value>> {
         let mut query = vec![("limit", limit.to_string())];
         if let Some(c) = cursor {
@@ -538,7 +539,20 @@ impl Client {
         if let Some(a) = action {
             query.push(("action", a.to_owned()));
         }
+        if let Some(k) = kind {
+            query.push(("kind", k.to_owned()));
+        }
         self.send(self.http.get(self.url("/v1/audit")).query(&query))
+            .await
+    }
+
+    /// `POST /v1/secrets/test`: Prüfung beim Provider über den Proxy-Pfad (SEC-004, SEC-011).
+    pub async fn test_secret(&self, secret_ref: &str, kind: Option<&str>) -> Result<Value> {
+        let mut body = serde_json::json!({ "secret_ref": secret_ref });
+        if let Some(k) = kind {
+            body["kind"] = Value::String(k.to_owned());
+        }
+        self.send(self.http.post(self.url("/v1/secrets/test")).json(&body))
             .await
     }
 
