@@ -808,3 +808,32 @@ fn agt_014_agent_ask_never_allows_on_timeout() {
                              "approval": { "timeout": "1s", "on_timeout": "deny" } })];
     inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap();
 }
+
+/// Security-Review #327 (Minor 4): Der Präfix `agent/` gehört dem Zustand der Agent-Ebene;
+/// Regeln anderer Ebenen schreiben ihn nicht (sonst setzten sie Zähler eines Agents).
+#[test]
+fn agt_014_agent_state_prefix_is_reserved_for_the_agent_level() {
+    for scope in [Scope::User, Scope::Project] {
+        let text = "spec_version: 1\nname: u\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{ op: set, scope: session, key: agent/a/zaehler, value: \"0\" }]\n";
+        let err = parse_set(scope, "u.yaml", text).unwrap_err();
+        assert!(err.message.contains("agent/"), "{scope:?}: {err}");
+    }
+}
+
+/// Security-Review #327 (Minor 3): `policies[].ref` bleibt lexikalisch im Agent-Verzeichnis;
+/// `..` und absolute Pfade werden gar nicht erst gelesen.
+#[test]
+fn agt_014_policy_refs_outside_the_agent_dir_are_not_read() {
+    for r in ["../x.yaml", "/etc/passwd", "policies/../../x.yaml", "", "."] {
+        let entries = vec![json!({ "ref": r })];
+        let err = beton_policy::load::agent_sets(
+            Scope::Agent,
+            "a",
+            "agents/a/agent.yaml",
+            &entries,
+            |rel| panic!("{rel} gelesen"),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("policies[0].ref"), "{r}: {err}");
+    }
+}

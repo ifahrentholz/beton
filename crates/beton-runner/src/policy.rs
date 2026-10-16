@@ -2899,6 +2899,35 @@ mod tests {
         assert!(matches!(waiting.await.unwrap(), GateDecision::Deny { .. }));
     }
 
+    /// Security-Review #327: Ist die Sandbox angehalten (Proxy ausgefallen, SBX-006 AC3), gilt
+    /// ein vorher gespeicherter Entscheid des Hooks nicht mehr: Auch die Rückfrage des Vendors
+    /// und die automatische Freigabe zum selben Call werden abgelehnt (`sandbox-halted`).
+    #[tokio::test]
+    async fn sbx_006_ac3_halted_sandbox_denies_even_with_a_stored_hook_decision() {
+        for origin in [GateOrigin::VendorAsk, GateOrigin::AutoApproval] {
+            let (g, _rx) = gate();
+            let pre = GateRequest {
+                origin: GateOrigin::PreTool,
+                ..ask("c1")
+            };
+            assert!(matches!(g.decide(pre).await, GateDecision::Allow { .. }));
+            g.halt_tools("Egress-Proxy ausgefallen");
+            let decision = tokio::time::timeout(
+                Duration::from_secs(2),
+                g.decide(GateRequest {
+                    origin,
+                    ..ask("c1")
+                }),
+            )
+            .await
+            .expect("keine Approval-Card bei angehaltener Sandbox");
+            assert!(
+                matches!(decision, GateDecision::Deny { .. }),
+                "{origin:?}: {decision:?}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn pol_003_system_tools_pass_the_policy_without_a_human_card() {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von

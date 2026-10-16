@@ -10,8 +10,13 @@ use beton_sandbox::{
 };
 
 /// Die Sandbox der Session mit den Anforderungen des Agents. `user`: `sandbox:` der
-/// User-Konfiguration.
-pub fn tighten(user: &SandboxSpec, a: &agent::Sandbox) -> Result<SandboxSpec, SandboxError> {
+/// User-Konfiguration; `auto`: das Backend, das `auto` auf diesem Rechner wählt.
+pub fn tighten(
+    user: &SandboxSpec,
+    a: &agent::Sandbox,
+    auto: Option<ProviderId>,
+) -> Result<SandboxSpec, SandboxError> {
+    let _ = auto;
     let loosen = |field: &str| SandboxError::InvalidSpec {
         path: format!("agent.sandbox.{field}"),
         message: "Die Agent-Ebene kann die Sandbox nur verschärfen, keine Freigaben geben \
@@ -127,13 +132,18 @@ mod tests {
         serde_norway::from_str(yaml).unwrap()
     }
 
+    /// `auto` wählt auf dem Testrechner Seatbelt.
+    fn tighten_on(u: &SandboxSpec, a: &agent::Sandbox) -> Result<SandboxSpec, SandboxError> {
+        tighten(u, a, Some(ProviderId::Seatbelt))
+    }
+
     fn user(yaml: &str) -> SandboxSpec {
         SandboxSpec::from_yaml(yaml).unwrap()
     }
 
     #[test]
     fn agt_014_agent_sandbox_only_tightens() {
-        let out = tighten(
+        let out = tighten_on(
             &user("allow_network: true\nmasks: [.env]\n"),
             &a("allow_network: false\nworkspace: ro\nmasks: [secrets/]\npreset: readonly\nlimits: { pids: 64 }\n"),
         )
@@ -144,7 +154,7 @@ mod tests {
         assert_eq!(out.masks, Some(vec![".env".into(), "secrets/".into()]));
         assert_eq!(out.limits.unwrap().pids, Some(64));
         // Höhere Limits der User-Ebene bleiben die niedrigeren.
-        let out = tighten(
+        let out = tighten_on(
             &user("limits: { pids: 32 }\n"),
             &a("limits: { pids: 64 }\n"),
         )
@@ -166,22 +176,77 @@ mod tests {
             "env: { passthrough: [AWS_SECRET_ACCESS_KEY] }\n",
             "credentials: [{ name: x }]\n",
         ] {
-            let err = tighten(&user("{}\n"), &a(yaml)).unwrap_err();
+            let err = tighten_on(&user("{}\n"), &a(yaml)).unwrap_err();
             assert_eq!(err.code(), "invalid_spec", "{yaml}: {err}");
         }
     }
 
     #[test]
     fn agt_014_ac3_backend_requirement_is_honoured_or_unavailable() {
-        let out = tighten(&user("{}\n"), &a("backend: seatbelt\n")).unwrap();
+        let out = tighten_on(&user("{}\n"), &a("backend: seatbelt\n")).unwrap();
         assert_eq!(
             out.backend,
             Some(BackendChoice::Provider(ProviderId::Seatbelt))
         );
-        let err = tighten(&user("backend: landlock\n"), &a("backend: seatbelt\n")).unwrap_err();
+        let err = tighten_on(&user("backend: landlock\n"), &a("backend: seatbelt\n")).unwrap_err();
         assert_eq!(err.code(), "sandbox_unavailable", "{err}");
         // Ohne Sandbox der Session startet ein Agent mit Sandbox-Anforderung nicht.
-        let err = tighten(&user("backend: none\n"), &a("allow_network: false\n")).unwrap_err();
+        let err = tighten_on(&user("backend: none\n"), &a("allow_network: false\n")).unwrap_err();
         assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+    }
+
+    /// Security-Review #327 B1: Ohne `masks` der User-Ebene gelten die Standard-Masken
+    /// (`.env`, `.env.*`); zusätzliche Masken des Agents heben sie nicht auf.
+    #[test]
+    fn agt_014_agent_masks_without_user_masks_keep_the_default_masks() {
+        let out = tighten_on(&user("{}\n"), &a("masks: [node_modules]\n")).unwrap();
+        let masks = out.masks.unwrap();
+        for m in [".env", ".env.*", "node_modules"] {
+            assert!(masks.iter().any(|x| x == m), "{m} fehlt: {masks:?}");
+        }
+        // Eigene Masken der User-Ebene bleiben ebenso.
+        let out = tighten_on(&user("masks: [secrets/]\n"), &a("masks: [node_modules]\n")).unwrap();
+        assert_eq!(
+            out.masks,
+            Some(vec!["secrets/".into(), "node_modules".into()])
+        );
+        // Ohne Agent-Masken bleibt `None` (= Standard-Masken).
+        let out = tighten_on(&user("{}\n"), &a("allow_network: false\n")).unwrap();
+        assert_eq!(out.masks, None);
+    }
+
+    /// Security-Review #327: Ein Agent kann kein anderes Backend erzwingen, als die Session
+    /// ohnehin nutzt (z. B. `bwrap` statt des von `auto` gewählten `landlock`); seine
+    /// Garantien wären andere. Das ist ein Startfehler, keine Lockerung.
+    #[test]
+    fn agt_014_agent_cannot_switch_the_backend_auto_selects() {
+        let err = tighten(
+            &user("{}\n"),
+            &a("backend: bwrap\n"),
+            Some(ProviderId::Landlock),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+        let err = tighten(&user("{}\n"), &a("backend: seatbelt\n"), None).unwrap_err();
+        assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+        // Dasselbe Backend, das `auto` wählt: erfüllt.
+        let out = tighten(
+            &user("{}\n"),
+            &a("backend: landlock\n"),
+            Some(ProviderId::Landlock),
+        )
+        .unwrap();
+        assert_eq!(
+            out.backend,
+            Some(BackendChoice::Provider(ProviderId::Landlock))
+        );
+        // `backend: auto` des Agents verlangt nur irgendeine Sandbox.
+        let out = tighten(
+            &user("{}\n"),
+            &a("backend: auto\n"),
+            Some(ProviderId::Landlock),
+        )
+        .unwrap();
+        assert_eq!(out.backend, None);
     }
 }

@@ -1145,6 +1145,7 @@ async fn compose_unix(
                 tool_sandbox: !inherited,
                 egress_proxy: true,
             },
+            harness_policy: None,
         },
         passthrough,
         placeholders,

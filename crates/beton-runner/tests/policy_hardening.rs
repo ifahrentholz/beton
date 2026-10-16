@@ -523,6 +523,74 @@ async fn agt_014_agent_policies_are_the_agent_level_of_the_gate() {
     assert!(err.contains("policies[0].modify.permission_mode"), "{err}");
 }
 
+/// Security-Review #327: `policies[].ref` bleibt im Agent-Verzeichnis. `..`, absolute Pfade
+/// und Symlinks hinaus sind ein Startfehler; die Meldung enthält nichts aus der Datei.
+#[cfg(unix)]
+#[tokio::test]
+async fn agt_014_policy_refs_cannot_leave_the_agent_dir() {
+    let tmp = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let work = tmp.path().join("work");
+    let agent = work.join(".beton/agents/streng");
+    std::fs::create_dir_all(agent.join("policies")).unwrap();
+    // Eine gültige Policy-Datei außerhalb des Agent-Verzeichnisses (mit Marker im Grund).
+    let outside = tmp.path().join("outside.yaml");
+    std::fs::write(
+        &outside,
+        "spec_version: 1\nname: outside\nrules:\n  - id: x\n    on: tool_call\n    action: deny\n    reason: MARKER-AUSSERHALB-0815\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, agent.join("policies/link.yaml")).unwrap();
+    let run_dir = tmp.path().join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let paths = beton_runner::mcp::Paths {
+        beton_home: tmp.path().join("home/.beton"),
+        home: Some(tmp.path().join("home")),
+        run_dir,
+        relay: std::path::PathBuf::from("/bin/false"),
+    };
+    let fake: HarnessId = "fake".parse().unwrap();
+    let caps = beton_harness::Capabilities::minimal(
+        beton_harness::Mode::Native,
+        beton_harness::Transport::Native,
+    );
+    for r in [
+        "../../../../outside.yaml".to_owned(),
+        outside.display().to_string(),
+        "policies/link.yaml".to_owned(),
+    ] {
+        std::fs::write(
+            agent.join("agent.yaml"),
+            format!(
+                "spec_version: 1\nname: streng\nexecutor: {{ harness: fake }}\npolicies:\n  - {{ ref: \"{r}\" }}\n"
+            ),
+        )
+        .unwrap();
+        let err = beton_runner::mcp::prepare(
+            beton_core::id::SessionId::new(),
+            &fake,
+            &caps,
+            &work,
+            beton_runner::mcp::AgentSource::Ref("streng"),
+            &beton_harness::registry::HarnessLayers::default(),
+            &paths,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{r}: Start nicht verweigert"));
+        assert!(err.contains("policies[0]"), "{r}: {err}");
+        assert!(!err.contains("MARKER-AUSSERHALB"), "{r}: {err}");
+    }
+}
+
 // ------------------------------------------------------------- Minor (#234)
 
 #[tokio::test]

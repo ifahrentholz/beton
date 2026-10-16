@@ -182,6 +182,19 @@ async fn m2_demo_yolo_in_the_sandbox_secrets_egress_force_push_and_budget() {
     // `~/.ssh` ist nicht lesbar.
     let key = result_of(&events, "cat ~/.ssh/id_ed25519");
     assert_ne!(key["status"], "ok", "{key}");
+    // Der Grund ist die Sandbox (Seatbelt: „Operation not permitted“, Landlock: „Permission
+    // denied“, Maske unter bwrap: nicht vorhanden), nicht ein anderer Fehler des Tools.
+    let why = key["result"].to_string();
+    assert!(
+        [
+            "Operation not permitted",
+            "Permission denied",
+            "No such file"
+        ]
+        .iter()
+        .any(|m| why.contains(m)),
+        "{key}"
+    );
     assert!(!text.contains(KEY), "Schlüssel im Log");
     // Nicht erlaubter Host: blockiert und gemeldet.
     let curl = result_of(
@@ -206,22 +219,26 @@ async fn m2_demo_yolo_in_the_sandbox_secrets_egress_force_push_and_budget() {
     let push = result_of(&events, "git push --force origin feature");
     assert_eq!(push["status"], "denied", "{push}");
 
-    // Das Budget (0,50 USD) ist überschritten: Der nächste Turn startet nicht.
-    let err = client.input(&id, "weiter").await;
-    let stopped = match err {
-        Err(e) => e.to_string().contains("policy_denied") || e.to_string().contains("budget"),
-        Ok(_) => {
-            let events = wait_for(&serve, &id, |e| {
-                e["type"] == "turn.failed"
-                    || (e["type"] == "policy.decision"
-                        && e["payload"]["phase"] == "model_request"
-                        && e["payload"]["outcome"] == "deny")
-            })
-            .await;
-            !events.iter().any(|e| e.to_string().contains("noch mehr"))
-        }
+    // Das Budget (0,50 USD) ist überschritten: Der nächste Turn startet nicht, abgelehnt von
+    // der Budget-Regel der Session (`session-budget/max-cost`, API-006).
+    // Abgelehnt beim Annehmen der Eingabe (403) oder vor der Modell-Anfrage des Turns.
+    let _ = client.input(&id, "weiter").await;
+    let is_deny = |e: &Value| {
+        e["type"] == "policy.decision"
+            && e["payload"]["phase"] == "model_request"
+            && e["payload"]["outcome"] == "deny"
     };
-    assert!(stopped, "Budget stoppt nicht");
+    let events = wait_for(&serve, &id, is_deny).await;
+    let denied = events.iter().rev().find(|e| is_deny(e)).unwrap();
+    assert_eq!(
+        denied["payload"]["matched"][0]["set"], "session-budget",
+        "{denied}"
+    );
+    assert_eq!(
+        denied["payload"]["matched"][0]["rule_id"], "max-cost",
+        "{denied}"
+    );
+    assert!(!events.iter().any(|e| e.to_string().contains("noch mehr")));
     let all = serde_json::to_string(&events_final(&serve, &id).await).unwrap();
     assert!(!all.contains(SECRET) && !all.contains(KEY));
 }

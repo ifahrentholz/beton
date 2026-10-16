@@ -189,6 +189,156 @@ async fn pol_023_ac2_har_007_ac2_fs_write_text_file_is_gated_and_confined_to_the
     s.shutdown(Shutdown::Kill).await.unwrap();
 }
 
+/// Startet mit Stufen-Umgebung (Policy der Stufe 1) im Arbeitsverzeichnis.
+async fn start_staged(
+    scenario: &Path,
+    gate: Arc<dyn Gate>,
+    workdir: &Path,
+    policy: Option<beton_sandbox::ResolvedPolicy>,
+) -> (Box<dyn HarnessSession>, mpsc::Receiver<NormalizedEvent>) {
+    let ctx = AdapterContext {
+        stage: policy.map(|p| beton_harness::StageEnv {
+            shim_dir: PathBuf::from("/sbx/exec/bin"),
+            exchange: PathBuf::from("/sbx/xchg"),
+            tools: None,
+            sandbox: Default::default(),
+            harness_policy: Some(Arc::new(p)),
+        }),
+        gate,
+        launcher: Arc::new(RealLauncher),
+        env: env_for(scenario),
+    };
+    let mut s = adapter()
+        .start(
+            SessionSpec {
+                workdir: workdir.to_path_buf(),
+                ..SessionSpec::default()
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+    let rx = s.events().unwrap();
+    (s, rx)
+}
+
+/// Schreibt per `fs/write_text_file` nacheinander nach `paths`; liefert die Events.
+async fn write_all(
+    ws: &Path,
+    paths: &[PathBuf],
+    gate: Arc<dyn Gate>,
+    policy: Option<beton_sandbox::ResolvedPolicy>,
+) -> Vec<EventPayload> {
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for p in paths {
+        yaml.push_str(&format!(
+            "      - {{ fs_write: {{ path: \"{}\", content: \"BOESE\" }} }}\n",
+            p.display()
+        ));
+    }
+    let (_dir, path) = scenario(&yaml);
+    let (mut s, mut rx) = start_staged(&path, gate, ws, policy).await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    s.shutdown(Shutdown::Kill).await.unwrap();
+    events
+}
+
+/// Security-Review #327 (A1): `fs/write_text_file` schreibt in Stufe 0, aber nie, was Stufe 1
+/// selbst nicht schreiben darf: Git-Hooks und -Konfiguration (SBX-003 AC4), die `.git`-Datei
+/// eines Worktrees, jede Pfadkomponente `.git` (Groß/klein egal). Auch wenn das Gate erlaubt.
+#[tokio::test]
+async fn har_007_ac2_fs_write_never_touches_git_files() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws = ws.path().canonicalize().unwrap();
+    let git = ws.join("repo");
+    std::fs::create_dir_all(git.join(".git/hooks")).unwrap();
+    std::fs::write(git.join(".git/config"), "[core]\n").unwrap();
+    // Worktree: `.git` ist eine Datei mit Verweis auf das Git-Verzeichnis.
+    let wt = ws.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+    let targets = [
+        git.join(".git/hooks/pre-commit"),
+        git.join(".git/config"),
+        wt.join(".git"),
+    ];
+    let events = write_all(&ws, &targets, Arc::new(AllowAll), None).await;
+    let text = format!("{events:?}");
+    assert_eq!(text.matches("fs_write error").count(), 3, "{text}");
+    assert!(!git.join(".git/hooks/pre-commit").exists());
+    assert_eq!(
+        std::fs::read_to_string(git.join(".git/config")).unwrap(),
+        "[core]\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(wt.join(".git")).unwrap(),
+        "gitdir: /repo/.git/worktrees/wt\n"
+    );
+    // Auf Dateisystemen ohne Groß/klein-Unterscheidung (macOS) ist `.GIT` dasselbe.
+    if ws.join("repo/.GIT").exists() {
+        let events = write_all(&ws, &[git.join(".GIT/config")], Arc::new(AllowAll), None).await;
+        assert!(format!("{events:?}").contains("fs_write error"));
+        assert_eq!(
+            std::fs::read_to_string(git.join(".git/config")).unwrap(),
+            "[core]\n"
+        );
+    }
+}
+
+/// Security-Review #327 (A1): Mit Stufen-Umgebung gilt die Policy der Stufe 1 auch für
+/// `fs/write_text_file`: keine Masken (`.env`), keine nur lesbaren Teilbäume.
+#[tokio::test]
+async fn har_007_ac2_fs_write_follows_the_stage_one_policy() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws = ws.path().canonicalize().unwrap();
+    std::fs::create_dir_all(ws.join(".beton")).unwrap();
+    let mut policy = beton_sandbox::ResolvedPolicy::unsandboxed(beton_sandbox::Stage::Harness);
+    policy.workspace = ws.clone();
+    policy.write_roots = vec![ws.clone()];
+    policy.read_only = vec![ws.join(".beton")];
+    policy.masks = vec![beton_sandbox::Mask::Pattern {
+        root: ws.clone(),
+        glob: ".env".into(),
+        any_depth: true,
+        source: "default".into(),
+    }];
+    let targets = [
+        ws.join(".env"),
+        ws.join(".beton/config.yaml"),
+        ws.join("ok.txt"),
+    ];
+    let events = write_all(&ws, &targets, Arc::new(AllowAll), Some(policy)).await;
+    let text = format!("{events:?}");
+    assert_eq!(text.matches("fs_write error").count(), 2, "{text}");
+    assert!(!ws.join(".env").exists());
+    assert!(!ws.join(".beton/config.yaml").exists());
+    assert_eq!(std::fs::read_to_string(ws.join("ok.txt")).unwrap(), "BOESE");
+}
+
+/// Security-Review #327: Das Gate prüft den aufgelösten Zielpfad, nicht den Rohpfad des Agents
+/// (Symlink-Verzeichnis im Workspace, nicht kanonisches Arbeitsverzeichnis).
+#[cfg(unix)]
+#[tokio::test]
+async fn pol_023_ac2_fs_write_gates_the_resolved_path() {
+    let ws = tempfile::tempdir().unwrap();
+    let real = ws.path().canonicalize().unwrap();
+    std::fs::create_dir_all(real.join("echt")).unwrap();
+    std::os::unix::fs::symlink(real.join("echt"), real.join("link")).unwrap();
+    let gate = Arc::new(Recording::default());
+    let raw = ws.path().join("link/a.txt");
+    let _ = write_all(ws.path(), &[raw], gate.clone(), None).await;
+    let seen = gate.0.lock().unwrap();
+    let paths: Vec<_> = seen.iter().map(|r| r.args["path"].clone()).collect();
+    assert_eq!(
+        paths,
+        [serde_json::Value::String(
+            real.join("echt/a.txt").display().to_string()
+        )],
+        "{seen:?}"
+    );
+}
+
 async fn until_turn_end(rx: &mut mpsc::Receiver<NormalizedEvent>) -> Vec<EventPayload> {
     let mut out = Vec::new();
     while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {

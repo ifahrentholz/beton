@@ -35,6 +35,7 @@ pub mod registry;
 pub mod resolve;
 pub mod seatbelt;
 pub mod spec;
+mod writable;
 
 /// Basis für die Verzeichnisse einer Session mit zweistufiger Sandbox (Scratch beider Stufen,
 /// Austausch, Broker-Socket, CA-Bundle). Unter Linux `/var/tmp`, nicht `/tmp` bzw. `TMPDIR`:

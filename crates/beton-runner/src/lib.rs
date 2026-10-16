@@ -847,7 +847,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         .and_then(|s| s.agent().ok())
         .and_then(|(spec, _)| spec.sandbox);
     let sandbox_spec = match &agent_sandbox {
-        Some(a) => match agent_sandbox::tighten(&sandbox_boot.spec, a) {
+        Some(a) => match agent_sandbox::tighten(&sandbox_boot.spec, a, None) {
             Ok(s) => s,
             Err(e) => {
                 let e = beton_harness::HarnessError::StartRefused(e.to_string());

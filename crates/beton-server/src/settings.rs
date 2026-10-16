@@ -351,10 +351,27 @@ mod tests {
                 "{source}"
             );
         }
-        for mode in ["plan", "default", "accept_edits"] {
+        for mode in ["plan", "default"] {
             assert!(
                 agent_permission_mode("project", Some(mode), None).is_ok(),
                 "{mode}"
+            );
+        }
+    }
+
+    /// Security-Review #327 (R7 aus #258): Auch `accept_edits` lockert (Datei-Änderungen ohne
+    /// Rückfrage); ein Projekt-Agent setzt es nicht selbst.
+    #[test]
+    fn agt_014_project_agent_cannot_turn_on_accept_edits_by_itself() {
+        let p = agent_permission_mode("project", Some("accept_edits"), None).unwrap_err();
+        assert_eq!(p.code, ProblemCode::AgentInvalid, "{p:?}");
+        assert!(
+            agent_permission_mode("project", Some("accept_edits"), Some("accept_edits")).is_ok()
+        );
+        for source in ["user", "builtin"] {
+            assert!(
+                agent_permission_mode(source, Some("accept_edits"), None).is_ok(),
+                "{source}"
             );
         }
     }

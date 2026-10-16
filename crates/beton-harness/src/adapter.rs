@@ -583,6 +583,9 @@ pub struct StageEnv {
     pub tools: Option<Arc<dyn ProcessLauncher>>,
     /// Was das Stufenmodell dieser Session tatsächlich durchsetzt (für `yolo`, HAR-027).
     pub sandbox: crate::SandboxStatus,
+    /// Policy der Stufe 1: Schreibt beton im Auftrag des Harness (ACP `fs/write_text_file`),
+    /// gilt sie auch dafür (Security-Review #327).
+    pub harness_policy: Option<Arc<beton_sandbox::ResolvedPolicy>>,
 }
 
 impl std::fmt::Debug for StageEnv {
@@ -592,6 +595,7 @@ impl std::fmt::Debug for StageEnv {
             .field("exchange", &self.exchange)
             .field("tools", &self.tools.is_some())
             .field("sandbox", &self.sandbox)
+            .field("harness_policy", &self.harness_policy.is_some())
             .finish()
     }
 }
