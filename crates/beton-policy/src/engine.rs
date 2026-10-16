@@ -286,13 +286,17 @@ impl EffectiveSet {
                 .cmp(&(b.scope, &b.name, &b.origin, &b.version))
         });
         let mut hasher = Sha256::new();
+        // Längenpräfixe statt Trennzeichen; Herkunft und Format gehören dazu, weil sie die
+        // Bedeutung eines Sets prägen (z. B. Zustands-Keys von `daily_budget`, #263).
         for s in &sets {
-            hasher.update(s.scope.as_str());
-            hasher.update([0]);
-            hasher.update(&s.name);
-            hasher.update([0]);
-            hasher.update(&s.version);
-            hasher.update([0]);
+            let format = match s.format {
+                crate::load::SourceFormat::Yaml => "yaml",
+                crate::load::SourceFormat::Inline => "inline",
+            };
+            for part in [s.scope.as_str(), &s.name, &s.origin, &s.version, format] {
+                hasher.update((part.len() as u64).to_be_bytes());
+                hasher.update(part.as_bytes());
+            }
         }
         invalid.sort();
         Self {

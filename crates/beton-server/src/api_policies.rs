@@ -686,6 +686,16 @@ pub async fn policy_snapshot(
         };
         sources.push((version.to_owned(), text.as_bytes().to_vec()));
     }
+    // Schon beim Speichern wiederaufbauen (#263): Nur ein Manifest, das sich mit diesen Inhalten
+    // zu seinem `policy_set_hash` laden lässt, wird gespeichert; ein fehlerhafter erster Upload
+    // blockiert den richtigen sonst dauerhaft.
+    beton_policy::snapshot::rebuild(&manifest, |v| {
+        sources
+            .iter()
+            .find(|(version, _)| version == v)
+            .map(|(_, bytes)| bytes.clone())
+    })
+    .map_err(|e| invalid(format!("Snapshot passt nicht zum Policy-Set: {e}")))?;
     let stored = state
         .store
         .put_policy_snapshot(
