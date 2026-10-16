@@ -704,3 +704,79 @@ async fn pol_027_ac4_shadow_view_counts_would_deny_per_rule_and_day() {
     assert_eq!(r["last"]["session_id"], id.to_string());
     assert_eq!(r["last"]["summary"], "Bash: pnpm publish --dry-run");
 }
+
+// ------------------------------------------------------------------ #276 (Review #257)
+
+async fn child_of(t: &TestApp, parent: SessionId, cwd: &Path) -> SessionId {
+    let local = t.store.ensure_local().await.unwrap();
+    t.store
+        .create_session(
+            OrgId::LOCAL,
+            NewSession {
+                id: SessionId::new(),
+                owner: UserId::LOCAL,
+                kind: SessionKind::Subagent,
+                harness: "fake".into(),
+                cwd: cwd.display().to_string(),
+                model: None,
+                effort: None,
+                permission_mode: None,
+                agent_ref: None,
+                project_id: None,
+                parent_id: Some(parent),
+                trigger: SessionTrigger::Spawn,
+                home_node: local.node,
+                harness_opts: Value::Null,
+                max_cost_usd: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+async fn query(t: &TestApp, id: SessionId) -> bool {
+    let r = post(t, &format!("/test/system/{id}/policy.query"), json!({})).await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    r.json()["allowed"].as_bool().unwrap()
+}
+
+/// #276 (AGT-007, POL-027): Das Limit von 20 `policy_query`-Abfragen je Turn gilt für den
+/// ganzen Session-Baum (Turn des Root), nicht je Session: Childs und Enkel teilen es mit dem
+/// Root, statt je Turn eigene 20 zu bekommen. Ein neuer Turn des Root gibt es frei.
+#[tokio::test]
+async fn agt_007_policy_queries_share_one_budget_per_session_tree() {
+    let s = setup().await;
+    let t = &s.t;
+    let root = session(t, s.project.path()).await;
+    let child = child_of(t, root, s.project.path()).await;
+    let grandchild = child_of(t, child, s.project.path()).await;
+    append(
+        t,
+        root,
+        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+    )
+    .await;
+    for i in 0..20 {
+        let who = [root, child, grandchild][i % 3];
+        assert!(query(t, who).await, "Abfrage {i}");
+    }
+    for who in [root, child, grandchild] {
+        assert!(!query(t, who).await, "Limit des Baums erreicht");
+    }
+    // Ein neuer Turn eines Childs gibt nichts frei, einer des Root schon.
+    append(
+        t,
+        child,
+        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+    )
+    .await;
+    assert!(!query(t, child).await);
+    append(
+        t,
+        root,
+        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+    )
+    .await;
+    assert!(query(t, grandchild).await);
+}
