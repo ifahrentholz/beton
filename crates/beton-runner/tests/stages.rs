@@ -610,3 +610,86 @@ async fn agt_006_ac3_secret_refs_only_for_user_level_servers() {
         beton_runner::mcp::resolve_secrets(vec![agent], session, Some(&mut s), true).await;
     assert_eq!(kept.len(), 1);
 }
+
+/// Minimales Git-Verzeichnis im Workspace mit einem zweiten Worktree-Eintrag.
+fn git_fixture(fx: &Fx) -> PathBuf {
+    let git = fx.ws.join(".git");
+    for d in ["objects", "refs", "worktrees/wt2"] {
+        std::fs::create_dir_all(git.join(d)).unwrap();
+    }
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(git.join("worktrees/wt2/commondir"), "../..\n").unwrap();
+    std::fs::write(git.join("worktrees/wt2/gitdir"), "/x/wt2/.git\n").unwrap();
+    git
+}
+
+#[tokio::test]
+async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
+    let fx = fx();
+    let git = git_fixture(&fx);
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(s.check_git(), Ok(()));
+    // Normale git-Arbeit und ein neuer Worktree-Eintrag (parallele Session) sind kein Verstoß.
+    std::fs::write(git.join("index.lock"), "x").unwrap();
+    std::fs::create_dir_all(git.join("worktrees/neu")).unwrap();
+    std::fs::write(git.join("worktrees/neu/commondir"), "../..\n").unwrap();
+    assert_eq!(s.check_git(), Ok(()));
+
+    // Umgeht etwas die Sperren der Sandbox, findet der Runner es nach dem Tool-Lauf, setzt
+    // zurück und beendet die Session.
+    std::fs::write(git.join("commondir"), "/tmp/x\n").unwrap();
+    std::fs::write(git.join("worktrees/wt2/gitdir"), "/tmp/x\n").unwrap();
+    let err = s.check_git().unwrap_err();
+    assert!(err.contains(".git/commondir"), "{err}");
+    assert!(err.contains(".git/worktrees/wt2/gitdir"), "{err}");
+    assert!(!git.join("commondir").exists());
+    assert_eq!(
+        std::fs::read_to_string(git.join("worktrees/wt2/gitdir")).unwrap(),
+        "/x/wt2/.git\n"
+    );
+    assert_eq!(s.check_git(), Ok(()));
+    // Schreibt ein Prozess bis zum Ende der Sandbox noch einmal, setzt der Runner nach dem
+    // Beenden erneut zurück.
+    std::fs::write(git.join("commondir"), "/tmp/x\n").unwrap();
+    s.restore_git();
+    assert!(!git.join("commondir").exists());
+
+    // In Stufe 2 entsteht `commondir` nicht (Seatbelt sperrt; unter Linux beendet der Launcher
+    // die Sandbox, entfernt die Datei und meldet es, dann endet die Session).
+    let out = s
+        .tools
+        .spawn(
+            CommandSpec::new("/bin/sh")
+                .args(["-c", "echo /tmp/x > .git/commondir"])
+                .cwd(&fx.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!git.join("commondir").exists());
+    if cfg!(target_os = "linux") {
+        let mut result = s.check_git();
+        for _ in 0..50 {
+            if result.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            result = s.check_git();
+        }
+        assert!(
+            result.as_ref().is_err_and(|e| e.contains(".git/commondir")),
+            "{result:?}"
+        );
+    } else {
+        assert_eq!(s.check_git(), Ok(()));
+    }
+}

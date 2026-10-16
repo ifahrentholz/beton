@@ -285,7 +285,7 @@ impl LinuxProvider {
             .map_err(|e| format!("{}: {e}", launcher.display()))?;
         // Der Status-Socket bleibt offen, bis das Ziel endet: Sein Schließen hieße „Runner tot“.
         let ctl = match pending.finish(&plan) {
-            Ok(fd) => fd,
+            Ok((fd, _)) => fd,
             Err((e, _)) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -394,8 +394,10 @@ fn command(
 }
 
 impl Pending {
-    /// Übergibt den Plan und wartet auf `Ready`. Gibt den Status-Socket zurück.
-    fn finish(mut self, plan: &LaunchPlan) -> Result<RawFd, (String, Option<i32>)> {
+    /// Übergibt den Plan und wartet auf `Ready`. Gibt den Status-Socket zurück, dazu einen
+    /// `fs`-Verstoß, falls der Launcher die Sandbox schon vor `Ready` beenden musste (das Ziel
+    /// lief dann bereits und legte eine Git-Steuerdatei an, #209).
+    fn finish(mut self, plan: &LaunchPlan) -> Result<(RawFd, Option<Ctl>), (String, Option<i32>)> {
         close(self.plan_r);
         self.plan_r = -1;
         close(self.ctl_child);
@@ -419,7 +421,12 @@ impl Pending {
                 Ok(Some(Ctl::Ready)) => {
                     let fd = self.ctl;
                     self.ctl = -1;
-                    Ok(fd)
+                    Ok((fd, None))
+                }
+                Ok(Some(m @ Ctl::Fs { .. })) => {
+                    let fd = self.ctl;
+                    self.ctl = -1;
+                    Ok((fd, Some(m)))
                 }
                 Ok(Some(Ctl::Failed {
                     step,
@@ -445,18 +452,29 @@ struct LinuxGuard;
 
 impl TreeGuard for LinuxGuard {}
 
-fn watch(ctl: RawFd, stage: Stage, violations: Violations, sink: Option<ViolationSink>) {
+fn watch(
+    ctl: RawFd,
+    early: Option<Ctl>,
+    stage: Stage,
+    violations: Violations,
+    sink: Option<ViolationSink>,
+) {
     std::thread::spawn(move || {
         let mut seen: Vec<String> = Vec::new();
-        while let Ok(Some(m)) = msg::recv(ctl) {
-            let Ctl::Limit { target } = m else { continue };
+        let mut early = early;
+        while let Some(m) = early.take().or_else(|| msg::recv(ctl).ok().flatten()) {
+            let (kind, target) = match m {
+                Ctl::Limit { target } => (ViolationKind::Limit, target),
+                Ctl::Fs { target } => (ViolationKind::Fs, target),
+                _ => continue,
+            };
             if seen.contains(&target) {
                 continue;
             }
             seen.push(target.clone());
             let v = SandboxViolation {
                 stage: stage.event(),
-                kind: ViolationKind::Limit,
+                kind,
                 target: Some(target),
                 suppressed_count: 0,
             };
@@ -535,8 +553,8 @@ impl SandboxProvider for LinuxProvider {
             message: format!("{}: {e}", launcher.display()),
             kind: e.kind(),
         })?;
-        let ctl = match pending.finish(&plan) {
-            Ok(fd) => fd,
+        let (ctl, early) = match pending.finish(&plan) {
+            Ok(r) => r,
             Err((e, errno)) => {
                 let _ = child.start_kill();
                 return Err(SandboxError::SpawnFailed {
@@ -548,7 +566,7 @@ impl SandboxProvider for LinuxProvider {
             }
         };
         let violations = Violations::default();
-        watch(ctl, policy.stage, violations.clone(), sink);
+        watch(ctl, early, policy.stage, violations.clone(), sink);
         Ok(child.with_guard(Box::new(LinuxGuard), violations))
     }
 }

@@ -52,7 +52,7 @@ pub use caps::{Cap, CapSet};
 pub use child::{Output, SandboxedChild};
 pub use command::{CommandSpec, EnvSpec, Stdio};
 pub use error::SandboxError;
-pub use git::GitLayout;
+pub use git::{ControlSnapshot, GitLayout};
 pub use masks::HarnessGrants;
 pub use none::NoneProvider;
 pub use provider::{KernelInfo, ProbeReport, ProviderId, SandboxProvider};

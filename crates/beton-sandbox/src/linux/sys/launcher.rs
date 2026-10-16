@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use super::msg::{self, CONNECTOR_FD, CTL_FD, Ctl, MAX_PLAN, PLAN_FD, STATUS_FD};
 use super::util::{self, Status, StepError, StepResult, close, cstr, cvt};
-use super::{cgroup, landlock, mounts, net, probe, seccomp};
+use super::{cgroup, gitwatch, landlock, mounts, net, probe, seccomp};
 use crate::linux::plan::{self, LaunchMode, LaunchPlan};
 use crate::linux::{LAUNCH_FAILED, PLAN_VERSION};
 use crate::resolve::NetMode;
@@ -161,6 +161,9 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
         }
         NetMode::None => None,
     };
+    // Vor dem Start des Ziels: neue `commondir`/`gitdir` im Git-Dir erkennen (#209).
+    let git_watch = gitwatch::GitWatch::new(&plan::git_watch_dirs(&plan))
+        .map_err(|e| StepError::io("git", "inotify", e))?;
     let (status_r, status_w) = util::pipe().map_err(|e| StepError::io("start", "pipe", e))?;
     let (go_r, go_w) = util::pipe().map_err(|e| StepError::io("start", "pipe", e))?;
     let mut mask_dir = None;
@@ -258,8 +261,21 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
     close(status_w);
     util::stdio_to_null();
     let sigfd = util::sigchld_fd().map_err(|e| StepError::io("start", "signalfd", e))?;
+    let mut fds = vec![CTL_FD, sigfd];
+    fds.extend(git_watch.as_ref().map(gitwatch::GitWatch::fd));
+    let mut git_hits: Vec<PathBuf> = Vec::new();
     let child_status = loop {
-        let rev = util::poll(&[CTL_FD, sigfd], 200).unwrap_or_default();
+        let rev = util::poll(&fds, 200).unwrap_or_default();
+        if let Some(w) = &git_watch
+            && git_hits.is_empty()
+        {
+            // Eine Git-Steuerdatei entstand: sofort entfernen, dann die Sandbox beenden (fail
+            // closed); nach deren Ende räumt `sweep` ein zweites Mal auf.
+            git_hits = w.sweep();
+            if !git_hits.is_empty() {
+                util::kill(child, libc::SIGKILL);
+            }
+        }
         if rev
             .first()
             .is_some_and(|r| r & (libc::POLLHUP | libc::POLLERR) != 0)
@@ -304,7 +320,27 @@ fn outer(plan: LaunchPlan) -> StepResult<Infallible> {
     let reported = util::read_to_end(status_r, 64)
         .ok()
         .and_then(|b| Status::decode(&b));
-    exit_like(reported.unwrap_or(child_status))
+    let mut status = reported.unwrap_or(child_status);
+    if let Some(w) = &git_watch {
+        // Nach dem Ende aller Prozesse der Sandbox: entfernen und melden.
+        for p in w.sweep() {
+            if !git_hits.contains(&p) {
+                git_hits.push(p);
+            }
+        }
+        for p in &git_hits {
+            let _ = msg::send(
+                CTL_FD,
+                &Ctl::Fs {
+                    target: p.display().to_string(),
+                },
+            );
+        }
+        if !git_hits.is_empty() {
+            status = Status::Signaled(libc::SIGKILL);
+        }
+    }
+    exit_like(status)
 }
 
 /// Kind von L im bwrap-Modus: wartet auf die cgroup, legt die Deskriptoren fest und startet bwrap.

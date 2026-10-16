@@ -236,3 +236,47 @@ proptest! {
         prop_assert_eq!(re.is_match(&other), other.starts_with(&name) && !other.contains('/'));
     }
 }
+
+#[test]
+fn sbx_003_git_control_files_and_worktree_entries_are_protected() {
+    let p = policy_for("/w");
+    let profile = render(&p).unwrap();
+    let param = |prefix: &str| {
+        let (_, v) = profile
+            .params
+            .iter()
+            .find(|(k, _)| k.starts_with(&format!("{prefix}_")))
+            .unwrap();
+        regex::Regex::new(v).unwrap()
+    };
+    let files = param("GIT_RE");
+    for hit in [
+        "/w/.git/commondir",
+        "/w/.git/gitdir",
+        "/w/.git/worktrees/a/commondir",
+        "/w/.git/worktrees/a/gitdir",
+        "/w/.git/worktrees/a/config.worktree",
+        "/w/.git/modules/s/commondir",
+        "/w/.git/modules/s/hooks/pre-commit",
+    ] {
+        assert!(files.is_match(hit), "{hit}");
+    }
+    for miss in [
+        "/w/.git/index.lock",
+        "/w/.git/worktrees/a/index.lock",
+        "/w/.git/commondir.lock",
+        "/w/.git/refs/heads/commondir",
+    ] {
+        assert!(!files.is_match(miss), "{miss}");
+    }
+    let dirs = param("GIT_WT");
+    for hit in ["/w/.git/worktrees", "/w/.git/worktrees/a"] {
+        assert!(dirs.is_match(hit), "{hit}");
+    }
+    assert!(!dirs.is_match("/w/.git/worktrees/a/HEAD"));
+    assert!(
+        profile
+            .text
+            .contains("(deny file-write-create file-write-unlink (regex (param \"GIT_WT_")
+    );
+}

@@ -243,12 +243,22 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
             git_lines.push(format!(
                 "(deny file-write* (subpath (param \"{hooks}\")) (literal (param \"{config}\")))"
             ));
+            // `commondir`/`gitdir` lenken git auf ein anderes Git-Verzeichnis (#209); ein
+            // literal/regex-Deny sperrt auch das Anlegen (Symlink, Hardlink, `mkdir`, `mv`).
             let re = format!(
-                "{}/(modules/(.+/)?(hooks(/.*)?|config)|worktrees/[^/]+/config\\.worktree)$",
+                "{}/(commondir|gitdir|modules/(.+/)?(hooks(/.*)?|config|commondir|gitdir)|\
+                 worktrees/[^/]+/(config\\.worktree|commondir|gitdir))$",
                 root_regex(d)?
             );
             let key = b.param("GIT_RE", re);
             git_lines.push(format!("(deny file-write* (regex (param \"{key}\")))"));
+            // Einträge unter `worktrees` weder anlegen noch wegbewegen: Sonst ließe sich ein
+            // vorbereitetes Verzeichnis samt `commondir` an ihre Stelle umbenennen.
+            let re = format!("{}/worktrees(/[^/]+)?$", root_regex(d)?);
+            let key = b.param("GIT_WT", re);
+            git_lines.push(format!(
+                "(deny file-write-create file-write-unlink (regex (param \"{key}\")))"
+            ));
             // `hooks` und `config` selbst nicht austauschen (Umbenennen des Elternteils).
             let keep = b.path("GIT_DIR", d)?;
             git_lines.push(format!(
