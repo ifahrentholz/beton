@@ -337,6 +337,49 @@ async fn har_009_ac4_server_exiting_before_initialize_is_reported() {
     assert!(f.error.contains("vor initialize"), "{}", f.error);
 }
 
+/// #319: Endet der Server, bevor der Harness `initialize` schickt, darf der Hub die Verbindung
+/// nicht wortlos schließen (Linux: `ECONNRESET` beim Lesen, sonst EOF ohne Antwort). Er meldet
+/// den Fehler und beantwortet jede weitere Anfrage mit `SERVER_UNAVAILABLE`, wie bei einem
+/// Server, der gar nicht startet.
+#[tokio::test]
+async fn har_009_ac4_requests_after_the_server_already_exited_get_an_error() {
+    let dir = private_dir();
+    let s = SessionId::new();
+    let (h, mut events) = hub(
+        dir.path(),
+        s,
+        servers("servers:\n  stirbt:\n    command: sh\n    args: [\"-c\", \"exit 3\"]\n"),
+        Some(system()),
+    )
+    .await;
+    let (mut c, reply) = Client::connect(h.socket(), &s.to_string(), &token(&h), "stirbt").await;
+    assert!(reply.ok);
+    // Erst abwarten, bis der Hub das Ende des Servers bemerkt hat; dann anfragen.
+    let mut failed = None;
+    while failed.is_none() {
+        let ev = tokio::time::timeout(Duration::from_secs(10), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if let EventPayload::McpServerFailed(f) = ev {
+            failed = Some(f);
+        }
+    }
+    let f = failed.unwrap();
+    assert_eq!(f.name, "stirbt");
+    assert!(f.error.contains("vor initialize"), "{}", f.error);
+    for id in 0..2 {
+        c.send(&json!({"jsonrpc": "2.0", "id": id, "method": "initialize", "params": {}}))
+            .await;
+        let r = c
+            .recv()
+            .await
+            .expect("Antwort statt geschlossener Verbindung");
+        assert_eq!(r["id"], id, "{r}");
+        assert_eq!(r["error"]["code"], codes::SERVER_UNAVAILABLE, "{r}");
+    }
+}
+
 #[test]
 fn agt_006_ac1_filter_hides_and_blocks_tools_outside_allow() {
     let server = servers("servers:\n  gh:\n    command: x\n    allow: [get_pull_request]\n")
