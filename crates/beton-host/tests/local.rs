@@ -133,10 +133,10 @@ async fn run_002_ac4_env_outside_allowlist_is_not_visible() {
     assert!(!env.contains("ANTHROPIC_API_KEY"));
 }
 
-/// #298: Debug-Builds reichen das großzügige Zeitbudget der Policy-Engine für
-/// Integrationstests an den Runner weiter, aus der geerbten Umgebung oder, weil die
-/// Test-Helfer `BETON_*` herausfiltern, aus der des Daemons (`.cargo/config.toml`).
-#[cfg(debug_assertions)]
+/// #298: Builds mit dem Feature `test-budget` (#304) reichen das großzügige Zeitbudget der
+/// Policy-Engine für Integrationstests an den Runner weiter, aus der geerbten Umgebung oder,
+/// weil die Test-Helfer `BETON_*` herausfiltern, aus der des Daemons (`.cargo/config.toml`).
+#[cfg(feature = "test-budget")]
 #[tokio::test]
 async fn pol_002_debug_builds_pass_the_test_policy_budget_to_the_runner() {
     let var = beton_runner::env::TEST_POLICY_BUDGET;

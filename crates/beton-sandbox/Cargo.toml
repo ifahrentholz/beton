@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Test-Schalter `BETON_TEST_SANDBOX_UNAVAILABLE` (SBX-006 AC1): nur als Dev-Dependency
+# aktivieren, nie in ausgelieferten Builds (wie `test-budget`, #304).
+test-sandbox = []
+
 [dependencies]
 beton-core.workspace = true
 getrandom.workspace = true

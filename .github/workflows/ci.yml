@@ -244,6 +244,29 @@ jobs:
       - name: Benchmark Policy-Auswertung
         run: cargo test -p beton-policy --release --test bench -- --ignored --nocapture
 
+      # Testbudget der Policy-Engine nie im ausgelieferten Build (POL-002, #304): Das Feature
+      # `test-budget` schalten nur Dev-Dependencies ein, also nur Builds mit Testzielen. Keine
+      # normale oder Build-Abhängigkeit im Workspace darf es aktivieren; ein Release-Build ohne
+      # das Feature rechnet auch mit gesetzter Variable mit den Grenzen aus POL-002
+      # (`Limits::runtime() == Limits::default()`), auch mit Debug-Assertions im Release-Profil.
+      - name: Release-Build ohne Testbudget der Policy-Engine (POL-002, #304)
+        env:
+          BETON_TEST_POLICY_BUDGET_MS: "60000"
+        run: |
+          tree=$(cargo tree --workspace -e normal,build -f '{p} {f}')
+          # Ebenso der Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1).
+          if grep -wE 'test-budget|test-sandbox' <<<"$tree"; then
+            echo "Feature test-budget bzw. test-sandbox außerhalb von Dev-Dependencies aktiv" >&2
+            exit 1
+          fi
+          for assertions in false true; do
+            out=$(CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=$assertions \
+              cargo test --release -p beton-policy --test cel -- --exact \
+              pol_002_without_the_test_budget_feature_runtime_limits_are_the_defaults 2>&1)
+            echo "$out"
+            grep -q "test result: ok. 1 passed" <<<"$out"
+          done
+
       # covers: PRX-001 AC3 (200 parallele HTTPS-Verbindungen, p99-Zusatzlatenz < 20 ms im
       # Release-Build; nur Loopback und lokale Test-Upstreams)
       - name: Benchmark Egress-Proxy

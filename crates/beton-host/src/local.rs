@@ -260,23 +260,30 @@ impl RunnerProvider for LocalProvider {
                 serde_json::to_string(&boot.harnesses).unwrap_or_default(),
             ));
         }
-        // Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298): nur
-        // Debug-Builds reichen die Variable weiter. Sie kommt aus der Umgebung des Daemons,
-        // weil die Test-Helfer die geerbte Umgebung ohne `BETON_*` übergeben.
-        #[cfg(debug_assertions)]
-        for name in [
-            beton_runner::env::TEST_POLICY_BUDGET,
-            // Abgeschaltete Backends (SBX-006 AC1): Der Runner sieht dieselbe Registry.
-            beton_runner::env::TEST_SANDBOX_UNAVAILABLE,
-        ] {
-            if let Some(v) = self
-                .inherit
-                .get(name)
-                .cloned()
-                .or_else(|| std::env::var(name).ok())
-            {
-                vars.push((name.into(), v));
-            }
+        // Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298): nur Builds mit
+        // dem Feature `test-budget` reichen die Variable weiter (#304). Sie kommt aus der
+        // Umgebung des Daemons, weil die Test-Helfer die geerbte Umgebung ohne `BETON_*`
+        // übergeben.
+        #[cfg(feature = "test-budget")]
+        if let Some(v) = self
+            .inherit
+            .get(beton_runner::env::TEST_POLICY_BUDGET)
+            .cloned()
+            .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
+        {
+            vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
+        }
+        // Abgeschaltete Sandbox-Backends (SBX-006 AC1): nur Builds mit dem Feature
+        // `test-sandbox` (wie `test-budget` nur über Dev-Dependencies); der Runner sieht dann
+        // dieselbe Registry wie der Daemon.
+        #[cfg(feature = "test-sandbox")]
+        if let Some(v) = self
+            .inherit
+            .get(beton_runner::env::TEST_SANDBOX_UNAVAILABLE)
+            .cloned()
+            .or_else(|| std::env::var(beton_runner::env::TEST_SANDBOX_UNAVAILABLE).ok())
+        {
+            vars.push((beton_runner::env::TEST_SANDBOX_UNAVAILABLE.into(), v));
         }
         let (program, args) = self
             .command

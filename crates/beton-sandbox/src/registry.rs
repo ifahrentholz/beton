@@ -48,8 +48,8 @@ pub fn auto_backend(os: Os) -> Option<ProviderId> {
     }
 }
 
-/// Nur Debug-Builds (Tests): Backends, die die Registry als nicht verfügbar meldet (`all`
-/// oder IDs mit Komma, z. B. `landlock,bwrap`).
+/// Nur mit dem Feature `test-sandbox` (Tests): Backends, die die Registry als nicht verfügbar
+/// meldet (`all` oder IDs mit Komma, z. B. `landlock,bwrap`).
 pub const TEST_UNAVAILABLE_ENV: &str = "BETON_TEST_SANDBOX_UNAVAILABLE";
 
 /// Ein registriertes, auf dieser Plattform (noch) nicht nutzbares Backend.
@@ -152,19 +152,21 @@ impl Registry {
             r.register(unavailable(id, "Container-Backend folgt mit SBX-015 (M5)"));
         }
         r.register(Arc::new(NoneProvider));
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "test-sandbox")]
         r.disable_for_tests();
         r
     }
 
-    /// Nur Debug-Builds: [`TEST_UNAVAILABLE_ENV`] schaltet Backends ab (`all` bzw. IDs mit
-    /// Komma), z. B. „Linux ohne Landlock und bwrap“ für SBX-006 AC1. Der Schalter macht die
-    /// Sandbox nie verfügbarer als sie ist; `none` bleibt, wie es ist.
-    #[cfg(debug_assertions)]
+    /// Nur mit dem Feature `test-sandbox` (Dev-Dependencies, nie ausgeliefert):
+    /// [`TEST_UNAVAILABLE_ENV`] schaltet Backends ab (`all` bzw. IDs mit Komma), z. B. „Linux
+    /// ohne Landlock und bwrap“ für SBX-006 AC1. Der Schalter macht die Sandbox nie
+    /// verfügbarer als sie ist; `none` bleibt, wie es ist.
+    #[cfg(feature = "test-sandbox")]
     fn disable_for_tests(&mut self) {
         let Ok(list) = std::env::var(TEST_UNAVAILABLE_ENV) else {
             return;
         };
+        tracing::warn!("Test-Schalter {TEST_UNAVAILABLE_ENV} aktiv: Sandbox-Backends abgeschaltet");
         let ids: Vec<ProviderId> = self
             .providers
             .keys()

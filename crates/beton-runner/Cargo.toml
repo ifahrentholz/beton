@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Testbudget der Policy-Engine (#298, #304): nur als dev-dependency aktivieren, nie in
+# ausgelieferten Builds.
+test-budget = ["beton-policy/test-budget"]
+# Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1): nur als dev-dependency.
+test-sandbox = ["beton-sandbox/test-sandbox"]
+
 [dependencies]
 async-trait.workspace = true
 beton-agents.workspace = true
@@ -42,7 +49,7 @@ rustix.workspace = true
 [dev-dependencies]
 axum.workspace = true
 beton-harness-direct = { workspace = true, features = ["mock"] }
-beton-host.workspace = true
+beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 futures-util.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
