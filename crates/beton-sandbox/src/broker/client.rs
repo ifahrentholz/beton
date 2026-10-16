@@ -185,6 +185,7 @@ mod imp {
             .collect();
         let req = Request {
             v: super::super::proto::VERSION,
+            op: super::super::proto::Op::Exec,
             token,
             argv,
             cwd,
@@ -215,7 +216,7 @@ mod imp {
         match reply {
             Reply::Started { .. } => {}
             Reply::Error { code, message } => return fail(&format!("{code}: {message}")),
-            Reply::Exited { .. } => return fail("unerwartete Antwort"),
+            Reply::Exited { .. } | Reply::Allowed => return fail("unerwartete Antwort"),
         }
         loop {
             let mut fds = [
