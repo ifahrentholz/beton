@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use beton_core::event::EgressSource;
+use beton_core::event::{EgressSource, ViolationKind};
 use beton_harness::{StageEnv, ToolIsolation};
 use beton_proxy::{
     BetonCa, Binding, CredentialAudit, CredentialKind, CredentialSource, Credentials, EgressEvents,
@@ -185,6 +185,9 @@ pub struct SessionStages {
     traffic: Traffic,
     tools_binding_list: Vec<Binding>,
     _summaries: Option<AbortOnDrop>,
+    /// Git-Steuerdateien vor dem ersten Tool-Lauf und vom Backend gemeldete Verstöße daran
+    /// (SBX-003, #209).
+    git: Option<GitGuard>,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
     _proxies: Vec<beton_proxy::ProxyInstance>,
@@ -301,6 +304,91 @@ impl SessionStages {
         {
             0
         }
+    }
+}
+
+/// Zweite Linie hinter den Sperren der Backends (SBX-003, #209): Schnappschuss der
+/// Git-Steuerdateien beim Start und `fs`-Verstöße, die ein Backend an ihnen meldet (Linux:
+/// der Launcher hat die Sandbox beendet und die Datei entfernt).
+struct GitGuard {
+    common_dir: PathBuf,
+    before: beton_sandbox::ControlSnapshot,
+    reported: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+}
+
+impl GitGuard {
+    fn new(layout: &beton_sandbox::GitLayout) -> Self {
+        Self {
+            common_dir: layout.common_dir.clone(),
+            before: beton_sandbox::ControlSnapshot::capture(layout),
+            reported: Arc::default(),
+        }
+    }
+
+    fn sink(&self) -> beton_sandbox::ViolationSink {
+        let reported = self.reported.clone();
+        Arc::new(move |v: beton_core::event::SandboxViolation| {
+            let Some(target) = v.target.filter(|_| v.kind == ViolationKind::Fs) else {
+                return;
+            };
+            let path = PathBuf::from(target);
+            let control = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| beton_sandbox::git::CONTROL_FILES.contains(&n));
+            if control && let Ok(mut list) = reported.lock() {
+                list.push(path);
+            }
+        })
+    }
+
+    /// Pfad für die Meldung: relativ zum Common-Dir (ohne Pfade des Benutzers im Log).
+    fn label(&self, p: &Path) -> String {
+        match p.strip_prefix(&self.common_dir) {
+            Ok(rel) => format!(".git/{}", rel.display()),
+            Err(_) => p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let mut hits: Vec<PathBuf> = self
+            .reported
+            .lock()
+            .map(|mut l| std::mem::take(&mut *l))
+            .unwrap_or_default();
+        let changed = self.before.changes();
+        let mut restore_failed = None;
+        if !changed.is_empty() {
+            restore_failed = self.before.restore(&changed).err();
+            hits.extend(changed);
+        }
+        if hits.is_empty() {
+            return Ok(());
+        }
+        hits.sort();
+        hits.dedup();
+        let names: Vec<String> = hits.iter().map(|p| self.label(p)).collect();
+        let state = match restore_failed {
+            None => "entfernt bzw. zurückgesetzt".to_owned(),
+            Some(e) => format!("nicht vollständig zurückgesetzt ({e})"),
+        };
+        Err(format!(
+            "Git-Steuerdatei aus der Sandbox angelegt oder geändert: {} ({state}); die Session \
+             endet, weil git sonst ein fremdes Git-Verzeichnis samt Hooks nähme",
+            names.join(", ")
+        ))
+    }
+}
+
+impl SessionStages {
+    /// Prüft nach einem Tool-Lauf die Git-Steuerdateien (SBX-003, #209); `Err` mit Begründung,
+    /// wenn eine entstanden ist oder sich geändert hat. Neue und geänderte werden dabei
+    /// entfernt bzw. zurückgesetzt.
+    pub fn check_git(&self) -> Result<(), String> {
+        self.git.as_ref().map_or(Ok(()), GitGuard::check)
     }
 }
 
@@ -763,6 +851,8 @@ async fn compose_unix(
     }
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
+    let git_guard = git.as_ref().map(GitGuard::new);
+    let git_sink = git_guard.as_ref().map(GitGuard::sink);
     let ctx = |stage: Stage, scratch: &Path, proxy: Option<ProxyEndpoint>| {
         let mut c = ResolveCtx::new(stage, input.workdir, &input.home, scratch);
         c.git.clone_from(&git);
@@ -785,7 +875,10 @@ async fn compose_unix(
     c.session_dir = Some(root.clone());
     let tools_policy = provider.resolve(&spec, &c)?;
     check_session_dir(&root, &[&tools_tmp, &xchg, &ca_dir], &tools_policy)?;
-    let tools = Sandbox::new(provider.clone(), tools_policy, input.events.clone());
+    let mut tools = Sandbox::new(provider.clone(), tools_policy, input.events.clone());
+    if let Some(sink) = &git_sink {
+        tools = tools.with_violations(sink.clone());
+    }
     let broker = beton_sandbox::broker::Broker::start(&exec, tools.clone())
         .await
         .map_err(|e| io("Exec-Broker", e))?;
@@ -822,7 +915,10 @@ async fn compose_unix(
             )?;
         }
     }
-    let harness = Sandbox::new(provider, harness_policy, input.events);
+    let mut harness = Sandbox::new(provider, harness_policy, input.events);
+    if let Some(sink) = git_sink {
+        harness = harness.with_violations(sink);
+    }
     Ok(SessionStages {
         harness,
         tools,
@@ -839,6 +935,7 @@ async fn compose_unix(
         traffic,
         tools_binding_list,
         _summaries: summaries,
+        git: git_guard,
         _broker: broker,
         _proxies: proxies,
         _dir: dir,

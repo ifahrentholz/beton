@@ -3,6 +3,7 @@
 //! Konfiguration bleiben read-only (sonst führte ein späteres `git` außerhalb der Sandbox
 //! Code des Agents aus).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::SandboxError;
@@ -112,6 +113,31 @@ impl GitLayout {
         }))
     }
 
+    /// Pfade der Steuerdateien ([`CONTROL_FILES`]) im Git-Dir, im Common-Dir und in den
+    /// vorhandenen Einträgen unter `worktrees/` (auch wenn sie fehlen).
+    pub fn control_files(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![self.git_dir.clone(), self.common_dir.clone()];
+        if let Ok(entries) = std::fs::read_dir(self.common_dir.join("worktrees")) {
+            let mut wt: Vec<PathBuf> = entries
+                .flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.path())
+                .collect();
+            wt.sort();
+            dirs.extend(wt);
+        }
+        let mut out = Vec::new();
+        for d in dirs {
+            for name in CONTROL_FILES {
+                let p = d.join(name);
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+
     /// Schreib-Wurzeln außerhalb des Workspace, die `git commit` im Worktree braucht.
     pub fn write_roots(&self) -> Vec<PathBuf> {
         if !self.dot_git_is_file {
@@ -123,5 +149,155 @@ impl GitLayout {
             self.common_dir.join("refs"),
             self.common_dir.join("logs"),
         ]
+    }
+}
+
+/// Höchstgröße einer Steuerdatei, deren Inhalt der Schnappschuss festhält.
+const MAX_CONTROL_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ControlEntry {
+    Missing,
+    File(Vec<u8>),
+    /// Verzeichnis, Symlink, zu große Datei oder nicht lesbar.
+    Other,
+}
+
+fn entry(p: &Path) -> ControlEntry {
+    match std::fs::symlink_metadata(p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => ControlEntry::Missing,
+        Ok(m) if m.is_file() && m.len() <= MAX_CONTROL_BYTES => std::fs::read(p)
+            .map(ControlEntry::File)
+            .unwrap_or(ControlEntry::Other),
+        _ => ControlEntry::Other,
+    }
+}
+
+/// Zustand der Git-Steuerdateien eines Workspace vor dem ersten Tool-Lauf: die zweite Linie
+/// hinter den Sperren der Backends (SBX-003, #209). Der Runner vergleicht nach jedem Tool-Lauf
+/// und beendet die Session, wenn eine Steuerdatei entstanden ist oder sich geändert hat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlSnapshot {
+    entries: BTreeMap<PathBuf, ControlEntry>,
+}
+
+impl ControlSnapshot {
+    pub fn capture(layout: &GitLayout) -> Self {
+        Self {
+            entries: layout
+                .control_files()
+                .into_iter()
+                .map(|p| {
+                    let e = entry(&p);
+                    (p, e)
+                })
+                .collect(),
+        }
+    }
+
+    /// Steuerdateien, die seit dem Schnappschuss entstanden sind oder sich geändert haben.
+    /// Verschwundene zählen nicht (git selbst räumt Worktrees ab), ebenso wenig Einträge neuer
+    /// Worktrees (eine parallele Session legt ihren an).
+    pub fn changes(&self) -> Vec<PathBuf> {
+        self.entries
+            .iter()
+            .filter(|(p, before)| {
+                let now = entry(p);
+                now != ControlEntry::Missing && now != **before
+            })
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+
+    /// Stellt für `paths` den Zustand des Schnappschusses wieder her: Neues wird entfernt
+    /// (ohne Symlinks zu folgen), Geändertes durch den alten Inhalt ersetzt.
+    pub fn restore(&self, paths: &[PathBuf]) -> std::io::Result<()> {
+        for p in paths {
+            let Some(before) = self.entries.get(p) else {
+                continue;
+            };
+            match std::fs::symlink_metadata(p) {
+                Ok(m) if m.is_dir() => std::fs::remove_dir_all(p)?,
+                Ok(_) => std::fs::remove_file(p)?,
+                Err(_) => {}
+            }
+            if let ControlEntry::File(content) = before {
+                use std::io::Write as _;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(p)?
+                    .write_all(content)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn layout(root: &Path) -> GitLayout {
+        let git = root.join(".git");
+        std::fs::create_dir_all(git.join("worktrees/wt2")).unwrap();
+        std::fs::write(git.join("worktrees/wt2/commondir"), "../..\n").unwrap();
+        std::fs::write(git.join("worktrees/wt2/gitdir"), "/x/wt2/.git\n").unwrap();
+        GitLayout {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git,
+        }
+    }
+
+    #[test]
+    fn sbx_003_snapshot_finds_new_and_changed_control_files_and_restores_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let l = layout(tmp.path());
+        let git = &l.git_dir;
+        let snap = ControlSnapshot::capture(&l);
+        assert!(snap.changes().is_empty());
+        // Normale git-Arbeit und neue Worktrees ändern nichts.
+        std::fs::write(git.join("index.lock"), "x").unwrap();
+        std::fs::create_dir_all(git.join("worktrees/neu")).unwrap();
+        std::fs::write(git.join("worktrees/neu/commondir"), "../..\n").unwrap();
+        assert!(snap.changes().is_empty());
+
+        std::fs::write(git.join("commondir"), "/tmp/x\n").unwrap();
+        std::fs::write(git.join("worktrees/wt2/gitdir"), "/tmp/x\n").unwrap();
+        let changed = snap.changes();
+        assert_eq!(
+            changed,
+            vec![git.join("commondir"), git.join("worktrees/wt2/gitdir")]
+        );
+        snap.restore(&changed).unwrap();
+        assert!(!git.join("commondir").exists());
+        assert_eq!(
+            std::fs::read_to_string(git.join("worktrees/wt2/gitdir")).unwrap(),
+            "/x/wt2/.git\n"
+        );
+        assert!(snap.changes().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sbx_003_restore_removes_a_symlink_without_following_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let l = layout(tmp.path());
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "bleibt").unwrap();
+        let snap = ControlSnapshot::capture(&l);
+        let gitdir = l.git_dir.join("worktrees/wt2/gitdir");
+        std::fs::remove_file(&gitdir).unwrap();
+        std::os::unix::fs::symlink(&victim, &gitdir).unwrap();
+        std::os::unix::fs::symlink(&victim, l.git_dir.join("commondir")).unwrap();
+        let changed = snap.changes();
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        snap.restore(&changed).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "bleibt");
+        assert!(std::fs::symlink_metadata(l.git_dir.join("commondir")).is_err());
+        assert_eq!(std::fs::read_to_string(&gitdir).unwrap(), "/x/wt2/.git\n");
     }
 }
