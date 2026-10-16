@@ -743,7 +743,7 @@ async fn pol_023_ac3_unrequested_acp_tool_call_is_observed_notified_and_cancelle
         acp_config(&dir.join("work"), &s, Some(false));
         write(
             &dir.join("work/.beton/policies/no-rm.yaml"),
-            "spec_version: 1\nname: no-rm\nrules:\n  - id: no-rm\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"rm\")'\n    action: deny\n    reason: rm ist verboten\n",
+            "spec_version: 1\nname: no-rm\nrules:\n  - id: no-rm\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"rm\")'\n    action: deny\n    enforcement: best_effort\n    reason: rm ist verboten\n",
         );
     })
     .await;

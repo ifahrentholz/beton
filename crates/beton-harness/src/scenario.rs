@@ -456,6 +456,7 @@ impl Step {
         add(self.hang, "hang");
         add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
+        add(self.fs_write.is_some(), "fs_write");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
         add(self.echo_settings, "echo_settings");

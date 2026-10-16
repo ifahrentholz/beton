@@ -533,7 +533,13 @@ async fn agt_009_child_takes_effort_and_mode_from_its_executor_and_never_yolo() 
     let id = env.run_agent("lead", "los").await;
     let events = env.first_turn(&id).await;
     let results = tool_results(&events, "session_spawn");
-    assert!(results[0].contains("sandbox_required"), "{}", results[0]);
+    // Ein Sub-Agent aus dem Repository schaltet YOLO nicht selbst ein (AGT-014, #258 R7);
+    // ohne Sandbox ginge es ohnehin nicht (`sandbox_required`).
+    assert!(
+        results[0].contains("agent_invalid") || results[0].contains("sandbox_required"),
+        "{}",
+        results[0]
+    );
     assert!(results[1].contains("gelesen"), "{}", results[1]);
     let all = nodes(&env.tree(&id).await);
     assert_eq!(all.len(), 2, "kein Child für yolo");

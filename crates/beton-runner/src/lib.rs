@@ -1459,6 +1459,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         );
         s.kill_proxies();
     }
+    // Beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3).
+    let (observed_tx, mut observed_rx) =
+        mpsc::unbounded_channel::<(beton_policy::load::RuleRef, String)>();
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
@@ -1700,6 +1703,30 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         break None;
                     }
                 }
+                Some((rule, reason)) = observed_rx.recv() => {
+                    // POL-023 AC3: `notify` und Abbruch des Turns (`session/cancel` bei ACP).
+                    let event = system_event(
+                        &boot,
+                        EventPayload::PolicyNotified(beton_core::event::PolicyNotified {
+                            rule_id: rule.rule_id.clone(),
+                            scope: rule.scope.as_str().to_owned(),
+                            set: rule.set.clone(),
+                            channels: vec!["ui".into()],
+                            message: Some(format!(
+                                "Nur beobachteter Tool-Call verstößt gegen eine Policy: {reason}; \
+                                 der Turn wird abgebrochen"
+                            )),
+                        }),
+                    );
+                    let mut batch = drain_gate(&boot, &mut gate_rx, &call_events);
+                    batch.push(event);
+                    if !push(&mut ws, &boot, &mut unacked, batch).await {
+                        break None;
+                    }
+                    if turn_running {
+                        let _ = session.interrupt().await;
+                    }
+                }
                 ge = gate_rx.recv() => {
                     let Some(first) = ge else { continue };
                     let mut fatal = first.fatal.then(|| fatal_reason(&first));
@@ -1856,7 +1883,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
                             _ => None,
                         };
-                        let observe = track_tool_calls(&gate, &ev, &mut unobserved, done);
+                        let observe = track_tool_calls(&gate, &ev, &mut unobserved, done, !harness_gates_all);
                         let event = to_event(&boot, &actor, ev);
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
@@ -1880,9 +1907,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             break;
                         }
                         for req in observe {
-                            // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
+                            // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1); trifft
+                            // eine `deny`-Regel, meldet der Runner es und bricht den Turn ab
+                            // (POL-023 AC3).
                             let g = gate.clone();
-                            tokio::spawn(async move { g.observe(req).await });
+                            let tx = observed_tx.clone();
+                            tokio::spawn(async move {
+                                if let Some(hit) = g.observe(req).await {
+                                    let _ = tx.send(hit);
+                                }
+                            });
                         }
                         if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; held_context = None; }
                         if done {
@@ -2365,11 +2399,25 @@ fn track_tool_calls(
     ev: &NormalizedEvent,
     unobserved: &mut HashMap<String, GateRequest>,
     turn_done: bool,
+    observe_at_start: bool,
 ) -> Vec<GateRequest> {
     let mut out = Vec::new();
     match &ev.payload {
         EventPayload::ToolCallRequested(r) => {
             gate.note_requested(&r.call_id, r.mcp_server.as_deref(), &r.tool);
+            // ACP ordnet über die Tool-Art zu (`execute`, `edit` …); ohne sie fände die
+            // Normalisierung weder Kommando noch Pfade (POL-023 AC3).
+            let acp_kind = (r.source == beton_core::event::ToolSource::Acp).then(|| {
+                match r.kind.as_deref() {
+                    Some("shell") => "execute",
+                    Some("file_edit" | "file_write") => "edit",
+                    Some("file_read") => "read",
+                    Some("search") => "search",
+                    Some("web_fetch") => "fetch",
+                    _ => "other",
+                }
+                .to_owned()
+            });
             unobserved.insert(
                 r.call_id.clone(),
                 GateRequest {
@@ -2379,9 +2427,21 @@ fn track_tool_calls(
                     kind: r.kind.clone().unwrap_or_default(),
                     args: r.args.clone(),
                     mcp_server: r.mcp_server.clone(),
+                    acp_kind,
                     ..GateRequest::default()
                 },
             );
+        }
+        // Ohne Gate-Anfrage gestartet (POL-023 AC3): schon beim Start beobachten, damit eine
+        // `deny`-Regel den Turn noch abbrechen kann.
+        // Nur für Harnesses ohne volles Gate; bei vollem Gate ist ein Call ohne Entscheidung
+        // ein Integritätsfehler (HAR-005), den keine Beobachtung verdecken darf.
+        EventPayload::ToolCallStarted(st) if observe_at_start => {
+            if !gate.decided(&st.call_id)
+                && let Some(req) = unobserved.remove(&st.call_id)
+            {
+                out.push(req);
+            }
         }
         EventPayload::ToolCallCompleted(c) => {
             gate.note_completed(c.status);

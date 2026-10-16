@@ -164,14 +164,15 @@ async fn pol_023_ac2_har_007_ac2_fs_write_text_file_is_gated_and_confined_to_the
     assert!(!draussen.exists(), "außerhalb geschrieben");
     assert!(text.contains("fs_write ok"), "{text}");
     assert!(text.contains("fs_write error"), "{text}");
-    let seen = gate.0.lock().unwrap();
-    assert!(
-        seen.iter().any(|r| r.kind == "file_write"
-            && r.origin == beton_harness::GateOrigin::PreTool
-            && r.args["path"] == ws_path.join("notizen.txt").display().to_string()),
-        "{seen:?}"
-    );
-    drop(seen);
+    {
+        let seen = gate.0.lock().unwrap();
+        assert!(
+            seen.iter().any(|r| r.kind == "file_write"
+                && r.origin == beton_harness::GateOrigin::PreTool
+                && r.args["path"] == ws_path.join("notizen.txt").display().to_string()),
+            "{seen:?}"
+        );
+    }
     s.shutdown(Shutdown::Kill).await.unwrap();
 
     // Lehnt das Gate ab, schreibt beton nicht und meldet einen JSON-RPC-Fehler.

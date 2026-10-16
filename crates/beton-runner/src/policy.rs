@@ -589,6 +589,9 @@ struct Inner {
     /// Gesetzt, wenn die Sandbox eine Voraussetzung verloren hat (z. B. der Proxy, SBX-006
     /// AC3): Jede weitere Tool-Ausführung wird abgelehnt.
     halted: std::sync::OnceLock<String>,
+    /// Nur beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3): Call-ID →
+    /// erste Regel und Begründung.
+    observed_denies: Mutex<HashMap<String, (beton_policy::load::RuleRef, String)>>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -881,6 +884,7 @@ impl PolicyGate {
                 queries: Mutex::new(dry::QueryBudget::default()),
                 inapplicable: Mutex::new(BTreeSet::new()),
                 halted: std::sync::OnceLock::new(),
+                observed_denies: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1977,7 +1981,17 @@ impl PolicyGate {
                     (outcome, Level::ObserveOnly) => {
                         let fin = match outcome {
                             Outcome::Allow => FinalOutcome::Allow,
-                            Outcome::Deny { .. } => FinalOutcome::Deny,
+                            Outcome::Deny { reasons } => {
+                                if let Some(first) = reasons.first()
+                                    && let Ok(mut m) = self.inner.observed_denies.lock()
+                                {
+                                    m.insert(
+                                        req.call_id.clone(),
+                                        (first.rule.clone(), reason_text(reasons)),
+                                    );
+                                }
+                                FinalOutcome::Deny
+                            }
                             Outcome::Ask { .. } => FinalOutcome::Expired,
                         };
                         self.apply_effects(&ev.decision, fin, req.turn_id).await;
@@ -2321,12 +2335,19 @@ impl PolicyGate {
 
     /// Tool-Call ohne Gate-Anfrage des Harness (nur beobachtbar, POL-025 AC1): genau ein
     /// `policy.decision` mit `enforcement: observe_only`.
-    pub async fn observe(&self, req: GateRequest) {
+    /// Trifft eine `deny`-Regel, liefert es die erste samt Begründung (POL-023 AC3: dann folgen
+    /// `policy.notified` und der Abbruch des Turns).
+    pub async fn observe(&self, req: GateRequest) -> Option<(beton_policy::load::RuleRef, String)> {
         if self.decided(&req.call_id) {
-            return;
+            return None;
         }
-        let v = self.tool_verdict(&req, Level::ObserveOnly).await;
-        let _ = v;
+        let call = req.call_id.clone();
+        let _ = self.tool_verdict(&req, Level::ObserveOnly).await;
+        self.inner
+            .observed_denies
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&call))
     }
 
     /// Phase `model_request` (Turn oder Call). Mit `ask_human = false` liefert `ask`

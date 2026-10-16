@@ -580,6 +580,7 @@ dependencies = [
  "beton-core",
  "beton-harness",
  "beton-policy",
+ "libc",
  "serde",
  "serde_json",
  "serde_norway",
