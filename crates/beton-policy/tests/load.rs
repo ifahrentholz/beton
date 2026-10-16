@@ -963,3 +963,37 @@ fn pol_010_remember_key_without_tool_identity_is_linted() {
     // Ohne `remember_key` gilt der Default-Fingerprint (bindet Tool und Server).
     assert!(lints("  - id: q\n    on: tool_call\n    action: ask\n").is_empty());
 }
+
+/// #248 (POL-002, POL-016): `glob()`, `startsWith` & Co. auf rohen Pfaden (`tool.paths`,
+/// `tool.write_paths`, `tool.cwd`) vergleichen lexikalisch, ohne Symlinks und
+/// Groß-/Kleinschreibung des Dateisystems; der Hinweis empfiehlt `resolve()` bzw. `under()`.
+#[test]
+fn pol_002_lexical_comparisons_on_raw_paths_are_linted() {
+    let deny = |when: &str| {
+        format!("  - id: p\n    on: tool_call\n    when: '{when}'\n    action: deny\n")
+    };
+    for when in [
+        "glob(tool.paths[0], \"/etc/**\")",
+        "tool.paths.exists(p, glob(p, \"**/.env*\"))",
+        "tool.write_paths.exists(p, p.startsWith(\"/etc\"))",
+        "tool.cwd.startsWith(\"/repo\")",
+        "tool.cwd == \"/repo\"",
+        "\"/etc/passwd\" in tool.paths",
+        "tool.paths.all(p, !p.endsWith(\".pem\"))",
+    ] {
+        let l = lints(&deny(when));
+        assert_eq!(l.len(), 1, "{when}: {l:?}");
+        assert!(l[0].1.contains("resolve("), "{when}: {l:?}");
+    }
+    for when in [
+        "tool.paths.exists(p, glob(resolve(p), \"/etc/**\"))",
+        "tool.paths.exists(p, under(p, \"/etc\"))",
+        "resolve(tool.cwd).startsWith(\"/repo\")",
+        "size(tool.paths) > 3",
+        "tool.command.startsWith(\"rm\")",
+    ] {
+        assert!(lints(&deny(when)).is_empty(), "{when}");
+    }
+    // Entzuckerte Regeltypen vergleichen aufgelöste Pfade und erzeugen keinen Hinweis.
+    assert!(lints("  - id: g\n    type: path_guard\n    params: {}\n").is_empty());
+}
