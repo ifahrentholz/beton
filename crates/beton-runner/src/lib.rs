@@ -487,6 +487,18 @@ impl policy::StateSource for TunnelState {
     }
 }
 
+/// Abfrage-Budget je Session-Baum (System-Call `policy.query`, #276).
+#[async_trait]
+impl policy::QueryBudgetSource for TunnelState {
+    async fn take(&self) -> Result<policy::QueryTaken, String> {
+        let v = self.call("policy.query", json!({})).await?;
+        match (v["allowed"].as_bool(), v["crossed"].as_bool()) {
+            (Some(allowed), Some(crossed)) => Ok(policy::QueryTaken { allowed, crossed }),
+            _ => Err("ungültige Antwort".into()),
+        }
+    }
+}
+
 #[async_trait]
 impl policy::SnapshotSink for TunnelState {
     async fn store(
@@ -828,6 +840,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }))
     // Set-Snapshots je Version im Blob-Store der Session (POL-027 AC2).
     .with_snapshots(Arc::new(TunnelState {
+        calls: usage_tx.clone(),
+    }))
+    // `policy_query`-Limit je Session-Baum, gezählt vom Server (#276).
+    .with_query_budget(Arc::new(TunnelState {
         calls: usage_tx.clone(),
     }));
     // Credentials und Egress-Events des Stufenmodells (PRX-006, PRX-009): Werte und Audit über

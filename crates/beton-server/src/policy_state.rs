@@ -121,3 +121,49 @@ pub async fn inbox_read(state: &AppState, session: SessionId) -> Result<Value, P
     state.store.session(state.local.org, session).await?;
     Ok(json!({ "messages": Vec::<Value>::new() }))
 }
+
+/// Höchstzahl der `policy_query`-Abfragen je Session-Baum und Turn des Root (AGT-007, #276).
+pub const QUERY_LIMIT: u32 = 20;
+
+/// Höchste Tiefe beim Suchen des Root (Schutz gegen Zyklen in `parent_id`).
+const MAX_TREE_DEPTH: usize = 64;
+
+/// Abfragen je Root: (Zahl der `turn.started` des Root, verbrauchte Abfragen).
+#[derive(Debug, Default)]
+pub struct QueryBudgets(std::sync::Mutex<HashMap<SessionId, (u64, u32)>>);
+
+/// `policy.query`: zählt eine `policy_query`-Abfrage auf das Budget des Session-Baums. Das
+/// Budget gilt je Turn des Root (Childs und Enkel teilen es); ein neuer Turn eines Childs gibt
+/// nichts frei. Antwort `{allowed, crossed, used, limit}`; `crossed` bei der ersten Abfrage über
+/// dem Limit (Hinweis im Verlauf).
+pub async fn policy_query(state: &AppState, session: SessionId) -> Result<Value, Problem> {
+    let org = state.local.org;
+    let mut root = session;
+    for _ in 0..MAX_TREE_DEPTH {
+        match state.store.session(org, root).await?.parent_id {
+            Some(parent) => root = parent,
+            None => break,
+        }
+    }
+    let turns = state.store.count_events(org, root, "turn.started").await?;
+    let used = {
+        let mut budgets = state
+            .runtime
+            .policy_queries
+            .0
+            .lock()
+            .map_err(|_| Problem::new(ProblemCode::Internal))?;
+        let entry = budgets.entry(root).or_insert((turns, 0));
+        if entry.0 != turns {
+            *entry = (turns, 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        entry.1
+    };
+    Ok(json!({
+        "allowed": used <= QUERY_LIMIT,
+        "crossed": used == QUERY_LIMIT + 1,
+        "used": used,
+        "limit": QUERY_LIMIT,
+    }))
+}

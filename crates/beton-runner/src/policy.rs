@@ -20,7 +20,7 @@
 
 mod dry;
 
-pub use dry::SnapshotSink;
+pub use dry::{QueryBudgetSource, QueryTaken, SnapshotSink};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -583,6 +583,8 @@ struct Inner {
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
     queries: Mutex<dry::QueryBudget>,
+    /// Gemeinsames Budget des Session-Baums (Server, #276); ohne zählt das Gate selbst.
+    query_source: Option<Arc<dyn dry::QueryBudgetSource>>,
     /// Set-Versionen, deren Lint-Hinweise schon gemeldet sind (#242, #248).
     linted: Mutex<HashSet<String>>,
     /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
@@ -888,6 +890,7 @@ impl PolicyGate {
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
+                query_source: None,
                 linted: Mutex::new(HashSet::new()),
                 inapplicable: Mutex::new(BTreeSet::new()),
                 halted: std::sync::OnceLock::new(),
