@@ -353,13 +353,14 @@ async fn on_connected(app: &AppHandle, conn: Connection) {
         .lock()
         .map(|mut p| std::mem::take(&mut *p))
         .unwrap_or_default();
-    // Das Hauptfenster wechselt vom Startbildschirm zur Web-UI; weitere Deep-Links bekommen
-    // eigene Fenster.
+    // Das Hauptfenster wechselt vom Startbildschirm zur Web-UI. Nach einem Neustart des
+    // Daemons bleiben Fenster mit der Web-UI, wo sie sind (sie verbinden sich selbst neu);
+    // offene Deep-Links öffnen ihre Session.
     let mut routes = pending.into_iter();
-    let first = routes.next().unwrap_or_else(|| "/".into());
     if let Some(main) = app.get_webview_window(MAIN)
         && main.url().is_ok_and(|u| !allowed_remote(&c, &u))
     {
+        let first = routes.next().unwrap_or_else(|| "/".into());
         match Manager::login_url(&client, &first).await {
             Ok(url) => {
                 if let Ok(url) = Url::parse(&url) {
@@ -368,8 +369,6 @@ async fn on_connected(app: &AppHandle, conn: Connection) {
             }
             Err(e) => tracing::warn!("Anmeldung des Fensters: {e}"),
         }
-    } else {
-        open_route(app, &first);
     }
     for r in routes {
         open_route(app, &r);
