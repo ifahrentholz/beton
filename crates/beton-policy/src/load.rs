@@ -189,7 +189,11 @@ impl LoadedSet {
                 RuleKind::Cel { when: Some(p), .. } => Some(p),
                 _ => None,
             };
-            if when.into_iter().chain(rule.aux()).any(Program::compares_raw_paths) {
+            if when
+                .into_iter()
+                .chain(rule.aux())
+                .any(Program::compares_raw_paths)
+            {
                 out.push((
                     rule.id.clone(),
                     "vergleicht `tool.paths`, `tool.write_paths` bzw. `tool.cwd` lexikalisch \
@@ -645,17 +649,16 @@ fn check_rules_with(
             }
         }
         // Keine automatische Freigabe nach Ablauf einer Rückfrage auf der Agent-Ebene.
-        if scope == Scope::Agent {
-            if rule
+        if scope == Scope::Agent
+            && rule
                 .approval
                 .as_ref()
                 .is_some_and(|a| a.on_timeout == Some(crate::doc::TimeoutAction::Allow))
-            {
-                return Err(loc.at(
-                    &field("approval.on_timeout"),
-                    "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
-                ));
-            }
+        {
+            return Err(loc.at(
+                &field("approval.on_timeout"),
+                "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
+            ));
         }
         if let Some(parts) = desugar_parts(scope, rule, loc, &at)? {
             out.rules.extend(parts);

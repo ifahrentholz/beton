@@ -657,7 +657,10 @@ impl<'a> Run<'a> {
                 .map(|a| a.to_json())
                 .unwrap_or(Value::Null);
             let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
-            parts.push(format!("sha256:{}", hex::encode(Sha256::digest(&canonical))));
+            parts.push(format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(&canonical))
+            ));
         }
         serde_json::to_string(&parts).ok()
     }

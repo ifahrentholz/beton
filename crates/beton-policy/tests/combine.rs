@@ -663,7 +663,7 @@ impl Clock for TickClock {
 /// die Entscheidung zu `deny` machen. Die Spur selbst bleibt vollständig.
 #[test]
 fn pol_027_trace_does_not_spend_the_time_budget_of_the_decision() {
-    let parts = vec!["tool.kind == \"shell\""; 12].join(" && ");
+    let parts = ["tool.kind == \"shell\""; 12].join(" && ");
     let rules = format!(
         "{}{}",
         rule("long", "tool_call", &parts, "allow"),

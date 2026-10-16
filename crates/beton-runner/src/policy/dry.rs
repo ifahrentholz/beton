@@ -185,7 +185,9 @@ impl PolicyGate {
             return match tokio::time::timeout(super::USAGE_TIMEOUT, source.take()).await {
                 Ok(Ok(t)) => (t.allowed, t.crossed, false),
                 _ => {
-                    tracing::warn!("Policy: Abfrage-Budget nicht verfügbar; policy_query abgelehnt");
+                    tracing::warn!(
+                        "Policy: Abfrage-Budget nicht verfügbar; policy_query abgelehnt"
+                    );
                     (false, false, true)
                 }
             };

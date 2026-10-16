@@ -281,7 +281,8 @@ fn pol_005_codex_command_with_shell_wrapper_is_parsed() {
 #[test]
 fn pol_005_codex_workdir_is_the_tool_cwd() {
     for name in ["exec_command", "shell"] {
-        let args = json!({ "command": ["bash", "-lc", "rm -rf ./build"], "workdir": "/work/other" });
+        let args =
+            json!({ "command": ["bash", "-lc", "rm -rf ./build"], "workdir": "/work/other" });
         let tool = normalize(&raw("codex", name, &args)).unwrap();
         assert_eq!(tool.cwd, "/work/other", "{name}");
         assert!(

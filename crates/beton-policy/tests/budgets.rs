@@ -1173,18 +1173,31 @@ fn pol_013_routes_below_the_user_level_never_raise_model_or_effort_without_appro
     for scope in [Scope::Project, Scope::Agent] {
         // Teurer: Rückfrage mit Begründung, die Route gilt erst nach Freigabe.
         let d = eval(vec![route_to(scope, "model: claude-opus-4-5")], &sonnet);
-        assert!(matches!(d.outcome, Outcome::Ask { .. }), "{scope:?}: {d:#?}");
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
         assert_eq!(reason_ids(&d), ["up"]);
-        assert!(reason_text(&d).contains("Preis-Katalog"), "{}", reason_text(&d));
+        assert!(
+            reason_text(&d).contains("Preis-Katalog"),
+            "{}",
+            reason_text(&d)
+        );
         let d = eval(vec![route_to(scope, "reasoning_effort: xhigh")], &sonnet);
-        assert!(matches!(d.outcome, Outcome::Ask { .. }), "{scope:?}: {d:#?}");
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
         assert!(reason_text(&d).contains("Effort"), "{}", reason_text(&d));
         // Unbekanntes Modell des Users (Default des Harness): nicht nachweisbar günstiger.
         let d = eval(
             vec![route_to(scope, "model: claude-haiku-4-5")],
             &turn_with(None, None),
         );
-        assert!(matches!(d.outcome, Outcome::Ask { .. }), "{scope:?}: {d:#?}");
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
         // Günstiger, gleich oder niedriger: ohne Rückfrage.
         for (route, model, effort) in [
             ("model: claude-haiku-4-5", Some("claude-haiku-4-5"), None),
@@ -1210,9 +1223,15 @@ fn pol_013_routes_below_the_user_level_never_raise_model_or_effort_without_appro
         "p",
         "  - id: opus\n    on: model_request\n    action: modify\n    modify: { model: claude-opus-4-5 }\n",
     );
-    assert!(matches!(eval(vec![repo], &sonnet).outcome, Outcome::Ask { .. }));
+    assert!(matches!(
+        eval(vec![repo], &sonnet).outcome,
+        Outcome::Ask { .. }
+    ));
     // Die User-Ebene darf verteuern.
-    let d = eval(vec![route_to(Scope::User, "model: claude-opus-4-5")], &sonnet);
+    let d = eval(
+        vec![route_to(Scope::User, "model: claude-opus-4-5")],
+        &sonnet,
+    );
     assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
     assert_eq!(d.modified.model.as_deref(), Some("claude-opus-4-5"));
     // Auch beim Start: Projekt-Route auf ein teureres Startmodell fragt.
@@ -1224,7 +1243,10 @@ fn pol_013_routes_below_the_user_level_never_raise_model_or_effort_without_appro
             "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
         }),
     );
-    let d = eval(vec![route_to(Scope::Project, "model: claude-opus-4-5")], &start);
+    let d = eval(
+        vec![route_to(Scope::Project, "model: claude-opus-4-5")],
+        &start,
+    );
     assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
 }
 
@@ -1237,7 +1259,10 @@ fn pol_013_handwritten_cost_rules_also_block_unpriced_routes_below_the_user_leve
     let turn = unpriced_turn("claude-sonnet-4-5", json!({}));
     for (phase, when) in [
         ("model_request", "session.cost_usd > 5.0"),
-        ("model_request", "session.cost_usd + session.equivalent_usd > 5.0"),
+        (
+            "model_request",
+            "session.cost_usd + session.equivalent_usd > 5.0",
+        ),
         ("tool_call", "run.subtree_equivalent_usd > 5.0"),
         ("session_start", "user.daily_cost_usd > 50.0"),
     ] {

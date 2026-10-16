@@ -2612,7 +2612,9 @@ impl PolicyGate {
         };
         match ev.decision.outcome.clone() {
             Outcome::Allow => Checked::Allow(tightened(ev.decision.modified)),
-            Outcome::Ask { reasons } if reasons.iter().all(|r| approved.iter().any(|a| same(a, r))) => {
+            Outcome::Ask { reasons }
+                if reasons.iter().all(|r| approved.iter().any(|a| same(a, r))) =>
+            {
                 Checked::Allow(tightened(ev.decision.modified))
             }
             Outcome::Ask { reasons } => Checked::Deny {
@@ -3101,7 +3103,8 @@ mod tests {
                 "{origin:?}: {seen:?}"
             );
             assert!(
-                seen.iter().any(|e| matches!(e, EventPayload::PolicyNotified(n)
+                seen.iter()
+                    .any(|e| matches!(e, EventPayload::PolicyNotified(n)
                     if n.rule_id == "sandbox-halted" && n.channels == ["ui"])),
                 "{origin:?}: {seen:?}"
             );

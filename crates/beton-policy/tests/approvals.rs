@@ -351,12 +351,12 @@ fn pol_010_default_fingerprint_encodes_its_parts_unambiguously() {
     );
     assert_ne!(
         fp(shell("/repo@x", "y")),
-        fp(json!({ "kind": "shell", "server": "builtin", "name": "Bash@/repo", "cwd": "x",
-                   "command": "y", "args": { "command": "y" } }))
+        fp(
+            json!({ "kind": "shell", "server": "builtin", "name": "Bash@/repo", "cwd": "x",
+                   "command": "y", "args": { "command": "y" } })
+        )
     );
-    let mcp = |server: &str, name: &str| {
-        json!({ "kind": "mcp", "server": server, "name": name, "args": {} })
-    };
+    let mcp = |server: &str, name: &str| json!({ "kind": "mcp", "server": server, "name": name, "args": {} });
     assert_ne!(fp(mcp("a/b", "c")), fp(mcp("a", "b/c")));
     // Ein Grant gilt also nur für genau diesen Call.
     let rule = ask_reasons(&eval(

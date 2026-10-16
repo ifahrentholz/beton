@@ -595,7 +595,11 @@ async fn pol_027_ac2_snapshot_call_rejects_a_manifest_that_does_not_rebuild_to_i
     )
     .await;
     assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
-    assert_eq!(r.json()["stored"], true, "der richtige Snapshot wird gespeichert");
+    assert_eq!(
+        r.json()["stored"],
+        true,
+        "der richtige Snapshot wird gespeichert"
+    );
 }
 
 #[tokio::test]
@@ -754,7 +758,9 @@ async fn agt_007_policy_queries_share_one_budget_per_session_tree() {
     append(
         t,
         root,
-        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+        vec![EventPayload::TurnStarted(
+            beton_core::event::TurnStarted::default(),
+        )],
     )
     .await;
     for i in 0..20 {
@@ -768,14 +774,18 @@ async fn agt_007_policy_queries_share_one_budget_per_session_tree() {
     append(
         t,
         child,
-        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+        vec![EventPayload::TurnStarted(
+            beton_core::event::TurnStarted::default(),
+        )],
     )
     .await;
     assert!(!query(t, child).await);
     append(
         t,
         root,
-        vec![EventPayload::TurnStarted(beton_core::event::TurnStarted::default())],
+        vec![EventPayload::TurnStarted(
+            beton_core::event::TurnStarted::default(),
+        )],
     )
     .await;
     assert!(query(t, grandchild).await);

@@ -627,7 +627,10 @@ async fn pol_009_ac1_fork_takes_the_state_up_to_its_seq() {
         .unwrap()
         .to_owned();
     let child_events = env.events(&child).await;
-    assert_eq!(state_values(&child_events, "project/count/pushes"), [json!(1), json!(2)]);
+    assert_eq!(
+        state_values(&child_events, "project/count/pushes"),
+        [json!(1), json!(2)]
+    );
     env.wait_status(&child, "idle").await;
     let turn = env.turn(&child, "vier").await;
     assert_eq!(
@@ -663,7 +666,10 @@ async fn pol_009_ac2_effects_of_an_ask_rule_follow_its_resolution() {
         of_type(&turn, "approval.resolved")[0]["payload"]["via"],
         "timeout"
     );
-    assert!(state_values(&turn, "project/asked/asked").is_empty(), "{turn:#?}");
+    assert!(
+        state_values(&turn, "project/asked/asked").is_empty(),
+        "{turn:#?}"
+    );
 }
 
 // ---------------------------------------------------------------------------------- UX-001

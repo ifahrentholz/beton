@@ -950,16 +950,19 @@ fn lints(rules: &str) -> Vec<(String, String)> {
 #[test]
 fn pol_010_remember_key_without_tool_identity_is_linted() {
     let rule = |key: &str| {
-        format!(
-            "  - id: push\n    on: tool_call\n    action: ask\n    remember_key: '{key}'\n"
-        )
+        format!("  - id: push\n    on: tool_call\n    action: ask\n    remember_key: '{key}'\n")
     };
     let l = lints(&rule("tool.command"));
     assert_eq!(l.len(), 1, "{l:?}");
     assert_eq!(l[0].0, "push");
     assert!(l[0].1.contains("remember_key"), "{l:?}");
     assert_eq!(lints(&rule("tool.name + \":\" + tool.command")).len(), 1);
-    assert!(lints(&rule("tool.server + \"/\" + tool.name + \":\" + tool.command")).is_empty());
+    assert!(
+        lints(&rule(
+            "tool.server + \"/\" + tool.name + \":\" + tool.command"
+        ))
+        .is_empty()
+    );
     // Ohne `remember_key` gilt der Default-Fingerprint (bindet Tool und Server).
     assert!(lints("  - id: q\n    on: tool_call\n    action: ask\n").is_empty());
 }

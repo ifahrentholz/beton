@@ -241,8 +241,16 @@ fn pol_027_snapshot_rejects_tampered_or_missing_sources() {
 /// Herkunft darf sich nicht zum selben Hash wiederaufbauen lassen.
 #[test]
 fn pol_027_set_hash_covers_origin_and_format() {
-    let a = EffectiveSet::new(vec![set(Scope::Project, "/repo-a/.beton/policies/git.yaml", GIT)]);
-    let b = EffectiveSet::new(vec![set(Scope::Project, "/repo-b/.beton/policies/git.yaml", GIT)]);
+    let a = EffectiveSet::new(vec![set(
+        Scope::Project,
+        "/repo-a/.beton/policies/git.yaml",
+        GIT,
+    )]);
+    let b = EffectiveSet::new(vec![set(
+        Scope::Project,
+        "/repo-b/.beton/policies/git.yaml",
+        GIT,
+    )]);
     assert_eq!(a.sets()[0].version, b.sets()[0].version, "gleicher Inhalt");
     assert_ne!(a.hash(), b.hash(), "andere Herkunft, anderer Set-Hash");
     let mut forged = a.manifest();
