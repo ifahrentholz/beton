@@ -94,6 +94,17 @@ impl ProbeCache {
     /// Status für `spec` (User-Konfiguration); `proxy_ca`: Der Daemon hat eine Quelle für die
     /// beton-CA (ohne sie kein Netz im Stufenmodell, PRX-002).
     pub async fn info(&self, spec: &SandboxSpec, proxy_ca: bool) -> SandboxInfo {
+        self.info_with(spec, proxy_ca, None).await
+    }
+
+    /// Wie [`Self::info`]; `launcher`: Programm mit `__sandbox-exec` für die Linux-Probe (der
+    /// Runner, sonst das eigene Binary).
+    pub async fn info_with(
+        &self,
+        spec: &SandboxSpec,
+        proxy_ca: bool,
+        launcher: Option<&std::path::Path>,
+    ) -> SandboxInfo {
         let spec = SandboxSpec::merged(&[spec]);
         let choice = spec.backend.unwrap_or(BackendChoice::Auto);
         let backend = match choice {
@@ -116,7 +127,9 @@ impl ProbeCache {
                 ),
             };
         }
-        let probed = self.probe(&backend, choice).await;
+        let probed = self
+            .probe(&backend, choice, launcher.map(std::path::Path::to_path_buf))
+            .await;
         let proxy = spec.allow_network == Some(false) || proxy_ca;
         let active = probed.available;
         let hint = if active {
@@ -141,7 +154,12 @@ impl ProbeCache {
         }
     }
 
-    async fn probe(&self, key: &str, choice: BackendChoice) -> Probed {
+    async fn probe(
+        &self,
+        key: &str,
+        choice: BackendChoice,
+        launcher: Option<std::path::PathBuf>,
+    ) -> Probed {
         if let Ok(last) = self.last.lock()
             && let Some((at, k, p)) = last.as_ref()
             && k == key
@@ -149,7 +167,7 @@ impl ProbeCache {
         {
             return p.clone();
         }
-        let probed = tokio::task::spawn_blocking(move || probe_now(choice))
+        let probed = tokio::task::spawn_blocking(move || probe_now(choice, launcher.as_deref()))
             .await
             .unwrap_or_else(|e| Probed {
                 provider: None,
@@ -164,8 +182,11 @@ impl ProbeCache {
     }
 }
 
-fn probe_now(choice: BackendChoice) -> Probed {
-    let registry = Registry::platform();
+fn probe_now(choice: BackendChoice, launcher: Option<&std::path::Path>) -> Probed {
+    let registry = match launcher {
+        Some(l) => Registry::with_launcher(l),
+        None => Registry::platform(),
+    };
     let provider = match registry.select(choice) {
         Ok(p) => p,
         Err(e) => {

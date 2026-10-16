@@ -1079,7 +1079,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // AGT-014: Agent-Ebene der Policy-Hierarchie.
     gate.set_inline(
         beton_policy::load::Scope::Agent,
-        setup.agent_policies.drain(..).collect(),
+        std::mem::take(&mut setup.agent_policies),
     );
     // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
     let forked = match &boot.fork {

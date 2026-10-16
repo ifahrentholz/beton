@@ -170,6 +170,8 @@ async fn daemon_env(
             r.sessions.proxy_ca = Some(std::sync::Arc::new(support::TestCa));
         }
         r.sessions.sandbox = sandbox;
+        // Die Linux-Probe des Daemons braucht einen Launcher mit `__sandbox-exec`.
+        r.sessions.sandbox_launcher = Some(runner_bin().into());
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
         );

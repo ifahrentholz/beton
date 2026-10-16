@@ -132,6 +132,9 @@ pub struct SessionsConfig {
     pub sandbox: beton_sandbox::SandboxSpec,
     /// Probe des gewählten Backends für Vorprüfung und `GET /v1/info` (SBX-006).
     pub sandbox_probe: Arc<crate::sandbox_status::ProbeCache>,
+    /// Launcher der Linux-Probe (`__sandbox-exec`): der Runner, falls er nicht das eigene
+    /// Binary ist (eingebettete Daemons in Tests); sonst das eigene Binary.
+    pub sandbox_launcher: Option<PathBuf>,
     /// `proxy.extra_ca_files` (PRX-002).
     pub proxy_extra_ca_files: Vec<PathBuf>,
     /// Lädt die beton-CA über die Proxy-Capability (PRX-002); `None`: keine Session mit Netz
@@ -677,7 +680,11 @@ impl<'a> SessionManager<'a> {
     pub async fn sandbox_info(&self) -> crate::sandbox_status::SandboxInfo {
         let cfg = self.cfg();
         cfg.sandbox_probe
-            .info(&cfg.sandbox, cfg.proxy_ca.is_some())
+            .info_with(
+                &cfg.sandbox,
+                cfg.proxy_ca.is_some(),
+                cfg.sandbox_launcher.as_deref(),
+            )
             .await
     }
 
@@ -1914,6 +1921,7 @@ mod stage_tests {
             skill_paths: crate::session_skills::SkillPaths::from_process(),
             sandbox: beton_sandbox::SandboxSpec::from_yaml(yaml).unwrap(),
             sandbox_probe: Arc::default(),
+            sandbox_launcher: None,
             proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
             proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
             credentials: None,
