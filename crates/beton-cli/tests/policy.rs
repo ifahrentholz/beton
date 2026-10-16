@@ -264,6 +264,7 @@ async fn pol_027_ac1_ac2_explain_a_real_decision_with_the_runner_snapshot() {
 }
 
 /// Liest eine Log-Datei unter `$BETON_HOME/logs`, bis `pred` gilt (höchstens 10 s).
+#[cfg(unix)]
 fn wait_log(home: &Path, name: &str, pred: impl Fn(&str) -> bool) -> String {
     let path = home.join("logs").join(name);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -278,6 +279,8 @@ fn wait_log(home: &Path, name: &str, pred: impl Fn(&str) -> bool) -> String {
 
 /// #304: Ist das Testbudget der Policy-Engine aktiv (Feature `test-budget`, nur in Testläufen),
 /// schreiben Daemon und Runner beim Start eine `warn`-Zeile; mit `0` (echtes Budget) nicht.
+/// Nur Unix: Der Test beendet den Daemon mit SIGTERM ([`Serve::terminate`]).
+#[cfg(unix)]
 #[test]
 fn pol_002_active_test_budget_warns_at_daemon_and_runner_start() {
     const HELLO: &str = "turns:\n  - emit:\n      - { message: \"Hallo!\" }\n";
