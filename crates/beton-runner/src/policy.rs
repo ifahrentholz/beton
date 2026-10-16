@@ -22,7 +22,7 @@ mod dry;
 
 pub use dry::SnapshotSink;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -583,6 +583,8 @@ struct Inner {
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
     queries: Mutex<dry::QueryBudget>,
+    /// Set-Versionen, deren Lint-Hinweise schon gemeldet sind (#242, #248).
+    linted: Mutex<HashSet<String>>,
     /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
     /// Regel und Session; POL-011).
     inapplicable: Mutex<BTreeSet<String>>,
@@ -886,6 +888,7 @@ impl PolicyGate {
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
+                linted: Mutex::new(HashSet::new()),
                 inapplicable: Mutex::new(BTreeSet::new()),
                 halted: std::sync::OnceLock::new(),
                 observed_denies: Mutex::new(HashMap::new()),
@@ -1287,10 +1290,40 @@ impl PolicyGate {
         }
         let set = store.effective();
         drop(store);
+        self.report_lints(&set, turn);
         if changed && self.inner.started.load(Ordering::SeqCst) {
             self.recheck(&set, turn);
         }
         set
+    }
+
+    /// Lint-Hinweise jeder Set-Version einmal als Warnung (`notice`, #242, #248).
+    fn report_lints(&self, set: &EffectiveSet, turn: Option<TurnId>) {
+        for s in set.sets() {
+            let fresh = self
+                .inner
+                .linted
+                .lock()
+                .map(|mut l| l.insert(s.version.clone()))
+                .unwrap_or(false);
+            if !fresh {
+                continue;
+            }
+            for (rule, text) in s.lints() {
+                self.emit(
+                    EventPayload::Notice(Notice {
+                        level: NoticeLevel::Warn,
+                        text: format!(
+                            "Policy `{}` ({}), Regel `{rule}`: {text}",
+                            s.name,
+                            s.scope.as_str()
+                        ),
+                    }),
+                    turn,
+                    None,
+                );
+            }
+        }
     }
 
     /// Nach dem Start bei jeder Änderung dieselbe Prüfung wie vor dem Start (#234): Nie gültige
@@ -3720,6 +3753,24 @@ mod tests {
             &[],
         );
         assert_eq!(short["summary"], "ls");
+    }
+
+    /// #248: Auf einem case-insensitiven Dateisystem (macOS) übernimmt die Pfadauflösung für
+    /// existierende Teile die Schreibweise des Dateisystems; `resolve()`/`under()` vergleichen
+    /// damit dieselbe Datei unabhängig von der Schreibweise der Anfrage. Auf case-sensitiven
+    /// Dateisystemen (Linux) sind andere Schreibweisen andere Dateien.
+    #[test]
+    fn pol_002_fs_resolver_uses_the_case_of_the_file_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap().join("Repo");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join(".env"), "x").unwrap();
+        let other = real.parent().unwrap().join("REPO/.ENV");
+        if !other.exists() {
+            return;
+        }
+        let resolved = FsResolver.resolve(&other.display().to_string()).unwrap();
+        assert_eq!(resolved, real.join(".env").display().to_string());
     }
 
     #[test]
