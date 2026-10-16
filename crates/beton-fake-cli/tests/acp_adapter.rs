@@ -244,6 +244,14 @@ async fn write_all(
     events
 }
 
+/// Zahl der abgelehnten `fs/write_text_file` (die Fake-CLI meldet jede als Text-Delta).
+fn write_errors(events: &[EventPayload]) -> usize {
+    events
+        .iter()
+        .filter(|e| matches!(e, EventPayload::MessageDelta(d) if d.text.contains("fs_write error")))
+        .count()
+}
+
 /// Security-Review #327 (A1): `fs/write_text_file` schreibt in Stufe 0, aber nie, was Stufe 1
 /// selbst nicht schreiben darf: Git-Hooks und -Konfiguration (SBX-003 AC4), die `.git`-Datei
 /// eines Worktrees, jede Pfadkomponente `.git` (Groß/klein egal). Auch wenn das Gate erlaubt.
@@ -265,7 +273,7 @@ async fn har_007_ac2_fs_write_never_touches_git_files() {
     ];
     let events = write_all(&ws, &targets, Arc::new(AllowAll), None).await;
     let text = format!("{events:?}");
-    assert_eq!(text.matches("fs_write error").count(), 3, "{text}");
+    assert_eq!(write_errors(&events), 3, "{text}");
     assert!(!git.join(".git/hooks/pre-commit").exists());
     assert_eq!(
         std::fs::read_to_string(git.join(".git/config")).unwrap(),
@@ -310,7 +318,7 @@ async fn har_007_ac2_fs_write_follows_the_stage_one_policy() {
     ];
     let events = write_all(&ws, &targets, Arc::new(AllowAll), Some(policy)).await;
     let text = format!("{events:?}");
-    assert_eq!(text.matches("fs_write error").count(), 2, "{text}");
+    assert_eq!(write_errors(&events), 2, "{text}");
     assert!(!ws.join(".env").exists());
     assert!(!ws.join(".beton/config.yaml").exists());
     assert_eq!(std::fs::read_to_string(ws.join("ok.txt")).unwrap(), "BOESE");

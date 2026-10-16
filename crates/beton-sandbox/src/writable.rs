@@ -11,13 +11,77 @@ impl ResolvedPolicy {
     /// Schreib-Wurzel, nie in nur lesbaren Teilbäumen, Git-Verzeichnissen, Masken oder
     /// versteckten Dotfiles einer Grant-Wurzel (fail closed).
     pub fn may_write(&self, path: &Path) -> bool {
-        let _ = path;
-        true
+        if !path.is_absolute() || path.components().any(|c| !normal_or_root(c)) {
+            return false;
+        }
+        // Jede Komponente `.git` (Groß/klein egal: macOS) bleibt unberührt (SBX-003 AC4).
+        if path
+            .components()
+            .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+        {
+            return false;
+        }
+        if !self.write_roots.iter().any(|w| path.starts_with(w)) {
+            return false;
+        }
+        if self.read_only.iter().any(|r| path.starts_with(r)) {
+            return false;
+        }
+        if let Some(g) = &self.git
+            && [&g.dot_git, &g.git_dir, &g.common_dir]
+                .iter()
+                .any(|d| path.starts_with(d))
+        {
+            return false;
+        }
+        if self.masks.iter().any(|m| masked(m, path)) {
+            return false;
+        }
+        !self.hidden.iter().any(|h| {
+            let Ok(rel) = path.strip_prefix(&h.root) else {
+                return false;
+            };
+            let Some(first) = rel.components().next() else {
+                return false;
+            };
+            let name = first.as_os_str().to_string_lossy();
+            name.starts_with('.') && !(h.writable && h.allow.iter().any(|a| *a == name))
+        })
     }
 }
 
-#[allow(dead_code)]
-fn unused(_: &Mask, _: Component<'_>) {}
+fn normal_or_root(c: Component<'_>) -> bool {
+    matches!(c, Component::RootDir | Component::Normal(_))
+}
+
+/// Trifft die Maske `path` oder einen seiner Vorfahren? Namensmuster ohne Rücksicht auf
+/// Groß/klein (auf macOS sind `.ENV` und `.env` dieselbe Datei; sonst nur strenger).
+fn masked(mask: &Mask, path: &Path) -> bool {
+    match mask {
+        Mask::Path { path: m, .. } => path.starts_with(m),
+        Mask::Pattern {
+            root,
+            glob,
+            any_depth,
+            ..
+        } => {
+            let Ok(rel) = path.strip_prefix(root) else {
+                return false;
+            };
+            let glob = glob.to_lowercase();
+            let mut names = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_lowercase());
+            if *any_depth {
+                names.any(|n| crate::linux::plan::glob_match(&glob, &n))
+            } else {
+                names
+                    .next()
+                    .is_some_and(|n| crate::linux::plan::glob_match(&glob, &n))
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -132,10 +132,12 @@ impl AgentDir {
         self.memory().is_some()
     }
 
-    /// Inhalt einer Datei relativ zum Verzeichnis.
+    /// Inhalt einer Datei relativ zum Verzeichnis. Nur innerhalb: kein `..` hinaus, kein
+    /// absoluter Pfad, kein Symlink, dessen Ziel außerhalb liegt (Security-Review #327; z. B.
+    /// `policies[].ref` oder `instructions.file` auf `~/.ssh/…`).
     pub fn read(&self, rel: &str) -> Option<Vec<u8>> {
         match (self, self.memory()) {
-            (AgentDir::Fs(dir), _) => std::fs::read(dir.join(rel)).ok(),
+            (AgentDir::Fs(dir), _) => std::fs::read(Self::inside_fs(dir, rel)?).ok(),
             (_, Some((builtins, prefix))) => {
                 let path = normalize_relative(prefix, rel)?;
                 builtins.get(&path).map(<[u8]>::to_vec)
@@ -144,10 +146,18 @@ impl AgentDir {
         }
     }
 
+    /// Aufgelöster Pfad von `rel` in `dir`, wenn er (auch nach Symlinks) darin liegt.
+    fn inside_fs(dir: &Path, rel: &str) -> Option<PathBuf> {
+        normalize_relative("", rel)?;
+        let root = dir.canonicalize().ok()?;
+        let target = dir.join(rel).canonicalize().ok()?;
+        target.starts_with(&root).then_some(target)
+    }
+
     /// Existiert die Datei oder das Verzeichnis?
     pub fn exists(&self, rel: &str) -> bool {
         match (self, self.memory()) {
-            (AgentDir::Fs(dir), _) => dir.join(rel).exists(),
+            (AgentDir::Fs(dir), _) => Self::inside_fs(dir, rel).is_some(),
             (_, Some((builtins, prefix))) => normalize_relative(prefix, rel)
                 .is_some_and(|p| builtins.get(&p).is_some() || builtins.has_dir(&p)),
             (_, None) => false,

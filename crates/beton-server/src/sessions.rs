@@ -591,7 +591,7 @@ impl<'a> SessionManager<'a> {
             crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
         if let Some(a) = &agent {
             crate::settings::agent_permission_mode(
-                &a.snapshot.source,
+                a.snapshot.trust_source(),
                 agent_mode.as_deref(),
                 req.permission_mode.as_deref(),
             )?;

@@ -88,19 +88,24 @@ pub fn permission_mode(raw: &str, sandbox: SandboxStatus) -> Result<PermissionMo
 }
 
 /// AGT-014 (#258 R7): Ein Agent aus dem Repository (Quelle `project`, Repo-Inhalt) schaltet
-/// `yolo` nicht selbst ein; das geht nur ausdrücklich in der Anfrage (`requested`) oder über
-/// einen Agent der User-Ebene bzw. einen eingebauten.
+/// `yolo` und `accept_edits` nicht selbst ein; das geht nur ausdrücklich in der Anfrage
+/// (`requested`) oder über einen Agent der User-Ebene bzw. einen eingebauten.
 pub fn agent_permission_mode(
     source: &str,
     agent_mode: Option<&str>,
     requested: Option<&str>,
 ) -> Result<(), Problem> {
     let trusted = matches!(source, "user" | "builtin");
-    if agent_mode == Some("yolo") && requested.is_none() && !trusted {
-        return Err(Problem::new(ProblemCode::AgentInvalid).detail(
-            "Ein Projekt-Agent kann `permission_mode: yolo` nicht selbst setzen (Repo-Inhalt); \
-             YOLO nur ausdrücklich, z. B. `beton run <agent> --permission-mode yolo`.",
-        ));
+    // Beide lockern gegenüber dem Default (Rückfragen entfallen); `plan` und `default` nicht.
+    if let Some(mode @ ("yolo" | "accept_edits")) = agent_mode
+        && requested.is_none()
+        && !trusted
+    {
+        return Err(Problem::new(ProblemCode::AgentInvalid).detail(format!(
+            "Ein Projekt-Agent kann `permission_mode: {mode}` nicht selbst setzen \
+             (Repo-Inhalt); nur ausdrücklich, z. B. `beton run <agent> --permission-mode \
+             {mode}`."
+        )));
     }
     Ok(())
 }

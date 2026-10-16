@@ -374,6 +374,7 @@ impl HarnessAdapter for AcpAdapter {
                 closing: closing.clone(),
                 cancel: cancel.clone(),
                 workdir: spec.workdir.clone(),
+                write_policy: ctx.stage.as_ref().and_then(|s| s.harness_policy.clone()),
                 fs_calls: Arc::default(),
             },
         ));
@@ -588,6 +589,9 @@ struct Dispatcher {
     cancel: Arc<Notify>,
     /// Arbeitsverzeichnis der Session; `fs/write_text_file` schreibt nur darin.
     workdir: std::path::PathBuf,
+    /// Policy der Stufe 1: `fs/write_text_file` schreibt nur, was der Harness-Prozess selbst
+    /// schreiben dürfte (Security-Review #327).
+    write_policy: Option<Arc<beton_sandbox::ResolvedPolicy>>,
     /// Laufende Nummer für Call-IDs der Client-Aufrufe (`fs-<n>`).
     fs_calls: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -825,7 +829,14 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
 
 /// Ziel eines `fs/write_text_file`, wenn es im Arbeitsverzeichnis liegt: absoluter Pfad, das
 /// Elternverzeichnis existiert und liegt (aufgelöst) im Workspace, das Ziel ist kein Symlink.
-fn write_target(workdir: &std::path::Path, raw: &str) -> Option<std::path::PathBuf> {
+/// Nie unter einer Pfadkomponente `.git` (Groß/klein egal; Hooks, Konfiguration, die
+/// `.git`-Datei eines Worktrees, SBX-003 AC4); mit `policy` nur, was Stufe 1 selbst schreiben
+/// darf (Masken, nur lesbare Teilbäume, Security-Review #327).
+fn write_target(
+    workdir: &std::path::Path,
+    raw: &str,
+    policy: Option<&beton_sandbox::ResolvedPolicy>,
+) -> Option<std::path::PathBuf> {
     let path = std::path::Path::new(raw);
     if !path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
         return None;
@@ -836,6 +847,15 @@ fn write_target(workdir: &std::path::Path, raw: &str) -> Option<std::path::PathB
         return None;
     }
     let target = parent.join(path.file_name()?);
+    if target
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+    {
+        return None;
+    }
+    if policy.is_some_and(|p| !p.may_write(&target)) {
+        return None;
+    }
     if std::fs::symlink_metadata(&target).is_ok_and(|m| !m.is_file()) {
         return None;
     }
@@ -866,13 +886,14 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
             .await;
         return;
     };
-    let Some(target) = write_target(&d.workdir, raw) else {
+    let Some(target) = write_target(&d.workdir, raw, d.write_policy.as_deref()) else {
         let _ = d
             .rpc
             .respond_error(
                 id,
                 codes::INVALID_PARAMS,
-                "beton schreibt per fs/write_text_file nur im Arbeitsverzeichnis der Session",
+                "beton schreibt per fs/write_text_file nur im Arbeitsverzeichnis der Session und \
+                 nur, was die Sandbox des Agents erlaubt (nie unter `.git`)",
             )
             .await;
         return;
@@ -880,7 +901,8 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
     let n = d.fs_calls.fetch_add(1, Ordering::SeqCst) + 1;
     let call_id = format!("fs-{n}");
     let turn = d.state.lock().await.turn;
-    let args = json!({ "path": raw });
+    // Das Gate prüft den aufgelösten Pfad, in den beton schreibt, nicht den Rohpfad.
+    let args = json!({ "path": target.display().to_string() });
     send_all(
         &d.tx,
         vec![EventPayload::ToolCallRequested(

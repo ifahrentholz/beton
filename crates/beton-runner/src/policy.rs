@@ -2575,6 +2575,17 @@ impl Gate for PolicyGate {
                     .ok()
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
+                // Angehaltene Sandbox (SBX-006 AC3): Ein gespeicherter Entscheid gilt nicht
+                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327).
+                if self.inner.halted.get().is_some() {
+                    let level = if had_prior {
+                        Level::Full
+                    } else {
+                        Level::ApprovalOnly
+                    };
+                    let v = self.tool_verdict(&req, level).await;
+                    return GateDecision::Deny { reason: v.reason };
+                }
                 let v = match prior {
                     // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
                     // Argumente nach der Prüfung geändert (z. B. ein weiterer Hook mit
@@ -2653,6 +2664,13 @@ impl Gate for PolicyGate {
                     }
                     _ => None,
                 };
+                // Während der Rückfrage angehalten (SBX-006 AC3): Die Freigabe gilt nicht.
+                let denied = denied.or_else(|| {
+                    human
+                        .allow
+                        .then(|| self.inner.halted.get().cloned())
+                        .flatten()
+                });
                 if let Ok(mut d) = self.inner.decided.lock()
                     && let Some(entry) = d.get_mut(&req.call_id)
                 {

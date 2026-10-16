@@ -16,7 +16,6 @@ pub fn tighten(
     a: &agent::Sandbox,
     auto: Option<ProviderId>,
 ) -> Result<SandboxSpec, SandboxError> {
-    let _ = auto;
     let loosen = |field: &str| SandboxError::InvalidSpec {
         path: format!("agent.sandbox.{field}"),
         message: "Die Agent-Ebene kann die Sandbox nur verschärfen, keine Freigaben geben \
@@ -67,15 +66,34 @@ pub fn tighten(
                 .into(),
         });
     }
+    // Ein Agent wählt kein anderes Backend, als die Session ohnehin nutzt: Andere Backends
+    // setzen Masken und Grenzen anders durch (z. B. `bwrap` statt `landlock`). Er kann nur
+    // verlangen, dass es dieses ist; sonst startet er nicht (Security-Review #327).
     if let Some(BackendChoice::Provider(p)) = wanted {
-        match user_merged.backend.unwrap_or(BackendChoice::Auto) {
-            BackendChoice::Auto => out.backend = Some(BackendChoice::Provider(p)),
-            BackendChoice::Provider(u) if u == p => {}
-            BackendChoice::Provider(u) => {
+        let session = match user_merged.backend.unwrap_or(BackendChoice::Auto) {
+            BackendChoice::Provider(u) => Some(u),
+            BackendChoice::Auto => auto,
+        };
+        match session {
+            Some(u) if u == p => out.backend = Some(BackendChoice::Provider(p)),
+            Some(u) => {
                 return Err(SandboxError::Unavailable {
                     provider: p,
                     missing: beton_sandbox::caps::required_default(),
-                    hint: format!("Der Agent verlangt das Backend `{p}`, die Session nutzt `{u}`"),
+                    hint: format!(
+                        "Der Agent verlangt das Backend `{p}`, die Session nutzt `{u}`; ein \
+                         Agent wechselt das Backend nicht"
+                    ),
+                });
+            }
+            None => {
+                return Err(SandboxError::Unavailable {
+                    provider: p,
+                    missing: beton_sandbox::caps::required_default(),
+                    hint: format!(
+                        "Der Agent verlangt das Backend `{p}`, auf diesem Rechner gibt es kein \
+                         Sandbox-Backend"
+                    ),
                 });
             }
         }
@@ -92,8 +110,16 @@ pub fn tighten(
     if a.require_tool_isolation == Some(true) {
         out.require_tool_isolation = Some(true);
     }
+    // Masken werden vereinigt; ohne `masks` der User-Ebene gelten deren Standard-Masken
+    // (`.env`, `.env.*`), die zusätzliche Agent-Masken nicht aufheben (Security-Review #327).
+    // Die übrigen Listen (Pfade, Egress, Credentials, Env) setzt die Agent-Ebene nie (oben).
     if !a.masks.is_empty() {
-        let mut masks = out.masks.clone().unwrap_or_default();
+        let mut masks = out.masks.clone().unwrap_or_else(|| {
+            beton_sandbox::masks::DEFAULT_WORKSPACE_MASKS
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect()
+        });
         masks.extend(a.masks.iter().cloned());
         out.masks = Some(masks);
     }
@@ -110,6 +136,19 @@ pub fn tighten(
         out.limits = Some(limits);
     }
     Ok(out)
+}
+
+/// Das Backend, das `auto` auf diesem Rechner wählt; nur abgefragt, wenn der Agent ein
+/// bestimmtes Backend verlangt (die Probe startet unter Linux Prozesse).
+pub fn auto_choice(a: &agent::Sandbox) -> Option<ProviderId> {
+    let wants = a
+        .backend
+        .is_some_and(|b| !matches!(b, agent::SandboxBackend::Auto | agent::SandboxBackend::None));
+    if !wants {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    beton_sandbox::Registry::with_launcher(&exe).auto_choice()
 }
 
 fn provider(b: agent::SandboxBackend) -> ProviderId {

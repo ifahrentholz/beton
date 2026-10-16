@@ -179,7 +179,7 @@ pub struct MaskTargets {
     pub rebind: Vec<PathBuf>,
 }
 
-fn glob_match(glob: &str, name: &str) -> bool {
+pub(crate) fn glob_match(glob: &str, name: &str) -> bool {
     fn rec(g: &[char], n: &[char]) -> bool {
         match (g.first(), n.first()) {
             (None, None) => true,

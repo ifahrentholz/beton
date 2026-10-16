@@ -409,7 +409,11 @@ impl SessionManager<'_> {
         // `yolo` ohne Sandbox endet mit `sandbox_required`, bevor etwas angelegt wird.
         let (effort, permission_mode) = crate::settings::executor_settings(snapshot.as_ref());
         if let Some(s) = &snapshot {
-            crate::settings::agent_permission_mode(&s.source, permission_mode.as_deref(), None)?;
+            crate::settings::agent_permission_mode(
+                s.trust_source(),
+                permission_mode.as_deref(),
+                None,
+            )?;
         }
         let caps = self.harness_capabilities(&harness, std::path::Path::new(&created.cwd));
         // SBX-006: Ohne Sandbox nur, wenn der Parent bestätigt ist; das Child übernimmt die

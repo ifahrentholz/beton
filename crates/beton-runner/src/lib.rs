@@ -847,14 +847,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         .and_then(|s| s.agent().ok())
         .and_then(|(spec, _)| spec.sandbox);
     let sandbox_spec = match &agent_sandbox {
-        Some(a) => match agent_sandbox::tighten(&sandbox_boot.spec, a, None) {
-            Ok(s) => s,
-            Err(e) => {
-                let e = beton_harness::HarnessError::StartRefused(e.to_string());
-                report_start_failure(&boot, &e).await;
-                return Err(e.into());
+        Some(a) => {
+            match agent_sandbox::tighten(&sandbox_boot.spec, a, agent_sandbox::auto_choice(a)) {
+                Ok(s) => s,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(e.to_string());
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
             }
-        },
+        }
         None => sandbox_boot.spec.clone(),
     };
     if !stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec]))

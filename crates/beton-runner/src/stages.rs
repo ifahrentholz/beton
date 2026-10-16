@@ -1132,6 +1132,7 @@ async fn compose_unix(
     if let Some(sink) = git_sink {
         harness = harness.with_violations(sink);
     }
+    let harness_policy = Some(std::sync::Arc::new(harness.policy().clone()));
     Ok(SessionStages {
         harness,
         tools,
@@ -1145,7 +1146,7 @@ async fn compose_unix(
                 tool_sandbox: !inherited,
                 egress_proxy: true,
             },
-            harness_policy: None,
+            harness_policy,
         },
         passthrough,
         placeholders,

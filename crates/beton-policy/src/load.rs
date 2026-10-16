@@ -446,6 +446,23 @@ pub fn agent_sets(
         match e.get("ref").and_then(serde_json::Value::as_str) {
             Some(rel) => {
                 let file = format!("{origin} → {rel}");
+                // Nur relativ und innerhalb des Agent-Verzeichnisses; sonst wird nichts gelesen
+                // (Security-Review #327). Symlinks hinaus lehnt `read` ab.
+                let inside = !rel.is_empty()
+                    && std::path::Path::new(rel)
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                if !inside {
+                    return Err(LoadError {
+                        file,
+                        line: 1,
+                        column: 1,
+                        message: format!(
+                            "policies[{i}].ref: Pfad außerhalb des Agent-Verzeichnisses \
+                             (nur relativ, ohne `..`)"
+                        ),
+                    });
+                }
                 let text = read(rel).map_err(|m| LoadError {
                     file: file.clone(),
                     line: 1,
@@ -553,6 +570,21 @@ fn check_rules_with(
                     ),
                 ));
             }
+        }
+        // Der Präfix `agent/` gehört dem Zustand der Agent-Ebene (Security-Review #327).
+        if scope != Scope::Agent
+            && let Some(j) = rule
+                .effects
+                .iter()
+                .position(|e| e.key.starts_with("agent/"))
+        {
+            return Err(loc.at(
+                &field(&format!("effects[{j}].key")),
+                format!(
+                    "Key `{}`: der Präfix `agent/` ist für Regeln der Agent-Ebene reserviert",
+                    rule.effects[j].key
+                ),
+            ));
         }
         // Agent-Ebene verschärft nur (AGT-014): Effects nur auf eigenen Session-Zustand,
         // keine automatische Freigabe nach Ablauf einer Rückfrage.
