@@ -9,6 +9,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -77,6 +79,7 @@ async fn daemon_with(data: &Path, load: Load) -> Daemonized {
     cfg.socket = None;
     let runners = data.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider =
             std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners));
         r.sessions.dev = true;
@@ -150,7 +153,13 @@ impl Daemonized {
     }
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
-        self.request(method, path, body, &[]).await
+        self.request(
+            method,
+            path,
+            support::confirm_unsandboxed(method, path, body),
+            &[],
+        )
+        .await
     }
 
     async fn ws(

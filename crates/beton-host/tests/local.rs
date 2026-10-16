@@ -62,6 +62,7 @@ fn boot() -> RunnerBoot {
         snapshots: None,
         fork: None,
         sandbox: None,
+        unsandboxed_confirmed: false,
         proxy_ca: None,
         compaction: Default::default(),
         max_cost_usd: None,

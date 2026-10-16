@@ -39,7 +39,7 @@ use crate::enforcement::{Level, Matrix};
 use crate::engine::{Decision, EffectiveSet, EvalOptions, Outcome, Reason};
 use crate::explain::{context_values, explain, render as render_explain};
 use crate::grants::SessionGrants;
-use crate::load::{LoadedSet, MAX_FILE_BYTES, Scope, inline_set, load_file};
+use crate::load::{LoadedSet, MAX_FILE_BYTES, Scope, load_file};
 use crate::normalize::{ToolSource, harness_family, normalize_source};
 use crate::state::{FinalOutcome, PolicyState, effects_due, next_value};
 use crate::yaml;
@@ -402,8 +402,9 @@ pub fn expected_rules(test: &Path) -> Result<std::collections::BTreeSet<String>,
     Ok(out)
 }
 
-/// Lädt die `policies:` eines `agent.yaml` als Inline-Set der Ebene (AGT-014).
-fn load_agent(scope: Scope, path: &Path) -> Result<Option<LoadedSet>, String> {
+/// Lädt die `policies:` eines `agent.yaml` als Sets der Ebene (AGT-014): Inline-Regeln und
+/// Dateien per `ref` (relativ zum Verzeichnis des `agent.yaml`).
+fn load_agent(scope: Scope, path: &Path) -> Result<Vec<LoadedSet>, String> {
     let text = read_text(path)?;
     let doc = yaml::parse(&text).map_err(|e| {
         format!(
@@ -418,7 +419,7 @@ fn load_agent(scope: Scope, path: &Path) -> Result<Option<LoadedSet>, String> {
         .as_str()
         .ok_or_else(|| format!("{}:1:1: `name` fehlt", path.display()))?;
     let rules = match &doc.value["policies"] {
-        Value::Null => return Ok(None),
+        Value::Null => return Ok(Vec::new()),
         Value::Array(rules) => rules.clone(),
         _ => {
             let pos = doc.pos("policies");
@@ -430,20 +431,26 @@ fn load_agent(scope: Scope, path: &Path) -> Result<Option<LoadedSet>, String> {
             ));
         }
     };
-    inline_set(scope, name, &path.display().to_string(), &rules)
-        .map(Some)
-        .map_err(|e| {
-            // Inline-Fehler tragen den Feldpfad (`policies[i]…`); Position aus dem Dokument.
-            let field = e.message.split(':').next().unwrap_or_default();
-            let pos = doc.pos(field);
-            format!(
-                "{}:{}:{}: {}",
-                path.display(),
-                pos.line,
-                pos.column,
-                e.message
-            )
-        })
+    let dir = path.parent().unwrap_or(Path::new("."));
+    // `agent_sets` liest nur relative Pfade ohne `..`.
+    crate::load::agent_sets(scope, name, &path.display().to_string(), &rules, |rel| {
+        read_text(&dir.join(rel))
+    })
+    .map_err(|e| {
+        if e.file != path.display().to_string() {
+            return e.to_string();
+        }
+        // Inline-Fehler tragen den Feldpfad (`policies[i]…`); Position aus dem Dokument.
+        let field = e.message.split(':').next().unwrap_or_default();
+        let pos = doc.pos(field);
+        format!(
+            "{}:{}:{}: {}",
+            path.display(),
+            pos.line,
+            pos.column,
+            e.message
+        )
+    })
 }
 
 fn load_layers(test: &Path, file: &TestFile, opts: &TestOptions) -> Result<EffectiveSet, String> {
@@ -465,9 +472,7 @@ fn load_layers(test: &Path, file: &TestFile, opts: &TestOptions) -> Result<Effec
                 ));
             }
             if path.file_name().is_some_and(|n| n == "agent.yaml") {
-                if let Some(set) = load_agent(scope, &path)? {
-                    sets.push(Arc::new(set));
-                }
+                sets.extend(load_agent(scope, &path)?.into_iter().map(Arc::new));
             } else {
                 sets.push(Arc::new(
                     load_file(scope, &path).map_err(|e| e.to_string())?,

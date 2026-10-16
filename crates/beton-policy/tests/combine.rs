@@ -87,6 +87,36 @@ fn pol_007_ac1_user_deny_beats_agent_allow() {
     assert!(d.matched.iter().any(|m| m.rule.rule_id == "yes-shell"));
 }
 
+/// AGT-014 AC2: Eine Inline-Regel `allow` im Agent (`policies:` im `agent.yaml`) hebt ein
+/// `deny` der Projekt-Ebene nicht auf.
+#[test]
+fn agt_014_ac2_agent_allow_cannot_lift_a_project_deny() {
+    let project = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "rules:\n{}",
+            rule("no-push", "tool_call", "tool.kind == \"shell\"", "deny")
+        ),
+    );
+    let agent = std::sync::Arc::new(
+        beton_policy::load::inline_set(
+            Scope::Agent,
+            "lax",
+            "agents/lax/agent.yaml",
+            &[json!({ "id": "lax-allow", "on": "tool_call", "when": "tool.kind == \"shell\"", "action": "allow" })],
+        )
+        .unwrap(),
+    );
+    let d = eval(vec![agent, project], &tool("shell", json!({})));
+    assert_eq!(deny_reasons(&d), ["no-push"]);
+    assert!(
+        d.matched
+            .iter()
+            .any(|m| m.rule.rule_id == "lax-allow" && m.rule.scope == Scope::Agent)
+    );
+}
+
 #[test]
 fn pol_007_ac2_defaults_are_lifted_only_by_the_same_scope() {
     let project = set(Scope::Project, "p", "defaults:\n  browser_navigate: deny\n");

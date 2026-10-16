@@ -130,11 +130,14 @@ pub async fn start_with(
     // Die Proxy-Capability teilen sich die Quelle der beton-CA (PRX-002, #191) und die
     // Credentials der Proxy-Instanzen (PRX-006); beide gehören zum Egress-Proxy.
     let proxy_cap = Arc::new(caps.proxy);
-    runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
-        store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
-        cap: proxy_cap.clone(),
-        host_id: runtime.host.id.to_string(),
-    }));
+    // Eine eingebettete Quelle (Tests, `customize`) bleibt; sonst die aus dem Secret-Store.
+    if runtime.sessions.proxy_ca.is_none() {
+        runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+            store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+            cap: proxy_cap.clone(),
+            host_id: runtime.host.id.to_string(),
+        }));
+    }
     runtime.sessions.secret_tester = Some(Arc::new(crate::secret_test::SecretTester::new(
         beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
         proxy_cap.clone(),

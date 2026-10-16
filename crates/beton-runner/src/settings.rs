@@ -347,7 +347,7 @@ mod tests {
     }
 
     fn sandbox() -> SandboxStatus {
-        SandboxStatus::current()
+        SandboxStatus::NONE
     }
 
     #[test]

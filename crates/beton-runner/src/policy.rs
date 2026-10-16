@@ -586,6 +586,12 @@ struct Inner {
     /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
     /// Regel und Session; POL-011).
     inapplicable: Mutex<BTreeSet<String>>,
+    /// Gesetzt, wenn die Sandbox eine Voraussetzung verloren hat (z. B. der Proxy, SBX-006
+    /// AC3): Jede weitere Tool-Ausführung wird abgelehnt.
+    halted: std::sync::OnceLock<String>,
+    /// Nur beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3): Call-ID →
+    /// erste Regel und Begründung.
+    observed_denies: Mutex<HashMap<String, (beton_policy::load::RuleRef, String)>>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -877,6 +883,8 @@ impl PolicyGate {
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
                 inapplicable: Mutex::new(BTreeSet::new()),
+                halted: std::sync::OnceLock::new(),
+                observed_denies: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -1934,6 +1942,16 @@ impl PolicyGate {
                 }
             }
             Ok(n) => {
+                if let Some(reason) = self.inner.halted.get() {
+                    return self.builtin_denied(
+                        req,
+                        &subject,
+                        subject_ref,
+                        level,
+                        "sandbox-halted",
+                        reason.clone(),
+                    );
+                }
                 if let Some(path) = pre.policy_files {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
@@ -1963,7 +1981,17 @@ impl PolicyGate {
                     (outcome, Level::ObserveOnly) => {
                         let fin = match outcome {
                             Outcome::Allow => FinalOutcome::Allow,
-                            Outcome::Deny { .. } => FinalOutcome::Deny,
+                            Outcome::Deny { reasons } => {
+                                if let Some(first) = reasons.first()
+                                    && let Ok(mut m) = self.inner.observed_denies.lock()
+                                {
+                                    m.insert(
+                                        req.call_id.clone(),
+                                        (first.rule.clone(), reason_text(reasons)),
+                                    );
+                                }
+                                FinalOutcome::Deny
+                            }
                             Outcome::Ask { .. } => FinalOutcome::Expired,
                         };
                         self.apply_effects(&ev.decision, fin, req.turn_id).await;
@@ -2261,9 +2289,28 @@ impl PolicyGate {
         level: Level,
         path: &str,
     ) -> Verdict {
-        let set = self.refresh(req.turn_id);
         let reason = policy_files_reason(path);
-        let decision = builtin_deny(Phase::ToolCall, set.hash(), "policy-files", reason.clone());
+        self.builtin_denied(req, subject, subject_ref, level, "policy-files", reason)
+    }
+
+    /// Hält das Gate an (SBX-006 AC3): Jede weitere Tool-Ausführung wird mit `reason`
+    /// abgelehnt (eingebaute Regel `sandbox-halted`), bis die Session endet.
+    pub fn halt_tools(&self, reason: &str) {
+        let _ = self.inner.halted.set(reason.to_owned());
+    }
+
+    /// Ablehnung durch eine eingebaute Regel, ohne Auswertung der Policies (fail closed).
+    fn builtin_denied(
+        &self,
+        req: &GateRequest,
+        subject: &Value,
+        subject_ref: Value,
+        level: Level,
+        rule_id: &str,
+        reason: String,
+    ) -> Verdict {
+        let set = self.refresh(req.turn_id);
+        let decision = builtin_deny(Phase::ToolCall, set.hash(), rule_id, reason.clone());
         let event = decision_event(
             &decision,
             DecisionMeta {
@@ -2288,12 +2335,19 @@ impl PolicyGate {
 
     /// Tool-Call ohne Gate-Anfrage des Harness (nur beobachtbar, POL-025 AC1): genau ein
     /// `policy.decision` mit `enforcement: observe_only`.
-    pub async fn observe(&self, req: GateRequest) {
+    /// Trifft eine `deny`-Regel, liefert es die erste samt Begründung (POL-023 AC3: dann folgen
+    /// `policy.notified` und der Abbruch des Turns).
+    pub async fn observe(&self, req: GateRequest) -> Option<(beton_policy::load::RuleRef, String)> {
         if self.decided(&req.call_id) {
-            return;
+            return None;
         }
-        let v = self.tool_verdict(&req, Level::ObserveOnly).await;
-        let _ = v;
+        let call = req.call_id.clone();
+        let _ = self.tool_verdict(&req, Level::ObserveOnly).await;
+        self.inner
+            .observed_denies
+            .lock()
+            .ok()
+            .and_then(|mut m| m.remove(&call))
     }
 
     /// Phase `model_request` (Turn oder Call). Mit `ask_human = false` liefert `ask`
@@ -2521,6 +2575,17 @@ impl Gate for PolicyGate {
                     .ok()
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
+                // Angehaltene Sandbox (SBX-006 AC3): Ein gespeicherter Entscheid gilt nicht
+                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327).
+                if self.inner.halted.get().is_some() {
+                    let level = if had_prior {
+                        Level::Full
+                    } else {
+                        Level::ApprovalOnly
+                    };
+                    let v = self.tool_verdict(&req, level).await;
+                    return GateDecision::Deny { reason: v.reason };
+                }
                 let v = match prior {
                     // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
                     // Argumente nach der Prüfung geändert (z. B. ein weiterer Hook mit
@@ -2599,6 +2664,13 @@ impl Gate for PolicyGate {
                     }
                     _ => None,
                 };
+                // Während der Rückfrage angehalten (SBX-006 AC3): Die Freigabe gilt nicht.
+                let denied = denied.or_else(|| {
+                    human
+                        .allow
+                        .then(|| self.inner.halted.get().cloned())
+                        .flatten()
+                });
                 if let Ok(mut d) = self.inner.decided.lock()
                     && let Some(entry) = d.get_mut(&req.call_id)
                 {
@@ -2843,6 +2915,35 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
         g.inner.pending.lock().unwrap().clear();
         assert!(matches!(waiting.await.unwrap(), GateDecision::Deny { .. }));
+    }
+
+    /// Security-Review #327: Ist die Sandbox angehalten (Proxy ausgefallen, SBX-006 AC3), gilt
+    /// ein vorher gespeicherter Entscheid des Hooks nicht mehr: Auch die Rückfrage des Vendors
+    /// und die automatische Freigabe zum selben Call werden abgelehnt (`sandbox-halted`).
+    #[tokio::test]
+    async fn sbx_006_ac3_halted_sandbox_denies_even_with_a_stored_hook_decision() {
+        for origin in [GateOrigin::VendorAsk, GateOrigin::AutoApproval] {
+            let (g, _rx) = gate();
+            let pre = GateRequest {
+                origin: GateOrigin::PreTool,
+                ..ask("c1")
+            };
+            assert!(matches!(g.decide(pre).await, GateDecision::Allow { .. }));
+            g.halt_tools("Egress-Proxy ausgefallen");
+            let decision = tokio::time::timeout(
+                Duration::from_secs(2),
+                g.decide(GateRequest {
+                    origin,
+                    ..ask("c1")
+                }),
+            )
+            .await
+            .expect("keine Approval-Card bei angehaltener Sandbox");
+            assert!(
+                matches!(decision, GateDecision::Deny { .. }),
+                "{origin:?}: {decision:?}"
+            );
+        }
     }
 
     #[tokio::test]

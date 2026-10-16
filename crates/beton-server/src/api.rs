@@ -51,6 +51,8 @@ pub struct Info {
     pub features: Vec<String>,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: AttachmentLimitsView,
+    /// Sandbox des Hosts (SBX-006): aktiv, Egress-Proxy, ob `yolo` startbar ist (HAR-027).
+    pub sandbox: crate::sandbox_status::SandboxInfo,
 }
 
 /// Grenzen für Anhänge im Composer (WEB-006, `attachments.*`).
@@ -66,6 +68,7 @@ pub struct AttachmentLimitsView {
 #[utoipa::path(get, path = "/v1/info", tag = "system",
     responses((status = 200, description = "Server-Informationen", body = Info)))]
 pub async fn info(State(state): State<AppState>) -> axum::Json<Info> {
+    let sandbox = state.sessions().sandbox_info().await;
     axum::Json(Info {
         version: env!("CARGO_PKG_VERSION").into(),
         schema_version: beton_store::SCHEMA_VERSION,
@@ -77,6 +80,7 @@ pub async fn info(State(state): State<AppState>) -> axum::Json<Info> {
             max_file_bytes: state.runtime.attachments.max_file_bytes,
             max_files: state.runtime.attachments.max_files,
         },
+        sandbox,
     })
 }
 

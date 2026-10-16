@@ -82,6 +82,10 @@ pub struct AgentSnapshot {
     /// Wurzel-Agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth_limit: Option<u32>,
+    /// Quelle des Wurzel-Agents bei Sub-Agents (`source: subagent`): Ein Sub-Agent ist so
+    /// vertrauenswürdig wie der Agent, aus dessen Snapshot er stammt (#258 R7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_source: Option<String>,
 }
 
 /// Fehler beim Erfassen oder Lesen eines Snapshots.
@@ -230,6 +234,7 @@ impl AgentSnapshot {
             overrides: Overrides::default(),
             depth: 0,
             depth_limit: None,
+            root_source: None,
         };
         snapshot.hash = snapshot.content_hash()?;
         Ok(snapshot)
@@ -315,6 +320,12 @@ impl AgentSnapshot {
         self.depth_limit.map_or(own, |l| l.min(own))
     }
 
+    /// Quelle, nach der sich das Vertrauen richtet: die des Wurzel-Agents (Sub-Agents erben
+    /// sie; ältere Snapshots ohne Angabe gelten als `subagent`, also nicht vertrauenswürdig).
+    pub fn trust_source(&self) -> &str {
+        self.root_source.as_deref().unwrap_or(&self.source)
+    }
+
     /// Snapshot für einen Sub-Agent aus `agents` (Child-Session von `session_spawn`); die
     /// Parameter des Childs löst der Aufrufer danach auf.
     pub fn subagent(&self, name: &str) -> Result<Self, SnapshotError> {
@@ -338,6 +349,7 @@ impl AgentSnapshot {
             overrides: Overrides::default(),
             depth: self.depth + 1,
             depth_limit: Some(self.spawn_depth_limit(&spec)),
+            root_source: Some(self.trust_source().to_owned()),
         };
         match &sub.reference {
             Some(reference) => {
@@ -530,5 +542,10 @@ mod tests {
         // Der Snapshot übersteht die Serialisierung.
         let back = AgentSnapshot::from_bytes(&grandchild.to_bytes()).unwrap();
         assert_eq!(back.depth_limit, Some(2));
+        // Sub-Agents erben das Vertrauen des Wurzel-Agents (#258 R7), auch nach dem
+        // Serialisieren; hier ein Projekt-Agent, also nicht vertrauenswürdig.
+        assert_eq!(grandchild.source, "subagent");
+        assert_eq!(back.trust_source(), "project");
+        assert_eq!(root.trust_source(), "project");
     }
 }

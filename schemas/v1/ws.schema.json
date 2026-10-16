@@ -4440,6 +4440,24 @@
         "mode"
       ]
     },
+    "SessionSandbox": {
+      "description": "Schutz der Tools einer Session (SBX-006, HAR-027): Stufe 2 und Netz nur über den Proxy.",
+      "type": "object",
+      "properties": {
+        "egress_proxy": {
+          "description": "Netz der Tools nur über den Egress-Proxy (oder gar keins).",
+          "type": "boolean"
+        },
+        "tool_sandbox": {
+          "description": "Tools laufen in Stufe 2, getrennt vom Harness.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tool_sandbox",
+        "egress_proxy"
+      ]
+    },
     "SessionSettingsChanged": {
       "type": "object",
       "properties": {
@@ -4533,6 +4551,17 @@
         },
         "runner_id": {
           "$ref": "#/$defs/RunnerId"
+        },
+        "sandbox": {
+          "description": "Was die Sandbox dieser Session durchsetzt (SBX-006); Grundlage für `yolo` (HAR-027).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionSandbox"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

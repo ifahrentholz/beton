@@ -254,8 +254,9 @@ jobs:
           BETON_TEST_POLICY_BUDGET_MS: "60000"
         run: |
           tree=$(cargo tree --workspace -e normal,build -f '{p} {f}')
-          if grep -w test-budget <<<"$tree"; then
-            echo "Feature test-budget außerhalb von Dev-Dependencies aktiv" >&2
+          # Ebenso der Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1).
+          if grep -wE 'test-budget|test-sandbox' <<<"$tree"; then
+            echo "Feature test-budget bzw. test-sandbox außerhalb von Dev-Dependencies aktiv" >&2
             exit 1
           fi
           for assertions in false true; do

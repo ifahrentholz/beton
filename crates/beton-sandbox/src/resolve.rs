@@ -124,6 +124,10 @@ pub struct ResolveCtx {
     pub session_id: Option<String>,
     /// Nur Stufe 1: Zugang zum Exec-Broker.
     pub exec: Option<ExecAccess>,
+    /// Nur Stufe 1: Laufzeitverzeichnis der Session (`PreToolUse`-Hook, MCP-Relay-Hub, ihre
+    /// Token-Dateien, Session-Skills; #206). Lesbar, Unix-Sockets darin verbindbar, nicht
+    /// beschreibbar; Stufe 2 bekommt es nie.
+    pub runtime: Option<PathBuf>,
     /// Von beton verwaltete Schreib-Wurzeln der Stufe 1.
     pub shared: Vec<PathBuf>,
     /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
@@ -156,6 +160,7 @@ impl ResolveCtx {
             host_env: BTreeMap::new(),
             session_id: None,
             exec: None,
+            runtime: None,
             shared: Vec::new(),
             exchange: None,
             session_dir: None,
@@ -226,6 +231,9 @@ pub struct ResolvedPolicy {
     pub keychain: bool,
     /// Unix-Sockets, mit denen sich die Stufe verbinden darf (Stufe 1: Exec-Broker).
     pub unix_sockets: Vec<PathBuf>,
+    /// Verzeichnisse, in denen sich die Stufe mit jedem Unix-Socket verbinden darf (Stufe 1:
+    /// Laufzeitverzeichnis mit Hook- und Hub-Socket, #206).
+    pub unix_socket_dirs: Vec<PathBuf>,
     /// Verzeichnisse in Schreib-Wurzeln, die nur lesbar sind und nicht entstehen, umbenannt
     /// oder ersetzt werden dürfen (Stufe 2: Projekt-Konfiguration, SBX-002).
     pub read_only: Vec<PathBuf>,
@@ -262,8 +270,8 @@ pub struct ResolvedPolicy {
 }
 
 impl ResolvedPolicy {
-    /// Policy ohne Isolation (`backend: none`): Bis SBX-006 (WP-49) laufen Harness- und
-    /// Tool-Prozesse so, ausdrücklich über den Provider `none`.
+    /// Policy ohne Isolation: nur ausdrücklich `backend: none`, je Session bestätigt
+    /// (SBX-006), über den Provider `none`.
     pub fn unsandboxed(stage: Stage) -> Self {
         Self {
             backend: ProviderId::None,
@@ -277,6 +285,7 @@ impl ResolvedPolicy {
             git: None,
             keychain: false,
             unix_sockets: Vec::new(),
+            unix_socket_dirs: Vec::new(),
             read_only: Vec::new(),
             no_symlinks: Vec::new(),
             private: Vec::new(),
@@ -767,6 +776,18 @@ pub fn resolve(
         push_unique(&mut read_roots, dir.clone());
         unix_sockets.push(dir.join(name));
     }
+    let mut unix_socket_dirs = Vec::new();
+    if let Some(runtime) = &ctx.runtime {
+        if ctx.stage != Stage::Harness {
+            return Err(SandboxError::invalid(
+                "runtime",
+                "Das Laufzeitverzeichnis mit Hook- und Hub-Socket gibt es nur in Stufe 1 (#206)",
+            ));
+        }
+        let dir = own_grant("runtime", runtime, &forbidden, false)?;
+        push_unique(&mut read_roots, dir.clone());
+        unix_socket_dirs.push(dir);
+    }
 
     // Masken: Default (Stufe 1 und 2), in Stufe 2 alle Adapter-Pfade, eigene Masken.
     let mut masks = Vec::new();
@@ -1033,6 +1054,7 @@ pub fn resolve(
         git,
         keychain,
         unix_sockets,
+        unix_socket_dirs,
         read_only,
         no_symlinks,
         private,

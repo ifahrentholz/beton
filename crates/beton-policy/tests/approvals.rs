@@ -173,11 +173,12 @@ fn pol_010_allow_on_timeout_only_without_veto() {
         &shell("npm test"),
     ));
     assert_eq!(plan(&reasons, None).on_timeout, TimeoutAction::Deny);
-    // Ein Verbot auf einer niedrigeren Ebene hebt das `allow` einer höheren nicht auf.
+    // Ein Verbot auf einer niedrigeren Ebene hebt das `allow` einer höheren nicht auf. (Die
+    // Agent-Ebene kennt `on_timeout: allow` gar nicht, AGT-014; hier die Projekt-Ebene.)
     let reasons = ask_reasons(&eval(
         &[
             lenient(Scope::User, "u", "lenient", ""),
-            lenient(Scope::Agent, "a", "strict", ", allow_on_timeout: false"),
+            lenient(Scope::Project, "a", "strict", ", allow_on_timeout: false"),
         ],
         &shell("npm test"),
     ));

@@ -98,7 +98,7 @@ fn har_027_policy_mode_is_rechecked_against_the_sandbox() {
     use beton_runner::settings::policy_start_mode;
     let mut caps = Capabilities::minimal(Mode::Native, Transport::Native);
     caps.permission_modes = PermissionMode::ALL.to_vec();
-    let none = SandboxStatus::current();
+    let none = SandboxStatus::NONE;
     // Lockern wird verworfen, auch ohne Startmodus.
     assert_eq!(
         policy_start_mode(None, Some("yolo"), &caps, none).unwrap(),
@@ -421,19 +421,24 @@ async fn pol_001_tools_cannot_write_policy_files() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
-    // `policies:` im `agent.yaml` wird validiert, aber noch nicht geladen (WP-49). Statt die
-    // Regeln still zu ignorieren, startet ein solcher Agent nicht (fail closed).
+async fn agt_014_agent_policies_are_the_agent_level_of_the_gate() {
+    // `policies:` im `agent.yaml` (Inline-Regeln und Dateien per `ref`) bilden die
+    // Agent-Ebene (AGT-014); sie verschärfen nur.
     let tmp = tempfile::Builder::new()
         .prefix("bt")
         .tempdir_in("/tmp")
         .unwrap();
     let work = tmp.path().join("work");
     let agent = work.join(".beton/agents/streng");
-    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::create_dir_all(agent.join("policies")).unwrap();
     std::fs::write(
         agent.join("agent.yaml"),
-        "spec_version: 1\nname: streng\nexecutor: { harness: fake }\npolicies:\n  - { id: no-shell, on: tool_call, when: 'tool.kind == \"shell\"', action: deny }\n",
+        "spec_version: 1\nname: streng\nexecutor: { harness: fake }\npolicies:\n  - { id: no-shell, on: tool_call, when: 'shell.has_command(tool.argv, \"rm\")', action: deny }\n  - { ref: policies/extra.yaml }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        agent.join("policies/extra.yaml"),
+        "spec_version: 1\nname: extra\nrules:\n  - id: no-curl\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"curl\")'\n    action: deny\n",
     )
     .unwrap();
     let run_dir = tmp.path().join("run");
@@ -449,6 +454,54 @@ async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
         beton_harness::Mode::Native,
         beton_harness::Transport::Native,
     );
+    let setup = beton_runner::mcp::prepare(
+        beton_core::id::SessionId::new(),
+        &fake,
+        &caps,
+        &work,
+        beton_runner::mcp::AgentSource::Ref("streng"),
+        &beton_harness::registry::HarnessLayers::default(),
+        &paths,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let sets = setup.agent_policies.clone();
+    assert_eq!(sets.len(), 2, "{sets:?}");
+    assert!(
+        sets.iter()
+            .all(|s| s.scope == beton_policy::load::Scope::Agent)
+    );
+    let (g, _rx) = gate(tmp.path(), "fake");
+    g.set_inline(beton_policy::load::Scope::Agent, sets);
+    for (call, cmd, rule) in [
+        ("c1", "rm -rf build", "no-shell"),
+        ("c2", "curl https://x.example", "no-curl"),
+    ] {
+        match g.decide(bash(call, cmd, GateOrigin::PreTool)).await {
+            GateDecision::Deny { reason } => {
+                let reason = reason.unwrap_or_default();
+                assert!(reason.contains(rule), "{cmd}: {reason}");
+            }
+            other => panic!("{cmd}: {other:?}"),
+        }
+    }
+    assert_eq!(
+        g.decide(bash("c3", "ls", GateOrigin::PreTool)).await,
+        GateDecision::Allow { updated_args: None }
+    );
+
+    // Lockernde Angaben auf der Agent-Ebene sind ein Ladefehler; der Agent startet nicht.
+    std::fs::write(
+        agent.join("agent.yaml"),
+        "spec_version: 1\nname: streng\nexecutor: { harness: fake }\npolicies:\n  - { id: yolo, on: session_start, action: modify, modify: { permission_mode: yolo } }\n",
+    )
+    .unwrap();
     let err = beton_runner::mcp::prepare(
         beton_core::id::SessionId::new(),
         &fake,
@@ -467,7 +520,75 @@ async fn agt_014_agent_with_policies_does_not_start_until_they_are_enforced() {
     .await
     .err()
     .expect("Start verweigert");
-    assert!(err.contains("policies") && err.contains("WP-49"), "{err}");
+    assert!(err.contains("policies[0].modify.permission_mode"), "{err}");
+}
+
+/// Security-Review #327: `policies[].ref` bleibt im Agent-Verzeichnis. `..`, absolute Pfade
+/// und Symlinks hinaus sind ein Startfehler; die Meldung enthält nichts aus der Datei.
+#[cfg(unix)]
+#[tokio::test]
+async fn agt_014_policy_refs_cannot_leave_the_agent_dir() {
+    let tmp = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let work = tmp.path().join("work");
+    let agent = work.join(".beton/agents/streng");
+    std::fs::create_dir_all(agent.join("policies")).unwrap();
+    // Eine gültige Policy-Datei außerhalb des Agent-Verzeichnisses (mit Marker im Grund).
+    let outside = tmp.path().join("outside.yaml");
+    std::fs::write(
+        &outside,
+        "spec_version: 1\nname: outside\nrules:\n  - id: x\n    on: tool_call\n    action: deny\n    reason: MARKER-AUSSERHALB-0815\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, agent.join("policies/link.yaml")).unwrap();
+    let run_dir = tmp.path().join("run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let paths = beton_runner::mcp::Paths {
+        beton_home: tmp.path().join("home/.beton"),
+        home: Some(tmp.path().join("home")),
+        run_dir,
+        relay: std::path::PathBuf::from("/bin/false"),
+    };
+    let fake: HarnessId = "fake".parse().unwrap();
+    let caps = beton_harness::Capabilities::minimal(
+        beton_harness::Mode::Native,
+        beton_harness::Transport::Native,
+    );
+    for r in [
+        "../../../../outside.yaml".to_owned(),
+        outside.display().to_string(),
+        "policies/link.yaml".to_owned(),
+    ] {
+        std::fs::write(
+            agent.join("agent.yaml"),
+            format!(
+                "spec_version: 1\nname: streng\nexecutor: {{ harness: fake }}\npolicies:\n  - {{ ref: \"{r}\" }}\n"
+            ),
+        )
+        .unwrap();
+        let err = beton_runner::mcp::prepare(
+            beton_core::id::SessionId::new(),
+            &fake,
+            &caps,
+            &work,
+            beton_runner::mcp::AgentSource::Ref("streng"),
+            &beton_harness::registry::HarnessLayers::default(),
+            &paths,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("{r}: Start nicht verweigert"));
+        assert!(err.contains("policies[0]"), "{r}: {err}");
+        assert!(!err.contains("MARKER-AUSSERHALB"), "{r}: {err}");
+    }
 }
 
 // ------------------------------------------------------------- Minor (#234)

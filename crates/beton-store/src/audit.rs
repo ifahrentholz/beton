@@ -393,6 +393,26 @@ impl Store {
     }
 
     /// Eine Seite des Audit-Logs, neueste zuerst.
+    /// Gibt es einen versiegelten Eintrag `action` zur Session `session`? Z. B. die
+    /// Bestätigung von `backend: none` (SBX-006), die für Resume weiter gilt.
+    pub async fn audit_has_session_entry(
+        &self,
+        org: OrgId,
+        action: &str,
+        session: SessionId,
+    ) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT seq FROM audit_entries WHERE org_id = ? AND seq IS NOT NULL AND action = ? \
+             AND session_id = ? LIMIT 1",
+        )
+        .bind(org.to_string())
+        .bind(action)
+        .bind(session.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
     pub async fn audit_page(&self, org: OrgId, query: &AuditQuery) -> Result<AuditPage> {
         let limit = query.limit.clamp(1, 1000);
         let rows = sqlx::query(&format!(

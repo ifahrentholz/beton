@@ -1,0 +1,20 @@
+# Policy-Test (POL-026, QA-004): Agent-Ebene der Hierarchie (AGT-014) mit Inline-Regeln und
+# einer Policy-Datei per `ref`. Der Agent verschärft, kann aber nichts aufheben.
+spec_version: 1
+layers:
+  project: [fixtures/deny-push.yaml]
+  agent: [fixtures/agents/lax/agent.yaml]
+harness: claude
+cases:
+  - name: "AGT-014 AC2: Agent-allow hebt Projekt-deny nicht auf"
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push origin feature" } } }
+    expect: { outcome: deny, rules: [no-push] }
+  - name: "AGT-014: Regel per ref verschärft (Force-Push)"
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git push --force origin feature" } } }
+    expect: { outcome: deny, rules: [lax-git/force-push] }
+  - name: "AGT-014: Inline-Regel greift, wo keine höhere Ebene widerspricht"
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "git status" } } }
+    expect: { outcome: allow }

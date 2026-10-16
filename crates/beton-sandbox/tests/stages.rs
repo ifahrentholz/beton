@@ -252,6 +252,35 @@ fn sbx_002_stage_one_gets_exec_access_xdg_and_session_marker() {
     assert_eq!(err.code(), "invalid_spec", "{err}");
 }
 
+/// #206: Hook-Socket, MCP-Hub und ihre Token-Dateien liegen im Laufzeitverzeichnis der Stufe 1.
+/// Stufe 1 liest es und verbindet sich mit Sockets darin; Stufe 2 bekommt es nie.
+#[test]
+fn sbx_002_stage_one_runtime_dir_for_hook_and_mcp_sockets() {
+    let e = env();
+    let runtime = e.root.join("run");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let mut ctx = e.ctx(Stage::Harness);
+    ctx.harness = beton_sandbox::masks::harness_grants("claude");
+    ctx.runtime = Some(runtime.clone());
+    for backend in [ProviderId::Seatbelt, ProviderId::Landlock] {
+        let p = res(backend, "{}\n", &ctx);
+        assert!(
+            p.read_roots.contains(&runtime),
+            "{backend}: {:?}",
+            p.read_roots
+        );
+        assert!(!p.write_roots.contains(&runtime), "{backend}");
+        assert_eq!(p.unix_socket_dirs, vec![runtime.clone()], "{backend}");
+    }
+    let mut tools = e.ctx(Stage::Tools);
+    tools.runtime = Some(runtime);
+    let err = resolve(ProviderId::Seatbelt, &SandboxSpec::default(), &tools).unwrap_err();
+    assert_eq!(err.code(), "invalid_spec", "{err}");
+    // Ohne Laufzeitverzeichnis gibt es keine Socket-Verzeichnisse.
+    let p = res(ProviderId::Seatbelt, "{}\n", &e.ctx(Stage::Harness));
+    assert!(p.unix_socket_dirs.is_empty());
+}
+
 #[test]
 fn sbx_002_shared_exchange_and_programs_are_granted() {
     let e = env();

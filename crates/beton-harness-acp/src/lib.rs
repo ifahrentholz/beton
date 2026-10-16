@@ -157,8 +157,9 @@ async fn initialize(rpc: &RpcClient, timeout: Duration) -> Result<Value, Harness
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
-                // fs/* und terminal/* erst mit der Tool-Sandbox (SBX-002, ab M2).
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
+                // `fs/write_text_file` führt beton selbst aus, geprüft wie jedes Schreiben (POL-023
+                // AC2, HAR-007 AC2); Lesen und `terminal/*` folgen.
+                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": true}, "terminal": false},
                 "clientInfo": {"name": "beton", "version": env!("CARGO_PKG_VERSION")},
             }),
             timeout,
@@ -372,6 +373,9 @@ impl HarnessAdapter for AcpAdapter {
                 process: process.clone(),
                 closing: closing.clone(),
                 cancel: cancel.clone(),
+                workdir: spec.workdir.clone(),
+                write_policy: ctx.stage.as_ref().and_then(|s| s.harness_policy.clone()),
+                fs_calls: Arc::default(),
             },
         ));
         Ok(Box::new(AcpSession {
@@ -583,6 +587,13 @@ struct Dispatcher {
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<AtomicBool>,
     cancel: Arc<Notify>,
+    /// Arbeitsverzeichnis der Session; `fs/write_text_file` schreibt nur darin.
+    workdir: std::path::PathBuf,
+    /// Policy der Stufe 1: `fs/write_text_file` schreibt nur, was der Harness-Prozess selbst
+    /// schreiben dürfte (Security-Review #327).
+    write_policy: Option<Arc<beton_sandbox::ResolvedPolicy>>,
+    /// Laufende Nummer für Call-IDs der Client-Aufrufe (`fs-<n>`).
+    fs_calls: Arc<std::sync::atomic::AtomicU64>,
 }
 
 async fn send_all(
@@ -630,6 +641,8 @@ async fn dispatch(mut incoming: mpsc::Receiver<Incoming>, d: Dispatcher) {
             } => {
                 if method == "session/request_permission" {
                     permission(&d, &id, &params, raw).await;
+                } else if method == "fs/write_text_file" {
+                    fs_write(&d, &id, &params).await;
                 } else {
                     // fs/* und terminal/* erst mit der Tool-Sandbox (SBX-002, ab M2).
                     if !(method.starts_with("fs/") || method.starts_with("terminal/")) {
@@ -728,21 +741,27 @@ fn turn_end(d: &Dispatcher, turn_id: TurnId, result: Result<Value, RpcError>) ->
     }
 }
 
-/// Wählt die Option eines Permission-Requests: nie automatisch „immer“, wenn „einmal“ geht.
-fn option_for(options: &Value, allow: bool) -> Option<String> {
-    let wanted: &[&str] = if allow {
-        &["allow_once", "allow_always"]
-    } else {
-        &["reject_once", "reject_always"]
-    };
-    wanted.iter().find_map(|kind| {
-        options
-            .as_array()?
-            .iter()
-            .find(|o| o["kind"] == *kind)
-            .and_then(|o| o["optionId"].as_str().map(str::to_owned))
-    })
+/// Option eines Permission-Requests der Art `kind`.
+fn option_of(options: &Value, kind: &str) -> Option<String> {
+    options
+        .as_array()?
+        .iter()
+        .find(|o| o["kind"] == kind)
+        .and_then(|o| o["optionId"].as_str().map(str::to_owned))
 }
+
+/// Antwort auf einen Permission-Request (POL-023 AC1): nur einmalige Optionen, nie „immer“,
+/// damit jede weitere Aktion erneut geprüft wird. Ohne `allow_once` lehnt beton einmalig ab.
+/// Liefert die Option (`None`: abbrechen) und ob der Call damit erlaubt ist.
+fn choose(options: &Value, allow: bool) -> (Option<String>, bool) {
+    if allow && let Some(o) = option_of(options, "allow_once") {
+        return (Some(o), true);
+    }
+    (option_of(options, "reject_once"), false)
+}
+
+/// JSON-RPC-Fehler, wenn eine beton-Policy einen Client-Aufruf (`fs/*`) ablehnt.
+const POLICY_DENIED: i64 = -32001;
 
 /// `session/request_permission` → Gate (HAR-007, POL-023 ab M2).
 async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJson>) {
@@ -785,18 +804,16 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
         },
         Some(Ok(GateDecision::Deny { .. })) | Some(Err(_)) => (false, false),
     };
-    // Nie automatisch „immer erlauben“, wenn „einmal“ geht (POL-023).
-    let option = if cancelled {
-        None
+    // Nur einmalige Optionen, nie „immer erlauben“ (POL-023 AC1).
+    let (option, allow) = if cancelled {
+        (None, false)
     } else {
-        option_for(&params["options"], allow)
+        choose(&params["options"], allow)
     };
     let response = match &option {
         Some(option) => json!({"outcome": {"outcome": "selected", "optionId": option}}),
         None => json!({"outcome": {"outcome": "cancelled"}}),
     };
-    // Ohne passende Erlauben-Option bleibt es eine Ablehnung.
-    let allow = allow && option.is_some();
     let started = {
         let mut st = d.state.lock().await;
         if allow {
@@ -808,6 +825,172 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
     };
     let _ = d.rpc.respond(id, response).await;
     send_all(&d.tx, started.into_iter().collect(), None, turn).await;
+}
+
+/// Ziel eines `fs/write_text_file`, wenn es im Arbeitsverzeichnis liegt: absoluter Pfad, das
+/// Elternverzeichnis existiert und liegt (aufgelöst) im Workspace, das Ziel ist kein Symlink.
+/// Nie unter einer Pfadkomponente `.git` (Groß/klein egal; Hooks, Konfiguration, die
+/// `.git`-Datei eines Worktrees, SBX-003 AC4); mit `policy` nur, was Stufe 1 selbst schreiben
+/// darf (Masken, nur lesbare Teilbäume, Security-Review #327).
+fn write_target(
+    workdir: &std::path::Path,
+    raw: &str,
+    policy: Option<&beton_sandbox::ResolvedPolicy>,
+) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+        return None;
+    }
+    let root = workdir.canonicalize().ok()?;
+    let parent = path.parent()?.canonicalize().ok()?;
+    if !parent.starts_with(&root) {
+        return None;
+    }
+    let target = parent.join(path.file_name()?);
+    if target
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+    {
+        return None;
+    }
+    if policy.is_some_and(|p| !p.may_write(&target)) {
+        return None;
+    }
+    if std::fs::symlink_metadata(&target).is_ok_and(|m| !m.is_file()) {
+        return None;
+    }
+    Some(target)
+}
+
+/// Schreibt `content` ohne Symlinks zu folgen (O_NOFOLLOW).
+fn write_no_follow(target: &std::path::Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        o.custom_flags(libc::O_NOFOLLOW);
+    }
+    o.open(target)?.write_all(content.as_bytes())
+}
+
+/// `fs/write_text_file` (POL-023 AC2, HAR-007 AC2): unabhängig von Permission-Requests als
+/// Datei-Schreiben vor der Ausführung durch das Gate (`path_guard`, volles Gate), nur im
+/// Arbeitsverzeichnis; jede Ablehnung ist ein JSON-RPC-Fehler (fail closed).
+async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
+    let (Some(raw), Some(content)) = (params["path"].as_str(), params["content"].as_str()) else {
+        let _ = d
+            .rpc
+            .respond_error(id, codes::INVALID_PARAMS, "`path` und `content` fehlen")
+            .await;
+        return;
+    };
+    let Some(target) = write_target(&d.workdir, raw, d.write_policy.as_deref()) else {
+        let _ = d
+            .rpc
+            .respond_error(
+                id,
+                codes::INVALID_PARAMS,
+                "beton schreibt per fs/write_text_file nur im Arbeitsverzeichnis der Session und \
+                 nur, was die Sandbox des Agents erlaubt (nie unter `.git`)",
+            )
+            .await;
+        return;
+    };
+    let n = d.fs_calls.fetch_add(1, Ordering::SeqCst) + 1;
+    let call_id = format!("fs-{n}");
+    let turn = d.state.lock().await.turn;
+    // Das Gate prüft den aufgelösten Pfad, in den beton schreibt, nicht den Rohpfad.
+    let args = json!({ "path": target.display().to_string() });
+    send_all(
+        &d.tx,
+        vec![EventPayload::ToolCallRequested(
+            beton_core::event::ToolCallRequested {
+                call_id: call_id.clone(),
+                tool: "fs/write_text_file".into(),
+                kind: Some("file_write".into()),
+                mcp_server: None,
+                args: args.clone(),
+                source: beton_core::event::ToolSource::Acp,
+                parent_call_id: None,
+            },
+        )],
+        None,
+        turn,
+    )
+    .await;
+    let request = GateRequest {
+        turn_id: turn,
+        call_id: call_id.clone(),
+        tool: "fs/write_text_file".into(),
+        kind: "file_write".into(),
+        args,
+        mcp_server: None,
+        acp_kind: Some("edit".into()),
+        origin: GateOrigin::PreTool,
+        raw: None,
+    };
+    let decision = tokio::time::timeout(d.gate_timeout, d.gate.decide(request)).await;
+    let denied = match decision {
+        Ok(GateDecision::Allow { updated_args: None }) => None,
+        Ok(GateDecision::Allow { .. }) => {
+            Some("geänderte Argumente kann beton hier nicht übernehmen".to_owned())
+        }
+        Ok(GateDecision::Deny { reason }) => {
+            Some(reason.unwrap_or_else(|| "von der beton-Policy abgelehnt".into()))
+        }
+        Err(_) => Some("Gate antwortet nicht".to_owned()),
+    };
+    let (status, result) = match &denied {
+        Some(reason) => {
+            let _ = d.rpc.respond_error(id, POLICY_DENIED, reason).await;
+            (beton_core::event::ToolStatus::Denied, json!(reason))
+        }
+        None => {
+            send_all(
+                &d.tx,
+                vec![EventPayload::ToolCallStarted(
+                    beton_core::event::ToolCallStarted {
+                        call_id: call_id.clone(),
+                        sandbox_stage: None,
+                        args: None,
+                    },
+                )],
+                None,
+                turn,
+            )
+            .await;
+            match write_no_follow(&target, content) {
+                Ok(()) => {
+                    let _ = d.rpc.respond(id, Value::Null).await;
+                    (beton_core::event::ToolStatus::Ok, json!("geschrieben"))
+                }
+                Err(e) => {
+                    let _ = d
+                        .rpc
+                        .respond_error(id, codes::INTERNAL_ERROR, &format!("schreiben: {e}"))
+                        .await;
+                    (beton_core::event::ToolStatus::Error, json!(e.to_string()))
+                }
+            }
+        }
+    };
+    send_all(
+        &d.tx,
+        vec![EventPayload::ToolCallCompleted(
+            beton_core::event::ToolCallCompleted {
+                call_id,
+                status,
+                result: Some(result),
+                result_ref: None,
+                duration_ms: 0,
+            },
+        )],
+        None,
+        turn,
+    )
+    .await;
 }
 
 /// Eine laufende ACP-Session.
@@ -963,6 +1146,31 @@ impl HarnessSession for AcpSession {
 mod tests {
     use super::*;
 
+    /// POL-023 AC1: beton antwortet nur mit einer einmaligen Option, nie mit „immer“; ohne
+    /// `allow_once` lehnt es einmalig ab, statt `allow_always` zu wählen.
+    #[test]
+    fn pol_023_ac1_only_once_options_are_ever_chosen() {
+        let all = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "o", "kind": "allow_once"},
+            {"optionId": "r", "kind": "reject_once"},
+            {"optionId": "ra", "kind": "reject_always"},
+        ]);
+        assert_eq!(choose(&all, true), (Some("o".into()), true));
+        assert_eq!(choose(&all, false), (Some("r".into()), false));
+        let always_only = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "r", "kind": "reject_once"},
+        ]);
+        assert_eq!(choose(&always_only, true), (Some("r".into()), false));
+        let no_once = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "ra", "kind": "reject_always"},
+        ]);
+        assert_eq!(choose(&no_once, true), (None, false));
+        assert_eq!(choose(&no_once, false), (None, false));
+    }
+
     #[test]
     fn permission_options_never_pick_always_first() {
         let options = json!([
@@ -970,9 +1178,9 @@ mod tests {
             {"optionId": "o", "kind": "allow_once"},
             {"optionId": "r", "kind": "reject_once"},
         ]);
-        assert_eq!(option_for(&options, true).as_deref(), Some("o"));
-        assert_eq!(option_for(&options, false).as_deref(), Some("r"));
-        assert_eq!(option_for(&json!([]), true), None);
+        assert_eq!(choose(&options, true).0.as_deref(), Some("o"));
+        assert_eq!(choose(&options, false).0.as_deref(), Some("r"));
+        assert_eq!(choose(&json!([]), true), (None, false));
     }
 }
 

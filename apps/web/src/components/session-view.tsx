@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
-import type { Capabilities, HarnessInfo, PermissionMode } from '@beton/sdk'
+import type { Capabilities, HarnessInfo, PermissionMode, SessionSandbox } from '@beton/sdk'
 import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
@@ -43,6 +43,7 @@ function useMeta(sessionId: string) {
     let effort: string | null | undefined
     let permissionMode: PermissionMode | null | undefined
     let capabilities: Capabilities | undefined
+    let sandbox: SessionSandbox | undefined
     let status = summary?.status ?? 'starting'
     for (const e of events ?? []) {
       const created = payloadOf(e, 'session.created')
@@ -53,7 +54,10 @@ function useMeta(sessionId: string) {
         permissionMode = created.permission_mode as PermissionMode | undefined
       }
       const started = payloadOf(e, 'session.started')
-      if (started) capabilities = started.capabilities as unknown as Capabilities
+      if (started) {
+        capabilities = started.capabilities as unknown as Capabilities
+        sandbox = started.sandbox
+      }
       const st = payloadOf(e, 'session.status')
       if (st) status = st.status
       // Wirksame Einstellungen: der letzte Stand aus `session.settings_changed` (HAR-017, HAR-027).
@@ -64,7 +68,7 @@ function useMeta(sessionId: string) {
     }
     // Titel des Users gewinnt gegen später erzeugte (UX-009 AC2).
     const { title, source } = titleFrom(summary, events)
-    return { harness, model, effort, permissionMode, capabilities, title, titleSource: source, status }
+    return { harness, model, effort, permissionMode, capabilities, sandbox, title, titleSource: source, status }
   }, [events, summary])
 }
 
@@ -350,6 +354,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         effort={meta.effort}
         permissionMode={meta.permissionMode}
         capabilities={meta.capabilities}
+        sandbox={meta.sandbox}
         running={running}
         continueWith={targets}
         onContinue={meta.harness ? continueWith : undefined}

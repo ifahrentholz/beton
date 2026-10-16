@@ -6,7 +6,7 @@ test('WEB-001 AC1: `beton run` druckt eine URL, unter der die Session live sicht
     'live',
     `turns:\n  - expect_input: "hallo"\n    emit:\n      - { message_delta: "Erster Teil. ", chunk: 4, chunk_delay_ms: 30 }\n      - { message_delta: "Zweiter Teil.", chunk: 4, delay_ms: 2500 }\n`,
   )
-  const run = spawn(BETON, ['run', 'fake', '--scenario', scenario, '-p', 'hallo'], {
+  const run = spawn(BETON, ['run', '--unsandboxed', 'fake', '--scenario', scenario, '-p', 'hallo'], {
     env: daemon.env(),
     cwd: daemon.work,
   })

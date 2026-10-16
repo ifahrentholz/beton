@@ -9,6 +9,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -82,6 +84,7 @@ impl Env {
         }
         let runners = dir.path().join("runners");
         let daemon = start_with(cfg, store.clone(), move |mut r| {
+            r.sessions.sandbox = support::unsandboxed();
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -105,7 +108,9 @@ impl Env {
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -751,4 +756,109 @@ async fn agt_011_plan_mode_of_the_agent_is_binding_exit_plan_mode_is_denied() {
         answers(&events)
     );
     env.daemon.shutdown().await;
+}
+
+// --------------------------------------------------------------------------- AGT-014
+
+/// AGT-014 AC1: Eine Inline-Regel `git_guard` im Agent wirkt als Agent-Ebene und erscheint so
+/// in der Entscheidung und ihrer Erklärung (`beton policy explain`, POL-027).
+#[tokio::test]
+async fn agt_014_ac1_agent_git_guard_has_scope_agent_in_decision_and_explain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scenario = sc(
+        tmp.path(),
+        "push.yaml",
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"git push origin feature\" } }, gate: true }\n      - { on_gate: { allow: [{ tool_result: ok }], deny: [{ message: \"nicht gepusht\" }] } }\n",
+    );
+    let env = Env::start(&[claude_path(&scenario)], |dir| {
+        write(
+            &dir.join("work/.beton/agents/vorsichtig/agent.yaml"),
+            "spec_version: 1\nname: vorsichtig\nexecutor: { harness: claude }\ninstructions: { text: \"Pushe nie.\", project_files: none }\npolicies:\n  - { id: agent-git, type: git_guard, params: { push: deny } }\n",
+        );
+    })
+    .await;
+    let (status, s) = env.create_agent(json!({"agent": "vorsichtig"})).await;
+    assert_eq!(status, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let events = env.turn(&id, "los").await;
+    let text = serde_json::to_string(&events).unwrap();
+    let decision = events
+        .iter()
+        .find(|e| {
+            e["type"] == "policy.decision"
+                && e["payload"]["phase"] == "tool_call"
+                && e["payload"]["outcome"] == "deny"
+        })
+        .unwrap_or_else(|| panic!("keine Ablehnung: {text}"));
+    let matched = decision["payload"]["matched"].as_array().unwrap();
+    assert!(
+        matched.iter().any(|m| m["scope"] == "agent"
+            && m["rule_id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("agent-git")),
+        "{decision}"
+    );
+    let seq = decision["seq"].as_u64().unwrap();
+    let start = Instant::now();
+    loop {
+        let (status, ex) = env
+            .http(
+                "GET",
+                &format!("/v1/sessions/{id}/policy-decisions/{seq}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{ex}");
+        if ex["snapshot_error"].is_null() {
+            let explain = ex["explain"].as_str().unwrap_or_default();
+            assert!(explain.contains("agent"), "{explain}");
+            assert!(ex["explanation"].to_string().contains("\"agent\""), "{ex}");
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{ex}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// AGT-014 AC3: Verlangt der Agent eine Sandbox, die auf dem Host nicht verfügbar ist, startet
+/// er nicht (`sandbox_unavailable`), auch nicht ohne Sandbox.
+#[tokio::test]
+async fn agt_014_ac3_agent_with_unavailable_sandbox_requirement_does_not_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scenario = sc(
+        tmp.path(),
+        "ok.yaml",
+        "turns:\n  - emit: [{ message: ok }]\n",
+    );
+    // Das Backend des jeweils anderen Betriebssystems.
+    let other = if cfg!(target_os = "macos") {
+        "landlock"
+    } else {
+        "seatbelt"
+    };
+    let env = Env::start(&[claude_path(&scenario)], move |dir| {
+        write(
+            &dir.join("work/.beton/agents/abgeschottet/agent.yaml"),
+            &format!(
+                "spec_version: 1\nname: abgeschottet\nexecutor: {{ harness: claude }}\ninstructions: {{ text: \"x\", project_files: none }}\nsandbox: {{ backend: {other}, allow_network: false }}\n"
+            ),
+        );
+    })
+    .await;
+    let (status, s) = env.create_agent(json!({"agent": "abgeschottet"})).await;
+    let text = s.to_string();
+    if status == 201 {
+        let id = s["id"].as_str().unwrap().to_owned();
+        let events = env
+            .wait_for(&id, |e| {
+                e["type"] == "session.status" && e["payload"]["status"] == "failed"
+            })
+            .await;
+        let text = serde_json::to_string(&events).unwrap();
+        assert!(text.contains("sandbox_unavailable"), "{text}");
+        assert!(of_type(&events, "harness.ready").is_empty(), "{text}");
+    } else {
+        assert!(text.contains("sandbox_unavailable"), "{status}: {text}");
+    }
 }

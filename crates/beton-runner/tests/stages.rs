@@ -58,6 +58,7 @@ fn input<'a>(fx: &'a Fx, harness: &'a str, iso: ToolIsolation) -> StageInput<'a>
         .collect(),
         program: None,
         events: None,
+        violations: None,
     }
 }
 
@@ -203,17 +204,26 @@ async fn har_015_ac4_api_key_harness_sees_only_a_placeholder_and_its_host_via_mi
 }
 
 #[tokio::test]
-async fn sbx_002_without_explicit_backend_sessions_stay_on_backend_none_until_wp49() {
+async fn sbx_006_the_sandbox_is_required_by_default() {
+    // SBX-006: Ohne `backend` gilt `auto`; nur ausdrücklich `none` läuft ohne Stufen.
     let fx = fx();
-    for yaml in ["{}\n", "backend: none\n", "preset: dev\n"] {
+    for yaml in ["{}\n", "preset: dev\n"] {
         let s = compose(
             input(&fx, "claude", ToolIsolation::ShellOverride),
             opts(yaml, true),
         )
         .await
         .unwrap();
-        assert!(s.is_none(), "{yaml}");
+        let s = s.unwrap_or_else(|| panic!("ohne Stufen: {yaml}"));
+        assert_ne!(s.harness.policy().backend, beton_sandbox::ProviderId::None);
     }
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: none\n", true),
+    )
+    .await
+    .unwrap();
+    assert!(s.is_none());
 }
 
 #[tokio::test]
@@ -454,6 +464,93 @@ async fn prx_005_prx_008_one_proxy_instance_per_stage_passthrough_only_in_stage_
     assert!(s.env.shim_dir.join("bt-exec-bash").exists());
 }
 
+/// SBX-006 AC3: Endet der Proxy der Session, scheitert der nächste Netzwerkzugriff aus Stufe 2
+/// (kein Direktzugriff), das Stufenmodell meldet den Verlust, und nach `halt` startet keine
+/// neue Tool-Ausführung mehr.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_006_ac3_without_proxy_stage_two_has_no_network_and_the_loss_is_reported() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "fake", ToolIsolation::Beton),
+        opts("backend: auto\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let curl = |s: &beton_runner::stages::SessionStages| {
+        s.tools.spawn(
+            CommandSpec::new("/bin/sh")
+                .args([
+                    "-c",
+                    "curl -s -o /dev/null -m 10 -w '%{http_code}' http://blocked.example/ ; echo",
+                ])
+                .cwd(&fx.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+    };
+    // Mit Proxy: Der Proxy lehnt den nicht erlaubten Host ab (403).
+    let out = curl(&s)
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "403",
+        "{out:?}"
+    );
+    let down = s.proxy_down();
+    s.kill_proxies();
+    tokio::time::timeout(Duration::from_secs(5), down)
+        .await
+        .expect("Verlust des Proxys wird gemeldet");
+    // Ohne Proxy: keine Verbindung, auch kein Direktzugriff.
+    let out = curl(&s)
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "000",
+        "{out:?}"
+    );
+    // Nach `halt` keine neue Tool-Ausführung (fail closed).
+    s.halt("proxy_down");
+    let err = curl(&s).unwrap_err();
+    assert_eq!(err.code(), "sandbox_unavailable", "{err}");
+}
+
+/// #206: Hook-Socket, MCP-Hub, Token-Dateien und Session-Skills liegen im Laufzeitverzeichnis
+/// der Stufe 1 im Session-Verzeichnis; Stufe 1 liest es und erreicht Sockets darin, Stufe 2
+/// sieht es nicht.
+#[tokio::test]
+async fn sbx_002_runtime_dir_of_stage_one_for_hook_and_mcp() {
+    let fx = fx();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let runtime = s.runtime_dir().to_path_buf();
+    assert!(runtime.is_dir());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&runtime).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+    }
+    let h = s.harness.policy();
+    assert!(h.read_roots.contains(&runtime), "{:?}", h.read_roots);
+    assert!(!h.write_roots.iter().any(|w| runtime.starts_with(w)));
+    assert_eq!(h.unix_socket_dirs, vec![runtime.clone()]);
+    let t = s.tools.policy();
+    assert!(!t.read_roots.iter().any(|r| runtime.starts_with(r)));
+    assert!(t.unix_socket_dirs.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_002_bt_exec_from_stage_one_runs_in_stage_two() {
     let fx = fx();
@@ -631,13 +728,15 @@ fn git_fixture(fx: &Fx) -> PathBuf {
 async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
     let fx = fx();
     let git = git_fixture(&fx);
-    let s = compose(
-        input(&fx, "claude", ToolIsolation::ShellOverride),
-        opts("backend: auto\nallow_network: false\n", true),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    // SBX-013/SBX-014: Verstöße, die das Backend meldet, gehen auch als Event an die Session.
+    let seen: Arc<std::sync::Mutex<Vec<beton_core::event::SandboxViolation>>> = Arc::default();
+    let sink = seen.clone();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.violations = Some(Arc::new(move |v| sink.lock().unwrap().push(v)));
+    let s = compose(inp, opts("backend: auto\nallow_network: false\n", true))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(s.check_git(), Ok(()));
     // Normale git-Arbeit und ein neuer Worktree-Eintrag (parallele Session) sind kein Verstoß.
     std::fs::write(git.join("index.lock"), "x").unwrap();
@@ -692,6 +791,12 @@ async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
         assert!(
             result.as_ref().is_err_and(|e| e.contains(".git/commondir")),
             "{result:?}"
+        );
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.iter()
+                .any(|v| v.kind == beton_core::event::ViolationKind::Fs),
+            "{seen:?}"
         );
     } else {
         assert_eq!(s.check_git(), Ok(()));

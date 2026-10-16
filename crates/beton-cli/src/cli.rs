@@ -229,6 +229,11 @@ pub struct RunArgs {
     /// Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`.
     #[arg(long = "param", value_name = "NAME=WERT")]
     pub params: Vec<String>,
+    /// Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): Sie läuft ohne
+    /// Sandbox, das Audit-Log vermerkt es, YOLO bleibt gesperrt. Ohne die Angabe fragt die CLI
+    /// im Terminal nach; eine User-Policy kann `backend: none` trotzdem verbieten.
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 /// Reasoning-Effort (HAR-017).
@@ -345,6 +350,10 @@ pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
 pub struct ResumeArgs {
     /// Session (ID, eindeutiges Präfix oder `last`).
     pub session: String,
+    /// Bestätigt `sandbox.backend: none` für diese Session, falls sie noch keine Bestätigung
+    /// hat, z. B. eine importierte (SBX-006).
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 #[derive(Debug, Args)]

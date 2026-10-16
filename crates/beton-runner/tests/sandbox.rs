@@ -1,6 +1,7 @@
-//! SBX-001 AC4 im Runner: Der Start des Harness-Prozesses (Fake-CLI hinter dem Claude-Adapter)
-//! meldet genau ein `sandbox.started`. Bis SBX-006 (WP-49) läuft er ausdrücklich über
-//! `backend: none`, sichtbar als `degraded`. Keine echten Vendor-CLIs, kein Netz.
+//! Harness-Prozess (Fake-CLI hinter dem Claude-Adapter) und Sandbox im Runner: SBX-001 AC4
+//! (genau ein `sandbox.started`, mit `backend: none` sichtbar als `degraded`), der
+//! `PreToolUse`-Hook aus Stufe 1 (#206) und YOLO in der Sandbox mit durchgesetzter `deny`-Policy
+//! (HAR-027 AC2). Keine echten Vendor-CLIs, kein Netz.
 
 #![allow(
     clippy::disallowed_methods,
@@ -8,6 +9,8 @@
 )]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
+
+mod support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -32,7 +35,9 @@ struct D {
 impl D {
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -95,10 +100,10 @@ impl D {
             if s["status"] == want {
                 return;
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(20),
-                "Status {want} fehlt: {s}"
-            );
+            if start.elapsed() > Duration::from_secs(20) || s["status"] == "failed" {
+                let events = self.events(id).await;
+                panic!("Status {want} fehlt: {s}\n{events:#?}");
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -117,11 +122,35 @@ fn fake_cli() -> PathBuf {
 }
 
 async fn daemon(dir: &Path) -> D {
-    let sc = dir.join("scenario.yaml");
-    std::fs::write(&sc, "turns:\n  - emit:\n      - { message: \"ok\" }\n").unwrap();
+    daemon_with(
+        dir,
+        "turns:\n  - emit:\n      - { message: \"ok\" }\n",
+        support::unsandboxed(),
+    )
+    .await
+}
+
+async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::SandboxSpec) -> D {
+    daemon_env(dir, scenario, sandbox, &[]).await
+}
+
+async fn daemon_env(
+    dir: &Path,
+    scenario: &str,
+    sandbox: beton_sandbox::SandboxSpec,
+    extra: &[(&str, &str)],
+) -> D {
+    // Im Workspace der Sessions (`<dir>/work`): Die Fake-CLI liest ihr Szenario dort auch aus
+    // der Sandbox (Stufe 1).
+    let sc = dir.join("work/.scenario.yaml");
+    std::fs::create_dir_all(dir.join("work")).unwrap();
+    std::fs::write(&sc, scenario).unwrap();
     let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| !k.ends_with("_API_KEY") && k != "ANTHROPIC_AUTH_TOKEN")
         .collect();
+    for (k, v) in extra {
+        inherit.insert((*k).into(), (*v).into());
+    }
     inherit.insert(
         "BETON_CLAUDE_PATH".into(),
         format!(
@@ -136,6 +165,13 @@ async fn daemon(dir: &Path) -> D {
     cfg.socket = None;
     let runners = dir.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        // Stufenmodell: Die CA kommt aus dem Speicher (Proxy der Stufe 1 für die Vendor-Hosts).
+        if !sandbox.unsandboxed() {
+            r.sessions.proxy_ca = Some(std::sync::Arc::new(support::TestCa));
+        }
+        r.sessions.sandbox = sandbox;
+        // Die Linux-Probe des Daemons braucht einen Launcher mit `__sandbox-exec`.
+        r.sessions.sandbox_launcher = Some(runner_bin().into());
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
         );
@@ -188,5 +224,205 @@ async fn sbx_001_ac4_harness_start_emits_exactly_one_sandbox_started() {
     assert_eq!(p["backend"], "none");
     assert_eq!(p["caps"], json!([]));
     assert_eq!(p["degraded"], true);
+    // Für Clients (Mode-Picker): ohne Sandbox kein Schutz der Tools, kein YOLO.
+    let started = events
+        .iter()
+        .find(|e| e["type"] == "session.started")
+        .unwrap();
+    assert_eq!(
+        started["payload"]["sandbox"],
+        json!({"tool_sandbox": false, "egress_proxy": false})
+    );
+    d.daemon.shutdown().await;
+}
+/// #206, HAR-005: Claude (Fake-CLI) läuft in Stufe 1, der `PreToolUse`-Hook erreicht seinen
+/// Socket und entscheidet; Bash läuft über `bt-exec` in Stufe 2. HAR-027 AC2: Im Modus `yolo`
+/// setzt beton eine `deny`-Policy auf `git push --force` weiter durch.
+#[tokio::test]
+async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denied() {
+    let dir = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo lief\" } }, gate: true, run: true }\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"git push --force origin main\" } }, gate: true, run: true }\n      - { message: \"fertig\" }\n";
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(work.join(".beton/policies")).unwrap();
+    std::fs::write(
+        work.join(".beton/policies/git.yaml"),
+        "spec_version: 1\nname: git\nrules:\n  - id: no-force\n    type: git_guard\n    params: { force_push: deny, push: allow }\n",
+    )
+    .unwrap();
+    let d = daemon_with(
+        dir.path(),
+        scenario,
+        beton_sandbox::SandboxSpec::from_yaml("allow_network: false").unwrap(),
+    )
+    .await;
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "claude", "cwd": work, "permission_mode": "yolo"})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    d.wait_status(&id, "idle").await;
+    let (status, _) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "los"})),
+        )
+        .await;
+    assert_eq!(status, 202);
+    let start = Instant::now();
+    let events = loop {
+        let events = d.events(&id).await;
+        if events
+            .iter()
+            .any(|e| e["type"] == "turn.completed" || e["type"] == "turn.failed")
+        {
+            break events;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            events.iter().map(|e| e["type"].clone()).collect::<Vec<_>>()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let text = serde_json::to_string(&events).unwrap();
+    // Der Status für Clients: Stufe 2 und Proxy aktiv (Mode-Picker, HAR-027).
+    assert!(
+        events.iter().any(|e| e["type"] == "session.started"
+            && e["payload"]["sandbox"] == json!({"tool_sandbox": true, "egress_proxy": true})),
+        "{text}"
+    );
+    // Harness in Stufe 1 mit echtem Backend, das erlaubte Kommando lief in Stufe 2.
+    assert!(
+        events.iter().any(|e| e["type"] == "sandbox.started"
+            && e["payload"]["stage"] == "harness"
+            && e["payload"]["backend"] != "none"),
+        "{text}"
+    );
+    let completed: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "tool.call.completed")
+        .collect();
+    assert_eq!(completed.len(), 2, "{text}");
+    assert_eq!(completed[0]["payload"]["status"], "ok", "{text}");
+    assert!(
+        completed[0]["payload"].to_string().contains("lief"),
+        "{text}"
+    );
+    // Über `bt-exec` und den Exec-Broker in Stufe 2 gestartet.
+    assert!(
+        events.iter().any(|e| e["type"] == "sandbox.started"
+            && e["payload"]["stage"] == "tools"
+            && e["payload"]["backend"] != "none"),
+        "{text}"
+    );
+    // Der Force-Push: vom Hook (volles Gate) per Policy abgelehnt, nicht ausgeführt.
+    assert_eq!(completed[1]["payload"]["status"], "denied", "{text}");
+    let decisions: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["type"] == "policy.decision" && e["payload"]["phase"] == "tool_call")
+        .collect();
+    assert!(
+        decisions.iter().any(|d| d["payload"]["outcome"] == "deny"
+            && d["payload"]["enforcement"] == "full"
+            && d["payload"].to_string().contains("no-force")),
+        "{text}"
+    );
+    assert!(!text.contains("policy_integrity_violation"), "{text}");
+    assert!(!text.contains("sandbox_integrity"), "{text}");
+    d.daemon.shutdown().await;
+}
+
+/// SBX-006 AC3: Endet der Egress-Proxy während der Session (Test-Schalter der Testbuilds), geht
+/// die Session auf `paused` mit `sandbox.violation {kind: proxy_down}`, und neue
+/// Tool-Ausführungen werden abgelehnt.
+#[tokio::test]
+async fn sbx_006_ac3_proxy_down_pauses_the_session_and_rejects_new_tool_calls() {
+    let dir = tempfile::Builder::new()
+        .prefix("bt")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo hallo\" } }, gate: true }\n      - { on_gate: { allow: [{ tool_result: \"hallo\" }], deny: [{ message: \"abgelehnt\" }] } }\n";
+    let d = daemon_env(
+        dir.path(),
+        scenario,
+        beton_sandbox::SandboxSpec::from_yaml("{}").unwrap(),
+        &[("BETON_TEST_SANDBOX_PROXY_DOWN", "1")],
+    )
+    .await;
+    let work = dir.path().join("work");
+    let (status, body) = d
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"target": "fake", "cwd": work, "harness_opts": {"scenario": work.join(".scenario.yaml")}})),
+        )
+        .await;
+    assert_eq!(status, 201, "{body}");
+    let id = body["id"].as_str().unwrap().to_owned();
+    // Der Verlust des Proxys pausiert die Session.
+    let start = Instant::now();
+    loop {
+        let events = d.events(&id).await;
+        let violation = events
+            .iter()
+            .any(|e| e["type"] == "sandbox.violation" && e["payload"]["kind"] == "proxy_down");
+        let paused = events
+            .iter()
+            .any(|e| e["type"] == "session.status" && e["payload"]["status"] == "paused");
+        if violation && paused {
+            break;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{:#?}", events);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Eine neue Tool-Ausführung wird abgelehnt.
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "los"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    let start = Instant::now();
+    let events = loop {
+        let events = d.events(&id).await;
+        if events.iter().any(|e| e["type"] == "tool.call.completed") {
+            break events;
+        }
+        assert!(start.elapsed() < Duration::from_secs(20), "{events:#?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let text = serde_json::to_string(&events).unwrap();
+    let completed = events
+        .iter()
+        .find(|e| e["type"] == "tool.call.completed")
+        .unwrap();
+    assert_eq!(completed["payload"]["status"], "denied", "{text}");
+    assert!(
+        completed["payload"]["result"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("proxy_down"),
+        "{text}"
+    );
+    assert!(
+        events.iter().any(|e| e["type"] == "policy.decision"
+            && e["payload"]["phase"] == "tool_call"
+            && e["payload"]["outcome"] == "deny"
+            && e["payload"]["enforcement"] == "full"),
+        "{text}"
+    );
+    // Die Session bleibt pausiert.
+    let s = d.http("GET", &format!("/v1/sessions/{id}"), None).await.1;
+    assert_eq!(s["status"], "paused", "{s}");
     d.daemon.shutdown().await;
 }

@@ -197,6 +197,15 @@ pub struct Step {
     /// Hook ausgehebelt wurde (Integritätsprüfung, HAR-005, #233).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skip_gate: bool,
+    /// Einen erlaubten `Bash`-Aufruf wirklich ausführen, wie Claude Code über
+    /// `$CLAUDE_CODE_SHELL -c <command>` (im Stufenmodell `bt-exec`, also Stufe 2, SBX-002);
+    /// Ausgabe und Exit-Code sind das Ergebnis. Nur die Fake-CLI (`stream-json`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run: bool,
+    /// Nur ACP-Test-Agent: `fs/write_text_file` beim Client aufrufen (HAR-007, POL-023) und das
+    /// Ergebnis als Nachricht melden (`fs_write ok` bzw. `fs_write error <code>: <text>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_write: Option<WriteFileStep>,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,
@@ -447,6 +456,7 @@ impl Step {
         add(self.hang, "hang");
         add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
+        add(self.fs_write.is_some(), "fs_write");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
         add(self.echo_settings, "echo_settings");

@@ -8,6 +8,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -39,6 +41,7 @@ async fn daemon(dir: &Path, customize: impl FnOnce(Runtime) -> Runtime) -> Daemo
     cfg.socket = None;
     let runners = dir.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider =
             std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners));
         r.sessions.dev = true;
@@ -62,7 +65,9 @@ impl Daemonized {
     /// Einfacher HTTP/1.1-Client (keine weitere Abhängigkeit nötig).
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -596,6 +601,7 @@ async fn ses_003_ac3_input_resumes_while_the_stopped_runner_is_still_exiting() {
     let dir = tmp();
     let runners = dir.path().join("runners");
     let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(Lingering(LocalProvider::new(
             vec![runner_bin().into()],
             runners,
@@ -753,6 +759,7 @@ async fn daemon_capturing(dir: &Path, idle: Option<Duration>) -> (Daemonized, Ca
     let capture = Capture::new(dir.join("runners"));
     let provider = capture.clone();
     let d = daemon(dir, move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(provider);
         if let Some(idle) = idle {
             r.tunnel.idle_timeout = idle;
@@ -873,6 +880,7 @@ async fn ses_003_ac3_runner_slower_than_the_wait_is_not_aborted() {
     let capture = Capture::new(dir.path().join("runners"));
     let provider = capture.clone();
     let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(provider);
         r.sessions.connect_timeout = Duration::from_secs(1);
         r.tunnel.idle_timeout = Duration::from_millis(300);
@@ -915,6 +923,7 @@ async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budg
     let capture = Capture::new(dir.path().join("runners"));
     let provider = capture.clone();
     let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(provider);
         r.sessions.connect_timeout = Duration::from_millis(500);
         r.sessions.start_budget = Duration::from_secs(3);
@@ -1206,6 +1215,7 @@ async fn har_002_ac2_incompatible_cli_fails_the_session_with_event() {
     inherit.insert("BETON_CLAUDE_PATH".into(), cli.display().to_string());
     let runners = dir.path().join("runners");
     let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
         );
@@ -1296,6 +1306,7 @@ async fn har_004_claude_adapter_runs_a_turn_through_the_runner() {
     );
     let runners = dir.path().join("runners");
     let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
         );

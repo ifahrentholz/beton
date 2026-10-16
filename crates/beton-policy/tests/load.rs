@@ -751,3 +751,144 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
         );
     }
 }
+
+// --------------------------------------------------------------- AGT-014: nur verschärfen
+
+/// AGT-014 (Klasse „Lockerung von unten“, #268): Effects einer Agent-Regel schreiben nur
+/// eigenen Zustand (`agent/<set>/…`, Scope `session` bzw. `run`), nie Zähler oder Freigaben
+/// der User-Ebene (`user`, `user_day`) oder fremde Keys.
+#[test]
+fn agt_014_agent_effects_only_touch_own_session_state() {
+    let effect = |scope: &str, key: &str| {
+        vec![json!({ "id": "e", "on": "tool_call", "action": "allow",
+                     "effects": [{ "op": "delete", "scope": scope, "key": key }] })]
+    };
+    for (scope, key) in [
+        ("user_day", "pushes"),
+        ("user", "agent/a/x"),
+        ("session", "pushes"),
+        ("run", "loop/abc"),
+    ] {
+        let err = inline_set(
+            Scope::Agent,
+            "a",
+            "agents/a/agent.yaml",
+            &effect(scope, key),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("policies[0].effects[0]"),
+            "{scope}/{key}: {err}"
+        );
+    }
+    inline_set(
+        Scope::Agent,
+        "a",
+        "agents/a/agent.yaml",
+        &effect("session", "agent/a/zaehler"),
+    )
+    .unwrap();
+    // Die User-Ebene darf das weiterhin.
+    let text = "spec_version: 1\nname: u\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{ op: delete, scope: user_day, key: pushes }]\n";
+    parse_set(Scope::User, "u.yaml", text).unwrap();
+}
+
+/// AGT-014: Eine Agent-Regel lässt nach Ablauf einer Rückfrage nie automatisch zu
+/// (`on_timeout: allow` wäre eine Lockerung gegenüber höheren `ask`-Regeln).
+#[test]
+fn agt_014_agent_ask_never_allows_on_timeout() {
+    let rules = vec![json!({ "id": "q", "on": "tool_call", "action": "ask",
+                             "approval": { "timeout": "1s", "on_timeout": "allow" } })];
+    let err = inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap_err();
+    assert!(
+        err.message.contains("policies[0].approval.on_timeout"),
+        "{err}"
+    );
+    let rules = vec![json!({ "id": "q", "on": "tool_call", "action": "ask",
+                             "approval": { "timeout": "1s", "on_timeout": "deny" } })];
+    inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap();
+}
+
+/// Security-Review #327 (Minor 4): Der Präfix `agent/` gehört dem Zustand der Agent-Ebene;
+/// Regeln anderer Ebenen schreiben ihn nicht (sonst setzten sie Zähler eines Agents).
+#[test]
+fn agt_014_agent_state_prefix_is_reserved_for_the_agent_level() {
+    for scope in [Scope::User, Scope::Project] {
+        let text = "spec_version: 1\nname: u\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{ op: set, scope: session, key: agent/a/zaehler, value: \"0\" }]\n";
+        let err = parse_set(scope, "u.yaml", text).unwrap_err();
+        assert!(err.message.contains("agent/"), "{scope:?}: {err}");
+    }
+}
+
+/// Security-Review #327 (Minor 3): `policies[].ref` bleibt lexikalisch im Agent-Verzeichnis;
+/// `..` und absolute Pfade werden gar nicht erst gelesen.
+#[test]
+fn agt_014_policy_refs_outside_the_agent_dir_are_not_read() {
+    for r in ["../x.yaml", "/etc/passwd", "policies/../../x.yaml", "", "."] {
+        let entries = vec![json!({ "ref": r })];
+        let err = beton_policy::load::agent_sets(
+            Scope::Agent,
+            "a",
+            "agents/a/agent.yaml",
+            &entries,
+            |rel| panic!("{rel} gelesen"),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("policies[0].ref"), "{r}: {err}");
+    }
+}
+
+/// POL-001: Unbekannte Tool-Klassen in `kinds` sind ein Ladefehler mit Feldpfad.
+#[test]
+fn pol_001_unknown_tool_kind_is_a_load_error() {
+    let text = "spec_version: 1\nname: k\nrules:\n  - id: k\n    on: tool_call\n    kinds: [shell, zauberei]\n    action: deny\n";
+    let err = parse_set(Scope::User, "k.yaml", text).unwrap_err();
+    assert!(err.message.contains("kinds[1]"), "{err}");
+    assert!(err.message.contains("zauberei"), "{err}");
+}
+
+/// AGT-014: Mehrere `ref`s und Inline-Regeln: Das Inline-Set steht vorn, die Dateien folgen in
+/// ihrer Reihenfolge; Lesefehler nennen den Eintrag.
+#[test]
+fn agt_014_agent_sets_order_and_read_errors() {
+    let file =
+        "spec_version: 1\nname: extra\nrules:\n  - id: e\n    on: tool_call\n    action: deny\n";
+    let entries = vec![
+        json!({ "ref": "policies/extra.yaml" }),
+        json!({ "id": "inline", "on": "tool_call", "action": "deny" }),
+    ];
+    let sets =
+        beton_policy::load::agent_sets(Scope::Agent, "a", "agents/a/agent.yaml", &entries, |_| {
+            Ok(file.to_owned())
+        })
+        .unwrap();
+    assert_eq!(sets.len(), 2);
+    assert_eq!(sets[0].name, "a");
+    assert_eq!(sets[1].name, "extra");
+    let err =
+        beton_policy::load::agent_sets(Scope::Agent, "a", "agents/a/agent.yaml", &entries, |_| {
+            Err("nicht da".into())
+        })
+        .unwrap_err();
+    assert!(err.message.contains("policies[0].ref: nicht da"), "{err}");
+    assert!(err.file.contains("policies/extra.yaml"), "{err}");
+}
+
+/// POL-001: Felder, die nur zu einer bestimmten Aktion oder einem Regeltyp gehören, sind
+/// außerhalb davon Ladefehler mit Feldpfad.
+#[test]
+fn pol_001_fields_outside_their_action_are_load_errors() {
+    for (rule, field) in [
+        ("action: deny\n    params: { limit_usd: 1 }\n", "params"),
+        ("action: deny\n    modify: { model: x }\n", "modify"),
+        ("action: modify\n    modify: {}\n", "modify"),
+        ("action: modify\n    modify: { args: 3 }\n", "modify.args"),
+        ("action: deny\n    on_unsupported: deny\n", "on_unsupported"),
+        ("action: deny\n    notify: { channels: [log] }\n", "notify"),
+    ] {
+        let text =
+            format!("spec_version: 1\nname: f\nrules:\n  - id: f\n    on: tool_call\n    {rule}");
+        let err = parse_set(Scope::User, "f.yaml", &text).unwrap_err();
+        assert!(err.message.contains(field), "{rule}: {err}");
+    }
+}

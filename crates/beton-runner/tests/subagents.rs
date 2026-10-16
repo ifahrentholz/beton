@@ -11,6 +11,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -105,6 +107,7 @@ impl Env {
         let worktrees = dir.path().join("worktrees");
         let user = opts.harnesses_user;
         let daemon = start_with(cfg, store.clone(), move |mut r| {
+            r.sessions.sandbox = support::unsandboxed();
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -130,7 +133,9 @@ impl Env {
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -528,7 +533,13 @@ async fn agt_009_child_takes_effort_and_mode_from_its_executor_and_never_yolo() 
     let id = env.run_agent("lead", "los").await;
     let events = env.first_turn(&id).await;
     let results = tool_results(&events, "session_spawn");
-    assert!(results[0].contains("sandbox_required"), "{}", results[0]);
+    // Ein Sub-Agent aus dem Repository schaltet YOLO nicht selbst ein (AGT-014, #258 R7);
+    // ohne Sandbox ginge es ohnehin nicht (`sandbox_required`).
+    assert!(
+        results[0].contains("agent_invalid") || results[0].contains("sandbox_required"),
+        "{}",
+        results[0]
+    );
     assert!(results[1].contains("gelesen"), "{}", results[1]);
     let all = nodes(&env.tree(&id).await);
     assert_eq!(all.len(), 2, "kein Child für yolo");

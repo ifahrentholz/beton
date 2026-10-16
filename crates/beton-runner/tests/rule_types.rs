@@ -45,9 +45,13 @@ impl Env {
     }
 
     fn gate(&self) -> (PolicyGate, mpsc::UnboundedReceiver<GateEvent>) {
+        self.gate_for("claude")
+    }
+
+    fn gate_for(&self, harness: &str) -> (PolicyGate, mpsc::UnboundedReceiver<GateEvent>) {
         let (tx, rx) = mpsc::unbounded_channel();
         let opts = PolicyOptions {
-            harness: "claude".parse::<HarnessId>().unwrap(),
+            harness: harness.parse::<HarnessId>().unwrap(),
             workdir: self.wt(),
             home: Some(self.home()),
             dirs: vec![(Scope::User, self.root.join("user"))],
@@ -253,4 +257,27 @@ async fn pol_015_mcp_server_named_builtin_is_denied_by_the_gate() {
         ))
         .await;
     assert_eq!(d, GateDecision::Allow { updated_args: None });
+}
+
+/// POL-023 AC2, HAR-007 AC2: Ein ACP-`fs/write_text_file` kommt als Datei-Schreiben vor der
+/// Ausführung ans Gate (wie es der ACP-Adapter meldet) und wird gegen `path_guard` geprüft:
+/// außerhalb des Worktrees abgelehnt, darin erlaubt.
+#[tokio::test]
+async fn pol_023_ac2_acp_fs_write_is_checked_against_path_guard() {
+    let env = Env::new();
+    env.policy("  - id: paths\n    type: path_guard\n");
+    let (g, _rx) = env.gate_for("acp:fake");
+    let write = |call: &str, p: &Path| GateRequest {
+        call_id: call.into(),
+        tool: "fs/write_text_file".into(),
+        kind: "file_write".into(),
+        acp_kind: Some("edit".into()),
+        args: serde_json::json!({ "path": path(p), "content": "x" }),
+        origin: GateOrigin::PreTool,
+        ..GateRequest::default()
+    };
+    let d = g.decide(write("fs-1", &env.home().join(".bashrc"))).await;
+    assert!(denied(&d), "{d:?}");
+    let d = g.decide(write("fs-2", &env.wt().join("notizen.txt"))).await;
+    assert!(!denied(&d), "{d:?}");
 }

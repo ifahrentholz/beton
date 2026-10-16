@@ -4,6 +4,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -32,6 +34,7 @@ async fn daemon(dir: &Path, customize: impl FnOnce(Runtime) -> Runtime) -> D {
     cfg.socket = None;
     let runners = dir.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider =
             std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners));
         r.sessions.dev = true;
@@ -112,7 +115,9 @@ impl D {
     }
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         self.raw(method, path, "application/json", body.as_bytes())
             .await
     }

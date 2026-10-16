@@ -286,6 +286,9 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 }))?;
                 state.call = None;
             }
+        } else if let Some(w) = &step.fs_write {
+            let text = self.fs_write(&w.path, &w.content)?;
+            self.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}))?;
         } else if let Some(call) = &step.mcp_call {
             self.calls += 1;
             let id = format!("call_fake{:08}", self.calls);
@@ -349,6 +352,30 @@ impl<R: BufRead, W: Write> Agent<R, W> {
     }
 
     /// `session/request_permission`; `None`, wenn der Client abbricht.
+    /// `fs/write_text_file` beim Client (HAR-007); liefert den Text für die Nachricht.
+    fn fs_write(&mut self, path: &str, content: &str) -> Result<String, Stop> {
+        let request_id = self.requests;
+        self.requests += 1;
+        let session_id = self.session_id.clone();
+        self.io.emit(&json!({
+            "jsonrpc": "2.0", "id": request_id, "method": "fs/write_text_file",
+            "params": {"sessionId": session_id, "path": path, "content": content},
+        }))?;
+        loop {
+            let msg = self.io.read()?;
+            if msg.get("method").is_none() && msg["id"] == json!(request_id) {
+                return Ok(match msg.get("error") {
+                    Some(e) => format!(
+                        "fs_write error {}: {}",
+                        e["code"],
+                        e["message"].as_str().unwrap_or_default()
+                    ),
+                    None => "fs_write ok".into(),
+                });
+            }
+        }
+    }
+
     fn permission(&mut self, tool: &Value) -> Result<Option<bool>, Stop> {
         let request_id = self.requests;
         self.requests += 1;

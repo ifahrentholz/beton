@@ -9,6 +9,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -90,6 +92,7 @@ impl Env {
             .unwrap_or_default();
         let daemon = start_with(cfg, store.clone(), move |mut r| {
             r.sessions.harnesses_user = user_harnesses;
+            r.sessions.sandbox = support::unsandboxed();
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -114,7 +117,9 @@ impl Env {
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -574,6 +579,7 @@ async fn agt_007_ac2_session_spawn_runs_a_codex_child_and_returns_its_answer() {
         )
         .await
         .unwrap();
+    support::confirm_stored(&env.store, session.id).await;
     let id = session.id.to_string();
     let events = env.turn(&id, "los").await;
     let ready = of_type(&events, "harness.ready");
@@ -717,5 +723,57 @@ async fn agt_007_ac4_ask_user_question_answer_becomes_the_tool_result() {
     );
     let resolved = of_type(&events, "approval.resolved")[0];
     assert_eq!(resolved["payload"]["decision"], "answer");
+    env.daemon.shutdown().await;
+}
+
+// --------------------------------------------------------------------------- POL-023 AC3
+
+/// POL-023 AC3: Meldet ein ACP-Agent einen Tool-Call ohne Permission-Request, prüft beton ihn
+/// beim Start nur beobachtend (`enforcement: observe_only`); trifft eine `deny`-Regel, folgt
+/// `policy.notified`, und beton bricht den Turn per `session/cancel` ab.
+#[tokio::test]
+async fn pol_023_ac3_unrequested_acp_tool_call_is_observed_notified_and_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "a.yaml",
+        "turns:\n  - expect_input: \"los\"\n    emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"rm -rf build\" } } }\n      - { hang: true }\n",
+    );
+    let env = Env::start(&[], |dir| {
+        acp_config(&dir.join("work"), &s, Some(false));
+        write(
+            &dir.join("work/.beton/policies/no-rm.yaml"),
+            "spec_version: 1\nname: no-rm\nrules:\n  - id: no-rm\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"rm\")'\n    action: deny\n    enforcement: best_effort\n    reason: rm ist verboten\n",
+        );
+    })
+    .await;
+    let id = env.create("acp:fake").await;
+    env.input(&id, "los").await;
+    let events = env
+        .wait_for(&id, |e| {
+            matches!(
+                e["type"].as_str(),
+                Some("turn.completed" | "turn.failed" | "turn.interrupted")
+            )
+        })
+        .await;
+    let text = serde_json::to_string(&events).unwrap();
+    assert!(
+        events.iter().any(|e| e["type"] == "policy.decision"
+            && e["payload"]["phase"] == "tool_call"
+            && e["payload"]["enforcement"] == "observe_only"
+            && e["payload"]["outcome"] == "deny"),
+        "{text}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "policy.notified" && e["payload"]["rule_id"] == "no-rm"),
+        "{text}"
+    );
+    assert!(
+        events.iter().any(|e| e["type"] == "turn.interrupted"),
+        "Turn nicht abgebrochen: {text}"
+    );
     env.daemon.shutdown().await;
 }

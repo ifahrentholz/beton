@@ -245,6 +245,9 @@ impl RunnerProvider for LocalProvider {
                 serde_json::to_string(sb).unwrap_or_default(),
             ));
         }
+        if boot.unsandboxed_confirmed {
+            vars.push((beton_runner::env::UNSANDBOXED_CONFIRMED.into(), "1".into()));
+        }
         if boot.compaction != beton_harness::CompactionSettings::default() {
             vars.push((
                 beton_runner::env::COMPACTION.into(),
@@ -269,6 +272,23 @@ impl RunnerProvider for LocalProvider {
             .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
         {
             vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
+        }
+        // Abgeschaltete Sandbox-Backends (SBX-006 AC1): nur Builds mit dem Feature
+        // `test-sandbox` (wie `test-budget` nur über Dev-Dependencies); der Runner sieht dann
+        // dieselbe Registry wie der Daemon.
+        #[cfg(feature = "test-sandbox")]
+        for name in [
+            beton_runner::env::TEST_SANDBOX_UNAVAILABLE,
+            beton_runner::env::TEST_SANDBOX_PROXY_DOWN,
+        ] {
+            if let Some(v) = self
+                .inherit
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+            {
+                vars.push((name.into(), v));
+            }
         }
         let (program, args) = self
             .command

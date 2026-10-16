@@ -407,6 +407,12 @@ pub fn env_denied(name: &str) -> bool {
 }
 
 impl SandboxSpec {
+    /// Ausdrücklich ohne Isolation (`backend: none`). Ohne `backend` gilt `auto`: Die Sandbox
+    /// ist erforderlich (SBX-006).
+    pub fn unsandboxed(&self) -> bool {
+        self.backend == Some(BackendChoice::Provider(ProviderId::None))
+    }
+
     /// Liest eine Ebene aus YAML (der Inhalt unter `sandbox:`) und prüft sie.
     pub fn from_yaml(text: &str) -> Result<Self, SandboxError> {
         let value: serde_json::Value = serde_norway::from_str(text)

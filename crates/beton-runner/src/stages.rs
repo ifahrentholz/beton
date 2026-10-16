@@ -8,8 +8,9 @@
 //!   Broker  ◄──── bt-exec ─────────────── Bash-Tool ─── Sandbox::spawn ──► /bin/zsh -c …
 //! ```
 //!
-//! Bis WP-49 (SBX-006) greift das Modell nur, wenn `sandbox.backend` ausdrücklich gesetzt und
-//! nicht `none` ist; sonst laufen Harness und Tools wie bisher über `backend: none`.
+//! Das Modell ist der Default (SBX-006): Ohne `sandbox.backend` gilt `auto`, und fehlt eine
+//! geforderte Capability, startet die Session nicht. Nur ausdrücklich `backend: none` (je
+//! Session bestätigt, siehe Runner) läuft ohne Stufen.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -165,6 +166,8 @@ pub struct StageInput<'a> {
     /// Programm des Harness (aufgelöst), für die Lese-Grants der Stufe 1.
     pub program: Option<PathBuf>,
     pub events: Option<EventSink>,
+    /// Verstöße, die die Backends beider Stufen melden (`sandbox.violation`, SBX-013, SBX-014).
+    pub violations: Option<beton_sandbox::ViolationSink>,
 }
 
 /// Die laufenden Stufen einer Session; alles endet mit `Drop` (Proxy-Instanzen, Broker,
@@ -190,6 +193,8 @@ pub struct SessionStages {
     git: Option<Arc<GitGuard>>,
     /// Meldet einen Verstoß, den der Git-Shim der Stufe 1 gefunden hat (#311).
     git_alarm: Arc<tokio::sync::Notify>,
+    /// Laufzeitverzeichnis der Stufe 1 (#206).
+    runtime: PathBuf,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
     _proxies: Vec<beton_proxy::ProxyInstance>,
@@ -258,6 +263,48 @@ impl SessionStages {
         let out = (instance.proxy_url(), proxy.ca_pem());
         self._proxies.push(instance);
         Ok(out)
+    }
+
+    /// Endet, sobald eine Proxy-Instanz der Stufen (bzw. des Direkt-API-Loops) keine
+    /// Verbindungen mehr annimmt, z. B. nach einem Absturz (SBX-006 AC3). Ohne Netz nie.
+    pub fn proxy_down(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let downs: Vec<_> = self._proxies.iter().map(|p| Box::pin(p.down())).collect();
+        async move {
+            if downs.is_empty() {
+                return std::future::pending::<()>().await;
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+            for down in downs {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    down.await;
+                    let _ = tx.send(()).await;
+                });
+            }
+            drop(tx);
+            let _ = rx.recv().await;
+        }
+    }
+
+    /// Beendet alle Proxy-Instanzen der Session sofort (wie ein Absturz).
+    pub fn kill_proxies(&self) {
+        for p in &self._proxies {
+            p.shutdown();
+        }
+    }
+
+    /// Hält beide Stufen an (SBX-006 AC3): Danach startet keine neue Tool-Ausführung mehr,
+    /// auch nicht über den Exec-Broker, und kein neuer Harness-Prozess.
+    pub fn halt(&self, reason: &str) {
+        self.tools.halt(reason);
+        self.harness.halt(reason);
+    }
+
+    /// Laufzeitverzeichnis der Stufe 1 (0700, im Session-Verzeichnis): Hier legt der Runner
+    /// Hook-Server, MCP-Relay-Hub und Session-Skills an, damit der Harness in Stufe 1 sie
+    /// erreicht (#206); Stufe 2 sieht es nicht.
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime
     }
 
     /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
@@ -548,12 +595,9 @@ fn credential_kind(t: beton_sandbox::CredentialType) -> CredentialKind {
     }
 }
 
-/// Ist das Stufenmodell konfiguriert? Bis WP-49 nur mit ausdrücklichem Backend außer `none`.
+/// Gilt das Stufenmodell? Immer, außer bei ausdrücklichem `backend: none` (SBX-006).
 pub fn active(spec: &SandboxSpec) -> bool {
-    matches!(
-        spec.backend,
-        Some(b) if b != BackendChoice::Provider(ProviderId::None)
-    )
+    !spec.unsandboxed()
 }
 
 fn unavailable(provider: ProviderId, missing: &[Cap], hint: impl Into<String>) -> SandboxError {
@@ -663,7 +707,7 @@ fn install_git_shim(policy: &mut beton_sandbox::ResolvedPolicy, shim_dir: &Path)
     policy.env.insert("PATH".into(), path);
 }
 
-/// Baut die Stufen der Session. `Ok(None)`: kein Stufenmodell konfiguriert (bis WP-49).
+/// Baut die Stufen der Session. `Ok(None)`: ausdrücklich `backend: none`.
 pub async fn compose(
     input: StageInput<'_>,
     opts: StageOptions,
@@ -728,15 +772,27 @@ async fn compose_unix(
         .path()
         .canonicalize()
         .map_err(|e| io("Sandbox-Verzeichnis", e))?;
-    let (harness_tmp, tools_tmp, xchg, exec, bin, ca_dir) = (
+    let (harness_tmp, tools_tmp, xchg, exec, bin, ca_dir, runtime) = (
         root.join("harness"),
         root.join("tools"),
         root.join("xchg"),
         root.join("exec"),
         root.join("exec/bin"),
         root.join("ca"),
+        // Hook-Socket, MCP-Hub, ihre Token-Dateien und Session-Skills (#206): Stufe 1 liest
+        // es und erreicht die Sockets darin, Stufe 2 sieht es nicht.
+        root.join("run"),
     );
-    for d in [&root, &harness_tmp, &tools_tmp, &xchg, &exec, &bin, &ca_dir] {
+    for d in [
+        &root,
+        &harness_tmp,
+        &tools_tmp,
+        &xchg,
+        &exec,
+        &bin,
+        &ca_dir,
+        &runtime,
+    ] {
         std::fs::create_dir_all(d).map_err(|e| io("Sandbox-Verzeichnis", e))?;
         std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| io("Sandbox-Verzeichnis", e))?;
@@ -970,7 +1026,17 @@ async fn compose_unix(
     let git_guard = git
         .as_ref()
         .map(|l| Arc::new(GitGuard::new(l, git_alarm.clone())));
-    let git_sink = git_guard.as_deref().map(GitGuard::sink);
+    // Verstöße gehen an den Git-Wächter (SBX-003) und als Event an die Session (SBX-013).
+    let git_sink = match (
+        git_guard.as_deref().map(GitGuard::sink),
+        input.violations.clone(),
+    ) {
+        (Some(g), Some(v)) => Some(Arc::new(move |e: beton_core::event::SandboxViolation| {
+            g(e.clone());
+            v(e);
+        }) as beton_sandbox::ViolationSink),
+        (g, v) => g.or(v),
+    };
     let ctx = |stage: Stage, scratch: &Path, proxy: Option<ProxyEndpoint>| {
         let mut c = ResolveCtx::new(stage, input.workdir, &input.home, scratch);
         c.git.clone_from(&git);
@@ -1035,6 +1101,7 @@ async fn compose_unix(
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
     c.harness = grants;
     c.exec = Some(broker.access(bin.clone()));
+    c.runtime = Some(runtime.clone());
     c.exchange = Some(xchg.clone());
     // Nichts im `PATH` der Stufe 1, was Stufe 2 schreiben kann (SBX-002).
     c.untrusted_path = tools.policy().write_roots.clone();
@@ -1065,6 +1132,7 @@ async fn compose_unix(
     if let Some(sink) = git_sink {
         harness = harness.with_violations(sink);
     }
+    let harness_policy = Some(std::sync::Arc::new(harness.policy().clone()));
     Ok(SessionStages {
         harness,
         tools,
@@ -1072,6 +1140,13 @@ async fn compose_unix(
             shim_dir: bin,
             exchange: xchg,
             tools: None,
+            // Stufe 2 erreicht das Netz nur über den Proxy oder gar nicht (PRX-008); getrennt
+            // vom Harness laufen Tools nur ohne `tool_isolation: inherited` (SBX-002 AC4).
+            sandbox: beton_harness::SandboxStatus {
+                tool_sandbox: !inherited,
+                egress_proxy: true,
+            },
+            harness_policy,
         },
         passthrough,
         placeholders,
@@ -1082,6 +1157,7 @@ async fn compose_unix(
         tools_binding_list,
         _summaries: summaries,
         git: git_guard,
+        runtime,
         git_alarm,
         _broker: broker,
         _proxies: proxies,

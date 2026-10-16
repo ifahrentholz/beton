@@ -329,6 +329,14 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
             "(allow network-outbound (remote unix-socket (path-literal (param \"{key}\"))))"
         ));
     }
+    // Laufzeitverzeichnis der Stufe 1 (#206): jeder Socket darin, auch in Unterverzeichnissen
+    // (Hook-Server, MCP-Hub); beton legt dort nur eigene Sockets an.
+    for dir in &policy.unix_socket_dirs {
+        let key = b.path("SOCKDIR", dir)?;
+        unix_lines.push(format!(
+            "(allow network-outbound (remote unix-socket (subpath (param \"{key}\"))))"
+        ));
+    }
     let mut dev_lines = Vec::new();
     for port in &policy.dev_ports {
         let key = b.param("DEV_PORT", port.to_string());

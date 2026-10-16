@@ -300,7 +300,12 @@ impl EgressProxy {
             stopped,
         });
         let accept = instance.clone();
+        // Lebt, solange die Annahme-Schleife läuft; endet sie (Stopp, Abbruch, Panik), fällt der
+        // Wächter und `down()` meldet es (SBX-006 AC3).
+        let (alive_tx, alive) = watch::channel(true);
+        let guard = AliveGuard(alive_tx);
         spawn_until(instance.stopped.clone(), async move {
+            let _guard = guard;
             loop {
                 match listener.accept().await {
                     Ok((tcp, _)) => {
@@ -320,7 +325,17 @@ impl EgressProxy {
             addr,
             token: ProxyToken(token),
             stop,
+            alive,
         })
+    }
+}
+
+/// Setzt beim Fallenlassen „läuft nicht mehr“ (auch bei Abbruch oder Panik der Aufgabe).
+struct AliveGuard(watch::Sender<bool>);
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        let _ = self.0.send(false);
     }
 }
 
@@ -357,6 +372,8 @@ pub struct ProxyInstance {
     addr: SocketAddr,
     token: ProxyToken,
     stop: watch::Sender<bool>,
+    /// `true`, solange die Annahme-Schleife läuft.
+    alive: watch::Receiver<bool>,
 }
 
 impl Drop for ProxyInstance {
@@ -380,6 +397,20 @@ impl ProxyInstance {
 
     pub fn token(&self) -> &ProxyToken {
         &self.token
+    }
+
+    /// Endet, sobald die Instanz keine Verbindungen mehr annimmt, gleich aus welchem Grund
+    /// (Stopp, Absturz der Aufgabe). Grundlage für „Proxy weg → Session pausiert“ (SBX-006 AC3).
+    pub fn down(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut alive = self.alive.clone();
+        async move {
+            let _ = alive.wait_for(|a| !*a).await;
+        }
+    }
+
+    /// Beendet die Instanz sofort (Listener, Tunnel, Verbindungen), wie ein Absturz.
+    pub fn shutdown(&self) {
+        let _ = self.stop.send(true);
     }
 
     /// Proxy-URL für die Sandbox: `http://bt:<token>@127.0.0.1:<port>` (enthält das Token).

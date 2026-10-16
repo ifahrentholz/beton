@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+mod agent_sandbox;
 mod credentials;
 pub mod fork;
 pub mod mcp;
@@ -75,6 +76,15 @@ pub mod env {
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
     /// `sandbox:` der User-Konfiguration und `proxy.extra_ca_files` als JSON (SBX-002, #191).
     pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
+    /// `1`: `backend: none` ist für diese Session bestätigt (SBX-006, Audit beim Server).
+    pub const UNSANDBOXED_CONFIRMED: &str = "BETON_UNSANDBOXED_CONFIRMED";
+    /// Nur mit dem Feature `test-sandbox`: Backends abschalten (Tests, SBX-006 AC1).
+    #[cfg(feature = "test-sandbox")]
+    pub const TEST_SANDBOX_UNAVAILABLE: &str = beton_sandbox::TEST_UNAVAILABLE_ENV;
+    /// Nur mit dem Feature `test-sandbox`: `1` beendet die Proxy-Instanzen der Session gleich
+    /// nach dem Start, wie ein Absturz (Tests, SBX-006 AC3).
+    #[cfg(feature = "test-sandbox")]
+    pub const TEST_SANDBOX_PROXY_DOWN: &str = "BETON_TEST_SANDBOX_PROXY_DOWN";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
     /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
@@ -122,8 +132,12 @@ pub struct RunnerBoot {
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
     pub fork_logged: bool,
-    /// Zweistufige Sandbox (SBX-002); `None`: wie bisher ohne Isolation.
+    /// Zweistufige Sandbox (SBX-002). `None` heißt Default-Konfiguration: Sandbox
+    /// erforderlich (SBX-006); ohne Isolation nur mit ausdrücklichem `backend: none`.
     pub sandbox: Option<stages::SandboxBoot>,
+    /// `backend: none` ist für diese Session bestätigt (SBX-006); ohne Bestätigung startet
+    /// keine Session ohne Sandbox.
+    pub unsandboxed_confirmed: bool,
     /// beton-CA für die Proxy-Instanzen der Session (dritte stdin-Zeile, PRX-002).
     pub proxy_ca: Option<stages::CaText>,
     /// Automatische Compaction (USE-009).
@@ -219,6 +233,8 @@ impl RunnerBoot {
                 ),
                 Err(_) => None,
             },
+            unsandboxed_confirmed: std::env::var(env::UNSANDBOXED_CONFIRMED)
+                .is_ok_and(|v| v == "1"),
             proxy_ca,
             compaction: match std::env::var(env::COMPACTION) {
                 Ok(json) => serde_json::from_str(&json)
@@ -536,11 +552,17 @@ impl Unacked {
 #[derive(Default)]
 struct StatusTracker {
     current: Option<SessionStatus>,
+    /// Die Sandbox hat eine Voraussetzung verloren (SBX-006 AC3): Die Session bleibt
+    /// `paused`, bis der Runner endet; nur `failed` und `stopped` lösen das ab.
+    paused: bool,
 }
 
 impl StatusTracker {
     fn set(&mut self, boot: &RunnerBoot, to: SessionStatus, out: &mut Vec<Event>) {
         if self.current == Some(to) {
+            return;
+        }
+        if self.paused && !matches!(to, SessionStatus::Failed | SessionStatus::Stopped) {
             return;
         }
         self.current = Some(to);
@@ -553,6 +575,25 @@ impl StatusTracker {
             EventPayload::SessionStatus(SessionStatusChanged {
                 status: to,
                 reason: None,
+            }),
+        ));
+    }
+}
+
+impl StatusTracker {
+    /// `paused` mit Grund (SBX-006 AC3); spätere Wechsel außer `failed`/`stopped` entfallen.
+    fn pause(&mut self, boot: &RunnerBoot, reason: &str, out: &mut Vec<Event>) {
+        self.paused = true;
+        self.current = Some(SessionStatus::Paused);
+        out.push(Event::new(
+            boot.session_id,
+            0,
+            Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            EventPayload::SessionStatus(SessionStatusChanged {
+                status: SessionStatus::Paused,
+                reason: Some(reason.to_owned()),
             }),
         ));
     }
@@ -795,10 +836,42 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         credentials::channel_calls(usage_tx),
         stage_tx.clone(),
     ));
-    // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
-    // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
-    let mut stages = match &boot.sandbox {
-        Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
+    // Zweistufige Sandbox (SBX-002, SBX-006, PRX-001, PRX-005, PRX-008, #191): Default
+    // „Sandbox erforderlich“; jeder Fehler verhindert den Start (fail closed). Ohne Isolation
+    // nur mit ausdrücklichem `backend: none`, das für diese Session bestätigt ist.
+    let sandbox_boot = boot.sandbox.clone().unwrap_or_default();
+    // AGT-014: `sandbox:` des Agents verschärft die Sandbox der Session nur; eine Anforderung,
+    // die der Host nicht erfüllt, oder eine Lockerung verhindert den Start (fail closed).
+    let agent_sandbox = snapshot
+        .as_ref()
+        .and_then(|s| s.agent().ok())
+        .and_then(|(spec, _)| spec.sandbox);
+    let sandbox_spec = match &agent_sandbox {
+        Some(a) => {
+            match agent_sandbox::tighten(&sandbox_boot.spec, a, agent_sandbox::auto_choice(a)) {
+                Ok(s) => s,
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(e.to_string());
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            }
+        }
+        None => sandbox_boot.spec.clone(),
+    };
+    if !stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec]))
+        && !boot.unsandboxed_confirmed
+    {
+        let e = beton_harness::HarnessError::StartRefused(
+            "sandbox_confirmation_required: `sandbox.backend: none` startet nur mit Bestätigung \
+             für diese Session (`beton run --unsandboxed`)"
+                .into(),
+        );
+        report_start_failure(&boot, &e).await;
+        return Err(e.into());
+    }
+    let mut stages = match &sandbox_boot {
+        sb if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec])) => {
             let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
                 Ok(ca) => ca,
                 Err(e) => {
@@ -832,6 +905,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 )
                 .map(|b| b.program),
                 events: Some(events),
+                // Verstöße der Backends als `sandbox.violation` (SBX-013 AC1, SBX-014).
+                violations: Some({
+                    let tx = stage_tx.clone();
+                    Arc::new(move |v| {
+                        let _ = tx.send(EventPayload::SandboxViolation(v));
+                    })
+                }),
             };
             // HAR-015 AC4: Mit `auth: api_key` sieht die Vendor-CLI nur einen Platzhalter.
             let harness_key = (boot.harnesses.user.auth(boot.harness.as_str())
@@ -848,7 +928,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             let direct = direct_route(&boot);
             let opts = stages::StageOptions {
                 direct,
-                spec: sb.spec.clone(),
+                spec: sandbox_spec.clone(),
                 proxy_ca: ca,
                 proxy: beton_proxy::ProxyOptions {
                     extra_ca_files: sb.extra_ca_files.clone(),
@@ -872,6 +952,21 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    // #206: Hook-Server, MCP-Relay-Hub und Session-Skills liegen im Stufenmodell im
+    // Laufzeitverzeichnis der Stufe 1, damit der Harness sie aus seiner Sandbox erreicht.
+    let run_dir = stages
+        .as_ref()
+        .map(|s| s.runtime_dir().to_path_buf())
+        .unwrap_or(run_dir);
+    let paths = mcp::Paths {
+        run_dir: run_dir.clone(),
+        ..paths
+    };
+    // Was das Stufenmodell tatsächlich durchsetzt; nur das schaltet `yolo` frei (HAR-027).
+    let sandbox_status = stages
+        .as_ref()
+        .map(|s| s.env.sandbox)
+        .unwrap_or(beton_harness::SandboxStatus::NONE);
     if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
         direct_via_proxy(&boot, &mut registry, egress);
     }
@@ -974,6 +1069,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    // AGT-014: Ohne Snapshot ließe sich `sandbox:` nicht vor dem Aufbau der Stufen anwenden.
+    if setup.agent_sandbox.is_some() && agent_sandbox.is_none() {
+        let e = beton_harness::HarnessError::StartRefused(
+            "sandbox_unavailable: Agent mit `sandbox:` ohne Snapshot (AGT-004); Start verweigert"
+                .into(),
+        );
+        report_start_failure(&boot, &e).await;
+        return Err(e.into());
+    }
+    // AGT-014: Agent-Ebene der Policy-Hierarchie.
+    gate.set_inline(
+        beton_policy::load::Scope::Agent,
+        std::mem::take(&mut setup.agent_policies),
+    );
     // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
     let forked = match &boot.fork {
         Some(path) => match fork::load(path) {
@@ -1017,7 +1126,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         boot.effort.as_deref(),
         boot.permission_mode.as_deref(),
         caps.as_ref().unwrap_or(&fallback_caps),
-        beton_harness::SandboxStatus::current(),
+        sandbox_status,
     ) {
         Ok(s) => s,
         Err(rejected) => {
@@ -1103,7 +1212,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .map(|m| m.as_str().to_owned()),
             sandbox: Some(stages::sandbox_vars(stages.as_ref())),
             network: Some(beton_policy::vars::StartNetworkVars {
-                proxy_enabled: Some(beton_harness::SandboxStatus::current().egress_proxy),
+                proxy_enabled: Some(sandbox_status.egress_proxy),
             }),
             worktree: Some(boot.workdir.display().to_string()),
             fork_of: None,
@@ -1125,6 +1234,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     &mut start_settings,
                     &m,
                     caps.as_ref().unwrap_or(&fallback_caps),
+                    sandbox_status,
                 ) {
                     Ok(mode) => {
                         policy_mode = mode;
@@ -1244,6 +1354,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 harness_version: probe.version.unwrap_or_default(),
                 capabilities,
                 harness_session_ref: native_ref,
+                sandbox: Some(beton_core::event::SessionSandbox {
+                    tool_sandbox: sandbox_status.tool_sandbox,
+                    egress_proxy: sandbox_status.egress_proxy,
+                }),
             }),
         ),
     );
@@ -1334,6 +1448,26 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
+    // SBX-006 AC3: Endet ein Egress-Proxy der Session, pausiert sie, und neue
+    // Tool-Ausführungen werden abgelehnt.
+    let mut proxy_down: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+        stages.as_ref().map(|s| {
+            Box::pin(s.proxy_down())
+                as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        });
+    #[cfg(feature = "test-sandbox")]
+    if std::env::var(env::TEST_SANDBOX_PROXY_DOWN).is_ok_and(|v| v == "1")
+        && let Some(s) = &stages
+    {
+        tracing::warn!(
+            "Test-Schalter {}: Proxy beendet",
+            env::TEST_SANDBOX_PROXY_DOWN
+        );
+        s.kill_proxies();
+    }
+    // Beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3).
+    let (observed_tx, mut observed_rx) =
+        mpsc::unbounded_channel::<(beton_policy::load::RuleRef, String)>();
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
@@ -1547,6 +1681,58 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // steht im Log vor den Folge-Events des Harness; ein `policy.decision` wartet
                 // seinerseits auf sein `tool.call.requested` (POL-025).
                 biased;
+                () = async {
+                    match proxy_down.as_mut() {
+                        Some(f) => f.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    proxy_down = None;
+                    if let Some(st) = &stages {
+                        st.halt("proxy_down");
+                    }
+                    gate.halt_tools(
+                        "proxy_down: Der Egress-Proxy der Session ist beendet; neue \
+                         Tool-Ausführungen sind abgelehnt, die Session ist pausiert (SBX-006)",
+                    );
+                    let mut batch = vec![system_event(
+                        &boot,
+                        EventPayload::SandboxViolation(beton_core::event::SandboxViolation {
+                            stage: beton_core::event::SandboxStage::Tools,
+                            kind: beton_core::event::ViolationKind::ProxyDown,
+                            target: None,
+                            suppressed_count: 0,
+                        }),
+                    )];
+                    tracker.pause(&boot, "proxy_down: Egress-Proxy beendet", &mut batch);
+                    if !push(&mut ws, &boot, &mut unacked, batch).await {
+                        break None;
+                    }
+                }
+                Some((rule, reason)) = observed_rx.recv() => {
+                    // POL-023 AC3: `notify` und Abbruch des Turns (`session/cancel` bei ACP).
+                    let event = system_event(
+                        &boot,
+                        EventPayload::PolicyNotified(beton_core::event::PolicyNotified {
+                            rule_id: rule.rule_id.clone(),
+                            scope: rule.scope.as_str().to_owned(),
+                            set: rule.set.clone(),
+                            channels: vec!["ui".into()],
+                            message: Some(format!(
+                                "Nur beobachteter Tool-Call verstößt gegen eine Policy: {reason}; \
+                                 der Turn wird abgebrochen"
+                            )),
+                        }),
+                    );
+                    let mut batch = drain_gate(&boot, &mut gate_rx, &call_events);
+                    batch.push(event);
+                    if !push(&mut ws, &boot, &mut unacked, batch).await {
+                        break None;
+                    }
+                    if turn_running {
+                        let _ = session.interrupt().await;
+                    }
+                }
                 ge = gate_rx.recv() => {
                     let Some(first) = ge else { continue };
                     let mut fatal = first.fatal.then(|| fatal_reason(&first));
@@ -1703,7 +1889,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
                             _ => None,
                         };
-                        let observe = track_tool_calls(&gate, &ev, &mut unobserved, done);
+                        let observe = track_tool_calls(&gate, &ev, &mut unobserved, done, !harness_gates_all);
                         let event = to_event(&boot, &actor, ev);
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
@@ -1727,9 +1913,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             break;
                         }
                         for req in observe {
-                            // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1).
+                            // Ohne Gate-Anfrage des Harness: nur beobachtet (POL-025 AC1); trifft
+                            // eine `deny`-Regel, meldet der Runner es und bricht den Turn ab
+                            // (POL-023 AC3).
                             let g = gate.clone();
-                            tokio::spawn(async move { g.observe(req).await });
+                            let tx = observed_tx.clone();
+                            tokio::spawn(async move {
+                                if let Some(hit) = g.observe(req).await {
+                                    let _ = tx.send(hit);
+                                }
+                            });
                         }
                         if busy { status(&mut lifecycle, RunnerState::Busy, None, &mut batch); turn_running = true; held_context = None; }
                         if done {
@@ -1943,7 +2136,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             if name == "session.set" {
                                 // HAR-017, HAR-027: prüfen, dann sofort bzw. nach dem Turn anwenden.
-                                match settings::parse(&args, &session_caps, beton_harness::SandboxStatus::current()) {
+                                match settings::parse(&args, &session_caps, sandbox_status) {
                                     Err(r) => {
                                         let msg = TunnelUp::CmdResult { cmd_id, result: None, problem: Some(r.to_problem()) };
                                         if !send(&mut ws, &msg).await { break None; }
@@ -2143,12 +2336,13 @@ fn apply_start_modifications(
     start: &mut settings::Change,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
+    sandbox: beton_harness::SandboxStatus,
 ) -> Result<Option<beton_harness::PermissionMode>, settings::Rejected> {
     let mode = settings::policy_start_mode(
         start.permission_mode,
         m.permission_mode.as_deref(),
         caps,
-        beton_harness::SandboxStatus::current(),
+        sandbox,
     )?;
     if let Some(model) = &m.model {
         start.model = Some(model.clone());
@@ -2211,11 +2405,25 @@ fn track_tool_calls(
     ev: &NormalizedEvent,
     unobserved: &mut HashMap<String, GateRequest>,
     turn_done: bool,
+    observe_at_start: bool,
 ) -> Vec<GateRequest> {
     let mut out = Vec::new();
     match &ev.payload {
         EventPayload::ToolCallRequested(r) => {
             gate.note_requested(&r.call_id, r.mcp_server.as_deref(), &r.tool);
+            // ACP ordnet über die Tool-Art zu (`execute`, `edit` …); ohne sie fände die
+            // Normalisierung weder Kommando noch Pfade (POL-023 AC3).
+            let acp_kind = (r.source == beton_core::event::ToolSource::Acp).then(|| {
+                match r.kind.as_deref() {
+                    Some("shell") => "execute",
+                    Some("file_edit" | "file_write") => "edit",
+                    Some("file_read") => "read",
+                    Some("search") => "search",
+                    Some("web_fetch") => "fetch",
+                    _ => "other",
+                }
+                .to_owned()
+            });
             unobserved.insert(
                 r.call_id.clone(),
                 GateRequest {
@@ -2225,9 +2433,21 @@ fn track_tool_calls(
                     kind: r.kind.clone().unwrap_or_default(),
                     args: r.args.clone(),
                     mcp_server: r.mcp_server.clone(),
+                    acp_kind,
                     ..GateRequest::default()
                 },
             );
+        }
+        // Ohne Gate-Anfrage gestartet (POL-023 AC3): schon beim Start beobachten, damit eine
+        // `deny`-Regel den Turn noch abbrechen kann.
+        // Nur für Harnesses ohne volles Gate; bei vollem Gate ist ein Call ohne Entscheidung
+        // ein Integritätsfehler (HAR-005), den keine Beobachtung verdecken darf.
+        EventPayload::ToolCallStarted(st) if observe_at_start => {
+            if !gate.decided(&st.call_id)
+                && let Some(req) = unobserved.remove(&st.call_id)
+            {
+                out.push(req);
+            }
         }
         EventPayload::ToolCallCompleted(c) => {
             gate.note_completed(c.status);

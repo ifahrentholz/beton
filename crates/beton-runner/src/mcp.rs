@@ -176,6 +176,10 @@ pub struct McpSetup {
     pub timeout: Option<std::time::Duration>,
     /// `executor.permission_mode` des Agents (HAR-027); `plan` bindet die Session (AGT-011).
     pub agent_permission_mode: Option<beton_harness::PermissionMode>,
+    /// `policies:` des Agents als Sets der Agent-Ebene (AGT-014).
+    pub agent_policies: Vec<beton_policy::load::LoadedSet>,
+    /// `sandbox:` des Agents (AGT-014, verschärft die Sandbox der Session nur).
+    pub agent_sandbox: Option<beton_agents::spec::Sandbox>,
 }
 
 /// Woher der Agent einer Session kommt.
@@ -294,6 +298,45 @@ fn load(
             Ok(Some((LoadedAgent { spec, dir }, snapshot.params.clone())))
         }
     }
+}
+
+/// `policies:` eines Agents als Sets der Agent-Ebene (AGT-014): Inline-Regeln und Dateien per
+/// `ref` aus dem Agent-Verzeichnis (bzw. Snapshot).
+pub fn agent_policies(
+    spec: &beton_agents::spec::AgentSpec,
+    dir: &beton_agents::AgentDir,
+) -> Result<Vec<beton_policy::load::LoadedSet>, String> {
+    if spec.policies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<serde_json::Value> = spec
+        .policies
+        .iter()
+        .map(|p| match &p.reference {
+            Some(r) => serde_json::json!({ "ref": r }),
+            None => {
+                let mut rule = serde_json::Map::new();
+                if let Some(id) = &p.id {
+                    rule.insert("id".into(), serde_json::Value::String(id.clone()));
+                }
+                rule.extend(p.rule.iter().map(|(k, v)| (k.clone(), v.clone())));
+                serde_json::Value::Object(rule)
+            }
+        })
+        .collect();
+    beton_policy::load::agent_sets(
+        beton_policy::load::Scope::Agent,
+        spec.name.as_str(),
+        &format!("agent:{}/agent.yaml", spec.name),
+        &entries,
+        |rel| {
+            let bytes = dir
+                .read(rel)
+                .ok_or_else(|| format!("{rel} nicht im Agent-Verzeichnis"))?;
+            String::from_utf8(bytes).map_err(|_| format!("{rel} ist kein UTF-8"))
+        },
+    )
+    .map_err(|e| format!("Agent `{}`: Policy ungültig: {e}", spec.name))
 }
 
 /// Instructions des Agents für diesen Harness (AGT-005); Fehler verhindern den Start.
@@ -449,15 +492,11 @@ pub async fn prepare(
         AgentSource::Snapshot(snap) if snap.source == "user" || snap.source == "builtin"
     );
     let loaded = load(source, workdir, paths)?;
-    // AGT-014 (#234): `policies` des Agents wertet beton erst mit WP-49 aus. Bis dahin startet
-    // ein solcher Agent nicht, statt seine Regeln still zu ignorieren (fail closed).
-    if let Some((a, _)) = &loaded
-        && !a.spec.policies.is_empty()
-    {
-        return Err(format!(
-            "Agent `{}` bringt `policies` mit, die beton noch nicht durchsetzt (AGT-014, kommt mit WP-49); Start verweigert",
-            a.spec.name
-        ));
+    // AGT-014: `policies` des Agents bilden die Agent-Ebene; jeder Ladefehler (auch eine
+    // lockernde Angabe) verhindert den Start (fail closed).
+    if let Some((a, _)) = &loaded {
+        setup.agent_policies = agent_policies(&a.spec, &a.dir)?;
+        setup.agent_sandbox.clone_from(&a.spec.sandbox);
     }
     if let Some((a, params)) = &loaded {
         let composed = compose_instructions(a, params, caps, workdir)?;

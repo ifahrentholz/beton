@@ -12,6 +12,8 @@ authors.workspace = true
 # Testbudget der Policy-Engine (#298, #304): nur als dev-dependency aktivieren, nie in
 # ausgelieferten Builds.
 test-budget = ["beton-runner/test-budget"]
+# Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1): nur als dev-dependency.
+test-sandbox = ["beton-runner/test-sandbox"]
 
 [dependencies]
 async-trait.workspace = true
@@ -29,7 +31,7 @@ tracing.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
-beton-host = { workspace = true, features = ["test-budget"] }
+beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 tempfile.workspace = true
 
 [lints]

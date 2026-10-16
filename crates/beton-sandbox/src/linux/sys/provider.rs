@@ -267,6 +267,7 @@ impl LinuxProvider {
             git: None,
             net: NetMode::None,
             unix_sockets: Vec::new(),
+            unix_socket_dirs: Vec::new(),
             dev_ports: Vec::new(),
             read_only: Vec::new(),
             no_symlinks: Vec::new(),

@@ -79,6 +79,10 @@ pub struct LaunchPlan {
     /// Unix-Sockets, mit denen sich das Ziel verbinden darf (Stufe 1: Exec-Broker).
     #[serde(default)]
     pub unix_sockets: Vec<PathBuf>,
+    /// Verzeichnisse, in denen sich das Ziel mit Unix-Sockets verbinden darf (Stufe 1:
+    /// Laufzeitverzeichnis mit Hook- und Hub-Socket, #206).
+    #[serde(default)]
+    pub unix_socket_dirs: Vec<PathBuf>,
     /// Loopback-Ports für Dev-Server (PRX-008 AC3).
     #[serde(default)]
     pub dev_ports: Vec<u16>,
@@ -135,6 +139,7 @@ impl LaunchPlan {
             git: policy.git.clone(),
             net: policy.net,
             unix_sockets: policy.unix_sockets.clone(),
+            unix_socket_dirs: policy.unix_socket_dirs.clone(),
             dev_ports: policy.dev_ports.clone(),
             read_only: policy.read_only.clone(),
             no_symlinks: policy.no_symlinks.clone(),
@@ -174,7 +179,7 @@ pub struct MaskTargets {
     pub rebind: Vec<PathBuf>,
 }
 
-fn glob_match(glob: &str, name: &str) -> bool {
+pub(crate) fn glob_match(glob: &str, name: &str) -> bool {
     fn rec(g: &[char], n: &[char]) -> bool {
         match (g.first(), n.first()) {
             (None, None) => true,
