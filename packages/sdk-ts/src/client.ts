@@ -35,6 +35,10 @@ import type { WrittenFile } from './gen/WrittenFile.js'
 import type { PricingView } from './gen/PricingView.js'
 import type { SessionUsageView } from './gen/SessionUsageView.js'
 import type { UsageReportView } from './gen/UsageReportView.js'
+import type { TerminalList } from './gen/TerminalList.js'
+import type { TerminalOpenRequest } from './gen/TerminalOpenRequest.js'
+import type { TerminalView } from './gen/TerminalView.js'
+import { Channel, type ChannelOptions } from './channel.js'
 import { defaultWebSocketFactory, eventStream, type StreamOptions, type WebSocketFactory } from './stream.js'
 
 export interface ClientOptions {
@@ -436,6 +440,23 @@ export class Session {
 
   private base(): string {
     return `/v1/sessions/${enc(this.id)}`
+  }
+
+  /** Workspace-Terminals der Session (SES-019): PTY im Runner, Prozess in der Sandbox. */
+  readonly terminals = {
+    /** Laufende Terminals. */
+    list: (): Promise<TerminalList> => this.client.request('GET', `${this.base()}/terminals`),
+    /** Neues Terminal; ohne `command` die Shell des Benutzers. */
+    open: (req: TerminalOpenRequest): Promise<TerminalView> => this.client.request('POST', `${this.base()}/terminals`, req),
+    rename: (terminalId: string, name: string): Promise<TerminalView> =>
+      this.client.request('PATCH', `${this.base()}/terminals/${enc(terminalId)}`, { name }),
+    /** Neue Fenstergröße; der Prozess bekommt `SIGWINCH` (WEB-010 AC2). */
+    resize: (terminalId: string, cols: number, rows: number): Promise<TerminalView> =>
+      this.client.request('POST', `${this.base()}/terminals/${enc(terminalId)}/resize`, { cols, rows }),
+    close: (terminalId: string): Promise<void> => this.client.request('DELETE', `${this.base()}/terminals/${enc(terminalId)}`),
+    /** Binärkanal des Terminals: Ausgabe (zuerst ein Keyframe) und Eingaben (PROTO-007). */
+    attach: (terminalId: string, options: ChannelOptions): Channel =>
+      new Channel(this.client.transport(), this.id, 'terminal', terminalId, options),
   }
 
   /**
