@@ -48,12 +48,16 @@ fn call_with(name: &str, args: Value, fixtures: Value) -> Activation {
     .unwrap()
 }
 
-/// Auswertung mit den Grenzen des Betriebs: Die Tests prüfen Entscheidungen, keine Laufzeit;
-/// das großzügige Zeitbudget der Testläufe kommt zentral aus `BETON_TEST_POLICY_BUDGET_MS`
-/// (`.cargo/config.toml`, #298).
+/// Auswertung mit großzügigem Zeitbudget: Die Tests prüfen Entscheidungen, keine Laufzeit
+/// (#285, #298). Eigene Grenzen statt `Limits::runtime()`, weil `cargo test -p beton-policy`
+/// (auch die Coverage, QA-011) ohne das Feature `test-budget` läuft (#304); Kostenbudget und
+/// Ausdrucksgröße bleiben die aus POL-002.
 fn eval(sets: Vec<Arc<LoadedSet>>, act: &Activation) -> Decision {
     let opts = EvalOptions {
-        limits: beton_policy::cel::Limits::runtime(),
+        limits: beton_policy::cel::Limits {
+            eval_budget_us: 10_000_000,
+            ..beton_policy::cel::Limits::default()
+        },
         ..EvalOptions::default()
     };
     EffectiveSet::new(sets).evaluate(act, &opts)

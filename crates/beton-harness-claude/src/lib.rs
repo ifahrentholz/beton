@@ -579,6 +579,17 @@ impl HarnessAdapter for ClaudeAdapter {
         spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        Ok(Box::new(self.launch(spec, ctx).await?))
+    }
+}
+
+impl ClaudeAdapter {
+    /// Startet die CLI und liefert die konkrete Session (für [`HarnessAdapter::start`]).
+    async fn launch(
+        &self,
+        spec: SessionSpec,
+        ctx: AdapterContext,
+    ) -> Result<ClaudeSession, HarnessError> {
         // Installiert-Prüfung macht `Registry::start` über den Probe; ohne Auflösung bleibt
         // der Name, damit Replays (Golden-Tests) ohne CLI laufen.
         let (program, mut args) = match resolve_binary(&harness_id(), "claude", &ctx.env) {
@@ -668,7 +679,8 @@ impl HarnessAdapter for ClaudeAdapter {
         let mut process = ctx.launcher.launch(launch).await?;
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
-        state.lock().await.session_ref = session_ref;
+        state.lock().await.session_ref.clone_from(&session_ref);
+        let native_ref: NativeRef = Arc::new(std::sync::Mutex::new(session_ref));
         let mut caps = HarnessAdapter::capabilities(self, Mode::Native, &ProbeReport::default());
         if hook.is_none() {
             caps.tool_call_gate = ToolCallGate::ApprovalOnly;
@@ -694,11 +706,13 @@ impl HarnessAdapter for ClaudeAdapter {
                 plan_locked: spec.plan_locked,
                 process: process.clone(),
                 closing: closing.clone(),
+                native_ref: native_ref.clone(),
             },
         ));
-        Ok(Box::new(ClaudeSession {
+        Ok(ClaudeSession {
             stdin,
             state,
+            native_ref,
             tx,
             rx: Some(rx),
             process,
@@ -707,11 +721,16 @@ impl HarnessAdapter for ClaudeAdapter {
             _instructions: instructions.map(|(dir, _)| dir),
             _hook: hook.map(|(server, _)| server),
             caps,
-        }))
+        })
     }
 }
 
 type Writer = Arc<Mutex<Option<Box<dyn AsyncWrite + Send + Unpin>>>>;
+
+/// Native Session-Referenz, lesbar ohne den Zustand der Leseschleife (HAR-020 AC2, #305):
+/// Mit `try_lock` auf den Zustand kam `None`, solange die Leseschleife eine Zeile abbildete.
+/// Die `std`-Sperre wird nie über ein `await` gehalten, Lesen wartet höchstens kurz.
+type NativeRef = Arc<std::sync::Mutex<Option<String>>>;
 
 async fn write_json(stdin: &Writer, v: &Value) -> Result<(), HarnessError> {
     let mut guard = stdin.lock().await;
@@ -731,6 +750,7 @@ struct Reader {
     plan_locked: bool,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<std::sync::atomic::AtomicBool>,
+    native_ref: NativeRef,
 }
 
 async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Reader) {
@@ -768,7 +788,15 @@ async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Read
                 let (events, turn) = {
                     let mut st = r.state.lock().await;
                     let turn = st.turn;
-                    (map_line(&v, &mut st), turn)
+                    let events = map_line(&v, &mut st);
+                    // `system/init` meldet die Referenz der CLI (beim Abzweigen eine neue).
+                    if st.session_ref.is_some() {
+                        r.native_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone_from(&st.session_ref);
+                    }
+                    (events, turn)
                 };
                 if events
                     .iter()
@@ -1107,6 +1135,7 @@ async fn plan_locked_deny(
 pub struct ClaudeSession {
     stdin: Writer,
     state: Arc<Mutex<MapState>>,
+    native_ref: NativeRef,
     tx: mpsc::Sender<NormalizedEvent>,
     rx: Option<mpsc::Receiver<NormalizedEvent>>,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
@@ -1256,10 +1285,10 @@ impl HarnessSession for ClaudeSession {
     }
 
     fn native_session_ref(&self) -> Option<String> {
-        self.state
-            .try_lock()
-            .ok()
-            .and_then(|s| s.session_ref.clone())
+        self.native_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn capabilities(&self) -> Option<Capabilities> {
@@ -1570,6 +1599,90 @@ mod attachment_tests {
         assert_eq!(
             user_content(&UserInput::from("nur Text")),
             vec![json!({"type": "text", "text": "nur Text"})]
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_ref_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::golden::{RawLine, ReplayLauncher};
+    use beton_harness::{AllowAll, HostEnv};
+
+    async fn launch(spec: SessionSpec, lines: Vec<RawLine>) -> ClaudeSession {
+        let ctx = AdapterContext {
+            stage: None,
+            gate: Arc::new(AllowAll),
+            launcher: Arc::new(ReplayLauncher::new(lines, 0)),
+            env: HostEnv::default(),
+        };
+        ClaudeAdapter::default()
+            .launch(
+                SessionSpec {
+                    workdir: std::env::temp_dir(),
+                    ..spec
+                },
+                ctx,
+            )
+            .await
+            .unwrap()
+    }
+
+    /// #305: Der Runner liest die Referenz für `session.started` direkt nach dem Start, während
+    /// die Leseschleife schon Zeilen der CLI verarbeitet und dafür den Zustand sperrt. Die
+    /// Referenz darf davon nicht abhängen (HAR-020 AC2, Grundlage für das Resume aus AC1).
+    #[tokio::test]
+    async fn har_020_ac2_session_ref_is_readable_while_the_reader_holds_the_state() {
+        let s = launch(SessionSpec::default(), Vec::new()).await;
+        let held = s.state.lock().await;
+        let id = s.native_session_ref().expect("eigene --session-id");
+        drop(held);
+        assert_eq!(s.native_session_ref().as_deref(), Some(id.as_str()));
+
+        let resumed = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                ..SessionSpec::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let _held = resumed.state.lock().await;
+        assert_eq!(
+            resumed.native_session_ref().as_deref(),
+            Some("2b1c5d1e-0000-4000-8000-000000000001")
+        );
+    }
+
+    /// Beim Abzweigen vergibt die CLI die Referenz; sie gilt, sobald `system/init` gelesen ist.
+    #[tokio::test]
+    async fn har_020_ac2_forked_session_ref_comes_from_init() {
+        let init = r#"{"type":"system","subtype":"init","session_id":"9f0e8d7c-0000-4000-8000-000000000002","model":"m","tools":[],"mcp_servers":[]}"#;
+        let mut s = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                fork_session: true,
+                ..SessionSpec::default()
+            },
+            vec![RawLine {
+                ms: 0,
+                after_stdin: 0,
+                out: init.into(),
+            }],
+        )
+        .await;
+        let mut rx = s.events().unwrap();
+        while let Some(e) = rx.recv().await {
+            if matches!(e.payload, EventPayload::HarnessReady(_)) {
+                break;
+            }
+        }
+        let _held = s.state.lock().await;
+        assert_eq!(
+            s.native_session_ref().as_deref(),
+            Some("9f0e8d7c-0000-4000-8000-000000000002")
         );
     }
 }
