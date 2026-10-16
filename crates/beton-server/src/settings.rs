@@ -318,6 +318,29 @@ mod tests {
         assert!(precheck_switch(&json!({"permission_mode": "yolo"})).is_ok());
     }
 
+    /// AGT-014 (Klasse „Lockerung von unten“, #258 R7): Ein Agent aus dem Repository
+    /// (Projekt-Agent) schaltet YOLO nicht selbst ein; das geht nur ausdrücklich in der Anfrage
+    /// oder über einen Agent der User-Ebene bzw. einen eingebauten.
+    #[test]
+    fn agt_014_project_agent_cannot_turn_on_yolo_by_itself() {
+        let p = agent_permission_mode("project", Some("yolo"), None).unwrap_err();
+        assert_eq!(p.code, ProblemCode::AgentInvalid, "{p:?}");
+        // Ausdrücklich angefragt: Der Agent entscheidet es nicht.
+        assert!(agent_permission_mode("project", Some("yolo"), Some("yolo")).is_ok());
+        for source in ["user", "builtin"] {
+            assert!(
+                agent_permission_mode(source, Some("yolo"), None).is_ok(),
+                "{source}"
+            );
+        }
+        for mode in ["plan", "default", "accept_edits"] {
+            assert!(
+                agent_permission_mode("project", Some(mode), None).is_ok(),
+                "{mode}"
+            );
+        }
+    }
+
     #[test]
     fn har_027_unknown_or_unsupported_modes_are_rejected() {
         let p =

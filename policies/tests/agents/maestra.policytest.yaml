@@ -1,6 +1,6 @@
-# Policy-Test (POL-026, QA-004): Built-in-Agent maestra (AGT-011). Seine Agent-Policies
-# (`maestra-no-code`, `maestra-no-merge`) kommen mit WP-49 zurück (#172, #234); bis dahin
-# bringt maestra keine eigenen Regeln mit, und es gelten die höheren Ebenen unverändert.
+# Policy-Test (POL-026, QA-004): Built-in-Agent maestra (AGT-011) schreibt keinen Code und
+# merged bzw. pusht nie (Agent-Policies `maestra-no-code`, `maestra-no-merge`, AGT-014). Die
+# höheren Ebenen gelten unverändert dazu.
 spec_version: 1
 layers:
   user: [../fixtures/dangerous-shell.yaml]
@@ -8,15 +8,31 @@ layers:
   agent: [../../../agents/maestra/agent.yaml]
 harness: claude
 cases:
-  - name: Lesende Kommandos sind erlaubt
+  - name: "AGT-011 AC2: maestra ruft selbst kein Bash auf"
     phase: tool_call
     input: { tool: { name: Bash, args: { command: "git status" } } }
-    expect: { outcome: allow }
-  - name: User-Regel fragt auch unter maestra nach
+    expect: { outcome: deny, rules: [defaults.tool_call] }
+  - name: "AGT-011 AC2: maestra bearbeitet keine Dateien"
     phase: tool_call
-    input: { tool: { name: Bash, args: { command: "rm -rf build" } } }
-    expect: { outcome: ask, rules: [rm-rf] }
-  - name: Projekt-deny gilt auch unter maestra
+    input: { tool: { name: Edit, args: { file_path: /repo/src/main.rs, old_string: a, new_string: b } } }
+    expect: { outcome: deny, rules: [defaults.tool_call] }
+  - name: maestra schreibt keine Dateien
+    phase: tool_call
+    input: { tool: { name: Write, args: { file_path: /repo/notes.md, content: x } } }
+    expect: { outcome: deny, rules: [defaults.tool_call] }
+  - name: maestra liest Dateien
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/README.md } } }
+    expect: { outcome: allow, rules: [maestra-no-code] }
+  - name: maestra delegiert per session_spawn
+    phase: tool_call
+    input: { tool: { name: mcp__beton__session_spawn, args: { agent: impl-claude } } }
+    expect: { outcome: allow, rules: [maestra-no-code] }
+  - name: maestra merged nicht (auch per MCP-Tool)
+    phase: tool_call
+    input: { tool: { name: mcp__github__merge_pull_request, args: { n: 1 } } }
+    expect: { outcome: deny, rules: [maestra-no-merge] }
+  - name: User-Regel und Projekt-deny gelten unter maestra weiter
     phase: tool_call
     input: { tool: { name: Bash, args: { command: "git push origin main" } } }
-    expect: { outcome: deny, rules: [no-push] }
+    expect: { outcome: deny, rules: [no-push, maestra-no-merge] }

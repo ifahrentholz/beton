@@ -751,3 +751,60 @@ fn pol_001_builtin_rule_types_are_not_yet_desugared() {
         );
     }
 }
+
+// --------------------------------------------------------------- AGT-014: nur verschärfen
+
+/// AGT-014 (Klasse „Lockerung von unten“, #268): Effects einer Agent-Regel schreiben nur
+/// eigenen Zustand (`agent/<set>/…`, Scope `session` bzw. `run`), nie Zähler oder Freigaben
+/// der User-Ebene (`user`, `user_day`) oder fremde Keys.
+#[test]
+fn agt_014_agent_effects_only_touch_own_session_state() {
+    let effect = |scope: &str, key: &str| {
+        vec![json!({ "id": "e", "on": "tool_call", "action": "allow",
+                     "effects": [{ "op": "delete", "scope": scope, "key": key }] })]
+    };
+    for (scope, key) in [
+        ("user_day", "pushes"),
+        ("user", "agent/a/x"),
+        ("session", "pushes"),
+        ("run", "loop/abc"),
+    ] {
+        let err = inline_set(
+            Scope::Agent,
+            "a",
+            "agents/a/agent.yaml",
+            &effect(scope, key),
+        )
+        .unwrap_err();
+        assert!(
+            err.message.contains("policies[0].effects[0]"),
+            "{scope}/{key}: {err}"
+        );
+    }
+    inline_set(
+        Scope::Agent,
+        "a",
+        "agents/a/agent.yaml",
+        &effect("session", "agent/a/zaehler"),
+    )
+    .unwrap();
+    // Die User-Ebene darf das weiterhin.
+    let text = "spec_version: 1\nname: u\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{ op: delete, scope: user_day, key: pushes }]\n";
+    parse_set(Scope::User, "u.yaml", text).unwrap();
+}
+
+/// AGT-014: Eine Agent-Regel lässt nach Ablauf einer Rückfrage nie automatisch zu
+/// (`on_timeout: allow` wäre eine Lockerung gegenüber höheren `ask`-Regeln).
+#[test]
+fn agt_014_agent_ask_never_allows_on_timeout() {
+    let rules = vec![json!({ "id": "q", "on": "tool_call", "action": "ask",
+                             "approval": { "timeout": "1s", "on_timeout": "allow" } })];
+    let err = inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap_err();
+    assert!(
+        err.message.contains("policies[0].approval.on_timeout"),
+        "{err}"
+    );
+    let rules = vec![json!({ "id": "q", "on": "tool_call", "action": "ask",
+                             "approval": { "timeout": "1s", "on_timeout": "deny" } })];
+    inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).unwrap();
+}
