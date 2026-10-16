@@ -195,6 +195,18 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         SessionSkills::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         beton_core::event::Attachment::export_all(&cfg)
             .context("TypeScript-Export fehlgeschlagen")?;
+        // Workspace-Terminals (SES-019, WEB-010).
+        use beton_server::terminals::{
+            TerminalList, TerminalOpenRequest, TerminalRename, TerminalResize, TerminalView,
+        };
+        TerminalOpenRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalList::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalRename::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalResize::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Binärkanäle (PROTO-007): Bild-Metadaten des Browser-Kanals.
+        beton_proto::channel::BrowserFrameMeta::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
         // Session-Export/-Import als Datei (SES-009, DATA-010).
         beton_server::exports::SessionImportResult::export_all(&cfg)
             .context("TypeScript-Export fehlgeschlagen")?;
