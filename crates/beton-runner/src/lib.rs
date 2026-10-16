@@ -13,6 +13,7 @@ pub mod policy;
 pub mod settings;
 pub mod stages;
 pub mod state;
+pub mod terminals;
 pub mod workspace;
 
 use std::collections::{HashMap, VecDeque};
@@ -832,6 +833,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     }));
     // Credentials und Egress-Events des Stufenmodells (PRX-006, PRX-009): Werte und Audit über
     // den Tunnel, Events ins Session-Log.
+    // Snapshots der Terminals als Blob über den Tunnel (DATA-011).
+    let term_calls = usage_tx.clone();
     let credentials = Arc::new(credentials::TunnelCredentials::new(
         credentials::channel_calls(usage_tx),
         stage_tx.clone(),
@@ -1468,6 +1471,28 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3).
     let (observed_tx, mut observed_rx) =
         mpsc::unbounded_channel::<(beton_policy::load::RuleRef, String)>();
+    // Workspace-Terminals (SES-019, SBX-017): Prozesse in der Tool-Sandbox der Session; ohne
+    // Stufenmodell (`backend: none`, bestätigt) ohne Isolation wie jedes Tool.
+    let (term_tx, mut term_rx) = mpsc::unbounded_channel::<terminals::Out>();
+    let term_sandbox = match &stages {
+        Some(s) => s.tools.clone(),
+        None => {
+            let tx = stage_tx.clone();
+            beton_sandbox::Sandbox::unsandboxed(
+                beton_sandbox::Stage::Tools,
+                Some(Arc::new(move |ev| {
+                    let _ = tx.send(EventPayload::SandboxStarted(ev));
+                })),
+            )
+        }
+    };
+    let terminals = terminals::Terminals::new(
+        term_sandbox,
+        boot.workdir.clone(),
+        terminals::Terminals::default_shell(std::env::var("SHELL").ok().as_deref()),
+        term_tx,
+        term_calls,
+    );
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
@@ -1572,6 +1597,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             )
             .await
         {
+            continue;
+        }
+        // Offene Terminals erneut anmelden (PROTO-007); Frames erst im neuen Kredit.
+        let mut announced = true;
+        for up in terminals.connected() {
+            announced &= send(&mut ws, &up).await;
+        }
+        if !announced {
+            terminals.disconnected();
             continue;
         }
 
@@ -1978,6 +2012,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         return Ok(Exit::HarnessExited { code: x.code });
                     }
                 }
+                out = term_rx.recv() => {
+                    let Some(out) = out else { continue };
+                    if !forward_terminal(&mut ws, &boot, &mut unacked, out).await { break None; }
+                }
                 ev = recv_opt(&mut hub_events) => {
                     let Some(payload) = ev else { hub_events = None; continue };
                     if let EventPayload::McpServerFailed(f) = &payload
@@ -2077,9 +2115,30 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     {
                         detached_at = Some(std::time::Instant::now());
                     }
+                    if let Message::Binary(bytes) = &msg {
+                        // Eingaben an ein Terminal (PROTO-007).
+                        terminals.input_frame(bytes);
+                        continue;
+                    }
                     let Message::Text(text) = msg else { continue };
                     let Ok(down) = serde_json::from_str::<TunnelDown>(&text) else { continue };
                     match down {
+                        TunnelDown::ChannelCredit { channel_id, bytes } => terminals.credit(channel_id, bytes),
+                        TunnelDown::ChannelKeyframe { channel_id } => terminals.keyframe(channel_id),
+                        TunnelDown::CmdDeliver { cmd_id, name, args, actor } if name.starts_with("terminal.") => {
+                            // Workspace-Terminals (SES-019): PTY hier, Prozess in Stufe 2.
+                            let msg = match terminals.command(&name, &args, actor).await {
+                                Ok(result) => TunnelUp::CmdResult { cmd_id, result: Some(result), problem: None },
+                                Err(e) => TunnelUp::CmdResult { cmd_id, result: None, problem: Some(e.to_problem()) },
+                            };
+                            // Kanal und `terminal.opened` vor der Antwort: Ein Client, der danach
+                            // den Kanal öffnet, findet ihn (PROTO-007).
+                            let mut ok = true;
+                            while let Ok(out) = term_rx.try_recv() {
+                                ok &= forward_terminal(&mut ws, &boot, &mut unacked, out).await;
+                            }
+                            if !ok || !send(&mut ws, &msg).await { break None; }
+                        }
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
                         TunnelDown::CmdDeliver { cmd_id, name, args, .. } if name == ONE_SHOT_CMD => {
@@ -2172,7 +2231,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             if !send(&mut ws, &msg).await { break None; }
                         }
                         TunnelDown::RunnerStop { grace_s, .. } => {
-                            let mut batch = Vec::new();
+                            // Terminals enden mit dem Runner (SES-019).
+                            let mut batch: Vec<Event> = terminals.shutdown().into_iter().map(|p| system_event(&boot, p)).collect();
                             status(&mut lifecycle, RunnerState::Draining, Some("runner.stop".into()), &mut batch);
                             status(&mut lifecycle, RunnerState::Terminated, None, &mut batch);
                             let _ = push(&mut ws, &boot, &mut unacked, batch).await;
@@ -2196,7 +2256,6 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                         }
                         TunnelDown::Welcome { .. } => {}
-                        TunnelDown::ChannelCredit { .. } | TunnelDown::ChannelKeyframe { .. } => {}
                     }
                 }
                 Some((cmd_id, reply)) = one_shot_rx.recv() => {
@@ -2273,9 +2332,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             ));
         }
         if let Some(exit) = outcome {
+            terminals.shutdown();
             return finish(session, exit).await;
         }
-        // Verbindung verloren: weiterlaufen, puffern, neu verbinden.
+        // Verbindung verloren: weiterlaufen, puffern, neu verbinden; Terminals lesen frei weiter.
+        terminals.disconnected();
         if lifecycle
             .go(RunnerState::Lost, Some("Tunnel getrennt".into()))
             .is_ok()
@@ -2864,6 +2925,26 @@ async fn recv_opt<T>(rx: &mut Option<tokio::sync::mpsc::UnboundedReceiver<T>>) -
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
+    }
+}
+
+/// Meldung der Terminals an den Server (SES-019): Event ins Log, Binärframe, Steuernachricht.
+async fn forward_terminal(
+    ws: &mut Ws,
+    boot: &RunnerBoot,
+    unacked: &mut Unacked,
+    out: terminals::Out,
+) -> bool {
+    match out {
+        terminals::Out::Event(payload, by) => {
+            let event = match by {
+                Some(a) => Event::new(boot.session_id, 0, a, *payload),
+                None => system_event(boot, *payload),
+            };
+            push(ws, boot, unacked, vec![event]).await
+        }
+        terminals::Out::Frame(bytes) => ws.send(Message::Binary(bytes.into())).await.is_ok(),
+        terminals::Out::Up(up) => send(ws, &up).await,
     }
 }
 

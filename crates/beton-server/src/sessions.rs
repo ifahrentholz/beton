@@ -305,6 +305,8 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             }
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
+            // Bildschirmzustand eines Terminals als Blob der Session (DATA-011).
+            "terminal.snapshot" => crate::terminals::store_snapshot(&self.0, session, &args).await,
             // Credentials der Proxy-Instanzen des Runners (PRX-006, PRX-009 AC4).
             "credential.resolve" | "credential.used" | "credential.misuse"
             | "egress.passthrough" => credential_call(&self.0, session, tool, &args).await,

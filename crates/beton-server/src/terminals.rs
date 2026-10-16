@@ -335,3 +335,32 @@ pub fn register_commands(reg: &mut CommandRegistry) {
         reg.register(std::sync::Arc::new(TerminalCommand { name, twin }));
     }
 }
+
+/// Größter Snapshot eines Terminals (Scrollback samt Formatierung).
+pub const MAX_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
+
+/// System-Call `terminal.snapshot {data_b64}` des Runners: legt den Bildschirmzustand als Blob
+/// der Session ab und liefert `{blob_ref}` (DATA-011). Das Event `terminal.snapshot` schreibt
+/// danach der Runner.
+pub async fn store_snapshot(
+    state: &AppState,
+    session: SessionId,
+    args: &Value,
+) -> Result<Value, Problem> {
+    use base64::Engine as _;
+    let data = args["data_b64"]
+        .as_str()
+        .ok_or_else(|| Problem::new(ProblemCode::ValidationFailed).detail("data_b64 fehlt"))?;
+    if data.len() > MAX_SNAPSHOT_BYTES / 3 * 4 + 4 {
+        return Err(Problem::new(ProblemCode::PayloadTooLarge)
+            .detail(format!("Snapshot größer als {MAX_SNAPSHOT_BYTES} Bytes")));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| Problem::new(ProblemCode::ValidationFailed).detail(e.to_string()))?;
+    let blob = state
+        .store
+        .put_session_blob(state.local.org, session, &bytes)
+        .await?;
+    Ok(json!({ "blob_ref": blob }))
+}

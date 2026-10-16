@@ -687,6 +687,21 @@ async fn connection(
         return;
     }
 
+    // Schreiben in eigener Aufgabe: Die Lese-Schleife wartet nie auf den Socket zum Runner.
+    // Sonst blockierten sich beide Seiten, wenn der Runner gerade Frames schreibt und der Server
+    // ihm Kredit schickt (volle Socket-Puffer, PROTO-007).
+    let (wtx, mut wrx) = mpsc::unbounded_channel::<Message>();
+    let writer = tokio::spawn(async move {
+        while let Some(m) = wrx.recv().await {
+            let closing = matches!(m, Message::Close(_));
+            if sink.send(m).await.is_err() || closing {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+    let as_text =
+        |m: &TunnelDown| Message::Text(serde_json::to_string(m).unwrap_or_default().into());
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
     let down = tx.clone();
     // Binärframes an den Runner (Eingaben der Terminals, PROTO-007).
@@ -743,18 +758,18 @@ async fn connection(
                 } else {
                     "Daemon fährt herunter"
                 };
-                let _ = sink.send(close_msg(close::SHUTTING_DOWN, reason)).await;
+                let _ = wtx.send(close_msg(close::SHUTTING_DOWN, reason));
                 break;
             }
             down = rx.recv() => {
                 let Some(down) = down else { break };
-                if sink.send(Message::Text(serde_json::to_string(&down).unwrap_or_default().into())).await.is_err() {
+                if wtx.send(as_text(&down)).is_err() {
                     break;
                 }
             }
             bin = bin_rx.recv() => {
                 let Some(bin) = bin else { continue };
-                if sink.send(Message::Binary(bin.into())).await.is_err() {
+                if wtx.send(Message::Binary(bin.into())).is_err() {
                     break;
                 }
             }
@@ -797,14 +812,14 @@ async fn connection(
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
                             let unsaved = unsaved_push(&reply);
-                            if sink.send(Message::Text(serde_json::to_string(&reply).unwrap_or_default().into())).await.is_err() || stale {
+                            if wtx.send(as_text(&reply)).is_err() || stale {
                                 break;
                             }
                             if unsaved {
                                 // Spätere Pushes dieser Verbindung dürfen die Lücke nicht
                                 // überspringen: trennen, der Runner sendet nach dem Reconnect
                                 // alles Unbestätigte erneut (PROTO-015, #278).
-                                let _ = sink.send(close_msg(close::INTERNAL, "Events nicht gespeichert")).await;
+                                let _ = wtx.send(close_msg(close::INTERNAL, "Events nicht gespeichert"));
                                 break;
                             }
                         }
@@ -816,13 +831,17 @@ async fn connection(
             }
             _ = ping.tick() => {
                 if last_pong.elapsed() > state.config.pong_timeout {
-                    let _ = sink.send(close_msg(close::HEARTBEAT_TIMEOUT, "kein Pong")).await;
+                    let _ = wtx.send(close_msg(close::HEARTBEAT_TIMEOUT, "kein Pong"));
                     break;
                 }
-                let _ = sink.send(Message::Ping(Vec::new().into())).await;
+                let _ = wtx.send(Message::Ping(Vec::new().into()));
             }
         }
     }
+    // Ausstehendes (z. B. das Close-Frame) noch senden.
+    drop(wtx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+
     // Ein geordnet gestoppter Runner meldet sich nicht wieder an: sein Token sperren, bevor
     // die Verbindung als getrennt gilt. Nur dieses Token, und vor `stopped`: Wer daraufhin eine
     // Eingabe schickt, startet einen Nachfolger mit neuem Token (SES-003 AC3, #198).
