@@ -37,6 +37,9 @@ pub enum Ctl {
     },
     /// Ein Limit wurde erreicht (`pids`, `memory`).
     Limit { target: String },
+    /// In der Sandbox entstand eine Git-Steuerdatei (`commondir`/`gitdir`, #209); der
+    /// Launcher hat die Sandbox beendet und die Datei entfernt.
+    Fs { target: String },
 }
 
 /// Sendet eine Nachricht (best effort, Nachrichten sind klein).

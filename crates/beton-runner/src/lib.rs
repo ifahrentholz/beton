@@ -1610,9 +1610,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     for mut ev in incoming {
                         // SBX-002: Shell-Aufruf ohne Start über den Exec-Broker (Stufe 1).
                         let sandbox_hit = match (integrity.as_mut(), stages.as_ref()) {
-                            (Some(i), Some(s)) => i.observe(&ev.payload, s.broker_starts()).err(),
+                            (Some(i), Some(s)) => i.observe(&ev.payload, s.broker_starts()).err().map(|r| (SHELL_OUTSIDE_STAGE_TWO, r)),
                             _ => None,
                         };
+                        // SBX-003 (#209): Nach jedem Tool-Lauf dürfen keine Git-Steuerdateien
+                        // (`commondir`/`gitdir`) entstanden oder geändert sein.
+                        let sandbox_hit = sandbox_hit.or_else(|| match (&ev.payload, stages.as_ref()) {
+                            (EventPayload::ToolCallCompleted(_), Some(s)) => s.check_git().err().map(|r| (GIT_CONTROL_CHANGED, r)),
+                            _ => None,
+                        });
                         if timed_out && let EventPayload::TurnInterrupted(t) = &mut ev.payload {
                             t.reason = Some(TIMED_OUT.into());
                         }
@@ -1737,13 +1743,17 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             break;
                         }
                     }
-                    if let Some(reason) = sandbox_violation {
+                    if let Some((title, reason)) = sandbox_violation {
                         // Kommandos liefen in Stufe 1: sofort beenden, Session `failed`.
                         tracing::error!("Integritätsprüfung der Sandbox: {reason}");
                         let _ = session.shutdown(Shutdown::Kill).await;
-                        end_sandbox_integrity_violation(&boot, &mut lifecycle, &reason, &mut batch);
+                        // Erst beenden, dann (erneut) zurücksetzen: Prozesse der Stufe 2 enden
+                        // mit ihren `bt-exec`-Verbindungen (SBX-003, #209).
+                        if let Some(s) = stages.as_ref() { s.restore_git(); }
+                        end_sandbox_integrity_violation(&boot, &mut lifecycle, title, &reason, &mut batch);
                         let _ = push(&mut ws, &boot, &mut unacked, batch).await;
                         drain_acks(&mut ws, &mut unacked).await;
+                        if let Some(s) = stages.as_ref() { s.restore_git(); }
                         return Ok(Exit::PolicyViolation);
                     }
                     if run_over {
@@ -2563,11 +2573,17 @@ fn end_policy_failure(
     ));
 }
 
-/// Integritätsverstoß des Stufenmodells (SBX-002): `error` mit Problem `sandbox_integrity`,
-/// Runner und Session `failed` (wie bei der Policy-Integrität, HAR-005).
+/// Titel der Integritätsverstöße der Sandbox.
+const SHELL_OUTSIDE_STAGE_TWO: &str = "Ein Shell-Kommando lief nicht in der Tool-Sandbox (Stufe 2)";
+const GIT_CONTROL_CHANGED: &str =
+    "In der Sandbox entstand oder änderte sich eine Git-Steuerdatei (commondir/gitdir)";
+
+/// Integritätsverstoß des Stufenmodells (SBX-002, SBX-003): `error` mit Problem
+/// `sandbox_integrity`, Runner und Session `failed` (wie bei der Policy-Integrität, HAR-005).
 fn end_sandbox_integrity_violation(
     boot: &RunnerBoot,
     lifecycle: &mut Lifecycle,
+    title: &str,
     reason: &str,
     out: &mut Vec<Event>,
 ) {
@@ -2577,7 +2593,7 @@ fn end_sandbox_integrity_violation(
             problem: json!({
                 "type": "urn:beton:problem:sandbox_integrity",
                 "code": "sandbox_integrity",
-                "title": "Ein Shell-Kommando lief nicht in der Tool-Sandbox (Stufe 2)",
+                "title": title,
                 "detail": reason,
             }),
         }),
