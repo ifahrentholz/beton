@@ -4441,6 +4441,7 @@
       ]
     },
     "SessionSandbox": {
+      "description": "Schutz der Tools einer Session (SBX-006, HAR-027): Stufe 2 und Netz nur über den Proxy.",
       "type": "object",
       "properties": {
         "egress_proxy": {

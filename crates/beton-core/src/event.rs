@@ -539,8 +539,9 @@ payload!(SessionStarted {
     /// Was die Sandbox dieser Session durchsetzt (SBX-006); Grundlage für `yolo` (HAR-027).
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] sandbox: Option<SessionSandbox>,
 });
-/// Schutz der Tools einer Session (SBX-006, HAR-027): Stufe 2 und Netz nur über den Proxy.
-payload!(SessionSandbox {
+payload!(
+    /// Schutz der Tools einer Session (SBX-006, HAR-027): Stufe 2 und Netz nur über den Proxy.
+    SessionSandbox {
     /// Tools laufen in Stufe 2, getrennt vom Harness.
     tool_sandbox: bool,
     /// Netz der Tools nur über den Egress-Proxy (oder gar keins).
