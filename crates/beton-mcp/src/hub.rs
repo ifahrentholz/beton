@@ -725,14 +725,21 @@ where
     } else {
         from_server.abort();
     }
+    if !server_gone {
+        return;
+    }
     // War der Server nie initialisiert, ist er gescheitert (HAR-009 AC4).
-    if server_gone && !initialized.load(std::sync::atomic::Ordering::SeqCst) {
+    if !initialized.load(std::sync::atomic::Ordering::SeqCst) {
         let detail = match exit {
             Ok(Ok(status)) => format!("Server endete vor initialize ({status})"),
             _ => "Server antwortete nicht auf initialize".to_owned(),
         };
         failed(&shared.events, &server.name, detail);
     }
+    // Der Harness kann noch Anfragen unterwegs haben, die der Server nie gesehen hat (#319:
+    // Server endet vor `initialize`). Die Verbindung offen halten und jede beantworten, statt
+    // sie mit ungelesenen Daten zu schließen (Linux: `ECONNRESET` beim Harness).
+    refuse_rest(r, out, format!("MCP-Server {} beendet", server.name)).await;
 }
 
 #[cfg(test)]
