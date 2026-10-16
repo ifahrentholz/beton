@@ -578,7 +578,8 @@ async fn pol_014_require_approval_asks_for_file_writes() {
 
 // --------------------------------------------------------------------------------- POL-009
 
-const COUNT_PUSHES: &str = "rules:\n  - id: count-pushes\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ has(state.session.pushes) ? state.session.pushes + 1 : 1 }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n";
+/// Projekt-Regeln schreiben nur eigenen Session-Zustand (`project/<set>/…`, POL-009, #268).
+const COUNT_PUSHES: &str = "rules:\n  - id: count-pushes\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ \"project/count/pushes\" in state.session ? state.session[\"project/count/pushes\"] + 1 : 1 }}' }\n    effects:\n      - { op: increment, scope: session, key: project/count/pushes }\n";
 
 fn state_values(events: &[Value], key: &str) -> Vec<Value> {
     of_type(events, "policy.state_changed")
@@ -605,7 +606,7 @@ async fn pol_009_ac1_fork_takes_the_state_up_to_its_seq() {
     let third = env.turn(&id, "drei").await;
     let events = env.events(&id).await;
     assert_eq!(
-        state_values(&events, "pushes"),
+        state_values(&events, "project/count/pushes"),
         [json!(1), json!(2), json!(3)]
     );
     let notified = of_type(&third, "policy.notified")[0];
@@ -626,7 +627,7 @@ async fn pol_009_ac1_fork_takes_the_state_up_to_its_seq() {
         .unwrap()
         .to_owned();
     let child_events = env.events(&child).await;
-    assert_eq!(state_values(&child_events, "pushes"), [json!(1), json!(2)]);
+    assert_eq!(state_values(&child_events, "project/count/pushes"), [json!(1), json!(2)]);
     env.wait_status(&child, "idle").await;
     let turn = env.turn(&child, "vier").await;
     assert_eq!(
@@ -634,7 +635,7 @@ async fn pol_009_ac1_fork_takes_the_state_up_to_its_seq() {
         "Push Nr. 3",
         "{turn:#?}"
     );
-    assert_eq!(state_values(&turn, "pushes"), [json!(3)]);
+    assert_eq!(state_values(&turn, "project/count/pushes"), [json!(3)]);
 }
 
 #[tokio::test]
@@ -642,7 +643,7 @@ async fn pol_009_ac2_effects_of_an_ask_rule_follow_its_resolution() {
     let env = Env::start().await;
     env.project_policy(
         "asked",
-        "rules:\n  - id: confirm\n    on: tool_call\n    action: ask\n    approval: { timeout: 2s }\n    effects:\n      - { op: increment, scope: session, key: asked }\n",
+        "rules:\n  - id: confirm\n    on: tool_call\n    action: ask\n    approval: { timeout: 2s }\n    effects:\n      - { op: increment, scope: session, key: project/asked/asked }\n",
     );
     let id = env.create(&env.scenario(&pushes(3, "ls"))).await;
     env.wait_status(&id, "idle").await;
@@ -650,19 +651,19 @@ async fn pol_009_ac2_effects_of_an_ask_rule_follow_its_resolution() {
     let before = env.start_turn(&id, "eins").await;
     env.resolve_with(&id, json!({"decision": "allow"})).await;
     let turn = env.turn_end(&id, before).await;
-    assert_eq!(state_values(&turn, "asked"), [json!(1)]);
+    assert_eq!(state_values(&turn, "project/asked/asked"), [json!(1)]);
     // Ablehnung: mit Default effects_on ebenfalls.
     let before = env.start_turn(&id, "zwei").await;
     env.resolve_with(&id, json!({"decision": "deny"})).await;
     let turn = env.turn_end(&id, before).await;
-    assert_eq!(state_values(&turn, "asked"), [json!(2)]);
+    assert_eq!(state_values(&turn, "project/asked/asked"), [json!(2)]);
     // Ablauf: nicht.
     let turn = env.turn(&id, "drei").await;
     assert_eq!(
         of_type(&turn, "approval.resolved")[0]["payload"]["via"],
         "timeout"
     );
-    assert!(state_values(&turn, "asked").is_empty(), "{turn:#?}");
+    assert!(state_values(&turn, "project/asked/asked").is_empty(), "{turn:#?}");
 }
 
 // ---------------------------------------------------------------------------------- UX-001

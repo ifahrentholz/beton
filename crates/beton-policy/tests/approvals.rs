@@ -575,7 +575,7 @@ fn pol_014_static_kinds_feed_the_enforcement_check() {
 #[test]
 fn pol_009_effect_values_and_notify_messages_are_evaluated() {
     let s = set(
-        Scope::Project,
+        Scope::User,
         "p",
         "rules:\n  - id: count-pushes\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: set, scope: session, key: last, value: 'tool.command' }\n",
     );

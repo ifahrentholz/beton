@@ -687,7 +687,7 @@ fn pol_001_new_rules_with_effects_or_approval_timeouts_count_as_loosening() {
     use beton_policy::store::only_tightens;
     let base = parse_set(Scope::Project, "g.yaml", DENY_SHELL).unwrap();
     for added in [
-        "  - id: reset\n    on: tool_call\n    action: notify\n    effects:\n      - { op: delete, scope: user_day, key: pushes }\n",
+        "  - id: reset\n    on: tool_call\n    action: notify\n    effects:\n      - { op: delete, scope: session, key: project/guard/pushes }\n",
         "  - id: fast\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s }\n",
         "  - id: lax\n    on: tool_call\n    action: ask\n    approval: { on_timeout: allow }\n",
         "  - id: lax-type\n    type: require_approval\n    params: { kinds: [shell], on_timeout: allow }\n",

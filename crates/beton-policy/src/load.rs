@@ -571,25 +571,26 @@ fn check_rules_with(
                 ));
             }
         }
-        // Der Präfix `agent/` gehört dem Zustand der Agent-Ebene (Security-Review #327).
-        if scope != Scope::Agent
-            && let Some(j) = rule
-                .effects
-                .iter()
-                .position(|e| e.key.starts_with("agent/"))
-        {
-            return Err(loc.at(
-                &field(&format!("effects[{j}].key")),
-                format!(
-                    "Key `{}`: der Präfix `agent/` ist für Regeln der Agent-Ebene reserviert",
-                    rule.effects[j].key
-                ),
-            ));
+        // Die Präfixe `project/` und `agent/` gehören dem Zustand ihrer Ebene (Security-Review
+        // #327, #268).
+        for (prefix, owner) in [("agent/", Scope::Agent), ("project/", Scope::Project)] {
+            if scope != owner
+                && let Some(j) = rule.effects.iter().position(|e| e.key.starts_with(prefix))
+            {
+                return Err(loc.at(
+                    &field(&format!("effects[{j}].key")),
+                    format!(
+                        "Key `{}`: der Präfix `{prefix}` ist für Regeln der Ebene {} reserviert",
+                        rule.effects[j].key,
+                        owner.as_str()
+                    ),
+                ));
+            }
         }
-        // Agent-Ebene verschärft nur (AGT-014): Effects nur auf eigenen Session-Zustand,
-        // keine automatische Freigabe nach Ablauf einer Rückfrage.
-        if scope == Scope::Agent {
-            let own = format!("agent/{}/", loc.set);
+        // Unterhalb der User-Ebene verschärfen Regeln nur (POL-007, AGT-014, #268): Effects nur
+        // auf eigenen Session-Zustand, nie auf Zähler oder Zustand anderer Ebenen.
+        if matches!(scope, Scope::Project | Scope::Agent) {
+            let own = format!("{}/{}/", scope.as_str(), loc.set);
             for (j, effect) in rule.effects.iter().enumerate() {
                 let own_scope = matches!(
                     effect.scope,
@@ -599,12 +600,16 @@ fn check_rules_with(
                     return Err(loc.at(
                         &field(&format!("effects[{j}]")),
                         format!(
-                            "Effects der Agent-Ebene schreiben nur eigenen Zustand der Session \
-                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen"
+                            "Effects der Ebene {} schreiben nur eigenen Zustand der Session \
+                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen",
+                            scope.as_str()
                         ),
                     ));
                 }
             }
+        }
+        // Keine automatische Freigabe nach Ablauf einer Rückfrage auf der Agent-Ebene.
+        if scope == Scope::Agent {
             if rule
                 .approval
                 .as_ref()

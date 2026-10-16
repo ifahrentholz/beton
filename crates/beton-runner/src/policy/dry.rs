@@ -424,7 +424,7 @@ rules:
     action: ask
     reason: Push bestätigen
     effects:
-      - { op: increment, scope: session, key: pushes }
+      - { op: increment, scope: session, key: project/push/pushes }
   - id: count
     on: tool_call
     action: notify

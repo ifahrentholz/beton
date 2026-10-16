@@ -2997,6 +2997,12 @@ mod tests {
     }
 
     fn with_policy_state(body: &str, state: Option<Arc<dyn StateSource>>) -> Policy {
+        with_policy_at(Scope::Project, body, state)
+    }
+
+    /// Policy auf `scope`; Effects auf fremden Zustand (`user_day`, Keys ohne Präfix) darf nur
+    /// die User-Ebene schreiben (POL-009, #268).
+    fn with_policy_at(scope: Scope, body: &str, state: Option<Arc<dyn StateSource>>) -> Policy {
         let dir = tempfile::tempdir().unwrap();
         let pdir = dir.path().join("policies");
         std::fs::create_dir_all(&pdir).unwrap();
@@ -3007,7 +3013,7 @@ mod tests {
         .unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
         let opts = PolicyOptions {
-            dirs: vec![(Scope::Project, pdir)],
+            dirs: vec![(scope, pdir)],
             workdir: dir.path().to_path_buf(),
             ..PolicyOptions::default()
         };
@@ -3250,7 +3256,7 @@ mod tests {
 
     #[tokio::test]
     async fn pol_009_ac2_effects_follow_the_resolution() {
-        let mut p = with_policy(COUNT_ASKED);
+        let mut p = with_policy_at(Scope::User, COUNT_ASKED, None);
         // Freigabe: angewendet.
         let g = p.gate.clone();
         let call = tokio::spawn(async move { g.decide(pre("c1", "ls")).await });
@@ -3303,7 +3309,8 @@ mod tests {
             },
             ..FakeState::default()
         });
-        let mut p = with_policy_state(
+        let mut p = with_policy_at(
+            Scope::User,
             "rules:\n  - id: count-pushes\n    on: tool_call\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }} heute {{ state.user_day.pushes }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: increment, scope: user_day, key: pushes }\n",
             Some(source.clone()),
         );
@@ -3338,7 +3345,8 @@ mod tests {
                 Err("weg".into())
             }
         }
-        let mut p = with_policy_state(
+        let mut p = with_policy_at(
+            Scope::User,
             "rules:\n  - id: count\n    on: tool_call\n    action: allow\n    effects:\n      - { op: increment, scope: session, key: n }\n",
             Some(Arc::new(Broken)),
         );

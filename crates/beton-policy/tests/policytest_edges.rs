@@ -339,7 +339,7 @@ rules:
         d,
         "s.policytest.yaml",
         b"spec_version: 1
-layers: { project: [p.yaml] }
+layers: { user: [p.yaml] }
 fixtures:
   run: { cost_usd: 1.5 }
   state: { user_day: { calls: 1 }, user: { seen: [] }, run: { last: none } }

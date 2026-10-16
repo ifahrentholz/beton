@@ -43,7 +43,7 @@ rules:
     action: ask
     reason: Push bestätigen
     effects:
-      - { op: increment, scope: user, key: pushes }
+      - { op: increment, scope: session, key: project/git/pushes }
   - id: tell
     on: tool_call
     action: notify
