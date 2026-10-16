@@ -326,6 +326,33 @@ function StepLine({ done, active, children }: { done?: boolean; active?: boolean
 }
 
 function DaemonScreen({ state }: { state: string }) {
+  if (state === 'failed') {
+    return (
+      <F id={['DESK-002', 'DESK-001']} className="concrete-grain flex h-full flex-col items-center justify-center gap-5 p-8">
+        <BetonGlyph className="size-14 text-[30px]" />
+        <p className="type-wide text-xl font-[700]">beton startet nicht</p>
+        <ul className="space-y-1.5 text-[13px]">
+          <StepLine done>beton 0.1.0 gefunden (mitgeliefert)</StepLine>
+          <StepLine done>Kein laufender Daemon – starte einen neuen</StepLine>
+          <li className="flex items-center gap-2 text-deny">
+            <X className="size-3.5" />
+            Daemon-Start fehlgeschlagen: Port 7420 ist belegt
+          </li>
+          <StepLine>Profil „local“ öffnen</StepLine>
+        </ul>
+        <p className="max-w-md text-center text-[12px] text-muted-foreground">
+          Deine Sessions unter ~/.beton/ sind unverändert. Die Logs nennen den Grund; ein anderer Port lässt sich mit{' '}
+          <code className="font-mono">beton config set server.listen '[127.0.0.1:7421]'</code> setzen.
+        </p>
+        <div className="flex gap-2">
+          <button className="chamfer-sm bg-foreground px-3 py-1.5 text-[13px] font-semibold text-background">Erneut versuchen</button>
+          <button className="rounded-md border border-border px-3 py-1.5 text-[13px]">Logs anzeigen</button>
+          <button className="rounded-md border border-border px-3 py-1.5 text-[13px]">Beenden</button>
+        </div>
+      </F>
+    )
+  }
+
   if (state === 'starting') {
     return (
       <F id={['DESK-002', 'DESK-001']} className="concrete-grain flex h-full flex-col items-center justify-center gap-5 p-8">
@@ -521,6 +548,22 @@ function DeepLinkScreen({ state }: { state: string }) {
             <div className="mt-4 flex gap-2">
               <button className="chamfer-sm bg-foreground px-3 py-1.5 text-[13px] font-semibold text-background">Profil anlegen und anmelden</button>
               <button className="rounded-md border border-border px-3 py-1.5 text-[13px]">Abbrechen</button>
+            </div>
+          </F>
+        </InlineDialog>
+      )}
+      {state === 'server-m3' && (
+        <InlineDialog waiting={false}>
+          <F id="DESK-006">
+            <p className="text-[15px] font-semibold">Link auf einen anderen Server</p>
+            <LinkLine>beton://beton.team.example.com/s/ses_9a1b?comment=c_42</LinkLine>
+            <p className="mt-2 text-[13px]">
+              Dieser Link gehört zu <span className="font-medium">beton.team.example.com</span>. Diese Version von beton arbeitet nur mit dem lokalen
+              Daemon auf diesem Rechner; weitere Server kommen mit einer späteren Version.
+            </p>
+            <p className="mt-1 text-[12px] text-muted-foreground">beton hat den Link nicht geöffnet und keine Verbindung zu diesem Server aufgebaut.</p>
+            <div className="mt-4 flex gap-2">
+              <button className="rounded-md border border-border px-3 py-1.5 text-[13px]">OK</button>
             </div>
           </F>
         </InlineDialog>
@@ -904,6 +947,7 @@ export const group: ScreenGroup = {
       features: ['DESK-002', 'DESK-001'],
       states: [
         { id: 'starting', title: 'Start' },
+        { id: 'failed', title: 'Start fehlgeschlagen' },
         { id: 'existing', title: 'Verbunden mit CLI-Daemon' },
         { id: 'incompatible', title: 'Daemon inkompatibel' },
         { id: 'quit', title: 'Beenden mit laufenden Sessions' },
@@ -921,6 +965,7 @@ export const group: ScreenGroup = {
         { id: 'open', title: 'Session an Event geöffnet' },
         { id: 'unknown', title: 'Unbekannter Server (ab M4)' },
         { id: 'pair', title: 'Koppeln (ab M4)' },
+        { id: 'server-m3', title: 'Server-Link vor M4 (auch Koppeln)' },
       ],
       component: DeepLinkScreen,
     },
