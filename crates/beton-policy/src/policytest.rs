@@ -432,10 +432,8 @@ fn load_agent(scope: Scope, path: &Path) -> Result<Vec<LoadedSet>, String> {
         }
     };
     let dir = path.parent().unwrap_or(Path::new("."));
+    // `agent_sets` liest nur relative Pfade ohne `..`.
     crate::load::agent_sets(scope, name, &path.display().to_string(), &rules, |rel| {
-        if Path::new(rel).is_absolute() || rel.split('/').any(|c| c == "..") {
-            return Err("Pfad außerhalb des Agent-Verzeichnisses".into());
-        }
         read_text(&dir.join(rel))
     })
     .map_err(|e| {

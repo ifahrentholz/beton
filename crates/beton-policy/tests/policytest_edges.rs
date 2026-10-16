@@ -120,6 +120,52 @@ fn pol_026_agent_layers_with_errors_are_load_errors() {
         e.contains("agent.yaml:") && e.contains("policies[0].id"),
         "{e}"
     );
+    // Verweise per `ref`: fehlende Datei, Pfad hinaus, ungültige Datei; Inline-Fehler hinter
+    // einem Verweis nennen die Position im `agent.yaml` (AGT-014, Security-Review #327).
+    write(
+        d,
+        "refs/agent.yaml",
+        b"spec_version: 1\nname: x\npolicies:\n  - { ref: fehlt.yaml }\n",
+    );
+    let e = error_of(d, "r1.policytest.yaml", &case("refs"));
+    assert!(
+        e.contains("policies[0].ref") && e.contains("fehlt.yaml"),
+        "{e}"
+    );
+    write(
+        d,
+        "refs/agent.yaml",
+        b"spec_version: 1\nname: x\npolicies:\n  - { ref: ../p.yaml }\n",
+    );
+    let e = error_of(d, "r2.policytest.yaml", &case("refs"));
+    assert!(e.contains("außerhalb"), "{e}");
+    write(
+        d,
+        "refs/kaputt.yaml",
+        b"spec_version: 1\nname: k\nrules: 3\n",
+    );
+    write(
+        d,
+        "refs/agent.yaml",
+        b"spec_version: 1\nname: x\npolicies:\n  - { ref: kaputt.yaml }\n",
+    );
+    let e = error_of(d, "r3.policytest.yaml", &case("refs"));
+    assert!(e.contains("kaputt.yaml"), "{e}");
+    write(
+        d,
+        "refs/gut.yaml",
+        P.replace("name: p", "name: gut").as_bytes(),
+    );
+    write(
+        d,
+        "refs/agent.yaml",
+        b"spec_version: 1\nname: x\npolicies:\n  - { ref: gut.yaml }\n  - { id: B, on: tool_call, action: deny }\n",
+    );
+    let e = error_of(d, "r4.policytest.yaml", &case("refs"));
+    assert!(
+        e.contains("policies[1].id") && e.contains("agent.yaml:5:"),
+        "{e}"
+    );
     write(d, "broken/agent.yaml", b"name: [\n");
     assert!(error_of(d, "y.policytest.yaml", &case("broken")).contains("agent.yaml"));
     // `~/` ohne bekanntes Home ist ein Fehler, keine stille Auswahl.

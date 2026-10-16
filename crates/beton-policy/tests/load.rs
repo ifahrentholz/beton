@@ -837,3 +837,58 @@ fn agt_014_policy_refs_outside_the_agent_dir_are_not_read() {
         assert!(err.message.contains("policies[0].ref"), "{r}: {err}");
     }
 }
+
+/// POL-001: Unbekannte Tool-Klassen in `kinds` sind ein Ladefehler mit Feldpfad.
+#[test]
+fn pol_001_unknown_tool_kind_is_a_load_error() {
+    let text = "spec_version: 1\nname: k\nrules:\n  - id: k\n    on: tool_call\n    kinds: [shell, zauberei]\n    action: deny\n";
+    let err = parse_set(Scope::User, "k.yaml", text).unwrap_err();
+    assert!(err.message.contains("kinds[1]"), "{err}");
+    assert!(err.message.contains("zauberei"), "{err}");
+}
+
+/// AGT-014: Mehrere `ref`s und Inline-Regeln: Das Inline-Set steht vorn, die Dateien folgen in
+/// ihrer Reihenfolge; Lesefehler nennen den Eintrag.
+#[test]
+fn agt_014_agent_sets_order_and_read_errors() {
+    let file =
+        "spec_version: 1\nname: extra\nrules:\n  - id: e\n    on: tool_call\n    action: deny\n";
+    let entries = vec![
+        json!({ "ref": "policies/extra.yaml" }),
+        json!({ "id": "inline", "on": "tool_call", "action": "deny" }),
+    ];
+    let sets =
+        beton_policy::load::agent_sets(Scope::Agent, "a", "agents/a/agent.yaml", &entries, |_| {
+            Ok(file.to_owned())
+        })
+        .unwrap();
+    assert_eq!(sets.len(), 2);
+    assert_eq!(sets[0].name, "a");
+    assert_eq!(sets[1].name, "extra");
+    let err =
+        beton_policy::load::agent_sets(Scope::Agent, "a", "agents/a/agent.yaml", &entries, |_| {
+            Err("nicht da".into())
+        })
+        .unwrap_err();
+    assert!(err.message.contains("policies[0].ref: nicht da"), "{err}");
+    assert!(err.file.contains("policies/extra.yaml"), "{err}");
+}
+
+/// POL-001: Felder, die nur zu einer bestimmten Aktion oder einem Regeltyp gehören, sind
+/// außerhalb davon Ladefehler mit Feldpfad.
+#[test]
+fn pol_001_fields_outside_their_action_are_load_errors() {
+    for (rule, field) in [
+        ("action: deny\n    params: { limit_usd: 1 }\n", "params"),
+        ("action: deny\n    modify: { model: x }\n", "modify"),
+        ("action: modify\n    modify: {}\n", "modify"),
+        ("action: modify\n    modify: { args: 3 }\n", "modify.args"),
+        ("action: deny\n    on_unsupported: deny\n", "on_unsupported"),
+        ("action: deny\n    notify: { channels: [log] }\n", "notify"),
+    ] {
+        let text =
+            format!("spec_version: 1\nname: f\nrules:\n  - id: f\n    on: tool_call\n    {rule}");
+        let err = parse_set(Scope::User, "f.yaml", &text).unwrap_err();
+        assert!(err.message.contains(field), "{rule}: {err}");
+    }
+}
