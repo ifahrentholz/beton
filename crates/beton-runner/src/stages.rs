@@ -628,6 +628,17 @@ fn check_git_shim_dir(
             "git-Shim liegt außerhalb der Lese-Wurzeln der Stufe 1",
         ));
     }
+    // Nur Stufe 0 schreibt den Shim; in einer Schreib-Wurzel der Stufe 1 ließe er sich
+    // austauschen.
+    if policy.write_roots.iter().any(|w| dir.starts_with(w)) {
+        return Err(SandboxError::PathEscape {
+            path: "sandbox".into(),
+            message: format!(
+                "git-Shim {} liegt in einer Schreib-Wurzel der Stufe 1",
+                dir.display()
+            ),
+        });
+    }
     Ok(())
 }
 
@@ -986,11 +997,22 @@ async fn compose_unix(
     if let Some(sink) = &git_sink {
         tools = tools.with_violations(sink.clone());
     }
-    // Der Broker beantwortet auch die Vorabprüfung des Git-Shims (SBX-003, #311); ohne
-    // Git-Verzeichnis im Workspace gibt es nichts zu vergleichen.
+    // Der Broker beantwortet auch die Vorabprüfung des Git-Shims (SBX-003, #311). War der
+    // Workspace beim Start kein Git-Repo, gibt es keinen Schnappschuss: Entsteht ein `.git`,
+    // startet git in Stufe 1 nicht mehr (ohne Ende der Session; git in Stufe 2 bleibt).
     let check: beton_sandbox::broker::GitCheck = match git_guard.clone() {
         Some(g) => Arc::new(move || g.preflight()),
-        None => Arc::new(|| Ok(())),
+        None => {
+            let dot_git = input.workdir.join(".git");
+            Arc::new(move || match std::fs::symlink_metadata(&dot_git) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(
+                    "`.git` im Workspace ist erst während der Session entstanden; ohne \
+                     Schnappschuss der Git-Steuerdateien startet git in Stufe 1 nicht"
+                        .into(),
+                ),
+            })
+        }
     };
     let broker = beton_sandbox::broker::Broker::start_with_git_check(&exec, tools.clone(), check)
         .await
