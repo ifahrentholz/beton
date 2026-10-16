@@ -596,6 +596,26 @@ fn modules(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     }
 }
 
+fn is_real_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
+}
+
+/// Git-Verzeichnisse, in denen der Launcher das Entstehen von `commondir`/`gitdir` überwacht
+/// (#209): Git-Dir und Common-Dir, soweit sie in einer Schreib-Wurzel liegen. Fehlende Dateien
+/// lassen sich nicht per Mount sperren, und `git` muss dort beliebige Lock-Dateien anlegen.
+pub fn git_watch_dirs(plan: &LaunchPlan) -> Vec<PathBuf> {
+    let Some(g) = &plan.git else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for d in [&g.git_dir, &g.common_dir] {
+        if !out.contains(d) && is_real_dir(d) && plan.write_roots.iter().any(|w| d.starts_with(w)) {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
 /// Die Git-Mounts eines Plans.
 pub fn git_mounts(plan: &LaunchPlan) -> GitMounts {
     let mut m = GitMounts::default();
@@ -612,9 +632,23 @@ pub fn git_mounts(plan: &LaunchPlan) -> GitMounts {
             ro.push(d.join(name));
         }
         modules(&d.join("modules"), &mut ro, 0);
-        if let Ok(entries) = std::fs::read_dir(d.join("worktrees")) {
+        // Einträge anderer Worktrees: Steuerdateien read-only; liegt `worktrees` in einer
+        // Schreib-Wurzel, werden es und seine Einträge zu Mountpunkten (weder umbenennbar noch
+        // ersetzbar, sonst ließe sich ein vorbereiteter Eintrag einsetzen, #209).
+        let wt = d.join("worktrees");
+        let pin = is_real_dir(&wt) && plan.write_roots.iter().any(|w| wt.starts_with(w));
+        if pin {
+            m.pinned.push(wt.clone());
+        }
+        if let Ok(entries) = std::fs::read_dir(&wt) {
             for e in entries.flatten() {
-                ro.push(e.path().join("config.worktree"));
+                let p = e.path();
+                for name in ["config.worktree", "commondir", "gitdir"] {
+                    ro.push(p.join(name));
+                }
+                if pin && e.file_type().is_ok_and(|t| t.is_dir()) {
+                    m.pinned.push(p);
+                }
             }
         }
     }
@@ -948,6 +982,72 @@ mod tests {
         }
         // Nicht vorhandene Dateien werden nicht gebunden.
         assert!(!m.read_only.contains(&git.join("commondir")), "{m:?}");
+    }
+
+    #[test]
+    fn sbx_003_git_mounts_protect_worktree_control_files_and_pin_their_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let git = root.join("ws/.git");
+        let admin = git.join("worktrees/wt2");
+        write(&admin.join("commondir"));
+        write(&admin.join("gitdir"));
+        write(&git.join("config"));
+        plan.git = Some(GitProtection {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git.clone(),
+        });
+        let m = git_mounts(&plan);
+        for p in ["commondir", "gitdir"] {
+            assert!(m.read_only.contains(&admin.join(p)), "{p}: {m:?}");
+        }
+        // `.git` liegt im Workspace (Schreib-Wurzel): `worktrees` und seine Einträge sind
+        // Mountpunkte.
+        for p in [&git, &git.join("worktrees"), &admin] {
+            assert!(m.pinned.contains(p), "{}: {m:?}", p.display());
+        }
+        // Fehlende `commondir`/`gitdir` im Git-Dir überwacht der Launcher.
+        assert_eq!(git_watch_dirs(&plan), vec![git.clone()]);
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::Pin {
+                path: admin.clone(),
+                writable: false
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::ReadOnly {
+                path: admin.join("commondir")
+            }),
+            "{ops:?}"
+        );
+    }
+
+    #[test]
+    fn sbx_003_git_dirs_outside_the_write_roots_are_neither_pinned_nor_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let common = root.join("repo/.git");
+        let admin = common.join("worktrees/wt");
+        write(&admin.join("commondir"));
+        write(&admin.join("gitdir"));
+        plan.git = Some(GitProtection {
+            dot_git: root.join("ws/.git"),
+            dot_git_is_file: true,
+            git_dir: admin.clone(),
+            common_dir: common.clone(),
+        });
+        plan.write_roots.push(admin.clone());
+        let m = git_mounts(&plan);
+        assert!(m.pinned.is_empty(), "{m:?}");
+        assert!(m.read_only.contains(&admin.join("commondir")), "{m:?}");
+        // Nur das eigene Git-Dir ist beschreibbar; dessen Steuerdateien gibt es.
+        assert_eq!(git_watch_dirs(&plan), vec![admin]);
     }
 
     #[test]

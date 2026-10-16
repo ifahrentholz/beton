@@ -426,7 +426,7 @@ impl Pending {
                     message,
                     errno,
                 })) => Err((format!("{step}: {message}"), errno)),
-                Ok(Some(Ctl::Limit { .. })) => continue,
+                Ok(Some(Ctl::Limit { .. } | Ctl::Fs { .. })) => continue,
                 Ok(None) => Err((
                     match w {
                         Err(e) => format!("Launcher endete ohne Rückmeldung (Plan: {e})"),
@@ -449,14 +449,18 @@ fn watch(ctl: RawFd, stage: Stage, violations: Violations, sink: Option<Violatio
     std::thread::spawn(move || {
         let mut seen: Vec<String> = Vec::new();
         while let Ok(Some(m)) = msg::recv(ctl) {
-            let Ctl::Limit { target } = m else { continue };
+            let (kind, target) = match m {
+                Ctl::Limit { target } => (ViolationKind::Limit, target),
+                Ctl::Fs { target } => (ViolationKind::Fs, target),
+                _ => continue,
+            };
             if seen.contains(&target) {
                 continue;
             }
             seen.push(target.clone());
             let v = SandboxViolation {
                 stage: stage.event(),
-                kind: ViolationKind::Limit,
+                kind,
                 target: Some(target),
                 suppressed_count: 0,
             };

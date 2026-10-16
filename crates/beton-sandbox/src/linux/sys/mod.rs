@@ -7,6 +7,7 @@
 )]
 
 pub mod cgroup;
+pub mod gitwatch;
 pub mod landlock;
 pub mod launcher;
 pub mod mounts;

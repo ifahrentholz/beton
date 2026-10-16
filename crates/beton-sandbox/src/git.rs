@@ -7,6 +7,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::SandboxError;
 
+/// Steuerdateien eines Git-Verzeichnisses, über die git ein anderes (gemeinsames) Git-
+/// Verzeichnis samt dessen Konfiguration und Hooks nimmt. Aus der Sandbox heraus dürfen sie
+/// weder entstehen noch sich ändern (SBX-003, #209).
+pub const CONTROL_FILES: [&str; 2] = ["commondir", "gitdir"];
+
 /// Wo das Git-Verzeichnis eines Workspace liegt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitLayout {
