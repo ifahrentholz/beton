@@ -793,6 +793,49 @@ fn agt_014_agent_effects_only_touch_own_session_state() {
     parse_set(Scope::User, "u.yaml", text).unwrap();
 }
 
+/// POL-009 (#268): Wie auf der Agent-Ebene schreiben Effects einer Projekt-Regel nur eigenen
+/// Zustand (`project/<set>/…`, Scope `session` bzw. `run`). Sonst könnte ein Repo Zähler oder
+/// Zustand einer User-Regel löschen oder setzen – mit `user`/`user_day` sogar
+/// sessionübergreifend und schon beim Session-Start.
+#[test]
+fn pol_009_project_effects_only_touch_own_session_state() {
+    let text = |scope: &str, key: &str| {
+        format!(
+            "spec_version: 1\nname: p\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{{ op: delete, scope: {scope}, key: {key} }}]\n"
+        )
+    };
+    for (scope, key) in [
+        ("user_day", "pushes"),
+        ("user", "project/p/x"),
+        ("user_day", "project/p/x"),
+        ("session", "pushes"),
+        ("run", "project/other/x"),
+        ("session", "project/px"),
+    ] {
+        let err = parse_set(Scope::Project, ".beton/policies/p.yaml", &text(scope, key))
+            .map(|_| panic!("{scope}/{key}: Ladefehler erwartet"))
+            .unwrap_err();
+        assert!(
+            err.message.contains("rules[0].effects[0]") && err.message.contains("project/p/"),
+            "{scope}/{key}: {err}"
+        );
+    }
+    for scope in ["session", "run"] {
+        parse_set(
+            Scope::Project,
+            ".beton/policies/p.yaml",
+            &text(scope, "project/p/zaehler"),
+        )
+        .unwrap_or_else(|e| panic!("{scope}: {e}"));
+    }
+    // Der Präfix gehört der Projekt-Ebene: User- und Agent-Regeln schreiben ihn nicht.
+    let err = parse_set(Scope::User, "u.yaml", &text("session", "project/p/zaehler")).unwrap_err();
+    assert!(err.message.contains("project/"), "{err}");
+    let rules = vec![json!({ "id": "e", "on": "tool_call", "action": "allow",
+                             "effects": [{ "op": "delete", "scope": "session", "key": "project/p/x" }] })];
+    assert!(inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).is_err());
+}
+
 /// AGT-014: Eine Agent-Regel lässt nach Ablauf einer Rückfrage nie automatisch zu
 /// (`on_timeout: allow` wäre eine Lockerung gegenüber höheren `ask`-Regeln).
 #[test]
