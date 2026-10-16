@@ -72,6 +72,8 @@ impl AppState {
 #[derive(Clone)]
 pub struct Runtime {
     pub hub: Arc<Hub>,
+    /// Binärkanäle (PROTO-007): Terminals, Browser, Audio.
+    pub channels: Arc<crate::channels::ChannelHub>,
     pub commands: Arc<CommandRegistry>,
     pub authorizer: Arc<dyn Authorizer>,
     pub ws: WsConfig,
@@ -122,6 +124,7 @@ impl Runtime {
     pub fn new(shutdown: watch::Receiver<bool>) -> Self {
         Self {
             hub: Arc::new(Hub::default()),
+            channels: Arc::default(),
             commands: Arc::new(CommandRegistry::default()),
             authorizer: Arc::new(LocalAuthorizer),
             ws: WsConfig::default(),

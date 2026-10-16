@@ -20,6 +20,7 @@ pub mod api_usage;
 pub mod api_workspace;
 pub mod app;
 pub mod attachments;
+pub mod channels;
 pub mod commands;
 pub mod config;
 pub mod credentials;
