@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NotificationSettings",
+  "description": "Benachrichtigungs-Einstellungen eines Users (UX-006).",
+  "type": "object",
+  "properties": {
+    "events": {
+      "$ref": "#/$defs/NotificationMatrix",
+      "default": {
+        "approval_requested": {
+          "badge": true,
+          "desktop": true,
+          "sound": true
+        },
+        "async_done": {
+          "badge": true,
+          "desktop": true,
+          "sound": false
+        },
+        "budget_threshold": {
+          "badge": false,
+          "desktop": true,
+          "sound": false
+        },
+        "mention": {
+          "badge": true,
+          "desktop": true,
+          "sound": false
+        },
+        "question": {
+          "badge": true,
+          "desktop": true,
+          "sound": false
+        },
+        "rate_limit_high": {
+          "badge": false,
+          "desktop": true,
+          "sound": false
+        },
+        "runner_lost": {
+          "badge": false,
+          "desktop": true,
+          "sound": false
+        },
+        "turn_completed": {
+          "badge": false,
+          "desktop": false,
+          "sound": false
+        }
+      }
+    },
+    "preview": {
+      "description": "Session-Titel plus erste Zeile; `false`: nur Session und Ereignis (DESK-005 AC3).",
+      "type": "boolean",
+      "default": true
+    },
+    "quiet_hours": {
+      "$ref": "#/$defs/QuietHours",
+      "default": {
+        "allow_approvals": true,
+        "enabled": false,
+        "end": "07:00",
+        "start": "22:00"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "NotificationChannels": {
+      "description": "Kanäle eines Ereignistyps. Inbox/In-App ist immer an und deshalb kein Feld.",
+      "type": "object",
+      "properties": {
+        "badge": {
+          "description": "Zählt im Dock- bzw. Tray-Badge (DESK-004).",
+          "type": "boolean"
+        },
+        "desktop": {
+          "description": "Mitteilung des Betriebssystems (DESK-005).",
+          "type": "boolean"
+        },
+        "sound": {
+          "description": "Ton zur Mitteilung.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "desktop",
+        "sound",
+        "badge"
+      ]
+    },
+    "NotificationMatrix": {
+      "description": "Kanäle je Ereignistyp. Defaults wie im Entwurf `settings-notifications`.",
+      "type": "object",
+      "properties": {
+        "approval_requested": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": true,
+            "desktop": true,
+            "sound": true
+          }
+        },
+        "async_done": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": true,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "budget_threshold": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": false,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "mention": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": true,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "question": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": true,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "rate_limit_high": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": false,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "runner_lost": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": false,
+            "desktop": true,
+            "sound": false
+          }
+        },
+        "turn_completed": {
+          "$ref": "#/$defs/NotificationChannels",
+          "default": {
+            "badge": false,
+            "desktop": false,
+            "sound": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuietHours": {
+      "description": "Ruhezeiten: täglich von `start` bis `end` (`HH:MM`, Ortszeit des Geräts; über Mitternacht\nerlaubt). In dieser Zeit bleiben Mitteilung und Ton stumm, die Inbox sammelt weiter.",
+      "type": "object",
+      "properties": {
+        "allow_approvals": {
+          "description": "Freigaben (`approval_requested`) trotzdem melden (UX-006 AC2).",
+          "type": "boolean",
+          "default": true
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "end": {
+          "type": "string",
+          "default": "07:00"
+        },
+        "start": {
+          "type": "string",
+          "default": "22:00"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -16,6 +16,7 @@ pub mod api_policies;
 pub mod api_proxy;
 pub mod api_secrets;
 pub mod api_sessions;
+pub mod api_settings;
 pub mod api_usage;
 pub mod api_workspace;
 pub mod app;

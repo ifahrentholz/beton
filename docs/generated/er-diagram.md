@@ -2,7 +2,7 @@
 
 # Datenmodell (lokal, SQLite)
 
-Schema-Version 13. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
+Schema-Version 15. Spezifikation: DATA-001 in [06-data-sync-protocol.md](../spec/06-data-sync-protocol.md#data-001--datenmodell--entitäten).
 
 ```mermaid
 erDiagram
@@ -272,6 +272,13 @@ erDiagram
         TEXT resets_at
         INTEGER seq
         TEXT ts
+    }
+    user_settings {
+        TEXT org_id PK
+        TEXT user_id PK
+        TEXT key PK
+        TEXT value
+        TEXT updated_at
     }
     users {
         TEXT id PK
