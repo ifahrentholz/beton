@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { Capabilities, PermissionMode } from '@beton/sdk'
+import type { Capabilities, PermissionMode, SessionSandbox } from '@beton/sdk'
 import { Check, ChevronDown, Lock } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { harnessName } from './harness'
@@ -52,8 +52,17 @@ export function settingsOptions(caps: Capabilities | undefined): {
   }
 }
 
-/** Ob YOLO hier startbar ist: erst mit Tool-Sandbox und Egress-Proxy (SBX-006, PRX-008, M2). */
-export const YOLO_AVAILABLE = false
+/** Hinweis mit aktiver Sandbox (Screen `harness-switching`, Zustand „Modus wählen“). */
+export const YOLO_ACTIVE_POLICIES = 'Deine Policies gelten weiter (z. B. kein '
+
+/**
+ * Ob YOLO für diese Session startbar ist: nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy, wie
+ * sie der Runner beim Start meldet (`session.started.sandbox`, SBX-006, HAR-027). Ohne Angabe
+ * gesperrt (fail closed).
+ */
+export function yoloAvailable(sandbox: SessionSandbox | null | undefined): boolean {
+  return !!sandbox?.tool_sandbox && !!sandbox?.egress_proxy
+}
 
 /** Änderung, die der Composer per `PATCH /v1/sessions/{id}` schickt. */
 export type SettingsPatch = { model?: string; effort?: string; permission_mode?: PermissionMode }
@@ -239,12 +248,15 @@ export function ModePicker({
   mode,
   modes,
   running,
+  yolo = false,
   onChange,
 }: {
   harness: string
   mode?: PermissionMode | null | undefined
   modes: PermissionMode[]
   running: boolean
+  /** Sandbox und Egress-Proxy sind für diese Session aktiv ({@link yoloAvailable}). */
+  yolo?: boolean
   onChange?: ((patch: SettingsPatch) => void) | undefined
 }) {
   const { open, setOpen, ref } = usePopover()
@@ -263,8 +275,35 @@ export function ModePicker({
         <div role="menu" aria-label="Permission-Mode" className={cn(POPOVER, 'w-[min(400px,calc(100vw-2rem))]')}>
           <div className="px-2 pt-1 pb-1.5 text-[11px] text-muted-foreground">Wie viel darf der Agent ohne Rückfrage?</div>
           {modes.map((m) =>
-            m === 'yolo' && !YOLO_AVAILABLE ? (
-              <Option key={m} disabled title={MODE_TEXT.yolo.title} sub={YOLO_BLOCKED} right={<Lock className="mt-0.5 size-3.5" aria-label="gesperrt" />} />
+            m === 'yolo' && !yolo ? (
+              <Option
+                key={m}
+                disabled
+                title={MODE_TEXT.yolo.title}
+                sub={
+                  <>
+                    {YOLO_BLOCKED}{' '}
+                    {/* Ziel ist der Screen `sandbox-settings` (eigenes Issue, M2 ohne UI-AC). */}
+                    <span className="text-foreground underline">Sandbox einrichten</span>
+                  </>
+                }
+                right={<Lock className="mt-0.5 size-3.5" aria-label="gesperrt" />}
+              />
+            ) : m === 'yolo' ? (
+              <Option
+                key={m}
+                title={MODE_TEXT.yolo.title}
+                sub={
+                  <>
+                    {YOLO_ACTIVE_POLICIES}
+                    <code className="font-mono text-[11px]">git push --force</code>). Sandbox{' '}
+                    <Check className="inline size-3 text-ok" aria-label="aktiv" /> aktiv · Proxy{' '}
+                    <Check className="inline size-3 text-ok" aria-label="aktiv" /> aktiv
+                  </>
+                }
+                selected={m === current}
+                onSelect={() => pick(m)}
+              />
             ) : (
               <Option key={m} title={MODE_TEXT[m].title} sub={MODE_TEXT[m].sub} selected={m === current} onSelect={() => pick(m)} />
             ),

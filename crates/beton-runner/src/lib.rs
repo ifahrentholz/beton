@@ -1352,6 +1352,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 harness_version: probe.version.unwrap_or_default(),
                 capabilities,
                 harness_session_ref: native_ref,
+                sandbox: Some(beton_core::event::SessionSandbox {
+                    tool_sandbox: sandbox_status.tool_sandbox,
+                    egress_proxy: sandbox_status.egress_proxy,
+                }),
             }),
         ),
     );

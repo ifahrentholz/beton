@@ -222,6 +222,15 @@ async fn sbx_001_ac4_harness_start_emits_exactly_one_sandbox_started() {
     assert_eq!(p["backend"], "none");
     assert_eq!(p["caps"], json!([]));
     assert_eq!(p["degraded"], true);
+    // Für Clients (Mode-Picker): ohne Sandbox kein Schutz der Tools, kein YOLO.
+    let started = events
+        .iter()
+        .find(|e| e["type"] == "session.started")
+        .unwrap();
+    assert_eq!(
+        started["payload"]["sandbox"],
+        json!({"tool_sandbox": false, "egress_proxy": false})
+    );
     d.daemon.shutdown().await;
 }
 /// #206, HAR-005: Claude (Fake-CLI) läuft in Stufe 1, der `PreToolUse`-Hook erreicht seinen
@@ -282,6 +291,12 @@ async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denie
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let text = serde_json::to_string(&events).unwrap();
+    // Der Status für Clients: Stufe 2 und Proxy aktiv (Mode-Picker, HAR-027).
+    assert!(
+        events.iter().any(|e| e["type"] == "session.started"
+            && e["payload"]["sandbox"] == json!({"tool_sandbox": true, "egress_proxy": true})),
+        "{text}"
+    );
     // Harness in Stufe 1 mit echtem Backend, das erlaubte Kommando lief in Stufe 2.
     assert!(
         events.iter().any(|e| e["type"] == "sandbox.started"
