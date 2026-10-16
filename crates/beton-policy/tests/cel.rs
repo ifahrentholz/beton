@@ -363,3 +363,58 @@ fn pol_002_deep_or_long_expressions_are_load_errors_not_crashes() {
         assert_eq!(ok, Ok(true));
     }
 }
+
+/// #298: Integrationstests heben das Zeitbudget über eine Variable an, die nur Debug-Builds
+/// lesen; Release-Builds kennen weder die Variable noch [`Limits::with_test_budget`].
+#[cfg(debug_assertions)]
+mod test_budget {
+    use beton_policy::cel::{Limits, TEST_BUDGET_ENV};
+
+    #[test]
+    fn pol_002_test_budget_raises_only_the_time_budget() {
+        let limits = Limits::default().with_test_budget(Some("1000"));
+        assert_eq!(limits.eval_budget_us, 1_000_000);
+        assert_eq!(limits.max_cost, Limits::default().max_cost);
+        assert_eq!(limits.max_expr_bytes, Limits::default().max_expr_bytes);
+    }
+
+    #[test]
+    fn pol_002_test_budget_never_lowers_and_ignores_invalid_values() {
+        for raw in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("0"),
+            Some("-5"),
+            Some("1s"),
+            Some("abc"),
+        ] {
+            assert_eq!(
+                Limits::default().with_test_budget(raw),
+                Limits::default(),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pol_002_test_budget_is_capped() {
+        let limits = Limits::default().with_test_budget(Some("999999999999"));
+        assert_eq!(limits.eval_budget_us, 60_000_000);
+    }
+
+    #[test]
+    fn pol_002_runtime_limits_are_the_defaults_plus_the_test_budget() {
+        assert_eq!(TEST_BUDGET_ENV, "BETON_TEST_POLICY_BUDGET_MS");
+        let raw = std::env::var(TEST_BUDGET_ENV).ok();
+        assert_eq!(
+            Limits::runtime(),
+            Limits::default().with_test_budget(raw.as_deref())
+        );
+    }
+}
+
+#[test]
+fn pol_002_default_time_budget_stays_10_ms() {
+    assert_eq!(Limits::default().eval_budget_us, 10_000);
+}

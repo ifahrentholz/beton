@@ -82,6 +82,10 @@ pub mod env {
     pub const MAX_COST: &str = "BETON_MAX_COST";
     /// `1`: Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
     pub const SPAWNED: &str = "BETON_SPAWNED";
+    /// Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298); nur
+    /// Debug-Builds reichen es an den Runner weiter und lesen es.
+    #[cfg(debug_assertions)]
+    pub const TEST_POLICY_BUDGET: &str = beton_policy::cel::TEST_BUDGET_ENV;
 }
 
 /// Startparameter eines Runners. Das Token kommt über stdin, nie über Env oder argv

@@ -416,6 +416,7 @@ pub async fn evaluate(
             &EvalOptions {
                 capabilities: matrix.capabilities(phase),
                 grants: Some(&grants),
+                limits: beton_policy::cel::Limits::runtime(),
                 ..EvalOptions::default()
             },
         );
