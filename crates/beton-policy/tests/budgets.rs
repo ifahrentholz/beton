@@ -1042,8 +1042,9 @@ fn pol_013_routes_below_the_user_level_to_unpriced_models_are_denied_while_a_bud
     );
     assert_eq!(d.outcome, Outcome::Allow);
     assert_eq!(d.modified.model.as_deref(), Some("claude-haiku-4-5"));
+    // Ohne Budget fragt sie nach: nicht nachweisbar günstiger (#286).
     let d = eval(vec![route(Scope::Project, "modell-ohne-preis")], &turn);
-    assert_eq!(d.outcome, Outcome::Allow);
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
     // Auch ein `on_exceed: route` eines Repos auf ein Modell ohne Preis gilt als Umgehung.
     let repo = set(
         Scope::Project,
@@ -1257,7 +1258,7 @@ fn pol_013_handwritten_cost_rules_also_block_unpriced_routes_below_the_user_leve
     let other = set(
         Scope::User,
         "u",
-        "  - id: other\n    on: model_request\n    when: 'session.turns > 100'\n    action: deny\n",
+        "  - id: other\n    on: model_request\n    when: 'request.model == \"x\"'\n    action: deny\n",
     );
     let d = eval(vec![other, route], &turn);
     assert!(!matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");

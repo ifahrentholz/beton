@@ -771,6 +771,33 @@ fn scope_of(t: RuleType, params: Option<&BTreeMap<String, Value>>) -> Option<Bud
     }
 }
 
+/// Ist `to` laut eingebettetem Preis-Katalog höchstens so teuer wie `from` (Eingabe- und
+/// Ausgabepreis)? Gleiche IDs immer; ein unbekanntes Modell (Default des Harness) bzw. ein
+/// Modell ohne Preis ist nie nachweisbar günstiger (#286).
+pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
+    if from == Some(to) {
+        return true;
+    }
+    let catalog = beton_core::pricing::Catalog::embedded();
+    match (from.and_then(|f| catalog.resolve(f)), catalog.resolve(to)) {
+        (Some(a), Some(b)) if a.id == b.id => true,
+        (Some(a), Some(b)) => {
+            b.input_per_mtok <= a.input_per_mtok && b.output_per_mtok <= a.output_per_mtok
+        }
+        _ => false,
+    }
+}
+
+/// Ist der Effort `to` höchstens so hoch wie `from`? Die niedrigste Stufe immer; ein
+/// unbekannter Effort ist nie nachweisbar niedriger (#286).
+pub fn effort_not_higher(from: Option<&str>, to: &str) -> bool {
+    let rank = |e: &str| EFFORTS.iter().position(|x| *x == e);
+    if from == Some(to) || rank(to) == Some(0) {
+        return true;
+    }
+    matches!((from.and_then(rank), rank(to)), (Some(a), Some(b)) if b <= a)
+}
+
 /// Budget-Regeln (`spend_cap`, `daily_budget`) des Sets in kanonischer Reihenfolge, je Regel
 /// einmal; Dry-Run-Regeln zählen nicht.
 pub fn budget_rules(set: &EffectiveSet) -> Vec<BudgetRule> {
