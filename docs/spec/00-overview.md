@@ -254,9 +254,10 @@ docs/                  # spec/, adr/
 
 | # | Punkt | Zu klären bis |
 |---|---|---|
-| 1 | Wer hält die Signing-Accounts (Apple Developer Program, Azure Trusted Signing)? | vor M3 (erstes öffentliches Release) |
-| 2 | Domain (z. B. `beton.dev`, `getbeton.dev`), ungeprüft | vor M3 |
+| 1 | Wer hält die Signing-Accounts (Apple Developer Program, Azure Trusted Signing)? | vor M3 (erstes öffentliches Release), #54 |
+| 2 | Domain (z. B. `beton.dev`, `getbeton.dev`), ungeprüft | vor M3, #55 |
 | 3 | Spätere GitHub-Org bzw. Umbenennung des npm-Scopes | bei Bedarf |
 | 4 | Aktuelle Nutzungsbedingungen von Anthropic und OpenAI zur Nutzung von Subscriptions durch Drittwerkzeuge (Hinweis in der Claude-Agent-SDK-Doku zu Third-Party-claude.ai-Logins) | **vor M0-Release**, Gate für ADR-0005 |
-| 5 | Markenrecht "beton", ungeprüft | vor M3 |
+| 5 | Markenrecht "beton", ungeprüft | vor M3, #56 |
 | 6 | Crate-Name `beton` auf crates.io ist belegt (Slab-Allocator); eventuell beim Maintainer anfragen | optional |
+| 7 | Eigene GitHub-Identität für Agents (Bot-Account oder GitHub App) und echtes Code-Owner-Approval; löst die Übergangsregel aus ADR-0036 (und ADR-0040, falls angenommen) ab | vor dem Release 0.1 (M3), #177 |
