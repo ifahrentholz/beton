@@ -202,6 +202,10 @@ pub struct Step {
     /// Ausgabe und Exit-Code sind das Ergebnis. Nur die Fake-CLI (`stream-json`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub run: bool,
+    /// Nur ACP-Test-Agent: `fs/write_text_file` beim Client aufrufen (HAR-007, POL-023) und das
+    /// Ergebnis als Nachricht melden (`fs_write ok` bzw. `fs_write error <code>: <text>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_write: Option<WriteFileStep>,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,

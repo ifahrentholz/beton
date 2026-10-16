@@ -81,6 +81,113 @@ async fn start(
     (s, rx)
 }
 
+/// Wie [`start`], mit eigenem Arbeitsverzeichnis.
+async fn start_in(
+    scenario: &Path,
+    gate: Arc<dyn Gate>,
+    workdir: &Path,
+) -> (Box<dyn HarnessSession>, mpsc::Receiver<NormalizedEvent>) {
+    let ctx = AdapterContext {
+        stage: None,
+        gate,
+        launcher: Arc::new(RealLauncher),
+        env: env_for(scenario),
+    };
+    let mut s = adapter()
+        .start(
+            SessionSpec {
+                workdir: workdir.to_path_buf(),
+                ..SessionSpec::default()
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+    let rx = s.events().unwrap();
+    (s, rx)
+}
+
+/// Erlaubt alles und merkt sich jede Anfrage.
+#[derive(Default)]
+struct Recording(std::sync::Mutex<Vec<beton_harness::GateRequest>>);
+
+#[async_trait::async_trait]
+impl Gate for Recording {
+    async fn decide(&self, req: beton_harness::GateRequest) -> beton_harness::GateDecision {
+        self.0.lock().unwrap().push(req);
+        beton_harness::GateDecision::Allow { updated_args: None }
+    }
+
+    async fn model_request(
+        &self,
+        _request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        beton_harness::ModelGateDecision::Allow {
+            model: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn tool_result(
+        &self,
+        _request: beton_harness::ResultGateRequest,
+    ) -> beton_harness::GateDecision {
+        beton_harness::GateDecision::Allow { updated_args: None }
+    }
+}
+
+/// POL-023 AC2, HAR-007 AC2: `fs/write_text_file` geht unabhängig von Permission-Requests als
+/// Datei-Schreiben durch das Gate (volles Gate, `path_guard`); außerhalb des Worktrees lehnt
+/// beton ab und meldet es als JSON-RPC-Fehler, auch wenn das Gate erlaubt. Eine `deny`-
+/// Entscheidung ist ebenfalls ein JSON-RPC-Fehler.
+#[tokio::test]
+async fn pol_023_ac2_har_007_ac2_fs_write_text_file_is_gated_and_confined_to_the_worktree() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws_path = ws.path().canonicalize().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let draussen = outside.path().join("draussen.txt");
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_write: {{ path: \"{}\", content: \"hallo\" }} }}\n      - {{ fs_write: {{ path: \"{}\", content: \"böse\" }} }}\n",
+        ws_path.join("notizen.txt").display(),
+        draussen.display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let gate = Arc::new(Recording::default());
+    let (mut s, mut rx) = start_in(&path, gate.clone(), &ws_path).await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let text = format!("{events:?}");
+    assert_eq!(
+        std::fs::read_to_string(ws_path.join("notizen.txt")).unwrap(),
+        "hallo"
+    );
+    assert!(!draussen.exists(), "außerhalb geschrieben");
+    assert!(text.contains("fs_write ok"), "{text}");
+    assert!(text.contains("fs_write error"), "{text}");
+    let seen = gate.0.lock().unwrap();
+    assert!(
+        seen.iter().any(|r| r.kind == "file_write"
+            && r.origin == beton_harness::GateOrigin::PreTool
+            && r.args["path"] == ws_path.join("notizen.txt").display().to_string()),
+        "{seen:?}"
+    );
+    drop(seen);
+    s.shutdown(Shutdown::Kill).await.unwrap();
+
+    // Lehnt das Gate ab, schreibt beton nicht und meldet einen JSON-RPC-Fehler.
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_write: {{ path: \"{}\", content: \"x\" }} }}\n",
+        ws_path.join("gesperrt.txt").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let (mut s, mut rx) = start_in(&path, Arc::new(DenyAll), &ws_path).await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    assert!(format!("{events:?}").contains("fs_write error"));
+    assert!(!ws_path.join("gesperrt.txt").exists());
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
 async fn until_turn_end(rx: &mut mpsc::Receiver<NormalizedEvent>) -> Vec<EventPayload> {
     let mut out = Vec::new();
     while let Ok(Some(e)) = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {

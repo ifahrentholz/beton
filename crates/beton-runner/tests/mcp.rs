@@ -725,3 +725,55 @@ async fn agt_007_ac4_ask_user_question_answer_becomes_the_tool_result() {
     assert_eq!(resolved["payload"]["decision"], "answer");
     env.daemon.shutdown().await;
 }
+
+// --------------------------------------------------------------------------- POL-023 AC3
+
+/// POL-023 AC3: Meldet ein ACP-Agent einen Tool-Call ohne Permission-Request, prüft beton ihn
+/// beim Start nur beobachtend (`enforcement: observe_only`); trifft eine `deny`-Regel, folgt
+/// `policy.notified`, und beton bricht den Turn per `session/cancel` ab.
+#[tokio::test]
+async fn pol_023_ac3_unrequested_acp_tool_call_is_observed_notified_and_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "a.yaml",
+        "turns:\n  - expect_input: \"los\"\n    emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"rm -rf build\" } } }\n      - { hang: true }\n",
+    );
+    let env = Env::start(&[], |dir| {
+        acp_config(&dir.join("work"), &s, Some(false));
+        write(
+            &dir.join("work/.beton/policies/no-rm.yaml"),
+            "spec_version: 1\nname: no-rm\nrules:\n  - id: no-rm\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"rm\")'\n    action: deny\n    reason: rm ist verboten\n",
+        );
+    })
+    .await;
+    let id = env.create("acp:fake").await;
+    env.input(&id, "los").await;
+    let events = env
+        .wait_for(&id, |e| {
+            matches!(
+                e["type"].as_str(),
+                Some("turn.completed" | "turn.failed" | "turn.interrupted")
+            )
+        })
+        .await;
+    let text = serde_json::to_string(&events).unwrap();
+    assert!(
+        events.iter().any(|e| e["type"] == "policy.decision"
+            && e["payload"]["phase"] == "tool_call"
+            && e["payload"]["enforcement"] == "observe_only"
+            && e["payload"]["outcome"] == "deny"),
+        "{text}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| e["type"] == "policy.notified" && e["payload"]["rule_id"] == "no-rm"),
+        "{text}"
+    );
+    assert!(
+        events.iter().any(|e| e["type"] == "turn.interrupted"),
+        "Turn nicht abgebrochen: {text}"
+    );
+    env.daemon.shutdown().await;
+}

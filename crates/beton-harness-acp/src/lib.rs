@@ -963,6 +963,31 @@ impl HarnessSession for AcpSession {
 mod tests {
     use super::*;
 
+    /// POL-023 AC1: beton antwortet nur mit einer einmaligen Option, nie mit „immer“; ohne
+    /// `allow_once` lehnt es einmalig ab, statt `allow_always` zu wählen.
+    #[test]
+    fn pol_023_ac1_only_once_options_are_ever_chosen() {
+        let all = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "o", "kind": "allow_once"},
+            {"optionId": "r", "kind": "reject_once"},
+            {"optionId": "ra", "kind": "reject_always"},
+        ]);
+        assert_eq!(choose(&all, true), (Some("o".into()), true));
+        assert_eq!(choose(&all, false), (Some("r".into()), false));
+        let always_only = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "r", "kind": "reject_once"},
+        ]);
+        assert_eq!(choose(&always_only, true), (Some("r".into()), false));
+        let no_once = json!([
+            {"optionId": "a", "kind": "allow_always"},
+            {"optionId": "ra", "kind": "reject_always"},
+        ]);
+        assert_eq!(choose(&no_once, true), (None, false));
+        assert_eq!(choose(&no_once, false), (None, false));
+    }
+
     #[test]
     fn permission_options_never_pick_always_first() {
         let options = json!([
