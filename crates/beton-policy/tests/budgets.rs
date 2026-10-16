@@ -1226,3 +1226,39 @@ fn pol_013_routes_below_the_user_level_never_raise_model_or_effort_without_appro
     let d = eval(vec![route_to(Scope::Project, "model: claude-opus-4-5")], &start);
     assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
 }
+
+/// #297 Punkt 3: Auch handgeschriebene CEL-Budgets (Regeln, die `*.cost_usd` bzw.
+/// `*.equivalent_usd` lesen) schützen gegen ein Umrouten unterhalb der User-Ebene auf ein
+/// Modell ohne Katalogpreis, nicht nur `spend_cap`/`daily_budget`.
+#[test]
+fn pol_013_handwritten_cost_rules_also_block_unpriced_routes_below_the_user_level() {
+    let route = route_to(Scope::Project, "model: modell-ohne-preis");
+    let turn = unpriced_turn("claude-sonnet-4-5", json!({}));
+    for (phase, when) in [
+        ("model_request", "session.cost_usd > 5.0"),
+        ("model_request", "session.cost_usd + session.equivalent_usd > 5.0"),
+        ("tool_call", "run.subtree_equivalent_usd > 5.0"),
+        ("session_start", "user.daily_cost_usd > 50.0"),
+    ] {
+        let budget = set(
+            Scope::User,
+            "u",
+            &format!("  - id: cap\n    on: {phase}\n    when: '{when}'\n    action: deny\n"),
+        );
+        let d = eval(vec![budget, route.clone()], &turn);
+        assert!(matches!(d.outcome, Outcome::Deny { .. }), "{when}: {d:#?}");
+        assert!(
+            reason_text(&d).contains("Katalogpreis") && reason_text(&d).contains("cap"),
+            "{when}: {}",
+            reason_text(&d)
+        );
+    }
+    // Eine Regel ohne Kostenbezug ist kein Budget.
+    let other = set(
+        Scope::User,
+        "u",
+        "  - id: other\n    on: model_request\n    when: 'session.turns > 100'\n    action: deny\n",
+    );
+    let d = eval(vec![other, route], &turn);
+    assert!(!matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");
+}
