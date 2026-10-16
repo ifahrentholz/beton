@@ -433,3 +433,57 @@ fn sbx_010_ac2_exec_in_the_tools_stage_cannot_read_ssh_config() {
     assert!(o.status.success(), "{}", stderr(&o));
     assert_eq!(stdout(&o), "hallo");
 }
+
+/// SBX-010 AC2 (fail closed): `beton sandbox exec` startet nichts ohne volle Isolation, weder
+/// mit `backend: none` (Datei oder `BETON_CFG_SANDBOX__BACKEND`) noch mit einer *degraded*
+/// Policy (z. B. `limits.memory_mb` ohne durchsetzbares Speicherlimit).
+#[cfg(unix)]
+#[test]
+fn sbx_010_ac2_exec_refuses_backend_none_and_degraded_policies() {
+    let refused = |o: &std::process::Output| {
+        assert!(
+            !o.status.success(),
+            "lief ohne volle Isolation: {}",
+            stdout(o)
+        );
+        assert_eq!(o.status.code(), Some(1), "{}", stderr(o));
+        assert!(!stdout(o).contains("hallo"), "Kommando lief: {}", stdout(o));
+        let err = stderr(o);
+        assert!(
+            err.contains("explain") && err.contains("nichts gestartet"),
+            "{err}"
+        );
+    };
+    let e = env("sandbox:\n  backend: none\n");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    refused(&sandbox(&e, &["exec", "--", "cat", "hallo.txt"]));
+
+    let e = env("");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    let o = run(beton(&e.beton_home)
+        .env("HOME", &e.home)
+        .env("BETON_CFG_SANDBOX__BACKEND", "none")
+        .current_dir(&e.ws)
+        .args(["sandbox", "exec", "--", "cat", "hallo.txt"]));
+    refused(&o);
+
+    // Speicherlimit: nur wenn das Backend `resources` nicht erzwingt, ist die Policy degraded.
+    let e = env("sandbox:\n  limits: { memory_mb: 256 }\n");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    let probe = json(&sandbox(&e, &["probe", "--json"]));
+    let auto = probe["auto"].as_str().unwrap().to_owned();
+    let enforced = probe["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == auto.as_str())
+        .unwrap()["caps"]
+        .to_string()
+        .contains("resources");
+    let o = sandbox(&e, &["exec", "--", "cat", "hallo.txt"]);
+    if enforced {
+        assert!(o.status.success(), "{}", stderr(&o));
+    } else {
+        refused(&o);
+    }
+}
