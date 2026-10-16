@@ -1624,6 +1624,11 @@ async fn proto_015_ac5_append_replacing_keeps_position_of_rejected_event() {
 /// wieder. Ein paralleler, interaktiver Schreiber (REST: Session anlegen, Idempotency-Lookup,
 /// Eingabe) bekommt sie trotzdem binnen fester Frist, statt im SQLite-Busy-Handler zu pollen
 /// und nach `busy_timeout` mit `database is locked` zu scheitern.
+///
+/// Gemessen wird wie im AC jeder Schreibzugriff einzeln (#319): Jeder wartet in der
+/// Warteschlange höchstens hinter den drei Dauerschreibern. Die Summe der drei Zugriffe stand
+/// früher unter derselben 1-s-Grenze; das sind neun Batches, deren Dauer unter CI-Last mit der
+/// CPU skaliert (macOS-CI: 1,07 s).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn data_003_ac4_interactive_writer_is_not_starved_by_continuous_writers() {
     let t = store().await;
@@ -1657,7 +1662,9 @@ async fn data_003_ac4_interactive_writer_is_not_starved_by_continuous_writers() 
     while batches.load(Ordering::Relaxed) < 3 {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let mut worst = Duration::ZERO;
+    // Je Zugriffsart die längste Dauer, dazu die längste Folge aller drei (nur fürs Log).
+    let mut worst = [Duration::ZERO; 3];
+    let mut worst_sequence = Duration::ZERO;
     for i in 0..15 {
         let start = Instant::now();
         let s = t
@@ -1665,26 +1672,45 @@ async fn data_003_ac4_interactive_writer_is_not_starved_by_continuous_writers() 
             .create_session(org(&t), new_session(&t))
             .await
             .unwrap();
+        let created = Instant::now();
         t.store
             .idempotency_lookup(org(&t), &format!("key-{i}"))
             .await
             .unwrap();
+        let looked_up = Instant::now();
         append_one(&t.store, &s, notice(s.id, "Eingabe")).await;
-        worst = worst.max(start.elapsed());
+        let appended = Instant::now();
+        for (w, d) in
+            worst
+                .iter_mut()
+                .zip([created - start, looked_up - created, appended - looked_up])
+        {
+            *w = (*w).max(d);
+        }
+        worst_sequence = worst_sequence.max(appended - start);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     stop.store(true, Ordering::Relaxed);
     for w in writers {
         w.await.unwrap();
     }
+    let [create, lookup, append] = worst;
     eprintln!(
-        "interaktiver Schreiber: höchstens {worst:?}, Dauerschreiber: {} Batches",
+        "interaktiver Schreiber, höchstens: Session anlegen {create:?}, Idempotency-Lookup \
+         {lookup:?}, Event {append:?} (alle drei nacheinander {worst_sequence:?}); \
+         Dauerschreiber: {} Batches",
         batches.load(Ordering::Relaxed)
     );
-    assert!(
-        worst < Duration::from_secs(1),
-        "interaktiver Schreiber wartet {worst:?} auf die Schreibsperre"
-    );
+    for (what, d) in [
+        ("Session anlegen", create),
+        ("Idempotency-Lookup", lookup),
+        ("Event schreiben", append),
+    ] {
+        assert!(
+            d < Duration::from_secs(1),
+            "{what} wartet {d:?} auf die Schreibsperre"
+        );
+    }
 }
 
 #[tokio::test]
