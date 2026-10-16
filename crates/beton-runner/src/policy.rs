@@ -2576,15 +2576,36 @@ impl Gate for PolicyGate {
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
                 // Angehaltene Sandbox (SBX-006 AC3): Ein gespeicherter Entscheid gilt nicht
-                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327).
-                if self.inner.halted.get().is_some() {
-                    let level = if had_prior {
-                        Level::Full
-                    } else {
-                        Level::ApprovalOnly
+                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327). Mit
+                // gespeichertem Entscheid gibt es schon ein `policy.decision` (POL-025 AC1);
+                // die Ablehnung steht dann als `policy.notified` im Log (#330).
+                if let Some(reason) = self.inner.halted.get().cloned() {
+                    if !had_prior {
+                        let v = self.tool_verdict(&req, Level::ApprovalOnly).await;
+                        return GateDecision::Deny { reason: v.reason };
+                    }
+                    if let Ok(mut d) = self.inner.decided.lock()
+                        && let Some(entry) = d.get_mut(&req.call_id)
+                    {
+                        entry.allowed = false;
+                    }
+                    self.emit(
+                        EventPayload::PolicyNotified(PolicyNotified {
+                            rule_id: "sandbox-halted".into(),
+                            scope: Scope::Org.as_str().to_owned(),
+                            set: String::new(),
+                            channels: vec!["ui".into()],
+                            message: Some(format!(
+                                "Freigabe für `{}` nach der Policy-Prüfung abgelehnt: {reason}",
+                                req.tool
+                            )),
+                        }),
+                        req.turn_id,
+                        None,
+                    );
+                    return GateDecision::Deny {
+                        reason: Some(reason),
                     };
-                    let v = self.tool_verdict(&req, level).await;
-                    return GateDecision::Deny { reason: v.reason };
                 }
                 let v = match prior {
                     // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
