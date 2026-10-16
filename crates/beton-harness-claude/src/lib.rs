@@ -679,7 +679,8 @@ impl ClaudeAdapter {
         let mut process = ctx.launcher.launch(launch).await?;
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
-        state.lock().await.session_ref = session_ref;
+        state.lock().await.session_ref.clone_from(&session_ref);
+        let native_ref: NativeRef = Arc::new(std::sync::Mutex::new(session_ref));
         let mut caps = HarnessAdapter::capabilities(self, Mode::Native, &ProbeReport::default());
         if hook.is_none() {
             caps.tool_call_gate = ToolCallGate::ApprovalOnly;
@@ -705,11 +706,13 @@ impl ClaudeAdapter {
                 plan_locked: spec.plan_locked,
                 process: process.clone(),
                 closing: closing.clone(),
+                native_ref: native_ref.clone(),
             },
         ));
         Ok(ClaudeSession {
             stdin,
             state,
+            native_ref,
             tx,
             rx: Some(rx),
             process,
@@ -723,6 +726,11 @@ impl ClaudeAdapter {
 }
 
 type Writer = Arc<Mutex<Option<Box<dyn AsyncWrite + Send + Unpin>>>>;
+
+/// Native Session-Referenz, lesbar ohne den Zustand der Leseschleife (HAR-020 AC2, #305):
+/// Mit `try_lock` auf den Zustand kam `None`, solange die Leseschleife eine Zeile abbildete.
+/// Die `std`-Sperre wird nie über ein `await` gehalten, Lesen wartet höchstens kurz.
+type NativeRef = Arc<std::sync::Mutex<Option<String>>>;
 
 async fn write_json(stdin: &Writer, v: &Value) -> Result<(), HarnessError> {
     let mut guard = stdin.lock().await;
@@ -742,6 +750,7 @@ struct Reader {
     plan_locked: bool,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<std::sync::atomic::AtomicBool>,
+    native_ref: NativeRef,
 }
 
 async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Reader) {
@@ -779,7 +788,15 @@ async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Read
                 let (events, turn) = {
                     let mut st = r.state.lock().await;
                     let turn = st.turn;
-                    (map_line(&v, &mut st), turn)
+                    let events = map_line(&v, &mut st);
+                    // `system/init` meldet die Referenz der CLI (beim Abzweigen eine neue).
+                    if st.session_ref.is_some() {
+                        r.native_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone_from(&st.session_ref);
+                    }
+                    (events, turn)
                 };
                 if events
                     .iter()
@@ -1118,6 +1135,7 @@ async fn plan_locked_deny(
 pub struct ClaudeSession {
     stdin: Writer,
     state: Arc<Mutex<MapState>>,
+    native_ref: NativeRef,
     tx: mpsc::Sender<NormalizedEvent>,
     rx: Option<mpsc::Receiver<NormalizedEvent>>,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
@@ -1267,10 +1285,10 @@ impl HarnessSession for ClaudeSession {
     }
 
     fn native_session_ref(&self) -> Option<String> {
-        self.state
-            .try_lock()
-            .ok()
-            .and_then(|s| s.session_ref.clone())
+        self.native_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn capabilities(&self) -> Option<Capabilities> {
