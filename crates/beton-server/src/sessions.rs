@@ -586,6 +586,13 @@ impl<'a> SessionManager<'a> {
         // Anlegen geprüft; `yolo` ohne Sandbox nie, auch nicht aus einem Agent (HAR-027).
         let (agent_effort, agent_mode) =
             crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
+        if let Some(a) = &agent {
+            crate::settings::agent_permission_mode(
+                &a.snapshot.source,
+                agent_mode.as_deref(),
+                req.permission_mode.as_deref(),
+            )?;
+        }
         let effort = req.effort.clone().or(agent_effort);
         let permission_mode = req.permission_mode.clone().or(agent_mode);
         let caps = self.harness_capabilities(&harness, Path::new(&req.cwd));

@@ -429,6 +429,53 @@ pub fn inline_set(
     })
 }
 
+/// Die `policies:` eines Agents als Sets der Agent-Ebene (AGT-014): Inline-Regeln bilden ein
+/// Set namens `name`, jede Referenz `{ref: <pfad>}` ein eigenes Set aus der Datei, die `read`
+/// relativ zum Agent-Verzeichnis liefert. Beide verschärfen nur (Ladefehler sonst, POL-007).
+pub fn agent_sets(
+    scope: Scope,
+    name: &str,
+    origin: &str,
+    entries: &[serde_json::Value],
+    read: impl Fn(&str) -> Result<String, String>,
+) -> Result<Vec<LoadedSet>, LoadError> {
+    let mut inline = Vec::new();
+    let mut index = Vec::new();
+    let mut sets = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        match e.get("ref").and_then(serde_json::Value::as_str) {
+            Some(rel) => {
+                let file = format!("{origin} → {rel}");
+                let text = read(rel).map_err(|m| LoadError {
+                    file: file.clone(),
+                    line: 1,
+                    column: 1,
+                    message: format!("policies[{i}].ref: {m}"),
+                })?;
+                sets.push(parse_set(scope, &file, &text)?);
+            }
+            None => {
+                inline.push(e.clone());
+                index.push(i);
+            }
+        }
+    }
+    if !inline.is_empty() {
+        let set = inline_set(scope, name, origin, &inline).map_err(|mut err| {
+            // Feldpfade nennen die Position im `agent.yaml`, nicht die unter den Inline-Regeln.
+            if let Some(rest) = err.message.strip_prefix("policies[")
+                && let Some((k, tail)) = rest.split_once(']')
+                && let Some(orig) = k.parse::<usize>().ok().and_then(|k| index.get(k))
+            {
+                err.message = format!("policies[{orig}]{tail}");
+            }
+            err
+        })?;
+        sets.insert(0, set);
+    }
+    Ok(sets)
+}
+
 /// Geprüfte Regeln eines Sets und die Defaults, die entzuckerte Regeltypen setzen.
 struct Checked {
     rules: Vec<LoadedRule>,
@@ -504,6 +551,36 @@ fn check_rules_with(
                         t.as_str(),
                         t.as_str()
                     ),
+                ));
+            }
+        }
+        // Agent-Ebene verschärft nur (AGT-014): Effects nur auf eigenen Session-Zustand,
+        // keine automatische Freigabe nach Ablauf einer Rückfrage.
+        if scope == Scope::Agent {
+            let own = format!("agent/{}/", loc.set);
+            for (j, effect) in rule.effects.iter().enumerate() {
+                let own_scope = matches!(
+                    effect.scope,
+                    crate::doc::StateScope::Session | crate::doc::StateScope::Run
+                );
+                if !own_scope || !effect.key.starts_with(&own) {
+                    return Err(loc.at(
+                        &field(&format!("effects[{j}]")),
+                        format!(
+                            "Effects der Agent-Ebene schreiben nur eigenen Zustand der Session \
+                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen"
+                        ),
+                    ));
+                }
+            }
+            if rule
+                .approval
+                .as_ref()
+                .is_some_and(|a| a.on_timeout == Some(crate::doc::TimeoutAction::Allow))
+            {
+                return Err(loc.at(
+                    &field("approval.on_timeout"),
+                    "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
                 ));
             }
         }

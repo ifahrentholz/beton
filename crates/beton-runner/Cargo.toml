@@ -48,6 +48,7 @@ rustix.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+serde_norway.workspace = true
 beton-harness-direct = { workspace = true, features = ["mock"] }
 beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 futures-util.workspace = true

@@ -823,13 +823,26 @@ async fn har_027_agent_executor_sets_effort_and_mode_but_never_yolo() {
         env.turn(&id, "eins").await.last().unwrap(),
         "model=fake-model effort=high mode=default"
     );
-    // Ein Agent (z. B. aus dem Repository) kann YOLO nicht erzwingen (fail closed).
+    // Ein Agent aus dem Repository kann YOLO nicht erzwingen (fail closed, AGT-014/#258 R7);
+    // auch ausdrücklich angefragt nicht ohne Sandbox (`sandbox_required`).
     agent(&env, "reckless", "{ harness: fake, permission_mode: yolo }");
     let (status, body) = env
         .http(
             "POST",
             "/v1/sessions",
             Some(json!({"agent": "reckless", "cwd": env.work(), "harness_opts": {"scenario": scenario}})),
+        )
+        .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (422, Some("agent_invalid")),
+        "{body}"
+    );
+    let (status, body) = env
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"agent": "reckless", "cwd": env.work(), "permission_mode": "yolo", "harness_opts": {"scenario": scenario}})),
         )
         .await;
     assert_eq!(

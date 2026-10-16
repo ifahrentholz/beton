@@ -801,6 +801,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "serde_norway",
  "sqlx",
  "tempfile",
  "thiserror",

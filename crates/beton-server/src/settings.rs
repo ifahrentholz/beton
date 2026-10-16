@@ -87,6 +87,24 @@ pub fn permission_mode(raw: &str, sandbox: SandboxStatus) -> Result<PermissionMo
     Ok(mode)
 }
 
+/// AGT-014 (#258 R7): Ein Agent aus dem Repository (Quelle `project`, Repo-Inhalt) schaltet
+/// `yolo` nicht selbst ein; das geht nur ausdrücklich in der Anfrage (`requested`) oder über
+/// einen Agent der User-Ebene bzw. einen eingebauten.
+pub fn agent_permission_mode(
+    source: &str,
+    agent_mode: Option<&str>,
+    requested: Option<&str>,
+) -> Result<(), Problem> {
+    let trusted = matches!(source, "user" | "builtin");
+    if agent_mode == Some("yolo") && requested.is_none() && !trusted {
+        return Err(Problem::new(ProblemCode::AgentInvalid).detail(
+            "Ein Projekt-Agent kann `permission_mode: yolo` nicht selbst setzen (Repo-Inhalt); \
+             YOLO nur ausdrücklich, z. B. `beton run <agent> --permission-mode yolo`.",
+        ));
+    }
+    Ok(())
+}
+
 /// Prüft Effort und Permission-Mode beim Anlegen einer Session bzw. eines Forks gegen den
 /// Katalog des Harness (`caps`, falls bekannt).
 pub fn validate_start(

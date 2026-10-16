@@ -408,6 +408,9 @@ impl SessionManager<'_> {
         // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027);
         // `yolo` ohne Sandbox endet mit `sandbox_required`, bevor etwas angelegt wird.
         let (effort, permission_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        if let Some(s) = &snapshot {
+            crate::settings::agent_permission_mode(&s.source, permission_mode.as_deref(), None)?;
+        }
         let caps = self.harness_capabilities(&harness, std::path::Path::new(&created.cwd));
         // SBX-006: Ohne Sandbox nur, wenn der Parent bestätigt ist; das Child übernimmt die
         // Bestätigung (eigener Audit-Eintrag mit Parent). Sonst gilt die Sandbox auch hier.

@@ -177,6 +177,13 @@ impl SessionManager<'_> {
         // Angabe die des Agents der Quelle (`executor`, AGT-004), sonst die Defaults.
         let snapshot = self.load_snapshot(source).await?;
         let (agent_effort, agent_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        if let Some(s) = &snapshot {
+            crate::settings::agent_permission_mode(
+                &s.source,
+                agent_mode.as_deref(),
+                req.permission_mode.as_deref(),
+            )?;
+        }
         let effort = req.effort.clone().or(agent_effort);
         let permission_mode = req.permission_mode.clone().or(agent_mode);
         // SBX-006: Der Fork einer bestätigten Session ohne Sandbox übernimmt die Bestätigung

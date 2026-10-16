@@ -5,6 +5,7 @@
 //! öffnet keinen Port. Unbestätigte Events hält er bis 64 MiB vor und sendet sie nach einem
 //! Reconnect erneut; darüber pausiert er das Lesen vom Harness.
 
+mod agent_sandbox;
 mod credentials;
 pub mod fork;
 pub mod mcp;
@@ -839,7 +840,23 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // „Sandbox erforderlich“; jeder Fehler verhindert den Start (fail closed). Ohne Isolation
     // nur mit ausdrücklichem `backend: none`, das für diese Session bestätigt ist.
     let sandbox_boot = boot.sandbox.clone().unwrap_or_default();
-    let sandbox_spec = sandbox_boot.spec.clone();
+    // AGT-014: `sandbox:` des Agents verschärft die Sandbox der Session nur; eine Anforderung,
+    // die der Host nicht erfüllt, oder eine Lockerung verhindert den Start (fail closed).
+    let agent_sandbox = snapshot
+        .as_ref()
+        .and_then(|s| s.agent().ok())
+        .and_then(|(spec, _)| spec.sandbox);
+    let sandbox_spec = match &agent_sandbox {
+        Some(a) => match agent_sandbox::tighten(&sandbox_boot.spec, a) {
+            Ok(s) => s,
+            Err(e) => {
+                let e = beton_harness::HarnessError::StartRefused(e.to_string());
+                report_start_failure(&boot, &e).await;
+                return Err(e.into());
+            }
+        },
+        None => sandbox_boot.spec.clone(),
+    };
     if !stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec]))
         && !boot.unsandboxed_confirmed
     {
@@ -1050,6 +1067,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    // AGT-014: Ohne Snapshot ließe sich `sandbox:` nicht vor dem Aufbau der Stufen anwenden.
+    if setup.agent_sandbox.is_some() && agent_sandbox.is_none() {
+        let e = beton_harness::HarnessError::StartRefused(
+            "sandbox_unavailable: Agent mit `sandbox:` ohne Snapshot (AGT-004); Start verweigert"
+                .into(),
+        );
+        report_start_failure(&boot, &e).await;
+        return Err(e.into());
+    }
+    // AGT-014: Agent-Ebene der Policy-Hierarchie.
+    gate.set_inline(
+        beton_policy::load::Scope::Agent,
+        setup.agent_policies.drain(..).collect(),
+    );
     // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
     let forked = match &boot.fork {
         Some(path) => match fork::load(path) {

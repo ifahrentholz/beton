@@ -33,8 +33,7 @@ tools:
 
 skills: [plan, fanout, cross-review, investigate]
 
-# Agent-Policies wertet beton erst mit WP-49 aus (AGT-014, #172); bis dahin verweigert der
-# Runner den Start eines Agents mit `policies` (#234). maestra schreibt trotzdem keinen Code:
-# `permission_mode: plan` bindet die Session (AGT-011). Mit WP-49 kommen zurück:
-#   - { id: maestra-no-code, type: tool_allowlist, params: { allow_kinds: [system, file_read, search] } }
-#   - { id: maestra-no-merge, type: git_guard, params: { merge: deny, push: deny } }
+# Agent-Policies (AGT-014): maestra schreibt keinen Code und merged bzw. pusht nie (AGT-011).
+policies:
+  - { id: maestra-no-code, type: tool_allowlist, params: { allow_kinds: [system, file_read, search] } }
+  - { id: maestra-no-merge, type: git_guard, params: { merge: deny, push: deny } }
