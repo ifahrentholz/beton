@@ -147,6 +147,32 @@ mod tests {
             vec![r#"s == "a\"&&""#, "t"]
         );
         assert_eq!(split_top_level("x", "&&"), vec!["x"]);
+        // #263: Raw-Strings kennen kein Escape, Triple-Quotes enthalten einfache Quotes.
+        assert_eq!(
+            split_top_level(r#"a == r"x\" && b"#, "&&"),
+            vec![r#"a == r"x\""#, "b"]
+        );
+        assert_eq!(
+            split_top_level(r"a == R'x\' && b", "&&"),
+            vec![r"a == R'x\'", "b"]
+        );
+        assert_eq!(
+            split_top_level(r#"a == """x " && y""" && b"#, "&&"),
+            vec![r#"a == """x " && y""""#, "b"]
+        );
+        assert_eq!(
+            split_top_level("a == '''it's && no''' || b", "||"),
+            vec!["a == '''it's && no'''", "b"]
+        );
+        assert_eq!(
+            split_top_level(r#"a == br"\" && b"#, "&&"),
+            vec![r#"a == br"\""#, "b"]
+        );
+        // Ein `r` am Ende eines Bezeichners ist kein Raw-String-Präfix.
+        assert_eq!(
+            split_top_level(r#"bar == "a\" && c" && d"#, "&&"),
+            vec![r#"bar == "a\" && c""#, "d"]
+        );
         assert_eq!(
             split_top_level("ä == \"ö\" && ü", "&&"),
             vec!["ä == \"ö\"", "ü"]
