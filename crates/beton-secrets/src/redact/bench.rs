@@ -3,19 +3,103 @@
 //! Läuft im Release-Build in der CI (Job „test (linux)“):
 //! `cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture`
 //!
-//! Regression: Ist `BETON_BENCH_BASELINE` eine Datei mit dem Wert von `main`
-//! (`{"mb_per_s": …}`), schlägt ein Rückgang um mehr als 20 % fehl. `BETON_BENCH_OUT` nimmt
-//! den gemessenen Wert für die nächste Basis auf.
+//! Regression (#296): `BETON_BENCH_BASELINE` ist die Basis-Datei von `main`
+//! (`{"mb_per_s": …, "history": [ … ]}`, bis zu fünf Messungen; eine alte Datei ohne `history`
+//! gilt als Reihe mit einem Wert). Ein Rückgang um mehr als 20 % gegenüber dem Median der Reihe
+//! schlägt fehl. `BETON_BENCH_OUT` nimmt den gemessenen Wert und die um ihn fortgeschriebene
+//! Reihe auf. Mit `BETON_BENCH_RECORD=1` (Pushes auf `main`) wird nur fortgeschrieben, nicht
+//! verglichen; der Floor von 50 MB/s gilt immer.
 
 use std::time::Instant;
 
 use super::{KnownSecrets, KnownSource, Redactor};
 use crate::value::SecretValue;
 
+// Unit-Tests der Basis (Lesen, Median, Fortschreiben) in `bench/tests.rs`.
+mod tests;
+
 /// Mindestdurchsatz laut AC3.
 const MIN_MB_PER_S: f64 = 50.0;
 /// Erlaubter Rückgang gegenüber `main`.
 const MAX_REGRESSION: f64 = 0.20;
+
+/// Zahl der `main`-Messungen, deren Median die Basis bildet.
+const HISTORY_LEN: usize = 5;
+
+/// Liest die Messreihe aus einer Basis-Datei (höchstens die letzten [`HISTORY_LEN`] Werte).
+///
+/// Eine Datei im alten Format (`{"mb_per_s": …}` ohne `history`) gilt als Reihe mit einem Wert.
+/// Alles andere als eine nicht leere Reihe positiver, endlicher Zahlen ist ein Fehler, damit
+/// eine kaputte Basis den Vergleich nicht stillschweigend abschaltet.
+fn baseline_history(text: &str) -> Result<Vec<f64>, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Basis ist kein JSON: {e}"))?;
+    let values: Vec<&serde_json::Value> = match (json.get("history"), json.get("mb_per_s")) {
+        (Some(history), _) => history
+            .as_array()
+            .ok_or("`history` ist kein Array")?
+            .iter()
+            .collect(),
+        (None, Some(value)) => vec![value],
+        (None, None) => return Err("Basis ohne `history` und `mb_per_s`".into()),
+    };
+    if values.is_empty() {
+        return Err("`history` ist leer".into());
+    }
+    let mut history = values
+        .into_iter()
+        .map(|v| match v.as_f64() {
+            Some(x) if x.is_finite() && x > 0.0 => Ok(x),
+            _ => Err(format!("ungültiger Messwert in der Basis: {v}")),
+        })
+        .collect::<Result<Vec<f64>, String>>()?;
+    let skip = history.len().saturating_sub(HISTORY_LEN);
+    history.drain(..skip);
+    Ok(history)
+}
+
+/// Median der Messreihe; `None` bei leerer Reihe.
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let mid = sorted.len() / 2;
+    Some(if sorted.len() % 2 == 1 {
+        sorted[mid]
+    } else {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    })
+}
+
+/// Hängt eine neue Messung an und behält die letzten [`HISTORY_LEN`] Werte.
+fn advance(history: &[f64], value: f64) -> Vec<f64> {
+    let mut next: Vec<f64> = history.to_vec();
+    next.push(value);
+    let skip = next.len().saturating_sub(HISTORY_LEN);
+    next.drain(..skip);
+    next
+}
+
+/// Inhalt der Datei für `BETON_BENCH_OUT`: aktueller Wert und fortgeschriebene Reihe.
+fn baseline_json(value: f64, history: &[f64]) -> String {
+    serde_json::json!({ "mb_per_s": value, "history": history }).to_string()
+}
+
+/// Vergleicht eine Messung mit dem Median der Basis; liefert den Median.
+fn check_regression(value: f64, history: &[f64]) -> Result<f64, String> {
+    let base = median(history).ok_or("Basis ohne Messwerte")?;
+    if value >= base * (1.0 - MAX_REGRESSION) {
+        Ok(base)
+    } else {
+        Err(format!(
+            "Regression: {value:.1} MB/s gegenüber {base:.1} MB/s (Median der letzten {} \
+             Messungen auf main) (> 20 %)",
+            history.len()
+        ))
+    }
+}
 
 /// Deterministischer Pseudozufall (xorshift64*), damit Läufe vergleichbar sind.
 struct Rng(u64);
@@ -107,23 +191,34 @@ fn sec_013_ac3_throughput_with_1000_known_values() {
         "{best:.1} MB/s liegt unter {MIN_MB_PER_S} MB/s"
     );
 
-    if let Some(path) = std::env::var_os("BETON_BENCH_BASELINE")
-        && let Ok(text) = std::fs::read_to_string(&path)
-    {
-        let baseline: serde_json::Value = serde_json::from_str(&text).unwrap();
-        if let Some(base) = baseline["mb_per_s"].as_f64() {
-            println!("Basis von main: {base:.1} MB/s");
-            assert!(
-                best >= base * (1.0 - MAX_REGRESSION),
-                "Regression: {best:.1} MB/s gegenüber {base:.1} MB/s auf main (> 20 %)"
-            );
-        }
+    // Bisherige Basis: Messreihe von `main`. Ohne Datei (erster Lauf, Cache leer) gibt es
+    // nur den Floor; eine vorhandene, aber kaputte Datei schlägt fehl.
+    let history = match std::env::var_os("BETON_BENCH_BASELINE") {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(text) => baseline_history(&text).unwrap(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => panic!("Basis {} nicht lesbar: {e}", path.display()),
+        },
+        None => Vec::new(),
+    };
+    let record = std::env::var_os("BETON_BENCH_RECORD").is_some_and(|v| v == "1");
+    if record {
+        // main: Basis fortschreiben, nicht gegen sich selbst vergleichen.
+        println!(
+            "Basis wird fortgeschrieben ({} Werte bisher)",
+            history.len()
+        );
+    } else if !history.is_empty() {
+        let series: Vec<String> = history.iter().map(|v| format!("{v:.1}")).collect();
+        println!("Messreihe von main: [{}] MB/s", series.join(", "));
+        let base = check_regression(best, &history).unwrap_or_else(|e| panic!("{e}"));
+        println!("Basis von main (Median): {base:.1} MB/s");
     }
     if let Some(path) = std::env::var_os("BETON_BENCH_OUT") {
         let path = std::path::PathBuf::from(path);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).unwrap();
         }
-        std::fs::write(&path, serde_json::json!({ "mb_per_s": best }).to_string()).unwrap();
+        std::fs::write(&path, baseline_json(best, &advance(&history, best))).unwrap();
     }
 }
