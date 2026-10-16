@@ -54,6 +54,7 @@ zeroize.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 
 [dev-dependencies]
+beton-host = { workspace = true, features = ["test-budget"] }
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

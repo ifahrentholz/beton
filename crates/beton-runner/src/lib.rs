@@ -82,9 +82,9 @@ pub mod env {
     pub const MAX_COST: &str = "BETON_MAX_COST";
     /// `1`: Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
     pub const SPAWNED: &str = "BETON_SPAWNED";
-    /// Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298); nur
-    /// Debug-Builds reichen es an den Runner weiter und lesen es.
-    #[cfg(debug_assertions)]
+    /// Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298); nur Builds mit
+    /// dem Feature `test-budget` reichen es an den Runner weiter und lesen es (#304).
+    #[cfg(feature = "test-budget")]
     pub const TEST_POLICY_BUDGET: &str = beton_policy::cel::TEST_BUDGET_ENV;
 }
 
@@ -368,6 +368,13 @@ fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter
 /// Exit-Code: 0 nach `runner.stop` oder Ende des Daemons, sonst der des Harness bzw. 1/2.
 pub async fn main_from_env() -> std::process::ExitCode {
     use std::process::ExitCode;
+    // #304: Ein Testbudget der Policy-Engine (Feature `test-budget`) gehört nie in den Betrieb.
+    if let Some(ms) = beton_policy::cel::Limits::active_test_budget_ms() {
+        tracing::warn!(
+            budget_ms = ms,
+            "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
+        );
+    }
     let boot = match RunnerBoot::from_env_and_stdin() {
         Ok(b) => b,
         Err(e) => {

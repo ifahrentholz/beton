@@ -293,8 +293,9 @@ fn pol_002_active_test_budget_warns_at_daemon_and_runner_start() {
         // Nach dem Ende von Daemon und Runner ist alles geschrieben.
         serve.terminate();
         for name in ["daemon.log", "runner.log"] {
+            // Ohne Warnung schreibt der Runner unter Umständen gar nichts; dass er lief, zeigt
+            // die Antwort von `beton run`.
             let text = wait_log(serve.home(), name, |t| !warns || t.contains(MARK));
-            assert!(!text.is_empty(), "{name} fehlt");
             let line = text.lines().find(|l| l.contains(MARK));
             if warns {
                 let line = line.unwrap_or_else(|| panic!("{name} ohne Warnung: {text}"));
