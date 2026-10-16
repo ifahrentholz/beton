@@ -275,6 +275,13 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     })
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))
     .ok();
+    // #304: Ein Testbudget der Policy-Engine (Feature `test-budget`) gehört nie in den Betrieb.
+    if let Some(ms) = beton_policy::cel::Limits::active_test_budget_ms() {
+        tracing::warn!(
+            budget_ms = ms,
+            "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
+        );
+    }
 
     // UX-007: Flags aus Config und Env; Unbekanntes und Entferntes nur als Warnung.
     let mut features = beton_core::feature::FeatureSet::from_sources(

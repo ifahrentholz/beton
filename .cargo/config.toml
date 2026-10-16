@@ -4,9 +4,11 @@ xtask = "run --quiet --package xtask --"
 # Großzügiges Zeitbudget der Policy-Engine (POL-002) für alle Testläufe (#298): Unter Last
 # überschreitet eine unoptimierte Auswertung sonst die 10 ms in Tests, die das Budget gar
 # nicht prüfen (fail closed). Der Auswerte-Timeout des Runners (250 ms) wächst mit, bleibt
-# aber unter der 1 s, die `pol_024_ac3_engine_error_or_timeout_denies` erlaubt. Nur
-# Debug-Builds lesen die Variable (`Limits::runtime`); Release-Builds kennen sie nicht, im
-# Betrieb bleibt es bei 10 ms bzw. 250 ms. Eine schon gesetzte Variable hat Vorrang, z. B.
-# `BETON_TEST_POLICY_BUDGET_MS=0` für das echte Budget.
+# aber unter der 1 s, die `pol_024_ac3_engine_error_or_timeout_denies` erlaubt. Nur Builds
+# mit dem Feature `test-budget` lesen die Variable (`Limits::runtime`); das Feature schalten
+# nur Dev-Dependencies ein (#304), also nur Builds mit Testzielen. `cargo build`/`cargo run`
+# und jeder ausgelieferte Build kennen sie nicht, im Betrieb bleibt es bei 10 ms bzw. 250 ms.
+# Ist das Testbudget aktiv, warnen Daemon und Runner beim Start. Eine schon gesetzte Variable
+# hat Vorrang, z. B. `BETON_TEST_POLICY_BUDGET_MS=0` für das echte Budget.
 [env]
 BETON_TEST_POLICY_BUDGET_MS = "500"

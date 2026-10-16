@@ -107,23 +107,26 @@ impl Default for Limits {
 }
 
 /// Umgebungsvariable, mit der Integrationstests das Zeitbudget je `evaluate` großzügig
-/// setzen (Millisekunden, #298). Nur Debug-Builds kennen und lesen sie; gesetzt wird sie für
-/// alle Testläufe in `.cargo/config.toml`.
-#[cfg(debug_assertions)]
+/// setzen (Millisekunden, #298). Nur Builds mit dem Feature `test-budget` kennen und lesen sie;
+/// das Feature schalten nur Dev-Dependencies ein (#304), gesetzt wird die Variable für alle
+/// Testläufe in `.cargo/config.toml`.
+#[cfg(feature = "test-budget")]
 pub const TEST_BUDGET_ENV: &str = "BETON_TEST_POLICY_BUDGET_MS";
 
 /// Obergrenze für [`TEST_BUDGET_ENV`]: großzügig, aber nie ohne Zeitbudget.
-#[cfg(debug_assertions)]
+#[cfg(feature = "test-budget")]
 const TEST_BUDGET_MAX_US: u64 = 60_000_000;
 
 impl Limits {
     /// Grenzen der Auswertung im Betrieb (Runner, Server, CLI): die Werte aus POL-002.
     ///
-    /// Nur in Debug-Builds hebt [`TEST_BUDGET_ENV`] das Zeitbudget an: Unter Last auf
-    /// geteilten CI-Runnern überschreitet eine unoptimierte Auswertung sonst die 10 ms in
-    /// Tests, die das Budget gar nicht prüfen (#298). Release-Builds lesen keine Variable.
+    /// Nur mit dem Feature `test-budget` hebt `BETON_TEST_POLICY_BUDGET_MS` das Zeitbudget an:
+    /// Unter Last auf geteilten CI-Runnern überschreitet eine unoptimierte Auswertung sonst die
+    /// 10 ms in Tests, die das Budget gar nicht prüfen (#298). Das Feature schalten nur
+    /// Dev-Dependencies ein, unabhängig vom Profil (#304); ohne es liest der Build keine
+    /// Variable.
     pub fn runtime() -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "test-budget")]
         {
             static RUNTIME: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
             RUNTIME
@@ -133,16 +136,24 @@ impl Limits {
                 })
                 .clone()
         }
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "test-budget"))]
         {
             Self::default()
         }
     }
 
+    /// Zeitbudget je `evaluate` in Millisekunden, wenn [`Limits::runtime`] von den Grenzen aus
+    /// POL-002 abweicht (Testbudget aktiv, nur mit dem Feature `test-budget`). Daemon und
+    /// Runner schreiben dann beim Start eine Warnung (#304).
+    pub fn active_test_budget_ms() -> Option<u64> {
+        let runtime = Self::runtime();
+        (runtime != Self::default()).then_some(runtime.eval_budget_us / 1_000)
+    }
+
     /// Hebt das Zeitbudget auf `raw` Millisekunden an (höchstens 60 s). Kleinere, fehlende
     /// oder ungültige Werte lassen die Grenzen unverändert; das Kostenbudget bleibt immer
-    /// gleich. Nur in Debug-Builds (#298).
-    #[cfg(debug_assertions)]
+    /// gleich. Nur mit dem Feature `test-budget` (#298, #304).
+    #[cfg(feature = "test-budget")]
     pub fn with_test_budget(mut self, raw: Option<&str>) -> Self {
         if let Some(ms) = raw.and_then(|r| r.trim().parse::<u64>().ok()) {
             let us = ms.saturating_mul(1_000).min(TEST_BUDGET_MAX_US);
