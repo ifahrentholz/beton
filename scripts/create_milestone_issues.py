@@ -5,25 +5,26 @@ Rollierende Planung (siehe Issue #17 und AGENTS.md): Pro Meilenstein werden die
 Arbeitspakete (WPS), ggf. Sonder-Issues für den Maintainer (HUMAN, Label `human-required`)
 und das Abschluss-/Planungs-Issue (PLAN) unten definiert. Für den nächsten Meilenstein `MS`
 umstellen und WPS/HUMAN/PLAN ersetzen. Die Definitionen früherer Meilensteine (M0: WP-01 bis
-WP-16 und LEGAL; M1: WP-17 bis WP-31 und HR-SIGNING/HR-DOMAIN/HR-TRADEMARK) bleiben als Vorlage
-in der Git-History.
+WP-16 und LEGAL; M1: WP-17 bis WP-31 und HR-SIGNING/HR-DOMAIN/HR-TRADEMARK; M2: WP-32 bis WP-50
+und HR-CODEOWNERS) bleiben als Vorlage in der Git-History.
 
 Das Skript prüft vorab, dass jedes Feature des Meilensteins (laut docs/spec) genau
-einem Paket zugeordnet ist. Bereits existierende Issues (gleicher Titel) werden
+einem Paket zugeordnet ist. Abhängigkeiten sind Schlüssel anderer Pakete oder (als ganze Zahl)
+Nummern bereits existierender Issues aus EXTERNAL, z. B. der `human-required`-Issues. Bereits existierende Issues (gleicher Titel) werden
 übersprungen, Labels und Milestones idempotent angelegt.
 
 Voraussetzung: `gh` ist angemeldet und hat Schreibrechte auf REPO.
 
 Aufruf:
   python3 scripts/create_milestone_issues.py --check     # nur Zuordnung prüfen
-  python3 scripts/create_milestone_issues.py --dry-run   # zeigt die gh-Aufrufe
+  python3 scripts/create_milestone_issues.py --dry-run   # zeigt die gh-Aufrufe und Issue-Texte
   python3 scripts/create_milestone_issues.py             # legt alles an
 """
 import json, re, glob, subprocess, sys, os
 
 REPO = "ifahrentholz/beton"
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-MS = "M2"  # Meilenstein, für den Issues angelegt werden
+MS = "M3"  # Meilenstein, für den Issues angelegt werden
 BLOB = f"https://github.com/{REPO}/blob/main"
 DRY = "--dry-run" in sys.argv
 
@@ -82,13 +83,17 @@ LABELS = {
     "area:security": ("c5def5", "Auth, Sandbox, Proxy, Secrets"),
     "area:legal": ("c5def5", "Lizenzen, Nutzungsbedingungen, Markenrecht"),
     "area:release": ("c5def5", "Distribution, Signing, Updates, Domain"),
+    "area:desktop": ("c5def5", "apps/desktop, Tauri-Hülle"),
+    "area:browser": ("c5def5", "beton-browser, eingebetteter Browser"),
+    "area:voice": ("c5def5", "beton-voice, Spracheingabe"),
 }
 
-# ---------- Arbeitspakete M2 ----------
-# Die Definitionen für M0 (WP-01 … WP-16, LEGAL) und M1 (WP-17 … WP-31, HR-SIGNING, HR-DOMAIN, HR-TRADEMARK)
-# stehen in der Git-History dieses Skripts.
+# ---------- Arbeitspakete M3 ----------
+# Die Definitionen für M0 (WP-01 … WP-16, LEGAL), M1 (WP-17 … WP-31, HR-SIGNING, HR-DOMAIN, HR-TRADEMARK) und
+# M2 (WP-32 … WP-50, HR-CODEOWNERS) stehen in der Git-History dieses Skripts.
 # Gemeinsame Hinweise (ADR-0032 Design-first, ADR-0033 lokal, ADR-0034 Subscription-first, Sicherheit) stehen pro Paket,
-# damit jedes Issue für sich verständlich ist.
+# damit jedes Issue für sich verständlich ist. Die Zuordnung der aus M2 übernommenen und der schon in M3 offenen Issues
+# steht in docs/plan/m2-triage.md.
 def design(screens, extra=""):
     """Hinweis auf die Prototyp-Screens (ADR-0032); `screens` sind Screen-IDs aus design/prototype/src/screens."""
     s = ", ".join(f"`{x}`" for x in screens.split())
@@ -98,269 +103,281 @@ def design(screens, extra=""):
 SUBSCRIPTION = "**Subscription-first (ADR-0034, ADR-0005):** Default-Auth ist der Login der Vendor-CLI; beton liest, speichert oder verwendet keine Subscription-Tokens. Kein Feature setzt einen API-Key voraus; Tests laufen ohne `*_API_KEY` im Env."
 LOCAL = "**Lokal ohne externe Server (ADR-0033):** Tests nur mit Fake-CLIs, Golden Transcripts und Mocks auf Loopback; kein Internet."
 LOCAL_NET = ("**Lokal ohne externe Server (ADR-0033):** Netz-Tests nur gegen lokale Test-Upstreams (TLS mit Test-CA) und einen Test-Resolver, "
-             "nie gegen `example.com`, `api.github.com` oder öffentliche Registries; die Linux-CI hat kein Netzwerk. Weil der Proxy Loopback und "
+             "nie gegen `example.com`, `github.com` oder öffentliche Registries; die Linux-CI hat kein Netzwerk. Weil der Proxy Loopback und "
              "private Ziele sperrt (PRX-007), brauchen Tests einen ausdrücklichen Test-Zugang, der in einer Produktionskonfiguration nicht erreichbar ist.")
 SECURITY = ("**Sicherheitskritisch (AGENTS.md §4, QA-013):** strikt TDD – erst der rote Test, dann die Implementierung. Fail closed: "
             "Fehler oder Ausfall von Engine, Sandbox, Proxy oder Secret-Store führen zur Ablehnung, nie zu stillschweigendem Erlauben. "
-            "Merge erst nach Maintainer-Freigabe.")
+            "Merge erst nach Maintainer-Freigabe (ADR-0036; zur Praxis der delegierten Agent-Reviews ADR-0040).")
+RELEASE_SECURITY = ("**Release-, Signing- und Update-Pipeline (AGENTS.md §5):** strikt TDD, fail closed (eine fehlende oder ungültige Signatur bricht ab, nie "
+                    "„ohne Signatur weiter“). Merge nur nach ausdrücklicher Zustimmung des Maintainers selbst; diese Freigabe wird nicht an Agent-Reviews "
+                    "delegiert (ADR-0040, Vorschlag). Schlüssel, Zertifikate und Tokens nie ins Repo, nur als Secrets der Environment `release`.")
 ESCAPE = "Sandbox-Escape-Tests (SBX-011, QA-005) werden nie abgeschwächt, übersprungen oder auf `#[ignore]` gesetzt, damit die CI grün wird."
+FILTER = ("**Sicherheitsfilter (ADR-0040, Vorschlag):** Hält der Sicherheitsfilter des Modells den Agent beim Ausformulieren von Ausbruchs- oder "
+          "Umgehungsfällen an, stoppt er diese Teilaufgabe, formuliert nicht um und übergibt per Issue-Kommentar an den Maintainer.")
 PLATFORMS = ("**Plattformen:** macOS (arm64) und Linux sind Pflicht und laufen in der CI. Windows (Beta) bekommt die Sandbox erst mit M5 (SBX-016): "
              "Der Windows-Build bleibt grün, die Backends melden dort `unavailable` (fail closed), es gibt keinen stillen Fallback.")
+NEW_CI = ("**Neue CI-Jobs:** Jeder Job in `.github/workflows/ci.yml` muss Required Check auf `main` sein (`scripts/check_branch_protection.py` im Job "
+          "„spec + roadmap“); das Eintragen ist eine Einstellung des Maintainers. Neue Jobs (z. B. Windows-Tests, `tauri-driver`) deshalb als "
+          "Vorschlag in einem `human-required`-Issue beschreiben (Vorlage #301) und erst nach der Freigabe einchecken.")
+RELEASE_GATE = ("**Kein Release 0.1 vor dem M2-Abschluss:** Veröffentlicht wird erst, wenn M2 abgeschlossen ist (Escape-Suite SBX-011/QA-005 als "
+                "Required Check, die in M2 verbliebenen `security-review`-Befunde, `docs/plan/m2-triage.md`) und #177 erledigt ist (ADR-0036). "
+                "Das Veröffentlichen ist unumkehrbar und bleibt beim Maintainer (AGENTS.md §5).")
 
 WPS = [
- dict(key="WP-32", title="Policy-Engine-Kern: CEL, Dokumentformat, Tool-Normalisierung & Hierarchie", labels=["area:security", "area:qa", "security-review"], deps=[],
-      features=["QA-013", "QA-011", "POL-002", "POL-001", "POL-005", "POL-007"],
-      goal="Neues Crate `beton-policy` mit CEL-Engine, Policy-Dokumentformat samt Hot-Reload, harness-übergreifender Tool-Normalisierung und dem verbindlichen Kombinationsalgorithmus über User → Projekt → Agent, dazu die Prozess-Gates für sicherheitskritische Crates (TDD-Check, Coverage-Floor).",
+ dict(key="WP-51", title="Binärkanäle, `beton-pty` & Workspace-Terminals in der Sandbox", labels=["area:protocol", "area:runner", "area:web", "area:security", "security-review"], deps=[],
+      features=["PROTO-007", "DATA-011", "SES-019", "WEB-010"],
+      goal="Terminal-Bytes, Browser-Frames und Audio laufen als Binärkanäle mit kreditbasierter Flusskontrolle im selben WebSocket. Workspace-Terminals laufen als PTY im Runner (`beton-pty`, ohne tmux) in Stufe 2 der Sandbox, überleben Client-Disconnects und erscheinen in der Web-UI als xterm.js-Tabs. Terminal-Bytes werden nie gespeichert, nur Snapshots.",
       notes=[
-        "Neues Crate `beton-policy` (00-overview §4.4). Die Engine ist rein: ohne IO, deterministisch, seiteneffektfrei. Die Anbindung an Runner und Adapter folgt mit WP-35.",
-        SECURITY,
-        "QA-013 zuerst: `CODEOWNERS` für `crates/beton-policy`, `beton-sandbox`, `beton-proxy`, `beton-secrets` und den Auth-Code in `beton-server`, CI-Check `security-tests-touched`, Checkliste in `.github/pull_request_template.md`. AC1 (Merge nur mit Code-Owner-Approval) braucht die Entscheidung aus dem `human-required`-Issue „Code-Owner-Review und Branch-Protection für sicherheitskritische Crates einrichten“. Ist sie beim Abschluss dieses Pakets noch offen, AC1 als eigenes Issue im Milestone M2 anlegen statt es stillschweigend wegzulassen.",
-        "QA-011: `cargo llvm-cov` in der CI, Floor `beton-policy` ≥ 90 % ab diesem Paket; `beton-sandbox` (≥ 80 %) kommt mit WP-39 ins Gate, `beton-proxy` und `beton-secrets` werden nur berichtet. Ratchet gegen `main` mit 0,2 Punkten Toleranz.",
-        "Kombinationsalgorithmus exakt nach 03-policies.md (Design); POL-007 AC5 als Property-Test mit permutierter Lade-Reihenfolge. Hierarchie-Fälle hier als Rust-Tests, mit WP-40 zusätzlich als YAML-Policy-Tests (QA-004).",
-        "POL-001: Schema per `cargo xtask codegen` nach `schemas/v1/policy.schema.json` (Rust-Typen sind Single Source of Truth); der `$schema`-Kommentar zeigt auf die lokale Datei, nie auf eine URL (ADR-0033). `beton setup` legt `~/.beton/policies/defaults.yaml` an. Die Agent-Ebene (`policies:` im `agent.yaml`, AGT-014) kommt mit WP-49; die Lade-Schnittstelle dafür hier vorsehen.",
-        "POL-002: `cel-rust`; Kostenlimit und 10-ms-Budget pro `evaluate` mit Fehlerinjektion testen, Benchmark (AC4) mit Schwelle in der CI. Die Kontext-Typen (POL-004) entstehen hier als Deklaration für die Typprüfung, die Befüllung zur Laufzeit folgt mit WP-35.",
-        "POL-005: Die Abbildungstabelle liegt als Daten vor (AC3) und wird gegen die vorhandenen Golden Transcripts von Claude, Codex und ACP geprüft.",
-        design("policy-overview policy-editor", " (Ladefehler: Typfehler, falsche Phase, doppelte Regel-ID, Hot-Reload fehlgeschlagen); in diesem Paket gibt es kein UI-AC"),
-      ]),
- dict(key="WP-33", title="Secret-Store: Keychain, verschlüsselte Datei & Audit-Log", labels=["area:security", "area:store", "area:cli", "security-review"], deps=[],
-      features=["SEC-012", "SEC-001", "SEC-002", "SEC-003", "SEC-004"],
-      goal="Neues Crate `beton-secrets`: Secrets werden per SecretRef adressiert, im OS-Keychain oder in einer verschlüsselten Datei gespeichert und nur über `get_for_use` herausgegeben; jede sicherheitsrelevante Aktion landet in einem hash-verketteten Audit-Log.",
-      notes=[
-        "Neues Crate `beton-secrets`. SEC-012 zuerst: Das Audit-Log (Append-only, Hash-Kette, `beton audit list|export|verify`, `GET /v1/audit`) ist Voraussetzung für SEC-001 AC3 und für Proxy und CA (WP-36).",
-        SECURITY,
-        "SEC-001: `SecretValue` ohne Klartext-`Debug`/`Serialize`, Nullen per `zeroize`; `get_for_use` nur über einen Capability-Typ für Proxy, Direkt-API-Harness und Git-Provider-Client (Sperre zur Compile-Zeit, AC2).",
-        "SEC-002: `keyring`-Crate. Die macOS-CI nutzt einen temporären Keychain, die Linux-CI ohne D-Bus den Datei-Fallback (SEC-003); Tests verändern nie den Keychain des Entwicklers.",
-        "SEC-003: Argon2id-Parameter laut Spec, atomares Schreiben (Kill-Test AC4), Entsperren über `BETON_SECRETS_PASSPHRASE_FILE` für Headless-Betrieb und CI. Gesperrt heißt `secrets_locked` (fail closed).",
-        "SEC-004: Werte nie als CLI-Argument (AC2) und nie in API-Responses (OpenAPI-Snapshot-Test, AC3). `beton secrets test` prüft über den Proxy-Pfad und kommt deshalb mit SEC-011 in WP-46.",
-        "Aus M0 (HAR-016 AC3, „ab M2“): Ein gefundener `OPENAI_API_KEY` wird nur nach ausdrücklicher Zustimmung in den Keychain übernommen; die Ausgabe zeigt ihn nur maskiert (`sk-…abcd`).",
-        "**Klären:** SEC-012 AC4 (ein Member sieht nur eigene Einträge) setzt Rollen voraus (AUTH-014, M4). Lokal gibt es nur den Owner; den Rollen-Teil nicht vorziehen und die Spec im PR klarstellen.",
-        "Lokal ohne externe Server (ADR-0033): kein Vault/KMS (v2), Envelope-Encryption für den zentralen Server erst mit M4.",
-        design("secrets-store security-audit-log", "; die Einstellungs-UI hat in M2 kein UI-AC"),
-      ]),
- dict(key="WP-34", title="Usage-Records, Preis-Katalog & eigene Preise", labels=["area:store", "area:core", "area:harness"], deps=[],
-      features=["USE-001", "USE-002", "USE-003"],
-      goal="Jedes `cost.delta` wird zu einem normalisierten Usage-Record, bewertet mit einem versionierten Preis-Katalog und eigenen Preisen für Gateway-Modelle; das ist die Grundlage für Budget-Policies und die Usage-Ansichten.",
-      notes=[
-        "USE-001 ist Owner der Projektion `usage_records` (Mechanismus DATA-005). `session.cost_usd` und `user.daily_cost_usd` für die Policy-Engine (POL-004, WP-35) kommen aus derselben Projektion.",
-        "Aus M0 (DATA-005 AC2, „ab M2“): Ein `cost.delta` ist in derselben Transaktion wie der Append in der Usage-Projektion sichtbar.",
-        "Aus M1 (HAR-006 AC3): Codex-Kosten aus dem Preis-Katalog; den Subscription-Teil (USE-004) liefert WP-44.",
-        "**Subscription-first (ADR-0034):** Records mit `auth_source: vendor_cli` zählen nie zu Geld-Summen (USE-001 AC3); ein Listenpreis-Äquivalent (`equivalent_usd`) ist nur informativ.",
-        "USE-002: Katalog als TOML im Binary; Updates nur mit Releases, nie per Netzabruf (ADR-0033). USE-003: Preisangaben aus `providers` (HAR-011) gelten als Overrides; vom zentralen Modus (AC4) gibt es lokal nur den `doctor`-Hinweis.",
-        design("usage-overview usage-pricing", "; die Anzeige kommt mit WP-44 und WP-47"),
-      ]),
- dict(key="WP-35", title="Policy-Gate im Runner: Phasen, Kontext, Entscheidungen, Durchsetzungsmatrix & Audit", labels=["area:harness", "area:server", "area:security", "security-review", "needs-vendor-cli"], deps=["WP-32", "WP-34"],
-      features=["POL-003", "POL-004", "POL-006", "POL-024", "POL-025"],
-      goal="Die Policy-Engine entscheidet an allen Hook-Phasen jeder Session über alle Harnesses, verweigert den Start bei nicht durchsetzbaren Pflichtregeln, und jede Auswertung erzeugt genau ein `policy.decision`.",
-      notes=[
-        "Ersetzt das bisherige `PolicyGate` aus M0/M1 durch die Engine aus WP-32; die minimale Approval-Karte (WEB-018) bleibt bis WP-37 in Betrieb.",
-        SECURITY,
-        "POL-024: Die Enforcement-Matrix wird aus den Harness-Capabilities (HAR-002, `tool_call_gate`) abgeleitet, nicht hart codiert. Nicht durchsetzbare Pflichtregeln verhindern den Start (`session.start_denied`); Engine-Fehler und Timeouts ergeben `deny`.",
-        "Aus #73 (HAR-005): session-spezifischer `PreToolUse`-Hook im Claude-Adapter, damit auch vom Vendor automatisch erlaubte Tools (z. B. `Read`, `echo`) das Gate passieren; danach deklariert der Claude-Adapter `tool_call_gate: full`. Den Mechanismus gegen die echte `claude`-CLI verifizieren und Golden Transcripts aufnehmen (Secret-Scan `cargo xtask golden-scan`).",
-        "Aus M0 (HAR-005 AC3, „ab M2“): Jede Permission-Anfrage erzeugt genau ein `policy.decision`; Adapter-Latenz ohne menschliche Interaktion < 20 ms p99.",
-        "Aus M1 (HAR-010 AC5, „ab M2“): Beim Direkt-API-Harness durchläuft jeder Model-Request die Phase `model_request` (Test: `deny` verhindert den HTTP-Request am Mock-Server).",
-        "Aus #101 (SES-004): Queue-Einträge durchlaufen beim Abarbeiten, nicht beim Einreihen, die Phase `model_request`; `deny` entfernt den Eintrag mit `policy.decision` im Verlauf, `ask` hält die Queue an. Direkte Eingaben und Steer genauso prüfen.",
-        "Aus 02-agents.md (System-Tools, „ab M2“): Aufrufe des `beton`-MCP-Servers durchlaufen `tool_call` mit `tool.kind = \"system\"`.",
-        "Aus #71 (HAR-027): Codex deklariert `yolo` erst, wenn beton dessen Approval-Requests automatisch laut Policy beantwortet (POL-006, POL-024); Claude-`yolo` (`bypassPermissions`) erst zusammen mit dem `PreToolUse`-Hook. Das Freischalten selbst (Sandbox-Status) folgt mit WP-49.",
-        "POL-004: Kontext-Variablen als Rust-Typen, daraus CEL-Deklaration und Referenztabelle für die Doku (Snapshot-Test); `session.cost_usd` und `user.daily_cost_usd` aus der Usage-Projektion (WP-34). Variablen späterer Meilensteine (`browser.*` M3, `budget.*` und `team` M4) nur als Typen, ohne Wirkung.",
-        "**Klären:** POL-003 AC1 verlangt einen Integrationstest pro Phase; `browser_navigate` und `browser_action` gibt es erst mit dem eingebetteten Browser (M3). Spec im PR klarstellen, welche Phasen in M2 getestet werden.",
-        "POL-025: keine Tool-Argumente im Klartext (`subject_hash`); Invarianten-Test: zu jedem `tool.call.requested` genau ein `policy.decision`.",
-        design("policy-enforcement policy-audit harness-catalog", " (Durchsetzung je Harness)"),
-      ]),
- dict(key="WP-36", title="Egress-Proxy-Kern: Instanzen, beton-CA & TLS-MITM, Regeln, HTTP/2 & Private-IP-Schutz", labels=["area:security", "security-review"], deps=["WP-33"],
-      features=["PRX-001", "PRX-002", "PRX-003", "PRX-004", "PRX-007"],
-      goal="Neues Crate `beton-proxy`: ein Forward-Proxy in Rust mit eigener Identität pro Session-Stufe, beton-CA für TLS-MITM, Default-Deny-Regeln, Prüfung jedes HTTP/2-Streams und Schutz vor privaten Zielen und DNS-Rebinding.",
-      notes=[
-        "Neues Crate `beton-proxy` (tokio, hyper, rustls), läuft im Runner (Stufe 0). Die Erzwingung „Netz nur zum Proxy“ in der OS-Sandbox kommt mit WP-39, WP-41 und WP-45 (PRX-008).",
-        SECURITY,
-        "PRX-002: Der CA-Schlüssel liegt nur im Secret-Store (WP-33), nie als Klartextdatei; die CA wird nie in einen System-Trust-Store installiert; die Rotation (`beton proxy ca rotate`) geht ins Audit-Log. Ist der Store gesperrt, startet keine Session mit Netz (fail closed).",
-        "PRX-003: Regeltests deklarativ unter `tests/egress/*.yaml` (AC1); Parser und Matcher von Anfang an mit `proptest` gegen eine Referenzimplementierung. Die Fuzz-Targets (QA-009) bündelt WP-48.",
-        "PRX-007: eigener Resolver, Verbindung nur zur geprüften IP; der Test-Resolver ist der Injektionspunkt für DNS-Rebinding-Tests (AC2) und für alle anderen Netz-Tests.",
-        LOCAL_NET,
-        design("egress-proxy egress-log", "; die Proxy-Ansicht hat in M2 kein UI-AC"),
-      ]),
- dict(key="WP-37", title="Approvals, Policy-Zustand, Inbox & Approval-Bar", labels=["area:server", "area:web", "area:security", "security-review"], deps=["WP-35"],
-      features=["POL-009", "POL-010", "POL-014", "UX-001", "WEB-007"],
-      goal="`ask`-Entscheidungen werden zu genau einer Approval-Card, die in der Approval-Bar der Session und in der zentralen Inbox beantwortbar ist, mit Grants, Timeouts, Zuständen und Zählern, die Neustarts überleben.",
-      notes=[
-        SECURITY,
-        "POL-010: Offene Approvals überleben Daemon-Neustarts (AC4); Timeout-Kombination exakt nach Spec. AC3 (403 für `view`) ist „ab M4“ und wird nicht vorgezogen.",
-        "POL-009: `session`- und `run`-Zustand als `policy.state_changed` im Session-Log (replay- und fork-fähig, ein Fork übernimmt bis `up_to_seq`); `user_day` und `user` im Store, Tagesgrenze in `user.timezone` (simulierte Uhr).",
-        "UX-001: Inbox-Projektion aus dem Event-Log (Rebuild-Test, AC4). Aus M1 (AGT-007 AC4, „ab M2“) und 02-agents.md: System-Tools `inbox_read` und `ask_user`; `ask_user` erzeugt eine Inbox-Frage, die Antwort erscheint als Tool-Result.",
-        "**Klären:** UX-001 AC3 verlangt einen Tray/Dock-Badge, die Desktop-App (DESK-004) kommt erst mit M3. In M2 nur der Zähler in der Web-UI; den Desktop-Teil per Spec-Änderung nach M3 verschieben (eigenes Issue).",
-        "WEB-007 löst die minimale Approval-Karte (WEB-018) ab; Tastatur (`⌘⏎`, `⌘⌫` ist eine Annahme, mit dem Prototyp abgleichen) und axe-Test für `role=\"alertdialog\"`.",
-        "**Design fehlt, vorher entwerfen und abnehmen lassen:** Der Prototyp zeigt in `session-stream` (Zustand „Freigabe offen“) nur eine einzelne Karte im Verlauf. Es fehlen die fixierte Leiste über dem Composer mit gestapelten Approvals, ausklappbare Argumente bzw. Diff bei Datei-Edits und der Zustand „entschieden von …“ (WEB-007 AC1, AC2).",
-        design("session-stream policy-approvals inbox-list inbox-shortcuts"),
-        "E2E (Playwright gegen Fake-Harness): Approval in der Bar erlauben, ein zweiter Client sieht „entschieden von …“, Approve aus der Inbox setzt eine pausierte Session fort.",
-      ]),
- dict(key="WP-38", title="Redaction-Pipeline, Payload-Redaktion & OpenTelemetry-Traces", labels=["area:security", "area:store", "area:protocol", "security-review"], deps=["WP-33", "WP-35"],
-      features=["SEC-013", "OBS-002", "DATA-012", "OBS-003"],
-      goal="Secrets erscheinen nirgends im Klartext, weder in Events, Tool-Outputs und Logs noch in Traces, Exporten oder Diagnose-Bundles; nachträglich entdeckte Leaks lassen sich manuell schwärzen, und jede Session ist als OTel-Trace nachvollziehbar.",
-      notes=[
-        SECURITY,
-        "SEC-013 ist Owner der Pipeline (Aho-Corasick über bekannte Werte inklusive Base64- und URL-Varianten, Muster-Detektoren); OBS-002 bindet sie als `tracing`-Layer ein (OBS-001). Benchmark ≥ 50 MB/s (AC3) mit Regressionsschwelle in der CI.",
-        "Aus M1 (SES-007 AC3, „ab M2“): Der Handover-Kontext beim Harness-Wechsel enthält keine Secret-Werte, nur `bt_cred_*` (Test mit präpariertem Log).",
-        "Aus M1 (SES-009 AC2, „ab M2“): Der Session-Export enthält keine Secret-Werte (Scan auf bekannte Test-Secrets).",
-        "DATA-012: `POST /v1/sessions/{id}/events/{seq}/redact`, `event.redacted` an verbundene Clients, Audit-Eintrag (WP-33). **Klären:** Rollen (Owner/Admin, `view` → 403 in AC3) kommen erst mit M4 (COL-001); lokal ist der Owner berechtigt. Rollen-Teil nicht vorziehen, Spec im PR klarstellen.",
-        "OBS-003: Export nur, wenn `observability.otlp.endpoint` bzw. `OTEL_EXPORTER_OTLP_ENDPOINT` gesetzt ist (ADR-0025, ADR-0033); ohne `capture_content` keine Prompts oder Tool-Argumente in Spans. **Klären:** AC1 nennt einen Testcontainer; die Linux-CI hat kein Netzwerk, deshalb einen OTLP-Empfänger im Prozess auf Loopback verwenden und die Spec anpassen.",
-        design("secret-redaction diag-events diag-logs diag-bundle diag-metrics", " (Schwärzen im Event-Log: Zustände `redact` und `redacted`)"),
-      ]),
- dict(key="WP-39", title="Sandbox-Kern & macOS-Backend (Seatbelt)", labels=["area:security", "area:runner", "security-review"], deps=["WP-36"],
-      features=["SBX-001", "SBX-003", "SBX-004", "SBX-007"],
-      goal="Neues Crate `beton-sandbox` mit Provider-Trait, Registry, deklarativer Konfiguration samt fail-closed-Pfadauflösung und Default-Masken, dazu das macOS-Backend auf Seatbelt (deny-default).",
-      notes=[
-        "Neues Crate `beton-sandbox`; ab hier gilt sein Coverage-Floor ≥ 80 % (QA-011, WP-32).",
+        "Aus #74 (PROTO-007): Binärframes im selben Socket statt Close `4400`. Frame-Layout, `open_channel`/`close_channel`, Kredit und `nack` als Rust-Typen in `beton-proto`, TS-Typen per `cargo xtask codegen`.",
+        "Neues Crate `beton-pty` (auf `portable-pty`, Unix-PTY bzw. ConPTY) im Runner. Es ist die Grundlage für die Panes der TUI (TUI-002, WP-52) und den Native-TUI-Modus (WP-53). Nie tmux.",
         SECURITY + " " + ESCAPE,
-        "SBX-001 AC2: Lint (`disallowed-methods`) gegen `Command::spawn` für Harness und Tools außerhalb von `beton-sandbox` und `beton-pty`. Die bestehenden Spawns aus M0/M1 (Runner, Adapter, MCP-stdio-Server) laufen dafür über `SandboxProvider::spawn`, vorerst mit `backend: none` als ausdrücklichem Provider. Das Verhalten bleibt bis WP-49 gleich; den Default „Sandbox erforderlich“ (SBX-006) schaltet erst WP-49 scharf.",
-        "SBX-003: Pfade nur mit `~` expandieren, `realpath`, verbotene Grants sind Fehler. Aus M1 (SES-015, „ab M2“): Der Worktree (inklusive `.git/worktrees/<name>` und Objekt-DB) ist Schreib-Root; SES-015 AC2 (Schreiben ins Haupt-Checkout scheitert) wird mit WP-45 in Stufe 2 nachgewiesen.",
-        "Aus #92: Die Workspace-API löst Pfade race-frei auf (`openat`-Ketten mit `O_NOFOLLOW`, unter Linux `openat2` mit `RESOLVE_BENEATH`). Das ist dieselbe Technik wie bei der Pfadauflösung hier, und mit der Sandbox wird die API zur relevanten Grenze; #92 im selben Zug schließen oder verlinken.",
-        "SBX-007: Profil aus einem versionierten Template mit Parametern (`-D KEY=VALUE`), nie per String-Konkatenation; Fuzz-Test des Profil-Generators (AC3). `sandbox-exec` braucht weder Entitlements noch Notarisierung; die signierte App kommt erst mit M3 (#54). CI auf `macos-latest` und der Vorversion (SBX-011).",
-        "Plattformübergreifende ACs (SBX-003 AC4, SBX-004) werden hier auf macOS nachgewiesen; dieselben Tests laufen ab WP-41 auch auf Linux.",
-        "Netz-ACs (SBX-007 AC2, AC5) über den Proxy aus WP-36 gegen lokale Test-Upstreams, nicht gegen `example.com` (ADR-0033).",
+        "SES-019 AC3 nutzt den Mechanismus aus SBX-017: Das PTY hält `beton-pty` in Stufe 0, der Kindprozess startet über `SandboxProvider::spawn` in Stufe 2 (Default-Sandbox, Proxy, Masken, `cargo xtask spawn-lint`). Den Terminal-Teil baut dieses Paket; SBX-017 als Feature (Vendor-TUI in Stufe 1, AC1) schließt WP-53 ab. Aus #202: je Start genau ein `sandbox.started {stage: tools}` im Session-Log; für Starts außerhalb einer Session festlegen, ob sie ins Audit-Log gehen.",
+        "Aus #241: Werkzeuge außerhalb der Systempfade (Homebrew, nvm, rustup, `/usr/bin/git` mit Xcode.app als Developer-Verzeichnis) laufen in Stufe 2 heute nicht; ein `npm run dev` im Terminal (SES-019 AC1) braucht sie. Entscheiden und umsetzen (Preset `dev`, aus dem `PATH` des Daemons abgeleitete Installationsverzeichnisse ohne Home-Dotfiles oder Vorschlag in `beton sandbox explain`), Spec SBX-012 anpassen, Tests unter macOS und Linux.",
+        "Aus #326 (ACP `terminal/*` und `fs/read_text_file`): Vom Agent gestartete Terminals laufen über denselben Weg in Stufe 2 und erscheinen als Terminal (SES-019); danach deklariert ACP `tool_isolation: beton` (ADR-0037). Lesen mit Masken.",
+        "Aus #93: User-Schreibzugriffe während eines Turns (Workspace-API und User-Terminals) werden nicht dem Agent zugeschrieben (genau ein `fs.changed` mit `actor: user`).",
+        "Aus #72: Der Runner reagiert auf `problem` nach gescheitertem Push mit Retry und Backoff und meldet das als `runner.status` (PROTO-015); `config set/unset` erhält Kommentare und Reihenfolge der YAML-Datei (CLI-008); Idempotency-Replay mit `Location` bei 201.",
+        "PROTO-007 AC3 (Browser-Frames) und DATA-011 AC3 (Audio) hier mit synthetischen Kanälen nachweisen; WP-56 und WP-60 stellen die Tests auf die echten Quellen um.",
+        "**Klären:** SES-019 AC2 (`comment_approve`), WEB-010 AC3 (Nur-Lese-Rollen) und PROTO-007 AC2 (`view`) setzen Rollen voraus (COL-001, M4). Lokal gibt es nur den Owner: die Autorisierung je Kanalart als Schnittstelle mit Owner-Default testen, den Rollen-Teil nicht vorziehen und die Spec im PR klarstellen (wie in M2 bei SEC-012 und DATA-012).",
+        "WEB-010 AC1 (≤ 30 ms p95) als Test mit Schwelle in der CI, nach dem Muster der bestehenden Benchmarks.",
+        LOCAL,
         PLATFORMS,
-        design("sandbox-settings sandbox-probe sandbox-unavailable sandbox-stages", "; die Einstellungs-UI hat in M2 kein UI-AC"),
+        design("workspace-terminals diag-connection diag-storage"),
       ]),
- dict(key="WP-40", title="Policy-Tests, Explain & Dry-Run", labels=["area:security", "area:cli", "area:web", "area:qa", "security-review"], deps=["WP-37"],
-      features=["POL-026", "POL-027", "QA-004"],
-      goal="Policies sind testbar und erklärbar: `beton policy test` mit YAML-Fällen und JUnit, `explain`, `eval` und `show` für jede Entscheidung, Shadow-Modus und ein CI-Gate für alle mitgelieferten Policies.",
+ dict(key="WP-52", title="ratatui-TUI: Session-Ansicht, Panes, Approvals & Windows", labels=["area:cli"], deps=["WP-51"],
+      features=["TUI-001", "TUI-002", "TUI-004", "TUI-005"],
+      goal="`beton tui` zeigt Session-Liste, Chat-Stream, Rail und Composer wie die Web-UI, teilt Terminal-Panes ohne tmux, entscheidet Approvals per Taste und läuft auch in Windows Terminal und Konsole.",
       notes=[
-        SECURITY,
-        "Kommt vor den Regeltypen (WP-42, WP-43), damit jeder eingebaute Regeltyp seine mitgelieferte Testdatei im POL-026-Format bekommt (POL-026 AC4).",
-        "QA-004: CI-Gate über alle mitgelieferten Policies (inklusive `defaults.yaml` aus `beton setup`) und Built-in-Agents (`maestra`, `duetto`); Hierarchie-Fälle sind Pflicht, dazu der Monotonie-Property-Test (AC3).",
-        "POL-027: Set-Versionen im Blob-Store (DATA-006), damit `explain` alte Entscheidungen rekonstruiert (AC2); `eval` ohne Events, Approvals und Zustandsänderungen (AC3). AC4 braucht die aggregierte Shadow-Ansicht in der Web-UI (Screen `policy-shadow`).",
-        "Aus M1 (AGT-007 AC3, „ab M2“): Das System-Tool `policy_query` liefert dieselbe Entscheidung wie die Engine bei echter Ausführung (Testfall `git push`).",
-        "Aus M0 (HAR-021 AC3, „ab M2“): `session.cost_usd` ist nach jedem `cost.delta` aktualisiert (Test über `beton policy explain`).",
-        "Aus #73 (PROTO-010 AC3): Schreibende Policy-Endpunkte (`PUT /v1/policies/…`) nutzen `extract::check_if_match` (412 bei veraltetem `If-Match`, nichts verändert). **Klären:** Kein M2-Feature definiert `PUT /v1/policies` für lokale Policies (API-002 nennt nur `/v1/policies` und `POST /v1/policies/evaluate`, die Org-/Team-Endpunkte sind POL-008 in M4). Entsteht der Endpunkt hier nicht, den Punkt aus #73 nach M4 verschieben.",
-        design("policy-tests policy-explain policy-shadow"),
+        "Nutzt `beton-sdk` und dieselben Events wie die Web-UI (TUI-001 AC1); keine eigene Policy- oder Kostenlogik in der TUI.",
+        "TUI-002 baut auf `beton-pty` aus WP-51 auf und ergänzt VT-Parser, Panes (teilen, fokussieren, zoomen), Prefix `Ctrl+G` und die Wiederherstellung nach einem Neustart der TUI (AC2).",
+        "Aus #265 (USE-008 AC3, „ab M3“): Kontextfüllstand in der Statuszeile mit derselben Logik wie `apps/web/src/lib/context.ts` (Stufen 70/85/95 %, ohne Fenster nur die Tokenzahl), Test `use_008_ac3_…`.",
+        "Aus #81: Event `plan.updated` für ACP-`plan` und Codex `turn/plan/updated` in PROTO-002 aufnehmen (Codegen) und in TUI und Web-UI anzeigen; vor dem ersten Release, damit es Teil des ersten Schema-Stands ist (PROTO-014, WP-67).",
+        "TUI-004: Approvals mit `y`/`n`/`s`/`d` über die Approval-API aus M2 (POL-010); Approvals anderer Sessions als Hinweis in der Statuszeile. Das Banner im Native-TUI-Pane kommt mit WP-53.",
+        "TUI-001 AC2 (500 Tokens/s, 30 fps, Diff-Rendering) als Test mit gedrosseltem Fake-Harness; Layouts als Snapshot-Tests gegen ein Test-Backend von ratatui.",
+        "TUI-005: crossterm und ConPTY. Für Tests unter Windows ist ein neuer CI-Job nötig. " + NEW_CI,
+        LOCAL,
+        design("tui-session tui-panes tui-windows", " (Gruppe `tui`)"),
       ]),
- dict(key="WP-41", title="Linux-Backend: Landlock, seccomp, Namespaces, bubblewrap & Ressourcenlimits", labels=["area:security", "area:runner", "security-review"], deps=["WP-39"],
-      features=["SBX-008", "SBX-009", "SBX-013"],
-      goal="Linux-Sandbox nativ in Rust (Landlock, seccomp, unprivilegierte Namespaces mit Relay zum Proxy), bubblewrap als Fallback und begrenzte, vollständig aufräumbare Prozessbäume auf Linux und macOS.",
+ dict(key="WP-53", title="Native-TUI-Modus: Vendor-TUI im PTY mit Hooks, Approvals & Sandbox", labels=["area:harness", "area:security", "security-review", "needs-vendor-cli"], deps=["WP-51", "WP-52"],
+      features=["HAR-012", "HAR-013", "HAR-014", "POL-022", "SBX-017", "TUI-003"],
+      goal="Die Original-TUIs von Claude Code und Codex laufen im PTY von beton in Stufe 1 der Sandbox und werden an alle Clients gespiegelt. Policies greifen über Vendor-Hooks bzw. die Approval-Integration von Codex, `ask` wird zur beton-Approval-Card, und Nachrichten erscheinen als strukturierte Events.",
       notes=[
         SECURITY + " " + ESCAPE,
-        "SBX-008: Launcher `beton __sandbox-exec`, Kernel-Matrix laut Spec (ABI 2 mit `truncate`-Sperre per seccomp, ABI ≥ 4 mit TCP-Regeln). Ubuntu 24.04 beschränkt unprivilegierte User-Namespaces per AppArmor: In der CI das Profil ausdrücklich setzen und den Fall „ohne Profil“ (AC5) als eigenen Test prüfen. Das AppArmor-Profil für deb/rpm wird mit der Paketierung (M3) ausgeliefert; hier entstehen Profil-Datei und Test.",
-        "**Klären:** SBX-008 AC4 (Debian 12, Kernel 6.1) und die Matrix aus SBX-011 brauchen andere Kernel als die GitHub-Runner (Ubuntu 22.04/24.04); Container teilen den Host-Kernel. Einen Plan für VM-Jobs (z. B. KVM auf den Linux-Runnern) mit gecachten Images festlegen; der Testlauf selbst bleibt ohne Netz.",
-        "SBX-009: bwrap ≥ 0.8; keine Env-Werte in bwrap-Argumenten (AC3).",
-        "SBX-013: cgroup v2 über systemd-User-Delegation, sonst rlimits; macOS mit rlimits und Erfassung der Nachfahren (Restrisiko `setsid` dokumentieren). Die Fork-Bombe nur mit Limit testen, der Host muss bedienbar bleiben.",
-        "Aus M0 (OBS-005 AC3, „ab M2“): `beton doctor` meldet auf Linux ohne Landlock `fail` für `sandbox.linux` mit Verweis auf die Kernel-Anforderung.",
+        "`beton run claude --mode tui` (CLI-005) startet den Modus. Das Hook-Kommando `beton hook claude` und den session-spezifischen `PreToolUse`-Hook über `--settings` gibt es seit M2 (HAR-005, WP-35); HAR-013 ergänzt `UserPromptSubmit` und `PostToolUse`. Die globale `~/.claude/settings.json` wird nie verändert; `--setting-sources user` wie im strukturierten Modus (#233).",
+        "Aus #197 (POL-022): Claude 2.1.296 ersetzt mit `PostToolUse` das Ergebnis nicht (`tool_result_gate: false`, `observe_only`). Neuere CLI-Versionen prüfen; sonst bleibt es bei `observe_only`, und die Enforcement-Matrix (POL-024) meldet das.",
+        "HAR-014: Der Codex-Adapter wählt per `probe()` die stärkste verfügbare Strategie und deklariert sie. Aus #239 (ADR-0037): Codex startet Kommandos über die Login-Shell; Stufe 2 für Codex (`shell_zsh_fork`, `exec-server`, Bind-Mount über die Login-Shell unter Linux) mit der aktuellen Codex-Version neu prüfen. Ohne Lösung bleibt Codex nur mit `sandbox.require_tool_isolation: false` und *degraded* nutzbar.",
+        "SBX-017: Der Harness am PTY-Slave startet über `SandboxProvider::spawn` in Stufe 1, Shell-Kommandos der Vendor-TUI gehen über `bt-exec` in Stufe 2 (Claude über `CLAUDE_CODE_SHELL`, ADR-0037). Den Terminal-Teil (AC2) liefert WP-51.",
+        "Aus #212 und #240: Die Suche nach Muster-Masken unter Linux kostet bei großen Workspaces und breiten Lese-Grants bei jedem Stufe-2-Start Zeit (in der CI bis zur 30-s-Frist). Startzeit messen (Benchmark), Suche begrenzen oder cachen, bei Überschreitung Hinweis statt Zeitüberschreitung.",
+        "HAR-012 AC3: Transcript-Tailing der Vendor-Dateien mit den Import-Parsern aus M1 (HAR-023, HAR-024); Credential-Dateien liest beton nie (ADR-0005). HAR-012 AC4 verlangt einen Fake-TUI-Test im PTY auch unter Windows (neuer CI-Job, siehe unten).",
+        "Hooks im TUI-Modus und die Codex-Strategie gegen die echten CLIs verifizieren und Golden Transcripts aufnehmen (`cargo xtask golden-scan`); die CI nutzt Fake-TUI und Fake-CLI. " + SUBSCRIPTION,
+        "Zugehörige Issues (Design-first, eigene Issues): Durchsetzung je Harness und Policy-Audit (#194, Screens `policy-enforcement`, `harness-catalog`) und Stufen der Sandbox (#238, Screen `sandbox-stages`); der TUI-Modus muss dort sichtbar werden.",
+        NEW_CI,
         PLATFORMS,
-        design("sandbox-probe sandbox-violation", " (Grund und Fallback in der Probe, Zustand `limit`)"),
+        design("tui-native harness-catalog harness-setup-cli policy-enforcement sandbox-stages"),
       ]),
- dict(key="WP-42", title="Regeltypen für Tools, Pfade & Git, Schleifen- und PII-Erkennung", labels=["area:security", "security-review"], deps=["WP-40"],
-      features=["POL-015", "POL-016", "POL-017", "POL-018", "POL-019"],
-      goal="Eingebaute Regeltypen `tool_allowlist`, `path_guard`, `git_guard`, `loop_detection` und `pii_redaction`, jeweils zu CEL entzuckert und mit mitgelieferten Policy-Tests.",
+ dict(key="WP-54", title="Eingebetteter Browser: Discovery, Chrome for Testing, CDP-Lebenszyklus & Profile", labels=["area:browser", "area:security", "security-review"], deps=[],
+      features=["BRW-001", "BRW-002", "BRW-003", "BRW-004", "BRW-008"],
+      goal="beton findet einen installierten Chromium-basierten Browser oder lädt auf Klick eine gepinnte Chrome for Testing, startet ihn lazy pro Session über CDP mit isoliertem Profil, erkennt Abstürze und wechselt zwischen eingebettetem und sichtbarem Fenster.",
       notes=[
+        "Neues Crate `beton-browser` (`chromiumoxide`), läuft im Runner (ADR-0016). Chromium startet über `SandboxProvider::spawn` (SBX-001 AC2, `cargo xtask spawn-lint`); das Seatbelt- bzw. Landlock-Profil für den Browser mit eigenem Schreib-Root für das Profil entsteht hier.",
         SECURITY,
-        "Jeder Regeltyp wird zu CEL entzuckert (sichtbar in `beton policy explain`) und bekommt eine mitgelieferte `*.policytest.yaml` (POL-026 AC4, QA-004).",
-        "POL-017 ist Teil des Demo-Szenarios: Force-Push-Erkennung (`-f`, `--force`, `--force-with-lease`, `+refspec`, `--mirror`, `git -C`, verkettete Kommandos), `parse_uncertain` ergibt `ask`; auch über MCP-Tools.",
-        "**Klären (Demo-Szenario):** Laut Demo erzeugt `git push --force` eine Approval-Card. Laut POL-017 ist der Default aber `force_push: deny`, und `beton setup` legt `force_push: deny` auf User-Ebene an, die ein Projekt nicht lockern kann (POL-007). Entweder das Demo-Szenario auf „wird abgelehnt“ ändern oder für die Demo `force_push: ask` auf User-Ebene setzen; die Entscheidung im PR festhalten (Spec bzw. ADR).",
-        "POL-016: Die Pfaderkennung in Shell-Kommandos ist best effort, die verbindliche Durchsetzung leistet die Sandbox (WP-39, WP-45). Die ACs prüfen nur die Normalisierung, daher keine Abhängigkeit auf die Sandbox-Pakete.",
-        "POL-018 (Should) nutzt `tool.repeat_count` und `tool.consecutive_errors` aus WP-35. POL-019 (Could): Regex und Luhn, kein ML; ohne Result-Modifikation des Harness `notify` mit `enforcement: observe_only`.",
-        design("policy-overview policy-editor policy-approvals git-conflicts", " (Zustand `loop` in `policy-approvals`)"),
-      ]),
- dict(key="WP-43", title="Budgets & Modell-Routing: `spend_cap`, `daily_budget`, `model_route`", labels=["area:security", "area:cli", "security-review"], deps=["WP-40"],
-      features=["POL-011", "POL-012", "POL-013"],
-      goal="Kostenobergrenzen pro Session, Run, Teilbaum und Tag sowie manuelles Modell-Routing per Policy; bei Überschreitung wird gestoppt, nachgefragt oder umgeroutet.",
-      notes=[
-        SECURITY,
-        "Teil des Demo-Szenarios („bei Überschreitung des Budgets wird gestoppt“). **Subscription-first (ADR-0034):** Subscription-Sessions haben kein `cost_usd`; `spend_cap` greift dann nur mit `cost_source = catalog` (Listenpreis-Äquivalent), sonst kommt `policy.rule_inapplicable`. **Klären:** Die Annahme in POL-011 festschreiben und das Demo damit führen, damit auch eine Subscription-Session stoppbar ist.",
-        "Aus M0 (API-006 AC4, „ab M2“): `beton run -p --max-cost` endet bei Überschreitung mit Exit-Code 5 (über eine `spend_cap`-Regel).",
-        "POL-011 AC2 und POL-013: Modellwechsel über HAR-017 (`session.settings_changed.mechanism` ist `live` oder `restart`); `on_unsupported` hat den Default `deny`.",
-        "POL-012: Tagesgrenze in der Zeitzone des Users (simulierte Uhr); Team-Scope und Budget-Leases (POL-021) sind M4 und werden nicht vorgezogen.",
-        design("policy-budgets policy-approvals", " (Zustand `spend` – Kostenschwelle)"),
-      ]),
- dict(key="WP-44", title="Usage-API, Subscription-Usage & `beton usage`", labels=["area:server", "area:cli", "area:harness", "needs-vendor-cli"], deps=["WP-34", "WP-37"],
-      features=["USE-004", "USE-005", "USE-007", "CLI-010"],
-      goal="Aggregierte Usage über `GET /v1/usage` und `beton usage`, mit Subscription-Usage (Tokens, Rate-Limit-Fenster) statt Geldbeträgen für eingeloggte Vendor-CLIs.",
-      notes=[
-        SUBSCRIPTION + " Subscription-Usage zeigt Tokens und Rate-Limit-Fenster, nie Mischsummen mit Geld (CLI-010 AC2).",
-        "USE-004: Quellen (Claude-`result`, Codex-Notifications zu Token-Usage und Rate-Limits) gegen die echten CLIs verifizieren, Annahmen in 11-platform-features.md und 01-harnesses.md korrigieren, Golden Transcripts aufnehmen. Ohne Reporting „nicht gemeldet“ statt 0. AC3 (Inbox-Hinweis ab 90 %) nutzt die Inbox aus WP-37 und ist per Konfiguration abschaltbar; die Einstellungs-UI (UX-006) ist M3.",
-        "Aus M1 (HAR-006 AC3): der Subscription-Teil der Codex-Usage (`usage.subscription`).",
-        "**Klären:** USE-005 AC2 (Sichtbarkeit nach Rolle) und AC3 (Postgres-Benchmark) setzen AUTH-014 bzw. DATA-004 voraus, beide M4. In M2 nur lokal (ein Owner, SQLite); AC2 und AC3 per Spec-Änderung als „ab M4“ markieren (eigenes Issue).",
-        "USE-007: Ohne laufenden Daemon read-only direkt aus der lokalen DB (AC3); stdout nur Daten, Hinweise auf stderr (CLI-001). CLI-010 regelt nur die Konsistenz der Oberfläche, Owner sind USE-005 und USE-007.",
-        design("usage-cli cli-usage settings-notifications"),
-      ]),
- dict(key="WP-45", title="Zweistufige Sandbox: Exec-Broker, Vendor-Passthrough, Netz nur zum Proxy & Presets", labels=["area:security", "area:runner", "area:harness", "security-review", "needs-vendor-cli"], deps=["WP-39", "WP-41"],
-      features=["SBX-002", "PRX-005", "PRX-008", "SBX-012"],
-      goal="Harness-Prozesse laufen in Stufe 1 mit Passthrough nur zu ihren Vendor-Hosts, jede Tool-Ausführung in einer frischen Stufe-2-Sandbox über den Exec-Broker, und auf beiden Plattformen erreicht Netzverkehr nur noch den Proxy.",
-      notes=[
-        SECURITY + " " + ESCAPE,
-        "**Erster Schritt:** die als *(Annahme)* markierten Mechanismen gegen die echten CLIs verifizieren und die Spec korrigieren: Claude-Bash über `CLAUDE_CODE_SHELL_PREFIX` bzw. Shell-Override, Codex über `bt-exec` als `bash`/`sh`-Shim im `PATH`, `credential_paths` und `keychain` je Adapter, Vendor-Hosts für den Passthrough (PRX-005). Golden Transcripts aufnehmen; die CI nutzt nur Fake-CLIs.",
-        "SBX-002 AC1 und PRX-005 AC1: manuelle Verifikation mit eingeloggter `claude`-CLI als Checkliste im PR (Subscription funktioniert in Stufe 1, der Proxy-Dump zeigt für `api.anthropic.com` keine entschlüsselten Header). " + SUBSCRIPTION,
-        "ACP (`fs/*`, `terminal/*`) und der Direkt-API-Harness führen Tools über beton aus, also immer in Stufe 2; ein Adapter mit `tool_isolation: inherited` startet nur mit `require_tool_isolation: false` (AC4). MCP-stdio-Server laufen ab hier in Stufe 2 (in M1 noch ohne Sandbox, WP-23).",
-        "Aus M1 (SES-015 AC2, „ab M2“): Ein Tool-Call, der aus dem Worktree heraus ins Haupt-Checkout schreibt, scheitert an der Sandbox.",
-        "PRX-008: Proxy- und CA-Variablen für `curl`, `git`, `npm`, `pip`, `cargo` und Node-`fetch` (AC1); bekannte Lücken (Go auf macOS, Java) scheitern geschlossen und werden dokumentiert. SBX-012 AC1 (`npm install`, `npm publish`) gegen eine lokale Registry-Attrappe statt `registry.npmjs.org`.",
+        "BRW-002 (ADR-0033): Download nur auf Klick, von der gepinnten URL, Prüfung per SHA-256 gegen die im Binary mitgelieferten Prüfsummen; fehlt die Prüfsumme oder weicht sie ab, wird nichts entpackt (fail closed). Import einer lokalen Datei als Alternative.",
+        "BRW-004: Profil `~/.beton/browser/profiles/<session_id>/`, nie das Alltagsprofil; Löschen der Session löscht das Profil. Dass Forks mit leerem Profil starten, ist eine *Annahme* der Spec: im PR bestätigen oder korrigieren.",
+        "BRW-001: Ergebnis in `beton doctor` (OBS-005). Tests mit Fake-Browser-Binaries bzw. einem lokal vorhandenen Headless-Chromium, ohne Download in der CI.",
+        "Der Netzweg über den Proxy (PRX-011, BRW-018) kommt mit WP-55. Bis dahin hat der Browser kein Netz außer lokalen Testseiten über einen ausdrücklichen Test-Zugang (fail closed, kein Direktzugang).",
         LOCAL_NET,
         PLATFORMS,
-        design("sandbox-stages sandbox-settings egress-proxy"),
+        design("browser-setup browser-panel browser-window"),
       ]),
- dict(key="WP-46", title="Credential-Injection, Env deny-by-default, Egress-Audit & Git-PAT", labels=["area:security", "area:cli", "security-review"], deps=["WP-45"],
-      features=["PRX-006", "PRX-009", "SBX-005", "SEC-011", "PRX-010"],
-      goal="Agents sehen Secrets nur als `bt_cred_*`: Der Proxy setzt echte Werte nur für gebundene Hosts ein, das Sandbox-Environment wird explizit gebaut, jede Egress-Entscheidung und Credential-Nutzung wird auditiert, und Git-PATs funktionieren über Platzhalter.",
+ dict(key="WP-55", title="Browser-Traffic über den Proxy, Browser-Policies & Dev-Server-Erkennung", labels=["area:browser", "area:security", "security-review"], deps=["WP-51", "WP-54"],
+      features=["PRX-011", "BRW-018", "BRW-019", "POL-020", "BRW-017"],
+      goal="Sämtlicher Browser-Traffic läuft über eine eigene Proxy-Identität mit Regeln und Credential-Injection, Chromium vertraut der beton-CA nur in dieser Instanz, Navigation, Formular-Submit und Downloads sind Policy-Hook-Punkte mit dem Regeltyp `browser_guard`, und lokale Dev-Server der Session werden erkannt.",
       notes=[
-        SECURITY + " " + ESCAPE,
-        "Teil des Demo-Szenarios („sieht Secrets nur als `bt_cred_*`“).",
-        "PRX-006: Platzhalter mit 160 bit pro Session und Binding; ersetzt wird nur in Headern und URL, nie im Body, nie bei `TRACE`, nie auf Passthrough-Verbindungen. Fehlgebrauch ergibt 403 `credential_host_mismatch` und den Audit-Eintrag `credential.misuse`. Das Fuzz-Target für die Ersetzung bündelt WP-48 (QA-009).",
-        "Übernahmen „ab M2“: HAR-011 AC2 (M1, Direkt-API-Key nur als Platzhalter im Loop-Request, der Proxy ersetzt ihn), HAR-015 AC4 (M0, `auth: api_key` ergibt nur `bt_cred_*` im Harness-Env), AGT-001 AC3 (M1, `${secret:github}` wird zu `bt_cred_*`), AGT-006 AC3 (M1, `${secret:x}` in MCP-`env`/`headers` nur als Platzhalter).",
-        "**Klären:** PRX-005 schließt Credential-Injection auf Passthrough-Verbindungen aus, Vendor-Hosts sind in Stufe 1 aber Passthrough. Für HAR-015 AC4 (`auth: api_key`) muss der Vendor-Host dieser Session über MITM statt Passthrough laufen, und der Direkt-API-Loop (Stufe 0) muss für HAR-011 AC2 über den Proxy gehen. Spec (PRX-005, HAR-011) im PR präzisieren.",
-        "SEC-011: `beton setup` übernimmt `gh`- bzw. `glab`-Tokens nur nach ausdrücklicher Bestätigung (AC2); `beton secrets test` (SEC-004) prüft über den Proxy-Pfad. AC1 (`git clone`, `gh pr list`) gegen lokale Git- und API-Attrappen statt github.com.",
-        "SBX-005: Werte nie über argv (AC4, `/proc/<pid>/cmdline`); `SSH_AUTH_SOCK`, `LD_PRELOAD`, `DYLD_*` und `BETON_TOKEN` werden immer entfernt.",
-        "PRX-009: nie Header-Werte, Cookies oder Query-Werte in Logs und Events (Grep-Test mit Markern, AC2); `beton audit list --kind credential` (AC4).",
+        SECURITY,
+        "PRX-011 ist Owner von Proxy-Identität, Start-Flags (`--proxy-server`, `--proxy-bypass-list=<-loopback>`, SPKI-Pinning des Instanz-Leafs) und Zertifikatsvertrauen; die beton-CA kommt nie in einen System-Trust-Store (PRX-002). BRW-018 weist das Ergebnis nach, auch für WebSockets und Service Worker.",
+        "BRW-019 und POL-020: Phasen `browser_navigate` und `browser_action` (POL-003) mit den Variablen aus POL-004, die es seit M2 nur als Typen gibt. Aus WP-35 (POL-003 AC1): Die Integrationstests je Phase für die beiden Browser-Phasen kommen hier dazu.",
+        "`browser_guard` wird zu CEL entzuckert (sichtbar in `beton policy explain`) und bekommt eine mitgelieferte `*.policytest.yaml` (POL-026 AC4, QA-004).",
+        "BRW-017: Loopback-Ausnahmen nur für erkannte Ports der eigenen Session und nur in der Browser-Proxy-Identität; sie lockern weder Stufe 1 noch Stufe 2 und enden mit der Session (PRX-007).",
+        "Zugehörige Issues (Design-first, eigene Issues): Policy-Übersicht und Ladefehler (#183, Screens `policy-overview`, `policy-editor`) und Proxy-Ansicht mit Egress-Log (#190, Screens `egress-proxy`, `egress-log`); `browser_guard` und die Browser-Identität des Proxys sollen dort sichtbar werden.",
         LOCAL_NET,
-        design("credential-injection egress-log security-audit-log git-connections secrets-store"),
+        design("browser-policies browser-panel egress-proxy egress-log policy-editor policy-overview"),
       ]),
- dict(key="WP-47", title="Web-UI: Usage-Seite, Kontextanzeige & Compaction-Trigger", labels=["area:web"], deps=["WP-44"],
-      features=["USE-006", "USE-008", "USE-009"],
-      goal="Usage-Seite mit Kennzahlen, Zeitreihen, Tabellen und Subscription-Bereich, dazu der Kontextfüllstand im Composer und manuelle bzw. automatische Compaction.",
+ dict(key="WP-56", title="Browser-Panel: Screencast, Input-Weiterleitung, Tabs & Co-Viewer", labels=["area:browser", "area:web"], deps=["WP-51", "WP-54"],
+      features=["BRW-005", "BRW-006", "BRW-007", "BRW-009", "BRW-020"],
+      goal="Der aktive Tab wird als Screencast über den Binärkanal an alle betrachtenden Clients gestreamt, nimmt Maus, Tastatur, IME und Paste aus dem Panel entgegen, passt Qualität und DPR an und zeigt Tabs, Adressleiste, Modus-Umschalter und „Agent steuert“.",
       notes=[
-        design("usage-overview usage-pricing usage-context session-stream workspace-composer inbox-palette"),
-        "USE-006: Summen identisch mit `GET /v1/usage` (E2E gegen den Fake-Harness-Datensatz), CSV-Export der sichtbaren Ansicht, Hinweis „ohne Preis – Override anlegen“ mit Link zu den Pricing-Einstellungen (Screen `usage-pricing`). Der Subscription-Bereich zeigt keine Geldbeträge (ADR-0034).",
-        "Aus M1 (#113): Der Compact-Button im Composer kommt mit dem Zustand aus der Capability; USE-009 ergänzt Trigger, Tooltip mit Grund bei `compaction: none` und die Automatik `compaction.auto`.",
-        "**Klären:** USE-008 AC3 verlangt die Anzeige in der TUI-Statuszeile; die TUI (TUI-001) kommt erst mit M3. In M2 nur Web; den TUI-Teil per Spec-Änderung nach M3 verschieben (eigenes Issue).",
-        "Diagramme aus dem eigenen Bundle, kein CDN (ADR-0033); Performance-Budgets (WEB-015) einhalten.",
+        "Baut auf den Binärkanälen aus WP-51 (höchstens 2 ausstehende Frames, Drop statt Stau) und auf `beton-browser` aus WP-54 auf; PROTO-007 AC3 hier auf echte Browser-Frames umstellen.",
+        "**Klären:** BRW-006 und BRW-020 nennen Rollen (`drive`, Viewer ohne Workspace-Freigabe; COL-001, M4). Lokal steuert der Owner, Co-Viewer sind in M3 weitere Fenster und Geräte desselben Users. Rollen-Teil nicht vorziehen, Spec im PR klarstellen.",
+        "Aus #104 (Design der Workspace-Rail): Das Browser-Panel sitzt in der Rail (WEB-008); Ein-/Ausblenden und Breite mit diesem Design-Issue abstimmen.",
+        "Performance-Budgets der Web-UI (WEB-015) einhalten; nichts aus einem CDN (ADR-0033). E2E mit Playwright gegen eine lokale Testseite und den Fake-Harness.",
+        design("browser-panel browser-inspect"),
       ]),
- dict(key="WP-48", title="Sandbox-Escape-Suite, `beton sandbox`-CLI, Verstoß-Reporting & Fuzzing", labels=["area:security", "area:qa", "area:cli", "security-review"], deps=["WP-32", "WP-46"],
-      features=["SBX-010", "SBX-011", "QA-005", "QA-009", "SBX-014"],
-      goal="Die Sandbox ist nachweisbar dicht: deklarative Escape-Suite mit Probe-Binary in einer CI-Matrix pro OS als Merge-Gate, `beton sandbox probe|explain|exec|test`, Verstoß-Events an der Tool-Card und Fuzz-Targets für alle sicherheitskritischen Parser.",
+ dict(key="WP-57", title="Browser-Agent-Tools, Accessibility-Snapshot & Inspect-Mode", labels=["area:browser", "area:security", "security-review"], deps=["WP-55", "WP-56"],
+      features=["BRW-010", "BRW-011", "BRW-012", "BRW-013", "BRW-014", "BRW-015", "BRW-016"],
+      goal="Jeder Harness steuert den Browser über System-Tools von `beton-mcp` mit stabilen refs aus dem Accessibility-Snapshot; im Inspect-Mode wählt der User Elemente im Panel, und der Agent bekommt Selektor, HTML-Ausschnitt, Styles, Screenshot-Crop und Kommentar.",
       notes=[
-        SECURITY + " " + ESCAPE,
-        "SBX-011 ist Owner von Suite, Probe-Binary (`bt-escape-probe`) und Plattform-Matrix, QA-005 von Gate und JUnit-Report. Kontrollgruppe ohne Sandbox (QA-005 AC1) und Mutationstest mit gelockertem Profil (AC2) belegen die Wirksamkeit. Gefälschtes `HOME` mit Fixture-Secrets, die in keinem CI-Log auftauchen (SBX-011 AC3).",
-        "CI-Matrix: macOS arm64 aktuell und Vorversion; Ubuntu 22.04, Ubuntu 24.04 mit AppArmor-Restriktion, Debian 12 und Fedora (VM-Plan aus WP-41). Jeder Linux-Job prüft seine erwartete Landlock-ABI (mindestens einer ≥ 4) und scheitert, statt Fälle zu überspringen (QA-005 AC3). Die neuen Required Checks setzt der Maintainer (human-required-Issue „Code-Owner-Review und Branch-Protection …“). Die Windows-Teilmenge kommt erst mit M5.",
-        "QA-009: `cargo-fuzz`-Targets unter `fuzz/` für HTTP/1.1- und CONNECT-Parser, ClientHello/SNI, Egress-Regeln, Platzhalter-Ersetzung, CEL (WP-32), Policy-YAML-Loader, WS-Frame-Decoder und SBPL-Escaping; Seed-Korpora im Repo, im PR 60 s je betroffenem Target, nightly 30 min (`.github/workflows/nightly.yml`).",
-        "SBX-010: `beton sandbox probe --json` und Einbindung in `beton doctor` (OBS-005).",
-        "SBX-014 (Could): Der Vorschlag „Regel hinzufügen“ schreibt erst nach Bestätigung in `.beton/config.yaml`; Verstoß-Events höchstens 10/s je Session.",
-        PLATFORMS,
-        design("sandbox-probe sandbox-violation", " (Zustand `suggest`)"),
+        SECURITY,
+        "BRW-010: Browser-Tools durchlaufen `tool_call` (Klasse `browser`, Abbildung in POL-005) und die Browser-Phasen aus WP-55; je Phase genau ein `policy.decision` (POL-025).",
+        "BRW-012: `browser_eval` ist standardmäßig nicht registriert, wird per Agent-Config aktiviert und ist dann je Aufruf mit Default `ask` geschützt. Ergebnis- und Fehlertexte laufen durch die Redaction (SEC-013).",
+        "BRW-014: Payload laut Design; der Crop geht als Bild an Harnesses mit `images` (HAR-002), sonst Text mit Hinweis. Blobs über DATA-006.",
+        "BRW-016 (Could) ist Stretch und blockiert das Paket nicht; `confidence` ehrlich melden.",
+        "Golden Transcripts für einen Browser-Tool-Call über Claude und Codex aufnehmen, wenn eine eingeloggte CLI verfügbar ist; sonst als Folge-Issue mit `needs-vendor-cli` (wie #97). Die CI nutzt den Fake-Harness.",
+        LOCAL,
+        design("browser-inspect browser-panel browser-policies browser-setup"),
       ]),
- dict(key="WP-49", title="YOLO in der Sandbox: Fail-closed, Agent-Policies, ACP-Durchsetzung & M2-Demo", labels=["area:security", "area:harness", "area:web", "area:qa", "security-review", "needs-vendor-cli"], deps=["WP-42", "WP-43", "WP-46"],
-      features=["SBX-006", "AGT-014", "POL-023"],
-      goal="Sessions starten nur noch mit aktiver Sandbox (oder ausdrücklich bestätigtem `backend: none`), YOLO wird mit Sandbox und Proxy freigeschaltet, Agents bringen eigene Policies und Sandbox-Anforderungen mit, ACP-Agents werden lückenlos geprüft, und das M2-Demo-Szenario läuft als E2E-Test.",
+ dict(key="WP-58", title="Desktop-App: Shell, Daemon-Sidecar, Tray, Benachrichtigungen & Deep-Links", labels=["area:desktop"], deps=[],
+      features=["DESK-001", "DESK-002", "DESK-004", "DESK-005", "DESK-006", "UX-006"],
+      goal="Tauri-2-App für macOS und Linux mit mehreren Fenstern und nativem Menü, die den lokalen Daemon als Sidecar startet oder einen laufenden nutzt, mit Tray und Dock-Badge, Benachrichtigungen nur für nicht betrachtete Sessions, Deep-Links `beton://` und einer Einstellungsseite für Benachrichtigungen.",
       notes=[
-        SECURITY + " " + ESCAPE,
-        "Das Demo-Szenario (Milestone-Beschreibung) wird hier zum automatisierten E2E-Test mit Fake-Harness auf macOS und Linux: YOLO-Session in der Sandbox, `cat ~/.ssh/id_ed25519` scheitert, ein nicht erlaubter Host wird blockiert (`egress.blocked`), Env und Events zeigen nur `bt_cred_*`, `git push --force` erzeugt eine Approval-Card bzw. wird abgelehnt (Klärung in WP-42), Budget-Überschreitung stoppt (WP-43). Dazu eine manuelle Verifikation mit echten, eingeloggten `claude`- und `codex`-CLIs als Checkliste im PR.",
-        "Aus #71 (YOLO freischalten): `beton_harness::SandboxStatus::current()` liefert in M1 fest „keine Sandbox, kein Proxy“, deshalb endet `yolo` beim Anlegen, Forken, Wechseln und Runner-Start mit `409 sandbox_required`. Der Status kommt jetzt aus der echten Sandbox- und Proxy-Konfiguration (SBX-006, PRX-008) und lässt sich nie über die Projekt-Konfiguration erzwingen.",
-        "Aus #71 (Sandbox-Status für Clients): Status über die API (z. B. `GET /v1/info` bzw. an der Session) und der Mode-Picker mit den Zuständen „YOLO ohne Sandbox“ (gesperrt, Link „Sandbox einrichten“) und „Sandbox ✓ aktiv · Proxy ✓ aktiv“ (Screen `harness-switching`). Ziel des Links ist Screen `sandbox-settings`; diese Ansicht hat in M2 kein UI-AC und wird als eigenes Issue angelegt, wenn sie gebaut werden soll.",
-        "Aus M1 (HAR-027 AC2, „ab M2“): Im Modus `yolo` wird eine `deny`-Policy auf `git push --force` weiterhin durchgesetzt (Golden- bzw. Fake-Test); Codex- und Claude-`yolo` wie in WP-35 (Approval-Automatik bzw. `PreToolUse`-Hook).",
-        "Aus M1 (AGT-011 AC2, „ab M2“): `maestra` bekommt eine Agent-Policy (AGT-014), die eigene `Bash`- und `Edit`-Aufrufe ablehnt; Test über die mitgelieferten Policy-Tests der Built-in-Agents (QA-004).",
-        "Aus M1 (HAR-007 AC2, „ab M2“) zusammen mit POL-023 AC2: Ein ACP-`fs/write_text_file` außerhalb des Worktrees wird von `path_guard` bzw. der Sandbox abgelehnt und als JSON-RPC-Fehler gemeldet.",
-        "SBX-006: Default „Sandbox erforderlich“ für alle Harness-Sessions; `backend: none` nur mit einmaliger Bestätigung pro Session und Audit-Eintrag (SEC-012), per User-Policy verbietbar (AC4; die Org-Ebene kommt erst mit M4). Fällt der Proxy aus, werden neue Tool-Ausführungen abgelehnt und die Session geht auf `paused` (AC3). Bestehende Tests (Playwright, `offline-e2e`) laufen danach mit Sandbox oder setzen `backend: none` ausdrücklich.",
-        "**Klären (Windows-Beta):** Mit dem Default „Sandbox erforderlich“ startet unter Windows bis M5 (SBX-016) keine Session ohne bestätigtes `backend: none`. Verhalten (Hinweis in `beton doctor`, Bestätigung) festlegen und dokumentieren.",
-        design("harness-switching sandbox-unavailable agent-detail policy-enforcement", " (Zustand `yolo-blocked`)"),
+        "`apps/desktop` (Tauri 2, ADR-0004) lädt die gebündelte Web-UI; eigene Logik nur für Fenster, Tray, Menü und Benachrichtigungen. Windows bleibt Beta (Build grün, Bundles erst mit M5).",
+        "DESK-002: Sidecar ist dasselbe `beton`-Binary; ein bereits laufender kompatibler Daemon wird genutzt (Versionsfenster DIST-018, WP-67). Das lokale Token erscheint nie in Logs oder URLs.",
+        "Aus #217 (UX-001 AC5, „ab M3“): Inbox-Zähler als Dock- bzw. Tray-Badge, folgt Änderungen binnen 1 s (Test `ux_001_ac5_…`).",
+        "DESK-006: Deep-Links öffnen nur Ansichten (Session, Kommentar-Anker) und lösen ohne Bestätigung keine Aktion aus; Pairing kommt mit DESK-003 (M4). Single-Instance.",
+        "UX-006: Einstellungen pro User serverseitig; das Routing (COL-010) ist M4, Web-Push bleibt aus (ADR-0033).",
+        "Zugehörige Issues: Hinweise nach Runner-Neustart (#135) und automatisch abgelehnte Freigaben (#153) bestimmen mit, welche Ereignisse eine Benachrichtigung auslösen (DESK-005).",
+        "Die E2E-Tests der Desktop-App mit `tauri-driver` kommen mit QA-008 (WP-67); hier Unit- und Integrationstests.",
+        LOCAL,
+        design("desktop-shell desktop-daemon desktop-tray desktop-notifications desktop-deeplink settings-notifications inbox-list"),
+      ]),
+ dict(key="WP-59", title="Lokales Whisper: Engine, Modelle on demand, Beschleunigung & Sprache", labels=["area:voice", "area:core"], deps=[],
+      features=["VOI-001", "VOI-002", "VOI-003", "VOI-006", "VOI-008"],
+      goal="Neues Crate `beton-voice` transkribiert lokal mit whisper.cpp, lädt Modelle nur auf Anforderung gegen gepinnte Prüfsummen, nutzt Metal bzw. CPU-Beschleunigung, erkennt Deutsch und Englisch und baut außer dem ausdrücklichen Download keine Verbindung auf (ADR-0023).",
+      notes=[
+        "`whisper-rs` (whisper.cpp): Lizenz und Build in `cargo deny` prüfen; Metal unter macOS, die CUDA-Variante erst mit der Build-Matrix (DIST-001, WP-65).",
+        "VOI-002 (ADR-0033): Download nur nach Bestätigung, von gepinnten URLs, Prüfung per SHA-256 (fail closed); Import einer lokalen Datei als Alternative. Tests mit einem kleinen Test-Modell bzw. Fixture, nie mit Download in der CI.",
+        "VOI-008: Test, dass `beton-voice` außer dem ausdrücklichen Download keine Verbindung aufbaut (Netz-Mock bzw. Offline-Namespace), und Lint gegen die Web-Speech-API im Frontend.",
+        "VOI-003: gewähltes Backend und Real-Time-Factor in `beton doctor`; bei Initialisierungsfehlern Rückfall auf CPU mit Hinweis.",
+        "Audio wird nie gespeichert (DATA-011 AC3, WP-51 und WP-60).",
+        LOCAL,
+        design("desktop-voice desktop-ptt"),
+      ]),
+ dict(key="WP-60", title="Diktat: Audio-Streaming, Teil-Ergebnisse & Push-to-Talk", labels=["area:voice", "area:desktop", "area:web"], deps=["WP-51", "WP-59", "WP-58"],
+      features=["VOI-004", "VOI-005", "VOI-007", "DESK-008"],
+      goal="Desktop, Web und PWA nehmen auf, streamen 16-kHz-PCM über einen eigenen Binärkanal, zeigen Teil-Ergebnisse im Composer, und ein globaler Push-to-Talk-Shortcut der Desktop-App diktiert in die zuletzt aktive Session.",
+      notes=[
+        "Baut auf dem Audio-Kanal aus WP-51, der Engine aus WP-59 und der Desktop-App aus WP-58 auf; DATA-011 AC3 hier auf echte Spracheingaben umstellen.",
+        "VOI-007 ist Owner von Verhalten, Modi `hold`/`toggle` und Default-Shortcut, DESK-008 von der Registrierung im Desktop. Kollisionen mit System-Shortcuts melden statt still zu überschreiben.",
+        "Aus QA-007 („ab M3: Voice mit Audio-Fixture“): Playwright-Test mit Audio-Fixture über das Fake-Mikrofon von Chromium, ohne echtes Mikrofon.",
+        "Mikrofon-Berechtigung im Tauri-Bundle (macOS `NSMicrophoneUsageDescription`); die Signatur kommt mit WP-65.",
+        LOCAL,
+        design("desktop-ptt desktop-voice session-stream"),
+      ]),
+ dict(key="WP-61", title="Projects als Gruppierung und Policy-Ebene & MCP-Server-Verwaltung", labels=["area:server", "area:web", "area:security", "security-review"], deps=[],
+      features=["SES-013", "SES-014", "UX-010"],
+      goal="Projects gruppieren Sessions, liefern Defaults (Repo-Root, Harness, Modell, Effort, Modus, Worktree, Base-Branch) und tragen die Projekt-Ebene der Policies; MCP-Server lassen sich auf User- und Projekt-Ebene in UI und CLI verwalten und testen.",
+      notes=[
+        SECURITY,
+        "Aus #74 (SES-013): Tabelle `projects` und Fremdschlüssel für `sessions.project_id`; die Migration legt vorher ein Backup an (DIST-018 AC3).",
+        "Übernahmen „ab M3“: SES-008 AC3 (importierte Sessions dem Project zuordnen, dessen Root ihr `cwd` enthält), SES-015 (Base-Branch aus dem Project-Default) und POL-001 (Projekt-Policies der Project-Entität, SES-014).",
+        "SES-014 (ADR-0041): Projekt-Policies verschärfen nur. Die Regeln der Projekt-Ebene aus M2 (`modify.args` erst ab der User-Ebene, eigene Effect-Keys #268, `on_timeout`) gelten auch für im Project gespeicherte Policies. Aus #236: Semantik von `allow_on_timeout: false` über Ebenen hinweg in POL-010 klären.",
+        "Aus #323: Das effektive Set am Server (`GET /v1/policies?session_id=`, `beton policy show --session`) zeigt Agent- und Project-Ebene. Aus #324: `beton agent validate` prüft Policies und Sandbox wie der Start (ADR-0041).",
+        "UX-010: Konfigurationsformat und Merge-Regeln sind AGT-006, der Transport HAR-009. Secret-Werte nur als SecretRef (SEC-001), nie im Klartext in Datei, Events oder Logs (AC3). Aus #249: Projekt-`.mcp.json` lädt Claude seit `--setting-sources user` nicht mehr; Hinweis beim Start und Übernahme nach `.beton/mcp.yaml` nur als Server-Definition und nach Bestätigung. Aus #96: MCP-Server-Fehler im Verlauf und Schalter „System-Tools bereitstellen“.",
+        "Aus #147: Default-Modell je Harness (`harnesses.<id>.model`) für Sessions und Sub-Agents, wenn weder Request noch Agent eines nennen; die Reihenfolge zusammen mit dem Project-Default festlegen und in HAR-017 und SES-013 dokumentieren.",
+        "Aus #122: Importierte Sessions nur über einen Fork in einem selbst gewählten Verzeichnis fortsetzen; kein Pfad aus der Importdatei erreicht den Runner.",
+        "Zugehörige Issues (Design-first, eigene Issues): Worktree der Session und Rückfrage beim Löschen (#91), Import und Export in der Web-UI (#119, #121), Tab „Policies & Sandbox“ im Agent-Detail (#322).",
+        design("workspace-projects workspace-new-session settings-mcp"),
+      ]),
+ dict(key="WP-62", title="Bedienung: Command-Palette, Session-Switcher, Shortcuts, Themes, Barrierefreiheit & Sprachen", labels=["area:web"], deps=[],
+      features=["UX-002", "UX-003", "UX-004", "UX-005", "WEB-016", "WEB-017"],
+      goal="Command-Palette mit zentraler Befehls-Registry, Session-Switcher, plattformabhängige Shortcuts mit Overlay, Themes mit passenden Varianten für Monaco, xterm.js und Shiki, Barrierefreiheit der Kernflüsse nach WCAG 2.2 AA und Deutsch/Englisch.",
+      notes=[
+        "Eine Registry für Befehle und Shortcuts (UX-002, UX-004); Palette, Switcher und Overlay lesen daraus. Bestehende Shortcuts der Approval-Bar (WEB-007) übernehmen.",
+        "Aus QA-007 („ab M3“): Playwright-Kernflüsse für Command-Palette und Themes.",
+        "WEB-016: axe-Tests für Session öffnen, Nachricht senden, Approval entscheiden und Diff lesen in allen Themes; ARIA-Live-Region gedrosselt.",
+        "WEB-017: `i18next` ist eine *Annahme* der Spec; Bundle-Größe gegen WEB-015 prüfen. CLI- und TUI-Ausgaben bleiben Englisch.",
+        "Zugehörige Issues (Design-first, jeweils eigenes Issue, nicht Teil der Definition of Done): Sessions-Seite und Sub-Agents in der Liste (#98, #145), Fork-Dialog (#109), Agent starten und Vorab-Prüfung (#125, #142), Agent-Bibliothek, Partitur, Debatte und Sub-Agents im Verlauf (#78, #139, #140, #141), Harness-Befehle im Slash-Menü (#131), Session-Titel (#126, #129), Experimentelle Funktionen und Umgebung (#99), Queue und Split-Diff (#100, #105), Button-Varianten des Prototyps (#86), Verbrauch und Preise (#179, #180, #266, #267). Die Palette ruft deren Befehle auf, sobald es sie gibt.",
+        design("inbox-palette inbox-switcher inbox-shortcuts settings-appearance"),
+      ]),
+ dict(key="WP-63", title="Onboarding-Wizard, CLI-Installationsangebot & Opt-in-Telemetrie", labels=["area:web", "area:cli", "needs-vendor-cli"], deps=["WP-51"],
+      features=["UX-008", "DIST-015", "OBS-007", "OBS-008"],
+      goal="Beim ersten Start führt ein Wizard durch dieselben Schritte wie `beton setup`: Harness-Erkennung mit Installationsangebot, Login über die CLI selbst, optionale API-Keys, Sandbox- und Proxy-Check, Opt-in für Telemetrie und Crash-Reports. Nichts davon passiert ohne ausdrückliche Zustimmung.",
+      notes=[
+        SUBSCRIPTION + " Der Login läuft nur über die Vendor-CLI im eingebetteten Terminal (UX-008 AC3).",
+        "Gemeinsame Zustandsmaschine im Daemon für `beton setup` und Wizard (`/v1/setup/*` ist eine *Annahme* der Spec). Der Login-Schritt nutzt die Terminals aus WP-51 und markiert den Kanal als `sensitive` (nie in `beton diagnose`, OBS-006 AC4).",
+        "DIST-015: gepflegte Installationsbefehle je Plattform; der angezeigte Befehl ist exakt der ausgeführte (AC2), nie still, nie als Root ohne Rückfrage. Tests mit Fake-Installern, nie mit echtem `npm install`.",
+        "OBS-007 und OBS-008 (ADR-0025, ADR-0033): standardmäßig aus, keine Vorauswahl, `DO_NOT_TRACK=1` und CI erzwingen „aus“; ohne Opt-in keine Verbindung (Netz-Mock-Test). **Klären:** Wohin Telemetrie und Crash-Reports gehen (Endpunkt, Betreiber), entscheidet der Maintainer; bis dahin nur lokal schreiben bzw. konfigurierbar lassen, kein fest eingebauter externer Server.",
+        "Zugehörige Issues (Design-first, eigene Issues) für den Sandbox-Schritt: Sandbox-Einstellungen als Ziel von „Sandbox einrichten“ (#321, #201), Bestätigung von `backend: none` und Proxy-Ausfall (#320), Fortsetzen nach Proxy-Ausfall (#325). Für die Harness-Erkennung: Harness-Katalog und ACP-Registrierung (#82), Provider-Ansicht (#113).",
+        "Login-Erkennung und Installationsbefehle gegen die echten CLIs prüfen (Checkliste im PR, Grundlage für QA-019); die CI nutzt Fake-CLIs.",
+        LOCAL,
+        design("inbox-onboarding cli-setup settings-privacy"),
+      ]),
+ dict(key="WP-64", title="Diagnose-Bundle, Verstoß-Reporting & PII-Schwärzung", labels=["area:security", "area:cli", "area:web", "security-review"], deps=[],
+      features=["OBS-006", "POL-019", "SBX-014"],
+      goal="`beton diagnose` erstellt ein secret-freies Bundle, Sandbox-Verstöße erscheinen mit Tool-Call-ID an der verursachenden Tool-Card samt bestätigungspflichtigem Regel-Vorschlag, und `pii_redaction` schwärzt PII in Tool-Results, wo beton den Inhalt kontrolliert.",
+      notes=[
+        SECURITY,
+        "OBS-006 und SEC-013 AC4 („ab M3“): Das Bundle läuft durch die Redaction-Pipeline aus M2; Test mit Fixture-Secrets über alle Dateien des Bundles. Kein automatischer Upload. Aus #214: Entropie-Heuristik der Redaction (abschaltbar, Default aus) ohne Regression des Benchmarks SEC-013 AC3.",
+        "SBX-014 (aus M2 verschoben, #299): AC1 braucht eine Zuordnung Request → Tool-Call (Proxy-Token oder Instanz je Tool-Call, Markierung durch den Exec-Broker); vorher ein ADR. AC3: Ratenbegrenzer am Event-Sink der Session. **Klären:** AC2 nennt als Ziel des Vorschlags `.beton/config.yaml`, die Projektebene lehnt `sandbox:` aber ab (ADR-0041); Ziel (User-Konfiguration) im PR festlegen und die Spec anpassen.",
+        "POL-019 (aus M2 verschoben, #279): Result-Modifikation im Direkt-Harness (und wo möglich bei ACP `fs/*`, `terminal/*`), Detektoren mit Prüfziffer (Luhn, IBAN) ohne IO in `beton-policy`; ohne Result-Modifikation `notify` mit `enforcement: observe_only`.",
+        "Aus #185: Retention des lokalen Audit-Logs mit Anker der Hash-Kette; `beton audit verify` bleibt nach dem Kürzen gültig.",
+        "Zugehörige Issues (Design-first, eigene Issues): Event-Log zum Schwärzen (#215), SSE-Befehl im Event-Log (#130), Sandbox-Probe und Verstöße (#213, #300), Explain, Policy-Tests und Shadow (#254), Approval „Agent wiederholt sich“ (#280), Budgets und Modell-Routing (#281, dazu #282 Zeitzone je Regel), Secrets und Audit-Log (#184), Credential-Bindings und Git-Verbindungen (#290).",
+        LOCAL,
+        design("diag-bundle diag-events secret-redaction sandbox-violation", " (Zustand `suggest`)"),
+      ]),
+ dict(key="WP-65", title="Release-Pipeline: Build-Matrix, Signing, Desktop-Bundles, GitHub Releases & Subscription-Checkliste", labels=["area:release", "area:qa", "security-review", "needs-vendor-cli"], deps=["WP-58", 54, 56],
+      features=["DIST-001", "DIST-002", "DIST-008", "DIST-013", "DIST-017", "DIST-019", "QA-019"],
+      goal="Release-Artefakte entstehen nur in der CI für die Build-Matrix: signiert und notarisiert (macOS), mit Sigstore-Bundles, SBOM und SLSA-Provenance, als Desktop-Bundles und GitHub-Release mit Kanälen. release-please pflegt Version und Changelog, und ohne bestandene Subscription-Checkliste bleibt ein Release Draft.",
+      notes=[
+        RELEASE_SECURITY,
+        RELEASE_GATE,
+        "Gate aus #54 (Signing-Accounts) und #56 (Markenrecht): Signatur-Identität, Bundle-IDs und Artefaktnamen hängen am Namen. Bis zur Entscheidung nur mit Test-Identitäten arbeiten und nichts veröffentlichen. Environment `release`, Secrets und Required Checks richtet der Maintainer ein (`human-required`-Issue „Release-Infrastruktur einrichten …“).",
+        "**Pflichten aus #74 (Review von #313/#304):** (1) Release-Binaries nie mit `--all-targets` oder `--all-features` bauen (z. B. `cargo build --release --locked -p beton-cli`), sonst ist das Cargo-Feature `test-budget` der Policy-Engine im ausgelieferten Binary aktiv. (2) Nach dem Bauen das Binary selbst prüfen: `beton` mit gesetztem `BETON_TEST_POLICY_BUDGET_MS` starten, die Warnung zum Testbudget darf nicht erscheinen; zusätzlich `! grep -qa BETON_TEST_POLICY_BUDGET_MS <artefakt>`. (3) `cargo tree --workspace -e normal,build --target all` im Prüfschritt, damit plattformabhängige Abhängigkeiten aller Ziele mitgeprüft werden.",
+        "Aus #74 (QA-002 AC4, „ab M3“): Prüfung, dass `beton-fake-cli` und andere Test-Binaries (z. B. Fuzz- und Probe-Binaries) in keinem Release-Archiv stecken.",
+        "DIST-013: Signing-Secrets nur in der Environment `release` (AC4); Windows-Signing ab M5; cosign keyless über GitHub OIDC. DIST-008: deb/rpm liefern das AppArmor-Profil `deploy/apparmor/beton` für `/usr/bin/beton` mit `userns`-Recht (SBX-008).",
+        "QA-019: Vorlage unter `docs/release/verifications/`, das Protokoll erstellt der Maintainer mit echten Logins; der CI-Check parst es und hält das Release als Draft (AC2). In die Checkliste gehören die Vendor-Hosts des Passthroughs (ADR-0038), die Tool-Isolation je CLI-Version (ADR-0037) und die offenen Aufnahmen mit echten CLIs: #80 (ACP-Presets), #97 (System-Tools), #108 (Codex-Fork), #111 (Codex-Compaction), #112 (`/compact`), #127 und #128 (Einmal-Modus), #136 (Claude-Modi), #137 (Effort je Modell), #143 (Tool-Timeouts). " + SUBSCRIPTION,
+        "Release-Workflows laufen nicht in PRs; die PR-Matrix baut im Check-Modus (DIST-001). " + NEW_CI,
+        design("install-ways install-verify install-update"),
+      ]),
+ dict(key="WP-66", title="Installation & Wartung: Installer, Homebrew, binstall, `upgrade`, `uninstall` & Completion", labels=["area:release", "area:cli", "security-review"], deps=["WP-65", 55],
+      features=["DIST-003", "DIST-004", "DIST-005", "DIST-016", "DIST-020", "CLI-013", "CLI-014"],
+      goal="Installation per Skript, Homebrew und `cargo binstall`, `beton upgrade` mit Erkennung der Installationsart und Signaturprüfung (auch offline aus einer Datei), `beton uninstall` und Shell-Completion.",
+      notes=[
+        RELEASE_SECURITY,
+        "Gate aus #55 (Domain): Installationshinweise und Doku-Links erst nach der Entscheidung festschreiben. Zur Laufzeit hängt nichts an einer Domain (ADR-0033); Installer-URLs zeigen auf GitHub Releases (DIST-002).",
+        "DIST-003 und DIST-016: Download nur bei ausdrücklichem Aufruf, SHA-256 und Signatur vor dem atomaren Austausch, `beton.old` als Rückfall; ein manipuliertes Archiv ändert nichts (DIST-016 AC3, AC5). Tests mit lokal signierten Test-Archiven im Offline-Namespace.",
+        "DIST-004: Tap `ifahrentholz/homebrew-tap` (Repository und Token richtet der Maintainer ein, `human-required`-Issue „Release-Infrastruktur einrichten …“); Tests gegen ein lokales Bare-Repo.",
+        "DIST-020: `--purge` nur nach Bestätigung, entfernt beton-eigene Keychain-Einträge, nie Vendor-Credentials (ADR-0005).",
+        "CLI-014 (Could): Completion mit dynamischen Session-IDs ohne laufenden Daemon read-only aus der lokalen DB (wie USE-007).",
+        LOCAL_NET,
+        design("install-ways install-verify install-update cli-upgrade cli-completion"),
+      ]),
+ dict(key="WP-67", title="Desktop-Auto-Update, Versionierung, Schema-Kompatibilität, Desktop-E2E & M3-Demo", labels=["area:release", "area:desktop", "area:qa", "security-review"], deps=["WP-53", "WP-57", "WP-60", "WP-65"],
+      features=["DESK-007", "DIST-014", "DIST-018", "PROTO-014", "QA-008", "QA-012"],
+      goal="Die Desktop-App aktualisiert sich nur auf Klick oder nach Opt-in über signierte Manifeste (auch offline aus einer Datei), Server, Runner und Clients prüfen ein Kompatibilitätsfenster, die CI vergleicht Schemas mit dem letzten Release, und die Desktop-App wird per `tauri-driver` getestet – einschließlich des M3-Demo-Szenarios im Offline-Namespace.",
+      notes=[
+        RELEASE_SECURITY,
+        "DIST-014 und DESK-007 (ADR-0033): ohne Klick oder `update.auto_check` keine Verbindung (Netz-Mock-Test über 48 h simulierte Laufzeit). Der Ed25519-Schlüssel des Updaters ist vom Code-Signing getrennt; Erzeugung und Ablage übernimmt der Maintainer (`human-required`-Issue „Release-Infrastruktur einrichten …“), Tests nutzen Test-Schlüssel.",
+        "DIST-018 und PROTO-014: Versionsfenster ±1 Minor, Schema-Vergleich gegen den letzten Release-Tag. Vor dem ersten Release gibt es keinen Tag: den Check mit Fixture-Schemas testen und mit 0.1 scharf schalten. Aus #74 (PROTO-004 AC3, „ab M3“): Kompatibilitätstests aktueller Server gegen den Client der Vorversion und umgekehrt, sobald es ein erstes Release gibt. DIST-018 AC3: Backup vor jeder Migration, Downgrade mit neuerem Schema wird verweigert.",
+        "QA-008: `tauri-driver` unter Linux (WebKitWebDriver); macOS über die Web-Suite (WebKit) plus Smoke-Checkliste. **Klären:** AC1 nennt Windows, die Desktop-App ist dort bis M5 Beta; Spec im PR auf Linux präzisieren oder den Windows-Job begründen.",
+        "Aus QA-018 AC5 („ab M3“): Das M3-Demo-Szenario läuft im Offline-Namespace mit Fake-Harness – Desktop (`tauri-driver`, Linux) bzw. Web-UI und `beton tui`, zwei Sessions in Worktrees eines lokalen Repos, Inspect-Mode gegen einen lokalen Dev-Server und Diktat mit vorab importiertem Modell und Audio-Fixture. Deshalb hängt das Paket an WP-53, WP-57 und WP-60.",
+        "QA-012 (Should): Benchmarks mit Schwellen, Startzeit-Budgets als Regressionstest. Aus #123, #251 und #292: zeitabhängige Tests (`run_003_ac4_…`, `ses_011_ac1_…`, `har_020_ac1_…`) auf Bereitschaftssignale statt fester Wartezeiten umstellen.",
+        NEW_CI,
+        LOCAL_NET,
+        design("desktop-update install-update install-compat hosts-overview"),
       ]),
 ]
 
-# ---------- human-required für M2 ----------
-# Die offenen Punkte aus 00-overview §9 (Signing-Accounts, Domain, Markenrecht) sind die Issues #54–#56 im
-# Milestone M3 und werden hier nicht wiederholt. Für die macOS-Sandbox sind weder Entitlements noch Notarisierung
-# nötig (`sandbox-exec`); die signierte App kommt mit M3. Neu für M2 ist nur die Review-Pflicht aus QA-013.
+# ---------- bestehende Issues (nicht vom Skript angelegt) ----------
+# Ganze Zahlen in `deps` verweisen auf diese bereits existierenden Issues; das Skript setzt dafür nur „blocked by“.
+EXTERNAL = {
+    54: "M3 · Signing-Accounts für macOS und Windows klären und einrichten (human-required)",
+    55: "M3 · Domain für beton prüfen und sichern (human-required)",
+    56: "M3 · Markenrecht „beton“ prüfen (human-required)",
+    177: "M3 · Eigene GitHub-Identität für Agents und Code-Owner-Approval (human-required)",
+}
+
+# ---------- human-required für M3 ----------
+# #54 (Signing-Accounts), #55 (Domain), #56 (Markenrecht) und #177 (Agent-Identität) existieren bereits im Milestone M3.
+# Neu ist nur die Einrichtung der Release-Infrastruktur, die Einstellungen und Schlüssel des Maintainers braucht.
 HUMAN = [
- dict(key="HR-CODEOWNERS", title="Code-Owner-Review und Branch-Protection für sicherheitskritische Crates einrichten", labels=["human-required", "area:qa", "area:security"], deps=[], features=[],
-      goal="QA-013 (M2) verlangt, dass Änderungen an `beton-policy`, `beton-sandbox`, `beton-proxy`, `beton-secrets` und am Auth-Code nur mit Approval des Maintainers als Code-Owner mergebar sind. Agents öffnen PRs derzeit unter dem Account des Maintainers, und GitHub zählt das Approval des PR-Autors nicht. Entscheiden, wie das gelöst wird, und die Repository-Einstellungen setzen.",
+ dict(key="HR-RELEASE-INFRA", title="Release-Infrastruktur einrichten: Environment `release`, Homebrew-Tap, Updater-Schlüssel und Required Checks", labels=["human-required", "area:release", "area:qa"], deps=[], features=[],
+      goal="Die Release-, Signing- und Update-Pakete von M3 (WP-65 bis WP-67) brauchen Einstellungen, Repositories und Schlüssel, die nur der Maintainer anlegen kann. Dieses Issue sammelt sie, damit die Pakete mit Test-Identitäten vorarbeiten und vor dem Release 0.1 umgestellt werden können.",
       notes=[
-        "Optionen: (a) eine eigene Identität für Agents (Bot-Account oder GitHub App) für Commits und PRs, der Maintainer bleibt Code-Owner und gibt frei; (b) QA-013 per ADR ändern, z. B. dürfen nur der Maintainer bzw. eine Bypass-Liste eines Rulesets sicherheitskritische PRs mergen. Ein zusätzlicher Account bzw. eine App ist eine Account-Entscheidung des Maintainers.",
-        "Gleiches Problem beim Label `no-test-needed`, das laut QA-013 nur Menschen setzen dürfen: Unter einem gemeinsamen Account ist das nicht unterscheidbar.",
-        "Danach die Branch-Protection von `main` ergänzen: „Require review from Code Owners“ (bei Option a) und die neuen Required Checks aus M2 (Escape-Suite macOS/Linux aus SBX-011/QA-005, Coverage-Floor QA-011, `security-tests-touched` QA-013, Policy-Tests QA-004). `enforce_admins` ist aktiv; eine Fehlkonfiguration blockiert alle Merges.",
-        "Keine Tokens oder Schlüssel ins Repo; ein Agent-Token nur mit minimalen Rechten.",
-        "Ergebnis als Kommentar festhalten (ggf. neues ADR zu ADR-0031). Fällig, bevor WP-32 abgeschlossen wird (QA-013 AC1); sonst AC1 als eigenes Issue im Milestone M2 nachziehen.",
+        "GitHub-Environment `release` mit Schutzregeln (nur Tags, nur der Release-Workflow) und den Signing-Secrets aus #54; Workflows außerhalb der Environment haben keinen Zugriff (DIST-013 AC4).",
+        "Repository `ifahrentholz/homebrew-tap` und ein Token mit minimalen Rechten für das automatische Aktualisieren von Formel und Cask (DIST-004).",
+        "Ed25519-Schlüsselpaar für den Tauri-Updater (getrennt vom Code-Signing, DIST-014): privater Schlüssel nur als Secret der Environment `release`, öffentlicher Schlüssel im Repo.",
+        "Neue CI-Jobs aus M3 (z. B. Windows-Tests für PTY und TUI, `tauri-driver`, Schema-Kompatibilität) als Required Checks eintragen, sobald die Pakete sie vorschlagen (`scripts/check_branch_protection.py`).",
+        "Keine Tokens oder Schlüssel ins Repo. Ergebnis als Kommentar festhalten; bei grundsätzlichen Abweichungen von ADR-0026 ein Folge-ADR.",
+        "Fällig vor dem Release 0.1; die Pakete arbeiten bis dahin mit Test-Schlüsseln und lokalen Attrappen.",
       ]),
 ]
 
@@ -372,14 +389,15 @@ Sobald die Planung eines Meilensteins steht, muss **seine gesamte Arbeit als Iss
 - Diese Vorgabe wird in jedes folgende Planungs-Issue („Mx-Abschluss & Planung Mx+1“) wörtlich übernommen.
 """
 
-PLAN = dict(key="WP-50", title="M2-Abschluss & Planung M3", labels=["type:planning"], deps=["WP-38", "WP-47", "WP-48", "WP-49"], features=[],
-      goal="M2 formal abschließen und die Arbeitspakete für M3 schneiden (rollierende Planung).",
+PLAN = dict(key="WP-68", title="M3-Abschluss & Planung M4", labels=["type:planning"], deps=["WP-61", "WP-62", "WP-63", "WP-64", "WP-66", "WP-67", "HR-RELEASE-INFRA", 177], features=[],
+      goal="M3 formal abschließen, das erste öffentliche Release 0.1 vorbereiten und die Arbeitspakete für M4 schneiden (rollierende Planung).",
       notes=[
-        "Prüfen: alle M2-Issues geschlossen (inklusive #73, #92, #101 und des `human-required`-Issues zum Code-Owner-Review), Demo-Szenario (Milestone-Beschreibung) erfüllt – E2E aus WP-49 auf macOS und Linux grün, Escape-Suite (WP-48) als Required Check grün, manuelle Verifikation mit echten `claude`- und `codex`-CLIs protokolliert –, `cargo xtask spec-coverage --milestone M2` ohne fehlende Must-ACs, `docs/spec/roadmap.md` (`python3 scripts/gen_roadmap.py`) und der Feature-Katalog (`python3 scripts/gen_feature_catalog.py`) aktuell.",
-        "Erkenntnisse aus M2 in Spec/ADRs zurückführen (z. B. verifizierte Annahmen zu `CLAUDE_CODE_SHELL_PREFIX`, dem Codex-Shell-Shim, den Vendor-Passthrough-Hosts, den Codex-Rate-Limit-Notifications und der Landlock-ABI-Matrix der CI; die Klärungen aus den M2-Paketen wie Force-Push im Demo, `cost_source: catalog`, Passthrough bei `auth: api_key`; neue ADRs statt stiller Änderungen).",
-        "M3-Features (`docs/spec/roadmap.md` → M3) in Arbeitspakete mit 3–8 Features schneiden – jedes M3-Feature genau einem Paket zugeordnet – und mit `scripts/create_milestone_issues.py` (MS und Paketdefinitionen anpassen) als Issues im Milestone `M3 — Desktop & TUI (Release 0.1)` anlegen: gleiche Struktur wie die M2-Issues, Labels, „blocked by“-Beziehungen, plus ein Issue „M3-Abschluss & Planung M4“. Pakete in `beton-policy`, `beton-sandbox`, `beton-proxy`, `beton-secrets`, Auth/Sharing sowie Release-, Signing- und Update-Pipeline bekommen `security-review` und werden strikt per TDD umgesetzt.",
-        "Übernahmen in die M3-Pakete: die „(ab M3)“-ACs früherer Features (`grep -rn \"(ab M3\" docs/spec/*.md`), #74 (M3 · Übernahmen aus M0), die offenen Issues im Milestone M3 und alle Übernahmen, die in den M2-Issues entstanden sind (z. B. Desktop-Badge der Inbox UX-001 AC3 und TUI-Anzeige USE-008 AC3, falls verschoben).",
-        "Stand der `human-required`-Issues #54 (Signing-Accounts), #55 (Domain) und #56 (Markenrecht) prüfen – vor M3 fällig, Gate für das signierte Desktop-Paket und Release 0.1.",
+        "Prüfen: alle M3-Issues geschlossen (inklusive der aus M2 übernommenen, siehe `docs/plan/m2-triage.md`, und #74), Demo-Szenario (Milestone-Beschreibung) erfüllt – manuell mit der signierten Desktop-App auf einem frischen Rechner und als Offline-E2E (QA-018 AC5, WP-67) –, Subscription-Checkliste für 0.1 protokolliert (QA-019), `cargo xtask spec-coverage --milestone M3` ohne fehlende Must-ACs, `docs/spec/roadmap.md` (`python3 scripts/gen_roadmap.py`) und der Feature-Katalog (`python3 scripts/gen_feature_catalog.py`) aktuell.",
+        "Release 0.1 erst, wenn M2 abgeschlossen ist (Escape-Suite SBX-011/QA-005 als Required Check, die in M2 verbliebenen `security-review`-Befunde) und #177 erledigt ist; danach ADR-0036 (und ADR-0040, falls angenommen) durch ein neues ADR ersetzen. Das Veröffentlichen ist unumkehrbar und eine Handlung des Maintainers (AGENTS.md §5).",
+        "Erkenntnisse aus M3 in Spec/ADRs zurückführen (z. B. Vendor-Hooks und Approval-Strategien im TUI-Modus, Codex in Stufe 2, Chromium in der Sandbox, Whisper-Backends, Signing und Notarisierung, Update-Kanäle; neue ADRs statt stiller Änderungen).",
+        "M4-Features (`docs/spec/roadmap.md` → M4) in Arbeitspakete mit 3–8 Features schneiden – jedes M4-Feature genau einem Paket zugeordnet – und mit `scripts/create_milestone_issues.py` (MS und Paketdefinitionen anpassen) als Issues im Milestone `M4 — Team` anlegen: gleiche Struktur wie die M3-Issues, Labels, „blocked by“-Beziehungen, plus ein Issue „M4-Abschluss & Planung M5“. Pakete in `beton-policy`, `beton-sandbox`, `beton-proxy`, `beton-secrets`, Auth/Sharing sowie Release-, Signing- und Update-Pipeline bekommen `security-review` und werden strikt per TDD umgesetzt.",
+        "Übernahmen in die M4-Pakete: die „(ab M4)“-ACs früherer Features (`grep -rn \"(ab M4\" docs/spec/*.md`), die offenen Issues im Milestone M4 (u. a. #75, #246, #255) und alle Übernahmen, die in den M3-Issues entstanden sind (z. B. die Rollen-Teile von SES-019, WEB-010, PROTO-007, BRW-006 und BRW-020, falls verschoben).",
+        "Offene Punkte aus `docs/spec/00-overview.md` §9 prüfen (#54, #55, #56, #177) und erledigte streichen.",
       ],
       extra=MAINTAINER_RULE)
 
@@ -400,7 +418,7 @@ def body(wp, num_of):
     if wp.get("extra"):
         out.append(wp["extra"])
     if wp["deps"]:
-        out.append("## Abhängigkeiten\nStart erst, wenn diese Issues geschlossen sind:\n" + "\n".join(f"- #{num_of[d]}" for d in wp["deps"]) + "\n")
+        out.append("## Abhängigkeiten\nStart erst, wenn diese Issues geschlossen sind:\n" + "\n".join(f"- #{d if isinstance(d, int) else num_of[d]}" for d in wp["deps"]) + "\n")
     if wp["key"].startswith("WP-") and wp["features"]:
         out.append("""## Definition of Done
 - [ ] Alle Akzeptanzkriterien der oben gelisteten Features sind durch Tests abgedeckt (Testnamen bzw. -kommentare nennen die Feature-ID).
@@ -417,7 +435,10 @@ def body(wp, num_of):
 
 def gh(args, inp=None):
     if DRY:
-        print("DRY gh", " ".join(args)[:160]); return "{}"
+        print("DRY gh", " ".join(args)[:160])
+        if inp:
+            print("\n".join("    | " + l for l in inp.splitlines()))
+        return "{}"
     r = subprocess.run(["gh"] + args, input=inp, capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit(f"gh {' '.join(args)} failed: {r.stderr}")
@@ -433,7 +454,7 @@ print(f"{MS} features: {len(ms_feats)} · assigned: {len(assigned)} · missing: 
 keys = [wp["key"] for wp in ALL]
 seen, bad_deps = set(), []
 for wp in HUMAN + WPS + [PLAN]:  # Anlegereihenfolge: deps müssen vorher angelegt sein
-    bad_deps += [(wp["key"], d) for d in wp["deps"] if d not in seen]
+    bad_deps += [(wp["key"], d) for d in wp["deps"] if (d not in EXTERNAL if isinstance(d, int) else d not in seen)]
     seen.add(wp["key"])
 bad_size = [(wp["key"], len(wp["features"])) for wp in WPS if not 3 <= len(wp["features"]) <= 8]
 print(f"packages: {len(WPS)} · human-required: {len(HUMAN)} · bad deps: {bad_deps} · bad size: {bad_size}")
@@ -491,6 +512,8 @@ for wp in order:
     for d in wp["deps"]:
         if DRY:
             continue
+        if isinstance(d, int) and d not in id_of:
+            id_of[d] = json.loads(gh(["api", f"repos/{REPO}/issues/{d}"]))["id"]
         r = subprocess.run(["gh", "api", "-X", "POST", f"repos/{REPO}/issues/{num_of[wp['key']]}/dependencies/blocked_by",
                             "-F", f"issue_id={id_of[d]}"], capture_output=True, text=True)
         if r.returncode != 0 and "already" not in r.stderr.lower():
