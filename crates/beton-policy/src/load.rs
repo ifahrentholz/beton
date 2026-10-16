@@ -166,9 +166,40 @@ pub struct LoadedSet {
 }
 
 impl LoadedSet {
-    /// Hinweise zu handgeschriebenen Regeln (kein Ladefehler): `(Regel-ID, Text)`.
+    /// Hinweise zu handgeschriebenen Regeln (kein Ladefehler): `(Regel-ID, Text)`. Der Runner
+    /// meldet sie als Warnung (`notice`). Entzuckerte Regeltypen erzeugen keine.
     pub fn lints(&self) -> Vec<(String, String)> {
-        Vec::new()
+        let mut out = Vec::new();
+        for rule in self.rules.iter().filter(|r| r.doc.rule_type.is_none()) {
+            // #242 N3: ohne Tool und Server gilt ein Grant auch für andere Tools.
+            if let Some(key) = &rule.remember_key {
+                let fields = key.fields();
+                if !fields.contains("tool.name") || !fields.contains("tool.server") {
+                    out.push((
+                        rule.id.clone(),
+                        "`remember_key` enthält nicht `tool.name` und `tool.server`: ein Grant \
+                         gilt dann auch für andere Tools bzw. Server mit demselben Schlüssel \
+                         (POL-010)"
+                            .to_owned(),
+                    ));
+                }
+            }
+            // #248: lexikalische Vergleiche auf rohen Pfaden.
+            let when = match &rule.kind {
+                RuleKind::Cel { when: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            if when.into_iter().chain(rule.aux()).any(Program::compares_raw_paths) {
+                out.push((
+                    rule.id.clone(),
+                    "vergleicht `tool.paths`, `tool.write_paths` bzw. `tool.cwd` lexikalisch \
+                     (ohne Symlinks und Groß-/Kleinschreibung des Dateisystems); für Pfade \
+                     `resolve(p)` bzw. `under(p, root)` verwenden (POL-002)"
+                        .to_owned(),
+                ));
+            }
+        }
+        out
     }
 
     pub fn rule_ref(&self, rule_id: &str) -> RuleRef {

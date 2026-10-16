@@ -274,6 +274,12 @@ impl Program {
         analyze::tool_kinds(&self.node)
     }
 
+    /// Vergleicht der Ausdruck rohe Pfade (`tool.paths`, `tool.write_paths`, `tool.cwd`)
+    /// lexikalisch, statt sie mit `resolve()`/`under()` aufzulösen (#248)?
+    pub fn compares_raw_paths(&self) -> bool {
+        analyze::compares_raw_paths(&self.node)
+    }
+
     /// Benutzte Variablen (`session`) und Felder (`session.cost_usd`).
     pub fn fields(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
