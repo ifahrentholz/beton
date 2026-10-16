@@ -466,6 +466,7 @@ dependencies = [
  "async-trait",
  "beton-agents",
  "beton-core",
+ "beton-desktop",
  "beton-git",
  "beton-harness",
  "beton-harness-acp",
@@ -516,6 +517,26 @@ dependencies = [
  "toml",
  "ts-rs",
  "ulid",
+]
+
+[[package]]
+name = "beton-desktop"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "beton-core",
+ "beton-sdk",
+ "beton-server",
+ "beton-store",
+ "jiff",
+ "rustix",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
