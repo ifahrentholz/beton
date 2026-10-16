@@ -80,6 +80,10 @@ pub mod env {
     /// Nur mit dem Feature `test-sandbox`: Backends abschalten (Tests, SBX-006 AC1).
     #[cfg(feature = "test-sandbox")]
     pub const TEST_SANDBOX_UNAVAILABLE: &str = beton_sandbox::TEST_UNAVAILABLE_ENV;
+    /// Nur mit dem Feature `test-sandbox`: `1` beendet die Proxy-Instanzen der Session gleich
+    /// nach dem Start, wie ein Absturz (Tests, SBX-006 AC3).
+    #[cfg(feature = "test-sandbox")]
+    pub const TEST_SANDBOX_PROXY_DOWN: &str = "BETON_TEST_SANDBOX_PROXY_DOWN";
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
     /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
@@ -547,11 +551,17 @@ impl Unacked {
 #[derive(Default)]
 struct StatusTracker {
     current: Option<SessionStatus>,
+    /// Die Sandbox hat eine Voraussetzung verloren (SBX-006 AC3): Die Session bleibt
+    /// `paused`, bis der Runner endet; nur `failed` und `stopped` lösen das ab.
+    paused: bool,
 }
 
 impl StatusTracker {
     fn set(&mut self, boot: &RunnerBoot, to: SessionStatus, out: &mut Vec<Event>) {
         if self.current == Some(to) {
+            return;
+        }
+        if self.paused && !matches!(to, SessionStatus::Failed | SessionStatus::Stopped) {
             return;
         }
         self.current = Some(to);
@@ -564,6 +574,25 @@ impl StatusTracker {
             EventPayload::SessionStatus(SessionStatusChanged {
                 status: to,
                 reason: None,
+            }),
+        ));
+    }
+}
+
+impl StatusTracker {
+    /// `paused` mit Grund (SBX-006 AC3); spätere Wechsel außer `failed`/`stopped` entfallen.
+    fn pause(&mut self, boot: &RunnerBoot, reason: &str, out: &mut Vec<Event>) {
+        self.paused = true;
+        self.current = Some(SessionStatus::Paused);
+        out.push(Event::new(
+            boot.session_id,
+            0,
+            Actor::System {
+                component: beton_core::event::SystemComponent::Runner,
+            },
+            EventPayload::SessionStatus(SessionStatusChanged {
+                status: SessionStatus::Paused,
+                reason: Some(reason.to_owned()),
             }),
         ));
     }
@@ -857,6 +886,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 )
                 .map(|b| b.program),
                 events: Some(events),
+                // Verstöße der Backends als `sandbox.violation` (SBX-013 AC1, SBX-014).
+                violations: Some({
+                    let tx = stage_tx.clone();
+                    Arc::new(move |v| {
+                        let _ = tx.send(EventPayload::SandboxViolation(v));
+                    })
+                }),
             };
             // HAR-015 AC4: Mit `auth: api_key` sieht die Vendor-CLI nur einen Platzhalter.
             let harness_key = (boot.harnesses.user.auth(boot.harness.as_str())
@@ -1375,6 +1411,23 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     for e in pending_status.drain(..) {
         unacked.push(e);
     }
+    // SBX-006 AC3: Endet ein Egress-Proxy der Session, pausiert sie, und neue
+    // Tool-Ausführungen werden abgelehnt.
+    let mut proxy_down: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+        stages.as_ref().map(|s| {
+            Box::pin(s.proxy_down())
+                as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        });
+    #[cfg(feature = "test-sandbox")]
+    if std::env::var(env::TEST_SANDBOX_PROXY_DOWN).is_ok_and(|v| v == "1")
+        && let Some(s) = &stages
+    {
+        tracing::warn!(
+            "Test-Schalter {}: Proxy beendet",
+            env::TEST_SANDBOX_PROXY_DOWN
+        );
+        s.kill_proxies();
+    }
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
@@ -1583,6 +1636,34 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 // steht im Log vor den Folge-Events des Harness; ein `policy.decision` wartet
                 // seinerseits auf sein `tool.call.requested` (POL-025).
                 biased;
+                () = async {
+                    match proxy_down.as_mut() {
+                        Some(f) => f.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    proxy_down = None;
+                    if let Some(st) = &stages {
+                        st.halt("proxy_down");
+                    }
+                    gate.halt_tools(
+                        "proxy_down: Der Egress-Proxy der Session ist beendet; neue \
+                         Tool-Ausführungen sind abgelehnt, die Session ist pausiert (SBX-006)",
+                    );
+                    let mut batch = vec![system_event(
+                        &boot,
+                        EventPayload::SandboxViolation(beton_core::event::SandboxViolation {
+                            stage: beton_core::event::SandboxStage::Tools,
+                            kind: beton_core::event::ViolationKind::ProxyDown,
+                            target: None,
+                            suppressed_count: 0,
+                        }),
+                    )];
+                    tracker.pause(&boot, "proxy_down: Egress-Proxy beendet", &mut batch);
+                    if !push(&mut ws, &boot, &mut unacked, batch).await {
+                        break None;
+                    }
+                }
                 ge = gate_rx.recv() => {
                     let Some(first) = ge else { continue };
                     let mut fatal = first.fatal.then(|| fatal_reason(&first));

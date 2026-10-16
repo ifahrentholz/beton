@@ -254,6 +254,9 @@ pub struct Sandbox {
     policy: ResolvedPolicy,
     events: Option<EventSink>,
     violations: Option<ViolationSink>,
+    /// Gesetzt, sobald eine Voraussetzung der Sandbox fehlt (z. B. der Proxy, SBX-006 AC3):
+    /// Danach startet kein Prozess mehr. Gilt für alle Klone.
+    halted: Arc<std::sync::OnceLock<String>>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -276,7 +279,19 @@ impl Sandbox {
             policy,
             events,
             violations: None,
+            halted: Arc::default(),
         }
+    }
+
+    /// Hält die Sandbox an (SBX-006 AC3): Jeder weitere Start scheitert mit
+    /// `sandbox_unavailable` und `reason`; auch für alle Klone. Wirkt nur einmal.
+    pub fn halt(&self, reason: &str) {
+        let _ = self.halted.set(reason.to_owned());
+    }
+
+    /// Grund, falls die Sandbox angehalten ist.
+    pub fn halted(&self) -> Option<&str> {
+        self.halted.get().map(String::as_str)
     }
 
     /// Meldet erkannte Verstöße (z. B. ein erreichtes Limit) als `sandbox.violation`.
@@ -316,6 +331,13 @@ impl Sandbox {
     }
 
     pub fn spawn(&self, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
+        if let Some(reason) = self.halted() {
+            return Err(SandboxError::Unavailable {
+                provider: self.provider.id(),
+                missing: [crate::Cap::Net].into_iter().collect(),
+                hint: format!("Sandbox angehalten ({reason}): keine neuen Prozesse"),
+            });
+        }
         let child = self
             .provider
             .spawn_observed(&self.policy, cmd, self.violations.clone())?;

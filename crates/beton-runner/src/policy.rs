@@ -586,6 +586,9 @@ struct Inner {
     /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
     /// Regel und Session; POL-011).
     inapplicable: Mutex<BTreeSet<String>>,
+    /// Gesetzt, wenn die Sandbox eine Voraussetzung verloren hat (z. B. der Proxy, SBX-006
+    /// AC3): Jede weitere Tool-Ausführung wird abgelehnt.
+    halted: std::sync::OnceLock<String>,
 }
 
 /// Das Gate einer Session; billig klonbar.
@@ -877,6 +880,7 @@ impl PolicyGate {
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
                 inapplicable: Mutex::new(BTreeSet::new()),
+                halted: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -1934,6 +1938,16 @@ impl PolicyGate {
                 }
             }
             Ok(n) => {
+                if let Some(reason) = self.inner.halted.get() {
+                    return self.builtin_denied(
+                        req,
+                        &subject,
+                        subject_ref,
+                        level,
+                        "sandbox-halted",
+                        reason.clone(),
+                    );
+                }
                 if let Some(path) = pre.policy_files {
                     return self.policy_files_denied(req, &subject, subject_ref, level, &path);
                 }
@@ -2261,9 +2275,28 @@ impl PolicyGate {
         level: Level,
         path: &str,
     ) -> Verdict {
-        let set = self.refresh(req.turn_id);
         let reason = policy_files_reason(path);
-        let decision = builtin_deny(Phase::ToolCall, set.hash(), "policy-files", reason.clone());
+        self.builtin_denied(req, subject, subject_ref, level, "policy-files", reason)
+    }
+
+    /// Hält das Gate an (SBX-006 AC3): Jede weitere Tool-Ausführung wird mit `reason`
+    /// abgelehnt (eingebaute Regel `sandbox-halted`), bis die Session endet.
+    pub fn halt_tools(&self, reason: &str) {
+        let _ = self.inner.halted.set(reason.to_owned());
+    }
+
+    /// Ablehnung durch eine eingebaute Regel, ohne Auswertung der Policies (fail closed).
+    fn builtin_denied(
+        &self,
+        req: &GateRequest,
+        subject: &Value,
+        subject_ref: Value,
+        level: Level,
+        rule_id: &str,
+        reason: String,
+    ) -> Verdict {
+        let set = self.refresh(req.turn_id);
+        let decision = builtin_deny(Phase::ToolCall, set.hash(), rule_id, reason.clone());
         let event = decision_event(
             &decision,
             DecisionMeta {

@@ -166,6 +166,8 @@ pub struct StageInput<'a> {
     /// Programm des Harness (aufgelöst), für die Lese-Grants der Stufe 1.
     pub program: Option<PathBuf>,
     pub events: Option<EventSink>,
+    /// Verstöße, die die Backends beider Stufen melden (`sandbox.violation`, SBX-013, SBX-014).
+    pub violations: Option<beton_sandbox::ViolationSink>,
 }
 
 /// Die laufenden Stufen einer Session; alles endet mit `Drop` (Proxy-Instanzen, Broker,
@@ -259,6 +261,41 @@ impl SessionStages {
         let out = (instance.proxy_url(), proxy.ca_pem());
         self._proxies.push(instance);
         Ok(out)
+    }
+
+    /// Endet, sobald eine Proxy-Instanz der Stufen (bzw. des Direkt-API-Loops) keine
+    /// Verbindungen mehr annimmt, z. B. nach einem Absturz (SBX-006 AC3). Ohne Netz nie.
+    pub fn proxy_down(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let downs: Vec<_> = self._proxies.iter().map(|p| Box::pin(p.down())).collect();
+        async move {
+            if downs.is_empty() {
+                return std::future::pending::<()>().await;
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+            for down in downs {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    down.await;
+                    let _ = tx.send(()).await;
+                });
+            }
+            drop(tx);
+            let _ = rx.recv().await;
+        }
+    }
+
+    /// Beendet alle Proxy-Instanzen der Session sofort (wie ein Absturz).
+    pub fn kill_proxies(&self) {
+        for p in &self._proxies {
+            p.shutdown();
+        }
+    }
+
+    /// Hält beide Stufen an (SBX-006 AC3): Danach startet keine neue Tool-Ausführung mehr,
+    /// auch nicht über den Exec-Broker, und kein neuer Harness-Prozess.
+    pub fn halt(&self, reason: &str) {
+        self.tools.halt(reason);
+        self.harness.halt(reason);
     }
 
     /// Laufzeitverzeichnis der Stufe 1 (0700, im Session-Verzeichnis): Hier legt der Runner
@@ -889,7 +926,17 @@ async fn compose_unix(
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
     let git_guard = git.as_ref().map(GitGuard::new);
-    let git_sink = git_guard.as_ref().map(GitGuard::sink);
+    // Verstöße gehen an den Git-Wächter (SBX-003) und als Event an die Session (SBX-013).
+    let git_sink = match (
+        git_guard.as_ref().map(GitGuard::sink),
+        input.violations.clone(),
+    ) {
+        (Some(g), Some(v)) => Some(Arc::new(move |e: beton_core::event::SandboxViolation| {
+            g(e.clone());
+            v(e);
+        }) as beton_sandbox::ViolationSink),
+        (g, v) => g.or(v),
+    };
     let ctx = |stage: Stage, scratch: &Path, proxy: Option<ProxyEndpoint>| {
         let mut c = ResolveCtx::new(stage, input.workdir, &input.home, scratch);
         c.git.clone_from(&git);

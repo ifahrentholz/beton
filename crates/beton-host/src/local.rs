@@ -277,13 +277,18 @@ impl RunnerProvider for LocalProvider {
         // `test-sandbox` (wie `test-budget` nur über Dev-Dependencies); der Runner sieht dann
         // dieselbe Registry wie der Daemon.
         #[cfg(feature = "test-sandbox")]
-        if let Some(v) = self
-            .inherit
-            .get(beton_runner::env::TEST_SANDBOX_UNAVAILABLE)
-            .cloned()
-            .or_else(|| std::env::var(beton_runner::env::TEST_SANDBOX_UNAVAILABLE).ok())
-        {
-            vars.push((beton_runner::env::TEST_SANDBOX_UNAVAILABLE.into(), v));
+        for name in [
+            beton_runner::env::TEST_SANDBOX_UNAVAILABLE,
+            beton_runner::env::TEST_SANDBOX_PROXY_DOWN,
+        ] {
+            if let Some(v) = self
+                .inherit
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+            {
+                vars.push((name.into(), v));
+            }
         }
         let (program, args) = self
             .command

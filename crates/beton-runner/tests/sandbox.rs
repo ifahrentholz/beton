@@ -391,10 +391,17 @@ async fn sbx_006_ac3_proxy_down_pauses_the_session_and_rejects_new_tool_calls() 
         .unwrap();
     assert_eq!(completed["payload"]["status"], "denied", "{text}");
     assert!(
+        completed["payload"]["result"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("proxy_down"),
+        "{text}"
+    );
+    assert!(
         events.iter().any(|e| e["type"] == "policy.decision"
             && e["payload"]["phase"] == "tool_call"
             && e["payload"]["outcome"] == "deny"
-            && e["payload"].to_string().contains("proxy_down")),
+            && e["payload"]["enforcement"] == "full"),
         "{text}"
     );
     // Die Session bleibt pausiert.
