@@ -99,6 +99,21 @@ impl Fixture {
     }
 
     async fn launch(&self, scenario: &Path, epoch: u64) -> RunnerHandle {
+        // Ausdrücklich ohne Isolation und bestätigt (SBX-006); die Sandbox prüfen eigene Tests.
+        let none = beton_host::SandboxBoot {
+            spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+            extra_ca_files: Vec::new(),
+        };
+        self.launch_with(scenario, epoch, Some(none), true).await
+    }
+
+    async fn launch_with(
+        &self,
+        scenario: &Path,
+        epoch: u64,
+        sandbox: Option<beton_host::SandboxBoot>,
+        unsandboxed_confirmed: bool,
+    ) -> RunnerHandle {
         let token = self
             .daemon
             .runtime
@@ -134,7 +149,8 @@ impl Fixture {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
-                    sandbox: None,
+                    sandbox,
+                    unsandboxed_confirmed,
                     proxy_ca: None,
                     compaction: Default::default(),
                     max_cost_usd: None,
@@ -232,6 +248,32 @@ turns:
       - { on_gate: { allow: [{ tool_result: "ok" }], deny: [{ message: "Push abgelehnt." }] } }
       - { usage: { input_tokens: 10, output_tokens: 5 } }
 "#;
+
+#[tokio::test]
+async fn sbx_006_runner_refuses_backend_none_without_confirmation() {
+    // Abwehr in der Tiefe: Auch wenn der Server die Bestätigung nicht prüfte, startet der
+    // Runner ohne sie keinen Harness ohne Sandbox.
+    let fx = fixture(|r| r).await;
+    let scenario = fx.scenario("turns: []");
+    let none = beton_host::SandboxBoot {
+        spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+        extra_ca_files: Vec::new(),
+    };
+    let _h = fx.launch_with(&scenario, 1, Some(none), false).await;
+    let events = fx
+        .wait_for(|p| {
+            matches!(p, EventPayload::SessionStatus(s) if s.status == beton_core::event::SessionStatus::Failed)
+        })
+        .await;
+    let text = serde_json::to_string(&events).unwrap();
+    assert!(text.contains("sandbox_confirmation_required"), "{text}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.payload(), Some(EventPayload::HarnessReady(_)))),
+        "Harness gestartet"
+    );
+}
 
 #[tokio::test]
 async fn proto_015_runner_streams_turn_with_approval() {

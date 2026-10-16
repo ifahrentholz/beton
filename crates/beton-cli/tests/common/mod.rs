@@ -56,16 +56,24 @@ impl Serve {
     }
 
     pub fn start_with(env: &[(&str, &str)]) -> Self {
-        Self::start_inner(env, false)
+        Self::start_inner(env, false, None)
+    }
+
+    /// Wie [`Self::start_with`], mit `config.yaml` im Datenverzeichnis vor dem Start.
+    pub fn start_with_config(config: &str, env: &[(&str, &str)]) -> Self {
+        Self::start_inner(env, false, Some(config))
     }
 
     /// Wie [`Self::start_with`], aber ohne `*_API_KEY` in der Umgebung des Daemons (ADR-0034).
     pub fn start_without_api_keys(env: &[(&str, &str)]) -> Self {
-        Self::start_inner(env, true)
+        Self::start_inner(env, true, None)
     }
 
-    fn start_inner(env: &[(&str, &str)], without_api_keys: bool) -> Self {
+    fn start_inner(env: &[(&str, &str)], without_api_keys: bool, config: Option<&str>) -> Self {
         let home = tempfile::tempdir().unwrap();
+        if let Some(config) = config {
+            std::fs::write(home.path().join("config.yaml"), config).unwrap();
+        }
         let work = tempfile::tempdir().unwrap();
         let log = std::fs::File::create(work.path().join("serve.log")).unwrap();
         let mut cmd = beton(home.path());

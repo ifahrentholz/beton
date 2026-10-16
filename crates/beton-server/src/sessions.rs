@@ -1729,11 +1729,23 @@ mod stage_tests {
     }
 
     #[tokio::test]
-    async fn sbx_002_runner_gets_stage_config_only_with_explicit_backend() {
+    async fn sbx_006_runner_gets_stage_config_by_default_and_backend_none_explicitly() {
+        // SBX-006: Ohne `backend` gilt „Sandbox erforderlich“ (mit CA für den Proxy).
         let (sb, ca) = stage_boot(&cfg("{}\n", Some(Ok(()))), SessionId::new())
             .await
             .unwrap();
-        assert!(sb.is_none() && ca.is_none());
+        assert!(sb.is_some() && ca.unwrap().ca().is_ok());
+        // `backend: none` geht ausdrücklich an den Runner (er prüft die Bestätigung), ohne CA.
+        let (sb, ca) = stage_boot(&cfg("backend: none\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            sb.unwrap().spec.backend,
+            Some(beton_sandbox::BackendChoice::Provider(
+                beton_sandbox::ProviderId::None
+            ))
+        );
+        assert!(ca.is_none());
         let (sb, ca) = stage_boot(&cfg("backend: auto\n", Some(Ok(()))), SessionId::new())
             .await
             .unwrap();

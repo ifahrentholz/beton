@@ -203,17 +203,26 @@ async fn har_015_ac4_api_key_harness_sees_only_a_placeholder_and_its_host_via_mi
 }
 
 #[tokio::test]
-async fn sbx_002_without_explicit_backend_sessions_stay_on_backend_none_until_wp49() {
+async fn sbx_006_the_sandbox_is_required_by_default() {
+    // SBX-006: Ohne `backend` gilt `auto`; nur ausdrücklich `none` läuft ohne Stufen.
     let fx = fx();
-    for yaml in ["{}\n", "backend: none\n", "preset: dev\n"] {
+    for yaml in ["{}\n", "preset: dev\n"] {
         let s = compose(
             input(&fx, "claude", ToolIsolation::ShellOverride),
             opts(yaml, true),
         )
         .await
         .unwrap();
-        assert!(s.is_none(), "{yaml}");
+        let s = s.unwrap_or_else(|| panic!("ohne Stufen: {yaml}"));
+        assert_ne!(s.harness.policy().backend, beton_sandbox::ProviderId::None);
     }
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: none\n", true),
+    )
+    .await
+    .unwrap();
+    assert!(s.is_none());
 }
 
 #[tokio::test]
