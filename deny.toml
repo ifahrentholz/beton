@@ -8,7 +8,12 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # Nur Linux-Build der Desktop-App: gtk-rs 0.18 von Tauri 2 bringt das Proc-Macro
+    # `proc-macro-error` mit (unmaintained, kein Sicherheitsfehler). Issue #354, läuft ab am
+    # 2027-04-30.
+    { id = "RUSTSEC-2024-0370", reason = "gtk-rs 0.18 über Tauri 2 (Linux), #354, bis 2027-04-30" },
+]
 
 [licenses]
 version = 2
