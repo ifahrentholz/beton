@@ -145,8 +145,9 @@ pub fn forward_names(policy: &crate::ResolvedPolicy) -> Vec<String> {
         .collect()
 }
 
-/// Einstieg von `bt-exec` bzw. `beton __exec`: `Some(exit)`, wenn dieses Programm als Shim
-/// aufgerufen wurde (Name `bt-exec` bzw. `bt-exec-<shell>` oder erstes Argument `__exec`).
+/// Einstieg von `bt-exec` bzw. `beton __exec` und des Git-Shims: `Some(exit)`, wenn dieses
+/// Programm als Shim aufgerufen wurde (Name `bt-exec` bzw. `bt-exec-<shell>`, erstes Argument
+/// `__exec` oder Name `git`, SBX-003).
 pub fn exec_dispatch() -> Option<std::process::ExitCode> {
     let mut args = std::env::args_os();
     let argv0 = args.next()?;
@@ -158,6 +159,8 @@ pub fn exec_dispatch() -> Option<std::process::ExitCode> {
     let rest: Vec<std::ffi::OsString> = args.collect();
     let code = if base == SHIM || base.starts_with("bt-exec-") {
         client::run(&argv0, rest)
+    } else if base == git_shim::NAME {
+        git_shim::run(&argv0, rest)
     } else if rest.first().map(|a| a.as_os_str()) == Some(std::ffi::OsStr::new(EXEC_ARG)) {
         client::run(&std::ffi::OsString::from(SHIM), rest[1..].to_vec())
     } else {
