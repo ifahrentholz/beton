@@ -689,11 +689,20 @@ impl ClaudeAdapter {
         let process = Arc::new(Mutex::new(process));
         let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        write_json(
+        let init = write_json(
             &stdin,
             &json!({"type": "control_request", "request_id": "beton_init", "request": {"subtype": "initialize"}}),
         )
-        .await?;
+        .await;
+        match init {
+            // Die CLI ist schon beendet (#316): kein Startfehler, sondern ein unerwarteter
+            // Exit; die Leseschleife sieht das Ende von stdout und meldet `harness.exited` mit
+            // Code und stderr (HAR-001), wie bei einem Exit kurz nach diesem Schreiben.
+            Err(HarnessError::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                tracing::debug!("claude: CLI endete vor initialize");
+            }
+            other => other?,
+        }
 
         tokio::spawn(read_loop(
             io.stdout,
@@ -1684,5 +1693,97 @@ mod session_ref_tests {
             s.native_session_ref().as_deref(),
             Some("9f0e8d7c-0000-4000-8000-000000000002")
         );
+    }
+}
+
+#[cfg(test)]
+mod early_exit_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::process::{ProcessIo, ProcessLauncher};
+    use beton_harness::{AllowAll, ExitInfo, HostEnv};
+
+    /// CLI, die schon beendet ist, wenn der Adapter `initialize` schreibt: stdin liefert
+    /// `BrokenPipe`, stdout ist leer, der Exit-Status steht fest.
+    struct Exited;
+
+    struct ExitedProcess(Option<ProcessIo>);
+
+    fn exit() -> ExitInfo {
+        ExitInfo {
+            code: Some(1),
+            signal: None,
+            stderr_tail: "Fehler beim Start".into(),
+        }
+    }
+
+    #[async_trait]
+    impl ProcessLauncher for Exited {
+        async fn launch(&self, _spec: LaunchSpec) -> std::io::Result<Box<dyn ProcessHandle>> {
+            // Die andere Seite ist sofort zu: Schreiben scheitert mit `BrokenPipe`.
+            let (stdin, _closed) = tokio::io::duplex(64);
+            Ok(Box::new(ExitedProcess(Some(ProcessIo {
+                stdin: Box::new(stdin),
+                stdout: Box::new(tokio::io::empty()),
+            }))))
+        }
+    }
+
+    #[async_trait]
+    impl ProcessHandle for ExitedProcess {
+        fn take_io(&mut self) -> Option<ProcessIo> {
+            self.0.take()
+        }
+        fn id(&self) -> Option<u32> {
+            None
+        }
+        async fn wait(&mut self) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+        async fn terminate(&mut self, _t: ShutdownTimeouts) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+        async fn kill(&mut self) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+    }
+
+    /// #316: Endet die CLI sofort nach dem Start, scheiterte `start` je nach Timing mit
+    /// `BrokenPipe` (Schreiben von `initialize`) oder lieferte eine Session mit
+    /// `harness.exited`. Ein unerwarteter Exit erzeugt immer `harness.exited` mit Code und
+    /// stderr (HAR-001), unabhängig davon, wann er passiert.
+    #[tokio::test]
+    async fn har_001_cli_exiting_before_initialize_reports_harness_exited() {
+        let ctx = AdapterContext {
+            stage: None,
+            gate: Arc::new(AllowAll),
+            launcher: Arc::new(Exited),
+            env: HostEnv::default(),
+        };
+        let mut session = ClaudeAdapter::default()
+            .start(
+                SessionSpec {
+                    workdir: std::env::temp_dir(),
+                    ..SessionSpec::default()
+                },
+                ctx,
+            )
+            .await
+            .expect("Start gelingt; das Ende meldet harness.exited");
+        let mut rx = session.events().unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(e) = rx.recv().await {
+                if let EventPayload::HarnessExited(x) = e.payload {
+                    return Some(x);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("harness.exited");
+        assert_eq!(exited.code, Some(1));
+        assert_eq!(exited.stderr_tail, "Fehler beim Start");
     }
 }
