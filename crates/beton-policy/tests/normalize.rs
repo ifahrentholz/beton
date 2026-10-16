@@ -275,6 +275,30 @@ fn pol_005_codex_command_with_shell_wrapper_is_parsed() {
     );
 }
 
+/// #242 N4: Codex nennt das Arbeitsverzeichnis eines Shell-Calls `workdir` (`exec_command`,
+/// `shell`). Es ist `tool.cwd`, die Basis relativer Pfade und Teil des Grant-Fingerprints; ein
+/// relatives Verzeichnis gilt relativ zum Arbeitsverzeichnis der Session.
+#[test]
+fn pol_005_codex_workdir_is_the_tool_cwd() {
+    for name in ["exec_command", "shell"] {
+        let args = json!({ "command": ["bash", "-lc", "rm -rf ./build"], "workdir": "/work/other" });
+        let tool = normalize(&raw("codex", name, &args)).unwrap();
+        assert_eq!(tool.cwd, "/work/other", "{name}");
+        assert!(
+            tool.paths.contains(&"/work/other/build".to_owned()),
+            "{name}: {:?}",
+            tool.paths
+        );
+        let args = json!({ "command": ["ls"], "workdir": "sub/../pkg" });
+        let tool = normalize(&raw("codex", name, &args)).unwrap();
+        assert_eq!(tool.cwd, "/work/repo/pkg", "{name}");
+    }
+    // Auch ein relatives `cwd` (app-server) gilt relativ zur Session statt gar nicht.
+    let args = json!({ "command": "ls", "cwd": "pkg" });
+    let tool = normalize(&raw("codex", "commandExecution", &args)).unwrap();
+    assert_eq!(tool.cwd, "/work/repo/pkg");
+}
+
 #[test]
 fn pol_005_context_shape_matches_declaration() {
     let args = json!({ "command": "ls" });
