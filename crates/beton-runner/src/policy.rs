@@ -2946,6 +2946,46 @@ mod tests {
         }
     }
 
+    /// #330 (Re-Review #327): Lehnt die angehaltene Sandbox einen Call mit gespeichertem
+    /// Hook-Entscheid ab, entsteht kein zweites `policy.decision` (POL-025 AC1: genau eines je
+    /// Call); die Ablehnung steht als `policy.notified` der Regel `sandbox-halted` im Log.
+    #[tokio::test]
+    async fn pol_025_ac1_halted_sandbox_adds_no_second_decision_for_a_decided_call() {
+        for origin in [GateOrigin::VendorAsk, GateOrigin::AutoApproval] {
+            let (g, mut rx) = gate();
+            let pre = GateRequest {
+                origin: GateOrigin::PreTool,
+                ..ask("c1")
+            };
+            assert!(matches!(g.decide(pre).await, GateDecision::Allow { .. }));
+            g.halt_tools("Egress-Proxy ausgefallen");
+            let decision = g
+                .decide(GateRequest {
+                    origin,
+                    ..ask("c1")
+                })
+                .await;
+            assert!(matches!(decision, GateDecision::Deny { .. }), "{origin:?}");
+            let mut seen = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                seen.push(e.payload);
+            }
+            assert_eq!(
+                seen.iter()
+                    .filter(|e| matches!(e, EventPayload::PolicyDecision(_)))
+                    .count(),
+                1,
+                "{origin:?}: {seen:?}"
+            );
+            assert!(
+                seen.iter().any(|e| matches!(e, EventPayload::PolicyNotified(n)
+                    if n.rule_id == "sandbox-halted" && n.channels == ["ui"])),
+                "{origin:?}: {seen:?}"
+            );
+            assert!(!g.inner.decided.lock().unwrap()["c1"].allowed, "{origin:?}");
+        }
+    }
+
     #[tokio::test]
     async fn pol_003_system_tools_pass_the_policy_without_a_human_card() {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
