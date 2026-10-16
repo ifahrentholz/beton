@@ -798,6 +798,47 @@ pub fn effort_not_higher(from: Option<&str>, to: &str) -> bool {
     matches!((from.and_then(rank), rank(to)), (Some(a), Some(b)) if b <= a)
 }
 
+/// Kontextfelder, die Kosten lesen (Geld bzw. Listenpreis-Äquivalent, POL-004).
+const COST_FIELDS: [&str; 9] = [
+    "session.cost_usd",
+    "session.equivalent_usd",
+    "run.cost_usd",
+    "run.equivalent_usd",
+    "run.subtree_cost_usd",
+    "run.subtree_equivalent_usd",
+    "user.daily_cost_usd",
+    "user.daily_equivalent_usd",
+    "user.monthly_cost_usd",
+];
+
+/// Erste Regel des Sets (kanonische Reihenfolge, ohne Dry-Run), die als Budget wirkt: ein
+/// Regeltyp `spend_cap`/`daily_budget` oder eine Regel, deren Ausdrücke Kosten lesen
+/// (`*.cost_usd`, `*.equivalent_usd`; #297).
+pub fn first_budget(set: &EffectiveSet) -> Option<RuleRef> {
+    if let Some(b) = budget_rules(set).into_iter().next() {
+        return Some(b.rule);
+    }
+    for s in set.sets() {
+        if s.mode == crate::doc::Mode::DryRun {
+            continue;
+        }
+        for r in s.rules.iter().filter(|r| !r.doc.dry_run) {
+            let when = match &r.kind {
+                RuleKind::Cel { when: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            let reads_cost = when.into_iter().chain(r.aux()).any(|p| {
+                let fields = p.fields();
+                COST_FIELDS.iter().any(|f| fields.contains(*f))
+            });
+            if reads_cost {
+                return Some(s.rule_ref(&r.id));
+            }
+        }
+    }
+    None
+}
+
 /// Budget-Regeln (`spend_cap`, `daily_budget`) des Sets in kanonischer Reihenfolge, je Regel
 /// einmal; Dry-Run-Regeln zählen nicht.
 pub fn budget_rules(set: &EffectiveSet) -> Vec<BudgetRule> {

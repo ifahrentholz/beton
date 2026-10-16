@@ -555,8 +555,8 @@ impl<'a> Run<'a> {
         if writer.scope <= Scope::User || crate::cel::ext::priced(model) {
             return;
         }
-        let budgets = crate::budget::budget_rules(self.set);
-        let Some(budget) = budgets.first() else {
+        // Jede Regel, die Kosten liest, wirkt als Budget (auch handgeschriebenes CEL, #297).
+        let Some(budget) = crate::budget::first_budget(self.set) else {
             return;
         };
         verdicts.deny.push(Reason {
@@ -565,7 +565,7 @@ impl<'a> Run<'a> {
                 "Umrouten auf `{model}` abgelehnt: Das Modell hat keinen Katalogpreis, und \
                  solange ein Budget gilt (`{}`), darf eine Regel der Ebene {} nicht darauf \
                  umleiten",
-                budget.rule.rule_id,
+                budget.rule_id,
                 writer.scope.as_str()
             ),
             severity: None,
