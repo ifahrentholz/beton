@@ -1042,8 +1042,9 @@ fn pol_013_routes_below_the_user_level_to_unpriced_models_are_denied_while_a_bud
     );
     assert_eq!(d.outcome, Outcome::Allow);
     assert_eq!(d.modified.model.as_deref(), Some("claude-haiku-4-5"));
+    // Ohne Budget fragt sie nach: nicht nachweisbar günstiger (#286).
     let d = eval(vec![route(Scope::Project, "modell-ohne-preis")], &turn);
-    assert_eq!(d.outcome, Outcome::Allow);
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
     // Auch ein `on_exceed: route` eines Repos auf ein Modell ohne Preis gilt als Umgehung.
     let repo = set(
         Scope::Project,
@@ -1138,4 +1139,152 @@ fn pol_012_threshold_keys_below_the_user_level_carry_the_project_identity() {
         .unwrap(),
     );
     assert_eq!(only_tightens(Some(&old), &new), Ok(()));
+}
+
+// ------------------------------------------------------------------ #286, #297 (Review #284)
+
+/// Turn mit Modell und Effort des Users (`None`: Default des Harness, unbekannt).
+fn turn_with(model: Option<&str>, effort: Option<&str>) -> Activation {
+    act(
+        Phase::ModelRequest,
+        json!({
+            "session": { "cost_usd": 0.0, "equivalent_usd": 0.0 },
+            "request": { "model": model, "reasoning_effort": effort, "granularity": "turn" },
+            "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+        }),
+    )
+}
+
+fn route_to(scope: Scope, route: &str) -> Arc<LoadedSet> {
+    set(
+        scope,
+        "r",
+        &format!("  - id: up\n    type: model_route\n    params: {{ routes: [{{ {route} }}] }}\n"),
+    )
+}
+
+/// #286 (POL-007, POL-013): Eine Route der Projekt- bzw. Agent-Ebene darf Modell oder Effort
+/// des Users nicht verteuern. Ist das neue Modell laut Katalog nicht nachweisbar höchstens so
+/// teuer (bzw. der Effort nicht höchstens so hoch), fragt die Regel nach; ab der User-Ebene
+/// gilt die Route wie bisher.
+#[test]
+fn pol_013_routes_below_the_user_level_never_raise_model_or_effort_without_approval() {
+    let sonnet = turn_with(Some("claude-sonnet-4-5"), Some("medium"));
+    for scope in [Scope::Project, Scope::Agent] {
+        // Teurer: Rückfrage mit Begründung, die Route gilt erst nach Freigabe.
+        let d = eval(vec![route_to(scope, "model: claude-opus-4-5")], &sonnet);
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
+        assert_eq!(reason_ids(&d), ["up"]);
+        assert!(
+            reason_text(&d).contains("Preis-Katalog"),
+            "{}",
+            reason_text(&d)
+        );
+        let d = eval(vec![route_to(scope, "reasoning_effort: xhigh")], &sonnet);
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
+        assert!(reason_text(&d).contains("Effort"), "{}", reason_text(&d));
+        // Unbekanntes Modell des Users (Default des Harness): nicht nachweisbar günstiger.
+        let d = eval(
+            vec![route_to(scope, "model: claude-haiku-4-5")],
+            &turn_with(None, None),
+        );
+        assert!(
+            matches!(d.outcome, Outcome::Ask { .. }),
+            "{scope:?}: {d:#?}"
+        );
+        // Günstiger, gleich oder niedriger: ohne Rückfrage.
+        for (route, model, effort) in [
+            ("model: claude-haiku-4-5", Some("claude-haiku-4-5"), None),
+            ("model: claude-sonnet-4-5", Some("claude-sonnet-4-5"), None),
+            ("reasoning_effort: low", None, Some("low")),
+            ("reasoning_effort: medium", None, Some("medium")),
+        ] {
+            let d = eval(vec![route_to(scope, route)], &sonnet);
+            assert_eq!(d.outcome, Outcome::Allow, "{scope:?} {route}: {d:#?}");
+            assert_eq!(d.modified.model.as_deref(), model, "{route}");
+            assert_eq!(d.modified.reasoning_effort.as_deref(), effort, "{route}");
+        }
+        // Der niedrigste Effort verteuert nie, auch ohne bekannten Effort des Users.
+        let d = eval(
+            vec![route_to(scope, "reasoning_effort: low")],
+            &turn_with(Some("claude-sonnet-4-5"), None),
+        );
+        assert_eq!(d.outcome, Outcome::Allow, "{scope:?}: {d:#?}");
+    }
+    // Auch ein handgeschriebenes `modify` eines Repos.
+    let repo = set(
+        Scope::Project,
+        "p",
+        "  - id: opus\n    on: model_request\n    action: modify\n    modify: { model: claude-opus-4-5 }\n",
+    );
+    assert!(matches!(
+        eval(vec![repo], &sonnet).outcome,
+        Outcome::Ask { .. }
+    ));
+    // Die User-Ebene darf verteuern.
+    let d = eval(
+        vec![route_to(Scope::User, "model: claude-opus-4-5")],
+        &sonnet,
+    );
+    assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
+    assert_eq!(d.modified.model.as_deref(), Some("claude-opus-4-5"));
+    // Auch beim Start: Projekt-Route auf ein teureres Startmodell fragt.
+    let start = act(
+        Phase::SessionStart,
+        json!({
+            "session": { "cost_usd": 0.0, "equivalent_usd": 0.0 },
+            "start": { "trigger": "interactive", "harness": "claude", "model": "claude-haiku-4-5" },
+            "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
+        }),
+    );
+    let d = eval(
+        vec![route_to(Scope::Project, "model: claude-opus-4-5")],
+        &start,
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
+}
+
+/// #297 Punkt 3: Auch handgeschriebene CEL-Budgets (Regeln, die `*.cost_usd` bzw.
+/// `*.equivalent_usd` lesen) schützen gegen ein Umrouten unterhalb der User-Ebene auf ein
+/// Modell ohne Katalogpreis, nicht nur `spend_cap`/`daily_budget`.
+#[test]
+fn pol_013_handwritten_cost_rules_also_block_unpriced_routes_below_the_user_level() {
+    let route = route_to(Scope::Project, "model: modell-ohne-preis");
+    let turn = unpriced_turn("claude-sonnet-4-5", json!({}));
+    for (phase, when) in [
+        ("model_request", "session.cost_usd > 5.0"),
+        (
+            "model_request",
+            "session.cost_usd + session.equivalent_usd > 5.0",
+        ),
+        ("tool_call", "run.subtree_equivalent_usd > 5.0"),
+        ("session_start", "user.daily_cost_usd > 50.0"),
+    ] {
+        let budget = set(
+            Scope::User,
+            "u",
+            &format!("  - id: cap\n    on: {phase}\n    when: '{when}'\n    action: deny\n"),
+        );
+        let d = eval(vec![budget, route.clone()], &turn);
+        assert!(matches!(d.outcome, Outcome::Deny { .. }), "{when}: {d:#?}");
+        assert!(
+            reason_text(&d).contains("Katalogpreis") && reason_text(&d).contains("cap"),
+            "{when}: {}",
+            reason_text(&d)
+        );
+    }
+    // Eine Regel ohne Kostenbezug ist kein Budget.
+    let other = set(
+        Scope::User,
+        "u",
+        "  - id: other\n    on: model_request\n    when: 'request.model == \"x\"'\n    action: deny\n",
+    );
+    let d = eval(vec![other, route], &turn);
+    assert!(!matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");
 }

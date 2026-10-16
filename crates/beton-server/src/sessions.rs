@@ -299,6 +299,8 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             "policy.state.apply" => {
                 crate::policy_state::policy_state_apply(&self.0, session, &args).await
             }
+            // `policy_query`-Limit je Session-Baum und Turn des Root (AGT-007, #276).
+            "policy.query" => crate::policy_state::policy_query(&self.0, session).await,
             // Set-Snapshot je Version für Explain (POL-027 AC2).
             "policy.snapshot" => {
                 crate::api_policies::policy_snapshot(&self.0, session, &args).await

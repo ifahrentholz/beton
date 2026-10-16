@@ -20,9 +20,9 @@
 
 mod dry;
 
-pub use dry::SnapshotSink;
+pub use dry::{QueryBudgetSource, QueryTaken, SnapshotSink};
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -583,6 +583,10 @@ struct Inner {
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
     queries: Mutex<dry::QueryBudget>,
+    /// Gemeinsames Budget des Session-Baums (Server, #276); ohne zählt das Gate selbst.
+    query_source: Option<Arc<dyn dry::QueryBudgetSource>>,
+    /// Set-Versionen, deren Lint-Hinweise schon gemeldet sind (#242, #248).
+    linted: Mutex<HashSet<String>>,
     /// Budget-Regeln, deren Kosten unbekannt sind (`policy.rule_inapplicable`, einmal je
     /// Regel und Session; POL-011).
     inapplicable: Mutex<BTreeSet<String>>,
@@ -692,6 +696,10 @@ fn rule_ids(reasons: &[Reason]) -> Vec<String> {
     }
     out
 }
+
+/// Nach so langer Wartezeit auf die Freigabe eines Starts wertet das Gate `session_start` auch
+/// ohne geänderte Policies erneut aus (Kosten können sich geändert haben, #297).
+const START_RECHECK_AFTER: Duration = Duration::from_secs(60);
 
 /// Ablehnung durch eine eingebaute Regel des Gates (ohne Engine, kein Fehler).
 fn builtin_deny(phase: Phase, hash: &str, rule_id: &str, message: String) -> Decision {
@@ -882,6 +890,8 @@ impl PolicyGate {
                 started_at: CelTimestamp::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
+                query_source: None,
+                linted: Mutex::new(HashSet::new()),
                 inapplicable: Mutex::new(BTreeSet::new()),
                 halted: std::sync::OnceLock::new(),
                 observed_denies: Mutex::new(HashMap::new()),
@@ -1283,10 +1293,40 @@ impl PolicyGate {
         }
         let set = store.effective();
         drop(store);
+        self.report_lints(&set, turn);
         if changed && self.inner.started.load(Ordering::SeqCst) {
             self.recheck(&set, turn);
         }
         set
+    }
+
+    /// Lint-Hinweise jeder Set-Version einmal als Warnung (`notice`, #242, #248).
+    fn report_lints(&self, set: &EffectiveSet, turn: Option<TurnId>) {
+        for s in set.sets() {
+            let fresh = self
+                .inner
+                .linted
+                .lock()
+                .map(|mut l| l.insert(s.version.clone()))
+                .unwrap_or(false);
+            if !fresh {
+                continue;
+            }
+            for (rule, text) in s.lints() {
+                self.emit(
+                    EventPayload::Notice(Notice {
+                        level: NoticeLevel::Warn,
+                        text: format!(
+                            "Policy `{}` ({}), Regel `{rule}`: {text}",
+                            s.name,
+                            s.scope.as_str()
+                        ),
+                    }),
+                    turn,
+                    None,
+                );
+            }
+        }
     }
 
     /// Nach dem Start bei jeder Änderung dieselbe Prüfung wie vor dem Start (#234): Nie gültige
@@ -2455,7 +2495,7 @@ impl PolicyGate {
             .as_deref()
             .and_then(|m| m.parse::<PermissionMode>().ok());
         let mut vars = self.base_vars("user");
-        vars.start = Some(start);
+        vars.start = Some(start.clone());
         let key = format!("session_start:{}", ApprovalId::new());
         let ev = self
             .evaluate(
@@ -2469,20 +2509,23 @@ impl PolicyGate {
                 None,
             )
             .await;
-        let mut modified = ev.decision.modified.clone();
         // Nur strenger (HAR-027, #231): ohne angefragten Modus ist `default` die Basis; ein
         // lockernder oder unbekannter Wert wird verworfen.
         let base = requested_mode.unwrap_or(PermissionMode::Default);
-        let tighter = modified
-            .permission_mode
-            .as_deref()
-            .and_then(|m| m.parse::<PermissionMode>().ok())
-            .is_some_and(|new| {
-                crate::settings::strictness(new) <= crate::settings::strictness(base)
-            });
-        if !tighter {
-            modified.permission_mode = None;
-        }
+        let tightened = |mut modified: Modifications| {
+            let tighter = modified
+                .permission_mode
+                .as_deref()
+                .and_then(|m| m.parse::<PermissionMode>().ok())
+                .is_some_and(|new| {
+                    crate::settings::strictness(new) <= crate::settings::strictness(base)
+                });
+            if !tighter {
+                modified.permission_mode = None;
+            }
+            modified
+        };
+        let modified = tightened(ev.decision.modified.clone());
         match ev.decision.outcome.clone() {
             Outcome::Allow => {
                 self.apply_effects(&ev.decision, FinalOutcome::Allow, None)
@@ -2503,6 +2546,7 @@ impl PolicyGate {
                     let _ = w.send(approval);
                 }
                 let card = plan(&reasons, None);
+                let asked_at = std::time::Instant::now();
                 let answered = self
                     .ask_human(
                         ApprovalKind::Policy,
@@ -2520,12 +2564,72 @@ impl PolicyGate {
                     .await;
                 let human = answered.human;
                 if human.allow {
+                    // Während der Wartezeit können sich Policies und Kosten ändern (#297):
+                    // erneut auswerten, wenn sich das Set geändert hat oder lange gewartet wurde.
+                    let changed = self.refresh(None).hash() != ev.decision.policy_set_hash;
+                    if changed || asked_at.elapsed() >= START_RECHECK_AFTER {
+                        return self.recheck_start(start, &reasons, tightened).await;
+                    }
                     Checked::Allow(modified)
                 } else {
                     Checked::Deny {
                         reason: human.reason.unwrap_or_else(|| reason_text(&reasons)),
                         rules: rule_ids(&reasons),
                     }
+                }
+            }
+        }
+    }
+
+    /// Erneute Auswertung von `session_start` nach einer Freigabe (#297): `deny` verweigert den
+    /// Start; neue `ask`-Gründe, die die Freigabe nicht abdeckt, ebenfalls (fail closed, die
+    /// Session muss neu gestartet werden). Effects der erneuten Auswertung gelten nur bei
+    /// `deny`; die der freigegebenen Auswertung sind schon angewendet.
+    async fn recheck_start(
+        &self,
+        start: StartVars,
+        approved: &[Reason],
+        tightened: impl Fn(Modifications) -> Modifications,
+    ) -> Checked {
+        let mut vars = self.base_vars("user");
+        vars.start = Some(start);
+        let ev = self
+            .evaluate(
+                Phase::SessionStart,
+                vars,
+                None,
+                Level::Full,
+                json!({"session_id": self.inner.opts.session_id, "recheck": true}),
+                None,
+                None,
+                None,
+            )
+            .await;
+        let same = |a: &Reason, b: &Reason| {
+            a.rule.scope == b.rule.scope
+                && a.rule.set == b.rule.set
+                && a.rule.rule_id == b.rule.rule_id
+        };
+        match ev.decision.outcome.clone() {
+            Outcome::Allow => Checked::Allow(tightened(ev.decision.modified)),
+            Outcome::Ask { reasons }
+                if reasons.iter().all(|r| approved.iter().any(|a| same(a, r))) =>
+            {
+                Checked::Allow(tightened(ev.decision.modified))
+            }
+            Outcome::Ask { reasons } => Checked::Deny {
+                reason: format!(
+                    "Policies haben sich während der Freigabe geändert; der Start braucht eine neue Freigabe: {}",
+                    reason_text(&reasons)
+                ),
+                rules: rule_ids(&reasons),
+            },
+            Outcome::Deny { reasons } => {
+                self.apply_effects(&ev.decision, FinalOutcome::Deny, None)
+                    .await;
+                Checked::Deny {
+                    reason: reason_text(&reasons),
+                    rules: rule_ids(&reasons),
                 }
             }
         }
@@ -2576,15 +2680,36 @@ impl Gate for PolicyGate {
                     .and_then(|d| d.get(&req.call_id).cloned());
                 let had_prior = prior.is_some();
                 // Angehaltene Sandbox (SBX-006 AC3): Ein gespeicherter Entscheid gilt nicht
-                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327).
-                if self.inner.halted.get().is_some() {
-                    let level = if had_prior {
-                        Level::Full
-                    } else {
-                        Level::ApprovalOnly
+                // mehr; die Prüfung lehnt mit `sandbox-halted` ab (Security-Review #327). Mit
+                // gespeichertem Entscheid gibt es schon ein `policy.decision` (POL-025 AC1);
+                // die Ablehnung steht dann als `policy.notified` im Log (#330).
+                if let Some(reason) = self.inner.halted.get().cloned() {
+                    if !had_prior {
+                        let v = self.tool_verdict(&req, Level::ApprovalOnly).await;
+                        return GateDecision::Deny { reason: v.reason };
+                    }
+                    if let Ok(mut d) = self.inner.decided.lock()
+                        && let Some(entry) = d.get_mut(&req.call_id)
+                    {
+                        entry.allowed = false;
+                    }
+                    self.emit(
+                        EventPayload::PolicyNotified(PolicyNotified {
+                            rule_id: "sandbox-halted".into(),
+                            scope: Scope::Org.as_str().to_owned(),
+                            set: String::new(),
+                            channels: vec!["ui".into()],
+                            message: Some(format!(
+                                "Freigabe für `{}` nach der Policy-Prüfung abgelehnt: {reason}",
+                                req.tool
+                            )),
+                        }),
+                        req.turn_id,
+                        None,
+                    );
+                    return GateDecision::Deny {
+                        reason: Some(reason),
                     };
-                    let v = self.tool_verdict(&req, level).await;
-                    return GateDecision::Deny { reason: v.reason };
                 }
                 let v = match prior {
                     // Gespeicherter Entscheid nur für dasselbe Subjekt (#233): Hat etwas die
@@ -2946,6 +3071,47 @@ mod tests {
         }
     }
 
+    /// #330 (Re-Review #327): Lehnt die angehaltene Sandbox einen Call mit gespeichertem
+    /// Hook-Entscheid ab, entsteht kein zweites `policy.decision` (POL-025 AC1: genau eines je
+    /// Call); die Ablehnung steht als `policy.notified` der Regel `sandbox-halted` im Log.
+    #[tokio::test]
+    async fn pol_025_ac1_halted_sandbox_adds_no_second_decision_for_a_decided_call() {
+        for origin in [GateOrigin::VendorAsk, GateOrigin::AutoApproval] {
+            let (g, mut rx) = gate();
+            let pre = GateRequest {
+                origin: GateOrigin::PreTool,
+                ..ask("c1")
+            };
+            assert!(matches!(g.decide(pre).await, GateDecision::Allow { .. }));
+            g.halt_tools("Egress-Proxy ausgefallen");
+            let decision = g
+                .decide(GateRequest {
+                    origin,
+                    ..ask("c1")
+                })
+                .await;
+            assert!(matches!(decision, GateDecision::Deny { .. }), "{origin:?}");
+            let mut seen = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                seen.push(e.payload);
+            }
+            assert_eq!(
+                seen.iter()
+                    .filter(|e| matches!(e, EventPayload::PolicyDecision(_)))
+                    .count(),
+                1,
+                "{origin:?}: {seen:?}"
+            );
+            assert!(
+                seen.iter()
+                    .any(|e| matches!(e, EventPayload::PolicyNotified(n)
+                    if n.rule_id == "sandbox-halted" && n.channels == ["ui"])),
+                "{origin:?}: {seen:?}"
+            );
+            assert!(!g.inner.decided.lock().unwrap()["c1"].allowed, "{origin:?}");
+        }
+    }
+
     #[tokio::test]
     async fn pol_003_system_tools_pass_the_policy_without_a_human_card() {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
@@ -2997,6 +3163,12 @@ mod tests {
     }
 
     fn with_policy_state(body: &str, state: Option<Arc<dyn StateSource>>) -> Policy {
+        with_policy_at(Scope::Project, body, state)
+    }
+
+    /// Policy auf `scope`; Effects auf fremden Zustand (`user_day`, Keys ohne Präfix) darf nur
+    /// die User-Ebene schreiben (POL-009, #268).
+    fn with_policy_at(scope: Scope, body: &str, state: Option<Arc<dyn StateSource>>) -> Policy {
         let dir = tempfile::tempdir().unwrap();
         let pdir = dir.path().join("policies");
         std::fs::create_dir_all(&pdir).unwrap();
@@ -3007,7 +3179,7 @@ mod tests {
         .unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
         let opts = PolicyOptions {
-            dirs: vec![(Scope::Project, pdir)],
+            dirs: vec![(scope, pdir)],
             workdir: dir.path().to_path_buf(),
             ..PolicyOptions::default()
         };
@@ -3250,7 +3422,7 @@ mod tests {
 
     #[tokio::test]
     async fn pol_009_ac2_effects_follow_the_resolution() {
-        let mut p = with_policy(COUNT_ASKED);
+        let mut p = with_policy_at(Scope::User, COUNT_ASKED, None);
         // Freigabe: angewendet.
         let g = p.gate.clone();
         let call = tokio::spawn(async move { g.decide(pre("c1", "ls")).await });
@@ -3303,7 +3475,8 @@ mod tests {
             },
             ..FakeState::default()
         });
-        let mut p = with_policy_state(
+        let mut p = with_policy_at(
+            Scope::User,
             "rules:\n  - id: count-pushes\n    on: tool_call\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }} heute {{ state.user_day.pushes }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: increment, scope: user_day, key: pushes }\n",
             Some(source.clone()),
         );
@@ -3338,7 +3511,8 @@ mod tests {
                 Err("weg".into())
             }
         }
-        let mut p = with_policy_state(
+        let mut p = with_policy_at(
+            Scope::User,
             "rules:\n  - id: count\n    on: tool_call\n    action: allow\n    effects:\n      - { op: increment, scope: session, key: n }\n",
             Some(Arc::new(Broken)),
         );
@@ -3353,6 +3527,29 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, EventPayload::Notice(n) if n.level == NoticeLevel::Warn)),
             "{events:?}"
+        );
+    }
+
+    /// #242 N3, #248: Lint-Hinweise einer Set-Version erscheinen einmal als Warnung im Verlauf
+    /// (`notice`), nicht bei jeder Auswertung.
+    #[tokio::test]
+    async fn pol_002_lints_of_a_set_version_become_one_warning() {
+        let mut p = with_policy(
+            "rules:\n  - id: raw\n    on: tool_call\n    when: 'tool.paths.exists(x, glob(x, \"/etc/**\"))'\n    action: deny\n",
+        );
+        let _ = p.gate.decide(pre("c1", "ls")).await;
+        let _ = p.gate.decide(pre("c2", "ls")).await;
+        let warnings: Vec<String> = drain(&mut p.rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                EventPayload::Notice(n) if n.level == NoticeLevel::Warn => Some(n.text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("raw") && warnings[0].contains("resolve("),
+            "{warnings:?}"
         );
     }
 
@@ -3562,6 +3759,24 @@ mod tests {
             &[],
         );
         assert_eq!(short["summary"], "ls");
+    }
+
+    /// #248: Auf einem case-insensitiven Dateisystem (macOS) übernimmt die Pfadauflösung für
+    /// existierende Teile die Schreibweise des Dateisystems; `resolve()`/`under()` vergleichen
+    /// damit dieselbe Datei unabhängig von der Schreibweise der Anfrage. Auf case-sensitiven
+    /// Dateisystemen (Linux) sind andere Schreibweisen andere Dateien.
+    #[test]
+    fn pol_002_fs_resolver_uses_the_case_of_the_file_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap().join("Repo");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join(".env"), "x").unwrap();
+        let other = real.parent().unwrap().join("REPO/.ENV");
+        if !other.exists() {
+            return;
+        }
+        let resolved = FsResolver.resolve(&other.display().to_string()).unwrap();
+        assert_eq!(resolved, real.join(".env").display().to_string());
     }
 
     #[test]

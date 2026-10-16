@@ -117,6 +117,10 @@ pub struct ToolSpec {
     pub patch: Option<String>,
     #[serde(default)]
     pub changes: Option<String>,
+    /// Argument mit dem Arbeitsverzeichnis eines Shell-Calls (Default `cwd`; Codex
+    /// `exec_command`/`shell`: `workdir`, #242).
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub subagent_spawn: bool,
 }
@@ -375,11 +379,14 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
             raw.native_name.to_owned(),
         ),
     };
-    let cwd = match raw.args.get("cwd").and_then(Value::as_str) {
-        Some(c) if spec.command.is_some() && c.starts_with('/') => {
-            normalize_path(c).unwrap_or_else(|| raw.cwd.to_owned())
+    // Arbeitsverzeichnis eines Shell-Calls aus seinen Argumenten; relativ zur Session (#242).
+    let base = normalize_path(raw.cwd).unwrap_or_default();
+    let cwd_key = spec.cwd.as_deref().unwrap_or("cwd");
+    let cwd = match raw.args.get(cwd_key).and_then(Value::as_str) {
+        Some(c) if spec.command.is_some() && !c.is_empty() => {
+            absolute(c, &base, raw.home).unwrap_or_else(|| base.clone())
         }
-        _ => normalize_path(raw.cwd).unwrap_or_default(),
+        _ => base,
     };
     let abs = |p: &str| absolute(p, &cwd, raw.home);
 
