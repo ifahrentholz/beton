@@ -187,6 +187,18 @@ impl<'a> Meter<'a> {
         }
     }
 
+    /// Nur mit dem Kostenlimit je Ausdruck, ohne Zeitbudget: für die Spur nach der
+    /// Entscheidung (#263), deren Aufwand Ausdrucksgröße und Kostenlimit begrenzen.
+    pub fn cost_only(limits: &Limits) -> Self {
+        Self {
+            max_cost: limits.max_cost,
+            used: 0,
+            deadline_us: u64::MAX,
+            clock: None,
+            ticks: 0,
+        }
+    }
+
     /// Ohne Kosten- und Zeitgrenzen (nur für Tests und Werkzeuge).
     pub fn unlimited() -> Self {
         Self {
@@ -271,7 +283,8 @@ impl Program {
 
     /// Spur für Explain (POL-027): die Teilausdrücke einer `&&`- bzw. `||`-Verknüpfung auf
     /// oberster Ebene mit ihren Ergebnissen; sonst der ganze Ausdruck. Jeder Teil wird mit
-    /// eigenem Kostenbudget ausgewertet, das Zeitbudget gilt weiter.
+    /// eigenem Kostenbudget ausgewertet; die Engine ruft das erst nach der Entscheidung mit
+    /// eigenem Meter auf (#263).
     pub fn trace(&self, act: &Activation, meter: &mut Meter) -> Vec<TracePart> {
         trace::trace(&self.source, &self.node, act, meter)
     }

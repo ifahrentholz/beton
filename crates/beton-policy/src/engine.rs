@@ -384,6 +384,9 @@ struct Run<'a> {
     hits: Vec<&'a LoadedRule>,
     /// Regel, deren Modell Pass 1 übernommen hat (erster Schreiber).
     model_writer: Option<RuleRef>,
+    /// Spuren, die nach der Entscheidung berechnet werden (#263): (Dry-Run?, Index in
+    /// `would` bzw. `matched`, Regel, Pass 2 mit modifiziertem Kontext?).
+    pending_traces: Vec<(bool, usize, &'a LoadedRule, bool)>,
 }
 
 /// Ein Verdikt mit Herkunft (für die Kombination).
@@ -424,6 +427,7 @@ impl<'a> Run<'a> {
             },
             hits: Vec::new(),
             model_writer: None,
+            pending_traces: Vec::new(),
         }
     }
 
@@ -450,11 +454,35 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// Spur der Bedingung einer gegriffenen Regel (Explain, POL-027 AC1).
-    fn trace(&mut self, rule: &LoadedRule, ctx: &Activation) -> Vec<TracePart> {
-        match &rule.kind {
-            RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut self.meter),
-            _ => Vec::new(),
+    /// Merkt die Spur der Bedingung einer gegriffenen Regel vor (Explain, POL-027 AC1).
+    fn defer_trace(&mut self, dry: bool, rule: &'a LoadedRule, modified: bool) {
+        let index = if dry {
+            self.decision.would.len()
+        } else {
+            self.decision.matched.len()
+        };
+        self.pending_traces.push((dry, index, rule, modified));
+    }
+
+    /// Spuren nach der Entscheidung (#263): mit eigenem Meter (Kostenlimit je Teilausdruck,
+    /// ohne Zeitbudget), damit Explain weder das Zeitbudget der Entscheidung verbraucht noch
+    /// sie ändern kann. Den Aufwand begrenzen Ausdrucksgröße (4 KiB) und Kostenlimit.
+    fn fill_traces(&mut self, original: &Activation, modified: &Activation) {
+        let mut meter = Meter::cost_only(&self.opts.limits);
+        for (dry, index, rule, pass2) in std::mem::take(&mut self.pending_traces) {
+            let ctx = if pass2 { modified } else { original };
+            let trace = match &rule.kind {
+                RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut meter),
+                _ => Vec::new(),
+            };
+            let list = if dry {
+                &mut self.decision.would
+            } else {
+                &mut self.decision.matched
+            };
+            if let Some(entry) = list.get_mut(index) {
+                entry.trace = trace;
+            }
         }
     }
 
@@ -481,14 +509,14 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn combine(&mut self, ctx: &Activation) -> Outcome {
+    fn combine(&mut self, original: &Activation) -> Outcome {
         let mut verdicts = Verdicts {
             deny: Vec::new(),
             ask: Vec::new(),
             allowed_scopes: Vec::new(),
         };
         // Pass 1 – Modifikation
-        let mut ctx = ctx.clone();
+        let mut ctx = original.clone();
         match self.pass_modify(&ctx, &mut verdicts) {
             Ok(()) => {}
             Err(_) => return self.deadline_deny(),
@@ -545,6 +573,7 @@ impl<'a> Run<'a> {
             Outcome::Allow
         };
         self.effects(&outcome, &ctx);
+        self.fill_traces(original, &ctx);
         outcome
     }
 
@@ -724,12 +753,13 @@ impl<'a> Run<'a> {
             if !hit {
                 continue;
             }
+            self.defer_trace(dry, rule, false);
             let entry = Match {
                 rule: set.rule_ref(&rule.id),
                 verdict: Verdict::Modify,
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
-                trace: self.trace(rule, ctx),
+                trace: Vec::new(),
             };
             if dry {
                 self.decision.would.push(entry);
@@ -983,12 +1013,13 @@ impl<'a> Run<'a> {
             if !hit {
                 continue;
             }
+            self.defer_trace(dry, rule, true);
             let entry = Match {
                 rule: set.rule_ref(&rule.id),
                 verdict: Verdict::of(action),
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
-                trace: self.trace(rule, ctx),
+                trace: Vec::new(),
             };
             if dry {
                 self.decision.would.push(entry);
