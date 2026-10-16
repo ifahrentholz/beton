@@ -452,7 +452,7 @@ Jede Route deklariert `Action` per Attribut-Makro; ein Test über die generierte
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Gibt ein Tool einen per `env.passthrough` durchgereichten echten Token-Wert aus, enthält das persistierte `tool.call.completed` nur `[REDACTED:…]`; Live-Clients erhalten ebenfalls die redigierte Fassung.
   - [ ] AC2 — Ein PEM-Private-Key in einer Agent-Nachricht wird vollständig (BEGIN bis END) ersetzt.
-  - [ ] AC3 — Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der zuletzt auf `main` gemessene Wert im Actions-Cache des Jobs „test (linux)“.)*
+  - [ ] AC3 — Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der Median der letzten fünf auf `main` gemessenen Werte; die Messreihe liegt im Actions-Cache des Jobs „test (linux)“ und wird von jedem Push auf `main` fortgeschrieben, damit eine einzelne Ausreißer-Messung nicht zur Basis wird (#296). Floor und Toleranz gelten unverändert.)*
   - [ ] AC4 — (ab M3, mit OBS-006) `beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle). *(`beton diagnose` entsteht erst mit OBS-006 in M3; die Pipeline steht dafür bereit.)*
 - **Abhängigkeiten:** SEC-001, PROTO-001, DATA-002 (siehe 06-data-sync-protocol.md), OBS-001 (siehe 11-platform-features.md)
 
