@@ -283,7 +283,7 @@ export function ModePicker({
                 sub={
                   <>
                     {YOLO_BLOCKED}{' '}
-                    {/* Ziel ist der Screen `sandbox-settings` (eigenes Issue, M2 ohne UI-AC). */}
+                    {/* Ziel ist der Screen `sandbox-settings` (#321, M2 ohne UI-AC). */}
                     <span className="text-foreground underline">Sandbox einrichten</span>
                   </>
                 }

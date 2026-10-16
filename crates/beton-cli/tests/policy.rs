@@ -290,7 +290,7 @@ fn pol_002_active_test_budget_warns_at_daemon_and_runner_start() {
         let scenario = serve.scenario(HELLO);
         let out = run(common::beton(serve.home())
             .current_dir(serve.work.path())
-            .args(["run", "fake", "-p", "hallo", "--scenario"])
+            .args(["run", "--unsandboxed", "fake", "-p", "hallo", "--scenario"])
             .arg(&scenario));
         assert!(out.status.success(), "{}", stderr(&out));
         // Nach dem Ende von Daemon und Runner ist alles geschrieben.
