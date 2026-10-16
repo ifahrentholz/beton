@@ -100,10 +100,10 @@ impl D {
             if s["status"] == want {
                 return;
             }
-            assert!(
-                start.elapsed() < Duration::from_secs(20),
-                "Status {want} fehlt: {s}"
-            );
+            if start.elapsed() > Duration::from_secs(20) || s["status"] == "failed" {
+                let events = self.events(id).await;
+                panic!("Status {want} fehlt: {s}\n{events:#?}");
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -131,7 +131,10 @@ async fn daemon(dir: &Path) -> D {
 }
 
 async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::SandboxSpec) -> D {
-    let sc = dir.join("scenario.yaml");
+    // Im Workspace der Sessions (`<dir>/work`): Die Fake-CLI liest ihr Szenario dort auch aus
+    // der Sandbox (Stufe 1).
+    let sc = dir.join("work/.scenario.yaml");
+    std::fs::create_dir_all(dir.join("work")).unwrap();
     std::fs::write(&sc, scenario).unwrap();
     let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| !k.ends_with("_API_KEY") && k != "ANTHROPIC_AUTH_TOKEN")
@@ -150,6 +153,10 @@ async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::Sandbox
     cfg.socket = None;
     let runners = dir.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        // Stufenmodell: Die CA kommt aus dem Speicher (Proxy der Stufe 1 für die Vendor-Hosts).
+        if !sandbox.unsandboxed() {
+            r.sessions.proxy_ca = Some(std::sync::Arc::new(support::TestCa));
+        }
         r.sessions.sandbox = sandbox;
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
@@ -214,7 +221,7 @@ async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denie
         .prefix("bt")
         .tempdir_in("/tmp")
         .unwrap();
-    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo stufe=$BETON_STAGE\" } }, gate: true, run: true }\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"git push --force origin main\" } }, gate: true, run: true }\n      - { message: \"fertig\" }\n";
+    let scenario = "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"echo lief\" } }, gate: true, run: true }\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"git push --force origin main\" } }, gate: true, run: true }\n      - { message: \"fertig\" }\n";
     let work = dir.path().join("work");
     std::fs::create_dir_all(work.join(".beton/policies")).unwrap();
     std::fs::write(
@@ -277,7 +284,14 @@ async fn har_027_ac2_yolo_in_the_sandbox_hook_decides_and_force_push_stays_denie
     assert_eq!(completed.len(), 2, "{text}");
     assert_eq!(completed[0]["payload"]["status"], "ok", "{text}");
     assert!(
-        completed[0]["payload"].to_string().contains("stufe=tools"),
+        completed[0]["payload"].to_string().contains("lief"),
+        "{text}"
+    );
+    // Über `bt-exec` und den Exec-Broker in Stufe 2 gestartet.
+    assert!(
+        events.iter().any(|e| e["type"] == "sandbox.started"
+            && e["payload"]["stage"] == "tools"
+            && e["payload"]["backend"] != "none"),
         "{text}"
     );
     // Der Force-Push: vom Hook (volles Gate) per Policy abgelehnt, nicht ausgeführt.

@@ -897,6 +897,16 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    // #206: Hook-Server, MCP-Relay-Hub und Session-Skills liegen im Stufenmodell im
+    // Laufzeitverzeichnis der Stufe 1, damit der Harness sie aus seiner Sandbox erreicht.
+    let run_dir = stages
+        .as_ref()
+        .map(|s| s.runtime_dir().to_path_buf())
+        .unwrap_or(run_dir);
+    let paths = mcp::Paths {
+        run_dir: run_dir.clone(),
+        ..paths
+    };
     // Was das Stufenmodell tatsächlich durchsetzt; nur das schaltet `yolo` frei (HAR-027).
     let sandbox_status = stages
         .as_ref()

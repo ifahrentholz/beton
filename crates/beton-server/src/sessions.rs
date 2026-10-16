@@ -195,16 +195,26 @@ pub async fn stage_boot(
     if !beton_host::stages_active(&spec) {
         return Ok((Some(boot), None));
     }
-    if spec.allow_network == Some(false) {
-        return Ok((Some(boot), None));
-    }
-    let source = cfg.proxy_ca.as_ref().ok_or_else(|| {
-        Problem::new(ProblemCode::SandboxUnavailable)
-            .detail("proxy_ca_missing: keine Quelle für die beton-CA")
-    })?;
-    let ca = source.handover(session).await.map_err(|e| {
-        Problem::new(ProblemCode::SandboxUnavailable).detail(format!("beton-CA: {e}"))
-    })?;
+    // Ohne Netz für die Tools braucht der Harness in Stufe 1 trotzdem seinen Proxy für die
+    // Vendor-Hosts (Passthrough): Die CA geht mit, wenn es eine Quelle gibt; fehlt sie, entscheidet
+    // der Runner (in-process Harnesses brauchen keine, alle anderen starten nicht).
+    let tools_offline = spec.allow_network == Some(false);
+    let Some(source) = cfg.proxy_ca.as_ref() else {
+        if tools_offline {
+            return Ok((Some(boot), None));
+        }
+        return Err(Problem::new(ProblemCode::SandboxUnavailable)
+            .detail("proxy_ca_missing: keine Quelle für die beton-CA"));
+    };
+    let ca = match source.handover(session).await {
+        Ok(ca) => ca,
+        Err(_) if tools_offline => return Ok((Some(boot), None)),
+        Err(e) => {
+            return Err(
+                Problem::new(ProblemCode::SandboxUnavailable).detail(format!("beton-CA: {e}"))
+            );
+        }
+    };
     Ok((
         Some(boot),
         Some(beton_host::CaText::new(ca.expose().to_owned())),

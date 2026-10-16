@@ -749,9 +749,11 @@ fn target_run(
         util::set_no_new_privs().map_err(|e| StepError::io("landlock", "no_new_privs", e))?;
         let rules = plan::landlock_rules(plan, missing);
         // Unix-Sockets mit Pfad (ab ABI 9): privates `/tmp`, Scratch und die Verzeichnisse
-        // ausdrücklich freigegebener Sockets (Stufe 1: Exec-Broker, SBX-002).
+        // ausdrücklich freigegebener Sockets (Stufe 1: Exec-Broker, SBX-002; Hook und
+        // MCP-Hub im Laufzeitverzeichnis, #206).
         let mut unix_dirs = vec![Path::new("/tmp"), plan.scratch.as_path()];
         unix_dirs.extend(plan.unix_sockets.iter().filter_map(|s| s.parent()));
+        unix_dirs.extend(plan.unix_socket_dirs.iter().map(PathBuf::as_path));
         let tcp = landlock::Tcp {
             connect: proxy_port
                 .into_iter()

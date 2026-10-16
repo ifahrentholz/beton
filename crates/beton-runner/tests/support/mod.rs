@@ -48,3 +48,20 @@ pub async fn confirm_stored(store: &beton_store::Store, session: beton_core::id:
         .await
         .expect("Audit-Eintrag");
 }
+
+/// beton-CA für Test-Daemons mit Stufenmodell (PRX-002): je Abruf neu erzeugt, nur im
+/// Speicher (kein Secret-Store, kein Schlüsselbund).
+pub struct TestCa;
+
+#[async_trait::async_trait]
+impl beton_server::sessions::ProxyCaSource for TestCa {
+    async fn handover(
+        &self,
+        _: beton_core::id::SessionId,
+    ) -> Result<beton_proxy::CaHandover, String> {
+        beton_proxy::BetonCa::generate("runner-tests", time::OffsetDateTime::now_utc())
+            .map_err(|e| e.to_string())?
+            .handover()
+            .map_err(|e| e.to_string())
+    }
+}

@@ -189,6 +189,8 @@ pub struct SessionStages {
     /// Git-Steuerdateien vor dem ersten Tool-Lauf und vom Backend gemeldete Verstöße daran
     /// (SBX-003, #209).
     git: Option<GitGuard>,
+    /// Laufzeitverzeichnis der Stufe 1 (#206).
+    runtime: PathBuf,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
     _proxies: Vec<beton_proxy::ProxyInstance>,
@@ -257,6 +259,13 @@ impl SessionStages {
         let out = (instance.proxy_url(), proxy.ca_pem());
         self._proxies.push(instance);
         Ok(out)
+    }
+
+    /// Laufzeitverzeichnis der Stufe 1 (0700, im Session-Verzeichnis): Hier legt der Runner
+    /// Hook-Server, MCP-Relay-Hub und Session-Skills an, damit der Harness in Stufe 1 sie
+    /// erreicht (#206); Stufe 2 sieht es nicht.
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime
     }
 
     /// Proxy-Zugang des Direkt-API-Loops (HAR-011 AC2).
@@ -629,15 +638,27 @@ async fn compose_unix(
         .path()
         .canonicalize()
         .map_err(|e| io("Sandbox-Verzeichnis", e))?;
-    let (harness_tmp, tools_tmp, xchg, exec, bin, ca_dir) = (
+    let (harness_tmp, tools_tmp, xchg, exec, bin, ca_dir, runtime) = (
         root.join("harness"),
         root.join("tools"),
         root.join("xchg"),
         root.join("exec"),
         root.join("exec/bin"),
         root.join("ca"),
+        // Hook-Socket, MCP-Hub, ihre Token-Dateien und Session-Skills (#206): Stufe 1 liest
+        // es und erreicht die Sockets darin, Stufe 2 sieht es nicht.
+        root.join("run"),
     );
-    for d in [&root, &harness_tmp, &tools_tmp, &xchg, &exec, &bin, &ca_dir] {
+    for d in [
+        &root,
+        &harness_tmp,
+        &tools_tmp,
+        &xchg,
+        &exec,
+        &bin,
+        &ca_dir,
+        &runtime,
+    ] {
         std::fs::create_dir_all(d).map_err(|e| io("Sandbox-Verzeichnis", e))?;
         std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| io("Sandbox-Verzeichnis", e))?;
@@ -907,6 +928,7 @@ async fn compose_unix(
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
     c.harness = grants;
     c.exec = Some(broker.access(bin.clone()));
+    c.runtime = Some(runtime.clone());
     c.exchange = Some(xchg.clone());
     // Nichts im `PATH` der Stufe 1, was Stufe 2 schreiben kann (SBX-002).
     c.untrusted_path = tools.policy().write_roots.clone();
@@ -958,6 +980,7 @@ async fn compose_unix(
         tools_binding_list,
         _summaries: summaries,
         git: git_guard,
+        runtime,
         _broker: broker,
         _proxies: proxies,
         _dir: dir,
