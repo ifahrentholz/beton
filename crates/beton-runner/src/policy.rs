@@ -3491,6 +3491,29 @@ mod tests {
         );
     }
 
+    /// #242 N3, #248: Lint-Hinweise einer Set-Version erscheinen einmal als Warnung im Verlauf
+    /// (`notice`), nicht bei jeder Auswertung.
+    #[tokio::test]
+    async fn pol_002_lints_of_a_set_version_become_one_warning() {
+        let mut p = with_policy(
+            "rules:\n  - id: raw\n    on: tool_call\n    when: 'tool.paths.exists(x, glob(x, \"/etc/**\"))'\n    action: deny\n",
+        );
+        let _ = p.gate.decide(pre("c1", "ls")).await;
+        let _ = p.gate.decide(pre("c2", "ls")).await;
+        let warnings: Vec<String> = drain(&mut p.rx)
+            .into_iter()
+            .filter_map(|e| match e {
+                EventPayload::Notice(n) if n.level == NoticeLevel::Warn => Some(n.text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("raw") && warnings[0].contains("resolve("),
+            "{warnings:?}"
+        );
+    }
+
     #[tokio::test]
     async fn pol_006_notify_log_stays_in_the_stream() {
         let mut p = with_policy(
