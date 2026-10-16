@@ -93,8 +93,11 @@ jobs:
           # Ohne ASan: Die eigenen Crates enthalten kein `unsafe` (Lint `unsafe_code = deny`),
           # Panics, Hänger und verletzte Invarianten findet libFuzzer auch so; der Build ist
           # deutlich schneller. Die Nightly-Läufe nutzen ASan.
-          cargo +nightly fuzz build -O --sanitizer none
-          bin="fuzz/target/$(rustc +nightly -vV | sed -n 's/^host: //p')/release"
+          # Ziel ausdrücklich: Das cargo-fuzz-Binary von install-action ist für musl gebaut und
+          # nähme sonst sein eigenes Ziel als Standard.
+          host="$(rustc +nightly -vV | sed -n 's/^host: //p')"
+          cargo +nightly fuzz build -O --sanitizer none --target "$host"
+          bin="fuzz/target/$host/release"
           pids=()
           for t in $TARGETS; do
             mkdir -p "fuzz/artifacts/$t" "$RUNNER_TEMP/corpus/$t"

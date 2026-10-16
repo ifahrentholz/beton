@@ -99,7 +99,9 @@ jobs:
         # covers: QA-009 AC1 (Nightly-Läufe ohne Crash/Timeout)
         run: |
           mkdir -p "$RUNNER_TEMP/corpus"
-          cargo +nightly fuzz run -O "${{ matrix.target }}" "$RUNNER_TEMP/corpus" "fuzz/corpus/${{ matrix.target }}" -- \
+          # Ziel ausdrücklich: Das cargo-fuzz-Binary von install-action ist für musl gebaut.
+          host="$(rustc +nightly -vV | sed -n 's/^host: //p')"
+          cargo +nightly fuzz run -O --target "$host" "${{ matrix.target }}" "$RUNNER_TEMP/corpus" "fuzz/corpus/${{ matrix.target }}" -- \
             -max_total_time=1800 -timeout=10 -rss_limit_mb=2048
       # Neue Korpus-Einträge werden nie automatisch committet; wer sie übernehmen will, holt
       # sie aus diesem Artefakt (`cargo fuzz cmin` vor dem Commit).
