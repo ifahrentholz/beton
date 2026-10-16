@@ -693,6 +693,10 @@ fn rule_ids(reasons: &[Reason]) -> Vec<String> {
     out
 }
 
+/// Nach so langer Wartezeit auf die Freigabe eines Starts wertet das Gate `session_start` auch
+/// ohne geänderte Policies erneut aus (Kosten können sich geändert haben, #297).
+const START_RECHECK_AFTER: Duration = Duration::from_secs(60);
+
 /// Ablehnung durch eine eingebaute Regel des Gates (ohne Engine, kein Fehler).
 fn builtin_deny(phase: Phase, hash: &str, rule_id: &str, message: String) -> Decision {
     let mut d = engine_deny(phase, hash, message);
@@ -2455,7 +2459,7 @@ impl PolicyGate {
             .as_deref()
             .and_then(|m| m.parse::<PermissionMode>().ok());
         let mut vars = self.base_vars("user");
-        vars.start = Some(start);
+        vars.start = Some(start.clone());
         let key = format!("session_start:{}", ApprovalId::new());
         let ev = self
             .evaluate(
@@ -2469,20 +2473,23 @@ impl PolicyGate {
                 None,
             )
             .await;
-        let mut modified = ev.decision.modified.clone();
         // Nur strenger (HAR-027, #231): ohne angefragten Modus ist `default` die Basis; ein
         // lockernder oder unbekannter Wert wird verworfen.
         let base = requested_mode.unwrap_or(PermissionMode::Default);
-        let tighter = modified
-            .permission_mode
-            .as_deref()
-            .and_then(|m| m.parse::<PermissionMode>().ok())
-            .is_some_and(|new| {
-                crate::settings::strictness(new) <= crate::settings::strictness(base)
-            });
-        if !tighter {
-            modified.permission_mode = None;
-        }
+        let tightened = |mut modified: Modifications| {
+            let tighter = modified
+                .permission_mode
+                .as_deref()
+                .and_then(|m| m.parse::<PermissionMode>().ok())
+                .is_some_and(|new| {
+                    crate::settings::strictness(new) <= crate::settings::strictness(base)
+                });
+            if !tighter {
+                modified.permission_mode = None;
+            }
+            modified
+        };
+        let modified = tightened(ev.decision.modified.clone());
         match ev.decision.outcome.clone() {
             Outcome::Allow => {
                 self.apply_effects(&ev.decision, FinalOutcome::Allow, None)
@@ -2503,6 +2510,7 @@ impl PolicyGate {
                     let _ = w.send(approval);
                 }
                 let card = plan(&reasons, None);
+                let asked_at = std::time::Instant::now();
                 let answered = self
                     .ask_human(
                         ApprovalKind::Policy,
@@ -2520,12 +2528,70 @@ impl PolicyGate {
                     .await;
                 let human = answered.human;
                 if human.allow {
+                    // Während der Wartezeit können sich Policies und Kosten ändern (#297):
+                    // erneut auswerten, wenn sich das Set geändert hat oder lange gewartet wurde.
+                    let changed = self.refresh(None).hash() != ev.decision.policy_set_hash;
+                    if changed || asked_at.elapsed() >= START_RECHECK_AFTER {
+                        return self.recheck_start(start, &reasons, tightened).await;
+                    }
                     Checked::Allow(modified)
                 } else {
                     Checked::Deny {
                         reason: human.reason.unwrap_or_else(|| reason_text(&reasons)),
                         rules: rule_ids(&reasons),
                     }
+                }
+            }
+        }
+    }
+
+    /// Erneute Auswertung von `session_start` nach einer Freigabe (#297): `deny` verweigert den
+    /// Start; neue `ask`-Gründe, die die Freigabe nicht abdeckt, ebenfalls (fail closed, die
+    /// Session muss neu gestartet werden). Effects der erneuten Auswertung gelten nur bei
+    /// `deny`; die der freigegebenen Auswertung sind schon angewendet.
+    async fn recheck_start(
+        &self,
+        start: StartVars,
+        approved: &[Reason],
+        tightened: impl Fn(Modifications) -> Modifications,
+    ) -> Checked {
+        let mut vars = self.base_vars("user");
+        vars.start = Some(start);
+        let ev = self
+            .evaluate(
+                Phase::SessionStart,
+                vars,
+                None,
+                Level::Full,
+                json!({"session_id": self.inner.opts.session_id, "recheck": true}),
+                None,
+                None,
+                None,
+            )
+            .await;
+        let same = |a: &Reason, b: &Reason| {
+            a.rule.scope == b.rule.scope
+                && a.rule.set == b.rule.set
+                && a.rule.rule_id == b.rule.rule_id
+        };
+        match ev.decision.outcome.clone() {
+            Outcome::Allow => Checked::Allow(tightened(ev.decision.modified)),
+            Outcome::Ask { reasons } if reasons.iter().all(|r| approved.iter().any(|a| same(a, r))) => {
+                Checked::Allow(tightened(ev.decision.modified))
+            }
+            Outcome::Ask { reasons } => Checked::Deny {
+                reason: format!(
+                    "Policies haben sich während der Freigabe geändert; der Start braucht eine neue Freigabe: {}",
+                    reason_text(&reasons)
+                ),
+                rules: rule_ids(&reasons),
+            },
+            Outcome::Deny { reasons } => {
+                self.apply_effects(&ev.decision, FinalOutcome::Deny, None)
+                    .await;
+                Checked::Deny {
+                    reason: reason_text(&reasons),
+                    rules: rule_ids(&reasons),
                 }
             }
         }
