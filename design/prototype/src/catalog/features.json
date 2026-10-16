@@ -2307,7 +2307,7 @@
   "acs": [
    "Gibt ein Tool einen per `env.passthrough` durchgereichten echten Token-Wert aus, enthält das persistierte `tool.call.completed` nur `[REDACTED:…]`; Live-Clients erhalten ebenfalls die redigierte Fassung.",
    "Ein PEM-Private-Key in einer Agent-Nachricht wird vollständig (BEGIN bis END) ersetzt.",
-   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der zuletzt auf `main` gemessene Wert im Actions-Cache des Jobs „test (linux)“.)*",
+   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der Median der letzten fünf auf `main` gemessenen Werte; die Messreihe liegt im Actions-Cache des Jobs „test (linux)“ und wird von jedem Push auf `main` fortgeschrieben, damit eine einzelne Ausreißer-Messung nicht zur Basis wird (#296). Floor und Toleranz gelten unverändert.)*",
    "(ab M3, mit OBS-006) `beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle). *(`beton diagnose` entsteht erst mit OBS-006 in M3; die Pipeline steht dafür bereit.)*"
   ]
  },
