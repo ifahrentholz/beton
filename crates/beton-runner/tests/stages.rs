@@ -312,7 +312,11 @@ async fn sbx_002_stage_one_path_has_no_relative_or_stage_two_writable_entries() 
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(s.harness.policy().env["PATH"], "/usr/bin:/bin");
+    // Vorn nur der Git-Shim aus dem Session-Verzeichnis (SBX-003, #311).
+    let path = &s.harness.policy().env["PATH"];
+    let (shim, rest) = path.split_once(':').unwrap();
+    assert!(shim.ends_with("/exec/git"), "{path}");
+    assert_eq!(rest, "/usr/bin:/bin");
     let tools = &s.tools.policy().env["PATH"];
     assert!(
         tools.split(':').all(|d| d.starts_with('/')),
@@ -692,4 +696,261 @@ async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
     } else {
         assert_eq!(s.check_git(), Ok(()));
     }
+}
+
+/// SBX-003 (#311): Vorn im `PATH` der Stufe 1 steht ein `git`-Shim (beton) in einem
+/// Verzeichnis, das nur Stufe 0 schreibt; das echte git ermittelt Stufe 0 beim Start als
+/// absoluten Pfad. Stufe 2 bekommt weder Shim noch Pfad.
+#[tokio::test]
+async fn sbx_003_git_shim_leads_the_stage_one_path_and_uses_the_real_git_from_stage_zero() {
+    use beton_sandbox::broker::git_shim::ENV_GIT;
+    let fx = fx();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let (h, t) = (s.harness.policy(), s.tools.policy());
+    let path = &h.env["PATH"];
+    let (dir, rest) = path.split_once(':').unwrap();
+    let dir = PathBuf::from(dir);
+    assert_eq!(rest, "/usr/bin:/bin:/usr/sbin:/sbin");
+    let shim = dir.join("git");
+    assert!(
+        std::fs::symlink_metadata(&shim)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        shim.canonicalize().unwrap(),
+        exe().canonicalize().unwrap(),
+        "der Shim ist beton selbst"
+    );
+    let real = PathBuf::from(&h.env[ENV_GIT]);
+    let expected = rest
+        .split(':')
+        .map(|d| std::path::Path::new(d).join("git"))
+        .find(|p| p.is_file())
+        .unwrap();
+    assert_eq!(real, expected, "erstes git im `PATH` ohne den Shim");
+    // Nur Stufe 0 schreibt das Verzeichnis; Stufe 2 sieht es nicht.
+    for p in [h, t] {
+        assert!(
+            !p.write_roots.iter().any(|r| dir.starts_with(r)),
+            "{:?}",
+            p.write_roots
+        );
+    }
+    assert!(!t.read_roots.iter().any(|r| dir.starts_with(r)));
+    assert!(!t.env["PATH"].contains(dir.to_str().unwrap()));
+    assert!(!t.env.contains_key(ENV_GIT));
+}
+
+/// Ein git, das in der Sandbox läuft, und die Lese-Wurzel seines Präfixes (wie in den
+/// Seatbelt-Tests): unter macOS das git von Xcode bzw. Homebrew, weil der `xcrun`-Stub
+/// `/usr/bin/git` mit Xcode.app in der Sandbox nicht startet.
+#[allow(clippy::disallowed_methods, reason = "Test sucht git in Stufe 0")]
+fn git_binary() -> (PathBuf, Option<PathBuf>) {
+    let found = if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/xcrun")
+            .args(["-f", "git"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+    } else {
+        None
+    };
+    let found = found
+        .or_else(|| {
+            std::process::Command::new("/usr/bin/which")
+                .arg("git")
+                .output()
+                .ok()
+                .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+        })
+        .expect("git");
+    let git = found.canonicalize().unwrap();
+    let prefix = if git.starts_with("/usr/local") {
+        Some(PathBuf::from("/usr/local"))
+    } else if git.starts_with("/usr/") || git.starts_with("/bin/") {
+        None
+    } else if git.starts_with("/opt/homebrew") {
+        Some(PathBuf::from("/opt/homebrew"))
+    } else {
+        // …/Contents/Developer/usr/bin/git → …/Contents/Developer
+        Some(git.ancestors().nth(3).unwrap().to_path_buf())
+    };
+    (git, prefix)
+}
+
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Test bereitet das Repo in Stufe 0 vor"
+)]
+fn git_init(git: &std::path::Path, ws: &std::path::Path) {
+    let status = std::process::Command::new(git)
+        .args(["init", "-q"])
+        .current_dir(ws)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// Escape-Test mit Kontrollgruppe (SBX-003, #311): Ist `.git/commondir` entstanden, startet
+/// `git` in Stufe 1 nicht (Exit ≠ 0, Meldung), der Runner erfährt es sofort, setzt zurück und
+/// beendet die Session. Aus Stufe 2 lässt sich `commondir` nicht anlegen; der Test bereitet es
+/// deshalb direkt in Stufe 0 vor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_003_git_in_stage_one_stops_when_commondir_changed() {
+    let fx = fx();
+    let (git, prefix) = git_binary();
+    git_init(&git, &fx.ws);
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env.insert(
+        "PATH".into(),
+        format!(
+            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+            git.parent().unwrap().display()
+        ),
+    );
+    let read = prefix
+        .map(|p| format!("read_paths: [\"{}\"]\n", p.display()))
+        .unwrap_or_default();
+    let s = compose(
+        inp,
+        opts(
+            &format!("backend: auto\nallow_network: false\n{read}"),
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        s.harness.policy().env[beton_sandbox::broker::git_shim::ENV_GIT],
+        git.to_str().unwrap()
+    );
+    let alarm = s.git_alarm().expect("Alarm des Git-Shims");
+    let trace = PathBuf::from(&s.harness.policy().env["TMPDIR"]).join("git-trace");
+    let shim_dir = s.harness.policy().env["PATH"]
+        .split(':')
+        .next()
+        .unwrap()
+        .to_owned();
+    let git_status = || async {
+        let out = s
+            .harness
+            .spawn(
+                CommandSpec::new("/bin/sh")
+                    .args([
+                        "-c",
+                        "command -v git; GIT_TRACE=\"$TMPDIR/git-trace\" git status --porcelain",
+                    ])
+                    .cwd(&fx.ws)
+                    .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+            )
+            .unwrap()
+            .output(Duration::from_secs(60))
+            .await
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    // Kontrollgruppe: unverändert → `git status` läuft in Stufe 1 über den Shim.
+    let (code, stdout, stderr) = git_status().await;
+    assert_eq!(code, Some(0), "{stdout}\n{stderr}");
+    assert_eq!(
+        stdout.lines().next(),
+        Some(format!("{shim_dir}/git").as_str()),
+        "{stdout}"
+    );
+    assert!(trace.exists(), "das echte git ist gelaufen");
+    assert_eq!(s.check_git(), Ok(()));
+    std::fs::remove_file(&trace).unwrap();
+
+    // Von Stufe 0 vorbereitet: `commondir` zeigt auf ein fremdes Verzeichnis.
+    let commondir = fx.ws.join(".git/commondir");
+    std::fs::write(&commondir, "/nicht/vorhanden\n").unwrap();
+    let (code, stdout, stderr) = git_status().await;
+    assert_eq!(code, Some(126), "{stdout}\n{stderr}");
+    assert!(stderr.contains(".git/commondir"), "{stderr}");
+    assert!(!trace.exists(), "git darf nicht starten");
+    // Der Runner erfährt es sofort (Verstoß), die Datei ist zurückgesetzt und die Session
+    // endet mit `sandbox_integrity`.
+    tokio::time::timeout(Duration::from_secs(5), alarm.notified())
+        .await
+        .expect("Verstoß an den Runner");
+    assert!(!commondir.exists());
+    let err = s.check_git().unwrap_err();
+    assert!(err.contains(".git/commondir"), "{err}");
+}
+
+/// SBX-003 (#311): Ohne Git-Repo beim Start gibt es keinen Schnappschuss. Entsteht während der
+/// Session ein `.git` im Workspace, startet `git` in Stufe 1 nicht (Kontrollgruppe: vorher
+/// läuft git).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_003_git_in_stage_one_refuses_a_git_dir_created_during_the_session() {
+    let fx = fx();
+    let (git, prefix) = git_binary();
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env.insert(
+        "PATH".into(),
+        format!(
+            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+            git.parent().unwrap().display()
+        ),
+    );
+    let read = prefix
+        .map(|p| format!("read_paths: [\"{}\"]\n", p.display()))
+        .unwrap_or_default();
+    let s = compose(
+        inp,
+        opts(
+            &format!("backend: auto\nallow_network: false\n{read}"),
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let trace = PathBuf::from(&s.harness.policy().env["TMPDIR"]).join("git-trace");
+    let git_version = || async {
+        let out = s
+            .harness
+            .spawn(
+                CommandSpec::new("/bin/sh")
+                    .args(["-c", "GIT_TRACE=\"$TMPDIR/git-trace\" git --version"])
+                    .cwd(&fx.ws)
+                    .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+            )
+            .unwrap()
+            .output(Duration::from_secs(60))
+            .await
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    // Kontrollgruppe: kein `.git` → git läuft.
+    let (code, stderr) = git_version().await;
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(trace.exists());
+    std::fs::remove_file(&trace).unwrap();
+    // Während der Session entstanden (hier von Stufe 0 vorbereitet).
+    git_init(&git, &fx.ws);
+    let (code, stderr) = git_version().await;
+    assert_eq!(code, Some(126), "{stderr}");
+    assert!(stderr.contains(".git"), "{stderr}");
+    assert!(!trace.exists(), "git darf nicht starten");
 }

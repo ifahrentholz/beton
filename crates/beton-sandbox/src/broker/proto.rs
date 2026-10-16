@@ -12,10 +12,31 @@ pub const VERSION: u32 = 1;
 /// Höchstgröße eines Rahmens.
 pub const MAX_FRAME: usize = 1024 * 1024;
 
-/// Anfrage von `bt-exec`.
+/// Art einer Anfrage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Op {
+    /// Ein Kommando in einer frischen Stufe-2-Sandbox starten (`bt-exec`).
+    #[default]
+    Exec,
+    /// Git-Shim der Stufe 1 (SBX-003, #311): Darf `git` jetzt starten? Der Broker vergleicht
+    /// die Git-Steuerdateien mit dem Schnappschuss des Runners und startet nichts; Antwort
+    /// [`Reply::Allowed`] oder `error{git_control_changed}`.
+    GitPreflight,
+}
+
+impl Op {
+    fn is_exec(&self) -> bool {
+        *self == Op::Exec
+    }
+}
+
+/// Anfrage von `bt-exec` bzw. dem Git-Shim.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub v: u32,
+    #[serde(default, skip_serializing_if = "Op::is_exec")]
+    pub op: Op,
     pub token: String,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
@@ -32,6 +53,7 @@ pub struct Request {
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Request")
+            .field("op", &self.op)
             .field("argv0", &self.argv.first())
             .field("cwd", &self.cwd)
             .field("env", &self.env_overrides.keys().collect::<Vec<_>>())
@@ -54,6 +76,8 @@ pub enum Reply {
         code: String,
         message: String,
     },
+    /// Antwort auf [`Op::GitPreflight`]: `git` darf starten.
+    Allowed,
 }
 
 /// Nachricht von `bt-exec` nach dem Start.
@@ -100,6 +124,7 @@ mod tests {
     fn req() -> Request {
         Request {
             v: VERSION,
+            op: Op::Exec,
             token: "GEHEIM-TOKEN".into(),
             argv: vec!["/bin/sh".into(), "-c".into(), "true".into()],
             cwd: PathBuf::from("/ws"),
