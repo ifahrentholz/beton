@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -499,7 +501,7 @@ fn pol_027_explain_renders_every_part_of_a_decision() {
         &act,
         &EvalOptions {
             grants: Some(&grants),
-            ..EvalOptions::default()
+            ..common::opts()
         },
     );
     let mut event = decision_event(&decision, DecisionMeta::new(Level::Full));

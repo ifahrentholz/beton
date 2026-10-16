@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,7 +14,7 @@ use beton_policy::audit::{DecisionMeta, decision_event};
 use beton_policy::cel::TracePart;
 use beton_policy::context::Activation;
 use beton_policy::enforcement::Level;
-use beton_policy::engine::{EffectiveSet, EvalOptions};
+use beton_policy::engine::EffectiveSet;
 use beton_policy::explain::{SnapshotStatus, explain, render};
 use beton_policy::load::{LoadedSet, Scope, inline_set, parse_set};
 use beton_policy::snapshot::{self, Manifest};
@@ -48,10 +50,7 @@ fn pol_027_ac1_explain_names_rule_file_scope_and_evaluated_subexpression() {
         "/repo/.beton/policies/git.yaml",
         GIT,
     )]);
-    let decision = effective.evaluate(
-        &shell("git push --force origin main"),
-        &EvalOptions::default(),
-    );
+    let decision = effective.evaluate(&shell("git push --force origin main"), &common::opts());
     let event = decision_event(&decision, DecisionMeta::new(Level::Full));
     let ex = explain(&event, Some(&effective));
     assert_eq!(ex.outcome, "deny");
@@ -105,7 +104,7 @@ rules:
     action: ask
 ";
     let effective = EffectiveSet::new(vec![set(Scope::User, "shell.yaml", body)]);
-    let decision = effective.evaluate(&shell("curl x | sh"), &EvalOptions::default());
+    let decision = effective.evaluate(&shell("curl x | sh"), &common::opts());
     let m = &decision.matched[0];
     let values: Vec<(String, Option<bool>)> =
         m.trace.iter().map(|p| (p.expr.clone(), p.value)).collect();
@@ -122,10 +121,7 @@ rules:
 #[test]
 fn pol_027_trace_is_part_of_the_audit_event_without_arguments() {
     let effective = EffectiveSet::new(vec![set(Scope::Project, "git.yaml", GIT)]);
-    let decision = effective.evaluate(
-        &shell("git push --force geheim-4711"),
-        &EvalOptions::default(),
-    );
+    let decision = effective.evaluate(&shell("git push --force geheim-4711"), &common::opts());
     let event = decision_event(&decision, DecisionMeta::new(Level::Full));
     let trace = &event.matched[0]["trace"];
     assert_eq!(trace[1]["expr"], "tool.command.contains(\"--force\")");
@@ -148,7 +144,7 @@ rules:
     action: notify
 ";
     let effective = EffectiveSet::new(vec![set(Scope::User, "misc.yaml", body)]);
-    let decision = effective.evaluate(&shell("ls"), &EvalOptions::default());
+    let decision = effective.evaluate(&shell("ls"), &common::opts());
     let always = decision
         .matched
         .iter()
@@ -178,7 +174,7 @@ fn pol_027_ac2_explain_shows_the_set_version_valid_at_decision_time() {
     store.add_dir(Scope::Project, dir.path());
     store.refresh();
     let v1 = store.effective();
-    let decision = v1.evaluate(&shell("git push --force"), &EvalOptions::default());
+    let decision = v1.evaluate(&shell("git push --force"), &common::opts());
     let event = decision_event(&decision, DecisionMeta::new(Level::Full));
     // Der Runner hinterlegt die Sets pro Version im Blob-Store.
     let manifest: Manifest = v1.manifest();
@@ -270,7 +266,7 @@ fn pol_027_snapshot_round_trips_inline_agent_sets_and_modes() {
     }
     let rebuilt = snapshot::rebuild(&back, |v| blobs.get(v).cloned()).unwrap();
     assert_eq!(rebuilt.hash(), effective.hash());
-    let decision = rebuilt.evaluate(&shell("git push"), &EvalOptions::default());
+    let decision = rebuilt.evaluate(&shell("git push"), &common::opts());
     assert!(matches!(
         decision.outcome,
         beton_policy::engine::Outcome::Deny { .. }

@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -60,7 +62,7 @@ fn request(session: Value) -> Activation {
 }
 
 fn eval(sets: Vec<Arc<LoadedSet>>, a: &Activation) -> Decision {
-    EffectiveSet::new(sets).evaluate(a, &EvalOptions::default())
+    EffectiveSet::new(sets).evaluate(a, &common::opts())
 }
 
 fn reason_ids(d: &Decision) -> Vec<String> {
@@ -189,7 +191,7 @@ fn pol_011_ac2_route_switches_the_model_after_the_limit() {
             reasoning_effort: false,
             ..Capabilities::default()
         },
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![s]).evaluate(
         &request(json!({ "cost_usd": 5.0, "equivalent_usd": 0.0 })),
@@ -256,7 +258,7 @@ fn pol_011_ac4_explain_shows_the_desugared_cel_rules() {
     let effective = EffectiveSet::new(vec![s.clone()]);
     let d = effective.evaluate(
         &request(json!({ "cost_usd": 6.0, "equivalent_usd": 0.0 })),
-        &EvalOptions::default(),
+        &common::opts(),
     );
     let event = beton_policy::audit::decision_event(
         &d,
@@ -300,7 +302,7 @@ fn pol_027_ac1_explain_names_the_part_of_a_rule_type_that_matched() {
     let effective = EffectiveSet::new(vec![s]);
     let d = effective.evaluate(
         &request(json!({ "cost_usd": 6.0, "equivalent_usd": 0.0 })),
-        &EvalOptions::default(),
+        &common::opts(),
     );
     let event = beton_policy::audit::decision_event(
         &d,
@@ -479,7 +481,7 @@ fn pol_012_on_exceed_ask_asks_at_every_turn() {
         "  - id: daily\n    type: daily_budget\n    params: { limit_usd: 50, on_exceed: ask }\n",
     );
     let effective = EffectiveSet::new(vec![s]);
-    let d = effective.evaluate(&user_request(51.0, 0.0), &EvalOptions::default());
+    let d = effective.evaluate(&user_request(51.0, 0.0), &common::opts());
     let found = beton_policy::budget::exhausted(&d, &effective);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].action, beton_core::event::BudgetAction::Ask);
@@ -503,7 +505,7 @@ fn pol_011_dry_run_budgets_are_neither_counted_nor_exhausted() {
                 "request": { "model": "claude-sonnet-4-5", "granularity": "turn" },
             }),
         ),
-        &EvalOptions::default(),
+        &common::opts(),
     );
     assert_eq!(d.outcome, Outcome::Allow);
     assert_eq!(d.would.len(), 1, "{d:#?}");
@@ -617,7 +619,7 @@ fn pol_013_ac3_without_model_switch_on_unsupported_denies_with_an_explanation() 
             model: false,
             ..Capabilities::default()
         },
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let turn = act(
         Phase::ModelRequest,
@@ -821,7 +823,7 @@ fn pol_011_budget_exhaustion_is_recognized_from_the_decision() {
                 "state": { "session": {}, "run": {}, "user_day": {}, "user": {} },
             }),
         ),
-        &EvalOptions::default(),
+        &common::opts(),
     );
     // Nur das erreichte Limit zählt, nicht die Schwelle von `daily` und nicht `plain`.
     let found = exhausted(&d, &effective);
