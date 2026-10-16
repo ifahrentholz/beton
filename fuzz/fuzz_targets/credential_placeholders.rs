@@ -180,17 +180,27 @@ fn check_find(text: &[u8]) {
         .into_iter()
         .map(|(i, _)| i)
         .collect();
-    let naive: Vec<usize> = (0..text.len().saturating_sub(PLACEHOLDER_LEN - 1))
-        .filter(|i| {
-            std::str::from_utf8(&text[*i..*i + PLACEHOLDER_LEN])
-                .ok()
-                .and_then(Placeholder::parse)
-                .is_some()
-        })
-        .collect();
+    // Referenz: von links, ohne Überlappung (wie der Proxy). Überlappt ein Kandidat den
+    // nächsten, zählt nur der linke: Ist er unbekannt, lehnt der Proxy ab
+    // (`credential_unknown`); ist er bekannt, zerstört das Einsetzen den rechten, der dann
+    // nicht vollständig gesendet wird.
+    let mut naive = Vec::new();
+    let mut i = 0;
+    while i + PLACEHOLDER_LEN <= text.len() {
+        let hit = std::str::from_utf8(&text[i..i + PLACEHOLDER_LEN])
+            .ok()
+            .and_then(Placeholder::parse)
+            .is_some();
+        if hit {
+            naive.push(i);
+            i += PLACEHOLDER_LEN;
+        } else {
+            i += 1;
+        }
+    }
     assert_eq!(
         found, naive,
-        "find_placeholders ≠ Placeholder::parse an jeder Stelle"
+        "find_placeholders ≠ Placeholder::parse von links ohne Überlappung"
     );
 }
 
