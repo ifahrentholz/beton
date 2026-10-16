@@ -7,7 +7,7 @@ import { fakeCli } from './fake-cli'
 
 /** Startet `beton run …` und liefert die gedruckte Session-URL (stderr) und das Ende. */
 function runAndUrl(daemon: Daemon, args: string[]) {
-  const run = spawn(BETON, ['run', ...args], { env: daemon.env(), cwd: daemon.work })
+  const run = spawn(BETON, ['run', '--unsandboxed', ...args], { env: daemon.env(), cwd: daemon.work })
   const exited = new Promise<number | null>((r) => run.on('exit', r))
   const url = new Promise<string>((resolve, reject) => {
     let err = ''
