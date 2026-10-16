@@ -638,6 +638,8 @@ async fn ses_003_ac3_input_resumes_while_the_stopped_runner_is_still_exiting() {
 struct Capture {
     inner: std::sync::Arc<LocalProvider>,
     tokens: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// Epoch der Session je Start (für eigene Tunnel-Verbindungen der Tests).
+    epochs: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
     delay: std::sync::Arc<std::sync::Mutex<Duration>>,
     /// Der Runner läuft, findet den Tunnel aber nie (falscher Socket).
@@ -651,6 +653,7 @@ impl Capture {
         Self {
             inner: std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners)),
             tokens: std::sync::Arc::default(),
+            epochs: std::sync::Arc::default(),
             broken: std::sync::Arc::default(),
             delay: std::sync::Arc::default(),
             hang: std::sync::Arc::default(),
@@ -683,6 +686,7 @@ impl beton_host::RunnerProvider for Capture {
         boot: &beton_host::RunnerBoot,
     ) -> Result<beton_host::RunnerHandle, beton_host::RunnerError> {
         self.tokens.lock().unwrap().push(boot.token.clone());
+        self.epochs.lock().unwrap().push(boot.epoch);
         let delay = *self.delay.lock().unwrap();
         tokio::time::sleep(delay).await;
         let mut boot = boot.clone();
@@ -961,6 +965,133 @@ async fn ses_003_ac3_runner_that_never_connects_is_replaced_after_the_start_budg
     let tokens = capture.tokens();
     assert_eq!(tokens.len(), 2, "nach dem Budget ersetzt");
     assert_eq!(tunnel_status(dir.path(), &tokens[0]).await, 401);
+    d.daemon.shutdown().await;
+}
+
+type TunnelWs = tokio_tungstenite::WebSocketStream<tokio::net::UnixStream>;
+
+/// Tunnel-Verbindung mit `token` wie ein Runner: `hello` und `session.bind`, zurück nach
+/// `bound`.
+async fn bind_as_runner(dir: &Path, token: &str, session: &str, epoch: u64) -> TunnelWs {
+    use beton_proto::tunnel::{PROTOCOL, PeerKind, SUBPROTOCOL, TunnelUp};
+    let stream = tokio::net::UnixStream::connect(dir.join("run/tunnel.sock"))
+        .await
+        .unwrap();
+    let mut req = "ws://localhost/v1/tunnel".into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    req.headers_mut()
+        .insert("sec-websocket-protocol", SUBPROTOCOL.parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::client_async(req, stream).await.unwrap();
+    let hello = TunnelUp::Hello {
+        kind: PeerKind::Runner,
+        version: "0".into(),
+        protocol: PROTOCOL.into(),
+        harnesses: Vec::new(),
+    };
+    let bind = TunnelUp::SessionBind {
+        session_id: session.parse().unwrap(),
+        epoch,
+        last_acked_rseq: 0,
+        prestart: false,
+    };
+    for up in [hello, bind] {
+        ws.send(Message::Text(serde_json::to_string(&up).unwrap().into()))
+            .await
+            .unwrap();
+    }
+    loop {
+        let Some(Ok(Message::Text(text))) = ws.next().await else {
+            panic!("Tunnel ohne bound geschlossen");
+        };
+        if serde_json::from_str::<Value>(&text).unwrap()["t"] == "bound" {
+            return ws;
+        }
+    }
+}
+
+/// #243 (AUTH-011 AC2): Runner-Tokens laufen ab. Der Runner erneuert seins über den Tunnel und
+/// bleibt verbunden; das beim Start übergebene Token öffnet den Tunnel danach nicht mehr.
+#[tokio::test]
+async fn auth_011_ac2_runner_renews_its_token_and_the_start_token_expires() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.tunnel.token_ttl = Duration::from_secs(1);
+        r
+    })
+    .await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "idle").await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 1);
+    assert_eq!(
+        tunnel_status(dir.path(), &tokens[0]).await,
+        401,
+        "Start-Token abgelaufen"
+    );
+    // Weiter verbunden: Die Eingabe läuft ohne neuen Start.
+    let (status, body) = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "hallo"})),
+        )
+        .await;
+    assert_eq!(status, 202, "{body}");
+    d.wait_for(&id, is("turn.completed")).await;
+    assert_eq!(capture.tokens().len(), 1, "kein neuer Start");
+    d.daemon.shutdown().await;
+}
+
+/// #243 (AUTH-011 AC2): Wer sein Token nicht erneuert, verliert den Tunnel nach Ablauf
+/// (Close 4401).
+#[tokio::test]
+async fn auth_011_ac2_tunnel_closes_when_the_token_is_not_renewed() {
+    let dir = tmp();
+    let capture = Capture::new(dir.path().join("runners"));
+    let provider = capture.clone();
+    let d = daemon(dir.path(), move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
+        r.sessions.provider = std::sync::Arc::new(provider);
+        r.tunnel.token_ttl = Duration::from_secs(1);
+        r
+    })
+    .await;
+    // Der gestartete Runner findet den Tunnel nie; der Test meldet sich mit seinem Token an.
+    capture
+        .hang
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let token = capture.tokens()[0].clone();
+    let epoch = capture.epochs.lock().unwrap()[0];
+    let mut ws = bind_as_runner(dir.path(), &token, &id, epoch).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(Message::Close(frame))) => return frame.map(|f| u16::from(f.code)),
+                Some(Ok(_)) => {}
+                _ => return None,
+            }
+        }
+    })
+    .await
+    .expect("Tunnel bleibt trotz abgelaufenem Token offen");
+    assert_eq!(closed, Some(4401));
     d.daemon.shutdown().await;
 }
 

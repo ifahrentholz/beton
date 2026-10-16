@@ -41,6 +41,8 @@ pub struct TunnelConfig {
     pub cmd_timeout: Duration,
     pub ping_interval: Duration,
     pub pong_timeout: Duration,
+    /// Gültigkeit eines Runner-Tokens ohne Erneuerung (AUTH-011 AC2, #243).
+    pub token_ttl: Duration,
 }
 
 impl Default for TunnelConfig {
@@ -51,6 +53,7 @@ impl Default for TunnelConfig {
             cmd_timeout: Duration::from_secs(30),
             ping_interval: Duration::from_secs(20),
             pong_timeout: Duration::from_secs(60),
+            token_ttl: TOKEN_TTL,
         }
     }
 }
@@ -92,6 +95,12 @@ async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
 
 /// Offene Freigaben einer Session: Ablauf (Unix-Sekunden) und Art.
 type OpenApprovals = HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>;
+
+/// Gültigkeit eines Runner-Tokens ohne Erneuerung (AUTH-011 AC2, #243).
+pub const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// System-Call, mit dem ein verbundener Runner sein Token erneuert (AUTH-011 AC2, #243).
+pub const RENEW_TOOL: &str = "runner.token_renew";
 
 /// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
 pub const DETACH_MAX: Duration = Duration::from_secs(3600);
@@ -151,6 +160,23 @@ impl RunnerRegistry {
         lock(&self.persisted).remove(&session);
         Ok(token)
     }
+
+    /// Gültigkeit neuer Tokens (AUTH-011 AC2).
+    pub fn token_ttl(&self) -> Duration {
+        TOKEN_TTL
+    }
+
+    /// Setzt die Gültigkeit neuer Tokens (Konfiguration, Tests).
+    pub fn set_token_ttl(&self, _ttl: Duration) {}
+
+    /// Erneuert ein gültiges Token (AUTH-011 AC2): neues Token derselben Generation und seine
+    /// Gültigkeit.
+    pub fn renew(&self, _token: &str) -> Option<(String, Duration)> {
+        None
+    }
+
+    /// Der Runner hat sich mit `token` angemeldet: ältere Tokens seiner Generation verfallen.
+    pub fn confirm(&self, _token: &str) {}
 
     pub fn revoke_tokens(&self, session: SessionId) {
         lock(&self.tokens).retain(|_, s| *s != session);
@@ -1349,5 +1375,78 @@ mod tests {
         std::fs::write(file.with_extension("json.tmp"), "alt").unwrap();
         crate::detached::save(&file, &r.detach(&[s])).unwrap();
         assert_eq!(crate::detached::take(&file).len(), 1);
+    }
+
+    /// #243 (AUTH-011 AC2): Ein Runner-Token läuft ohne Erneuerung ab (Default 15 min) und
+    /// lässt sich danach auch nicht mehr erneuern.
+    #[test]
+    fn auth_011_ac2_runner_token_expires_without_renewal() {
+        let runners = RunnerRegistry::default();
+        assert_eq!(runners.token_ttl(), Duration::from_secs(15 * 60));
+        runners.set_token_ttl(Duration::from_millis(50));
+        let s = SessionId::new();
+        let token = runners.mint_token(s).unwrap();
+        assert_eq!(runners.session_for(&token), Some(s));
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(runners.session_for(&token), None, "abgelaufen");
+        assert!(
+            runners.renew(&token).is_none(),
+            "abgelaufen: keine Erneuerung"
+        );
+    }
+
+    /// #243 (AUTH-011 AC2): Erneuern liefert ein neues Token derselben Generation. Das alte
+    /// gilt, bis sich der Runner mit dem neuen anmeldet (die Antwort kann verloren gehen); ein
+    /// geordneter Stopp sperrt die ganze Generation. Der gespeicherte `rseq`-Stand bleibt.
+    #[test]
+    fn auth_011_ac2_renewal_rotates_the_token_within_its_generation() {
+        let runners = RunnerRegistry::default();
+        let (s, other) = (SessionId::new(), SessionId::new());
+        let old = runners.mint_token(s).unwrap();
+        let foreign = runners.mint_token(other).unwrap();
+        lock(&runners.persisted).insert(s, 7);
+        let (new, ttl) = runners.renew(&old).expect("gültiges Token");
+        assert_ne!(new, old);
+        assert!(new.starts_with("bt_run_"));
+        assert_eq!(ttl, TOKEN_TTL);
+        assert_eq!(runners.session_for(&new), Some(s));
+        assert_eq!(runners.session_for(&old), Some(s), "bis zur Anmeldung");
+        assert_eq!(
+            lock(&runners.persisted).get(&s),
+            Some(&7),
+            "derselbe Prozess"
+        );
+        runners.confirm(&new);
+        assert_eq!(
+            runners.session_for(&old),
+            None,
+            "angemeldet: altes Token verfällt"
+        );
+        let newer = runners.renew(&new).unwrap().0;
+        runners.revoke_token(&new);
+        assert_eq!(runners.session_for(&new), None);
+        assert_eq!(
+            runners.session_for(&newer),
+            None,
+            "ganze Generation gesperrt"
+        );
+        assert_eq!(runners.session_for(&foreign), Some(other));
+        assert!(runners.renew("bt_run_unbekannt").is_none());
+    }
+
+    /// #243: Abgekoppelt wird das jüngste Token der Generation (nach einer Erneuerung).
+    #[test]
+    fn auth_011_detach_keeps_the_renewed_token() {
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        let first = old.mint_token(s).unwrap();
+        let renewed = old.renew(&first).unwrap().0;
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        let detached = old.detach(&[s]);
+        assert_eq!(detached.len(), 1);
+        let new = RunnerRegistry::default();
+        new.adopt(&detached[0]);
+        assert_eq!(new.session_for(&renewed), Some(s));
+        assert_eq!(new.session_for(&first), None);
     }
 }
