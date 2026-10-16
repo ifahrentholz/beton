@@ -650,6 +650,134 @@ async fn sbx_003_ac4_commits_in_a_worktree_reach_the_object_db_but_not_hooks() {
     );
 }
 
+/// Repo im Workspace mit Commit und einem zweiten Worktree (`<root>/wt2`); liefert dessen
+/// Eintrag `.git/worktrees/wt2`.
+fn repo_with_worktree(fx: &Fx, git: &Path) -> PathBuf {
+    git_host(git, &fx.ws, &["init", "-q"]);
+    git_host(
+        git,
+        &fx.ws,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    let wt2 = fx.root.join("wt2");
+    git_host(
+        git,
+        &fx.ws,
+        &["worktree", "add", "-q", "-b", "wt2", wt2.to_str().unwrap()],
+    );
+    fx.ws.join(".git/worktrees/wt2")
+}
+
+/// `commondir`/`gitdir` lenken Host-git auf ein anderes Git-Verzeichnis (#209).
+const GIT_DIR_ATTACKS: [&str; 5] = [
+    "echo /tmp/x > .git/commondir",
+    "echo /tmp/x > .git/gitdir",
+    "echo /tmp/x > .git/worktrees/wt2/commondir",
+    "echo /tmp/x > .git/worktrees/wt2/gitdir",
+    // Den Eintrag als Ganzes wegbewegen (dann ließe sich ein vorbereiteter einsetzen).
+    "mv .git/worktrees/wt2 .git/wt2-alt",
+];
+
+#[tokio::test]
+async fn sbx_003_ac4_commondir_and_gitdir_cannot_be_created_or_changed() {
+    let (git, prefix) = git_binary();
+    // Kontrollgruppe: ohne Sandbox gelingt jeder Angriff.
+    let fc = fx();
+    repo_with_worktree(&fc, &git);
+    for attack in GIT_DIR_ATTACKS {
+        let c = control(&fc, attack).await;
+        assert!(c.ok, "Kontrollgruppe {attack}: {c:?}");
+    }
+    assert!(fc.ws.join(".git/commondir").is_file());
+
+    let fx = fx();
+    let admin = repo_with_worktree(&fx, &git);
+    let before = [
+        std::fs::read(admin.join("commondir")).unwrap(),
+        std::fs::read(admin.join("gitdir")).unwrap(),
+    ];
+    let mut ctx = fx.ctx(Stage::Tools);
+    ctx.git = GitLayout::discover(&fx.ws).unwrap();
+    let yaml = format!("read_paths: [\"{}\"]\n", prefix.display());
+    let policy = fx.policy_with(&yaml, ctx);
+    for attack in GIT_DIR_ATTACKS {
+        let out = sh(&policy, attack).await;
+        assert!(!out.ok, "{attack}: {out:?}");
+    }
+    assert!(!fx.ws.join(".git/commondir").exists());
+    assert!(!fx.ws.join(".git/gitdir").exists());
+    assert_eq!(std::fs::read(admin.join("commondir")).unwrap(), before[0]);
+    assert_eq!(std::fs::read(admin.join("gitdir")).unwrap(), before[1]);
+    // git arbeitet weiter.
+    let g = git.display();
+    let out = sh(
+        &policy,
+        &format!(
+            "{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m c1 && \
+             {g} checkout -q -b neu && {g} log --oneline -1"
+        ),
+    )
+    .await;
+    assert!(out.ok && out.stdout.contains("c1"), "{out:?}");
+}
+
+#[tokio::test]
+async fn sbx_003_ac4_commondir_and_gitdir_of_the_own_worktree_are_read_only() {
+    let (git, prefix) = git_binary();
+    let attacks = |admin: &Path| {
+        [
+            format!("echo /tmp/x > {}/commondir", admin.display()),
+            format!("echo /tmp/x > {}/gitdir", admin.display()),
+        ]
+    };
+    // Kontrollgruppe: ohne Sandbox gelingt es.
+    let fc = fx();
+    let admin = repo_with_worktree(&fc, &git);
+    for attack in attacks(&admin) {
+        let c = control(&fc, &attack).await;
+        assert!(c.ok, "Kontrollgruppe {attack}: {c:?}");
+    }
+
+    let fx = fx();
+    let admin = repo_with_worktree(&fx, &git).canonicalize().unwrap();
+    let wt = fx.root.join("wt2");
+    let before = [
+        std::fs::read(admin.join("commondir")).unwrap(),
+        std::fs::read(admin.join("gitdir")).unwrap(),
+    ];
+    let mut ctx = ResolveCtx::new(Stage::Tools, &wt, &fx.home, &fx.scratch);
+    ctx.git = GitLayout::discover(&wt).unwrap();
+    let spec =
+        SandboxSpec::from_yaml(&format!("read_paths: [\"{}\"]\n", prefix.display())).unwrap();
+    let policy = seatbelt().resolve(&spec, &ctx).unwrap();
+    for attack in attacks(&admin) {
+        let out = sh(&policy, &attack).await;
+        assert!(!out.ok, "{attack}: {out:?}");
+    }
+    assert_eq!(std::fs::read(admin.join("commondir")).unwrap(), before[0]);
+    assert_eq!(std::fs::read(admin.join("gitdir")).unwrap(), before[1]);
+    let g = git.display();
+    let out = sh(
+        &policy,
+        &format!(
+            "{GIT_ENV} echo a > a.txt && {g} add a.txt && {g} commit -q -m im-worktree && \
+             {g} checkout -q -b neu && {g} log --oneline -1"
+        ),
+    )
+    .await;
+    assert!(out.ok && out.stdout.contains("im-worktree"), "{out:?}");
+}
+
 #[tokio::test]
 async fn ses_015_ac2_worktree_under_beton_home_writes_only_itself() {
     let fx = fx();
