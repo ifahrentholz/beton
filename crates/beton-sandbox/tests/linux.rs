@@ -1222,7 +1222,12 @@ async fn sbx_002_stage_one_reaches_sockets_of_its_runtime_dir_stage_two_does_not
         }
         let token = runtime.join("hook-1/hook.token").display().to_string();
         let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "read", &[&token])).await;
-        assert_eq!(probe_result(&out), "ok", "{}: Token-Datei: {out:?}", p.id());
+        assert_eq!(
+            probe_result(&out),
+            "ok:FIXTURE-HOOK-TOKEN",
+            "{}: Token-Datei: {out:?}",
+            p.id()
+        );
         if abi >= 9 {
             let o = other.display().to_string();
             let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&o])).await;
