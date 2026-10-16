@@ -351,6 +351,22 @@ mod tests {
         assert_eq!(sanitize("a\tb\nc\r"), "a\tb\nc");
     }
 
+    /// #242 N5: U+061C (Arabic Letter Mark) ist ein Bidi-Steuerzeichen wie U+200E/U+200F;
+    /// die Freigabe zeigt neben dem Hauptargument auch `cwd`/`workdir` und weitere Argumente,
+    /// damit der Mensch sieht, wo und wie der Befehl läuft.
+    #[test]
+    fn pol_010_approval_shows_all_arguments_without_bidi_marks() {
+        assert_eq!(sanitize("a\u{061c}b"), "ab");
+        let text = approval_summary(&json!({"kind": "policy", "subject": {"tool": {"name": "Bash",
+            "args": {"command": "rm -rf build", "cwd": "/home/u/.ssh", "timeout": 5}}}}));
+        assert!(text.starts_with("Bash: rm -rf build"), "{text}");
+        assert!(text.contains("cwd: /home/u/.ssh"), "{text}");
+        assert!(text.contains("timeout: 5"), "{text}");
+        let codex = approval_summary(&json!({"kind": "tool", "subject": {"tool": "exec_command",
+            "args": {"command": "ls", "workdir": "/etc\u{061c}"}}}));
+        assert!(codex.contains("workdir: /etc") && !codex.contains('\u{061c}'), "{codex:?}");
+    }
+
     #[test]
     fn tool_and_approval_summaries() {
         assert_eq!(
