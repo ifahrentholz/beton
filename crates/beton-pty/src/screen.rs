@@ -173,10 +173,20 @@ mod tests {
         assert_eq!(r.text(), s.text());
         assert_eq!(r.scrollback_text(), s.scrollback_text());
         assert_eq!(r.cursor(), s.cursor());
-        assert_eq!(r.cursor(), Cursor { row: 4, col: 12, visible: true });
+        assert_eq!(
+            r.cursor(),
+            Cursor {
+                row: 4,
+                col: 12,
+                visible: true
+            }
+        );
         // Farben bleiben erhalten.
         let back = r.parser.screen();
-        assert_eq!(back.cell(0, 0).unwrap().fgcolor(), s.parser.screen().cell(0, 0).unwrap().fgcolor());
+        assert_eq!(
+            back.cell(0, 0).unwrap().fgcolor(),
+            s.parser.screen().cell(0, 0).unwrap().fgcolor()
+        );
     }
 
     #[test]

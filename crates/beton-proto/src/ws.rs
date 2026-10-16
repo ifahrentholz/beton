@@ -112,7 +112,9 @@ pub enum ClientMsg {
         target: String,
     },
     /// Kanal schließen; der Server bestätigt mit `channel_closed`.
-    CloseChannel { channel_id: u32 },
+    CloseChannel {
+        channel_id: u32,
+    },
     /// Kredit für Frames des Servers: `bytes` (Terminal) bzw. `frames` (Browser).
     Credit {
         channel_id: u32,
@@ -182,7 +184,10 @@ pub enum ServerMsg {
         reason: Option<String>,
     },
     /// Weiterer Kredit für Eingaben des Clients (Bytes).
-    Credit { channel_id: u32, bytes: u64 },
+    Credit {
+        channel_id: u32,
+        bytes: u64,
+    },
 }
 
 impl ServerMsg {
@@ -351,9 +356,10 @@ mod tests {
             m,
             ClientMsg::OpenChannel { kind: ChannelKind::Terminal, ref target, .. } if target == "term_3"
         ));
-        let c: ClientMsg =
-            serde_json::from_value(serde_json::json!({"t": "credit", "channel_id": 5, "bytes": 262144}))
-                .unwrap();
+        let c: ClientMsg = serde_json::from_value(
+            serde_json::json!({"t": "credit", "channel_id": 5, "bytes": 262144}),
+        )
+        .unwrap();
         assert_eq!(
             c,
             ClientMsg::Credit {
