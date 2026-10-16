@@ -313,7 +313,7 @@ release-please PR gemergt → Tag
 ### QA-005 — Sandbox-Escape-Suite pro OS
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Das Probe-Binary `bt-escape-probe` versucht innerhalb der Sandbox (Stufe 1 und 2, siehe 04-sandbox.md) verbotene Aktionen; Suite, Fälle und Plattform-Matrix: Owner SBX-011, QA-005 regelt Gate und Reporting; jeder Fall muss scheitern und den erwarteten Mechanismus zeigen. CI läuft auf macOS, Linux und (ab M5) Windows. macOS/Linux: jeder Fehlschlag blockiert den Merge. Windows Beta: Regressionen blockieren; bekannte Lücken stehen in `tests/sandbox/known_gaps.windows.yaml` und werden im Release-Text genannt.
-- **Details:** Fälle (Auszug): `~/.ssh/id_*` und `~/.aws/credentials` lesen; Keychain/Secret-Service abfragen; `/etc/hosts` bzw. außerhalb des Workspace schreiben; Shell-RC-Dateien ändern; direkter TCP-Connect an Internet-IP (Proxy-Bypass); HTTPS über Proxy an nicht freigegebene Domain; `169.254.169.254` und `127.0.0.1:<Daemon-Port>`; DNS-Rebinding-Fixture; UDP/Raw-Sockets; `/var/run/docker.sock`; Symlink- und Hardlink-Ausbruch; `ptrace` des Elternprozesses; Lesen der Env anderer Prozesse via `/proc`; Env-Leak (keine Secrets in `env`); Fork-Bomb gegen Limits; verschachteltes `sandbox-exec`/`unshare`.
+- **Details:** Fälle (Auszug): `~/.ssh/id_*` und `~/.aws/credentials` lesen; Keychain/Secret-Service abfragen; `/etc/hosts` bzw. außerhalb des Workspace schreiben; Shell-RC-Dateien ändern; direkter TCP-Connect an Internet-IP (Proxy-Bypass); HTTPS über Proxy an nicht freigegebene Domain; `169.254.169.254` und `127.0.0.1:<Daemon-Port>`; DNS-Rebinding-Fixture; UDP/Raw-Sockets; `/var/run/docker.sock`; Symlink- und Hardlink-Ausbruch; `ptrace` des Elternprozesses; Lesen der Env anderer Prozesse via `/proc`; Env-Leak (keine Secrets in `env`); Fork-Bomb gegen Limits; verschachteltes `sandbox-exec`/`unshare`. *(Stand M2-Abschluss: Probe, Gate und JUnit-Report sind beim Maintainer zurückgestellt, #171, ADR-0040; die Linux-VM-Jobs als Required Checks beschreibt #301.)*
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Alle Fälle für macOS und Linux sind implementiert und schlagen in der Sandbox fehl; derselbe Probe **ohne** Sandbox gelingt (Kontrollgruppe, beweist Testwirksamkeit).
   - [ ] AC2 — Ein absichtlich gelockertes Profil (Test-Fixture) lässt die Suite fehlschlagen.
@@ -399,7 +399,7 @@ release-please PR gemergt → Tag
   - [ ] AC2 — Ein solcher PR ohne Teständerung schlägt im Check `security-tests-touched` fehl.
   - [ ] AC3 — Die PR-Vorlage enthält für diese Pfade die Checkliste „Test zuerst (rot) — Implementierung (grün) — Escape-/Policy-Suite grün“.
 - **Abhängigkeiten:** QA-010
-- **Referenz:** ADR-0031, ADR-0036
+- **Referenz:** ADR-0031, ADR-0036, ADR-0040 (vorgeschlagen: Praxis der delegierten Agent-Reviews bis zur eigenen Agent-Identität)
 
 ### QA-014 — Agent-Workflow & Feature-IDs
 - **Meilenstein:** M0 · **Priorität:** Must
