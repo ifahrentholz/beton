@@ -56,7 +56,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | Gruppe | Typ | D/T | Payload |
 | --- | --- | :-: | --- |
 | Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, effort?, permission_mode?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook, harness_opts?` |
-| | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?` |
+| | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?, sandbox? {tool_sandbox, egress_proxy}` (SBX-006, HAR-027) |
 | | `session.status` | D | `status: starting\|idle\|running\|waiting_approval\|paused\|stopped\|failed, reason?` |
 | | `session.resumed` | D | `mode: native\|handover` |
 | | `session.settings_changed` | D | `model?, effort?, requested_effort?, permission_mode?, mechanism?: live\|restart, effective_from_turn?` (kein `harness`: Harness-Wechsel nur per Fork, SES-007) |
