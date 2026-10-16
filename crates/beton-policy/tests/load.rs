@@ -2,12 +2,14 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::path::Path;
 
 use beton_policy::Phase;
 use beton_policy::context::Activation;
 use beton_policy::doc::{SCHEMA_COMMENT, schema_json};
-use beton_policy::engine::{EvalOptions, Outcome};
+use beton_policy::engine::Outcome;
 use beton_policy::load::{Scope, inline_set, parse_set};
 use beton_policy::store::{PolicyStore, StoreEvent};
 use serde_json::json;
@@ -227,7 +229,7 @@ fn pol_001_ac2_changed_project_file_applies_to_next_evaluation() {
         "{events:?}"
     );
     let first = store.effective();
-    let d = first.evaluate(&shell_call(), &EvalOptions::default());
+    let d = first.evaluate(&shell_call(), &common::opts());
     assert!(matches!(d.outcome, Outcome::Deny { .. }), "{d:?}");
 
     // Datei ändern, Session läuft weiter: nächste Auswertung mit neuer Version.
@@ -239,7 +241,7 @@ fn pol_001_ac2_changed_project_file_applies_to_next_evaluation() {
     );
     let second = store.effective();
     assert_ne!(first.hash(), second.hash());
-    let d = second.evaluate(&shell_call(), &EvalOptions::default());
+    let d = second.evaluate(&shell_call(), &common::opts());
     assert_eq!(d.outcome, Outcome::Allow, "{d:?}");
     assert_eq!(d.policy_set_hash, second.hash());
 
@@ -269,7 +271,7 @@ fn pol_001_ac3_broken_change_keeps_old_version_and_reports_file_line_error() {
 
     let after = store.effective();
     assert_eq!(before.hash(), after.hash());
-    let d = after.evaluate(&shell_call(), &EvalOptions::default());
+    let d = after.evaluate(&shell_call(), &common::opts());
     assert!(
         matches!(d.outcome, Outcome::Deny { .. }),
         "alte Version bleibt aktiv"
@@ -311,7 +313,7 @@ fn pol_001_store_ignores_policy_tests_and_keeps_deleted_files_until_a_new_sessio
     assert!(matches!(
         store
             .effective()
-            .evaluate(&shell_call(), &EvalOptions::default())
+            .evaluate(&shell_call(), &common::opts())
             .outcome,
         Outcome::Deny { .. }
     ));
@@ -323,7 +325,7 @@ fn pol_001_store_ignores_policy_tests_and_keeps_deleted_files_until_a_new_sessio
     assert_eq!(
         fresh
             .effective()
-            .evaluate(&shell_call(), &EvalOptions::default())
+            .evaluate(&shell_call(), &common::opts())
             .outcome,
         Outcome::Allow
     );
@@ -347,7 +349,7 @@ fn pol_001_unreadable_policy_dir_fails_closed() {
     let events = store.refresh();
     let outcome = store
         .effective()
-        .evaluate(&shell_call(), &EvalOptions::default())
+        .evaluate(&shell_call(), &common::opts())
         .outcome;
     let mut fresh = PolicyStore::new();
     fresh.add_dir(Scope::User, &policies);
@@ -448,7 +450,7 @@ fn pol_001_store_inline_sets_and_dirs() {
     assert_ne!(eff.hash(), before);
     assert_eq!(eff.sets().len(), 1);
     assert!(matches!(
-        eff.evaluate(&shell_call(), &EvalOptions::default()).outcome,
+        eff.evaluate(&shell_call(), &common::opts()).outcome,
         Outcome::Deny { .. }
     ));
     store.set_inline(Scope::Agent, vec![]);
@@ -538,9 +540,7 @@ fn pol_001_never_valid_files_are_listed_with_their_error() {
     assert_eq!(effective.never_valid().len(), 1);
     assert_eq!(effective.invalid().len(), 2);
     assert!(matches!(
-        effective
-            .evaluate(&shell_call(), &EvalOptions::default())
-            .outcome,
+        effective.evaluate(&shell_call(), &common::opts()).outcome,
         Outcome::Deny { .. }
     ));
 }
@@ -607,7 +607,7 @@ fn pol_001_yml_files_are_loaded_too() {
     assert!(matches!(
         store
             .effective()
-            .evaluate(&shell_call(), &EvalOptions::default())
+            .evaluate(&shell_call(), &common::opts())
             .outcome,
         Outcome::Deny { .. }
     ));
@@ -629,7 +629,7 @@ fn pol_001_loosening_project_changes_wait_for_a_new_session() {
         matches!(
             store
                 .effective()
-                .evaluate(&shell_call(), &EvalOptions::default())
+                .evaluate(&shell_call(), &common::opts())
                 .outcome,
             Outcome::Deny { .. }
         )
