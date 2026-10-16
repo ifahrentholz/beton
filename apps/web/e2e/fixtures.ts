@@ -50,7 +50,12 @@ export class Daemon {
     if (!existsSync(join(WEB_DIR, 'index.html'))) throw new Error('Web-UI fehlt: pnpm build')
     const home = mkdtempSync(join(tmpdir(), 'beton-e2e-home-'))
     const work = mkdtempSync(join(tmpdir(), 'beton-e2e-work-'))
-    writeFileSync(join(home, 'config.yaml'), `server:\n  listen: ["127.0.0.1:${options.port ?? 0}"]\n`)
+    // Ausdrücklich ohne Sandbox (SBX-006): Jede neue Session bestätigt das in `api()`; die
+    // Sandbox prüfen die Rust-Tests (u. a. das M2-Demo-Szenario).
+    writeFileSync(
+      join(home, 'config.yaml'),
+      `server:\n  listen: ["127.0.0.1:${options.port ?? 0}"]\nsandbox:\n  backend: none\n`,
+    )
     const { child, url } = await Daemon.spawn(home, options)
     const token = readFileSync(join(home, 'auth', 'local.token'), 'utf8').trim()
     return new Daemon(home, work, child, url, token, options)
@@ -98,6 +103,10 @@ export class Daemon {
 
   /** REST mit dem lokalen Token (Testaufbau, nicht die UI). */
   async api<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
+    // `backend: none` gilt nur mit Bestätigung je Session (SBX-006).
+    if (method === 'POST' && path === '/v1/sessions' && body && typeof body === 'object') {
+      body = { confirm_unsandboxed: true, ...(body as Record<string, unknown>) }
+    }
     const res = await fetch(`${this.url}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },

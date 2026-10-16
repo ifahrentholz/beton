@@ -75,6 +75,11 @@ pub mod env {
     pub const FORK_LOGGED: &str = "BETON_FORK_LOGGED";
     /// `sandbox:` der User-Konfiguration und `proxy.extra_ca_files` als JSON (SBX-002, #191).
     pub const SANDBOX: &str = "BETON_RUNNER_SANDBOX";
+    /// `1`: `backend: none` ist für diese Session bestätigt (SBX-006, Audit beim Server).
+    pub const UNSANDBOXED_CONFIRMED: &str = "BETON_UNSANDBOXED_CONFIRMED";
+    /// Nur Debug-Builds: Backends abschalten (Tests, SBX-006 AC1).
+    #[cfg(debug_assertions)]
+    pub const TEST_SANDBOX_UNAVAILABLE: &str = beton_sandbox::TEST_UNAVAILABLE_ENV;
     /// `compaction:` der User-Konfiguration als JSON (USE-009); fehlt sie, gilt der Default.
     pub const COMPACTION: &str = "BETON_COMPACTION";
     /// Session-Budget in USD (API-006 `--max-cost`); der Runner setzt es als `spend_cap` der
@@ -122,8 +127,12 @@ pub struct RunnerBoot {
     pub fork: Option<PathBuf>,
     /// Das Ergebnis des Fork-Plans steht schon im Log.
     pub fork_logged: bool,
-    /// Zweistufige Sandbox (SBX-002); `None`: wie bisher ohne Isolation.
+    /// Zweistufige Sandbox (SBX-002). `None` heißt Default-Konfiguration: Sandbox
+    /// erforderlich (SBX-006); ohne Isolation nur mit ausdrücklichem `backend: none`.
     pub sandbox: Option<stages::SandboxBoot>,
+    /// `backend: none` ist für diese Session bestätigt (SBX-006); ohne Bestätigung startet
+    /// keine Session ohne Sandbox.
+    pub unsandboxed_confirmed: bool,
     /// beton-CA für die Proxy-Instanzen der Session (dritte stdin-Zeile, PRX-002).
     pub proxy_ca: Option<stages::CaText>,
     /// Automatische Compaction (USE-009).
@@ -219,6 +228,8 @@ impl RunnerBoot {
                 ),
                 Err(_) => None,
             },
+            unsandboxed_confirmed: std::env::var(env::UNSANDBOXED_CONFIRMED)
+                .is_ok_and(|v| v == "1"),
             proxy_ca,
             compaction: match std::env::var(env::COMPACTION) {
                 Ok(json) => serde_json::from_str(&json)
@@ -788,10 +799,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         credentials::channel_calls(usage_tx),
         stage_tx.clone(),
     ));
-    // Zweistufige Sandbox (SBX-002, PRX-001, PRX-005, PRX-008, #191): bis WP-49 nur mit
-    // ausdrücklich konfiguriertem Backend; jeder Fehler verhindert den Start (fail closed).
-    let mut stages = match &boot.sandbox {
-        Some(sb) if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sb.spec])) => {
+    // Zweistufige Sandbox (SBX-002, SBX-006, PRX-001, PRX-005, PRX-008, #191): Default
+    // „Sandbox erforderlich“; jeder Fehler verhindert den Start (fail closed). Ohne Isolation
+    // nur mit ausdrücklichem `backend: none`, das für diese Session bestätigt ist.
+    let sandbox_boot = boot.sandbox.clone().unwrap_or_default();
+    let sandbox_spec = sandbox_boot.spec.clone();
+    if !stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec]))
+        && !boot.unsandboxed_confirmed
+    {
+        let e = beton_harness::HarnessError::StartRefused(
+            "sandbox_confirmation_required: `sandbox.backend: none` startet nur mit Bestätigung \
+             für diese Session (`beton run --unsandboxed`)"
+                .into(),
+        );
+        report_start_failure(&boot, &e).await;
+        return Err(e.into());
+    }
+    let mut stages = match &sandbox_boot {
+        sb if stages::active(&beton_sandbox::SandboxSpec::merged(&[&sandbox_spec])) => {
             let ca = match boot.proxy_ca.as_ref().map(stages::CaText::ca).transpose() {
                 Ok(ca) => ca,
                 Err(e) => {
@@ -841,7 +866,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             let direct = direct_route(&boot);
             let opts = stages::StageOptions {
                 direct,
-                spec: sb.spec.clone(),
+                spec: sandbox_spec.clone(),
                 proxy_ca: ca,
                 proxy: beton_proxy::ProxyOptions {
                     extra_ca_files: sb.extra_ca_files.clone(),
@@ -865,6 +890,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         }
         _ => None,
     };
+    // Was das Stufenmodell tatsächlich durchsetzt; nur das schaltet `yolo` frei (HAR-027).
+    let sandbox_status = stages
+        .as_ref()
+        .map(|s| s.env.sandbox)
+        .unwrap_or(beton_harness::SandboxStatus::NONE);
     if let Some(egress) = stages.as_ref().and_then(|s| s.direct()) {
         direct_via_proxy(&boot, &mut registry, egress);
     }
@@ -1010,7 +1040,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         boot.effort.as_deref(),
         boot.permission_mode.as_deref(),
         caps.as_ref().unwrap_or(&fallback_caps),
-        beton_harness::SandboxStatus::current(),
+        sandbox_status,
     ) {
         Ok(s) => s,
         Err(rejected) => {
@@ -1096,7 +1126,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 .map(|m| m.as_str().to_owned()),
             sandbox: Some(stages::sandbox_vars(stages.as_ref())),
             network: Some(beton_policy::vars::StartNetworkVars {
-                proxy_enabled: Some(beton_harness::SandboxStatus::current().egress_proxy),
+                proxy_enabled: Some(sandbox_status.egress_proxy),
             }),
             worktree: Some(boot.workdir.display().to_string()),
             fork_of: None,
@@ -1118,6 +1148,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     &mut start_settings,
                     &m,
                     caps.as_ref().unwrap_or(&fallback_caps),
+                    sandbox_status,
                 ) {
                     Ok(mode) => {
                         policy_mode = mode;
@@ -1931,7 +1962,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             if name == "session.set" {
                                 // HAR-017, HAR-027: prüfen, dann sofort bzw. nach dem Turn anwenden.
-                                match settings::parse(&args, &session_caps, beton_harness::SandboxStatus::current()) {
+                                match settings::parse(&args, &session_caps, sandbox_status) {
                                     Err(r) => {
                                         let msg = TunnelUp::CmdResult { cmd_id, result: None, problem: Some(r.to_problem()) };
                                         if !send(&mut ws, &msg).await { break None; }
@@ -2116,12 +2147,13 @@ fn apply_start_modifications(
     start: &mut settings::Change,
     m: &beton_policy::engine::Modifications,
     caps: &beton_harness::Capabilities,
+    sandbox: beton_harness::SandboxStatus,
 ) -> Result<Option<beton_harness::PermissionMode>, settings::Rejected> {
     let mode = settings::policy_start_mode(
         start.permission_mode,
         m.permission_mode.as_deref(),
         caps,
-        beton_harness::SandboxStatus::current(),
+        sandbox,
     )?;
     if let Some(model) = &m.model {
         start.model = Some(model.clone());

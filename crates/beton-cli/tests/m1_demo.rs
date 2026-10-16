@@ -353,7 +353,13 @@ async fn m1_demo_fork_to_codex_maestra_across_vendors_and_import() {
     vendor_dirs(vendor.path(), &work);
 
     // ---------------------------------------------------------------- 1. Claude → Fork auf Codex
-    let out = run(cli(&serve, &env).args(["run", "claude", "-p", "Baue einen Rate-Limiter"]));
+    let out = run(cli(&serve, &env).args([
+        "run",
+        "--unsandboxed",
+        "claude",
+        "-p",
+        "Baue einen Rate-Limiter",
+    ]));
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), "Rate-Limiter steht (Token-Bucket).\n");
     let client = serve.client();
@@ -401,8 +407,13 @@ async fn m1_demo_fork_to_codex_maestra_across_vendors_and_import() {
     .await;
 
     // ---------------------------------------------------------------- 2. beton run maestra
-    let out =
-        run(cli(&serve, &env).args(["run", "maestra", "-p", "Baue einen Rate-Limiter mit Tests"]));
+    let out = run(cli(&serve, &env).args([
+        "run",
+        "--unsandboxed",
+        "maestra",
+        "-p",
+        "Baue einen Rate-Limiter mit Tests",
+    ]));
     assert!(out.status.success(), "{}\n{}", stderr(&out), serve.log());
     let summary = stdout(&out);
     assert!(

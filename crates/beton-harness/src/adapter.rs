@@ -581,6 +581,8 @@ pub struct StageEnv {
     /// Startet Tools in Stufe 2 für Harnesses, deren Tools beton selbst ausführt
     /// (`tool_isolation: beton`, z. B. `shell_exec` des Direkt-API-Harness).
     pub tools: Option<Arc<dyn ProcessLauncher>>,
+    /// Was das Stufenmodell dieser Session tatsächlich durchsetzt (für `yolo`, HAR-027).
+    pub sandbox: crate::SandboxStatus,
 }
 
 impl std::fmt::Debug for StageEnv {
@@ -589,6 +591,7 @@ impl std::fmt::Debug for StageEnv {
             .field("shim_dir", &self.shim_dir)
             .field("exchange", &self.exchange)
             .field("tools", &self.tools.is_some())
+            .field("sandbox", &self.sandbox)
             .finish()
     }
 }

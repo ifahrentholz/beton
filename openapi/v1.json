@@ -4586,6 +4586,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "confirm_unsandboxed",
+            "in": "query",
+            "description": "Bestätigt `sandbox.backend: none` für eine Session ohne Bestätigung, z. B. eine\nimportierte (SBX-006); Audit-Eintrag `sandbox.backend_none`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -4621,6 +4630,16 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`sandbox_confirmation_required`: `backend: none` ohne Bestätigung für diese Session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -6553,6 +6572,13 @@
             ],
             "format": "double",
             "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);\nerreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab."
+          },
+          "confirm_unsandboxed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): ohne Bestätigung\n`409 sandbox_confirmation_required`; mit ihr ein Audit-Eintrag `sandbox.backend_none`.\nEine User-Policy kann `backend: none` trotzdem verbieten (SBX-006 AC4)."
           }
         }
       },
@@ -6923,6 +6949,13 @@
           "harness_opts": {
             "type": "object",
             "description": "Harness-spezifische Startoptionen (wie bei `POST /v1/sessions`); ohne Angabe die der\nQuelle, falls der Harness gleich bleibt."
+          },
+          "confirm_unsandboxed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Bestätigt `sandbox.backend: none` für den Fork (SBX-006); der Fork einer bestätigten\nSession übernimmt deren Bestätigung (Audit-Eintrag mit Quelle)."
           }
         }
       },
@@ -7401,7 +7434,8 @@
           "mode",
           "org_id",
           "features",
-          "attachments"
+          "attachments",
+          "sandbox"
         ],
         "properties": {
           "version": {
@@ -7434,6 +7468,10 @@
           "attachments": {
             "$ref": "#/components/schemas/AttachmentLimitsView",
             "description": "Grenzen für Anhänge (WEB-006)."
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxInfo",
+            "description": "Sandbox des Hosts (SBX-006): aktiv, Egress-Proxy, ob `yolo` startbar ist (HAR-027)."
           }
         }
       },
@@ -7752,6 +7790,27 @@
             "items": {
               "$ref": "#/components/schemas/FieldError"
             }
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Nur `sandbox_unavailable` (SBX-006): das geforderte Backend, …"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "… die Capabilities, die ihm fehlen (z. B. `net`), …"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "… und ein Hinweis zur Abhilfe."
           }
         },
         "additionalProperties": false
@@ -7787,6 +7846,7 @@
           "not_a_git_repo",
           "spawn_denied",
           "sandbox_required",
+          "sandbox_confirmation_required",
           "worktree_dirty",
           "worktree_unpushed",
           "imported_read_only",
@@ -8097,6 +8157,55 @@
             ],
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "SandboxInfo": {
+        "type": "object",
+        "description": "Sandbox-Status des Hosts für Clients (`GET /v1/info`, SBX-006, HAR-027).",
+        "required": [
+          "backend",
+          "active",
+          "proxy",
+          "yolo"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "Konfiguriertes Backend: `auto` (Default), `seatbelt`, `landlock`, `bwrap`, … oder\n`none` (ausdrücklich ohne Isolation, je Session zu bestätigen)."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Gewähltes Backend dieses Rechners (bei `auto`); fehlt bei `none`."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Sessions starten mit Sandbox: Das Backend ist auf diesem Rechner nutzbar."
+          },
+          "proxy": {
+            "type": "boolean",
+            "description": "Netz der Tools nur über den Egress-Proxy (oder gar keins, `allow_network: false`)."
+          },
+          "yolo": {
+            "type": "boolean",
+            "description": "`yolo` ist startbar (für Harnesses, deren Tools in Stufe 2 laufen)."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Was dem Backend fehlt, wenn es nicht nutzbar ist (z. B. `net`)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hinweis zur Einrichtung, wenn keine Sandbox aktiv ist."
           }
         }
       },

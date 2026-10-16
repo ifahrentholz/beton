@@ -12,6 +12,10 @@ Options:
           
           [env: BETON_SERVER]
 
+      --unsandboxed
+          Bestätigt `sandbox.backend: none` für diese Session, falls sie noch keine Bestätigung hat,
+          z. B. eine importierte (SBX-006)
+
       --json
           Maschinenlesbare Ausgabe (JSON) auf stdout
 

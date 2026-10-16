@@ -102,7 +102,8 @@ async fn use_007_ac3_usage_with_and_without_daemon() {
     let work = serve.work.path().to_path_buf();
 
     for harness in ["claude", "codex"] {
-        let out = run(cli(&home, &work, &env).args(["run", harness, "-p", "Hallo"]));
+        let out =
+            run(cli(&home, &work, &env).args(["run", "--unsandboxed", harness, "-p", "Hallo"]));
         assert!(out.status.success(), "{harness}: {}", stderr(&out));
     }
     let client = serve.client();

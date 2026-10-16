@@ -55,6 +55,7 @@ async fn sbx_002_claude_bash_tool_goes_through_bt_exec_in_stage_two() {
         shim_dir: PathBuf::from("/sbx/exec/bin"),
         exchange: PathBuf::from("/sbx/tools"),
         tools: None,
+        sandbox: Default::default(),
     };
     let spec = launched(Some(stage)).await;
     let get = |k: &str| {
@@ -94,6 +95,7 @@ async fn sbx_002_stage_vars_also_go_through_settings_env() {
             shim_dir: PathBuf::from("/sbx/exec/bin"),
             exchange: PathBuf::from("/sbx/xchg"),
             tools: None,
+            sandbox: Default::default(),
         };
         let spec = launched_with(
             ClaudeAdapter {

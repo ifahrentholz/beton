@@ -669,7 +669,11 @@ async fn runner_token_only_opens_its_own_session() {
                 agent_snapshot: None,
                 snapshots: None,
                 fork: None,
-                sandbox: None,
+                sandbox: Some(beton_host::SandboxBoot {
+                    spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+                    extra_ca_files: Vec::new(),
+                }),
+                unsandboxed_confirmed: true,
                 proxy_ca: None,
                 compaction: Default::default(),
                 max_cost_usd: None,

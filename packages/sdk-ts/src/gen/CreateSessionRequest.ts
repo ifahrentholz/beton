@@ -46,4 +46,10 @@ worktree?: WorktreeRequest,
  * `spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);
  * erreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab.
  */
-max_cost_usd?: number, };
+max_cost_usd?: number, 
+/**
+ * Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): ohne Bestätigung
+ * `409 sandbox_confirmation_required`; mit ihr ein Audit-Eintrag `sandbox.backend_none`.
+ * Eine User-Policy kann `backend: none` trotzdem verbieten (SBX-006 AC4).
+ */
+confirm_unsandboxed?: boolean, };

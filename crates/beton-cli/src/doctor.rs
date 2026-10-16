@@ -691,11 +691,17 @@ fn sandbox_status(
                 Some("beton nicht innerhalb einer anderen Sandbox starten"),
             ),
         },
+        // SBX-006 (Windows-Beta bis SBX-016): Default „Sandbox erforderlich“ heißt hier, dass
+        // keine Session ohne ausdrücklich bestätigtes `backend: none` startet.
         Os::Windows => check(
             "sandbox.windows",
             CheckStatus::Warn,
-            "Die Windows-Sandbox (Beta) folgt mit M5 (SBX-016)",
-            Some("bis dahin backend: none oder WSL2"),
+            "Die Windows-Sandbox (Beta) folgt mit M5 (SBX-016); bis dahin starten Sessions nur \
+             mit `sandbox.backend: none` und Bestätigung je Session, YOLO bleibt gesperrt",
+            Some(
+                "`sandbox: { backend: none }` in ~/.beton/config.yaml und jede Session mit \
+                 `beton run --unsandboxed` bestätigen (steht im Audit-Log); mit Sandbox: WSL2",
+            ),
         ),
         Os::Other => check(
             "sandbox",
@@ -946,6 +952,18 @@ mod tests {
             (c.id.as_str(), c.status),
             ("sandbox.windows", CheckStatus::Warn)
         );
+    }
+
+    /// SBX-006, Windows-Beta: Ohne Backend startet eine Session nur mit bestätigtem
+    /// `backend: none`; `doctor` sagt das samt Weg.
+    #[test]
+    fn sbx_006_windows_doctor_explains_backend_none_with_confirmation() {
+        let c = sandbox_check(beton_sandbox::Os::Windows, &[], None);
+        assert!(c.message.contains("backend: none"), "{}", c.message);
+        assert!(c.message.contains("YOLO"), "{}", c.message);
+        let hint = c.hint.unwrap_or_default();
+        assert!(hint.contains("--unsandboxed"), "{hint}");
+        assert!(hint.contains("Audit-Log"), "{hint}");
     }
 
     /// SBX-010: `doctor` bindet die Probe ein; die Angaben stehen in `details` des Checks

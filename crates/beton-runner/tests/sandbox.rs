@@ -1,6 +1,7 @@
-//! SBX-001 AC4 im Runner: Der Start des Harness-Prozesses (Fake-CLI hinter dem Claude-Adapter)
-//! meldet genau ein `sandbox.started`. Bis SBX-006 (WP-49) läuft er ausdrücklich über
-//! `backend: none`, sichtbar als `degraded`. Keine echten Vendor-CLIs, kein Netz.
+//! Harness-Prozess (Fake-CLI hinter dem Claude-Adapter) und Sandbox im Runner: SBX-001 AC4
+//! (genau ein `sandbox.started`, mit `backend: none` sichtbar als `degraded`), der
+//! `PreToolUse`-Hook aus Stufe 1 (#206) und YOLO in der Sandbox mit durchgesetzter `deny`-Policy
+//! (HAR-027 AC2). Keine echten Vendor-CLIs, kein Netz.
 
 #![allow(
     clippy::disallowed_methods,
@@ -8,6 +9,8 @@
 )]
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
+
+mod support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -32,7 +35,9 @@ struct D {
 impl D {
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -117,8 +122,17 @@ fn fake_cli() -> PathBuf {
 }
 
 async fn daemon(dir: &Path) -> D {
+    daemon_with(
+        dir,
+        "turns:\n  - emit:\n      - { message: \"ok\" }\n",
+        support::unsandboxed(),
+    )
+    .await
+}
+
+async fn daemon_with(dir: &Path, scenario: &str, sandbox: beton_sandbox::SandboxSpec) -> D {
     let sc = dir.join("scenario.yaml");
-    std::fs::write(&sc, "turns:\n  - emit:\n      - { message: \"ok\" }\n").unwrap();
+    std::fs::write(&sc, scenario).unwrap();
     let mut inherit: std::collections::BTreeMap<String, String> = std::env::vars()
         .filter(|(k, _)| !k.ends_with("_API_KEY") && k != "ANTHROPIC_AUTH_TOKEN")
         .collect();
@@ -136,6 +150,7 @@ async fn daemon(dir: &Path) -> D {
     cfg.socket = None;
     let runners = dir.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        r.sessions.sandbox = sandbox;
         r.sessions.provider = std::sync::Arc::new(
             LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
         );

@@ -98,7 +98,7 @@ fn har_027_policy_mode_is_rechecked_against_the_sandbox() {
     use beton_runner::settings::policy_start_mode;
     let mut caps = Capabilities::minimal(Mode::Native, Transport::Native);
     caps.permission_modes = PermissionMode::ALL.to_vec();
-    let none = SandboxStatus::current();
+    let none = SandboxStatus::NONE;
     // Lockern wird verworfen, auch ohne Startmodus.
     assert_eq!(
         policy_start_mode(None, Some("yolo"), &caps, none).unwrap(),

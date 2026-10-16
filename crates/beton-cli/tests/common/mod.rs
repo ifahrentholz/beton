@@ -15,9 +15,19 @@ use std::time::{Duration, Instant};
 use beton_sdk::{Client, DaemonInfo};
 use serde_json::json;
 
+/// Programm, das Tests statt einer echten Vendor-CLI finden, wenn sie keine Fake-CLI setzen:
+/// Es gibt die Datei nicht, der Harness gilt als nicht installiert. Echte `claude`/`codex`
+/// laufen über das Abo des Maintainers und kommen in Tests nie vor (AGENTS.md).
+pub const NO_REAL_VENDOR_CLI: &str = "/nonexistent/beton-tests-never-run-a-real-vendor-cli";
+
+/// `config.yaml` der Test-Daemons ohne eigene Konfiguration: ausdrücklich `backend: none`.
+pub const UNSANDBOXED_CONFIG: &str = "sandbox:\n  backend: none\n";
+
 pub fn beton(home: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_beton"));
-    c.env("BETON_HOME", home)
+    c.env("BETON_CLAUDE_PATH", NO_REAL_VENDOR_CLI)
+        .env("BETON_CODEX_PATH", NO_REAL_VENDOR_CLI)
+        .env("BETON_HOME", home)
         .env("NO_COLOR", "1")
         .env_remove("BETON_SERVER")
         .env_remove("BETON_TOKEN")
@@ -71,9 +81,14 @@ impl Serve {
 
     fn start_inner(env: &[(&str, &str)], without_api_keys: bool, config: Option<&str>) -> Self {
         let home = tempfile::tempdir().unwrap();
-        if let Some(config) = config {
-            std::fs::write(home.path().join("config.yaml"), config).unwrap();
-        }
+        // Ohne eigene Konfiguration ausdrücklich ohne Sandbox (SBX-006); jede neue Session
+        // bestätigt das (`beton run --unsandboxed`, `confirm_unsandboxed`). Die Sandbox prüfen
+        // eigene Tests (`sandbox_required.rs`, `m2_demo.rs`).
+        std::fs::write(
+            home.path().join("config.yaml"),
+            config.unwrap_or(UNSANDBOXED_CONFIG),
+        )
+        .unwrap();
         let work = tempfile::tempdir().unwrap();
         let log = std::fs::File::create(work.path().join("serve.log")).unwrap();
         let mut cmd = beton(home.path());
@@ -136,6 +151,7 @@ impl Serve {
                 "target": "fake",
                 "cwd": self.work.path(),
                 "harness_opts": {"scenario": scenario},
+                "confirm_unsandboxed": true,
             }))
             .await
             .unwrap();
@@ -234,7 +250,7 @@ pub fn background_home() -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(
         home.path().join("config.yaml"),
-        "server:\n  listen: [\"127.0.0.1:0\"]\n",
+        format!("server:\n  listen: [\"127.0.0.1:0\"]\n{UNSANDBOXED_CONFIG}"),
     )
     .unwrap();
     home

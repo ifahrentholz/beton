@@ -2,9 +2,10 @@
 //! nach einem Runner-Neustart (HAR-020).
 //!
 //! Der Server prüft Einstellungen vor dem Anlegen (Session, Fork) und vor dem Weiterreichen an
-//! den Runner: `yolo` ohne Sandbox lehnt er immer mit `sandbox_required` ab (fail closed), was
-//! der Katalog des Harness nicht kennt, mit `capability_unsupported`. Die endgültige Prüfung
-//! gegen die Capabilities der laufenden Session macht der Runner.
+//! den Runner: `yolo` ohne aktive Sandbox und Egress-Proxy des Hosts lehnt er beim Anlegen mit
+//! `sandbox_required` ab (fail closed), was der Katalog des Harness nicht kennt, mit
+//! `capability_unsupported`. Die endgültige Prüfung gegen die tatsächlich aufgebauten Stufen
+//! und die Capabilities der laufenden Session macht der Runner (auch beim Wechsel).
 
 use beton_core::event::{
     Actor, ApprovalDecision, ApprovalResolved, Event, EventPayload, ResolvedVia, SystemComponent,
@@ -74,12 +75,13 @@ fn invalid(detail: String) -> Problem {
 }
 
 /// Permission-Mode aus einer Anfrage; `yolo` ohne Sandbox und Egress-Proxy ist nie erlaubt.
-pub fn permission_mode(raw: &str) -> Result<PermissionMode, Problem> {
+pub fn permission_mode(raw: &str, sandbox: SandboxStatus) -> Result<PermissionMode, Problem> {
     let mode: PermissionMode = raw.parse().map_err(|e| invalid(format!("{e}")))?;
-    if mode == PermissionMode::Yolo && !SandboxStatus::current().allows_yolo() {
+    if mode == PermissionMode::Yolo && !sandbox.allows_yolo() {
         return Err(Problem::new(ProblemCode::SandboxRequired).detail(
-            "YOLO startet nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy; beides ist auf diesem \
-             Rechner nicht aktiv.",
+            "YOLO startet nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy; für diese Session \
+             ist beides nicht aktiv (`backend: none`, keine nutzbare Sandbox oder ein Harness, \
+             der Tools selbst ausführt).",
         ));
     }
     Ok(mode)
@@ -91,9 +93,10 @@ pub fn validate_start(
     caps: Option<&Capabilities>,
     effort: Option<&str>,
     mode: Option<&str>,
+    sandbox: SandboxStatus,
 ) -> Result<(), Problem> {
     if let Some(raw) = mode {
-        let mode = permission_mode(raw)?;
+        let mode = permission_mode(raw, sandbox)?;
         if let Some(caps) = caps
             && !caps.permission_modes.contains(&mode)
         {
@@ -119,7 +122,8 @@ pub fn validate_start(
 }
 
 /// Vorprüfung von `session.set` bzw. `PATCH /v1/sessions/{id}`, bevor etwas den Runner
-/// erreicht: Werte müssen gültig sein, `yolo` scheitert ohne Sandbox.
+/// erreicht: Werte müssen gültig sein. Ob `yolo` geht, entscheidet der Runner anhand der
+/// Stufen dieser Session (`sandbox_required`).
 pub fn precheck_switch(args: &Value) -> Result<(), Problem> {
     for key in ["model", "effort", "permission_mode"] {
         match &args[key] {
@@ -129,7 +133,8 @@ pub fn precheck_switch(args: &Value) -> Result<(), Problem> {
         }
     }
     if let Some(raw) = args["permission_mode"].as_str() {
-        permission_mode(raw)?;
+        raw.parse::<PermissionMode>()
+            .map_err(|e| invalid(format!("{e}")))?;
     }
     if let Some(effort) = args["effort"].as_str()
         && !EFFORT_LEVELS.contains(&effort)
@@ -282,37 +287,74 @@ mod tests {
     }
 
     #[test]
-    fn har_027_ac1_yolo_is_sandbox_required_at_create_and_switch() {
+    fn har_027_ac1_yolo_is_sandbox_required_at_create_without_sandbox() {
         let all = caps(&PermissionMode::ALL, &["low"]);
-        let p = validate_start(Some(&all), None, Some("yolo")).unwrap_err();
-        assert_eq!(p.code, ProblemCode::SandboxRequired);
-        // Auch ohne bekannten Katalog und beim Wechsel.
-        let p = validate_start(None, None, Some("yolo")).unwrap_err();
-        assert_eq!(p.code, ProblemCode::SandboxRequired);
-        let p = precheck_switch(&json!({"permission_mode": "yolo"})).unwrap_err();
+        let none = SandboxStatus::NONE;
+        let p = validate_start(Some(&all), None, Some("yolo"), none).unwrap_err();
         assert_eq!(p.code, ProblemCode::SandboxRequired);
         assert_eq!(p.code.status().as_u16(), 409);
+        // Auch ohne bekannten Katalog; Sandbox ohne Proxy (bzw. umgekehrt) reicht nicht.
+        let p = validate_start(None, None, Some("yolo"), none).unwrap_err();
+        assert_eq!(p.code, ProblemCode::SandboxRequired);
+        for partial in [
+            SandboxStatus {
+                tool_sandbox: true,
+                egress_proxy: false,
+            },
+            SandboxStatus {
+                tool_sandbox: false,
+                egress_proxy: true,
+            },
+        ] {
+            let p = validate_start(Some(&all), None, Some("yolo"), partial).unwrap_err();
+            assert_eq!(p.code, ProblemCode::SandboxRequired);
+        }
+        let full = SandboxStatus {
+            tool_sandbox: true,
+            egress_proxy: true,
+        };
+        assert!(validate_start(Some(&all), None, Some("yolo"), full).is_ok());
+        // Beim Wechsel entscheidet der Runner anhand der Stufen der Session.
+        assert!(precheck_switch(&json!({"permission_mode": "yolo"})).is_ok());
     }
 
     #[test]
     fn har_027_unknown_or_unsupported_modes_are_rejected() {
-        let p = validate_start(None, None, Some("bypassPermissions")).unwrap_err();
+        let p =
+            validate_start(None, None, Some("bypassPermissions"), SandboxStatus::NONE).unwrap_err();
         assert_eq!(p.code, ProblemCode::ValidationFailed);
         let only_default = caps(&[PermissionMode::Default], &[]);
-        let p = validate_start(Some(&only_default), None, Some("plan")).unwrap_err();
+        let p = validate_start(Some(&only_default), None, Some("plan"), SandboxStatus::NONE)
+            .unwrap_err();
         assert_eq!(p.code, ProblemCode::CapabilityUnsupported);
-        assert!(validate_start(Some(&only_default), None, Some("default")).is_ok());
+        assert!(
+            validate_start(
+                Some(&only_default),
+                None,
+                Some("default"),
+                SandboxStatus::NONE
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn har_017_effort_is_checked_against_the_catalog() {
         let none = caps(&[], &[]);
-        let p = validate_start(Some(&none), Some("high"), None).unwrap_err();
+        let p = validate_start(Some(&none), Some("high"), None, SandboxStatus::NONE).unwrap_err();
         assert_eq!(p.code, ProblemCode::CapabilityUnsupported);
-        let p = validate_start(None, Some("max"), None).unwrap_err();
+        let p = validate_start(None, Some("max"), None, SandboxStatus::NONE).unwrap_err();
         assert_eq!(p.code, ProblemCode::ValidationFailed);
         // Nicht unterstützte Stufe: der Runner mappt sie (HAR-017 AC3).
-        assert!(validate_start(Some(&caps(&[], &["low"])), Some("xhigh"), None).is_ok());
+        assert!(
+            validate_start(
+                Some(&caps(&[], &["low"])),
+                Some("xhigh"),
+                None,
+                SandboxStatus::NONE
+            )
+            .is_ok()
+        );
     }
 
     #[test]

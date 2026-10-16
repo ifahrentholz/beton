@@ -499,9 +499,8 @@ impl Registry {
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
         // HAR-027 AC1: Kein Harness startet `yolo` ohne Tool-Sandbox und Egress-Proxy, egal
         // woher der Modus kommt (fail closed, vor jedem Prozessstart).
-        if spec.permission_mode == Some(crate::PermissionMode::Yolo)
-            && !crate::SandboxStatus::current().allows_yolo()
-        {
+        let sandbox = ctx.stage.as_ref().map(|s| s.sandbox).unwrap_or_default();
+        if spec.permission_mode == Some(crate::PermissionMode::Yolo) && !sandbox.allows_yolo() {
             return Err(HarnessError::SandboxRequired(
                 "YOLO startet nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy".into(),
             ));

@@ -118,6 +118,11 @@ Options:
       --param <NAME=WERT>
           Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`
 
+      --unsandboxed
+          Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): Sie läuft ohne
+          Sandbox, das Audit-Log vermerkt es, YOLO bleibt gesperrt. Ohne die Angabe fragt die CLI im
+          Terminal nach; eine User-Policy kann `backend: none` trotzdem verbieten
+
   -h, --help
           Print help (see a summary with '-h')
 

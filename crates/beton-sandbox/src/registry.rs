@@ -48,6 +48,10 @@ pub fn auto_backend(os: Os) -> Option<ProviderId> {
     }
 }
 
+/// Nur Debug-Builds (Tests): Backends, die die Registry als nicht verfügbar meldet (`all`
+/// oder IDs mit Komma, z. B. `landlock,bwrap`).
+pub const TEST_UNAVAILABLE_ENV: &str = "BETON_TEST_SANDBOX_UNAVAILABLE";
+
 /// Ein registriertes, auf dieser Plattform (noch) nicht nutzbares Backend.
 #[derive(Debug, Clone)]
 pub struct UnavailableProvider {
@@ -148,7 +152,36 @@ impl Registry {
             r.register(unavailable(id, "Container-Backend folgt mit SBX-015 (M5)"));
         }
         r.register(Arc::new(NoneProvider));
+        #[cfg(debug_assertions)]
+        r.disable_for_tests();
         r
+    }
+
+    /// Nur Debug-Builds: [`TEST_UNAVAILABLE_ENV`] schaltet Backends ab (`all` bzw. IDs mit
+    /// Komma), z. B. „Linux ohne Landlock und bwrap“ für SBX-006 AC1. Der Schalter macht die
+    /// Sandbox nie verfügbarer als sie ist; `none` bleibt, wie es ist.
+    #[cfg(debug_assertions)]
+    fn disable_for_tests(&mut self) {
+        let Ok(list) = std::env::var(TEST_UNAVAILABLE_ENV) else {
+            return;
+        };
+        let ids: Vec<ProviderId> = self
+            .providers
+            .keys()
+            .copied()
+            .filter(|id| *id != ProviderId::None)
+            .filter(|id| {
+                list.split(',')
+                    .map(str::trim)
+                    .any(|w| w == "all" || w == id.as_str())
+            })
+            .collect();
+        for id in ids {
+            self.register(unavailable(
+                id,
+                &format!("abgeschaltet über {TEST_UNAVAILABLE_ENV} (Test)"),
+            ));
+        }
     }
 
     /// Das Backend für `auto` auf diesem Rechner. Linux: `landlock`; sind unprivilegierte

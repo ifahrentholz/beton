@@ -36,6 +36,7 @@ pub mod otel;
 pub mod policy_state;
 pub mod problem;
 pub mod queue;
+pub mod sandbox_status;
 pub mod secret_test;
 pub mod security;
 pub mod serve;

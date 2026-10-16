@@ -117,6 +117,8 @@ pub struct RunnerBoot {
     /// Zweistufige Sandbox (SBX-002, #191): `sandbox:` und `proxy.extra_ca_files`; geht als
     /// JSON in die Umgebung des Runners (keine Secrets).
     pub sandbox: Option<beton_runner::stages::SandboxBoot>,
+    /// `backend: none` ist für diese Session bestätigt (SBX-006).
+    pub unsandboxed_confirmed: bool,
     /// beton-CA für die Proxy-Instanzen (PRX-002); nur über stdin (dritte Zeile).
     pub proxy_ca: Option<beton_runner::stages::CaText>,
     /// `compaction:` der User-Konfiguration (USE-009).
@@ -276,6 +278,7 @@ macro_rules! runner_provider_contract {
                     snapshots: None,
                     fork: None,
                     sandbox: None,
+                    unsandboxed_confirmed: false,
                     proxy_ca: None,
                     compaction: Default::default(),
                     max_cost_usd: None,

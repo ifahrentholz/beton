@@ -245,6 +245,9 @@ impl RunnerProvider for LocalProvider {
                 serde_json::to_string(sb).unwrap_or_default(),
             ));
         }
+        if boot.unsandboxed_confirmed {
+            vars.push((beton_runner::env::UNSANDBOXED_CONFIRMED.into(), "1".into()));
+        }
         if boot.compaction != beton_harness::CompactionSettings::default() {
             vars.push((
                 beton_runner::env::COMPACTION.into(),
@@ -261,13 +264,19 @@ impl RunnerProvider for LocalProvider {
         // Debug-Builds reichen die Variable weiter. Sie kommt aus der Umgebung des Daemons,
         // weil die Test-Helfer die geerbte Umgebung ohne `BETON_*` übergeben.
         #[cfg(debug_assertions)]
-        if let Some(v) = self
-            .inherit
-            .get(beton_runner::env::TEST_POLICY_BUDGET)
-            .cloned()
-            .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
-        {
-            vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
+        for name in [
+            beton_runner::env::TEST_POLICY_BUDGET,
+            // Abgeschaltete Backends (SBX-006 AC1): Der Runner sieht dieselbe Registry.
+            beton_runner::env::TEST_SANDBOX_UNAVAILABLE,
+        ] {
+            if let Some(v) = self
+                .inherit
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+            {
+                vars.push((name.into(), v));
+            }
         }
         let (program, args) = self
             .command

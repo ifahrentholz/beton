@@ -349,6 +349,16 @@ impl Client {
             .await
     }
 
+    /// Wie [`Client::resume`], bestätigt dabei `sandbox.backend: none` für diese Session
+    /// (SBX-006), z. B. für eine importierte Session.
+    pub async fn resume_unsandboxed(&self, id: &str) -> Result<Value> {
+        self.post(
+            &format!("/v1/sessions/{id}/resume?confirm_unsandboxed=true"),
+            &Value::Null,
+        )
+        .await
+    }
+
     /// `POST /v1/sessions/{id}/archive` bzw. `/unarchive`.
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Value> {
         let action = if archived { "archive" } else { "unarchive" };

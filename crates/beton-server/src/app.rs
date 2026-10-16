@@ -150,6 +150,7 @@ impl Runtime {
                 import_lock: Arc::default(),
                 skill_paths: crate::session_skills::SkillPaths::from_process(),
                 sandbox: beton_sandbox::SandboxSpec::default(),
+                sandbox_probe: Arc::default(),
                 proxy_extra_ca_files: Vec::new(),
                 proxy_ca: None,
                 credentials: None,

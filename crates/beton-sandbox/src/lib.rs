@@ -56,7 +56,9 @@ pub use git::{ControlSnapshot, GitLayout};
 pub use masks::HarnessGrants;
 pub use none::NoneProvider;
 pub use provider::{KernelInfo, ProbeReport, ProviderId, SandboxProvider};
-pub use registry::{EventSink, Os, Registry, Sandbox, ViolationSink, auto_backend};
+pub use registry::{
+    EventSink, Os, Registry, Sandbox, TEST_UNAVAILABLE_ENV, ViolationSink, auto_backend,
+};
 pub use resolve::{
     ExecAccess, Mask, NetMode, ProxyEndpoint, ResolveCtx, ResolvedPolicy, Secret, Stage,
     check_caps, check_credential_file, mark_unenforced_limits, resolve,

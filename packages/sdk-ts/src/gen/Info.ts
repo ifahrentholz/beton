@@ -1,5 +1,6 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
 import type { AttachmentLimitsView } from "./AttachmentLimitsView";
+import type { SandboxInfo } from "./SandboxInfo";
 
 /**
  * Server-Informationen.
@@ -16,4 +17,8 @@ features: Array<string>,
 /**
  * Grenzen für Anhänge (WEB-006).
  */
-attachments: AttachmentLimitsView, };
+attachments: AttachmentLimitsView, 
+/**
+ * Sandbox des Hosts (SBX-006): aktiv, Egress-Proxy, ob `yolo` startbar ist (HAR-027).
+ */
+sandbox: SandboxInfo, };

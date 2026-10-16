@@ -3,30 +3,29 @@
 //!
 //! Fail closed: Ein Modus, den der Harness nicht deklariert, wird mit `capability_unsupported`
 //! abgelehnt statt still ignoriert; `yolo` (keine Vendor-Rückfragen) braucht Tool-Sandbox
-//! Stufe 2 und Egress-Proxy, sonst `sandbox_required`. Beides kommt erst mit M2 (SBX-006,
-//! PRX-008), bis dahin ist `yolo` nie startbar.
+//! Stufe 2 und Egress-Proxy, sonst `sandbox_required` (SBX-006, PRX-008). Den Status liefert
+//! allein das tatsächlich aufgebaute Stufenmodell der Session (Runner) bzw. die Sandbox der
+//! User-Konfiguration samt Probe (Server); Projekt- und Agent-Konfiguration können ihn nie
+//! setzen.
 
 use crate::adapter::{HarnessError, PermissionMode};
 use crate::capabilities::{Action, Capabilities, CapabilityUnsupported};
 
-/// Schutz, der auf diesem Host für Tool-Aufrufe aktiv ist.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Schutz, der für die Tool-Aufrufe einer Session aktiv ist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct SandboxStatus {
-    /// Tool-Sandbox Stufe 2 (SBX-006).
+    /// Tool-Sandbox Stufe 2 (SBX-002, SBX-006): Tools laufen getrennt vom Harness.
     pub tool_sandbox: bool,
-    /// Egress-Proxy (PRX-008).
+    /// Netz der Tools nur über den Egress-Proxy oder gar keins (PRX-008).
     pub egress_proxy: bool,
 }
 
 impl SandboxStatus {
-    /// Stand dieses Builds: Weder Tool-Sandbox Stufe 2 noch Egress-Proxy gibt es vor M2. Es gibt
-    /// bewusst keinen Schalter (Konfiguration, Umgebung, Projekt-Datei), der das ändert.
-    pub const fn current() -> Self {
-        Self {
-            tool_sandbox: false,
-            egress_proxy: false,
-        }
-    }
+    /// Ohne Sandbox (`backend: none` bzw. kein Stufenmodell).
+    pub const NONE: Self = Self {
+        tool_sandbox: false,
+        egress_proxy: false,
+    };
 
     /// `yolo` braucht beides (HAR-027).
     pub fn allows_yolo(&self) -> bool {
@@ -73,9 +72,8 @@ mod tests {
 
     #[test]
     fn har_027_ac1_yolo_without_sandbox_is_sandbox_required() {
-        let err =
-            check_permission_mode(PermissionMode::Yolo, &caps(&ALL), SandboxStatus::current())
-                .unwrap_err();
+        let err = check_permission_mode(PermissionMode::Yolo, &caps(&ALL), SandboxStatus::NONE)
+            .unwrap_err();
         assert_eq!(err.code(), "sandbox_required");
     }
 
@@ -103,20 +101,17 @@ mod tests {
     }
 
     #[test]
-    fn har_027_this_build_never_allows_yolo() {
-        assert!(!SandboxStatus::current().allows_yolo());
+    fn har_027_without_sandbox_never_allows_yolo() {
+        assert!(!SandboxStatus::NONE.allows_yolo());
         assert!(!SandboxStatus::default().allows_yolo());
     }
 
     #[test]
     fn har_027_undeclared_mode_is_capability_unsupported() {
         let c = caps(&[PermissionMode::Default]);
-        let err =
-            check_permission_mode(PermissionMode::Plan, &c, SandboxStatus::current()).unwrap_err();
+        let err = check_permission_mode(PermissionMode::Plan, &c, SandboxStatus::NONE).unwrap_err();
         assert_eq!(err.code(), "capability_unsupported");
-        assert!(
-            check_permission_mode(PermissionMode::Default, &c, SandboxStatus::current()).is_ok()
-        );
+        assert!(check_permission_mode(PermissionMode::Default, &c, SandboxStatus::NONE).is_ok());
     }
 
     #[test]

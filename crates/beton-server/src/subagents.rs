@@ -408,11 +408,16 @@ impl SessionManager<'_> {
         // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027);
         // `yolo` ohne Sandbox endet mit `sandbox_required`, bevor etwas angelegt wird.
         let (effort, permission_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        let caps = self.harness_capabilities(&harness, std::path::Path::new(&created.cwd));
+        // SBX-006: Ohne Sandbox nur, wenn der Parent bestätigt ist; das Child übernimmt die
+        // Bestätigung (eigener Audit-Eintrag mit Parent). Sonst gilt die Sandbox auch hier.
+        let parent_confirmed = self.unsandboxed_confirmed(parent).await?;
+        let sandbox = self.sandbox_start(caps.as_ref(), parent_confirmed).await?;
         crate::settings::validate_start(
-            self.harness_capabilities(&harness, std::path::Path::new(&created.cwd))
-                .as_ref(),
+            caps.as_ref(),
             effort.as_deref(),
             permission_mode.as_deref(),
+            sandbox.status,
         )?;
 
         // Session-Budget des Laufs (API-006 `--max-cost`): Das Child erbt, was der Teilbaum des
@@ -462,6 +467,7 @@ impl SessionManager<'_> {
                 max_cost_usd,
                 mode: requested_worktree.unwrap_or(limits.worktree),
                 in_background,
+                unsandboxed: sandbox.unsandboxed,
             })
             .await;
         let child = match started {
@@ -555,6 +561,14 @@ impl SessionManager<'_> {
                 return Err(e.into());
             }
         };
+        if c.unsandboxed {
+            self.record_unsandboxed(
+                child.id,
+                PrincipalId::User(c.parent.owner),
+                Some(c.parent.id),
+            )
+            .await?;
+        }
         if let Some(snapshot) = &c.snapshot {
             self.record_agent(child.id, snapshot, &[]).await?;
         }
@@ -1057,6 +1071,8 @@ struct StartChild<'a> {
     max_cost_usd: Option<f64>,
     mode: WorktreeMode,
     in_background: bool,
+    /// Ohne Sandbox mit der Bestätigung des Parents (SBX-006).
+    unsandboxed: bool,
 }
 
 /// Session-Baum unter einer Session (WEB-012).

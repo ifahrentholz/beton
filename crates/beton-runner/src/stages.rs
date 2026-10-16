@@ -8,8 +8,9 @@
 //!   Broker  ◄──── bt-exec ─────────────── Bash-Tool ─── Sandbox::spawn ──► /bin/zsh -c …
 //! ```
 //!
-//! Bis WP-49 (SBX-006) greift das Modell nur, wenn `sandbox.backend` ausdrücklich gesetzt und
-//! nicht `none` ist; sonst laufen Harness und Tools wie bisher über `backend: none`.
+//! Das Modell ist der Default (SBX-006): Ohne `sandbox.backend` gilt `auto`, und fehlt eine
+//! geforderte Capability, startet die Session nicht. Nur ausdrücklich `backend: none` (je
+//! Session bestätigt, siehe Runner) läuft ohne Stufen.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -499,12 +500,9 @@ fn credential_kind(t: beton_sandbox::CredentialType) -> CredentialKind {
     }
 }
 
-/// Ist das Stufenmodell konfiguriert? Bis WP-49 nur mit ausdrücklichem Backend außer `none`.
+/// Gilt das Stufenmodell? Immer, außer bei ausdrücklichem `backend: none` (SBX-006).
 pub fn active(spec: &SandboxSpec) -> bool {
-    matches!(
-        spec.backend,
-        Some(b) if b != BackendChoice::Provider(ProviderId::None)
-    )
+    !spec.unsandboxed()
 }
 
 fn unavailable(provider: ProviderId, missing: &[Cap], hint: impl Into<String>) -> SandboxError {
@@ -566,7 +564,7 @@ fn program_roots(program: &Path, path: Option<&str>) -> Vec<PathBuf> {
     out
 }
 
-/// Baut die Stufen der Session. `Ok(None)`: kein Stufenmodell konfiguriert (bis WP-49).
+/// Baut die Stufen der Session. `Ok(None)`: ausdrücklich `backend: none`.
 pub async fn compose(
     input: StageInput<'_>,
     opts: StageOptions,
@@ -944,6 +942,12 @@ async fn compose_unix(
             shim_dir: bin,
             exchange: xchg,
             tools: None,
+            // Stufe 2 erreicht das Netz nur über den Proxy oder gar nicht (PRX-008); getrennt
+            // vom Harness laufen Tools nur ohne `tool_isolation: inherited` (SBX-002 AC4).
+            sandbox: beton_harness::SandboxStatus {
+                tool_sandbox: !inherited,
+                egress_proxy: true,
+            },
         },
         passthrough,
         placeholders,
