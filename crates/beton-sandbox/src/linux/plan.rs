@@ -1028,6 +1028,27 @@ mod tests {
     }
 
     #[test]
+    fn sbx_003_git_mounts_protect_existing_module_control_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let git = root.join("ws/.git");
+        for p in ["modules/a/commondir", "modules/a/b/gitdir"] {
+            write(&git.join(p));
+        }
+        plan.git = Some(GitProtection {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git.clone(),
+        });
+        let m = git_mounts(&plan);
+        for p in ["modules/a/commondir", "modules/a/b/gitdir"] {
+            assert!(m.read_only.contains(&git.join(p)), "{p}: {m:?}");
+        }
+    }
+
+    #[test]
     fn sbx_003_git_dirs_outside_the_write_roots_are_neither_pinned_nor_watched() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();

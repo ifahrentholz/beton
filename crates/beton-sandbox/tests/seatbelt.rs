@@ -679,9 +679,13 @@ fn repo_with_worktree(fx: &Fx, git: &Path) -> PathBuf {
 }
 
 /// `commondir`/`gitdir` lenken Host-git auf ein anderes Git-Verzeichnis (#209).
-const GIT_DIR_ATTACKS: [&str; 5] = [
+const GIT_DIR_ATTACKS: [&str; 9] = [
     "echo /tmp/x > .git/commondir",
     "echo /tmp/x > .git/gitdir",
+    "ln -s /tmp/x .git/commondir",
+    "echo /tmp/x > c.txt && ln c.txt .git/commondir",
+    "echo /tmp/x > c.txt && mv c.txt .git/commondir",
+    "mkdir .git/commondir",
     "echo /tmp/x > .git/worktrees/wt2/commondir",
     "echo /tmp/x > .git/worktrees/wt2/gitdir",
     // Den Eintrag als Ganzes wegbewegen (dann ließe sich ein vorbereiteter einsetzen).
@@ -695,13 +699,20 @@ async fn sbx_003_ac4_commondir_and_gitdir_cannot_be_created_or_changed() {
     let fc = fx();
     repo_with_worktree(&fc, &git);
     for attack in GIT_DIR_ATTACKS {
-        let c = control(&fc, attack).await;
+        // Jeder Angriff für sich (ein vorheriger hätte den Namen schon belegt).
+        let c = control(&fc, &format!("rm -rf .git/commondir .git/gitdir; {attack}")).await;
         assert!(c.ok, "Kontrollgruppe {attack}: {c:?}");
     }
-    assert!(fc.ws.join(".git/commondir").is_file());
+    assert!(fc.ws.join(".git/wt2-alt").is_dir());
+    // Submodul-Eintrag (Seatbelt sperrt `modules/**/commondir|gitdir`).
+    let module_attack = "echo /tmp/x > .git/modules/sub/commondir";
+    std::fs::create_dir_all(fc.ws.join(".git/modules/sub")).unwrap();
+    let c = control(&fc, module_attack).await;
+    assert!(c.ok, "Kontrollgruppe {module_attack}: {c:?}");
 
     let fx = fx();
     let admin = repo_with_worktree(&fx, &git);
+    std::fs::create_dir_all(fx.ws.join(".git/modules/sub")).unwrap();
     let before = [
         std::fs::read(admin.join("commondir")).unwrap(),
         std::fs::read(admin.join("gitdir")).unwrap(),
@@ -710,10 +721,11 @@ async fn sbx_003_ac4_commondir_and_gitdir_cannot_be_created_or_changed() {
     ctx.git = GitLayout::discover(&fx.ws).unwrap();
     let yaml = format!("read_paths: [\"{}\"]\n", prefix.display());
     let policy = fx.policy_with(&yaml, ctx);
-    for attack in GIT_DIR_ATTACKS {
+    for attack in GIT_DIR_ATTACKS.into_iter().chain([module_attack]) {
         let out = sh(&policy, attack).await;
         assert!(!out.ok, "{attack}: {out:?}");
     }
+    assert!(!fx.ws.join(".git/modules/sub/commondir").exists());
     assert!(!fx.ws.join(".git/commondir").exists());
     assert!(!fx.ws.join(".git/gitdir").exists());
     assert_eq!(std::fs::read(admin.join("commondir")).unwrap(), before[0]);
