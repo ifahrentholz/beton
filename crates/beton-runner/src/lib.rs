@@ -1356,6 +1356,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     == beton_harness::ToolIsolation::ShellOverride
         })
         .map(|_| stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS));
+    // SBX-003 (#311): Weckt den Runner, wenn der Git-Shim der Stufe 1 einen Verstoß findet.
+    let git_alarm = stages
+        .as_ref()
+        .and_then(stages::SessionStages::git_alarm)
+        .unwrap_or_default();
     let (turn_gate_tx, mut turn_gate_rx) = mpsc::unbounded_channel::<TurnGate>();
     gate.order_after_requests();
     let mut answered: std::collections::HashSet<String> = Default::default();
@@ -2034,6 +2039,21 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     drain_acks(&mut ws, &mut unacked).await;
                     let _ = session.shutdown(Shutdown::Kill).await;
                     return Ok(Exit::TimedOut);
+                }
+                // SBX-003 (#311): Der Git-Shim der Stufe 1 hat vor einem `git` eine neue oder
+                // geänderte Git-Steuerdatei gefunden und git nicht gestartet; die Session
+                // endet sofort, nicht erst nach dem nächsten Tool-Lauf.
+                _ = git_alarm.notified() => {
+                    let Some(Err(reason)) = stages.as_ref().map(stages::SessionStages::check_git) else { continue };
+                    tracing::error!("Integritätsprüfung der Sandbox: {reason}");
+                    let _ = session.shutdown(Shutdown::Kill).await;
+                    if let Some(s) = stages.as_ref() { s.restore_git(); }
+                    let mut batch = Vec::new();
+                    end_sandbox_integrity_violation(&boot, &mut lifecycle, GIT_CONTROL_CHANGED, &reason, &mut batch);
+                    let _ = push(&mut ws, &boot, &mut unacked, batch).await;
+                    drain_acks(&mut ws, &mut unacked).await;
+                    if let Some(s) = stages.as_ref() { s.restore_git(); }
+                    return Ok(Exit::PolicyViolation);
                 }
                 _ = parent_check.tick() => {
                     // Mit offener Freigabe auf den nächsten Daemon warten (POL-010 AC4);

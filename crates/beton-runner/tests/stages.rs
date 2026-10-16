@@ -749,12 +749,50 @@ async fn sbx_003_git_shim_leads_the_stage_one_path_and_uses_the_real_git_from_st
     assert!(!t.env.contains_key(ENV_GIT));
 }
 
+/// Ein git, das in der Sandbox läuft, und die Lese-Wurzel seines Präfixes (wie in den
+/// Seatbelt-Tests): unter macOS das git von Xcode bzw. Homebrew, weil der `xcrun`-Stub
+/// `/usr/bin/git` mit Xcode.app in der Sandbox nicht startet.
+#[allow(clippy::disallowed_methods, reason = "Test sucht git in Stufe 0")]
+fn git_binary() -> (PathBuf, Option<PathBuf>) {
+    let found = if cfg!(target_os = "macos") {
+        std::process::Command::new("/usr/bin/xcrun")
+            .args(["-f", "git"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+    } else {
+        None
+    };
+    let found = found
+        .or_else(|| {
+            std::process::Command::new("/usr/bin/which")
+                .arg("git")
+                .output()
+                .ok()
+                .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
+        })
+        .expect("git");
+    let git = found.canonicalize().unwrap();
+    let prefix = if git.starts_with("/usr/local") {
+        Some(PathBuf::from("/usr/local"))
+    } else if git.starts_with("/usr/") || git.starts_with("/bin/") {
+        None
+    } else if git.starts_with("/opt/homebrew") {
+        Some(PathBuf::from("/opt/homebrew"))
+    } else {
+        // …/Contents/Developer/usr/bin/git → …/Contents/Developer
+        Some(git.ancestors().nth(3).unwrap().to_path_buf())
+    };
+    (git, prefix)
+}
+
 #[allow(
     clippy::disallowed_methods,
     reason = "Test bereitet das Repo in Stufe 0 vor"
 )]
-fn git_init(ws: &std::path::Path) {
-    let status = std::process::Command::new("git")
+fn git_init(git: &std::path::Path, ws: &std::path::Path) {
+    let status = std::process::Command::new(git)
         .args(["init", "-q"])
         .current_dir(ws)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -771,14 +809,33 @@ fn git_init(ws: &std::path::Path) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sbx_003_git_in_stage_one_stops_when_commondir_changed() {
     let fx = fx();
-    git_init(&fx.ws);
+    let (git, prefix) = git_binary();
+    git_init(&git, &fx.ws);
+    let mut inp = input(&fx, "claude", ToolIsolation::ShellOverride);
+    inp.host_env.insert(
+        "PATH".into(),
+        format!(
+            "{}:/usr/bin:/bin:/usr/sbin:/sbin",
+            git.parent().unwrap().display()
+        ),
+    );
+    let read = prefix
+        .map(|p| format!("read_paths: [\"{}\"]\n", p.display()))
+        .unwrap_or_default();
     let s = compose(
-        input(&fx, "claude", ToolIsolation::ShellOverride),
-        opts("backend: auto\nallow_network: false\n", true),
+        inp,
+        opts(
+            &format!("backend: auto\nallow_network: false\n{read}"),
+            true,
+        ),
     )
     .await
     .unwrap()
     .unwrap();
+    assert_eq!(
+        s.harness.policy().env[beton_sandbox::broker::git_shim::ENV_GIT],
+        git.to_str().unwrap()
+    );
     let alarm = s.git_alarm().expect("Alarm des Git-Shims");
     let trace = PathBuf::from(&s.harness.policy().env["TMPDIR"]).join("git-trace");
     let shim_dir = s.harness.policy().env["PATH"]

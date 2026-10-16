@@ -186,8 +186,10 @@ pub struct SessionStages {
     tools_binding_list: Vec<Binding>,
     _summaries: Option<AbortOnDrop>,
     /// Git-Steuerdateien vor dem ersten Tool-Lauf und vom Backend gemeldete Verstöße daran
-    /// (SBX-003, #209).
-    git: Option<GitGuard>,
+    /// (SBX-003, #209); geteilt mit dem Exec-Broker für den Git-Shim der Stufe 1 (#311).
+    git: Option<Arc<GitGuard>>,
+    /// Meldet einen Verstoß, den der Git-Shim der Stufe 1 gefunden hat (#311).
+    git_alarm: Arc<tokio::sync::Notify>,
     #[cfg(unix)]
     _broker: beton_sandbox::broker::Broker,
     _proxies: Vec<beton_proxy::ProxyInstance>,
@@ -309,20 +311,47 @@ impl SessionStages {
 
 /// Zweite Linie hinter den Sperren der Backends (SBX-003, #209): Schnappschuss der
 /// Git-Steuerdateien beim Start und `fs`-Verstöße, die ein Backend an ihnen meldet (Linux:
-/// der Launcher hat die Sandbox beendet und die Datei entfernt).
+/// der Launcher hat die Sandbox beendet und die Datei entfernt). Der Git-Shim der Stufe 1
+/// prüft über den Exec-Broker vor jedem `git` (#311); ein Verstoß dort bleibt festgehalten,
+/// bis der Runner die Session beendet.
 struct GitGuard {
     common_dir: PathBuf,
     before: beton_sandbox::ControlSnapshot,
     reported: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    /// Verstoß aus der Prüfung des Git-Shims; zugleich Sperre, damit Runner und Broker nicht
+    /// gleichzeitig zurücksetzen.
+    tripped: std::sync::Mutex<Option<String>>,
+    alarm: Arc<tokio::sync::Notify>,
 }
 
 impl GitGuard {
-    fn new(layout: &beton_sandbox::GitLayout) -> Self {
+    fn new(layout: &beton_sandbox::GitLayout, alarm: Arc<tokio::sync::Notify>) -> Self {
         Self {
             common_dir: layout.common_dir.clone(),
             before: beton_sandbox::ControlSnapshot::capture(layout),
             reported: Arc::default(),
+            tripped: std::sync::Mutex::new(None),
+            alarm,
         }
+    }
+
+    /// Prüfung des Git-Shims vor einem `git` der Stufe 1 (über den Exec-Broker): wie
+    /// [`Self::check`]; ein Verstoß bleibt für den Runner festgehalten und weckt ihn.
+    fn preflight(&self) -> Result<(), String> {
+        let Ok(mut tripped) = self.tripped.lock() else {
+            return Err("Prüfung der Git-Steuerdateien nicht möglich".into());
+        };
+        if let Some(why) = tripped.as_ref() {
+            return Err(why.clone());
+        }
+        let result = self
+            .compare()
+            .map_err(|why| format!("git in Stufe 1 nicht gestartet: {why}"));
+        if let Err(why) = &result {
+            *tripped = Some(why.clone());
+            self.alarm.notify_one();
+        }
+        result
     }
 
     fn sink(&self) -> beton_sandbox::ViolationSink {
@@ -363,7 +392,21 @@ impl GitGuard {
         }
     }
 
+    /// Nach einem Tool-Lauf bzw. auf den Alarm des Git-Shims: ein festgehaltener Verstoß oder
+    /// der Vergleich mit dem Schnappschuss.
     fn check(&self) -> Result<(), String> {
+        let Ok(mut tripped) = self.tripped.lock() else {
+            return Err("Prüfung der Git-Steuerdateien nicht möglich".into());
+        };
+        if let Some(why) = tripped.take() {
+            return Err(why);
+        }
+        self.compare()
+    }
+
+    /// Vergleich mit dem Schnappschuss samt gemeldeter Verstöße; setzt Neues bzw. Geändertes
+    /// zurück. Nur unter der Sperre `tripped`.
+    fn compare(&self) -> Result<(), String> {
         let mut hits: Vec<PathBuf> = self
             .reported
             .lock()
@@ -398,13 +441,13 @@ impl SessionStages {
     /// wenn eine entstanden ist oder sich geändert hat. Neue und geänderte werden dabei
     /// entfernt bzw. zurückgesetzt.
     pub fn check_git(&self) -> Result<(), String> {
-        self.git.as_ref().map_or(Ok(()), GitGuard::check)
+        self.git.as_ref().map_or(Ok(()), |g| g.check())
     }
 
     /// Meldet sich, sobald der Git-Shim der Stufe 1 einen Verstoß gefunden hat (SBX-003, #311);
     /// danach liefert [`Self::check_git`] die Begründung.
     pub fn git_alarm(&self) -> Option<Arc<tokio::sync::Notify>> {
-        None
+        Some(self.git_alarm.clone())
     }
 
     /// Nach dem Beenden der Session wegen eines Verstoßes: setzt Steuerdateien erneut zurück,
@@ -570,6 +613,27 @@ fn program_roots(program: &Path, path: Option<&str>) -> Vec<PathBuf> {
         out.push(node);
     }
     out
+}
+
+/// Stellt den Git-Shim vorn in den `PATH` der Stufe 1 und hinterlegt das echte git als
+/// absoluten Pfad (SBX-003, #311): das erste ausführbare `git` im aufgelösten `PATH` der
+/// Stufe 1, einmal beim Start in Stufe 0 ermittelt. Ohne git verweigert der Shim jeden Aufruf.
+fn install_git_shim(policy: &mut beton_sandbox::ResolvedPolicy, shim_dir: &Path) {
+    use beton_sandbox::broker::git_shim;
+    let path = policy.env.get("PATH").cloned().unwrap_or_default();
+    if let Some(real) = git_shim::find_real_git(&path, shim_dir) {
+        policy.env.insert(
+            git_shim::ENV_GIT.into(),
+            real.to_string_lossy().into_owned(),
+        );
+    }
+    let dir = shim_dir.to_string_lossy();
+    let path = if path.is_empty() {
+        dir.into_owned()
+    } else {
+        format!("{dir}:{path}")
+    };
+    policy.env.insert("PATH".into(), path);
 }
 
 /// Baut die Stufen der Session. `Ok(None)`: kein Stufenmodell konfiguriert (bis WP-49).
@@ -875,8 +939,11 @@ async fn compose_unix(
     }
 
     let git = beton_sandbox::GitLayout::discover(input.workdir)?;
-    let git_guard = git.as_ref().map(GitGuard::new);
-    let git_sink = git_guard.as_ref().map(GitGuard::sink);
+    let git_alarm = Arc::new(tokio::sync::Notify::new());
+    let git_guard = git
+        .as_ref()
+        .map(|l| Arc::new(GitGuard::new(l, git_alarm.clone())));
+    let git_sink = git_guard.as_deref().map(GitGuard::sink);
     let ctx = |stage: Stage, scratch: &Path, proxy: Option<ProxyEndpoint>| {
         let mut c = ResolveCtx::new(stage, input.workdir, &input.home, scratch);
         c.git.clone_from(&git);
@@ -903,13 +970,28 @@ async fn compose_unix(
     if let Some(sink) = &git_sink {
         tools = tools.with_violations(sink.clone());
     }
-    let broker = beton_sandbox::broker::Broker::start(&exec, tools.clone())
+    // Der Broker beantwortet auch die Vorabprüfung des Git-Shims (SBX-003, #311); ohne
+    // Git-Verzeichnis im Workspace gibt es nichts zu vergleichen.
+    let check: beton_sandbox::broker::GitCheck = match git_guard.clone() {
+        Some(g) => Arc::new(move || g.preflight()),
+        None => Arc::new(|| Ok(())),
+    };
+    let broker = beton_sandbox::broker::Broker::start_with_git_check(&exec, tools.clone(), check)
         .await
         .map_err(|e| io("Exec-Broker", e))?;
     let exe = opts.exe.canonicalize().map_err(|e| io("beton-Binary", e))?;
     for name in ["bt-exec", "bt-exec-zsh", "bt-exec-bash", "bt-exec-sh"] {
         std::os::unix::fs::symlink(&exe, bin.join(name)).map_err(|e| io("bt-exec", e))?;
     }
+    // Git-Shim (SBX-003, #311): `<session>/exec/git/git` → beton, nur für Stufe 0
+    // beschreibbar; Stufe 1 liest das Broker-Verzeichnis, Stufe 2 sieht es nicht.
+    let git_shim = exec.join(beton_sandbox::broker::git_shim::DIR);
+    std::fs::create_dir(&git_shim)
+        .and_then(|()| std::fs::set_permissions(&git_shim, std::fs::Permissions::from_mode(0o700)))
+        .and_then(|()| {
+            std::os::unix::fs::symlink(&exe, git_shim.join(beton_sandbox::broker::git_shim::NAME))
+        })
+        .map_err(|e| io("git-Shim", e))?;
 
     // Stufe 1.
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
@@ -929,6 +1011,19 @@ async fn compose_unix(
     c.credential_env = harness_env;
     let mut harness_policy = provider.resolve(&harness_spec, &c)?;
     harness_policy.inherited_tools = inherited;
+    // Stufe 1 muss den Shim ausführen können (fail closed, sonst liefe kein git).
+    if !harness_policy
+        .read_roots
+        .iter()
+        .any(|r| git_shim.starts_with(r))
+    {
+        return Err(unavailable(
+            id,
+            &[Cap::FsRead],
+            "git-Shim liegt außerhalb der Lese-Wurzeln der Stufe 1",
+        ));
+    }
+    install_git_shim(&mut harness_policy, &git_shim);
     // PRX-006 AC4: Credential-Dateien liegen außerhalb aller Freigaben beider Stufen.
     for cred in &tools_creds {
         if let Some(file) = &cred.source.file {
@@ -960,6 +1055,7 @@ async fn compose_unix(
         tools_binding_list,
         _summaries: summaries,
         git: git_guard,
+        git_alarm,
         _broker: broker,
         _proxies: proxies,
         _dir: dir,
