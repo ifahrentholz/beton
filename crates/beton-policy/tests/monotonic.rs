@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 
 use beton_policy::Phase;
@@ -163,7 +165,7 @@ fn evaluate(sets: Vec<Arc<LoadedSet>>, command: &str, args_supported: bool) -> O
             args: args_supported,
             ..Capabilities::default()
         },
-        ..EvalOptions::default()
+        ..common::opts()
     };
     EffectiveSet::new(sets).evaluate(&act, &opts).outcome
 }
