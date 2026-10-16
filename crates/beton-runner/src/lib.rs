@@ -13,7 +13,10 @@ pub mod policy;
 pub mod settings;
 pub mod stages;
 pub mod state;
+mod token;
 pub mod workspace;
+
+pub use token::RunnerToken;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -103,7 +106,8 @@ pub mod env {
 #[derive(Debug, Clone)]
 pub struct RunnerBoot {
     pub socket: PathBuf,
-    pub token: String,
+    /// Aktuelles Runner-Token; Erneuerungen über den Tunnel ersetzen es (AUTH-011 AC2).
+    pub token: RunnerToken,
     pub session_id: SessionId,
     pub runner_id: RunnerId,
     pub epoch: u64,
@@ -166,7 +170,7 @@ impl RunnerBoot {
     pub fn from_env_and_stdin() -> Result<Self, RunnerError> {
         let var = |k: &str| std::env::var(k).map_err(|_| RunnerError::Boot(format!("{k} fehlt")));
         let parse = |k: &str| -> Result<String, RunnerError> { var(k) };
-        let mut token = String::new();
+        let mut token = zeroize::Zeroizing::new(String::new());
         std::io::stdin()
             .read_line(&mut token)
             .map_err(|e| RunnerError::Boot(format!("Token von stdin: {e}")))?;
@@ -184,7 +188,7 @@ impl RunnerBoot {
         zeroize::Zeroize::zeroize(&mut ca);
         Ok(Self {
             socket: PathBuf::from(var(env::SOCKET)?),
-            token: token.trim().to_owned(),
+            token: RunnerToken::new(token.trim().to_owned()),
             session_id: parse(env::SESSION)?
                 .parse()
                 .map_err(|e| RunnerError::Boot(format!("{e}")))?,
@@ -657,7 +661,8 @@ async fn connect(boot: &RunnerBoot) -> Result<Ws, RunnerError> {
     let headers = req.headers_mut();
     headers.insert(
         "authorization",
-        format!("Bearer {}", boot.token)
+        boot.token
+            .bearer()
             .parse()
             .map_err(|_| RunnerError::Boot("Token ungültig".into()))?,
     );
@@ -1527,6 +1532,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Von einem späteren Daemon übernommen bzw. geordnet abgekoppelt (POL-010 AC4).
     let mut adopted = false;
     let mut detached_at: Option<std::time::Instant> = None;
+    // Erneuerung des Runner-Tokens über den Tunnel (AUTH-011 AC2, #243).
+    let mut renewal = token::Renewal::default();
 
     loop {
         // (Wieder-)Verbinden.
@@ -1551,6 +1558,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         adopted |= !parent_alive(boot.parent_pid);
         detached_at = None;
         backoff.reset();
+        renewal.reset();
         let hello = TunnelUp::Hello {
             kind: PeerKind::Runner,
             version: env!("CARGO_PKG_VERSION").into(),
@@ -2100,6 +2108,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     pending_calls.insert(call_id, call.reply);
                     if !send(&mut ws, &up).await { break None; }
                 }
+                () = sleep_until_opt(renewal.due()) => {
+                    let up = renewal.request();
+                    if !send(&mut ws, &up).await { break None; }
+                }
                 msg = ws.next() => {
                     let Some(Ok(msg)) = msg else { break None };
                     if let Message::Close(Some(frame)) = &msg
@@ -2217,7 +2229,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             tracing::warn!(?problem, "Tunnel-Problem");
                         }
-                        TunnelDown::SystemResult { call_id, result, problem } => {
+                        TunnelDown::SystemResult { call_id, mut result, problem } => {
+                            if renewal.on_result(&call_id, &mut result, &boot.token) {
+                                continue;
+                            }
                             if let Some(reply) = pending_calls.remove(&call_id) {
                                 let _ = reply.send(match (result, problem) {
                                     (Some(r), None) => Ok(r),
@@ -2574,6 +2589,9 @@ struct PreStart {
     ws: Option<Ws>,
     pending: HashMap<String, oneshot::Sender<Result<Value, Value>>>,
     next: u64,
+    /// Auch eine Vorab-Verbindung erneuert das Token: Eine Freigabe kann länger dauern als
+    /// seine Gültigkeit (AUTH-011 AC2).
+    renewal: token::Renewal,
 }
 
 impl PreStart {
@@ -2600,6 +2618,7 @@ impl PreStart {
             return false;
         }
         self.ws = Some(ws);
+        self.renewal.reset();
         true
     }
 
@@ -2653,6 +2672,12 @@ impl PreStart {
                         }
                     }
                 }
+                () = sleep_until_opt(self.renewal.due()), if self.ws.is_some() => {
+                    let up = self.renewal.request();
+                    if let Some(ws) = self.ws.as_mut() {
+                        let _ = send(ws, &up).await;
+                    }
+                }
                 call = usage_rx.recv() => {
                     let Some(call) = call else { continue };
                     if !self.connect(boot, unacked).await {
@@ -2676,7 +2701,10 @@ impl PreStart {
                     match down {
                         TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
-                        TunnelDown::SystemResult { call_id, result, problem } => {
+                        TunnelDown::SystemResult { call_id, mut result, problem } => {
+                            if self.renewal.on_result(&call_id, &mut result, &boot.token) {
+                                continue;
+                            }
                             if let Some(reply) = self.pending.remove(&call_id) {
                                 let _ = reply.send(match (result, problem) {
                                     (Some(r), None) => Ok(r),

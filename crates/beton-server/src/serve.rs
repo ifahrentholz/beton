@@ -119,6 +119,8 @@ pub async fn start_with(
     let mut runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
+    // Gültigkeit der Runner-Tokens (AUTH-011 AC2, #243).
+    runtime.runners.set_token_ttl(runtime.tunnel.token_ttl);
     // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
     // Werte, bevor irgendein Task schreibt oder verteilt (SEC-013); die übrigen Capabilities
     // bleiben hier ungenutzt (die REST-API gibt nie Werte heraus).

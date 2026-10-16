@@ -56,10 +56,11 @@ pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
-    /// Tunnel-Token und Startzeit des zuletzt gestarteten Runners je Session. Ist das Token
-    /// gesperrt (geordneter Stopp) oder das Start-Budget abgelaufen, startet dieser Runner nicht
-    /// mehr, auch wenn sein Prozess noch läuft (#198).
-    tokens: Mutex<HashMap<SessionId, (String, Instant)>>,
+    /// Token-Generation und Startzeit des zuletzt gestarteten Runners je Session; das Token
+    /// selbst hält der Daemon nicht (#243). Ist die Generation gesperrt (geordneter Stopp) oder
+    /// das Start-Budget abgelaufen, startet dieser Runner nicht mehr, auch wenn sein Prozess
+    /// noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, (crate::tunnel::Generation, Instant)>>,
     /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
     /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
     starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
@@ -960,13 +961,12 @@ impl<'a> SessionManager<'a> {
             // `confirm_unsandboxed`), nie still ohne Sandbox (SBX-006).
             return Err(unconfirmed_problem());
         }
-        let token = self
+        let (boot_token, generation) = self
             .state
             .runtime
             .runners
-            .mint_token(session.id)
+            .mint(session.id, cfg.start_budget)
             .map_err(|e| Problem::internal(&e))?;
-        let boot_token = token.clone();
         let spec = RunnerSpec {
             runner_id: RunnerId::new(),
             session_id: session.id,
@@ -1037,7 +1037,7 @@ impl<'a> SessionManager<'a> {
             .tokens
             .lock()
             .await
-            .insert(session.id, (token, Instant::now()));
+            .insert(session.id, (generation, Instant::now()));
         Ok(())
     }
 
@@ -1060,8 +1060,11 @@ impl<'a> SessionManager<'a> {
     /// dem Start-Budget noch läuft). Nur unter der Start-Sperre der Session aufrufen; dann gehört
     /// der Eintrag sicher zur Generation vor dem neuen Start.
     async fn replace_start(&self, session: SessionId) {
-        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
-            self.state.runtime.runners.revoke_token(&token);
+        if let Some((generation, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            self.state
+                .runtime
+                .runners
+                .revoke_generation(session, generation);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
@@ -1140,8 +1143,13 @@ impl<'a> SessionManager<'a> {
             .get(&session)
             .cloned();
         let budget = self.cfg().start_budget;
-        if !launched.is_some_and(|(t, at)| {
-            at.elapsed() < budget && self.state.runtime.runners.token_valid(&t)
+        if !launched.is_some_and(|(generation, at)| {
+            at.elapsed() < budget
+                && self
+                    .state
+                    .runtime
+                    .runners
+                    .generation_valid(session, generation)
         }) {
             return false;
         }
@@ -1619,8 +1627,8 @@ impl<'a> SessionManager<'a> {
         }
         // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
         // Tunnel (Security-Review zu #198).
-        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
-            runners.revoke_token(&token);
+        if let Some((generation, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            runners.revoke_generation(session, generation);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self

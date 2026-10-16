@@ -1064,6 +1064,9 @@ async fn auth_011_ac2_tunnel_closes_when_the_token_is_not_renewed() {
         r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider = std::sync::Arc::new(provider);
         r.tunnel.token_ttl = Duration::from_secs(1);
+        // Ein Start-Token gilt mindestens das Start-Budget lang.
+        r.sessions.start_budget = Duration::from_secs(1);
+        r.sessions.connect_timeout = Duration::from_millis(500);
         r
     })
     .await;

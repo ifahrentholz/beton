@@ -14,6 +14,10 @@ use ts_rs::TS;
 pub const SUBPROTOCOL: &str = "beton.tunnel.v1";
 pub const PROTOCOL: &str = "1.0";
 
+/// System-Call, mit dem ein verbundener Runner sein Token erneuert (AUTH-011 AC2, #243).
+/// Ergebnis `{token, expires_in_ms}`: neues Token derselben Generation und seine Gültigkeit.
+pub const TOKEN_RENEW_TOOL: &str = "runner.token_renew";
+
 /// Wer sich verbindet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
