@@ -171,6 +171,31 @@ impl TrayModel {
     }
 }
 
+/// „seit 3 Std.“ für den Daemon-Status im Tray.
+pub fn uptime(since: std::time::SystemTime, now: std::time::SystemTime) -> String {
+    let secs = now.duration_since(since).map(|d| d.as_secs()).unwrap_or(0);
+    match secs {
+        0..60 => "seit gerade eben".into(),
+        60..3600 => format!("seit {} Min.", secs / 60),
+        3600..86_400 => format!("seit {} Std.", secs / 3600),
+        _ if secs < 2 * 86_400 => "seit 1 Tag".into(),
+        _ => format!("seit {} Tagen", secs / 86_400),
+    }
+}
+
+/// Kopfzeile des Tray-Menüs (Entwurf `desktop-tray`).
+pub fn daemon_line(reachable: bool, version: &str, uptime: Option<&str>) -> String {
+    if !reachable {
+        return "Lokaler Daemon gestoppt – Sessions pausieren".into();
+    }
+    let mut parts = vec!["Lokaler Daemon läuft".to_owned()];
+    parts.extend(uptime.map(str::to_owned));
+    if !version.is_empty() {
+        parts.push(format!("v{version}"));
+    }
+    parts.join(" · ")
+}
+
 /// Sessions, die gerade arbeiten: Beim Beenden fragt die App, ob der Daemon weiterlaufen soll
 /// (DESK-002).
 pub fn working(sessions: &BTreeMap<String, SessionInfo>) -> Vec<String> {
@@ -259,6 +284,24 @@ mod tests {
             badge(&[], &sessions, &s),
             0,
             "ungelesene zählen nur mit Kanal an"
+        );
+    }
+
+    #[test]
+    fn desk_002_tray_header_shows_daemon_state() {
+        let t0 = std::time::SystemTime::UNIX_EPOCH;
+        let at = |s| t0 + std::time::Duration::from_secs(s);
+        assert_eq!(uptime(t0, at(5)), "seit gerade eben");
+        assert_eq!(uptime(t0, at(14 * 60)), "seit 14 Min.");
+        assert_eq!(uptime(t0, at(3 * 3600 + 5)), "seit 3 Std.");
+        assert_eq!(uptime(t0, at(3 * 86_400)), "seit 3 Tagen");
+        assert_eq!(
+            daemon_line(true, "0.1.0", Some("seit 3 Std.")),
+            "Lokaler Daemon läuft · seit 3 Std. · v0.1.0"
+        );
+        assert_eq!(
+            daemon_line(false, "0.1.0", None),
+            "Lokaler Daemon gestoppt – Sessions pausieren"
         );
     }
 

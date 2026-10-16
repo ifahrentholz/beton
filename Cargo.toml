@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "xtask", "apps/desktop/src-tauri"]
 # Fuzz-Targets (QA-009) sind ein eigener Workspace und brauchen nightly (`cargo fuzz`).
 exclude = ["fuzz"]
 
