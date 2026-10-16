@@ -304,7 +304,8 @@ fn program(name: &str, cwd: &Path, policy: &ResolvedPolicy) -> CliResult<PathBuf
 }
 
 /// SBX-010 AC2: ein Kommando von Hand in der Sandbox einer Stufe, ohne Netz. Kann das Backend
-/// die Sandbox nicht erzwingen, startet nichts (fail closed).
+/// die Sandbox nicht vollständig erzwingen (auch `backend: none` oder *degraded*), startet
+/// nichts (fail closed).
 async fn exec(ctx: &Ctx, args: SandboxExecArgs) -> CliResult {
     let Resolved {
         spec,
@@ -324,6 +325,20 @@ async fn exec(ctx: &Ctx, args: SandboxExecArgs) -> CliResult {
             ),
         )
     })?;
+    // Fail closed: `exec` ist zum Prüfen der Sandbox da; ohne volle Isolation (`backend:
+    // none` oder ausdrücklich nicht erzwungene Capabilities) startet nichts.
+    if policy.backend == beton_sandbox::ProviderId::None || !policy.degraded.is_empty() {
+        let degraded: Vec<&str> = policy.degraded.iter().map(|c| c.as_str()).collect();
+        return Err(CliError::new(
+            Exit::General,
+            anyhow::anyhow!(
+                "Sandbox {} (Stufe {stage}) isoliert nicht vollständig (nicht erzwungen: {}), \
+                 nichts gestartet; Details: `beton sandbox explain --stage {stage}`",
+                policy.backend,
+                degraded.join(", ")
+            ),
+        ));
+    }
     let (name, rest) = args
         .command
         .split_first()
