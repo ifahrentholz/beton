@@ -1,6 +1,7 @@
 (version 1)
-;; beton Seatbelt-Profil v2 (SBX-007; v2: Unix-Socket des Exec-Brokers, Dev-Ports, Projekt-
-;; Konfiguration und Austausch der Stufe 2, SBX-002/PRX-008).
+;; beton Seatbelt-Profil v3 (SBX-007; v2: Unix-Socket des Exec-Brokers, Dev-Ports, Projekt-
+;; Konfiguration und Austausch der Stufe 2, SBX-002/PRX-008; v3: Pseudo-Terminal eines
+;; Workspace-Terminals, SBX-017).
 ;; Dieser Text ist fest. Pfade, Muster und der Proxy-Port kommen ausschließlich als Parameter
 ;; (`sandbox-exec -D KEY=VALUE`) und werden nur über `(param "KEY")` referenziert; die
 ;; generierten Zeilen an den Markierungen `;;@…` enthalten nur feste Bausteine und Schlüssel.
@@ -88,3 +89,6 @@
 ;;@UNIX_SOCKETS
 ;; Dev-Server: bind/listen und Verbindungen nur auf `dev_ports` (Loopback des Hosts, PRX-008).
 ;;@DEV_PORTS
+;; Pseudo-Terminal (SBX-017): nur der eigene Slave und `/dev/tty` (das Controlling Terminal
+;; des Prozesses, also derselbe Slave), samt ioctl für Größe und Modi; keine anderen Terminals.
+;;@TTY

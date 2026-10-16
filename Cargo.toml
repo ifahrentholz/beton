@@ -87,7 +87,7 @@ vt100 = "0.16"
 landlock = "0.4.4"
 libc = "0.2"
 seccompiler = "0.5"
-process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
+process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "process-session", "tokio1"] }
 proptest = "1"
 # Prüfung der JUnit-Ausgabe von `beton policy test` (POL-026 AC2), nur in Tests.
 roxmltree = "0.21"

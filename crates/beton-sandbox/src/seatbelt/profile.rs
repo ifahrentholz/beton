@@ -14,10 +14,10 @@ use crate::error::SandboxError;
 use crate::resolve::{Mask, NetMode, ResolvedPolicy, Stage};
 
 /// Version des Templates (erscheint in Probe und `explain`).
-pub const PROFILE_VERSION: u32 = 2;
+pub const PROFILE_VERSION: u32 = 3;
 
 /// Das Template.
-pub const TEMPLATE: &str = include_str!("profile.v2.sbpl");
+pub const TEMPLATE: &str = include_str!("profile.v3.sbpl");
 
 /// Höchstgröße von Profil plus Parametern (SBX-007).
 pub const MAX_PROFILE_BYTES: usize = 256 * 1024;
@@ -106,6 +106,11 @@ fn within_any(p: &Path, roots: &[PathBuf]) -> bool {
 
 /// Erzeugt Profil und Parameter für `policy`.
 pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
+    render_for(policy, None)
+}
+
+/// Wie [`render`], für einen Start am Pseudo-Terminal mit dem Slave `tty` (SBX-017).
+pub fn render_for(policy: &ResolvedPolicy, tty: Option<&Path>) -> Result<Profile, SandboxError> {
     let mut b = Builder { params: Vec::new() };
     let hidden_roots: Vec<&PathBuf> = policy.hidden.iter().map(|h| &h.root).collect();
     let is_grant = |p: &PathBuf| hidden_roots.contains(&p);
@@ -346,7 +351,15 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         dev_lines.push(format!("(allow network-outbound (remote ip {ip}))"));
     }
 
-    let sections: [(&str, &Vec<String>); 14] = [
+    let mut tty_lines = Vec::new();
+    if let Some(slave) = tty {
+        let key = b.path("TTY", slave)?;
+        tty_lines.push(format!(
+            "(allow file-read* file-write-data file-ioctl (literal (param \"{key}\")) (literal \"/dev/tty\"))"
+        ));
+    }
+
+    let sections: [(&str, &Vec<String>); 15] = [
         ("GRANT_ROOTS", &grant_lines),
         ("HIDDEN", &hidden_lines),
         ("ROOTS", &root_lines),
@@ -360,6 +373,7 @@ pub fn render(policy: &ResolvedPolicy) -> Result<Profile, SandboxError> {
         ("NETWORK", &net_lines),
         ("UNIX_SOCKETS", &unix_lines),
         ("DEV_PORTS", &dev_lines),
+        ("TTY", &tty_lines),
         ("", &Vec::new()),
     ];
     let mut text = String::with_capacity(TEMPLATE.len() + 4096);

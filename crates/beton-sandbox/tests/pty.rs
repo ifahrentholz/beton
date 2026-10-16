@@ -43,7 +43,11 @@ struct Term {
 }
 
 impl Term {
-    fn start(p: &dyn SandboxProvider, policy: &beton_sandbox::ResolvedPolicy, script: &str) -> Self {
+    fn start(
+        p: &dyn SandboxProvider,
+        policy: &beton_sandbox::ResolvedPolicy,
+        script: &str,
+    ) -> Self {
         let mut pty = Pty::open(80, 24).unwrap();
         let slave = pty.take_slave().unwrap();
         let tty = Tty::new(Arc::new(slave), pty.slave_path().to_path_buf());
@@ -198,7 +202,10 @@ async fn sbx_017_a_sandboxed_terminal_cannot_write_to_other_terminals() {
     assert!(ctl.ok, "{ctl:?}");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !String::from_utf8_lossy(&seen.lock().unwrap()).contains("PWNED-CONTROL") {
-        assert!(Instant::now() < deadline, "Kontrollgruppe erreicht das Terminal nicht");
+        assert!(
+            Instant::now() < deadline,
+            "Kontrollgruppe erreicht das Terminal nicht"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

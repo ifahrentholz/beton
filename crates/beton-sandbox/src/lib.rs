@@ -51,9 +51,9 @@ pub fn session_base() -> std::path::PathBuf {
 
 pub use caps::{Cap, CapSet};
 pub use child::{Output, SandboxedChild};
-pub use command::{CommandSpec, EnvSpec, Stdio};
 #[cfg(unix)]
 pub use command::Tty;
+pub use command::{CommandSpec, EnvSpec, Stdio};
 pub use error::SandboxError;
 pub use git::{ControlSnapshot, GitLayout};
 pub use masks::HarnessGrants;
