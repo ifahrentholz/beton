@@ -542,7 +542,7 @@ fn pol_027_explain_renders_every_part_of_a_decision() {
         .find(|s| s.name == "live")
         .unwrap()
         .rule_ref("ask-me");
-    grants.add_with_id(&rule, "shell:builtin/Bash@:lift", "grt_1");
+    grants.add_with_id(&rule, r#"["shell","builtin","Bash","","lift"]"#, "grt_1");
     let decision = set.evaluate(
         &act,
         &EvalOptions {

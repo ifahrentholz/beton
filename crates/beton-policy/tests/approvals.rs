@@ -229,7 +229,7 @@ fn pol_010_ac2_grant_allows_same_command_only() {
     let fp = reasons[0].fingerprint.clone().expect("Fingerprint");
     assert_eq!(
         fp,
-        "shell:builtin/Bash@/work/repo:git push origin feature/x"
+        r#"["shell","builtin","Bash","/work/repo","git push origin feature/x"]"#
     );
 
     let mut grants = SessionGrants::default();
@@ -313,7 +313,7 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
     let c = ask_reasons(&eval(&[s], &act(json!({"a": 3}))));
     let fp = a[0].fingerprint.clone().unwrap();
     assert!(
-        fp.starts_with("mcp:github/create_pull_request:sha256:"),
+        fp.starts_with(r#"["mcp","github","create_pull_request","sha256:"#),
         "{fp}"
     );
     assert_eq!(
@@ -321,6 +321,61 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
         "unabhängig von der Reihenfolge"
     );
     assert_ne!(a[0].fingerprint, c[0].fingerprint);
+}
+
+/// #242 N1/N2: Die Teile des Default-Fingerprints sind eindeutig kodiert. Mit Trennzeichen
+/// (`:`, `/`, `@`) kollidierten `echo a:rm -rf ~` in `/repo` und `rm -rf ~` in `/repo:echo a`
+/// bzw. Server `a/b` mit Tool `c` und Server `a` mit Tool `b/c`; ein Grant für den einen Call
+/// erlaubte dann den anderen.
+#[test]
+fn pol_010_default_fingerprint_encodes_its_parts_unambiguously() {
+    let s = set(
+        Scope::Project,
+        "p",
+        "rules:\n  - id: any\n    on: tool_call\n    action: ask\n",
+    );
+    let fp = |tool: Value| {
+        let act = Activation::new(Phase::ToolCall, json!({ "tool": tool })).unwrap();
+        ask_reasons(&eval(std::slice::from_ref(&s), &act))[0]
+            .fingerprint
+            .clone()
+            .expect("Fingerprint")
+    };
+    let shell = |cwd: &str, command: &str| {
+        json!({ "kind": "shell", "server": "builtin", "name": "Bash", "cwd": cwd,
+                "command": command, "args": { "command": command } })
+    };
+    assert_ne!(
+        fp(shell("/repo", "echo a:rm -rf ~")),
+        fp(shell("/repo:echo a", "rm -rf ~"))
+    );
+    assert_ne!(
+        fp(shell("/repo@x", "y")),
+        fp(json!({ "kind": "shell", "server": "builtin", "name": "Bash@/repo", "cwd": "x",
+                   "command": "y", "args": { "command": "y" } }))
+    );
+    let mcp = |server: &str, name: &str| {
+        json!({ "kind": "mcp", "server": server, "name": name, "args": {} })
+    };
+    assert_ne!(fp(mcp("a/b", "c")), fp(mcp("a", "b/c")));
+    // Ein Grant gilt also nur für genau diesen Call.
+    let rule = ask_reasons(&eval(
+        std::slice::from_ref(&s),
+        &Activation::new(Phase::ToolCall, json!({ "tool": mcp("a/b", "c") })).unwrap(),
+    ))[0]
+        .rule
+        .clone();
+    let mut grants = SessionGrants::default();
+    grants.add(&rule, &fp(mcp("a/b", "c")));
+    let opts = EvalOptions {
+        grants: Some(&grants),
+        ..common::opts()
+    };
+    let other = EffectiveSet::new(vec![s.clone()]).evaluate(
+        &Activation::new(Phase::ToolCall, json!({ "tool": mcp("a", "b/c") })).unwrap(),
+        &opts,
+    );
+    assert!(matches!(other.outcome, Outcome::Ask { .. }), "{other:?}");
 }
 
 #[test]
