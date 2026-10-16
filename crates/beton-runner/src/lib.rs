@@ -1487,6 +1487,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Gate-Anfrage (beobachtet), Ergebnisse geprüfter Eingaben (SES-004, #101).
     let mut call_events: HashMap<String, beton_core::id::EventId> = HashMap::new();
     let mut unobserved: HashMap<String, GateRequest> = HashMap::new();
+    // Gestartete Calls (`tool.call.started`): nur ein nie gestarteter Call gilt mit `cancelled`
+    // als nicht ausgeführt (HAR-005, #268).
+    let mut started_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
     // SBX-002: Mit `shell_override` muss jeder abgeschlossene Shell-Aufruf über den Exec-Broker
     // gelaufen sein, sonst endet die Session (fail closed).
     let mut integrity = stages
@@ -1884,9 +1887,20 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                         // Nur, wenn der Harness selbst jeden Call durch das Gate schickt (Hook,
                         // Direkt-API); MCP-Aufrufe über den Relay-Hub prüft der Hub synchron.
                         let violation = match &ev.payload {
-                            EventPayload::ToolCallCompleted(c) if harness_gates_all && executed(c.status) => unobserved
-                                .get(&c.call_id)
-                                .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why))),
+                            EventPayload::ToolCallStarted(st) => {
+                                started_calls.insert(st.call_id.clone());
+                                None
+                            }
+                            EventPayload::ToolCallCompleted(c) => {
+                                let started = started_calls.remove(&c.call_id);
+                                if harness_gates_all && executed(c.status, started) {
+                                    unobserved
+                                        .get(&c.call_id)
+                                        .and_then(|r| gate.integrity_violation(r).map(|why| (r.clone(), why)))
+                                } else {
+                                    None
+                                }
+                            }
                             _ => None,
                         };
                         let observe = track_tool_calls(&gate, &ev, &mut unobserved, done, !harness_gates_all);
@@ -2774,13 +2788,15 @@ fn end_integrity_violation(
 /// Wurde ein Tool-Call (womöglich) ausgeführt? Auch ein Fehler (`…; exit 1`, Claude
 /// `is_error`) kann Wirkung gehabt haben (Re-Review R2 zu #253). Nicht ausgeführt sind nur
 /// abgelehnte Calls und solche, die vor der Ausführung abgebrochen wurden: Ein Call ohne
-/// Gate-Entscheidung mit `cancelled` wartete noch auf den Hook (z. B. Interrupt während einer
-/// offenen Freigabe).
-fn executed(status: beton_core::event::ToolStatus) -> bool {
-    !matches!(
-        status,
-        beton_core::event::ToolStatus::Denied | beton_core::event::ToolStatus::Cancelled
-    )
+/// Gate-Entscheidung mit `cancelled`, der nie gestartet ist (`tool.call.started`), wartete noch
+/// auf den Hook (z. B. Interrupt während einer offenen Freigabe). Nach dem Start kann er
+/// gelaufen sein (#268).
+fn executed(status: beton_core::event::ToolStatus, started: bool) -> bool {
+    match status {
+        beton_core::event::ToolStatus::Denied => false,
+        beton_core::event::ToolStatus::Cancelled => started,
+        _ => true,
+    }
 }
 
 /// Grund eines `fatal`-Gate-Events: der Problem-Code des `error`.
