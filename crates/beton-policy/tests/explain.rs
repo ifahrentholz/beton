@@ -236,6 +236,22 @@ fn pol_027_snapshot_rejects_tampered_or_missing_sources() {
     assert!(snapshot::rebuild(&wrong_hash, |v| blobs.get(v).cloned()).is_err());
 }
 
+/// #263: Herkunft und Format eines Sets gehören zum `policy_set_hash`. Die Herkunft prägt die
+/// Bedeutung (z. B. Zustands-Keys von `daily_budget` je Repo); ein Manifest mit falscher
+/// Herkunft darf sich nicht zum selben Hash wiederaufbauen lassen.
+#[test]
+fn pol_027_set_hash_covers_origin_and_format() {
+    let a = EffectiveSet::new(vec![set(Scope::Project, "/repo-a/.beton/policies/git.yaml", GIT)]);
+    let b = EffectiveSet::new(vec![set(Scope::Project, "/repo-b/.beton/policies/git.yaml", GIT)]);
+    assert_eq!(a.sets()[0].version, b.sets()[0].version, "gleicher Inhalt");
+    assert_ne!(a.hash(), b.hash(), "andere Herkunft, anderer Set-Hash");
+    let mut forged = a.manifest();
+    forged.sets[0].origin = "/repo-b/.beton/policies/git.yaml".into();
+    let blobs: HashMap<String, Vec<u8>> = a.sources().into_iter().collect();
+    assert!(snapshot::rebuild(&forged, |v| blobs.get(v).cloned()).is_err());
+    assert!(snapshot::rebuild(&a.manifest(), |v| blobs.get(v).cloned()).is_ok());
+}
+
 #[test]
 fn pol_027_snapshot_round_trips_inline_agent_sets_and_modes() {
     let agent = inline_set(

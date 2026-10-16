@@ -563,6 +563,41 @@ async fn pol_027_ac2_snapshot_call_rejects_content_that_does_not_match_its_versi
     assert_eq!(r.status, 400);
 }
 
+/// #263: Der Server baut den Snapshot schon beim Speichern wieder auf. Ein Manifest, das nicht
+/// zu seinem `policy_set_hash` passt (hier ohne Sets), wird abgelehnt, statt als erster
+/// Schreiber den richtigen Snapshot dauerhaft zu blockieren.
+#[tokio::test]
+async fn pol_027_ac2_snapshot_call_rejects_a_manifest_that_does_not_rebuild_to_its_hash() {
+    let s = setup().await;
+    let t = &s.t;
+    let id = session(t, s.project.path()).await;
+    let file = s.project.path().join(".beton/policies/git.yaml");
+    let set = EffectiveSet::new(vec![Arc::new(load_file(Scope::Project, &file).unwrap())]);
+    let manifest = set.manifest();
+    let sources: Vec<Value> = set
+        .sources()
+        .into_iter()
+        .map(|(v, b)| json!({ "version": v, "text": String::from_utf8(b).unwrap() }))
+        .collect();
+    let forged = json!({ "policy_set_hash": manifest.policy_set_hash, "sets": [] });
+    let r = post(
+        t,
+        &format!("/test/system/{id}/policy.snapshot"),
+        json!({ "manifest": forged, "sources": sources }),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["code"], "validation_failed");
+    let r = post(
+        t,
+        &format!("/test/system/{id}/policy.snapshot"),
+        json!({ "manifest": manifest, "sources": sources }),
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["stored"], true, "der richtige Snapshot wird gespeichert");
+}
+
 #[tokio::test]
 async fn pol_027_ac1_ac2_explain_shows_rule_file_and_version_of_the_decision() {
     let s = setup().await;
