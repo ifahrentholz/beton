@@ -1,9 +1,10 @@
 //! Rust-Client-SDK für die beton-API (API-005).
 //!
 //! CLI und TUI greifen ausschließlich über dieses Crate auf den Server zu. Der Umfang wächst
-//! mit den Arbeitspaketen; heute: Daemon-Erkennung, Info, Sessions (REST), Einmal-Codes und
-//! der WebSocket-Stream ([`ws`]).
+//! mit den Arbeitspaketen; heute: Daemon-Erkennung, Info, Sessions (REST), Einmal-Codes, der
+//! WebSocket-Stream ([`ws`]) und Binärkanäle für Terminals ([`channel`]).
 
+pub mod channel;
 pub mod probe;
 pub mod ws;
 
@@ -89,6 +90,32 @@ pub struct ExportDownload {
     pub blobs: u64,
     /// `.tar.zst` statt JSONL.
     pub archive: bool,
+}
+
+/// Ein laufendes Terminal einer Session (`TerminalView` der API, SES-019).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Terminal {
+    pub terminal_id: String,
+    /// Kanal des Runners; Clients öffnen das Terminal über [`channel::Channel`].
+    pub channel_id: u32,
+    pub name: String,
+    /// `harness_pty`, `user` oder `tool`.
+    pub kind: String,
+    pub cmd: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Neues Terminal (`POST /v1/sessions/{id}/terminals`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalOpen {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Programm und Argumente; ohne die Login-Shell des Benutzers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 /// Client für einen beton-Server.
@@ -461,6 +488,72 @@ impl Client {
         self.post(
             &format!("/v1/sessions/{id}/approvals/{approval_id}/resolve"),
             &body,
+        )
+        .await
+    }
+
+    /// Wie [`Client::resolve_approval`], mit `remember: session` („für diese Session
+    /// erlauben“). Der Server nimmt das nur an, wenn die Karte `approve_session` anbietet.
+    pub async fn resolve_approval_for_session(&self, id: &str, approval_id: &str) -> Result<Value> {
+        self.post(
+            &format!("/v1/sessions/{id}/approvals/{approval_id}/resolve"),
+            &serde_json::json!({ "decision": "allow", "remember": "session" }),
+        )
+        .await
+    }
+
+    /// `GET /v1/sessions/{id}/approvals`: offene Freigaben einer Session.
+    pub async fn approvals(&self, id: &str) -> Result<Page<Value>> {
+        self.get(&format!("/v1/sessions/{id}/approvals")).await
+    }
+
+    /// `GET /v1/sessions/{id}/workspace/changes?scope=uncommitted` (SES-017): geänderte Dateien
+    /// mit `additions`/`deletions`.
+    pub async fn workspace_changes(&self, id: &str) -> Result<Page<Value>> {
+        self.send(
+            self.http
+                .get(self.url(&format!("/v1/sessions/{id}/workspace/changes")))
+                .query(&[("scope", "uncommitted"), ("limit", "200")]),
+        )
+        .await
+    }
+
+    /// `GET /v1/sessions/{id}/terminals` (SES-019): laufende Terminals der Session.
+    pub async fn terminals(&self, id: &str) -> Result<Vec<Terminal>> {
+        let page: Page<Terminal> = self.get(&format!("/v1/sessions/{id}/terminals")).await?;
+        Ok(page.items)
+    }
+
+    /// `POST /v1/sessions/{id}/terminals`: Terminal öffnen (PTY im Runner, SES-019).
+    pub async fn open_terminal(&self, id: &str, request: &TerminalOpen) -> Result<Terminal> {
+        self.send(
+            self.http
+                .post(self.url(&format!("/v1/sessions/{id}/terminals")))
+                .json(request),
+        )
+        .await
+    }
+
+    /// `POST /v1/sessions/{id}/terminals/{terminal_id}/resize`.
+    pub async fn resize_terminal(
+        &self,
+        id: &str,
+        terminal_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Terminal> {
+        self.post(
+            &format!("/v1/sessions/{id}/terminals/{terminal_id}/resize"),
+            &serde_json::json!({ "cols": cols, "rows": rows }),
+        )
+        .await
+    }
+
+    /// `DELETE /v1/sessions/{id}/terminals/{terminal_id}`: Prozess beenden, Terminal schließen.
+    pub async fn close_terminal(&self, id: &str, terminal_id: &str) -> Result<()> {
+        self.send_empty(
+            self.http
+                .delete(self.url(&format!("/v1/sessions/{id}/terminals/{terminal_id}"))),
         )
         .await
     }
