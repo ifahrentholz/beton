@@ -340,7 +340,7 @@ fn find_hashed(text: &str, hashes: &[[u8; 32]], out: &mut Vec<Span>) {
         }
         if i - start == LEN && (i == b.len() || !word(b[i])) {
             let h: [u8; 32] = sha2::Sha256::digest(&b[start..i]).into();
-            if hashes.iter().any(|k| *k == h) {
+            if hashes.contains(&h) {
                 out.push(Span {
                     start,
                     end: i,
