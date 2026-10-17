@@ -958,7 +958,7 @@ impl Instance {
         let plan =
             match self
                 .credentials
-                .plan(scheme, &host, &path, query.as_deref(), req.headers())
+                .plan(scheme, &host, port, &path, query.as_deref(), req.headers())
             {
                 Ok(plan) => plan,
                 Err(refusal) => {
