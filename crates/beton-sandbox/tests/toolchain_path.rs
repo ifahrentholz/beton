@@ -197,6 +197,47 @@ fn sbx_012_toolchain_dirs_from_path_are_read_only_grants_without_home_dotfiles()
     assert!(!h.read_roots.contains(&t.opt.join("brew")));
 }
 
+/// #241 (Review #370): Nur `PATH`-Einträge namens `bin`/`sbin` ergeben Freigaben; ein anderes
+/// Verzeichnis (z. B. ein ganzer Baum wie `/opt` oder `…/tools`) wird nie freigegeben, auch
+/// nicht, wenn es Programme enthält.
+#[test]
+fn sbx_012_only_bin_and_sbin_path_entries_grant_never_whole_trees() {
+    let t = tc();
+    exe(&t.opt.join("tools/werkzeug"), "#!/bin/sh\necho werkzeug\n");
+    support::write(&t.opt.join("tools/geheim/daten"), "FIXTURE-OPT-DATA\n");
+    exe(&t.opt.join("brew/sbin/brewd"), "#!/bin/sh\necho brewd\n");
+    let mut ctx = t.ctx(Stage::Tools);
+    ctx.host_env.insert(
+        "PATH".into(),
+        [t.opt.join("tools"), t.opt.clone(), t.opt.join("brew/sbin")]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":"),
+    );
+    let p = resolve(ProviderId::Seatbelt, &SandboxSpec::default(), &ctx).unwrap();
+    assert!(
+        !p.read_roots
+            .iter()
+            .any(|r| t.opt.starts_with(r) || r.starts_with(t.opt.join("tools")) || r == &t.opt),
+        "{:#?}",
+        p.read_roots
+    );
+    // `sbin` wie `bin`: das Präfix des Pakets.
+    assert!(
+        p.read_roots.contains(&t.opt.join("brew")),
+        "{:#?}",
+        p.read_roots
+    );
+    assert!(
+        p.notes
+            .iter()
+            .any(|n| n.contains("PATH") && n.contains("tools") && n.contains("nicht freigegeben")),
+        "{:#?}",
+        p.notes
+    );
+}
+
 /// #241: Ein Symlink im `PATH` wird kanonisch freigegeben (das Ziel), nie der Link allein auf
 /// ein verbotenes Ziel.
 #[test]

@@ -834,11 +834,14 @@ fn text_of(events: &[EventPayload]) -> String {
         .join("\n")
 }
 
-/// #326: Mit `terminal/*` über beton deklariert ACP `tool_isolation: beton` (ADR-0037).
+/// ADR-0037 verlangt für `tool_isolation: beton` `terminal/*` **und** `fs/*` in Stufe 2;
+/// `fs/write_text_file` läuft noch in Stufe 0 (#329). Bis dahin bleibt ACP `inherited`
+/// (degraded, nur mit `require_tool_isolation: false`, kein `yolo`), obwohl `terminal/*` und
+/// `fs/read_text_file` schon in Stufe 2 laufen (Review #370).
 #[test]
-fn har_007_acp_declares_beton_tool_isolation() {
+fn har_007_acp_stays_inherited_until_fs_write_runs_in_stage_two() {
     let caps = adapter().capabilities(Mode::Native, &beton_harness::ProbeReport::default());
-    assert_eq!(caps.tool_isolation, beton_harness::ToolIsolation::Beton);
+    assert_eq!(caps.tool_isolation, beton_harness::ToolIsolation::Inherited);
 }
 
 /// #326: `fs/read_text_file` geht als Datei-Lesen durch das Gate und läuft in Stufe 2 (über den
