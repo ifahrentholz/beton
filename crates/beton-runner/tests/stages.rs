@@ -658,6 +658,81 @@ async fn sbx_002_bt_exec_from_stage_one_runs_in_stage_two() {
     assert_eq!(started.load(Ordering::SeqCst), 2);
 }
 
+/// #211 (SBX-008, SBX-002): Vor Landlock-ABI 9 kontrolliert Landlock `connect` auf Unix-Sockets
+/// nicht; erreichbar ist dann jeder sichtbare Pfad. Stufe 1 und Stufe 2 einer Session erreichen
+/// den Broker-Socket einer parallelen Session nicht (unter Linux verdeckt ein tmpfs die
+/// Session-Verzeichnisse eine Ebene höher, macOS sperrt per Seatbelt). Kontrollgruppe: Außerhalb
+/// der Sandbox verbindet dasselbe Kommando, und aus Stufe 1 bleibt der eigene Broker-Socket
+/// erreichbar. `curl` meldet 7, wenn die Verbindung scheitert.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_008_parallel_sessions_cannot_reach_each_others_sockets() {
+    let (fa, fb) = (fx(), fx());
+    let yaml = "backend: auto\nallow_network: false\n";
+    let a = compose(
+        input(&fa, "claude", ToolIsolation::ShellOverride),
+        opts(yaml, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let b = compose(
+        input(&fb, "claude", ToolIsolation::ShellOverride),
+        opts(yaml, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let own = a.harness.policy().env["BETON_EXEC_SOCKET"].clone();
+    let other = b.harness.policy().env["BETON_EXEC_SOCKET"].clone();
+    let connect = |sock: &str| {
+        format!(
+            "/usr/bin/curl -s -o /dev/null --max-time 5 --unix-socket '{sock}' http://beton/; \
+             echo \"rc=$?\""
+        )
+    };
+    let rc = |out: &[u8]| {
+        String::from_utf8_lossy(out)
+            .lines()
+            .find_map(|l| l.strip_prefix("rc=").map(str::to_owned))
+            .unwrap_or_default()
+    };
+    // Kontrollgruppe ohne Sandbox.
+    #[allow(clippy::disallowed_methods, reason = "Kontrollgruppe ohne Sandbox")]
+    let host = std::process::Command::new("/bin/sh")
+        .args(["-c", &connect(&other)])
+        .output()
+        .unwrap();
+    assert_ne!(rc(&host.stdout), "7", "Kontrollgruppe: Socket erreichbar");
+    for (stage, sandbox) in [("harness", &a.harness), ("tools", &a.tools)] {
+        let out = sandbox
+            .spawn(
+                CommandSpec::new("/bin/sh")
+                    .args(["-c", &connect(&other)])
+                    .cwd(&fa.ws)
+                    .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+            )
+            .unwrap()
+            .output(Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(rc(&out.stdout), "7", "{stage} erreicht die andere Session");
+    }
+    let out = a
+        .harness
+        .spawn(
+            CommandSpec::new("/bin/sh")
+                .args(["-c", &connect(&own)])
+                .cwd(&fa.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_ne!(rc(&out.stdout), "7", "eigener Broker aus Stufe 1");
+}
+
 #[tokio::test]
 async fn har_011_ac2_direct_loop_gets_its_own_proxy_instance_with_a_placeholder() {
     let fx = fx();
