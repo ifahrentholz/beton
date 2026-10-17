@@ -353,3 +353,89 @@ async fn pol_004_runner_fills_run_duration_and_session_data_of_the_server() {
         .await;
     assert!(denied(&d), "ohne Session-Daten: fail closed ({d:?})");
 }
+
+fn git_head(dir: &Path, branch: &str) {
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
+}
+
+fn push_in(call: &str, cwd: Option<&Path>) -> GateRequest {
+    GateRequest {
+        cwd: cwd.map(path),
+        ..req(
+            call,
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "git push"}),
+        )
+    }
+}
+
+/// #293 R1: Der Runner übernimmt das Arbeitsverzeichnis des Hooks (`cwd`) in `tool.cwd` und
+/// liest `session.branch` aus dem Repo dort: Ein Klon im Worktree auf `main`, `cd sub` und
+/// `git push` ist ein Push auf einen geschützten Branch, nicht nur eine Rückfrage.
+#[tokio::test]
+async fn pol_017_runner_uses_the_cwd_of_the_hook_and_the_branch_of_its_repository() {
+    let env = Env::new();
+    git_head(&env.wt(), "feature/x");
+    let sub = env.wt().join("sub");
+    git_head(&sub, "main");
+    env.policy(
+        "  - id: git\n    type: git_guard\n    params: { push: allow }\n  - id: on-main\n    on: tool_call\n    when: 'tool.kind == \"shell\" && session.branch == \"main\"'\n    action: deny\n",
+    );
+    let (gate, _rx) = env.gate();
+    let d = gate.decide(push_in("c1", None)).await;
+    assert!(!denied(&d), "im Worktree auf feature/x: erlaubt ({d:?})");
+    let d = gate.decide(push_in("c2", Some(&sub))).await;
+    assert!(denied(&d), "im Klon auf main: geschützt ({d:?})");
+    let GateDecision::Deny { reason } = &d else {
+        unreachable!()
+    };
+    let reason = reason.clone().unwrap_or_default();
+    assert!(
+        reason.contains("on-main") || reason.contains("geschützten Branch"),
+        "{reason}"
+    );
+}
+
+/// #293 R2: Lenkt die Git-Konfiguration (Repo, `config.worktree`, `~/.gitconfig`) einen Push
+/// ohne Refspec um oder ist sie nicht sicher lesbar, gilt `git push` als Push auf einen
+/// geschützten Branch.
+#[tokio::test]
+async fn pol_017_runner_reads_push_config_without_starting_git() {
+    let env = Env::new();
+    git_head(&env.wt(), "feature/x");
+    env.policy("  - id: git\n    type: git_guard\n    params: { push: allow }\n");
+    let config = env.wt().join(".git/config");
+    let global = env.home().join(".gitconfig");
+    for (file, text, protected) in [
+        (
+            &config,
+            "[core]\n\tbare = false\n[push]\n\tdefault = simple\n",
+            false,
+        ),
+        (&config, "[push]\n\tdefault = upstream\n", true),
+        (&config, "[Push]\n\tDefault = Matching\n", true),
+        (
+            &config,
+            "[remote \"origin\"]\n\turl = ../o.git\n\tpush = refs/heads/feature/x:refs/heads/main\n",
+            true,
+        ),
+        (&config, "[remote \"origin\"]\n\tmirror = true\n", true),
+        (&config, "[include]\n\tpath = ../../elsewhere.cfg\n", true),
+        (
+            &config,
+            "[includeIf \"gitdir:/x/\"]\n\tpath = /tmp/c\n",
+            true,
+        ),
+        (&config, "[remote \"origin\"\n\tpush = x\n", true),
+        (&global, "[push]\n\tdefault = matching\n", true),
+    ] {
+        let _ = std::fs::remove_file(&config);
+        let _ = std::fs::remove_file(&global);
+        std::fs::write(file, text).unwrap();
+        let (gate, _rx) = env.gate();
+        let d = gate.decide(push_in("c1", None)).await;
+        assert_eq!(denied(&d), protected, "{text}: {d:?}");
+    }
+}

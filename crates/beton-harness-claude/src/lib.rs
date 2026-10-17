@@ -934,6 +934,7 @@ pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
         args: payload["tool_input"].clone(),
         mcp_server,
         acp_kind: None,
+        cwd: None,
         origin: GateOrigin::PreTool,
         raw: None,
     }
@@ -1017,6 +1018,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
             args: input.clone(),
             mcp_server,
             acp_kind: None,
+            cwd: None,
             origin: GateOrigin::VendorAsk,
             raw,
         }),

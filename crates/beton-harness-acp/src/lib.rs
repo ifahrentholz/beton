@@ -787,6 +787,7 @@ async fn permission(d: &Dispatcher, id: &Value, params: &Value, raw: Option<RawJ
         args: args.clone(),
         mcp_server: None,
         acp_kind: tool["kind"].as_str().map(str::to_owned),
+        cwd: None,
         origin: GateOrigin::VendorAsk,
         raw,
     };
@@ -928,6 +929,7 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
         args,
         mcp_server: None,
         acp_kind: Some("edit".into()),
+        cwd: None,
         origin: GateOrigin::PreTool,
         raw: None,
     };
