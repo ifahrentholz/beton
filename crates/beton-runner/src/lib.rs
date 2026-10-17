@@ -998,6 +998,28 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         let c = credentials.clone();
         tokio::spawn(async move { c.audit_passthrough(hosts).await });
     }
+    // Workspace-Terminals (SES-019, SBX-017): Prozesse in der Tool-Sandbox der Session; ohne
+    // Stufenmodell (`backend: none`, bestätigt) ohne Isolation wie jedes Tool.
+    let (term_tx, mut term_rx) = mpsc::unbounded_channel::<terminals::Out>();
+    let term_sandbox = match &stages {
+        Some(s) => s.tools.clone(),
+        None => {
+            let tx = stage_tx.clone();
+            beton_sandbox::Sandbox::unsandboxed(
+                beton_sandbox::Stage::Tools,
+                Some(Arc::new(move |ev| {
+                    let _ = tx.send(EventPayload::SandboxStarted(ev));
+                })),
+            )
+        }
+    };
+    let terminals = terminals::Terminals::new(
+        term_sandbox,
+        boot.workdir.clone(),
+        terminals::Terminals::default_shell(std::env::var("SHELL").ok().as_deref()),
+        term_tx,
+        term_calls,
+    );
     let in_proc = caps
         .as_ref()
         .is_some_and(|c| c.transport == beton_harness::Transport::InProc);
@@ -1013,6 +1035,24 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 ..st.env.clone()
             }),
         ),
+        // Tools, die beton selbst ausführt (ACP `fs/read_text_file`, `terminal/*`, #326): in
+        // Stufe 2 und über die Terminals des Runners.
+        Some(st)
+            if predicted_caps(&boot, caps.as_ref(), true).tool_isolation
+                == beton_harness::ToolIsolation::Beton =>
+        {
+            (
+                Arc::new(SandboxLauncher::new(st.harness.clone())),
+                Some(beton_harness::StageEnv {
+                    tools: Some(Arc::new(SandboxLauncher::new(st.tools.clone()))),
+                    terminals: Some(Arc::new(terminals::ToolTerminals {
+                        terminals: terminals.clone(),
+                        actor: actor.clone(),
+                    })),
+                    ..st.env.clone()
+                }),
+            )
+        }
         Some(st) => (
             Arc::new(SandboxLauncher::new(st.harness.clone())),
             Some(st.env.clone()),
@@ -1487,28 +1527,6 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // Beobachtete Tool-Calls, die eine `deny`-Regel getroffen hätte (POL-023 AC3).
     let (observed_tx, mut observed_rx) =
         mpsc::unbounded_channel::<(beton_policy::load::RuleRef, String)>();
-    // Workspace-Terminals (SES-019, SBX-017): Prozesse in der Tool-Sandbox der Session; ohne
-    // Stufenmodell (`backend: none`, bestätigt) ohne Isolation wie jedes Tool.
-    let (term_tx, mut term_rx) = mpsc::unbounded_channel::<terminals::Out>();
-    let term_sandbox = match &stages {
-        Some(s) => s.tools.clone(),
-        None => {
-            let tx = stage_tx.clone();
-            beton_sandbox::Sandbox::unsandboxed(
-                beton_sandbox::Stage::Tools,
-                Some(Arc::new(move |ev| {
-                    let _ = tx.send(EventPayload::SandboxStarted(ev));
-                })),
-            )
-        }
-    };
-    let terminals = terminals::Terminals::new(
-        term_sandbox,
-        boot.workdir.clone(),
-        terminals::Terminals::default_shell(std::env::var("SHELL").ok().as_deref()),
-        term_tx,
-        term_calls,
-    );
     let mut backoff = Backoff::default();
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.

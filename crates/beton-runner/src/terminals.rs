@@ -220,6 +220,9 @@ struct Term {
     kill: Option<oneshot::Sender<()>>,
     exit: watch::Receiver<Option<Exit>>,
     captured: Option<Arc<Mutex<Captured>>>,
+    /// Prozess beendet; Terminals eines Harness (`kind: tool`) bleiben bis zur Freigabe
+    /// bekannt, damit `terminal/output` die Ausgabe noch liefert (ACP, #326).
+    ended: bool,
 }
 
 struct Shared {
@@ -634,6 +637,7 @@ impl Terminals {
                 kill: Some(kill_tx),
                 exit: exit_rx,
                 captured,
+                ended: false,
             },
         );
         let _ = self.out.send(Out::Event(
@@ -713,11 +717,24 @@ impl Terminals {
             signal: None,
         })));
         self.snapshot(&id).await;
-        // Nach `shutdown` meldet der Runner das Ende selbst.
-        let Some(t) = lock(&self.shared.terms).remove(&id) else {
-            return;
+        // Nach `shutdown` meldet der Runner das Ende selbst. Terminals eines Harness bleiben
+        // für `terminal/output` bis zur Freigabe.
+        let t = {
+            let mut terms = lock(&self.shared.terms);
+            match terms.get_mut(&id) {
+                None => return,
+                Some(t) if t.view.kind == TerminalKind::Tool => {
+                    t.ended = true;
+                    t.credit.close();
+                    (t.view.channel_id, None::<Term>)
+                }
+                Some(_) => {
+                    let Some(t) = terms.remove(&id) else { return };
+                    t.credit.close();
+                    (t.view.channel_id, Some(t))
+                }
+            }
         };
-        t.credit.close();
         let _ = self.out.send(Out::Event(
             Box::new(EventPayload::TerminalClosed(TerminalClosed {
                 terminal_id: id,
@@ -726,9 +743,20 @@ impl Terminals {
             None,
         ));
         let _ = self.out.send(Out::Up(TunnelUp::ChannelClose {
-            channel_id: t.view.channel_id,
+            channel_id: t.0,
             reason: Some("closed".into()),
         }));
+    }
+
+    /// Terminal eines Harness freigeben (ACP `terminal/release`): Prozess beenden, vergessen.
+    pub async fn release(&self, id: &str) -> Result<(), TermError> {
+        let running = self.with(id, |t| Ok(!t.ended))?;
+        if running {
+            self.close(id)?;
+            let _ = tokio::time::timeout(CLOSE_GRACE * 3, self.wait_for_exit(id)).await;
+        }
+        lock(&self.shared.terms).remove(id);
+        Ok(())
     }
 
     /// Bildschirmzustand als Blob (über den Server), dann `terminal.snapshot`.
@@ -776,6 +804,7 @@ impl Terminals {
     pub fn list(&self) -> Vec<View> {
         let mut v: Vec<View> = lock(&self.shared.terms)
             .values()
+            .filter(|t| !t.ended)
             .map(|t| t.view.clone())
             .collect();
         v.sort_by_key(|t| t.channel_id);
@@ -956,5 +985,191 @@ impl Terminals {
                 })
             })
             .collect()
+    }
+}
+
+/// Signalname für ACP (`SIGKILL` …).
+fn signal_name(n: i32) -> String {
+    match n {
+        1 => "SIGHUP".into(),
+        2 => "SIGINT".into(),
+        3 => "SIGQUIT".into(),
+        9 => "SIGKILL".into(),
+        13 => "SIGPIPE".into(),
+        15 => "SIGTERM".into(),
+        n => format!("SIG{n}"),
+    }
+}
+
+/// Die Terminals als Host für Harnesses (ACP `terminal/*`, #326): Kommandos laufen am PTY in
+/// Stufe 2 und erscheinen als Terminal `kind: tool` mit dem Agent als Akteur.
+pub struct ToolTerminals {
+    pub terminals: Terminals,
+    pub actor: Actor,
+}
+
+/// Rohausgabe eines Harness-Terminals höchstens (ohne eigene Angabe).
+const TOOL_OUTPUT_DEFAULT: usize = 1024 * 1024;
+
+#[async_trait::async_trait]
+impl beton_harness::terminal::TerminalHost for ToolTerminals {
+    async fn create(&self, req: beton_harness::terminal::ToolTerminal) -> Result<String, String> {
+        let name: String = std::iter::once(req.command.as_str())
+            .chain(req.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_NAME)
+            .collect();
+        let spec = OpenSpec {
+            name: Some(if name.trim().is_empty() {
+                "Agent".into()
+            } else {
+                name
+            }),
+            command: std::iter::once(req.command).chain(req.args).collect(),
+            env: req.env,
+            cwd: req.cwd,
+            cols: 120,
+            rows: 32,
+            kind: TerminalKind::Tool,
+            output_limit: Some(
+                req.output_limit
+                    .unwrap_or(TOOL_OUTPUT_DEFAULT)
+                    .min(TOOL_OUTPUT_DEFAULT * 16),
+            ),
+        };
+        self.terminals
+            .open(spec, Some(self.actor.clone()))
+            .map(|v| v.terminal_id)
+            .map_err(|e| e.detail)
+    }
+
+    async fn output(&self, id: &str) -> Result<beton_harness::terminal::TerminalOutput, String> {
+        let (output, truncated, exit) = self.terminals.output(id).map_err(|e| e.detail)?;
+        Ok(beton_harness::terminal::TerminalOutput {
+            output,
+            truncated,
+            exit: exit.map(|e| beton_harness::terminal::TerminalExit {
+                exit_code: e.exit_code,
+                signal: e.signal.map(signal_name),
+            }),
+        })
+    }
+
+    async fn wait_for_exit(
+        &self,
+        id: &str,
+    ) -> Result<beton_harness::terminal::TerminalExit, String> {
+        let e = self
+            .terminals
+            .wait_for_exit(id)
+            .await
+            .map_err(|e| e.detail)?;
+        Ok(beton_harness::terminal::TerminalExit {
+            exit_code: e.exit_code,
+            signal: e.signal.map(signal_name),
+        })
+    }
+
+    async fn kill(&self, id: &str) -> Result<(), String> {
+        self.terminals.close(id).map_err(|e| e.detail)
+    }
+
+    async fn release(&self, id: &str) -> Result<(), String> {
+        self.terminals.release(id).await.map_err(|e| e.detail)
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use beton_harness::terminal::TerminalHost as _;
+
+    fn host() -> (ToolTerminals, mpsc::UnboundedReceiver<Out>) {
+        let (out, rx) = mpsc::unbounded_channel();
+        let (calls, _calls_rx) = mpsc::unbounded_channel();
+        let dir = std::env::temp_dir();
+        let terminals = Terminals::new(
+            Sandbox::unsandboxed(beton_sandbox::Stage::Tools, None),
+            dir,
+            PathBuf::from("/bin/sh"),
+            out,
+            calls,
+        );
+        (
+            ToolTerminals {
+                terminals,
+                actor: Actor::Agent {
+                    id: None,
+                    harness: "acp:test".into(),
+                    agent_ref: None,
+                },
+            },
+            rx,
+        )
+    }
+
+    /// #326, SES-019: Ein Kommando des Agents läuft als Terminal `kind: tool`; Ausgabe und Ende
+    /// bleiben bis zur Freigabe abrufbar, die Ausgabe ist begrenzt.
+    #[tokio::test]
+    async fn ses_019_agent_terminal_keeps_output_until_release() {
+        let (h, mut rx) = host();
+        let id = h
+            .create(beton_harness::terminal::ToolTerminal {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "printf 'abcdefghij'; exit 4".into()],
+                output_limit: Some(5),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let exit = h.wait_for_exit(&id).await.unwrap();
+        assert_eq!(exit.exit_code, Some(4));
+        let out = h.output(&id).await.unwrap();
+        assert_eq!(out.output, "fghij");
+        assert!(out.truncated);
+        assert_eq!(out.exit.unwrap().exit_code, Some(4));
+        assert!(
+            h.terminals.list().is_empty(),
+            "beendet, nicht mehr gelistet"
+        );
+        h.release(&id).await.unwrap();
+        assert!(h.output(&id).await.is_err());
+        let mut opened = None;
+        while let Ok(o) = rx.try_recv() {
+            if let Out::Event(p, a) = o
+                && let EventPayload::TerminalOpened(t) = *p
+            {
+                opened = Some((t, a));
+            }
+        }
+        let (t, a) = opened.unwrap();
+        assert_eq!(t.kind, TerminalKind::Tool);
+        assert!(matches!(a, Some(Actor::Agent { .. })));
+    }
+
+    /// #326: `terminal/kill` beendet den Prozess, die Ausgabe bleibt.
+    #[tokio::test]
+    async fn ses_019_agent_terminal_kill_ends_the_process() {
+        let (h, _rx) = host();
+        let id = h
+            .create(beton_harness::terminal::ToolTerminal {
+                command: "/bin/sh".into(),
+                args: vec!["-c".into(), "echo bereit; sleep 600".into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        h.kill(&id).await.unwrap();
+        let exit = tokio::time::timeout(Duration::from_secs(10), h.wait_for_exit(&id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(exit.exit_code.is_some() || exit.signal.is_some());
+        assert!(h.output(&id).await.unwrap().output.contains("bereit"));
     }
 }

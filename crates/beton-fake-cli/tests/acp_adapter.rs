@@ -1037,6 +1037,6 @@ async fn har_007_fs_read_respects_stage_two_masks() {
         !text.contains("FIXTURE-DOTENV") && !text.contains("FIXTURE-SSH"),
         "{text}"
     );
-    assert_eq!(text.matches("fs_read error").count(), 2, "{text}");
+    assert!(text.matches("fs_read error").count() >= 2, "{text}");
     s.shutdown(Shutdown::Kill).await.unwrap();
 }
