@@ -44,6 +44,20 @@ describe('REST-Client', () => {
     ])
   })
 
+  it('UX-006 AC3: Benachrichtigungs-Einstellungen lesen und ersetzen', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      return [200, text ? JSON.parse(text) : { preview: true }]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    const current = await client.settings.notifications.get()
+    expect(current.preview).toBe(true)
+    const saved = await client.settings.notifications.put({ ...current, preview: false })
+    expect(saved.preview).toBe(false)
+    expect(seen).toEqual(['GET /v1/settings/notifications ', 'PUT /v1/settings/notifications {"preview":false}'])
+  })
+
   it('POL-027 AC4: Policies auswerten, erklären und Shadow-Treffer lesen', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

@@ -1,5 +1,5 @@
 // Build-Check (WEB-001 AC4, WEB-015, WEB-009, WEB-012): keine absoluten http(s)-Asset-URLs im
-// Bundle, Initial-JS (gzip) höchstens 450 KB, Monaco und xyflow nur in nachgeladenen Chunks.
+// Bundle, Initial-JS (gzip) höchstens 450 KB, Monaco, xyflow und xterm.js nur in nachgeladenen Chunks.
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { gzipSync } from 'node:zlib'
@@ -47,6 +47,12 @@ for (const rel of new Set(initial)) {
   if (XYFLOW.test(readFileSync(join(dist, rel), 'utf8'))) problems.push(`${rel}: xyflow im initialen Bundle`)
 }
 if (!files(dist).some((f) => f.endsWith('.js') && XYFLOW.test(readFileSync(f, 'utf8')))) problems.push('xyflow-Chunk fehlt im Build')
+// xterm.js (Terminals, WEB-010) kommt erst mit dem Terminal-Tab.
+const XTERM = /xterm-helper-textarea/
+for (const rel of new Set(initial)) {
+  if (XTERM.test(readFileSync(join(dist, rel), 'utf8'))) problems.push(`${rel}: xterm.js im initialen Bundle`)
+}
+if (!files(dist).some((f) => f.endsWith('.js') && XTERM.test(readFileSync(f, 'utf8')))) problems.push('xterm-Chunk fehlt im Build')
 if (problems.length) {
   console.error(problems.join('\n'))
   process.exit(1)

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import type { ResolveApprovalRequest } from '@beton/sdk'
 import { Check, ChevronRight, Clock, FileText, MessageCircleQuestion, Plug, ShieldCheck, SquareTerminal, X } from 'lucide-react'
 import { client } from '@/lib/client'
+import { useCommand } from '@/lib/commands'
 import { editPreview, resolutionText, scopeLabel, timeLeft } from '@/lib/approvals'
 import type { ApprovalItem } from '@/lib/timeline'
 import { cn } from '@/lib/utils'
@@ -186,44 +187,34 @@ export function ApprovalBar({ sessionId, approvals }: { sessionId: string; appro
     void resolve(top, { decision: 'answer', answer: answer.trim() })
   }
 
-  // Tastatur (WEB-007 AC1, AC3): in der Capture-Phase, damit der Composer `⌘↵` nicht als Senden nimmt.
-  useEffect(() => {
-    if (!top) return
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey
-      if (!mod) return
-      const field = typingIn(e.target)
-      const decide = e.key === 'Enter' || (e.key === 'Backspace' && top.approvalKind !== 'question')
-      if (decide) {
-        // Gehaltene Tasten und eine gerade erst erschienene Card entscheiden nichts.
-        if (e.repeat || Date.now() < armedAt.current) {
-          e.preventDefault()
-          e.stopPropagation()
-          return
-        }
-      }
-      if (e.key === 'Enter') {
-        e.preventDefault()
-        e.stopPropagation()
-        if (top.approvalKind === 'question') sendAnswer()
-        // Im Grund-Feld bestätigt ⌘⏎ das Ablehnen, nie das Erlauben.
-        else if (denying && field === reasonRef.current) deny()
-        else allow(e.shiftKey)
-      } else if (e.key === 'Backspace' && top.approvalKind !== 'question') {
-        if (field && field !== reasonRef.current && field.value) return
-        e.preventDefault()
-        e.stopPropagation()
-        if (denying) deny()
-        else setDenying(true)
-      } else if (e.shiftKey && e.key.toLowerCase() === 'a') {
-        e.preventDefault()
-        e.stopPropagation()
-        barRef.current?.focus()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+  // Tastatur (WEB-007 AC1, AC3) über die Befehls-Registry (UX-004): Capture-Phase, damit der
+  // Composer `⌘↵` nicht als Senden nimmt; auch aus Eingabefeldern. Gehaltene Tasten und eine gerade
+  // erst erschienene Card entscheiden nichts.
+  const guard = (e: KeyboardEvent | undefined) => !!e && (e.repeat || Date.now() < armedAt.current)
+  const confirm = (session: boolean, e: KeyboardEvent | undefined) => {
+    if (!top || guard(e)) return
+    const field = typingIn(e?.target ?? null)
+    if (top.approvalKind === 'question') sendAnswer()
+    // Im Grund-Feld bestätigt ⌘⏎ das Ablehnen, nie das Erlauben.
+    else if (denying && field === reasonRef.current) deny()
+    else allow(session)
+  }
+  const pendingTop = !!top
+  useCommand({ id: 'approval.allow', when: () => pendingTop, run: ({ event }) => confirm(false, event) })
+  useCommand({ id: 'approval.allowSession', when: () => pendingTop, run: ({ event }) => confirm(true, event) })
+  useCommand({
+    id: 'approval.deny',
+    when: () => pendingTop && top?.approvalKind !== 'question',
+    run: ({ event }) => {
+      const field = typingIn(event?.target ?? null)
+      // In einem Feld mit Text bleibt `⌘⌫` Löschen.
+      if (field && field !== reasonRef.current && field.value) return false
+      if (guard(event)) return
+      if (denying) deny()
+      else setDenying(true)
+    },
   })
+  useCommand({ id: 'approval.focus', when: () => pendingTop, run: () => barRef.current?.focus() })
 
   if (!top && !notice) return null
   const left = top ? timeLeft(top.expiresAt, top.onTimeout) : undefined

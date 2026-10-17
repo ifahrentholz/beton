@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 export function Menu({ children, className, label }: { children: ReactNode; className?: string; label: string }) {
   return (
     <div
+      id="composer-menu"
       role="listbox"
       aria-label={label}
       className={cn(

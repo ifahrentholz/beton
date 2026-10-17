@@ -374,15 +374,37 @@ mod tests {
                 "{license} darf nicht erlaubt sein"
             );
         }
-        // Advisories werden nicht pauschal ignoriert.
+        // Advisories werden nicht pauschal ignoriert: Eine Ausnahme nennt die Advisory, ein
+        // Issue mit Begründung und ein Ablaufdatum, das noch nicht erreicht ist (deny.toml).
+        let today: String = beton_core::time::Timestamp::now()
+            .to_string()
+            .chars()
+            .take(10)
+            .collect();
+        let date = regex::Regex::new(r"bis (\d{4}-\d{2}-\d{2})").unwrap();
+        let issue = regex::Regex::new(r"#\d+").unwrap();
         let ignored = config["advisories"]
             .get("ignore")
             .and_then(|v| v.as_array())
-            .map_or(0, Vec::len);
-        assert_eq!(
-            ignored, 0,
-            "RUSTSEC-Advisories dürfen nicht ignoriert werden"
-        );
+            .cloned()
+            .unwrap_or_default();
+        for entry in &ignored {
+            let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+            let reason = entry
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                id.starts_with("RUSTSEC-"),
+                "Ausnahme ohne Advisory-ID: {entry}"
+            );
+            assert!(issue.is_match(reason), "{id}: Begründung ohne Issue");
+            let until = date
+                .captures(reason)
+                .map(|c| c[1].to_owned())
+                .unwrap_or_else(|| panic!("{id}: Ausnahme ohne Ablaufdatum („bis JJJJ-MM-TT“)"));
+            assert!(until >= today, "{id}: Ausnahme ist am {until} abgelaufen");
+        }
         assert_eq!(config["sources"]["unknown-registry"].as_str(), Some("deny"));
     }
 

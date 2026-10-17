@@ -31,12 +31,15 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Spec-Abdeckung | `cargo xtask spec-coverage --milestone M0` (Exit 1, wenn Must-ACs ohne Test sind; `--report` nur zur Anzeige) |
 | Commit-Lint / DCO | `cargo xtask commit-lint --range origin/main..HEAD` · `cargo xtask dco --range origin/main..HEAD` |
 | Spawn-Lint (SBX-001) | `cargo xtask spawn-lint` (Harness- und Tool-Prozesse nur über `beton-sandbox`; Ausnahmen für Stufe-0-Prozesse in `xtask/src/spawn_lint.rs`) |
+| Escape-Suite (SBX-011, ADR-0042) | `cargo nextest run --profile escape -p beton-sandbox -p beton-runner -p beton-cli` (Escape-Tests mit Kontrollgruppe; in der CI zusätzlich die Plattform-Matrix `escape (…)`, VMs über `scripts/escape_vm.py`) · `beton sandbox test` (Selbsttests der Probe) |
+| CI-Skripte und Required Checks | `python3 -m unittest discover -s scripts -p 'test_*.py'`; neue CI-Jobs im selben PR in `scripts/required_checks.txt` eintragen (Branch-Protection setzt der Maintainer) |
 | Golden-Transcripts | `cargo nextest run -p <adapter-crate>` (offline); Erwartungen neu schreiben: `BETON_BLESS=1 cargo nextest run …`; Secret-Scan: `cargo xtask golden-scan` (Pre-Commit-Hook: `git config core.hooksPath .githooks`) |
 | Roadmap neu erzeugen | `python3 scripts/gen_roadmap.py` (CI prüft, dass `docs/spec/roadmap.md` aktuell ist) |
 | Feature-Katalog des Design-Prototyps neu erzeugen | `python3 scripts/gen_feature_catalog.py` (nach jeder Spec-Änderung; CI prüft `design/prototype/src/catalog/features.json`) |
 | Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schemas nach `schemas/v1/`, z. B. `agent.schema.json`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
 | TypeScript-SDK | `pnpm test` · `pnpm typecheck` · `pnpm build` in `packages/sdk-ts` |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` · `pnpm build` in `apps/web`; lokal gegen den Daemon: `pnpm build` und `BETON_WEB_DIR=apps/web/dist beton serve` |
+| Desktop-App | `pnpm install` und `pnpm dev` in `apps/desktop` (baut `beton` und die Web-UI, startet die Tauri-App gegen `~/.beton` bzw. `BETON_HOME`); Bundle: `pnpm build`; Tests: `cargo test -p beton-desktop -p beton-desktop-app`. Unter Linux vorher `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev` |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen `beton serve --dev` und Fake-Harness; vorher `cargo build -p beton-cli`, `pnpm build`, `pnpm exec playwright install chromium`) |
 | Offline-E2E (Linux, sudo) | `scripts/offline-e2e.sh isolated` bzw. `sinkhole`: M0-Demo im Netz-Namespace nur mit Loopback, der Sinkhole-Lauf meldet jede DNS-Anfrage und jedes Paket nach außen (QA-018) |
 

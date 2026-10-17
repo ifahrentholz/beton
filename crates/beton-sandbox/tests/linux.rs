@@ -511,8 +511,11 @@ async fn sbx_008_ac3_namespaces_mount_ptrace_and_kill_fail() {
     let me = std::process::id().to_string();
     // Kontrollgruppe ohne Sandbox.
     // `unshare -r` gelingt ohne Sandbox nur, wo unprivilegierte User-Namespaces erlaubt sind
-    // (nicht im CI-Lauf für SBX-009 AC1 mit `unprivileged_userns_clone=0`).
-    let userns = sysctl("kernel.unprivileged_userns_clone").as_deref() != Some("0");
+    // (nicht im CI-Lauf für SBX-009 AC1 mit `unprivileged_userns_clone=0` und nicht unter der
+    // AppArmor-Restriktion von Ubuntu, Job `escape (ubuntu-24.04, apparmor)`). Die Angriffe in der
+    // Sandbox unten gelten unverändert.
+    let userns = sysctl("kernel.unprivileged_userns_clone").as_deref() != Some("0")
+        && sysctl("kernel.apparmor_restrict_unprivileged_userns").as_deref() != Some("1");
     let script = if userns {
         format!("kill -0 {me} && unshare -r true && echo ok")
     } else {

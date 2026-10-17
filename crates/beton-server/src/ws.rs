@@ -16,6 +16,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
 use beton_core::event::Event;
 use beton_core::id::SessionId;
+use beton_proto::channel::{ChannelAccess, ChannelKind, DEFAULT_WINDOW, Frame, flags};
 use beton_proto::ws::{
     ClientMsg, PROTOCOL_MINOR, SUBPROTOCOL, ServerMsg, SessionLimits, close, negotiate,
 };
@@ -26,6 +27,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::app::AppState;
+use crate::channels::{ClientSink, Relay, SubId, may_input};
 use crate::commands::CommandCtx;
 use crate::problem::{Problem, ProblemCode};
 use crate::security::Authenticated;
@@ -64,10 +66,29 @@ impl Default for WsConfig {
     }
 }
 
-/// Wer Events einer Session lesen darf. Lokal (M0) gehört alles dem einen Benutzer;
-/// Freigaben (COL-001) ersetzen das in M4.
+/// Wer Events einer Session lesen und sie steuern darf. Lokal gehört alles dem einen
+/// Benutzer (Owner); Freigaben mit Rollen (COL-001) ersetzen das in M4. Die Defaults leiten
+/// alles aus `can_read` ab: wer lesen darf, ist lokal der Owner und darf steuern.
 pub trait Authorizer: Send + Sync {
     fn can_read(&self, auth: Authenticated, session: &beton_store::SessionRecord) -> bool;
+
+    /// Recht auf einem Binärkanal (PROTO-007 AC2); `None`: Kanal nicht öffnen. Ab M4 bilden
+    /// `view` und `comment_approve` auf `read` ab, `drive` auf `drive`.
+    fn channel_access(
+        &self,
+        auth: Authenticated,
+        session: &beton_store::SessionRecord,
+        kind: beton_proto::channel::ChannelKind,
+    ) -> Option<beton_proto::channel::ChannelAccess> {
+        let _ = kind;
+        self.can_read(auth, session)
+            .then_some(beton_proto::channel::ChannelAccess::Drive)
+    }
+
+    /// Darf Terminals öffnen, schließen, umbenennen und ihre Größe setzen (SES-019 AC2)?
+    fn can_drive(&self, auth: Authenticated, session: &beton_store::SessionRecord) -> bool {
+        self.can_read(auth, session)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -99,11 +120,15 @@ pub async fn ws_upgrade(
         .on_upgrade(move |socket| connection(socket, state, auth))
 }
 
-/// Ausgangswarteschlange mit Byte-Zähler (PROTO-008).
+/// Ausgangswarteschlange mit Byte-Zähler (PROTO-008); Binärframes der Kanäle zählen
+/// zusätzlich in `in_flight` des Kanal-Hubs (PROTO-007 AC1).
 #[derive(Clone)]
 struct Outbox {
     tx: mpsc::UnboundedSender<Message>,
     bytes: Arc<AtomicUsize>,
+    in_flight: Arc<AtomicUsize>,
+    /// Weckt die Kanäle, wenn die Warteschlange abgebaut ist (PROTO-007).
+    drained: Arc<tokio::sync::Notify>,
 }
 
 impl Outbox {
@@ -119,6 +144,12 @@ impl Outbox {
 
     fn raw(&self, msg: Message) -> bool {
         self.tx.send(msg).is_ok()
+    }
+
+    fn binary(&self, bytes: Vec<u8>) -> bool {
+        self.bytes.fetch_add(bytes.len(), Ordering::Relaxed);
+        self.in_flight.fetch_add(bytes.len(), Ordering::Relaxed);
+        self.tx.send(Message::Binary(bytes.into())).is_ok()
     }
 
     fn close(&self, code: u16, reason: &str) {
@@ -143,19 +174,40 @@ async fn connection(socket: WebSocket, state: AppState, auth: Authenticated) {
     let out = Outbox {
         tx,
         bytes: Arc::new(AtomicUsize::new(0)),
+        in_flight: state.runtime.channels.in_flight(),
+        drained: Arc::default(),
     };
     let counter = out.bytes.clone();
+    let in_flight = out.in_flight.clone();
+    let drained = out.drained.clone();
     let writer = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            let len = match &msg {
-                Message::Text(t) => t.len(),
-                _ => 0,
+            let (len, binary) = match &msg {
+                Message::Text(t) => (t.len(), 0),
+                Message::Binary(b) => (b.len(), b.len()),
+                _ => (0, 0),
             };
             let closing = matches!(msg, Message::Close(_));
             let sent = sink.send(msg).await;
-            counter.fetch_sub(len, Ordering::Relaxed);
+            let left = counter.fetch_sub(len, Ordering::Relaxed) - len;
+            in_flight.fetch_sub(binary, Ordering::Relaxed);
+            if binary > 0 && left < crate::channels::CLIENT_BACKLOG / 2 {
+                drained.notify_one();
+            }
             if sent.is_err() || closing {
                 break;
+            }
+        }
+        // Nicht mehr gesendete Binärframes zählen nicht weiter.
+        while let Ok(msg) = rx.try_recv() {
+            if let Message::Binary(b) = msg {
+                in_flight.fetch_sub(b.len(), Ordering::Relaxed);
+            }
+        }
+        rx.close();
+        while let Some(msg) = rx.recv().await {
+            if let Message::Binary(b) = msg {
+                in_flight.fetch_sub(b.len(), Ordering::Relaxed);
             }
         }
         let _ = sink.close().await;
@@ -194,6 +246,24 @@ async fn connection(socket: WebSocket, state: AppState, auth: Authenticated) {
         out: out.clone(),
         forwarders: HashMap::new(),
         rate: RateLimit::new(cfg.limits.max_commands_per_s, cfg.rate_violation_close),
+        channels: Arc::default(),
+    };
+    // Kanäle weiterleiten, sobald die Warteschlange abgebaut ist (PROTO-007).
+    let kicker = {
+        let channels = conn.channels.clone();
+        let drained = out.drained.clone();
+        tokio::spawn(async move {
+            loop {
+                drained.notified().await;
+                let relays: Vec<Arc<Relay>> = lock_channels(&channels)
+                    .values()
+                    .map(|c| c.relay.clone())
+                    .collect();
+                for r in relays {
+                    r.kick();
+                }
+            }
+        })
     };
     let mut ping = tokio::time::interval(cfg.ping_interval);
     ping.reset();
@@ -212,11 +282,7 @@ async fn connection(socket: WebSocket, state: AppState, auth: Authenticated) {
                 Some(Ok(Message::Ping(p))) => {
                     out.raw(Message::Pong(p));
                 }
-                Some(Ok(Message::Binary(_))) => {
-                    // Binärkanäle folgen mit PROTO-007 (M3).
-                    out.close(close::PROTOCOL, "Binärkanäle werden noch nicht unterstützt");
-                    break;
-                }
+                Some(Ok(Message::Binary(bytes))) => conn.binary(&bytes),
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
             },
             _ = ping.tick() => {
@@ -235,6 +301,8 @@ async fn connection(socket: WebSocket, state: AppState, auth: Authenticated) {
     for (_, f) in conn.forwarders.drain() {
         f.abort();
     }
+    conn.close_channels();
+    kicker.abort();
     drop(conn);
     drop(out);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
@@ -308,6 +376,51 @@ struct Conn {
     out: Outbox,
     forwarders: HashMap<SessionId, JoinHandle<()>>,
     rate: RateLimit,
+    /// Offene Binärkanäle dieser Verbindung (PROTO-007), nach Kanal-ID des Clients.
+    channels: Channels,
+}
+
+/// Ein offener Kanal eines Clients.
+#[derive(Clone)]
+struct OpenChannel {
+    relay: Arc<Relay>,
+    sub: SubId,
+    access: ChannelAccess,
+    kind: ChannelKind,
+    /// Restliches Fenster für Eingaben des Clients (Bytes).
+    input_window: u64,
+}
+
+type Channels = Arc<std::sync::Mutex<HashMap<u32, OpenChannel>>>;
+
+fn lock_channels(c: &Channels) -> std::sync::MutexGuard<'_, HashMap<u32, OpenChannel>> {
+    c.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Ausgang eines Kanals zu dieser Verbindung. Wird nie mit gesperrten `channels` aus einem
+/// Relay gerufen, das gerade eine Sperre der Verbindung braucht (keine Sperr-Zyklen: die
+/// Verbindung ruft Relays nur ohne eigene Sperre).
+struct ConnSink {
+    out: Outbox,
+    channels: Channels,
+}
+
+impl ClientSink for ConnSink {
+    fn frame(&self, frame: Frame) -> bool {
+        self.out.binary(frame.encode())
+    }
+
+    fn backlog(&self) -> usize {
+        self.out.queued()
+    }
+
+    fn closed(&self, channel_id: u32, reason: &str) {
+        lock_channels(&self.channels).remove(&channel_id);
+        self.out.send(&ServerMsg::ChannelClosed {
+            channel_id,
+            reason: Some(reason.to_owned()),
+        });
+    }
 }
 
 impl Conn {
@@ -361,8 +474,185 @@ impl Conn {
                 self.command(id, session_id, name, args, idempotency_key)
                     .await;
             }
+            ClientMsg::OpenChannel {
+                id,
+                session_id,
+                kind,
+                target,
+            } => self.open_channel(id, session_id, kind, &target).await,
+            ClientMsg::CloseChannel { channel_id } => {
+                let open = lock_channels(&self.channels).remove(&channel_id);
+                if let Some(c) = open {
+                    c.relay.unsubscribe(c.sub);
+                }
+                self.out.send(&ServerMsg::ChannelClosed {
+                    channel_id,
+                    reason: Some("closed".into()),
+                });
+            }
+            ClientMsg::Credit {
+                channel_id,
+                bytes,
+                frames,
+            } => {
+                let open = lock_channels(&self.channels).get(&channel_id).cloned();
+                if let Some(c) = open {
+                    let amount = if c.kind.counts_frames() {
+                        frames.map(u64::from)
+                    } else {
+                        bytes
+                    };
+                    c.relay.credit(c.sub, amount.unwrap_or(0));
+                }
+            }
         }
         None
+    }
+
+    /// Kanal öffnen (PROTO-007): Leserecht auf die Session, Recht je Art, vorhandene Quelle.
+    async fn open_channel(
+        &mut self,
+        id: String,
+        session: SessionId,
+        kind: ChannelKind,
+        target: &str,
+    ) {
+        let org = self.state.local.org;
+        let record = match self.state.store.session(org, session).await {
+            Ok(r) => r,
+            Err(e) => return nack(&self.out, &id, Problem::from(e)),
+        };
+        let authorizer = &self.state.runtime.authorizer;
+        let access = if authorizer.can_read(self.auth, &record) {
+            authorizer.channel_access(self.auth, &record, kind)
+        } else {
+            None
+        };
+        let Some(access) = access else {
+            return nack(&self.out, &id, Problem::new(ProblemCode::Forbidden));
+        };
+        let Some(relay) = self.state.runtime.channels.get(session, kind, target) else {
+            return nack(
+                &self.out,
+                &id,
+                Problem::new(ProblemCode::NotFound).detail(format!(
+                    "Kein {} `{target}` in dieser Session",
+                    kind.as_str()
+                )),
+            );
+        };
+        let channel_id = self.state.runtime.channels.next_client_channel();
+        let window = if may_input(access, kind) {
+            DEFAULT_WINDOW
+        } else {
+            0
+        };
+        // Erst die Bestätigung, dann die ersten Frames.
+        self.out.send(&ServerMsg::ChannelOpened {
+            id,
+            channel_id,
+            window,
+            access,
+        });
+        let sink = Arc::new(ConnSink {
+            out: self.out.clone(),
+            channels: self.channels.clone(),
+        });
+        let sub = relay.subscribe(sink, channel_id);
+        lock_channels(&self.channels).insert(
+            channel_id,
+            OpenChannel {
+                relay,
+                sub,
+                access,
+                kind,
+                input_window: window,
+            },
+        );
+    }
+
+    /// Binärframe des Clients: nur Eingaben (`INPUT`) auf eigenen Kanälen mit `drive`.
+    fn binary(&mut self, bytes: &[u8]) {
+        let frame = match Frame::decode(bytes) {
+            Ok(f) => f,
+            Err(e) => {
+                return nack(
+                    &self.out,
+                    "channel",
+                    Problem::new(ProblemCode::BadRequest).detail(e.to_string()),
+                );
+            }
+        };
+        let id = format!("channel:{}", frame.channel_id);
+        let open = lock_channels(&self.channels)
+            .get(&frame.channel_id)
+            .cloned();
+        let Some(c) = open else {
+            return nack(
+                &self.out,
+                &id,
+                Problem::new(ProblemCode::NotFound).detail("Kanal ist nicht offen"),
+            );
+        };
+        if !frame.has(flags::INPUT) {
+            return nack(
+                &self.out,
+                &id,
+                Problem::new(ProblemCode::BadRequest).detail("Clients senden nur Frames mit INPUT"),
+            );
+        }
+        if !may_input(c.access, c.kind) {
+            // PROTO-007 AC2: verwerfen, Verbindung bleibt offen.
+            return nack(
+                &self.out,
+                &id,
+                Problem::new(ProblemCode::Forbidden).detail("Eingaben brauchen das Recht drive"),
+            );
+        }
+        let len = frame.payload.len() as u64;
+        {
+            let mut channels = lock_channels(&self.channels);
+            let Some(open) = channels.get_mut(&frame.channel_id) else {
+                return;
+            };
+            if open.input_window < len {
+                drop(channels);
+                return nack(
+                    &self.out,
+                    &id,
+                    Problem::new(ProblemCode::RateLimited)
+                        .detail("Fenster für Eingaben überschritten"),
+                );
+            }
+            open.input_window -= len;
+        }
+        if !c.relay.input(frame.payload) {
+            return nack(
+                &self.out,
+                &id,
+                Problem::new(ProblemCode::Unavailable)
+                    .detail("Die Quelle nimmt gerade keine Eingaben an"),
+            );
+        }
+        // Weitergeleitet: Fenster wieder freigeben.
+        if let Some(open) = lock_channels(&self.channels).get_mut(&frame.channel_id) {
+            open.input_window += len;
+        }
+        self.out.send(&ServerMsg::Credit {
+            channel_id: frame.channel_id,
+            bytes: len,
+        });
+    }
+
+    /// Alle Kanäle dieser Verbindung schließen (Verbindungsende).
+    fn close_channels(&mut self) {
+        let open: Vec<OpenChannel> = lock_channels(&self.channels)
+            .drain()
+            .map(|(_, c)| c)
+            .collect();
+        for c in open {
+            c.relay.unsubscribe(c.sub);
+        }
     }
 
     async fn attach(
@@ -460,6 +750,7 @@ impl Conn {
                         status: 200,
                         content_type: "application/json".into(),
                         body: serde_json::to_vec(&result).unwrap_or_default(),
+                        location: None,
                     };
                     let _ = store.idempotency_save(org, k, &stored).await;
                 }

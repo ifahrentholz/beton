@@ -555,3 +555,47 @@ async fn sec_013_attach_fails_closed_when_the_store_breaks() {
     assert_eq!(redactor.status(), crate::RedactionStatus::Failed);
     assert!(redactor.redact_log_str("x").is_err());
 }
+
+/// #216: Werte aus `sandbox.env.passthrough` gelten als bekannte Werte (mit Varianten), auch
+/// wenn der Store gesperrt ist; das Audit nennt Grund und Namen, nie Werte.
+#[tokio::test]
+async fn sec_013_passthrough_values_are_known_values_and_audited_without_values() {
+    const ENV: &str = "Fixture-passthrough-4711-abcdef";
+    let mut f = fixture().await;
+    let redactor = Arc::new(crate::Redactor::pending());
+    take_caps(&mut f)
+        .redaction
+        .attach(&f.secrets, redactor.clone())
+        .await
+        .unwrap();
+    f.secrets
+        .add_redaction_values(
+            "env_passthrough",
+            vec![("GITHUB_TOKEN".into(), SecretValue::from(ENV))],
+        )
+        .await
+        .unwrap();
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(ENV);
+    let out = redactor
+        .redact_str(&format!("a {ENV} b {b64} c"))
+        .unwrap()
+        .into_owned();
+    assert!(!out.contains(ENV) && !out.contains(&b64[..20]), "{out}");
+    assert!(out.contains("[REDACTED:secret]"), "{out}");
+    // Ein neuer Aufbau aus dem Store verliert die Werte nicht.
+    f.secrets.put(token(&openai(), KNOWN)).await.unwrap();
+    assert!(!redactor.redact_str(ENV).unwrap().contains(ENV));
+    let entries = audit(&f).await;
+    let loaded: Vec<_> = redaction_entries(&entries)
+        .into_iter()
+        .filter(|e| e.details["reason"] == "env_passthrough")
+        .collect();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(
+        loaded[0].details["names"],
+        serde_json::json!(["GITHUB_TOKEN"])
+    );
+    assert_eq!(loaded[0].details["values"], 1);
+    assert!(!format!("{:?}", loaded[0].details).contains(ENV));
+}

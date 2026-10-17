@@ -372,3 +372,29 @@ proptest! {
         prop_assert!(!v.to_string().contains(&tok));
     }
 }
+
+/// #216: Ein Token aus 64 Hex-Zeichen, dessen SHA-256 bekannt ist (lokales Token des Daemons),
+/// wird geschwärzt, ohne dass der Redactor den Wert hält; andere Hex-Folgen bleiben.
+#[test]
+fn sec_013_tokens_known_by_hash_are_redacted() {
+    use sha2::Digest as _;
+    let token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let other = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    let r = Redactor::detectors_only();
+    r.set_token_hashes(vec![sha2::Sha256::digest(token.as_bytes()).into()]);
+    assert_eq!(
+        r.redact_str(&format!("Bearer-los: {token}, json: \"{token}\""))
+            .unwrap(),
+        "Bearer-los: [REDACTED:beton], json: \"[REDACTED:beton]\""
+    );
+    assert_eq!(r.redact_str(other).unwrap(), other, "unbekannter Hash");
+    let longer = format!("{token}0");
+    assert_eq!(
+        r.redact_str(&longer).unwrap(),
+        longer,
+        "nur genau 64 Zeichen"
+    );
+    let mut v = serde_json::json!({"t": token});
+    assert!(r.redact_json(&mut v).unwrap());
+    assert_eq!(v["t"], "[REDACTED:beton]");
+}

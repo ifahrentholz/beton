@@ -41,6 +41,8 @@ pub struct TunnelConfig {
     pub cmd_timeout: Duration,
     pub ping_interval: Duration,
     pub pong_timeout: Duration,
+    /// Gültigkeit eines Runner-Tokens ohne Erneuerung (AUTH-011 AC2, #243).
+    pub token_ttl: Duration,
 }
 
 impl Default for TunnelConfig {
@@ -51,6 +53,7 @@ impl Default for TunnelConfig {
             cmd_timeout: Duration::from_secs(30),
             ping_interval: Duration::from_secs(20),
             pong_timeout: Duration::from_secs(60),
+            token_ttl: TOKEN_TTL,
         }
     }
 }
@@ -93,13 +96,36 @@ async fn shutting_down(rx: &mut Option<tokio::sync::watch::Receiver<bool>>) {
 /// Offene Freigaben einer Session: Ablauf (Unix-Sekunden) und Art.
 type OpenApprovals = HashMap<beton_core::id::ApprovalId, (i64, beton_core::event::ApprovalKind)>;
 
+/// Gültigkeit eines Runner-Tokens ohne Erneuerung (AUTH-011 AC2, #243).
+pub const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// System-Call, mit dem ein verbundener Runner sein Token erneuert (AUTH-011 AC2, #243).
+pub use beton_proto::tunnel::TOKEN_RENEW_TOOL as RENEW_TOOL;
+
 /// Höchstdauer, die ein abgekoppelter Runner auf den nächsten Daemon wartet (POL-010 AC4).
 pub const DETACH_MAX: Duration = Duration::from_secs(3600);
 
+/// Ein gültiges Runner-Token (gehalten wird nur sein SHA-256, #243).
+#[derive(Debug, Clone, Copy)]
+struct TokenEntry {
+    session: SessionId,
+    /// Start eines Runner-Prozesses; Erneuerungen bleiben in derselben Generation.
+    generation: u64,
+    /// Reihenfolge innerhalb der Generation (Erneuerungen zählen hoch).
+    serial: u64,
+    expires: Instant,
+}
+
+/// Generation eines Runner-Starts (aus [`RunnerRegistry::mint`]); hängt nicht vom Token ab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Generation(u64);
+
 /// Verbundene Runner und ihre Tokens.
-#[derive(Default)]
 pub struct RunnerRegistry {
-    tokens: Mutex<HashMap<[u8; 32], SessionId>>,
+    tokens: Mutex<HashMap<[u8; 32], TokenEntry>>,
+    /// Gültigkeit neuer und erneuerter Tokens in Millisekunden (AUTH-011 AC2).
+    token_ttl_ms: AtomicU64,
+    next_serial: AtomicU64,
     conns: Mutex<HashMap<SessionId, RunnerConn>>,
     /// Höchste gespeicherte `rseq` je Session (Dedup nach Reconnect).
     persisted: Mutex<HashMap<SessionId, u64>>,
@@ -118,6 +144,29 @@ pub struct RunnerRegistry {
     next_cmd: AtomicU64,
 }
 
+impl Default for RunnerRegistry {
+    fn default() -> Self {
+        Self {
+            tokens: Mutex::default(),
+            token_ttl_ms: AtomicU64::new(duration_ms(TOKEN_TTL)),
+            next_serial: AtomicU64::new(1),
+            conns: Mutex::default(),
+            persisted: Mutex::default(),
+            stopping: Mutex::default(),
+            refuse_until: Mutex::default(),
+            approvals: Mutex::default(),
+            expected: Mutex::default(),
+            detached: Mutex::default(),
+            next_conn: AtomicU64::new(0),
+            next_cmd: AtomicU64::new(0),
+        }
+    }
+}
+
+fn duration_ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX).max(1)
+}
+
 impl std::fmt::Debug for RunnerRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("RunnerRegistry")
@@ -126,6 +175,19 @@ impl std::fmt::Debug for RunnerRegistry {
 
 fn hash(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
+}
+
+fn new_token() -> Result<String, crate::local_auth::AuthError> {
+    Ok(format!("bt_run_{}", crate::local_auth::random_hex(32)?))
+}
+
+/// Der gültige Eintrag zum Hash (Vergleich in konstanter Zeit, nicht abgelaufen).
+fn live(tokens: &HashMap<[u8; 32], TokenEntry>, h: &[u8; 32], now: Instant) -> Option<TokenEntry> {
+    tokens
+        .iter()
+        .find(|(k, _)| bool::from(k.ct_eq(h)))
+        .map(|(_, e)| *e)
+        .filter(|e| e.expires > now)
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -141,19 +203,102 @@ impl RunnerRegistry {
     /// Starts oder eines abgekoppelten Runners, verfallen hier. Bestehende Verbindungen bleiben
     /// davon unberührt; neu anmelden kann sich nur der neue Runner.
     pub fn mint_token(&self, session: SessionId) -> Result<String, crate::local_auth::AuthError> {
-        let token = format!("bt_run_{}", crate::local_auth::random_hex(32)?);
+        self.mint(session, Duration::ZERO).map(|(token, _)| token)
+    }
+
+    /// Wie [`Self::mint_token`], dazu die Generation des Starts: Mit ihr sperrt der Daemon den
+    /// Start später, ohne das Token selbst zu halten (#243). Das Token gilt mindestens
+    /// `at_least` lang (Start-Budget): Bis zur ersten Anmeldung kann der Runner nicht erneuern.
+    pub fn mint(
+        &self,
+        session: SessionId,
+        at_least: Duration,
+    ) -> Result<(String, Generation), crate::local_auth::AuthError> {
+        let token = new_token()?;
+        let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         {
             let mut tokens = lock(&self.tokens);
-            tokens.retain(|_, s| *s != session);
-            tokens.insert(hash(&token), session);
+            tokens.retain(|_, e| e.session != session);
+            tokens.insert(
+                hash(&token),
+                TokenEntry {
+                    session,
+                    generation: serial,
+                    serial,
+                    expires: Instant::now() + self.token_ttl().max(at_least),
+                },
+            );
         }
         lock(&self.expected).remove(&session);
         lock(&self.persisted).remove(&session);
-        Ok(token)
+        Ok((token, Generation(serial)))
+    }
+
+    /// Gültigkeit neuer Tokens (AUTH-011 AC2).
+    pub fn token_ttl(&self) -> Duration {
+        Duration::from_millis(self.token_ttl_ms.load(Ordering::Relaxed))
+    }
+
+    /// Setzt die Gültigkeit neuer und erneuerter Tokens (Konfiguration, Tests).
+    pub fn set_token_ttl(&self, ttl: Duration) {
+        self.token_ttl_ms.store(duration_ms(ttl), Ordering::Relaxed);
+    }
+
+    /// Erneuert ein gültiges Token (AUTH-011 AC2): neues Token derselben Generation und seine
+    /// Gültigkeit. Das alte gilt noch höchstens `token_ttl` lang, bis sich der Runner mit dem
+    /// neuen anmeldet ([`Self::confirm`]); geht die Antwort verloren, kommt er so trotzdem
+    /// wieder in den Tunnel. Ältere Tokens der Generation verfallen sofort. `None` für ein abgelaufenes,
+    /// gesperrtes oder unbekanntes Token.
+    pub fn renew(&self, token: &str) -> Option<(String, Duration)> {
+        self.renew_hash(&hash(token)).map(|(t, _, ttl)| (t, ttl))
+    }
+
+    /// Wie [`Self::renew`] über den Hash; liefert dazu den Hash des neuen Tokens.
+    fn renew_hash(&self, h: &[u8; 32]) -> Option<(String, [u8; 32], Duration)> {
+        let fresh = new_token().ok()?;
+        let fresh_hash = hash(&fresh);
+        let ttl = self.token_ttl();
+        let mut tokens = lock(&self.tokens);
+        let now = Instant::now();
+        let current = live(&tokens, h, now)?;
+        tokens.retain(|k, e| {
+            e.session != current.session
+                || e.generation != current.generation
+                || bool::from(k.ct_eq(h))
+        });
+        if let Some(old) = tokens.get_mut(h) {
+            old.expires = old.expires.min(now + ttl);
+        }
+        tokens.insert(
+            fresh_hash,
+            TokenEntry {
+                serial: self.next_serial.fetch_add(1, Ordering::Relaxed),
+                expires: now + ttl,
+                ..current
+            },
+        );
+        Some((fresh, fresh_hash, ttl))
+    }
+
+    /// Der Runner hat sich mit `token` angemeldet: ältere Tokens seiner Generation verfallen.
+    pub fn confirm(&self, token: &str) {
+        self.confirm_hash(&hash(token));
+    }
+
+    fn confirm_hash(&self, h: &[u8; 32]) {
+        let mut tokens = lock(&self.tokens);
+        let Some(current) = live(&tokens, h, Instant::now()) else {
+            return;
+        };
+        tokens.retain(|_, e| {
+            e.session != current.session
+                || e.generation != current.generation
+                || e.serial >= current.serial
+        });
     }
 
     pub fn revoke_tokens(&self, session: SessionId) {
-        lock(&self.tokens).retain(|_, s| *s != session);
+        lock(&self.tokens).retain(|_, e| e.session != session);
     }
 
     /// Gilt das Token noch (Runner darf sich anmelden)?
@@ -161,18 +306,41 @@ impl RunnerRegistry {
         self.session_for(token).is_some()
     }
 
-    /// Sperrt genau ein Token, z. B. das eines geordnet gestoppten Runners. Das Token eines
-    /// inzwischen gestarteten Nachfolgers derselben Session bleibt gültig (#198).
+    /// Hat die Generation eines Starts noch ein gültiges Token (der Runner kann sich anmelden)?
+    pub fn generation_valid(&self, session: SessionId, generation: Generation) -> bool {
+        let now = Instant::now();
+        lock(&self.tokens)
+            .values()
+            .any(|e| e.session == session && e.generation == generation.0 && e.expires > now)
+    }
+
+    /// Sperrt alle Tokens einer Generation (Stopp eines Starts, #198, #243). Ein inzwischen
+    /// gestarteter Nachfolger hat eine neue Generation und bleibt gültig.
+    pub fn revoke_generation(&self, session: SessionId, generation: Generation) {
+        lock(&self.tokens).retain(|_, e| e.session != session || e.generation != generation.0);
+    }
+
+    /// Sperrt die Generation von `token`, z. B. die eines geordnet gestoppten Runners samt
+    /// seiner Erneuerungen. Das Token eines inzwischen gestarteten Nachfolgers derselben
+    /// Session bleibt gültig (#198).
     pub fn revoke_token(&self, token: &str) {
-        lock(&self.tokens).remove(&hash(token));
+        self.revoke_hash(&hash(token));
+    }
+
+    fn revoke_hash(&self, h: &[u8; 32]) {
+        let mut tokens = lock(&self.tokens);
+        let Some(entry) = tokens.get(h).copied() else {
+            return;
+        };
+        tokens.retain(|_, e| e.session != entry.session || e.generation != entry.generation);
     }
 
     fn session_for(&self, token: &str) -> Option<SessionId> {
-        let h = hash(token);
-        lock(&self.tokens)
-            .iter()
-            .find(|(k, _)| bool::from(k.ct_eq(&h)))
-            .map(|(_, s)| *s)
+        self.session_for_hash(&hash(token))
+    }
+
+    fn session_for_hash(&self, h: &[u8; 32]) -> Option<SessionId> {
+        live(&lock(&self.tokens), h, Instant::now()).map(|e| e.session)
     }
 
     pub fn connected(&self, session: SessionId) -> bool {
@@ -254,15 +422,18 @@ impl RunnerRegistry {
             }) else {
                 continue;
             };
-            for (hash, s) in tokens.iter() {
-                if s == session {
-                    detached.insert(*session);
-                    out.push(crate::detached::DetachedRunner {
-                        session_id: *session,
-                        token_sha256: hex::encode(hash),
-                        until: until.min(cap),
-                    });
-                }
+            // Das jüngste Token der Session (nach Erneuerungen das zuletzt ausgegebene).
+            let newest = tokens
+                .iter()
+                .filter(|(_, e)| e.session == *session)
+                .max_by_key(|(_, e)| e.serial);
+            if let Some((hash, _)) = newest {
+                detached.insert(*session);
+                out.push(crate::detached::DetachedRunner {
+                    session_id: *session,
+                    token_sha256: hex::encode(hash),
+                    until: until.min(cap),
+                });
             }
         }
         out
@@ -287,7 +458,18 @@ impl RunnerRegistry {
             return;
         }
         let left = Duration::from_secs(left.unsigned_abs()).min(DETACH_MAX);
-        lock(&self.tokens).insert(hash, d.session_id);
+        // Bis zur Frist der Freigabe (höchstens 1 h), nicht nur `token_ttl`: Der Runner kann
+        // sein Token ohne Daemon nicht erneuern (POL-010 AC4).
+        let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
+        lock(&self.tokens).insert(
+            hash,
+            TokenEntry {
+                session: d.session_id,
+                generation: serial,
+                serial,
+                expires: Instant::now() + left,
+            },
+        );
         lock(&self.expected).insert(d.session_id, (Instant::now() + left, hash));
     }
 
@@ -331,6 +513,18 @@ impl RunnerRegistry {
         args: Value,
         timeout: Duration,
     ) -> Result<Value, Problem> {
+        self.deliver_as(session, name, args, None, timeout).await
+    }
+
+    /// Wie [`Self::deliver`], mit dem auslösenden Akteur (z. B. für `terminal.opened`).
+    pub async fn deliver_as(
+        &self,
+        session: SessionId,
+        name: &str,
+        args: Value,
+        actor: Option<Actor>,
+        timeout: Duration,
+    ) -> Result<Value, Problem> {
         let (tx, rx) = oneshot::channel();
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
@@ -349,6 +543,7 @@ impl RunnerRegistry {
                 cmd_id,
                 name: name.to_owned(),
                 args,
+                actor,
             });
         }
         match tokio::time::timeout(timeout, rx).await {
@@ -394,6 +589,8 @@ fn runner_code(problem: &Value) -> ProblemCode {
     match problem["code"].as_str().unwrap_or_default() {
         "capability_unsupported" => ProblemCode::CapabilityUnsupported,
         "sandbox_required" => ProblemCode::SandboxRequired,
+        "sandbox_unavailable" => ProblemCode::SandboxUnavailable,
+        "rate_limited" => ProblemCode::RateLimited,
         "unexpected_input" | "validation_failed" => ProblemCode::ValidationFailed,
         "not_found" => ProblemCode::NotFound,
         "no_active_turn" => ProblemCode::NoActiveTurn,
@@ -446,6 +643,38 @@ pub struct TunnelState {
     pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
     /// Automatische Compaction vor dem nächsten Turn aus der Queue (USE-009).
     pub compaction: beton_harness::CompactionSettings,
+    /// Binärkanäle der Runner (PROTO-007): Terminals.
+    pub channels: Arc<crate::channels::ChannelHub>,
+}
+
+/// Gegenstelle eines Kanals im Runner: Kredit und Keyframes als Steuernachricht, Eingaben als
+/// Binärframe mit der Kanal-ID des Runners.
+struct RunnerBackend {
+    tx: mpsc::UnboundedSender<TunnelDown>,
+    bin: mpsc::UnboundedSender<Vec<u8>>,
+    channel_id: u32,
+}
+
+impl crate::channels::ChannelBackend for RunnerBackend {
+    fn credit(&self, bytes: u64) {
+        let _ = self.tx.send(TunnelDown::ChannelCredit {
+            channel_id: self.channel_id,
+            bytes,
+        });
+    }
+
+    fn keyframe(&self) {
+        let _ = self.tx.send(TunnelDown::ChannelKeyframe {
+            channel_id: self.channel_id,
+        });
+    }
+
+    fn input(&self, payload: Vec<u8>) -> bool {
+        use beton_proto::channel::{Frame, flags};
+        self.bin
+            .send(Frame::new(self.channel_id, flags::INPUT | flags::FIN, payload).encode())
+            .is_ok()
+    }
 }
 
 impl TunnelState {
@@ -467,8 +696,10 @@ pub async fn tunnel_upgrade(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
+    // Der Server hält nur den SHA-256 des Tokens (#243).
     let Some((token, session)) = crate::security::bearer(&headers)
-        .and_then(|t| state.runners.session_for(t).map(|s| (t.to_owned(), s)))
+        .map(hash)
+        .and_then(|h| state.runners.session_for_hash(&h).map(|s| (h, s)))
     else {
         return Problem::new(ProblemCode::Unauthorized).into_response();
     };
@@ -479,6 +710,38 @@ pub async fn tunnel_upgrade(
     };
     ws.protocols([SUBPROTOCOL])
         .on_upgrade(move |socket| connection(socket, state, session, token))
+}
+
+/// Wie oft eine Verbindung den Ablauf ihres Tokens prüft: ein Viertel der Gültigkeit,
+/// zwischen 50 ms und 10 s.
+fn token_check_every(ttl: Duration) -> Duration {
+    (ttl / 4).clamp(Duration::from_millis(50), Duration::from_secs(10))
+}
+
+/// Antwort auf `runner.token_renew`: neues Token und seine Gültigkeit in Millisekunden. Das
+/// Ergebnis zeigt `Debug` von [`TunnelDown`] nie.
+fn renew_reply(runners: &RunnerRegistry, token: &mut [u8; 32], call_id: String) -> TunnelDown {
+    match runners.renew_hash(token) {
+        Some((fresh, fresh_hash, ttl)) => {
+            *token = fresh_hash;
+            TunnelDown::SystemResult {
+                call_id,
+                result: Some(serde_json::json!({
+                    "token": fresh,
+                    "expires_in_ms": u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX),
+                })),
+                problem: None,
+            }
+        }
+        None => TunnelDown::SystemResult {
+            call_id,
+            result: None,
+            problem: Some(serde_json::json!({
+                "code": "unauthorized",
+                "detail": "Token abgelaufen oder gesperrt",
+            })),
+        },
+    }
 }
 
 fn problem_msg(p: Problem) -> Message {
@@ -540,8 +803,10 @@ async fn connection(
     socket: WebSocket,
     state: TunnelState,
     token_session: SessionId,
-    token: String,
+    token: [u8; 32],
 ) {
+    // Hash des aktuellen Tokens dieser Verbindung; Erneuerungen ersetzen ihn (#243).
+    let mut token = token;
     let (mut sink, mut stream) = socket.split();
     if lock(&state.runners.refuse_until)
         .get(&token_session)
@@ -640,7 +905,35 @@ async fn connection(
         return;
     }
 
+    // Angemeldet: ältere Tokens dieser Generation verfallen (AUTH-011 AC2).
+    state.runners.confirm_hash(&token);
+    // Schreiben in eigener Aufgabe: Die Lese-Schleife wartet nie auf den Socket zum Runner.
+    // Sonst blockierten sich beide Seiten, wenn der Runner gerade Frames schreibt und der Server
+    // ihm Kredit schickt (volle Socket-Puffer, PROTO-007).
+    let (wtx, mut wrx) = mpsc::unbounded_channel::<Message>();
+    let writer = tokio::spawn(async move {
+        while let Some(m) = wrx.recv().await {
+            let closing = matches!(m, Message::Close(_));
+            if sink.send(m).await.is_err() || closing {
+                break;
+            }
+        }
+        let _ = sink.close().await;
+    });
+    let as_text =
+        |m: &TunnelDown| Message::Text(serde_json::to_string(m).unwrap_or_default().into());
     let (tx, mut rx) = mpsc::unbounded_channel::<TunnelDown>();
+    let down = tx.clone();
+    // Binärframes an den Runner (Eingaben der Terminals, PROTO-007).
+    let (bin_tx, mut bin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let mut channels: HashMap<
+        u32,
+        (
+            beton_proto::channel::ChannelKind,
+            String,
+            Arc<crate::channels::Relay>,
+        ),
+    > = HashMap::new();
     let conn_id = state.runners.next_conn.fetch_add(1, Ordering::Relaxed);
     lock(&state.runners.expected).remove(&session_id);
     // Offene Freigaben aus der Projektion: ein übernommener Runner meldet sie nicht erneut
@@ -674,6 +967,9 @@ async fn connection(
     let mut ping = tokio::time::interval(state.config.ping_interval);
     ping.reset();
     let mut last_pong = Instant::now();
+    // Ablauf des Tokens prüfen (AUTH-011 AC2): Wer nicht erneuert, verliert den Tunnel.
+    let mut token_check = tokio::time::interval(token_check_every(state.runners.token_ttl()));
+    token_check.reset();
     let mut shutdown = state.shutdown.clone();
     loop {
         tokio::select! {
@@ -685,31 +981,78 @@ async fn connection(
                 } else {
                     "Daemon fährt herunter"
                 };
-                let _ = sink.send(close_msg(close::SHUTTING_DOWN, reason)).await;
+                let _ = wtx.send(close_msg(close::SHUTTING_DOWN, reason));
                 break;
             }
             down = rx.recv() => {
                 let Some(down) = down else { break };
-                if sink.send(Message::Text(serde_json::to_string(&down).unwrap_or_default().into())).await.is_err() {
+                if wtx.send(as_text(&down)).is_err() {
+                    break;
+                }
+            }
+            bin = bin_rx.recv() => {
+                let Some(bin) = bin else { continue };
+                if wtx.send(Message::Binary(bin.into())).is_err() {
                     break;
                 }
             }
             msg = stream.next() => {
                 let Some(Ok(msg)) = msg else { break };
                 match msg {
+                    Message::Binary(bytes) => {
+                        // Ausgabe eines Kanals des Runners (PROTO-007); unbekannte Kanäle und
+                        // kaputte Frames verwirft der Server.
+                        match beton_proto::channel::Frame::decode(&bytes) {
+                            Ok(frame) => {
+                                if let Some((_, _, relay)) = channels.get(&frame.channel_id) {
+                                    relay.push(frame);
+                                }
+                            }
+                            Err(e) => tracing::warn!(%session_id, "Binärframe des Runners verworfen: {e}"),
+                        }
+                    }
                     Message::Text(text) => {
                         let Ok(up) = TunnelUp::from_json(&text) else { continue };
+                        // Erneuerung des Tokens dieser Verbindung (AUTH-011 AC2, #243).
+                        if let TunnelUp::SystemCall { call_id, tool, .. } = &up
+                            && tool == RENEW_TOOL
+                        {
+                            let reply = renew_reply(&state.runners, &mut token, call_id.clone());
+                            if wtx.send(as_text(&reply)).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        match up {
+                            TunnelUp::ChannelOpen { channel_id, kind, target } => {
+                                let backend = Arc::new(RunnerBackend {
+                                    tx: down.clone(),
+                                    bin: bin_tx.clone(),
+                                    channel_id,
+                                });
+                                let relay = state.channels.register(session_id, kind, &target, backend);
+                                channels.insert(channel_id, (kind, target, relay));
+                                continue;
+                            }
+                            TunnelUp::ChannelClose { channel_id, reason } => {
+                                if let Some((kind, target, _)) = channels.remove(&channel_id) {
+                                    state.channels.close(session_id, kind, &target, reason.as_deref().unwrap_or("closed"));
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
                             let unsaved = unsaved_push(&reply);
-                            if sink.send(Message::Text(serde_json::to_string(&reply).unwrap_or_default().into())).await.is_err() || stale {
+                            if wtx.send(as_text(&reply)).is_err() || stale {
                                 break;
                             }
                             if unsaved {
                                 // Spätere Pushes dieser Verbindung dürfen die Lücke nicht
                                 // überspringen: trennen, der Runner sendet nach dem Reconnect
                                 // alles Unbestätigte erneut (PROTO-015, #278).
-                                let _ = sink.send(close_msg(close::INTERNAL, "Events nicht gespeichert")).await;
+                                let _ = wtx.send(close_msg(close::INTERNAL, "Events nicht gespeichert"));
                                 break;
                             }
                         }
@@ -719,26 +1062,45 @@ async fn connection(
                     _ => {}
                 }
             }
-            _ = ping.tick() => {
-                if last_pong.elapsed() > state.config.pong_timeout {
-                    let _ = sink.send(close_msg(close::HEARTBEAT_TIMEOUT, "kein Pong")).await;
+            _ = token_check.tick() => {
+                if state.runners.session_for_hash(&token) != Some(session_id) {
+                    let _ = wtx.send(close_msg(close::UNAUTHENTICATED, "token_expired"));
                     break;
                 }
-                let _ = sink.send(Message::Ping(Vec::new().into())).await;
+            }
+            _ = ping.tick() => {
+                if last_pong.elapsed() > state.config.pong_timeout {
+                    let _ = wtx.send(close_msg(close::HEARTBEAT_TIMEOUT, "kein Pong"));
+                    break;
+                }
+                let _ = wtx.send(Message::Ping(Vec::new().into()));
             }
         }
     }
+    // Ausstehendes (z. B. das Close-Frame) noch senden.
+    drop(wtx);
+    let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+
     // Ein geordnet gestoppter Runner meldet sich nicht wieder an: sein Token sperren, bevor
     // die Verbindung als getrennt gilt. Nur dieses Token, und vor `stopped`: Wer daraufhin eine
     // Eingabe schickt, startet einen Nachfolger mit neuem Token (SES-003 AC3, #198).
     if lock(&state.runners.stopping).contains_key(&session_id) {
-        state.runners.revoke_token(&token);
+        state.runners.revoke_hash(&token);
     }
     // Abmelden (nur wenn die Verbindung noch die aktuelle ist).
-    {
+    let current = {
         let mut conns = lock(&state.runners.conns);
-        if conns.get(&session_id).is_some_and(|c| c.id == conn_id) {
+        let current = conns.get(&session_id).is_some_and(|c| c.id == conn_id);
+        if current {
             conns.remove(&session_id);
+        }
+        current
+    };
+    // Kanäle dieser Verbindung enden mit ihr; Clients öffnen sie neu, sobald der Runner sie
+    // nach dem Reconnect wieder anmeldet (PROTO-007).
+    if current {
+        for (_, (kind, target, _)) in channels.drain() {
+            state.channels.close(session_id, kind, &target, "detached");
         }
     }
     let stopped = lock(&state.runners.stopping).remove(&session_id);
@@ -943,6 +1305,8 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
             None
         }
         TunnelUp::Hello { .. } | TunnelUp::SessionBind { .. } => None,
+        // Binärkanäle folgen (PROTO-007).
+        TunnelUp::ChannelOpen { .. } | TunnelUp::ChannelClose { .. } => None,
     }
 }
 
@@ -964,6 +1328,8 @@ pub async fn idle_reaper(
                 c.idle(state.config.idle_timeout)
                     && hub.subscribers(**s) == 0
                     && !state.runners.has_open_approvals(**s)
+                    // Offene Terminals laufen weiter, auch ohne Client (SES-019 AC1).
+                    && state.channels.open_terminals(**s) == 0
             })
             .map(|(s, _)| *s)
             .collect();
@@ -1349,5 +1715,105 @@ mod tests {
         std::fs::write(file.with_extension("json.tmp"), "alt").unwrap();
         crate::detached::save(&file, &r.detach(&[s])).unwrap();
         assert_eq!(crate::detached::take(&file).len(), 1);
+    }
+
+    /// #243 (AUTH-011 AC2): Ein Runner-Token läuft ohne Erneuerung ab (Default 15 min) und
+    /// lässt sich danach auch nicht mehr erneuern.
+    #[test]
+    fn auth_011_ac2_runner_token_expires_without_renewal() {
+        let runners = RunnerRegistry::default();
+        assert_eq!(runners.token_ttl(), Duration::from_secs(15 * 60));
+        runners.set_token_ttl(Duration::from_millis(50));
+        let s = SessionId::new();
+        let token = runners.mint_token(s).unwrap();
+        assert_eq!(runners.session_for(&token), Some(s));
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(runners.session_for(&token), None, "abgelaufen");
+        assert!(
+            runners.renew(&token).is_none(),
+            "abgelaufen: keine Erneuerung"
+        );
+    }
+
+    /// #243 (AUTH-011 AC2): Erneuern liefert ein neues Token derselben Generation. Das alte
+    /// gilt, bis sich der Runner mit dem neuen anmeldet (die Antwort kann verloren gehen); ein
+    /// geordneter Stopp sperrt die ganze Generation. Der gespeicherte `rseq`-Stand bleibt.
+    #[test]
+    fn auth_011_ac2_renewal_rotates_the_token_within_its_generation() {
+        let runners = RunnerRegistry::default();
+        let (s, other) = (SessionId::new(), SessionId::new());
+        let old = runners.mint_token(s).unwrap();
+        let foreign = runners.mint_token(other).unwrap();
+        lock(&runners.persisted).insert(s, 7);
+        let (new, ttl) = runners.renew(&old).expect("gültiges Token");
+        assert_ne!(new, old);
+        assert!(new.starts_with("bt_run_"));
+        assert_eq!(ttl, TOKEN_TTL);
+        assert_eq!(runners.session_for(&new), Some(s));
+        assert_eq!(runners.session_for(&old), Some(s), "bis zur Anmeldung");
+        assert_eq!(
+            lock(&runners.persisted).get(&s),
+            Some(&7),
+            "derselbe Prozess"
+        );
+        runners.confirm(&new);
+        assert_eq!(
+            runners.session_for(&old),
+            None,
+            "angemeldet: altes Token verfällt"
+        );
+        let newer = runners.renew(&new).unwrap().0;
+        runners.revoke_token(&new);
+        assert_eq!(runners.session_for(&new), None);
+        assert_eq!(
+            runners.session_for(&newer),
+            None,
+            "ganze Generation gesperrt"
+        );
+        assert_eq!(runners.session_for(&foreign), Some(other));
+        assert!(runners.renew("bt_run_unbekannt").is_none());
+    }
+
+    /// #243: Abgekoppelt wird das jüngste Token der Generation (nach einer Erneuerung).
+    #[test]
+    fn auth_011_detach_keeps_the_renewed_token() {
+        let s = SessionId::new();
+        let old = RunnerRegistry::default();
+        let first = old.mint_token(s).unwrap();
+        let renewed = old.renew(&first).unwrap().0;
+        old.note_events(s, [&approval(s, beton_core::id::ApprovalId::new(), 600)]);
+        let detached = old.detach(&[s]);
+        assert_eq!(detached.len(), 1);
+        let new = RunnerRegistry::default();
+        new.adopt(&detached[0]);
+        assert_eq!(new.session_for(&renewed), Some(s));
+        assert_eq!(new.session_for(&first), None);
+    }
+
+    /// #243: Bis zur ersten Anmeldung kann ein Runner nicht erneuern: Ein Start-Token gilt
+    /// mindestens das Start-Budget lang. Nach einer Erneuerung gilt das alte nur noch höchstens
+    /// `token_ttl` lang.
+    #[test]
+    fn auth_011_start_token_lives_at_least_the_start_budget() {
+        let runners = RunnerRegistry::default();
+        runners.set_token_ttl(Duration::from_millis(50));
+        let s = SessionId::new();
+        let (token, generation) = runners.mint(s, Duration::from_secs(60)).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(runners.session_for(&token), Some(s), "im Start-Budget");
+        assert!(runners.generation_valid(s, generation));
+        let (renewed, _) = runners.renew(&token).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(
+            runners.session_for(&token),
+            None,
+            "nach der Erneuerung nur noch kurz"
+        );
+        assert_eq!(
+            runners.session_for(&renewed),
+            None,
+            "nicht erneuert: abgelaufen"
+        );
+        assert!(!runners.generation_valid(s, generation));
     }
 }

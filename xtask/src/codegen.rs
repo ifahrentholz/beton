@@ -13,6 +13,7 @@
 //! - `schemas/v1/export-header.schema.json` (Kopfzeile des Session-Exports, DATA-010)
 //! - `schemas/v1/usage.schema.json` (`GET /v1/usage`, `beton usage --json`, USE-005/USE-007)
 //! - `schemas/v1/usage-session.schema.json` (`beton usage --session <id> --json`, USE-007)
+//! - `schemas/v1/notification-settings.schema.json` (`/v1/settings/notifications`, UX-006)
 //! - `packages/sdk-ts/src/gen/*.ts` (TypeScript via `ts-rs`) plus `index.ts`
 //! - `docs/generated/er-diagram.md` (ER-Diagramm aus den SQLite-Migrationen, DATA-001 AC1)
 //! - `openapi/v1.json` (OpenAPI 3.1 via `utoipa`, API-001 AC1, PROTO-013 AC3)
@@ -105,6 +106,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
             schemars::schema_for!(beton_server::api_usage::UsageReportView),
         ),
         (
+            "schemas/v1/notification-settings.schema.json",
+            schemars::schema_for!(beton_core::notifications::NotificationSettings),
+        ),
+        (
             "schemas/v1/usage-session.schema.json",
             schemars::schema_for!(beton_server::api_usage::SessionUsageView),
         ),
@@ -155,6 +160,11 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         use beton_server::api_inbox::{InboxItemView, InboxPage};
         InboxItemView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         InboxPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Benachrichtigungs-Einstellungen (UX-006).
+        beton_core::notifications::NotificationSettings::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
+        beton_core::notifications::NotificationEvent::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
         // Usage (USE-005, USE-007).
         use beton_server::api_usage::{PricingView, SessionUsageView, UsageReportView};
         UsageReportView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
@@ -194,6 +204,18 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         use beton_server::session_skills::SessionSkills;
         SessionSkills::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         beton_core::event::Attachment::export_all(&cfg)
+            .context("TypeScript-Export fehlgeschlagen")?;
+        // Workspace-Terminals (SES-019, WEB-010).
+        use beton_server::terminals::{
+            TerminalList, TerminalOpenRequest, TerminalRename, TerminalResize, TerminalView,
+        };
+        TerminalOpenRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalList::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalRename::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        TerminalResize::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Binärkanäle (PROTO-007): Bild-Metadaten des Browser-Kanals.
+        beton_proto::channel::BrowserFrameMeta::export_all(&cfg)
             .context("TypeScript-Export fehlgeschlagen")?;
         // Session-Export/-Import als Datei (SES-009, DATA-010).
         beton_server::exports::SessionImportResult::export_all(&cfg)

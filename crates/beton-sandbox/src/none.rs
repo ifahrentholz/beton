@@ -13,6 +13,19 @@ use crate::resolve::ResolvedPolicy;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoneProvider;
 
+/// Startet der Befehl am Pseudo-Terminal (SBX-017)?
+pub(crate) fn has_tty(cmd: &CommandSpec) -> bool {
+    #[cfg(unix)]
+    {
+        cmd.tty.is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = cmd;
+        false
+    }
+}
+
 /// Grund für jede fehlende Capability.
 pub const REASON: &str = "backend: none isoliert nicht";
 
@@ -59,7 +72,7 @@ impl SandboxProvider for NoneProvider {
         if let Some(cwd) = &cmd.cwd {
             c.current_dir(cwd);
         }
-        child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
+        child::spawn(c, has_tty(&cmd)).map_err(|e| SandboxError::SpawnFailed {
             message: format!("{}: {e}", cmd.program.display()),
             kind: e.kind(),
         })

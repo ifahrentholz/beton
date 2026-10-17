@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::serve::ListenerExt as _;
 use beton_store::Store;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -119,6 +120,8 @@ pub async fn start_with(
     let mut runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
+    // Gültigkeit der Runner-Tokens (AUTH-011 AC2, #243).
+    runtime.runners.set_token_ttl(runtime.tunnel.token_ttl);
     // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
     // Werte, bevor irgendein Task schreibt oder verteilt (SEC-013); die übrigen Capabilities
     // bleiben hier ungenutzt (die REST-API gibt nie Werte heraus).
@@ -126,6 +129,18 @@ pub async fn start_with(
         beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone());
     if let Some(redactor) = &runtime.redactor {
         caps.redaction.attach(&secrets, redactor.clone()).await?;
+        // #216: Auch das lokale Token (nur über seinen Hash) und durchgereichte Secrets aus
+        // der Umgebung des Daemons sind bekannte Werte.
+        token.watch_redaction(redactor.clone());
+        secrets
+            .add_redaction_values(
+                "env_passthrough",
+                crate::sessions::passthrough_secrets(
+                    &runtime.sessions.sandbox,
+                    &runtime.sessions.daemon_env,
+                ),
+            )
+            .await?;
     }
     // Die Proxy-Capability teilen sich die Quelle der beton-CA (PRX-002, #191) und die
     // Credentials der Proxy-Instanzen (PRX-006); beide gehören zum Egress-Proxy.
@@ -192,6 +207,13 @@ pub async fn start_with(
             let shutdown = async move {
                 let _ = rx.wait_for(|s| *s).await;
             };
+            // Ohne Nagle: Terminal-Echos und kleine Steuernachrichten warten sonst auf das
+            // verzögerte ACK des Clients (bis 40 ms unter Linux, WEB-010 AC1).
+            let listener = listener.tap_io(|tcp| {
+                if let Err(e) = tcp.set_nodelay(true) {
+                    tracing::debug!("TCP_NODELAY nicht gesetzt: {e}");
+                }
+            });
             if let Err(e) = axum::serve(listener, app)
                 .with_graceful_shutdown(shutdown)
                 .await
@@ -228,6 +250,7 @@ pub async fn start_with(
             ]))),
             shutdown: Some(stop_rx.clone()),
             compaction: runtime.compaction,
+            channels: runtime.channels.clone(),
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

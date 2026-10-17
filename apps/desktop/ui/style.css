@@ -1,0 +1,123 @@
+/*
+ * Lokale Seiten der Desktop-App (Start, Daemon-Dialoge, Logs). Tokens wie in apps/web
+ * (Entwurf „Sichtbeton & Partitur“, design/prototype); keine externen Ressourcen.
+ */
+:root {
+  color-scheme: light dark;
+  --background: #e4e4e0;
+  --card: #f0f0ec;
+  --popover: #f6f6f3;
+  --sunken: #d6d6d0;
+  --foreground: #24272b;
+  --muted-foreground: #585c62;
+  --accent: #d5d5cf;
+  --border: #c4c4bd;
+  --ring: #8f6a10;
+  --ok: #1a683b;
+  --deny: #ac2920;
+  --deny-soft: #f0d2ce;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1d1f22;
+    --card: #26292d;
+    --popover: #2b2e33;
+    --sunken: #161819;
+    --foreground: #dcddd8;
+    --muted-foreground: #9a9ea4;
+    --accent: #30343a;
+    --border: #363a40;
+    --ring: #e2b33b;
+    --ok: #5bab78;
+    --deny: #e0675b;
+    --deny-soft: #42231f;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.muted { color: var(--muted-foreground); }
+.wide { font-stretch: 125%; letter-spacing: -0.01em; }
+.grain {
+  background-image:
+    radial-gradient(color-mix(in oklab, var(--foreground) 6%, transparent) 0.6px, transparent 0.7px),
+    radial-gradient(color-mix(in oklab, var(--foreground) 4%, transparent) 0.5px, transparent 0.6px);
+  background-size: 7px 7px, 11px 11px;
+  background-position: 0 0, 3px 5px;
+}
+.glyph {
+  display: flex; align-items: center; justify-content: center;
+  width: 56px; height: 56px; border-radius: 22%;
+  background: var(--foreground); color: var(--background);
+  font-size: 30px; font-weight: 800;
+}
+.start {
+  min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 20px; padding: 32px; text-align: center;
+}
+.start h1 { margin: 0; font-size: 20px; font-weight: 700; }
+.steps { list-style: none; margin: 0; padding: 0; text-align: left; font-size: 13px; }
+.steps li { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.steps li.todo { color: var(--muted-foreground); }
+.steps li.failed { color: var(--deny); }
+.mark { width: 14px; height: 14px; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.mark.todo::before { content: ""; width: 8px; height: 8px; border: 1px solid var(--muted-foreground); border-radius: 50%; }
+.mark.done::before { content: "✓"; color: var(--ok); font-weight: 700; }
+.mark.failed::before { content: "✕"; color: var(--deny); font-weight: 700; }
+.mark.active::before {
+  content: ""; width: 10px; height: 10px; border: 2px solid var(--foreground); border-right-color: transparent;
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .mark.active::before { animation: none; } }
+.note { max-width: 28rem; font-size: 12px; }
+.overlay {
+  position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center;
+  padding: 64px 24px 24px; background: color-mix(in oklab, var(--foreground) 25%, transparent);
+}
+.dialog {
+  width: 100%; max-width: 32rem; padding: 20px; text-align: left;
+  background: var(--popover); border: 1px solid var(--border); border-radius: 4px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.25);
+}
+.dialog h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.dialog p { margin: 6px 0 0; font-size: 13px; }
+.dialog .hint { font-size: 12.5px; color: var(--muted-foreground); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+button {
+  font: inherit; font-size: 13px; color: inherit; cursor: pointer;
+  padding: 6px 12px; border-radius: 3px; border: 1px solid var(--border); background: transparent;
+}
+button:hover { background: var(--accent); }
+button.primary {
+  border-color: var(--foreground); background: var(--foreground); color: var(--background); font-weight: 600;
+  clip-path: polygon(5px 0, 100% 0, 100% calc(100% - 5px), calc(100% - 5px) 100%, 0 100%, 0 5px);
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.options { margin-top: 12px; display: grid; gap: 8px; font-size: 13px; }
+.options label { display: flex; gap: 8px; align-items: flex-start; }
+.options input { margin-top: 3px; accent-color: var(--foreground); }
+.options small { display: block; font-size: 12px; color: var(--muted-foreground); }
+.logs { height: 100%; display: flex; flex-direction: column; background: var(--popover); }
+.logs header {
+  height: 40px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.logs header .path { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--muted-foreground); }
+.logs header .tools { margin-left: auto; display: flex; gap: 6px; }
+.logs header button { padding: 2px 8px; font-size: 12px; }
+.logs pre {
+  flex: 1; min-height: 0; overflow: auto; margin: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.55;
+  background: var(--sunken); border-radius: 3px; white-space: pre;
+}
+.dialog.full { max-width: none; min-height: 100%; border: 0; border-radius: 0; box-shadow: none; }
+.linkline { margin-top: 8px; padding: 4px 8px; border-radius: 2px; background: var(--sunken); font-size: 11.5px; word-break: break-all; }
+.strong { font-weight: 600; }
+.start .actions { justify-content: center; margin-top: 0; }

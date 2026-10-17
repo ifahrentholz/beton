@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
 import type { Capabilities, HarnessInfo, PermissionMode, SessionSandbox } from '@beton/sdk'
-import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
+import { GitFork, Link2, Menu, Minimize2, PanelRight, Paperclip, Square, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
-import { compacting as compactingOf, contextOf } from '@/lib/context'
+import { tk, useCommand, useCommands } from '@/lib/commands'
+import { compacting as compactingOf, contextLevel, contextOf } from '@/lib/context'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
@@ -14,24 +15,25 @@ import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 import { openApprovals, timeline, type ApprovalItem, type Item } from '@/lib/timeline'
 import { titleFrom, windowTitle } from '@/lib/title'
-import { changedPaths, lineLink, rangeLabel, withAttachments, type WorkspaceSearch } from '@/lib/workspace'
+import { indexForSeq, linkOf, type SessionSearch } from '@/lib/deeplink'
+import { useMru } from '@/lib/mru'
+import { changedPaths, lineLink, rangeLabel, withAttachments } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
 import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } from '@/store/workspace'
 import { Composer, type BetonCommand } from './composer'
 import { continueTargets, ForkBanner, forkOrigin } from './fork'
 import { QueueList } from './queue'
-import { HarnessBadge, listStatus, StatusMark } from './harness'
+import { HarnessBadge, harnessName, listStatus, StatusMark, VoiceDot, voiceOf } from './harness'
 import { useLayout } from './layout-state'
 import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
 import { ApprovalBar } from './approval-bar'
 import { ContextBar } from './context-bar'
+import { WindowDrop } from './window-drop'
+import { StreamAnnouncer } from './stream-announcer'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
-
-/** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
-export const ESC_ESC_MS = 600
 
 /** Metadaten aus dem Log: Harness, Modell, Capabilities, Titel, Status. */
 function useMeta(sessionId: string) {
@@ -138,7 +140,7 @@ const desktop = () => window.matchMedia('(min-width: 1024px)').matches
 export function SessionView({ sessionId }: { sessionId: string }) {
   useSessionStream(sessionId)
   useOpenFileSync(sessionId)
-  const search = useSearch({ strict: false }) as WorkspaceSearch
+  const search = useSearch({ strict: false }) as SessionSearch
   const navigate = useNavigate()
   const railOpen = useWorkspace((s) => s.railOpen)
   const railSheet = useWorkspace((s) => s.railSheet)
@@ -234,23 +236,42 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return () => clearTimeout(timer)
   }, [sessionId, lastSeq])
 
-  // `Esc` zweimal kurz hintereinander unterbricht den laufenden Turn (WEB-005, UX-004).
-  useEffect(() => {
-    if (!running) return
-    let last = 0
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return
-      const now = Date.now()
-      if (now - last < ESC_ESC_MS) {
-        last = 0
-        void client.session(sessionId).interrupt().catch(() => undefined)
-      } else {
-        last = now
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [running, sessionId])
+  // Zuletzt genutzt, je Gerät (UX-003 AC3).
+  useEffect(() => useMru.getState().touch(sessionId), [sessionId])
+
+  // Befehle dieser Session (UX-002): Palette und Kürzel aus der Registry. `Esc Esc` unterbricht
+  // nur bei laufendem Turn (WEB-005, UX-004; `when`, UX-002 AC2).
+  useCommand({
+    id: 'session.interrupt',
+    icon: Square,
+    when: () => running,
+    run: () => void client.session(sessionId).interrupt().catch(() => undefined),
+  })
+  useCommand({ id: 'session.fork', icon: GitFork, when: () => !!meta.harness, run: () => continueWith(meta.harness) })
+  const contextPct = context ? contextLevel(context.used, context.window).pct : null
+  useCommand({
+    id: 'session.compact',
+    title: tk('cmd.compact'),
+    hint: contextPct !== null ? (t) => t('cmd.compactHint', { percent: contextPct }) : '/compact',
+    icon: Minimize2,
+    group: 'session',
+    order: 4,
+    keywords: ['compact', 'kompaktieren', 'komprimieren', 'kontext', 'context'],
+    when: () => !!compaction && compaction !== 'none' && !running && !isCompacting,
+    run: compact,
+  })
+  useCommands(
+    targets.map((h, i) => ({
+      id: `session.continue.${h.id}`,
+      title: (t) => t('cmd.continueWith', { harness: harnessName(h.id) }),
+      hint: tk('cmd.continueHint'),
+      icon: voiceIcon(voiceOf(h.id)),
+      group: 'session',
+      order: 1 + i / 100,
+      keywords: ['fork', 'harness', 'weiter', 'continue', 'wechseln', 'switch'],
+      run: () => continueWith(h.id),
+    })),
+  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -261,6 +282,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     overscan: 8,
     getItemKey: (i) => items[i]?.key ?? i,
   })
+  // Sprung zu Event `seq` aus Deep-Link oder Benachrichtigung (DESK-006 AC3, DESK-005 AC2):
+  // einmal, sobald das Event geladen ist; danach folgt die Ansicht nicht mehr dem Ende.
+  const target = search.seq !== undefined ? indexForSeq(items, search.seq) : undefined
+  const targetKey = target !== undefined ? items[target]?.key : undefined
+  const jumped = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (target === undefined || search.seq === undefined || jumped.current === search.seq) return
+    if (lastSeq < search.seq) return
+    jumped.current = search.seq
+    atBottom.current = false
+    virtualizer.scrollToIndex(target, { align: 'center' })
+  }, [target, search.seq, lastSeq, virtualizer])
   useEffect(() => {
     if (atBottom.current && items.length > 0) virtualizer.scrollToIndex(items.length - 1, { align: 'end' })
   }, [items, virtualizer])
@@ -280,7 +313,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    <WindowDrop sessionId={sessionId} title={meta.title || 'Neue Session'}>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="@container flex h-12 shrink-0 items-center gap-3 border-b border-border px-3 sm:px-4">
         <button onClick={toggleList} className="flex size-8 items-center justify-center rounded-md hover:bg-accent lg:hidden" aria-label="Sessions anzeigen">
@@ -301,6 +334,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </button>
       </header>
       {origin && <ForkBanner origin={origin} />}
+      {search.opened === 'link' && <OpenedViaLink sessionId={sessionId} search={search} />}
       {log?.reconnecting && (
         <div className="flex items-center gap-2 border-b border-border bg-sunken px-4 py-1 text-[12px] text-muted-foreground" role="status">
           <WifiOff className="size-3.5" /> Verbindung zum Daemon unterbrochen – verbinde neu …
@@ -321,7 +355,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             if (!item) return null
             return (
               <div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute top-0 left-0 w-full px-3 py-2 sm:px-6" style={{ transform: `translateY(${v.start}px)` }}>
-                <StreamItem item={item} sessionId={sessionId} harness={meta.harness} />
+                <div className={cn(item.key === targetKey && 'rounded-md outline-2 outline-offset-4 outline-foreground/60')} data-target={item.key === targetKey ? 'seq' : undefined}>
+                  <StreamItem item={item} sessionId={sessionId} harness={meta.harness} />
+                </div>
               </div>
             )
           })}
@@ -332,6 +368,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </p>
         )}
       </div>
+      <StreamAnnouncer items={items} />
       {sendError && (
         <div className="border-t border-deny/40 bg-deny-soft px-4 py-1.5 text-[12px]" role="alert">
           {sendError}
@@ -405,6 +442,30 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         }}
       />
       <ConflictHost sessionId={sessionId} harness={meta.harness} />
+    </WindowDrop>
+  )
+}
+
+/** Hinweis „Geöffnet über beton://…“ (Entwurf `desktop-deeplink` Zustand „Session an Event geöffnet“). */
+export function OpenedViaLink({ sessionId, search }: { sessionId: string; search: SessionSearch }) {
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border bg-card px-4 text-[12px]" role="status">
+      <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 text-muted-foreground">Geöffnet über</span>
+      <code className="truncate font-mono text-[11.5px]">{linkOf(sessionId, search)}</code>
+      {search.seq !== undefined && <span className="shrink-0 text-muted-foreground">· Event {search.seq}</span>}
     </div>
   )
+}
+
+const voiceIcons = new Map<string, () => ReactElement>()
+
+/** Stimmfarbe als Symbol in der Palette („Weiter mit …“). */
+function voiceIcon(voice: ReturnType<typeof voiceOf>) {
+  let icon = voiceIcons.get(voice)
+  if (!icon) {
+    icon = () => <VoiceDot voice={voice} />
+    voiceIcons.set(voice, icon)
+  }
+  return icon
 }

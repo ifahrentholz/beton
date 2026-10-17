@@ -586,6 +586,8 @@ pub struct StageEnv {
     /// Policy der Stufe 1: Schreibt beton im Auftrag des Harness (ACP `fs/write_text_file`),
     /// gilt sie auch dafür (Security-Review #327).
     pub harness_policy: Option<Arc<beton_sandbox::ResolvedPolicy>>,
+    /// Terminals in Stufe 2 für Harnesses mit `tool_isolation: beton` (ACP `terminal/*`, #326).
+    pub terminals: Option<Arc<dyn crate::terminal::TerminalHost>>,
 }
 
 impl std::fmt::Debug for StageEnv {
@@ -596,6 +598,7 @@ impl std::fmt::Debug for StageEnv {
             .field("tools", &self.tools.is_some())
             .field("sandbox", &self.sandbox)
             .field("harness_policy", &self.harness_policy.is_some())
+            .field("terminals", &self.terminals.is_some())
             .finish()
     }
 }

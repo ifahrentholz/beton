@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+members = ["crates/*", "xtask", "apps/desktop/src-tauri"]
 # Fuzz-Targets (QA-009) sind ein eigener Workspace und brauchen nightly (`cargo fuzz`).
 exclude = ["fuzz"]
 
@@ -29,11 +29,13 @@ beton-harness-direct = { path = "crates/beton-harness-direct", version = "0.0.0"
 beton-mcp = { path = "crates/beton-mcp", version = "0.0.0" }
 beton-sdk = { path = "crates/beton-sdk", version = "0.0.0" }
 beton-cli = { path = "crates/beton-cli", version = "0.0.0" }
+beton-desktop = { path = "crates/beton-desktop", version = "0.0.0" }
 beton-git = { path = "crates/beton-git", version = "0.0.0" }
 beton-policy = { path = "crates/beton-policy", version = "0.0.0" }
 beton-secrets = { path = "crates/beton-secrets", version = "0.0.0" }
 beton-proxy = { path = "crates/beton-proxy", version = "0.0.0" }
 beton-sandbox = { path = "crates/beton-sandbox", version = "0.0.0" }
+beton-pty = { path = "crates/beton-pty", version = "0.0.0" }
 
 # extern
 # Secret-Store (SEC-001 … SEC-003): AEAD, KDF und Nullen von Secrets.
@@ -78,11 +80,15 @@ ignore = "0.4"
 # Zeitzonen des Users (POL-004 AC4, #195): IANA-Datenbank im Binary, keine Netzabrufe und
 # kein System-tzdata nötig (ADR-0033).
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
+# Workspace-Terminals (SES-019, TUI-002): Pseudo-Terminals (Unix-PTY bzw. ConPTY) und ein
+# VT-Emulator für Scrollback, Keyframes und Snapshots (DATA-011); nie tmux.
+portable-pty = "0.9"
+vt100 = "0.16"
 # Linux-Sandbox (SBX-008, SBX-009, SBX-013): Landlock, seccomp-BPF, Namespaces und rlimits.
 landlock = "0.4.4"
 libc = "0.2"
 seccompiler = "0.5"
-process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "tokio1"] }
+process-wrap = { version = "10", default-features = false, features = ["job-object", "kill-on-drop", "process-group", "process-session", "tokio1"] }
 proptest = "1"
 # Prüfung der JUnit-Ausgabe von `beton policy test` (POL-026 AC2), nur in Tests.
 roxmltree = "0.21"
@@ -132,6 +138,12 @@ unwrap_used = "warn"
 
 # SQLite ist C-Code; unoptimiert verlangsamt es jeden Store-Test deutlich.
 [profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
+# VT-Emulator der Terminals: 100 MB Ausgabe (DATA-011 AC1) wären unoptimiert sehr langsam.
+[profile.dev.package.vt100]
+opt-level = 3
+[profile.dev.package.vte]
 opt-level = 3
 
 # Argon2id mit m = 64 MiB (SEC-003) wäre unoptimiert in Tests sekundenlang.

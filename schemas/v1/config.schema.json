@@ -329,7 +329,7 @@
           }
         },
         "hosts": {
-          "description": "Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und\n`git_https`, sonst Override der Default-Hosts.",
+          "description": "Gebundene Hosts (exakt oder `*.domain`, optional mit `:port`; ohne Port nur 443); Pflicht\nfür `bearer`, `basic` und `git_https`, sonst Override der Default-Hosts.",
           "type": [
             "array",
             "null"
@@ -337,6 +337,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "implicit": {
+          "description": "Ohne Platzhalter und ohne `Authorization`-Header einsetzen (Default `true`; nur\n`git_https` mit `username`, `github` und `gitlab`, nie `bearer`/`basic`; PRX-006, #295).",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "name": {
           "description": "Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.",

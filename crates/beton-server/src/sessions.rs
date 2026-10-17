@@ -56,10 +56,11 @@ pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
-    /// Tunnel-Token und Startzeit des zuletzt gestarteten Runners je Session. Ist das Token
-    /// gesperrt (geordneter Stopp) oder das Start-Budget abgelaufen, startet dieser Runner nicht
-    /// mehr, auch wenn sein Prozess noch läuft (#198).
-    tokens: Mutex<HashMap<SessionId, (String, Instant)>>,
+    /// Token-Generation und Startzeit des zuletzt gestarteten Runners je Session; das Token
+    /// selbst hält der Daemon nicht (#243). Ist die Generation gesperrt (geordneter Stopp) oder
+    /// das Start-Budget abgelaufen, startet dieser Runner nicht mehr, auch wenn sein Prozess
+    /// noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, (crate::tunnel::Generation, Instant)>>,
     /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
     /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
     starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
@@ -74,6 +75,22 @@ impl Launched {
             .entry(session)
             .or_default()
             .clone()
+    }
+
+    /// Vergisst die Start-Sperre einer gelöschten Session.
+    fn forget(&self, session: SessionId) {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session);
+    }
+
+    /// Zahl der Sessions mit Start-Sperre (Diagnose, Tests von #243).
+    pub fn start_locks(&self) -> usize {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
@@ -307,6 +324,8 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             }
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
+            // Bildschirmzustand eines Terminals als Blob der Session (DATA-011).
+            "terminal.snapshot" => crate::terminals::store_snapshot(&self.0, session, &args).await,
             // Credentials der Proxy-Instanzen des Runners (PRX-006, PRX-009 AC4).
             "credential.resolve" | "credential.used" | "credential.misuse"
             | "egress.passthrough" => credential_call(&self.0, session, tool, &args).await,
@@ -318,6 +337,31 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
         };
         result.map_err(problem)
     }
+}
+
+/// Durchgereichte Variablen mit Secret-Namen (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD*`)
+/// und ihre Werte aus der Umgebung des Daemons: bekannte Werte der Redaction (#216).
+pub fn passthrough_secrets(
+    spec: &beton_sandbox::SandboxSpec,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, beton_secrets::SecretValue)> {
+    passthrough_names(spec, env)
+        .into_iter()
+        .filter(|name| secret_like(name))
+        .filter_map(|name| {
+            let value = beton_secrets::SecretValue::from(env.get(&name)?.as_str());
+            Some((name, value))
+        })
+        .collect()
+}
+
+/// Klingt der Name einer Variable nach einem Secret?
+fn secret_like(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    ["TOKEN", "KEY", "SECRET"]
+        .iter()
+        .any(|s| n == *s || n.ends_with(&format!("_{s}")))
+        || n.contains("PASSWORD")
 }
 
 /// Variablen aus `sandbox.env.passthrough`, die der Runner erben muss, damit die Auflösung sie
@@ -919,8 +963,20 @@ impl<'a> SessionManager<'a> {
         Ok(found)
     }
 
-    /// Startet einen Runner für die Session.
+    /// Startet einen Runner für die Session unter ihrer Start-Sperre: Ein gleichzeitiger
+    /// Stopp wartet, bis Token und Handle abgelegt sind, und räumt sie dann ab (#243, S1).
     pub(crate) async fn launch(
+        &self,
+        session: &SessionRecord,
+        resume: Option<String>,
+    ) -> Result<(), Problem> {
+        let starts = self.cfg().launched.start_lock(session.id);
+        let _start = starts.lock().await;
+        self.launch_unlocked(session, resume).await
+    }
+
+    /// Wie [`Self::launch`]; nur unter der Start-Sperre der Session aufrufen.
+    async fn launch_unlocked(
         &self,
         session: &SessionRecord,
         resume: Option<String>,
@@ -960,13 +1016,12 @@ impl<'a> SessionManager<'a> {
             // `confirm_unsandboxed`), nie still ohne Sandbox (SBX-006).
             return Err(unconfirmed_problem());
         }
-        let token = self
+        let (boot_token, generation) = self
             .state
             .runtime
             .runners
-            .mint_token(session.id)
+            .mint(session.id, cfg.start_budget)
             .map_err(|e| Problem::internal(&e))?;
-        let boot_token = token.clone();
         let spec = RunnerSpec {
             runner_id: RunnerId::new(),
             session_id: session.id,
@@ -1037,7 +1092,7 @@ impl<'a> SessionManager<'a> {
             .tokens
             .lock()
             .await
-            .insert(session.id, (token, Instant::now()));
+            .insert(session.id, (generation, Instant::now()));
         Ok(())
     }
 
@@ -1060,8 +1115,11 @@ impl<'a> SessionManager<'a> {
     /// dem Start-Budget noch läuft). Nur unter der Start-Sperre der Session aufrufen; dann gehört
     /// der Eintrag sicher zur Generation vor dem neuen Start.
     async fn replace_start(&self, session: SessionId) {
-        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
-            self.state.runtime.runners.revoke_token(&token);
+        if let Some((generation, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            self.state
+                .runtime
+                .runners
+                .revoke_generation(session, generation);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
@@ -1099,7 +1157,7 @@ impl<'a> SessionManager<'a> {
             if !self.await_adopted(session).await && !self.runner_starting(session).await {
                 self.replace_start(session).await;
                 let reference = self.last_native_ref(session).await?;
-                self.launch(&record, reference).await?;
+                self.launch_unlocked(&record, reference).await?;
             }
         }
         self.wait_connected(session).await?;
@@ -1140,8 +1198,13 @@ impl<'a> SessionManager<'a> {
             .get(&session)
             .cloned();
         let budget = self.cfg().start_budget;
-        if !launched.is_some_and(|(t, at)| {
-            at.elapsed() < budget && self.state.runtime.runners.token_valid(&t)
+        if !launched.is_some_and(|(generation, at)| {
+            at.elapsed() < budget
+                && self
+                    .state
+                    .runtime
+                    .runners
+                    .generation_valid(session, generation)
         }) {
             return false;
         }
@@ -1610,6 +1673,10 @@ impl<'a> SessionManager<'a> {
     /// mit (`parent_cancelled`, AGT-009 AC5).
     pub async fn stop(&self, session: SessionId, reason: &str) {
         self.cancel_children(session).await;
+        // Unter der Start-Sperre: Ein laufender Start (`resume`) legt sein Token erst ab und
+        // wird danach mit gestoppt, statt sich mit der gestoppten Session zu verbinden (#243).
+        let starts = self.cfg().launched.start_lock(session);
+        let _start = starts.lock().await;
         let runners = &self.state.runtime.runners;
         if runners.stop_with_reason(session, 10, reason) {
             let start = Instant::now();
@@ -1619,8 +1686,8 @@ impl<'a> SessionManager<'a> {
         }
         // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
         // Tunnel (Security-Review zu #198).
-        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
-            runners.revoke_token(&token);
+        if let Some((generation, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            runners.revoke_generation(session, generation);
         }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
@@ -1687,6 +1754,8 @@ impl<'a> SessionManager<'a> {
             .delete_session(self.org(), session, by, DeleteAuthority::Owner)
             .await?;
         self.state.runtime.queues.forget(session);
+        // Mit der Session verschwindet ihre Start-Sperre (#243, N4).
+        self.cfg().launched.forget(session);
         let _ = std::fs::remove_file(self.cfg().fork_plan(session));
         let _ = std::fs::remove_file(self.cfg().agent_snapshot(session));
         let fresh = self.cfg().fresh_dir(session);

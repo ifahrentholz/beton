@@ -373,3 +373,99 @@ async fn data_012_ac3_redaction_is_audited_for_the_owner() {
     assert_eq!(e.details["reason"], "Passwort im Chat");
     assert!(!serde_json::to_string(&entries).unwrap().contains(LEAK));
 }
+
+/// #216 (SEC-013): Werte durchgereichter Variablen mit Secret-Namen (`*_TOKEN`, `*_KEY`,
+/// `*_SECRET`, `*PASSWORD*`) und das lokale Token des Daemons sind bekannte Werte, auch nach
+/// einer Rotation des Tokens. Andere durchgereichte Werte bleiben lesbar.
+#[tokio::test]
+async fn sec_013_passthrough_secrets_and_the_local_token_are_redacted() {
+    const ENV: &str = "Fixture-passthrough-4711-abcdef";
+    const PLAIN: &str = "Fixture-plain-value-0815-xyz";
+    let dir = tempfile::tempdir().unwrap();
+    let redactor = Arc::new(beton_secrets::Redactor::pending());
+    let store = Store::open(
+        dir.path(),
+        StoreOptions {
+            redactor: redactor.clone(),
+            ..StoreOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut cfg = beton_server::ServerConfig::local(dir.path().to_path_buf());
+    cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
+    cfg.socket = None;
+    let for_runtime = redactor.clone();
+    let daemon = beton_server::start_with(cfg, store.clone(), move |mut r| {
+        r.redactor = Some(for_runtime);
+        r.secret_backend = Arc::new(MemoryBackend::default());
+        r.sessions.sandbox = beton_sandbox::SandboxSpec::from_yaml(
+            "env:\n  passthrough: [GITHUB_TOKEN, PLAIN_VAR, DB_PASSWORD_FILE]\n",
+        )
+        .unwrap();
+        r.sessions.daemon_env = Arc::new(std::collections::BTreeMap::from([
+            ("GITHUB_TOKEN".to_owned(), ENV.to_owned()),
+            ("PLAIN_VAR".to_owned(), PLAIN.to_owned()),
+            (
+                "DB_PASSWORD_FILE".to_owned(),
+                "Fixture-pw-path-value".to_owned(),
+            ),
+        ]));
+        r
+    })
+    .await
+    .unwrap();
+    let token = std::fs::read_to_string(dir.path().join("auth/local.token"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    let s = session(&store).await;
+    let text = format!("{ENV} | {PLAIN} | Fixture-pw-path-value | {token}");
+    append(
+        &store,
+        &s,
+        vec![message(s.id, MessageRole::Assistant, &text)],
+    )
+    .await;
+    let stored = store.events(s.org_id, s.id, 1, 10).await.unwrap();
+    let got = serde_json::to_string(&stored[0]).unwrap();
+    assert!(!got.contains(ENV), "{got}");
+    assert!(!got.contains("Fixture-pw-path-value"), "{got}");
+    assert!(!got.contains(&token), "{got}");
+    assert!(
+        got.contains(PLAIN),
+        "kein Secret-Name: bleibt lesbar: {got}"
+    );
+    assert!(got.contains("[REDACTED:beton]"), "{got}");
+    // Das Audit nennt die Namen, nie die Werte.
+    let audit = store.audit_entries(s.org_id, 100).await.unwrap();
+    let loaded = audit
+        .iter()
+        .find(|e| e.details["reason"] == "env_passthrough")
+        .expect("Audit der durchgereichten Werte");
+    assert_eq!(
+        loaded.details["names"],
+        json!(["DB_PASSWORD_FILE", "GITHUB_TOKEN"])
+    );
+    assert!(!loaded.details.to_string().contains("Fixture"));
+    // Rotation (`beton auth rotate-local` in einem anderen Prozess): das neue Token zählt.
+    daemon.token.rotate().unwrap();
+    let rotated = std::fs::read_to_string(dir.path().join("auth/local.token"))
+        .unwrap()
+        .trim()
+        .to_owned();
+    assert!(daemon.token.verify(&rotated));
+    append(
+        &store,
+        &s,
+        vec![message(s.id, MessageRole::Assistant, &rotated)],
+    )
+    .await;
+    let stored = store.events(s.org_id, s.id, 2, 10).await.unwrap();
+    assert!(
+        !serde_json::to_string(&stored[0])
+            .unwrap()
+            .contains(&rotated)
+    );
+    daemon.shutdown().await;
+}

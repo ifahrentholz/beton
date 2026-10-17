@@ -5,6 +5,7 @@ import type { SessionSummary } from '@beton/sdk'
 import { Archive, Plus, Search } from 'lucide-react'
 import { client } from '@/lib/client'
 import { ago } from '@/lib/format'
+import { t as tr, useT } from '@/lib/i18n'
 import { PLACEHOLDER } from '@/lib/title'
 import { cn } from '@/lib/utils'
 import { sortSessions, useSessions } from '@/store/sessions'
@@ -25,7 +26,7 @@ export function listRows(sessions: SessionSummary[], archived: boolean, hits?: S
   const pinned = list.filter((s) => s.pinned)
   if (pinned.length === 0) return list.map((session) => ({ kind: 'session', session }))
   return [
-    { kind: 'heading', label: 'Angepinnt' },
+    { kind: 'heading', label: tr('list.pinned') },
     ...pinned.map((session) => ({ kind: 'session' as const, session })),
     ...list.filter((s) => !s.pinned).map((session) => ({ kind: 'session' as const, session })),
   ]
@@ -61,13 +62,14 @@ function useSearch(query: string, archived: boolean): Set<string> | undefined {
 
 /** Linke Spalte (WEB-003): Sessions nach Aktivität, angepinnte oben, Suche, Archiv; virtualisiert. */
 export function SessionList({ active, onNew }: { active?: string | undefined; onNew: () => void }) {
+  const t = useT()
   const byId = useSessions((s) => s.byId)
   const loaded = useSessions((s) => s.loaded)
   const [query, setQuery] = useState('')
   const [archived, setArchived] = useState(false)
   const closeList = useLayout((s) => s.closeList)
   const hits = useSearch(query, archived)
-  const rows = useMemo(() => listRows(Object.values(byId), archived, hits), [byId, archived, hits])
+  const rows = useMemo(() => listRows(Object.values(byId), archived, hits), [byId, archived, hits, t])
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -81,19 +83,19 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
   })
   const sessionCount = rows.filter((r) => r.kind === 'session').length
   return (
-    <nav aria-label="Sessions" className="flex h-full w-full flex-col bg-sidebar">
+    <nav aria-label={t('nav.sessions')} className="flex h-full w-full flex-col bg-sidebar">
       <div className="flex items-center gap-1 p-2">
         <label className="flex h-8 flex-1 items-center gap-2 rounded-md border border-input bg-card px-2 text-xs text-muted-foreground">
           <Search className="size-3.5 shrink-0" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Sessions durchsuchen"
-            aria-label="Sessions durchsuchen"
+            placeholder={t('list.search')}
+            aria-label={t('list.search')}
             className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground"
           />
         </label>
-        <button onClick={onNew} title="Neue Session" aria-label="Neue Session" className="flex size-8 items-center justify-center rounded-md bg-foreground text-background">
+        <button onClick={onNew} title={t('list.new')} aria-label={t('list.new')} className="flex size-8 items-center justify-center rounded-md bg-foreground text-background">
           <Plus className="size-4" />
         </button>
       </div>
@@ -143,7 +145,7 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
                     )}
                   >
                     {s.title || PLACEHOLDER}
-                    {s.unread && <span className="sr-only"> (ungelesen)</span>}
+                    {s.unread && <span className="sr-only"> {t('list.unread')}</span>}
                   </div>
                   <div className="flex items-center gap-1.5 overflow-hidden text-[11px] whitespace-nowrap text-muted-foreground">
                     <VoiceDot voice={voiceOf(s.harness)} className="size-1.5" />
@@ -157,7 +159,7 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
         </div>
         {loaded && sessionCount === 0 && (
           <p className="px-3 py-4 text-[12px] text-muted-foreground">
-            {query ? 'Keine Session passt zur Suche.' : archived ? 'Keine archivierten Sessions.' : 'Noch keine Sessions. Starte eine mit dem Plus oder `beton run`.'}
+            {query ? t('list.noHits') : archived ? t('list.noArchived') : t('list.empty')}
           </p>
         )}
       </div>
@@ -166,7 +168,7 @@ export function SessionList({ active, onNew }: { active?: string | undefined; on
         className="flex items-center gap-2 border-t border-border px-3 py-2 text-[12px] text-muted-foreground hover:text-foreground"
         aria-pressed={archived}
       >
-        <Archive className="size-3.5" /> {archived ? 'Aktive Sessions' : 'Archiv'}
+        <Archive className="size-3.5" /> {archived ? t('list.active') : t('list.archive')}
       </button>
     </nav>
   )

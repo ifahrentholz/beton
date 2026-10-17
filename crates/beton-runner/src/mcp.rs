@@ -467,6 +467,16 @@ fn https_target(url: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_ascii_lowercase())
 }
 
+/// Dürfen MCP-Server des Agents `${secret:…}` nutzen? Nur Agents aus der User-Ebene und
+/// eingebaute (Review #291); Projekt-, Pfad- und Sub-Agents (Quelle `subagent`, auch die eines
+/// User-Agents) nicht, ebenso Sessions ohne Snapshot (fail closed, AGT-006).
+fn agent_trusted(source: &AgentSource<'_>) -> bool {
+    matches!(
+        source,
+        AgentSource::Snapshot(snap) if snap.source == "user" || snap.source == "builtin"
+    )
+}
+
 /// Bereitet die MCP-Injektion einer Session vor, dazu Instructions und Grenzen des Agents.
 /// Mit `harnesses` prüft der Runner, welche Sub-Agents hier startbar sind.
 #[allow(clippy::too_many_arguments)]
@@ -486,11 +496,7 @@ pub async fn prepare(
     stages: Option<&mut crate::stages::SessionStages>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
-    // Agents aus der User-Ebene oder eingebaute dürfen `${secret:…}` nutzen (Review #291).
-    let agent_trusted = matches!(
-        source,
-        AgentSource::Snapshot(snap) if snap.source == "user" || snap.source == "builtin"
-    );
+    let agent_trusted = agent_trusted(&source);
     let loaded = load(source, workdir, paths)?;
     // AGT-014: `policies` des Agents bilden die Agent-Ebene; jeder Ladefehler (auch eine
     // lockernde Angabe) verhindert den Start (fail closed).
@@ -681,6 +687,36 @@ mod tests {
 
     use super::*;
     use beton_harness::registry::{AcpAgentConfig, HarnessCommandConfig, HarnessesConfig};
+
+    /// #295 (Re-Review #291): Nur Agents mit Snapshot-Quelle `user` oder `builtin` dürfen
+    /// `${secret:…}` in MCP-Headern nutzen; `project`, `path` und `subagent` (auch Sub-Agents
+    /// eines User-Agents) nicht, ebenso Sessions ohne Snapshot.
+    #[test]
+    fn agt_006_ac3_only_user_and_builtin_snapshots_are_trusted() {
+        let snap = |source: &str| -> beton_agents::AgentSnapshot {
+            serde_json::from_value(serde_json::json!({
+                "format": 1, "name": "a", "source": source, "ref": "a", "hash": "sha256:0",
+                "files": {}, "entry": "agent"
+            }))
+            .unwrap()
+        };
+        for (source, trusted) in [
+            ("user", true),
+            ("builtin", true),
+            ("project", false),
+            ("path", false),
+            ("subagent", false),
+        ] {
+            let s = snap(source);
+            assert_eq!(
+                agent_trusted(&AgentSource::Snapshot(&s)),
+                trusted,
+                "Quelle {source}"
+            );
+        }
+        assert!(!agent_trusted(&AgentSource::Ref("builtin:x")));
+        assert!(!agent_trusted(&AgentSource::None));
+    }
 
     #[test]
     fn har_009_ac2_bridge_can_be_disabled_per_harness_and_acp_agent() {

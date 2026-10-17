@@ -12,6 +12,8 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
   use: {
+    // Die Tests prüfen deutsche Texte; die Sprache folgt sonst dem Browser (WEB-017).
+    locale: 'de-DE',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
   },

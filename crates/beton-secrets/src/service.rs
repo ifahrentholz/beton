@@ -409,6 +409,61 @@ impl Secrets {
         self.refresh_redaction("attach").await
     }
 
+    /// Weitere bekannte Werte außerhalb des Stores (z. B. `sandbox.env.passthrough`, #216):
+    /// `(Name, Wert)`; auditiert werden Grund und Namen, nie Werte. Ersetzt die Werte desselben
+    /// Grunds. Ohne angebundene Pipeline nichts zu tun.
+    pub async fn add_redaction_values(
+        &self,
+        reason: &str,
+        values: Vec<(String, SecretValue)>,
+    ) -> Result<()> {
+        let Some(redactor) = self.redaction.target.get() else {
+            return Ok(());
+        };
+        let _serial = self.redaction.rebuild.lock().await;
+        let mut names: Vec<String> = values.iter().map(|(n, _)| n.clone()).collect();
+        names.sort();
+        names.dedup();
+        let parts: Vec<SecretValue> = values
+            .iter()
+            .flat_map(|(_, v)| crate::redact::parts(SecretKind::Token, v))
+            .collect();
+        let known = match KnownSecrets::build(&parts) {
+            Ok(k) => k,
+            Err(e) => {
+                redactor.fail();
+                return Err(Error::Unavailable(e));
+            }
+        };
+        // Erst das Audit, dann der Matcher (wie beim Aufbau aus dem Store).
+        let audited = self
+            .store
+            .append_audit(
+                self.org,
+                NewAuditEntry {
+                    at: (self.clock)(),
+                    actor: self.actor,
+                    action: "secrets.redaction_loaded".into(),
+                    target_kind: "secret_store".into(),
+                    target_id: self.backend.kind().as_str().into(),
+                    session_id: None,
+                    host_id: None,
+                    details: serde_json::json!({
+                        "reason": reason,
+                        "names": names,
+                        "values": known.values(),
+                    }),
+                },
+            )
+            .await;
+        if let Err(e) = audited {
+            redactor.fail();
+            return Err(e.into());
+        }
+        redactor.install_extra(reason, known);
+        Ok(())
+    }
+
     /// Baut den Matcher der angebundenen Pipeline neu (nach Anlegen, Rotieren, Löschen,
     /// Entsperren). Ohne Pipeline nichts zu tun.
     ///

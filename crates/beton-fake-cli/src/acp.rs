@@ -286,6 +286,26 @@ impl<R: BufRead, W: Write> Agent<R, W> {
                 }))?;
                 state.call = None;
             }
+        } else if let Some(r) = &step.fs_read {
+            let mut params = json!({"path": r.path});
+            if let Some(l) = r.line {
+                params["line"] = json!(l);
+            }
+            if let Some(l) = r.limit {
+                params["limit"] = json!(l);
+            }
+            let text = match self.call("fs/read_text_file", params)? {
+                Ok(v) => format!("fs_read ok {}", v["content"].as_str().unwrap_or_default()),
+                Err(e) => format!(
+                    "fs_read error {}: {}",
+                    e["code"],
+                    e["message"].as_str().unwrap_or_default()
+                ),
+            };
+            self.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}))?;
+        } else if let Some(t) = &step.terminal {
+            let text = self.terminal(t)?;
+            self.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}))?;
         } else if let Some(w) = &step.fs_write {
             let text = self.fs_write(&w.path, &w.content)?;
             self.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}))?;
@@ -349,6 +369,61 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             }
         }
         Ok(TurnEnd::Done)
+    }
+
+    /// Eine Anfrage an den Client; `Ok(result)` oder `Err(error)` (#326).
+    fn call(&mut self, method: &str, params: Value) -> Result<Result<Value, Value>, Stop> {
+        let request_id = self.requests;
+        self.requests += 1;
+        let mut params = params;
+        params["sessionId"] = json!(self.session_id.clone());
+        self.io.emit(
+            &json!({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}),
+        )?;
+        loop {
+            let msg = self.io.read()?;
+            if msg.get("method").is_none() && msg["id"] == json!(request_id) {
+                return Ok(match msg.get("error") {
+                    Some(e) => Err(e.clone()),
+                    None => Ok(msg["result"].clone()),
+                });
+            }
+        }
+    }
+
+    /// `terminal/create` … `terminal/release` beim Client (#326).
+    fn terminal(&mut self, t: &beton_harness::scenario::TerminalStep) -> Result<String, Stop> {
+        let mut params = json!({"command": t.command, "args": t.args});
+        if let Some(l) = t.output_byte_limit {
+            params["outputByteLimit"] = json!(l);
+        }
+        let id = match self.call("terminal/create", params)? {
+            Ok(v) => v["terminalId"].as_str().unwrap_or_default().to_owned(),
+            Err(e) => {
+                return Ok(format!(
+                    "terminal error {}: {}",
+                    e["code"],
+                    e["message"].as_str().unwrap_or_default()
+                ));
+            }
+        };
+        let exit = if let Some(ms) = t.kill_after_ms {
+            std::thread::sleep(Duration::from_millis(ms));
+            let _ = self.call("terminal/kill", json!({"terminalId": id}))?;
+            self.call("terminal/wait_for_exit", json!({"terminalId": id}))?
+        } else {
+            self.call("terminal/wait_for_exit", json!({"terminalId": id}))?
+        };
+        let code = match exit {
+            Ok(v) => v["exitCode"].to_string(),
+            Err(e) => format!("error {}", e["code"]),
+        };
+        let output = match self.call("terminal/output", json!({"terminalId": id}))? {
+            Ok(v) => v["output"].as_str().unwrap_or_default().to_owned(),
+            Err(e) => format!("error {}", e["code"]),
+        };
+        let _ = self.call("terminal/release", json!({"terminalId": id}))?;
+        Ok(format!("terminal exit {code} output {output}"))
     }
 
     /// `session/request_permission`; `None`, wenn der Client abbricht.

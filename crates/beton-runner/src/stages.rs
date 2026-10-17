@@ -584,6 +584,18 @@ fn check_session_dir(
     Ok(())
 }
 
+/// Binding der Stufe 2 aus der Konfiguration (PRX-006).
+fn tools_binding(c: &beton_sandbox::spec::CredentialSpec, placeholder: Placeholder) -> Binding {
+    Binding {
+        name: c.name.clone(),
+        kind: credential_kind(c.kind),
+        hosts: c.hosts.clone().unwrap_or_default(),
+        username: c.username.clone(),
+        placeholder,
+        implicit: c.implicit.unwrap_or(true),
+    }
+}
+
 fn credential_kind(t: beton_sandbox::CredentialType) -> CredentialKind {
     use beton_sandbox::CredentialType as T;
     match t {
@@ -837,14 +849,7 @@ async fn compose_unix(
         for var in &c.env {
             tools_env.insert(var.clone(), p.to_string());
         }
-        tools_bindings.push(Binding {
-            name: c.name.clone(),
-            kind: credential_kind(c.kind),
-            hosts: c.hosts.clone().unwrap_or_default(),
-            username: c.username.clone(),
-            placeholder: p.clone(),
-            implicit: true,
-        });
+        tools_bindings.push(tools_binding(c, p.clone()));
         placeholders.insert(c.name.clone(), p);
     }
     // HAR-015 AC4: Der Key der Vendor-CLI steht in Stufe 1 nur als Platzhalter; ihre
@@ -989,7 +994,8 @@ async fn compose_unix(
                 vec![Binding {
                     name: route.binding.clone(),
                     kind: CredentialKind::Bearer,
-                    hosts: vec![route.host.clone()],
+                    // Mit Port, falls nicht 443 (#295).
+                    hosts: vec![target.clone()],
                     username: None,
                     placeholder: p.clone(),
                     implicit: false,
@@ -1147,6 +1153,7 @@ async fn compose_unix(
                 egress_proxy: true,
             },
             harness_policy,
+            terminals: None,
         },
         passthrough,
         placeholders,
@@ -1169,6 +1176,21 @@ async fn compose_unix(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// #295: `implicit: false` im Binding schaltet die implizite Injektion ab; Default an.
+    #[test]
+    fn prx_006_implicit_can_be_disabled_per_binding() {
+        let spec = |implicit: &str| -> beton_sandbox::spec::CredentialSpec {
+            serde_norway::from_str(&format!(
+                "{{name: gh, type: github, source: {{env: GH}}{implicit}}}"
+            ))
+            .unwrap()
+        };
+        let p = Placeholder::generate().unwrap();
+        assert!(tools_binding(&spec(""), p.clone()).implicit);
+        assert!(tools_binding(&spec(", implicit: true"), p.clone()).implicit);
+        assert!(!tools_binding(&spec(", implicit: false"), p).implicit);
+    }
 
     /// SBX-003 (#311): Das Verzeichnis des Git-Shims muss für Stufe 1 lesbar sein und darf in
     /// keiner ihrer Schreib-Wurzeln liegen (sonst tauschte Stufe 1 den Shim aus); fail closed.

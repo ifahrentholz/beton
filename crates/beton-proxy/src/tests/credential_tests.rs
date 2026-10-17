@@ -174,6 +174,17 @@ impl Fx {
         collect(s.send_request(req).await.unwrap()).await
     }
 
+    async fn send_port(
+        &self,
+        i: &ProxyInstance,
+        host: &str,
+        port: u16,
+        req: http::Request<Body>,
+    ) -> Got {
+        let mut s = h1(tunnel(&self.h, i, host, port, &[b"http/1.1"]).await).await;
+        collect(s.send_request(req).await.unwrap()).await
+    }
+
     fn ph(&self) -> &str {
         self.placeholder.as_str()
     }
@@ -820,4 +831,175 @@ async fn prx_009_ac2_logs_and_events_never_contain_header_cookie_or_query_values
             .iter()
             .any(|h| h.host == "api.github.com" && h.requests == 1)
     );
+}
+
+/// #295: Ein Binding gilt ohne Port nur für 443. Andere Ports brauchen `host:port` im Binding;
+/// sonst ist der Platzhalter dort ein Fehlgebrauch und implizit wird nichts eingesetzt.
+#[tokio::test]
+async fn prx_006_ports_other_than_443_need_host_port_in_the_binding() {
+    let fx = fx().await;
+    fx.h.route("api.github.com", "93.184.216.35", 8443, &fx.api);
+    let rules = ["* api.github.com/**", "* api.github.com:8443/**"];
+    let i = fx.instance(&rules).await;
+    let with_ph = |host: &str| {
+        with_header(
+            origin("GET", host, "/user"),
+            "authorization",
+            &format!("token {}", fx.ph()),
+        )
+    };
+    let got = fx
+        .send_port(&i, "api.github.com", 8443, with_ph("api.github.com:8443"))
+        .await;
+    assert_denied(&got, 403, "credential_host_mismatch");
+    assert_eq!(fx.api.count(), 0, "kein Wert an Port 8443");
+    let misuse = fx.audit.misuse.lock().unwrap().clone();
+    assert_eq!(misuse.len(), 1, "{misuse:?}");
+    assert_eq!(misuse[0].2, "host_mismatch");
+    // Implizit an Port 8443: nichts.
+    fx.send_port(
+        &i,
+        "api.github.com",
+        8443,
+        origin("GET", "api.github.com:8443", "/user"),
+    )
+    .await;
+    assert!(header(&fx.api.seen()[0], "authorization").is_none());
+    // Mit `host:port` im Binding: genau dieser Port, 443 dann nicht mehr.
+    let b = binding(
+        "github",
+        CredentialKind::Github,
+        &["api.github.com:8443"],
+        &fx.placeholder,
+    );
+    let j = fx.instance_with(&rules, vec![b]).await;
+    let got = fx
+        .send_port(&j, "api.github.com", 8443, with_ph("api.github.com:8443"))
+        .await;
+    assert_eq!(got.status, 200, "{}", got.body);
+    assert_eq!(
+        header(&fx.api.seen()[1], "authorization").unwrap(),
+        format!("token {TOKEN}")
+    );
+    let got = fx
+        .send(&j, "api.github.com", with_ph("api.github.com"))
+        .await;
+    assert_denied(&got, 403, "credential_host_mismatch");
+}
+
+/// #295: Werte mit Steuerzeichen (auch Tab) setzt der Proxy nie ein, auch nicht base64-kodiert
+/// im Basic-Header.
+#[tokio::test]
+async fn prx_006_values_with_control_characters_are_never_injected() {
+    let fx = fx().await;
+    let i = fx
+        .instance(&["* api.github.com/**", "* github.com/**"])
+        .await;
+    for value in [
+        &b"abc\tdef-FIXTURE"[..],
+        b"abc\r\ndef-FIXTURE",
+        b"abc\x7fdef-FIXTURE",
+    ] {
+        fx.source.set("github", Ok(value.to_vec()));
+        let r = with_header(
+            origin("GET", "api.github.com", "/user"),
+            "authorization",
+            &format!("token {}", fx.ph()),
+        );
+        let got = fx.send(&i, "api.github.com", r).await;
+        assert_denied(&got, 502, "credential_source_error");
+        // Basic (Git): Platzhalter als Passwort.
+        let r = with_header(
+            origin("GET", "github.com", "/o/r.git/info/refs"),
+            "authorization",
+            &format!("Basic {}", b64(&format!("x:{}", fx.ph()))),
+        );
+        let got = fx.send(&i, "github.com", r).await;
+        assert_denied(&got, 502, "credential_source_error");
+    }
+    assert_eq!(fx.api.count() + fx.github.count(), 0);
+}
+
+/// #295: Auch eine Instanz ohne Bindings auditiert einen Platzhalter (`credential.misuse`).
+#[tokio::test]
+async fn prx_006_placeholder_at_an_instance_without_bindings_is_audited() {
+    let fx = fx().await;
+    let i = fx.instance_with(&["* api.github.com/**"], Vec::new()).await;
+    let r = with_header(
+        origin("GET", "api.github.com", "/user"),
+        "authorization",
+        &format!("token {}", fx.ph()),
+    );
+    let got = fx.send(&i, "api.github.com", r).await;
+    assert_denied(&got, 403, "credential_unknown");
+    assert_eq!(
+        fx.audit.misuse.lock().unwrap().clone(),
+        vec![(
+            None,
+            "api.github.com".to_owned(),
+            "unknown_placeholder".to_owned()
+        )]
+    );
+}
+
+/// #295: `bearer` und `basic` setzen nie implizit ein (nur mit Platzhalter): Sonst bekäme
+/// Stufe 2 für jeden gebundenen Host eine Fähigkeit, die sie ohne Platzhalter nicht hätte.
+#[tokio::test]
+async fn prx_006_bearer_and_basic_never_inject_implicitly() {
+    let fx = fx().await;
+    let mut basic_b = binding(
+        "reg",
+        CredentialKind::Basic,
+        &["evil.test"],
+        &Placeholder::generate().unwrap(),
+    );
+    basic_b.username = Some("deploy".into());
+    fx.source.set("reg", Ok(b"s3cret-FIXTURE".to_vec()));
+    let bearer_b = binding(
+        "api",
+        CredentialKind::Bearer,
+        &["api.github.com"],
+        &fx.placeholder,
+    );
+    fx.source.set("api", Ok(TOKEN.as_bytes().to_vec()));
+    let i = fx
+        .instance_with(
+            &["* api.github.com/**", "* evil.test/**"],
+            vec![basic_b, bearer_b],
+        )
+        .await;
+    fx.send(
+        &i,
+        "api.github.com",
+        origin("GET", "api.github.com", "/user"),
+    )
+    .await;
+    fx.send(&i, "evil.test", origin("GET", "evil.test", "/v2/"))
+        .await;
+    assert!(header(&fx.api.seen()[0], "authorization").is_none());
+    assert!(header(&fx.evil.seen()[0], "authorization").is_none());
+    assert!(fx.audit.used.lock().unwrap().is_empty());
+}
+
+/// #295: Die 502-Antwort an die Sandbox nennt nur das Binding, keine Details der Quelle
+/// (Pfade, Kommandos, Secret-Refs).
+#[tokio::test]
+async fn prx_006_source_errors_reach_the_sandbox_without_details() {
+    let fx = fx().await;
+    let i = fx.instance(&["* api.github.com/**"]).await;
+    fx.source.set(
+        "github",
+        Err("Datei /home/u/.config/geheim/token: nicht lesbar (secret://user/gh)".into()),
+    );
+    let r = with_header(
+        origin("GET", "api.github.com", "/user"),
+        "authorization",
+        &format!("token {}", fx.ph()),
+    );
+    let got = fx.send(&i, "api.github.com", r).await;
+    assert_denied(&got, 502, "credential_source_error");
+    for detail in ["/home/u", "geheim", "secret://"] {
+        assert!(!got.body.contains(detail), "{}", got.body);
+    }
+    assert!(got.body.contains("github"), "{}", got.body);
 }

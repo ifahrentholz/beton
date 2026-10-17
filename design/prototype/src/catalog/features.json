@@ -1504,11 +1504,11 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-010--capability-probe--beton-sandbox-cli",
-  "summary": "`beton sandbox probe|explain|exec|test` macht den Sandbox-Zustand transparent: Probe der Backends (Kernel/Landlock-ABI, User-NS, seccomp, bwrap, `sandbox-exec`, Docker/Podman), Ausgabe der aufgelösten Policy, manuelles Ausführen eines Kommandos in Stufe 1/2 und Lauf der Escape-Suite auf dem lokalen System. `beton doctor` (OBS-005, siehe 11-platform-features.md) bindet die Probe ein.",
+  "summary": "`beton sandbox probe|explain|exec|test` macht den Sandbox-Zustand transparent: Probe der Backends (Kernel/Landlock-ABI, User-NS, seccomp, bwrap, `sandbox-exec`, Docker/Podman), Ausgabe der aufgelösten Policy, manuelles Ausführen eines Kommandos in Stufe 1/2 und Lauf der Selbsttests der Probe auf dem lokalen System. `beton doctor` (OBS-005, siehe 11-platform-features.md) bindet die Probe ein.",
   "acs": [
    "`beton sandbox probe --json` liefert pro Backend `available`, `caps`, `degraded_reasons` und (Linux) `landlock_abi`, `kernel`.",
    "`beton sandbox exec --stage tools -- cat ~/.ssh/config` scheitert mit Exit ≠ 0 und klarer Meldung.",
-   "`beton sandbox test` führt die Escape-Suite lokal aus und endet mit Exit 0 nur, wenn alle Pflichtfälle bestanden sind."
+   "`beton sandbox test` führt die Selbsttests der Probe für die Backends dieser Plattform lokal aus (je Backend ein Fall `selftest:<backend>`, `--json` als Bericht) und endet mit Exit 0 nur, wenn alle Pflichtfälle bestanden sind; Pflicht ist das Backend, das eine Session nähme (`sandbox.backend`, sonst `auto`), `none` besteht nie. *(Präzisiert, ADR-0042: Die vollständige Escape-Suite aus SBX-011 sind Tests aus dem Quellbaum und läuft mit `cargo nextest run --profile escape -p beton-sandbox -p beton-runner -p beton-cli`, nicht im ausgelieferten Binary.)*"
   ]
  },
  {
@@ -1520,12 +1520,12 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-011--sandbox-escape-testsuite",
-  "summary": "Eine deklarative Testsuite (`crates/beton-sandbox/tests/escape/*.yaml`) führt einen Probe-Binary (`bt-escape-probe`) in beiden Stufen aus und erwartet für jeden Angriff ein Scheitern. Sie läuft in CI pro OS (macOS arm64 aktuell und Vorversion; Ubuntu 22.04, Ubuntu 24.04 mit AppArmor-Restriktion, Debian 12, Fedora aktuell; Windows-Beta-Teilmenge ab M5; Docker ab M5) mit gefälschtem `HOME` voller Fixture-Secrets. Fehlschläge blockieren den Merge. SBX-011 ist Owner von Suite, Probe-Binary und Plattform-Matrix; Einbindung als Required Check und Reporting regelt QA-005.",
+  "summary": "Die Escape-Suite sind die Escape-Tests mit Kontrollgruppe in `crates/beton-sandbox/tests/seatbelt.rs` (macOS), `crates/beton-sandbox/tests/linux.rs` (Linux, Backends `landlock` und `bwrap`), `crates/beton-sandbox/tests/broker.rs` (Exec-Broker, `bt-exec`, Git-Shim), `crates/beton-runner/tests/stages.rs` (beide Stufen im Runner) und `crates/beton-cli/tests/m2_demo.rs` (Daemon, Sandbox, Proxy und Policies Ende zu Ende). Jeder Angriff läuft auch ohne Sandbox und muss dort gelingen (Kontrollgruppe); Homes und Secrets sind Fixtures in Temp-Verzeichnissen. Das nextest-Profil `escape` (`.config/nextest.toml`) fasst die Suite zusammen. Sie läuft in der CI pro Plattform (Matrix siehe Details; Windows-Beta-Teilmenge ab M5; Docker ab M5); Fehlschläge blockieren den Merge. SBX-011 ist Owner von Suite und Plattform-Matrix; Required Checks und Bericht regelt QA-005. Neue Fälle entstehen als Tests in diesen Dateien zusammen mit dem Feature, das sie absichern. *(Präzisiert nach der Entscheidung des Maintainers zu #171, ADR-0042: Das deklarative YAML-Format, das Probe-Binary `bt-escape-probe`, der Mutationstest mit gelockertem Profil und der Fallkatalog des Entwurfs entfallen; maßgeblich sind die vorhandenen Tests.)*",
   "acs": [
-   "Die CI-Matrix enthält die oben genannten Plattformen; jeder Pflichtfall erscheint als eigener Testfall im Report.",
-   "Ein absichtlich gelockertes Profil (Test-Fixture ohne Maske für `~/.ssh`) lässt den zugehörigen Fall rot werden (Mutationstest der Suite).",
-   "Fixture-Secrets tauchen in keinem CI-Log und keinem Session-Event auf (Grep auf Testartefakte).",
-   "Neue Backends gelten erst als verfügbar, wenn sie die Suite (bzw. die dokumentierte Teilmenge bei Beta) bestehen."
+   "Die CI führt die Suite auf allen Plattformen der Matrix aus (Jobs siehe Details); jeder Test erscheint als eigener Testfall im JUnit-Bericht des Jobs.",
+   "Jeder Angriffsfall der Suite führt dieselbe Aktion in derselben Fixture ohne Sandbox aus und verlangt dort Erfolg (Kontrollgruppe); scheitert die Kontrollgruppe, ist der Fall rot. *(Präzisiert, ADR-0042: statt eines Mutationstests mit gelockertem Profil.)*",
+   "Fixture-Secrets tauchen in keinem CI-Log und keinem Session-Event auf (Grep auf Testartefakte). *(Präzisiert, ADR-0042: Fixture-Secrets enthalten per Konvention `FIXTURE`; `scripts/check_fixture_secrets.py` durchsucht die JUnit-Berichte samt Ausgaben bestandener Tests und die Logs der VMs, `m2_demo` die Session-Events.)*",
+   "Neue Backends gelten erst als verfügbar, wenn sie die Suite (bzw. die dokumentierte Teilmenge bei Beta) bestehen. *(Präzisiert, ADR-0042: Ein Backend meldet sich erst nach bestandenem Selbsttest als verfügbar (Probe); jedes Linux-Backend der Registry ist in den Linux-Jobs der Matrix über `BETON_TEST_LINUX_BACKENDS` ausdrücklich gefordert, ein gefordertes, aber fehlendes Backend lässt die Tests scheitern; ein neues Backend kommt erst mit einem solchen Job dazu.)*"
   ]
  },
  {
@@ -2307,7 +2307,7 @@
   "acs": [
    "Gibt ein Tool einen per `env.passthrough` durchgereichten echten Token-Wert aus, enthält das persistierte `tool.call.completed` nur `[REDACTED:…]`; Live-Clients erhalten ebenfalls die redigierte Fassung.",
    "Ein PEM-Private-Key in einer Agent-Nachricht wird vollständig (BEGIN bis END) ersetzt.",
-   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der Median der letzten fünf auf `main` gemessenen Werte; die Messreihe liegt im Actions-Cache des Jobs „test (linux)“ und wird von jedem Push auf `main` fortgeschrieben, damit eine einzelne Ausreißer-Messung nicht zur Basis wird (#296). Floor und Toleranz gelten unverändert.)*",
+   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Präzisiert, #307: Basis ist eine Messung des Stands von `main` (erster Elter des Merge-Commits) im selben Job „test (linux, ohne Netzwerk)“ unmittelbar vor der Messung des PRs, also auf derselben Hardware; die Schwankung zwischen Runnern (±25–50 %) war größer als die Toleranz. Die Basis im Actions-Cache (#296, #306) entfällt. Fehlt die angeforderte Basis, schlägt der Benchmark fehl (fail closed); Pushes auf `main` prüfen nur den Floor. Floor 50 MB/s und Toleranz 20 % gelten unverändert.)*",
    "(ab M3, mit OBS-006) `beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle). *(`beton diagnose` entsteht erst mit OBS-006 in M3; die Pipeline steht dafür bereit.)*"
   ]
  },
@@ -2437,7 +2437,7 @@
   "summary": "Terminal-Bytes, Browser-Frames und Audio laufen als Binärframes `[ver u8][channel_id u32 BE][flags u8][payload]` im selben WebSocket. Kanäle werden per `open_channel` geöffnet (Autorisierung je Kind, z. B. Terminal-Input nur mit `drive`) und per `close_channel`/`channel_closed` beendet. Flusskontrolle ist kreditbasiert: Der Empfänger gewährt `credit {channel_id, bytes|frames}`; der Sender überschreitet das Fenster nie. Browser-Frames: max. 2 Frames unbestätigt, ältere werden verworfen (nur neuester zählt).",
   "acs": [
    "Ein Terminal mit 50 MB Ausgabe an einen langsamen Client (gedrosselt auf 100 KB/s) erhöht den Server-Speicher um < 2 MB (Kredit stoppt den Sender, PTY-Lesen pausiert).",
-   "Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet.",
+   "Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet. *(M3: als Schnittstelle `Authorizer::channel_access` mit Owner-Default, lokal hat der Owner `drive`; die Rolle `view` kommt mit COL-001/AUTH-014 in M4.)*",
    "Bei einem Client, der keine Browser-Frames bestätigt, sendet der Server nie mehr als 2 ausstehende Frames."
   ]
  },
@@ -3207,7 +3207,7 @@
   "summary": "User können pro Session interaktive Shells öffnen (mehrere, benannt), die im Runner als PTY laufen und von allen berechtigten Clients gesehen werden; ebenso werden vom Agent gestartete Langläufer (Dev-Server) als Terminal angezeigt. Terminals überleben Client-Disconnects.",
   "acs": [
    "Ein in der Web-UI gestartetes `npm run dev` läuft weiter, wenn alle Clients trennen, und ist beim Re-Attach mit Scrollback sichtbar.",
-   "Ein User mit Rolle `comment_approve` kann Terminals sehen, aber keine Eingaben senden (`403`).",
+   "Ein User mit Rolle `comment_approve` kann Terminals sehen, aber keine Eingaben senden (`403`). *(M3: als Schnittstelle `Authorizer::can_drive` mit Owner-Default; die Rolle kommt mit COL-001 in M4.)*",
    "`cat ~/.ssh/id_rsa` in einem User-Terminal mit Default-Sandbox scheitert."
   ]
  },
@@ -3886,7 +3886,7 @@
   "acs": [
    "Tastendruck-zu-Echo-Latenz lokal ≤ 30 ms (p95).",
    "Fenster-Resize sendet die neue Größe an das PTY; `vim` rendert korrekt.",
-   "Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert."
+   "Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert. *(M3: Nur-Lese-Zugriff kommt aus `channel_opened.access`; lokal hat der Owner `drive`, Rollen kommen mit COL-001 in M4.)*"
   ]
  },
  {
@@ -3991,7 +3991,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-017--internationalisierung-deen",
-  "summary": "UI-Texte über `i18next` *(Annahme)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
+  "summary": "UI-Texte über eigene Übersetzungstabellen *(präzisiert, WP-62: statt `i18next`)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
   "acs": [
    "CI-Check schlägt fehl, wenn ein Key in `de` oder `en` fehlt.",
    "Umschalten der Sprache wirkt ohne Reload."
@@ -6273,10 +6273,10 @@
   "chapter": "12-distribution-quality.md",
   "chapterTitle": "12 — Distribution & Qualität",
   "anchor": "qa-005--sandbox-escape-suite-pro-os",
-  "summary": "Das Probe-Binary `bt-escape-probe` versucht innerhalb der Sandbox (Stufe 1 und 2, siehe 04-sandbox.md) verbotene Aktionen; Suite, Fälle und Plattform-Matrix: Owner SBX-011, QA-005 regelt Gate und Reporting; jeder Fall muss scheitern und den erwarteten Mechanismus zeigen. CI läuft auf macOS, Linux und (ab M5) Windows. macOS/Linux: jeder Fehlschlag blockiert den Merge. Windows Beta: Regressionen blockieren; bekannte Lücken stehen in `tests/sandbox/known_gaps.windows.yaml` und werden im Release-Text genannt.",
+  "summary": "Gate und Bericht der Sandbox-Escape-Suite (Suite, Fälle und Plattform-Matrix: Owner SBX-011, siehe 04-sandbox.md; die Suite sind die vorhandenen Escape-Tests mit Kontrollgruppe, ADR-0042). Jeder Fall muss in der Sandbox (Stufe 1 und 2) scheitern und den erwarteten Mechanismus zeigen. Gate sind die Required Checks `test (macos)`, `test (linux, ohne Netzwerk)` und die Jobs `escape (…)` der Matrix (`scripts/required_checks.txt`); unter macOS und Linux blockiert jeder Fehlschlag den Merge. Windows Beta (ab M5): Regressionen blockieren; bekannte Lücken stehen in `tests/sandbox/known_gaps.windows.yaml` und werden im Release-Text genannt.",
   "acs": [
-   "Alle Fälle für macOS und Linux sind implementiert und schlagen in der Sandbox fehl; derselbe Probe ohne Sandbox gelingt (Kontrollgruppe, beweist Testwirksamkeit).",
-   "Ein absichtlich gelockertes Profil (Test-Fixture) lässt die Suite fehlschlagen.",
+   "Jeder Fall der Suite schlägt unter macOS und Linux in der Sandbox fehl; dieselbe Aktion ohne Sandbox gelingt (Kontrollgruppe, beweist Testwirksamkeit).",
+   "Die Suite kann nicht still grün werden: Kein Test der Suite trägt `#[ignore]` (CI-Check), die Jobs `escape (…)` laufen mit `--no-tests=fail`, und ein in `BETON_TEST_LINUX_BACKENDS` genanntes, aber nicht verfügbares Backend lässt die Tests scheitern. *(Präzisiert, ADR-0042: statt eines absichtlich gelockerten Profils.)*",
    "Jeder Linux-Job der Matrix (SBX-011) prüft die für sein Image erwartete Landlock-ABI (mindestens ein Job mit ABI ≥ 4); weicht sie ab, schlägt der Job fehl statt Fälle zu überspringen.",
    "Ergebnisse werden als JUnit-Report mit Fall-ID veröffentlicht."
   ]

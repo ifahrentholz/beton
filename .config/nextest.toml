@@ -6,3 +6,33 @@
 [[profile.default.overrides]]
 filter = 'test(/^ses_017_ac3_/) | test(/data_003_ac4_interactive_writer_is_not_starved/)'
 threads-required = 'num-test-threads'
+
+# Profil der CI (`--profile ci`, Jobs „test (linux, ohne Netzwerk)“ und „test (macos)“): Bericht als
+# JUnit unter `target/nextest/ci/junit.xml`, je Test ein Testfall, Fall-ID ist der Testname mit
+# Feature-ID (QA-005 AC4, SBX-011 AC1). Auch die Ausgaben bestandener Tests stehen darin, damit
+# der Scan auf Fixture-Secrets sie erfasst (SBX-011 AC3, `scripts/check_fixture_secrets.py`). Kein
+# Abbruch beim ersten Fehlschlag: Der Bericht soll alle Fälle enthalten.
+[profile.ci]
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+
+# Die Escape-Suite (SBX-011, ADR-0042): die Escape-Tests mit Kontrollgruppe. Läuft in den Jobs
+# `escape (…)` der Plattform-Matrix (`--profile escape`, Bericht `target/nextest/escape/junit.xml`)
+# und als Teil des ganzen Workspace in „test (linux, ohne Netzwerk)“ und „test (macos)“. Neue
+# Escape-Tests gehören in eine dieser Dateien.
+[profile.escape]
+default-filter = '''
+binary_id(beton-sandbox::seatbelt) | binary_id(beton-sandbox::linux)
+  | binary_id(beton-sandbox::broker) | binary_id(beton-runner::stages)
+  | binary_id(beton-cli::m2_demo)
+'''
+fail-fast = false
+
+[profile.escape.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true
