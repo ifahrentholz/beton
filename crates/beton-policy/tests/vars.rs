@@ -176,11 +176,17 @@ fn pol_004_unfilled_variables_are_load_errors_not_silent_defaults() {
     // Was der Runner füllt, bleibt ladbar.
     let filled = [
         ("session.title == \"x\"", Phase::ToolCall),
-        ("session.depth > 0 && has(session.parent_id)", Phase::ToolCall),
+        (
+            "session.depth > 0 && has(session.parent_id)",
+            Phase::ToolCall,
+        ),
         ("session.is_async", Phase::ModelRequest),
         ("session.duration_s > 60.0", Phase::ToolCall),
         ("has(session.project)", Phase::ToolCall),
-        ("run.trigger == \"spawn\" && run.id == session.id", Phase::ToolCall),
+        (
+            "run.trigger == \"spawn\" && run.id == session.id",
+            Phase::ToolCall,
+        ),
         ("run.turns > 3 && run.duration_s > 1.0", Phase::ModelRequest),
         ("start.fork_of == \"ses_x\"", Phase::SessionStart),
         ("user.id == \"usr_local\" && host.local", Phase::ToolCall),
