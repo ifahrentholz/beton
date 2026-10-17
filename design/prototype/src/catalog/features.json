@@ -3991,7 +3991,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-017--internationalisierung-deen",
-  "summary": "UI-Texte über `i18next` *(Annahme)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
+  "summary": "UI-Texte über eigene Übersetzungstabellen *(präzisiert, WP-62: statt `i18next`)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
   "acs": [
    "CI-Check schlägt fehl, wenn ein Key in `de` oder `en` fehlt.",
    "Umschalten der Sprache wirkt ohne Reload."

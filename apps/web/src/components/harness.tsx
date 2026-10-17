@@ -1,3 +1,4 @@
+import { useT, type MessageKey } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
 export type Voice = 'claude' | 'codex' | 'acp' | 'direct' | 'human'
@@ -58,24 +59,26 @@ export function listStatus(status: string): ListStatus {
   }
 }
 
-const statusLabel: Record<ListStatus, string> = {
-  running: 'läuft',
-  waiting: 'wartet auf dich',
-  idle: 'bereit',
-  failed: 'Fehler',
-  stopped: 'gestoppt',
+const statusLabel: Record<ListStatus, MessageKey> = {
+  running: 'status.running',
+  waiting: 'status.waiting',
+  idle: 'status.idle',
+  failed: 'status.failed',
+  stopped: 'status.stopped',
 }
 
 /** Status als Form + Farbe + Text (nicht nur Farbe, für Barrierefreiheit). */
 export function StatusMark({ status, withLabel }: { status: ListStatus; withLabel?: boolean }) {
+  const t = useT()
+  const label = t(statusLabel[status])
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5" title={statusLabel[status]} data-status={status}>
+    <span className="inline-flex shrink-0 items-center gap-1.5" title={label} data-status={status}>
       {status === 'running' && <span className="size-2 animate-pulse rounded-full bg-ok" />}
       {status === 'waiting' && <span className="chamfer-sm size-2.5 bg-signal" />}
       {status === 'idle' && <span className="size-2 rounded-full border border-muted-foreground" />}
       {status === 'failed' && <span className="size-2 rotate-45 bg-deny" />}
       {status === 'stopped' && <span className="size-2 rounded-[1px] bg-muted-foreground/50" />}
-      {withLabel ? <span className="text-xs text-muted-foreground">{statusLabel[status]}</span> : <span className="sr-only">{statusLabel[status]}</span>}
+      {withLabel ? <span className="text-xs text-muted-foreground">{label}</span> : <span className="sr-only">{label}</span>}
     </span>
   )
 }

@@ -1,7 +1,9 @@
-/** Dauer in Sekunden mit einer Nachkommastelle. */
+import { locale, t } from './i18n'
+
+/** Dauer in Sekunden mit einer Nachkommastelle (Format folgt der Sprache, WEB-017). */
 export function seconds(ms: number | undefined): string | undefined {
   if (ms === undefined) return undefined
-  return `${(ms / 1000).toLocaleString('de-DE', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`
+  return `${(ms / 1000).toLocaleString(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`
 }
 
 /** Kurzform von Tool-Argumenten, z. B. der Befehl oder Dateipfad. */
@@ -18,16 +20,16 @@ export function argSummary(args: unknown): string {
 
 /** Kosten aus Mikro-Einheiten (USD intern). */
 export function cost(micro: number): string {
-  return `${(micro / 1_000_000).toLocaleString('de-DE', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}`
+  return `${(micro / 1_000_000).toLocaleString(locale(), { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })}`
 }
 
 /** Relative Zeit, z. B. „vor 3 Min.“. */
 export function ago(iso: string, now: number = Date.now()): string {
   const diff = Math.max(0, now - Date.parse(iso))
   const min = Math.floor(diff / 60_000)
-  if (min < 1) return 'gerade eben'
-  if (min < 60) return `vor ${min} Min.`
+  if (min < 1) return t('time.now')
+  if (min < 60) return t('time.minutes', { n: min })
   const h = Math.floor(min / 60)
-  if (h < 24) return `vor ${h} Std.`
-  return new Date(iso).toLocaleDateString('de-DE')
+  if (h < 24) return t('time.hours', { n: h })
+  return new Date(iso).toLocaleDateString(locale())
 }

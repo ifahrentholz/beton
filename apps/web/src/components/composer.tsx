@@ -313,7 +313,8 @@ export function Composer({
             rows={2}
             aria-label="Nachricht"
             aria-autocomplete="list"
-            aria-expanded={menuOpen}
+            // Ein Textfeld kennt kein `aria-expanded` (axe, WEB-016); das offene Menü steht in `aria-controls`.
+            aria-controls={menuOpen ? 'composer-menu' : undefined}
             aria-activedescendant={menuOpen && count > 0 ? `${mention ? 'mention' : 'slash'}-${active}` : undefined}
             placeholder="Nachricht an den Agent – @ für Dateien, / für Befehle"
             onFocus={() => {
