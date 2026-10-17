@@ -5,12 +5,17 @@
 //! sie beim Stoppen. Er meldet außerdem, wenn das `pids`-Limit erreicht ist (`RLIMIT_NPROC` zählt
 //! unter macOS alle Prozesse des Benutzers).
 //!
+//! Vor einem Signal und vor dem Beenden friert er den Baum ein (#244): SIGSTOP an alle erfassten
+//! Prozesse, erneut erfassen, bis nichts Neues hinzukommt und alle angehalten sind (angehaltene
+//! Prozesse forken nicht, ihre Kinder behalten die Eltern-PID), dann das Signal bzw. SIGKILL.
+//! Nach einem Signal laufen die eingefrorenen Prozesse weiter (SIGCONT).
+//!
 //! Restrisiko (dokumentiert): Ein Prozess, der per `setsid` und doppeltem `fork` zwischen zwei
 //! Erfassungen verwaist, ist nicht mehr als Nachfahre erkennbar; er bleibt in der Sandbox
 //! gefangen (das Profil wird vererbt), wird aber nur best effort beendet.
 #![allow(unsafe_code, reason = "Prozessliste und Signale gibt es nur über libc")]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,6 +28,14 @@ use crate::registry::ViolationSink;
 /// Abstand zum Limit, ab dem gemeldet wird (Erfassung ist nicht atomar).
 const SLACK: u32 = 2;
 
+/// `pbi_status` angehaltener bzw. beendeter Prozesse (`SSTOP`, `SZOMB` aus `sys/proc.h`).
+const SSTOP: u32 = 4;
+const SZOMB: u32 = 5;
+
+/// Höchstzahl der Erfassungen beim Einfrieren (je etwa 1 ms Abstand); danach geht es ohne
+/// vollständiges Einfrieren weiter (z. B. ein Prozess, der sich nicht anhalten lässt).
+const FREEZE_ROUNDS: usize = 200;
+
 #[derive(Debug, Clone, Copy)]
 struct Proc {
     pid: i32,
@@ -30,6 +43,7 @@ struct Proc {
     pgid: i32,
     ruid: u32,
     start: (u64, u64),
+    status: u32,
 }
 
 fn list() -> Vec<Proc> {
@@ -66,6 +80,7 @@ fn list() -> Vec<Proc> {
                 pgid: info.pbi_pgid as i32,
                 ruid: info.pbi_ruid,
                 start: (info.pbi_start_tvsec, info.pbi_start_tvusec),
+                status: info.pbi_status,
             });
         }
         out
@@ -120,6 +135,8 @@ pub(crate) fn count_of_uid(uid: u32) -> u64 {
 struct State {
     root: i32,
     known: BTreeMap<i32, (u64, u64)>,
+    /// Von hier angehaltene Prozesse (nicht die, die schon vorher angehalten waren).
+    frozen: BTreeSet<i32>,
 }
 
 impl State {
@@ -127,6 +144,10 @@ impl State {
     /// von `uid`.
     fn scan_counting(&mut self, uid: Option<u32>) -> (usize, u64) {
         let procs = list();
+        self.update(&procs, uid)
+    }
+
+    fn update(&mut self, procs: &[Proc], uid: Option<u32>) -> (usize, u64) {
         let of_uid = uid.map_or(0, |u| procs.iter().filter(|p| p.ruid == u).count() as u64);
         let by_pid: BTreeMap<i32, Proc> = procs.iter().map(|p| (p.pid, *p)).collect();
         self.known
@@ -136,7 +157,7 @@ impl State {
         }
         loop {
             let mut added = false;
-            for p in &procs {
+            for p in procs {
                 if self.known.contains_key(&p.pid) {
                     continue;
                 }
@@ -154,6 +175,45 @@ impl State {
 
     fn scan(&mut self) -> usize {
         self.scan_counting(None).0
+    }
+
+    /// Friert den Baum ein (#244): SIGSTOP an jeden erfassten, noch laufenden Prozess, erneut
+    /// erfassen, bis keine neuen Prozesse hinzukommen und alle angehalten (oder beendet) sind.
+    /// Ein Kind, das während des Stoppens entsteht, hängt dann noch am angehaltenen Elternteil
+    /// und wird in der nächsten Runde erfasst.
+    fn freeze(&mut self) {
+        for _ in 0..FREEZE_ROUNDS {
+            let procs = list();
+            let before: BTreeSet<i32> = self.known.keys().copied().collect();
+            self.update(&procs, None);
+            let by_pid: BTreeMap<i32, &Proc> = procs.iter().map(|p| (p.pid, p)).collect();
+            let mut settled = self.known.keys().all(|p| before.contains(p));
+            for pid in self.known.keys() {
+                let Some(p) = by_pid.get(pid) else { continue };
+                if p.status == SSTOP || p.status == SZOMB {
+                    continue;
+                }
+                settled = false;
+                if self.frozen.insert(*pid) {
+                    // SAFETY: Signal an einen erfassten Nachfahren (Startzeit geprüft).
+                    unsafe { libc::kill(*pid, libc::SIGSTOP) };
+                }
+            }
+            if settled {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Lässt die von [`State::freeze`] angehaltenen Prozesse weiterlaufen.
+    fn thaw(&mut self) {
+        for pid in std::mem::take(&mut self.frozen) {
+            if self.known.contains_key(&pid) {
+                // SAFETY: Signal an einen erfassten Nachfahren, den `freeze` angehalten hat.
+                unsafe { libc::kill(pid, libc::SIGCONT) };
+            }
+        }
     }
 }
 
@@ -173,7 +233,7 @@ impl Tracker {
     ) -> Self {
         let state = Arc::new(Mutex::new(State {
             root: root as i32,
-            known: BTreeMap::new(),
+            ..State::default()
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let (s, st) = (state.clone(), stop.clone());
@@ -216,16 +276,26 @@ impl Tracker {
 
 impl TreeGuard for Tracker {
     /// Nicht erst auf den nächsten Durchlauf des Hintergrund-Threads warten: Was jetzt zum Baum
-    /// gehört, ist danach bekannt, auch wenn es die Prozessgruppe verlassen hat.
+    /// gehört, ist danach bekannt, auch wenn es die Prozessgruppe verlassen hat. Der Baum bleibt
+    /// eingefroren, bis [`TreeGuard::release`] oder [`TreeGuard::kill_tree`] folgt (#244).
     fn capture(&mut self) {
         if let Ok(mut s) = self.state.lock() {
-            s.scan();
+            s.freeze();
+        }
+    }
+
+    fn release(&mut self) {
+        if let Ok(mut s) = self.state.lock() {
+            s.thaw();
         }
     }
 
     fn kill_tree(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let Ok(mut s) = self.state.lock() else { return };
+        // Eingefroren forkt keiner mehr; danach trifft SIGKILL den vollständigen Baum.
+        s.freeze();
+        s.frozen.clear();
         for _ in 0..20 {
             let n = s.scan();
             // SAFETY: Signale an die Prozessgruppe und an erfasste Nachfahren (mit geprüfter

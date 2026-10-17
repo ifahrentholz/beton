@@ -21,8 +21,11 @@ use crate::command::CommandSpec;
 
 /// Zusatzaufgaben eines Backends am Prozessbaum.
 pub(crate) trait TreeGuard: Send {
-    /// Erfasst den Baum, bevor die Wurzel ein Signal bekommt (macOS: Nachfahren-Erfassung).
+    /// Erfasst den Baum, bevor die Wurzel ein Signal bekommt (macOS: Nachfahren-Erfassung, der
+    /// Baum ist danach eingefroren, #244).
     fn capture(&mut self) {}
+    /// Nach dem Signal: eingefrorene Prozesse laufen weiter.
+    fn release(&mut self) {}
     /// Beendet Prozesse, die die Prozessgruppe verlassen haben (best effort).
     fn kill_tree(&mut self) {}
 }
@@ -132,7 +135,11 @@ impl SandboxedChild {
         if let Some(g) = &mut self.guard {
             g.capture();
         }
-        self.inner.signal(signal)
+        let r = self.inner.signal(signal);
+        if let Some(g) = &mut self.guard {
+            g.release();
+        }
+        r
     }
 
     /// Wartet auf das Ende und sammelt stdout und stderr (sofern als Pipe angelegt). Nach

@@ -49,7 +49,7 @@ async fn tree_with_setsid_descendant(tag: &str) -> (SandboxedChild, String) {
     let tracker = Tracker {
         state: Arc::new(Mutex::new(State {
             root: root as i32,
-            known: BTreeMap::new(),
+            ..State::default()
         })),
         stop: Arc::new(AtomicBool::new(true)),
     };
@@ -140,4 +140,24 @@ async fn sbx_013_ac2_stop_keeps_children_forked_while_stopping() {
         drop(child);
         assert_gone(&marker).await;
     }
+}
+
+/// #244: Ein Signal an den Baum friert ihn nur kurz ein; danach laufen alle Prozesse weiter
+/// (hier SIGWINCH, das sie ignorieren), auch der per `setsid` abgelöste.
+#[tokio::test]
+async fn sbx_013_signal_tree_leaves_no_process_stopped() {
+    let (mut child, marker) = tree_with_setsid_descendant("1005").await;
+    child.signal_tree(libc::SIGWINCH).unwrap();
+    for pid in processes_with(&format!("sleep {marker}")) {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .unwrap();
+        let stat = String::from_utf8_lossy(&out.stdout);
+        assert!(!stat.contains('T'), "{pid} angehalten: {stat}");
+    }
+    child.start_kill().unwrap();
+    let _ = child.wait().await;
+    drop(child);
+    assert_gone(&marker).await;
 }
