@@ -379,6 +379,7 @@ struct Run<'a> {
     set: &'a EffectiveSet,
     phase: Phase,
     opts: &'a EvalOptions<'a>,
+    clock: &'a dyn Clock,
     meter: Meter<'a>,
     decision: Decision,
     /// Die geladene Regel je Eintrag in `decision.matched` (gleiche Reihenfolge): Regeltypen
@@ -411,6 +412,7 @@ impl<'a> Run<'a> {
             set,
             phase,
             opts,
+            clock,
             meter: Meter::new(&opts.limits, clock),
             decision: Decision {
                 phase,
@@ -467,16 +469,22 @@ impl<'a> Run<'a> {
         self.pending_traces.push((dry, index, rule, modified));
     }
 
-    /// Spuren nach der Entscheidung (#263): mit eigenem Meter (Kostenlimit je Teilausdruck,
-    /// ohne Zeitbudget), damit Explain weder das Zeitbudget der Entscheidung verbraucht noch
-    /// sie ändern kann. Den Aufwand begrenzen Ausdrucksgröße (4 KiB) und Kostenlimit.
+    /// Spuren nach der Entscheidung (#263): mit eigenem Meter, damit Explain weder das
+    /// Zeitbudget der Entscheidung verbraucht noch sie ändern kann. Den Aufwand begrenzen das
+    /// Kostenlimit je Teilausdruck und ein Gesamtbudget für Kosten und Zeit (#353); ist es
+    /// erschöpft, bleiben die übrigen Spuren leer und alle betroffenen als unvollständig
+    /// markiert.
     fn fill_traces(&mut self, original: &Activation, modified: &Activation) {
-        let mut meter = Meter::cost_only(&self.opts.limits);
+        let mut meter = Meter::for_trace(&self.opts.limits, self.clock);
         for (dry, index, rule, pass2) in std::mem::take(&mut self.pending_traces) {
             let ctx = if pass2 { modified } else { original };
-            let trace = match &rule.kind {
-                RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut meter),
-                _ => Vec::new(),
+            let (trace, incomplete) = match &rule.kind {
+                _ if meter.exhausted() => (Vec::new(), true),
+                RuleKind::Cel { when: Some(p), .. } => {
+                    let trace = p.trace(ctx, &mut meter);
+                    (trace, meter.exhausted())
+                }
+                _ => (Vec::new(), false),
             };
             let list = if dry {
                 &mut self.decision.would
@@ -485,6 +493,7 @@ impl<'a> Run<'a> {
             };
             if let Some(entry) = list.get_mut(index) {
                 entry.trace = trace;
+                entry.trace_incomplete = incomplete;
             }
         }
     }
