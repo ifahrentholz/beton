@@ -9,7 +9,7 @@ Container teilen den Kernel des Runners; Debian 12 (Kernel 6.1, Landlock-ABI 2),
    Start das Datenlaufwerk ausführt). Ergebnis im Verzeichnis `--dir` (Actions-Cache).
 2. `run`: Datenlaufwerk (ext4, `mkfs.ext4 -d`) mit Quellbaum, nextest-Archiv der Escape-Suite,
    Binaries und Gast-Skript bauen, die VM **ohne Netzwerkkarte** starten, Ergebnisse (Probe,
-   `beton sandbox test`, JUnit-Bericht, Logs) zurückholen.
+   `beton sandbox test`, JUnit-Bericht, Logs) zurückholen (Laufwerk per `sudo mount -o ro`).
 3. `check`: erwartete Landlock-ABI des Images (`scripts/check_landlock_abi.py`) und Ergebnisse
    prüfen. Eine Abweichung lässt den Job scheitern, statt Fälle zu überspringen.
 
@@ -285,12 +285,29 @@ def run(args):
         sh("qemu-img", "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", provisioned, disk)
         console = os.path.join(args.out, "console.log")
         qemu([(disk, "qcow2", False), (img, "raw", False)], net=False, console=console, timeout=args.timeout)
-        sh("debugfs", "-R", f"rdump /out {args.out}", img, stderr=subprocess.DEVNULL)
+        fetch_results(img, os.path.join(tmp, "mnt"), args.out)
     out = os.path.join(args.out, "out")
     for name in ("guest.log", "suite.log"):
         if os.path.exists(os.path.join(out, name)):
             show(os.path.join(out, name), name)
     return 0
+
+
+def fetch_results(img, mnt, dest):
+    """Holt `out/` vom Datenlaufwerk (schreibgeschützt eingehängt, wie auf dem Runner üblich
+    mit sudo); fehlt es, zeigt es den Inhalt des Laufwerks."""
+    os.makedirs(mnt)
+    sh("sudo", "mount", "-o", "loop,ro", img, mnt)
+    try:
+        src = os.path.join(mnt, "out")
+        if os.path.isdir(src):
+            target = os.path.join(dest, "out")
+            shutil.rmtree(target, ignore_errors=True)
+            shutil.copytree(src, target)
+        else:
+            log(f"::warning title=escape_vm::Datenlaufwerk ohne out/: {sorted(os.listdir(mnt))}")
+    finally:
+        sh("sudo", "umount", mnt)
 
 
 def read(path):
