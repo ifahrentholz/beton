@@ -75,6 +75,9 @@ pub struct ClaudeAdapter {
     /// Benutzer-Anpassungen der CLI (Hooks, Skills, Plugins, MCP) abschalten.
     pub isolated: bool,
     pub gate_timeout: Duration,
+    /// Managed Settings der CLI (Dateien bzw. Verzeichnisse mit `*.json`), die Hooks
+    /// abschalten können (#258 R5).
+    pub managed_settings: Vec<std::path::PathBuf>,
 }
 
 impl Default for ClaudeAdapter {
@@ -84,6 +87,7 @@ impl Default for ClaudeAdapter {
             auth: AuthSource::VendorCli,
             isolated: false,
             gate_timeout: GATE_TIMEOUT,
+            managed_settings: Vec::new(),
         }
     }
 }
