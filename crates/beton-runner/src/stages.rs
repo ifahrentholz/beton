@@ -368,6 +368,24 @@ impl SessionStages {
         ))
     }
 
+    /// Gate des Harness, das vor jeder Entscheidung die Zahl der Broker-Starts festhält
+    /// (Integritätsprüfung je Tool-Call, #270).
+    pub fn anchoring_gate(
+        &self,
+        inner: Arc<dyn beton_harness::Gate>,
+        anchors: ShellAnchors,
+    ) -> Arc<dyn beton_harness::Gate> {
+        #[cfg(unix)]
+        let starts = Some(self._broker.start_counter());
+        #[cfg(not(unix))]
+        let starts = None;
+        Arc::new(AnchoringGate {
+            inner,
+            anchors,
+            starts,
+        })
+    }
+
     /// Kommandos, die der Exec-Broker bisher in Stufe 2 gestartet hat.
     pub fn broker_starts(&self) -> u64 {
         #[cfg(unix)]
@@ -550,18 +568,57 @@ impl ShellAnchors {
     }
 }
 
+/// Hält vor jeder Entscheidung des inneren Gates die Zahl der Broker-Starts fest.
+struct AnchoringGate {
+    inner: Arc<dyn beton_harness::Gate>,
+    anchors: ShellAnchors,
+    starts: Option<Arc<std::sync::atomic::AtomicU64>>,
+}
+
+#[async_trait::async_trait]
+impl beton_harness::Gate for AnchoringGate {
+    async fn decide(&self, request: beton_harness::GateRequest) -> beton_harness::GateDecision {
+        let starts = self
+            .starts
+            .as_ref()
+            .map_or(0, |s| s.load(std::sync::atomic::Ordering::SeqCst));
+        self.anchors.record(&request.call_id, starts);
+        self.inner.decide(request).await
+    }
+
+    async fn model_request(
+        &self,
+        request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        self.inner.model_request(request).await
+    }
+
+    async fn tool_result(
+        &self,
+        request: beton_harness::ResultGateRequest,
+    ) -> beton_harness::GateDecision {
+        self.inner.tool_result(request).await
+    }
+}
+
 /// Integritätsprüfung für Harnesses mit `tool_isolation: shell_override` (Claude Code): Jeder
 /// abgeschlossene Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
 /// Ignoriert die CLI `CLAUDE_CODE_SHELL` (etwa nach einem Update), liefen ihre Kommandos in
 /// Stufe 1; dann endet die Session (fail closed, Security-Review #228). Gezählt wird jeder
-/// Abschluss außer `denied` (auch ein gescheitertes oder abgebrochenes Kommando ist gelaufen);
-/// zusätzliche Broker-Starts (Env-Probe, Shell-Snapshot) schaden nicht. Der Zähler ist global,
-/// nicht je Tool-Call; Code, der schon in Stufe 1 läuft, kann ihn erhöhen (#270).
+/// Abschluss außer `denied` (auch ein gescheitertes oder abgebrochenes Kommando ist gelaufen).
+///
+/// Zuordnung je Tool-Call (#270): Jeder Aufruf verbraucht einen eigenen Start, der nach der
+/// ersten Gate-Entscheidung über ihn liegt ([`ShellAnchors`]) und spätestens bei seinem
+/// Abschluss stattgefunden hat; gewählt wird der früheste freie (bei sich überlappenden
+/// Aufrufen in der Reihenfolge ihres Abschlusses optimal). Weitere Starts (Env-Probe,
+/// Shell-Snapshot) schaden nicht, decken aber keinen späteren Aufruf mehr. Ohne festgehaltene
+/// Entscheidung zählt jeder freie Start. Restrisiko: Code, der schon in Stufe 1 läuft, kann im
+/// Fenster eines Aufrufs selbst über den Broker starten (Shell-Starts in Stufe 1 sperren: #270).
 #[derive(Debug, Default)]
 pub struct ShellIntegrity {
     shell_tools: Vec<String>,
     open: std::collections::HashSet<String>,
-    completed: u64,
+    consumed: std::collections::BTreeSet<u64>,
     anchors: ShellAnchors,
 }
 
@@ -593,16 +650,20 @@ impl ShellIntegrity {
             }
             EventPayload::ToolCallCompleted(c) => {
                 let shell = self.open.remove(&c.call_id);
+                let after = self.anchors.take(&c.call_id).unwrap_or(0);
                 if shell && c.status != ToolStatus::Denied {
-                    self.completed += 1;
-                    if self.completed > broker_starts {
+                    let free = (after.saturating_add(1)..=broker_starts)
+                        .find(|k| !self.consumed.contains(k));
+                    let Some(start) = free else {
                         return Err(format!(
-                            "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker ({} \
-                             abgeschlossene Aufrufe, {broker_starts} Starts in Stufe 2); die \
-                             Session endet, weil Kommandos sonst in Stufe 1 liefen",
-                            c.call_id, self.completed
+                            "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker (kein eigener \
+                             Start in Stufe 2 nach der Freigabe: {after} Starts davor, \
+                             {broker_starts} insgesamt); die Session endet, weil Kommandos sonst \
+                             in Stufe 1 liefen",
+                            c.call_id
                         ));
-                    }
+                    };
+                    self.consumed.insert(start);
                 }
             }
             _ => {}

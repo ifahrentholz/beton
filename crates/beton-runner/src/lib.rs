@@ -1091,9 +1091,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     };
     // Vor dem Start prüft der Runner Policies selbst (Start verweigert, #182, POL-024).
     gate.defer_rechecks();
+    // SBX-002 (#270): Zahl der Broker-Starts je Gate-Entscheidung für die Integritätsprüfung.
+    let shell_anchors = stages::ShellAnchors::default();
+    let harness_gate: Arc<dyn beton_harness::Gate> = match stages.as_ref() {
+        Some(s) => s.anchoring_gate(Arc::new(gate.clone()), shell_anchors.clone()),
+        None => Arc::new(gate.clone()),
+    };
     let ctx = AdapterContext {
         stage,
-        gate: Arc::new(gate.clone()),
+        gate: harness_gate,
         launcher,
         env,
     };
@@ -1595,7 +1601,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 && predicted_caps(&boot, caps.as_ref(), true).tool_isolation
                     == beton_harness::ToolIsolation::ShellOverride
         })
-        .map(|_| stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS));
+        .map(|_| {
+            stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS)
+                .with_anchors(shell_anchors.clone())
+        });
     // SBX-003 (#311): Weckt den Runner, wenn der Git-Shim der Stufe 1 einen Verstoß findet.
     let git_alarm = stages
         .as_ref()

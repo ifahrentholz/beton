@@ -146,6 +146,11 @@ impl Broker {
         self.started.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Der Zähler hinter [`Broker::started`] (für Zeitpunkte der Gate-Entscheidungen, #270).
+    pub fn start_counter(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.started.clone()
+    }
+
     pub fn socket(&self) -> &Path {
         &self.socket
     }
