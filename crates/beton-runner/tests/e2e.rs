@@ -377,9 +377,12 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
     use sqlx::Connection as _;
     let f = fixture(|r| r).await;
     let mut yaml = String::from("turns:\n  - emit:\n");
+    // Nach den ersten drei Zeilen kommen die übrigen langsam genug, dass Pushes sicher in die
+    // Schreibsperre fallen (auch auf langsamen CI-Runnern) und erst danach enden.
     for i in 0..30 {
+        let delay = if i < 3 { 50 } else { 200 };
         yaml.push_str(&format!(
-            "      - {{ message: \"Zeile {i}\", delay_ms: 50 }}\n"
+            "      - {{ message: \"Zeile {i}\", delay_ms: {delay} }}\n"
         ));
     }
     let h = f.launch(&f.scenario(&yaml), 1).await;
