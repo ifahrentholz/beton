@@ -152,6 +152,18 @@ pub async fn control(fx: &Fx, script: &str) -> Out {
     run_with(&NoneProvider, &policy, cmd).await
 }
 
+/// Kontrollgruppe mit eigenem Workspace und Home.
+pub async fn control_in(ws: &Path, home: &Path, script: &str) -> Out {
+    let policy = ResolvedPolicy::unsandboxed(Stage::Tools);
+    let mut cmd = CommandSpec::new("/bin/sh").args(["-c", script]).cwd(ws);
+    cmd.env.clear = true;
+    cmd.env.set = vec![
+        ("HOME".into(), home.display().to_string()),
+        ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+    ];
+    run_with(&NoneProvider, &policy, cmd).await
+}
+
 /// Dieses Test-Binary als Sonde in der Sandbox: führt `probe` mit `args` aus.
 pub fn probe_cmd(policy: &ResolvedPolicy, probe: &str, args: &[&str]) -> CommandSpec {
     let exe = std::env::current_exe().unwrap();
