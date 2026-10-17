@@ -170,6 +170,14 @@ fn shown(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
+fn missing(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,12 +267,4 @@ mod tests {
             "{err}"
         );
     }
-}
-
-/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
-fn missing(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-    )
 }

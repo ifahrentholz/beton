@@ -167,6 +167,14 @@ fn entry_redirects(section: &str, line: &str) -> bool {
     }
 }
 
+/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
+fn missing(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::text_redirects;
@@ -189,12 +197,4 @@ mod tests {
             assert_eq!(text_redirects(text), redirects, "{text}");
         }
     }
-}
-
-/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
-fn missing(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-    )
 }
