@@ -301,8 +301,8 @@ pub struct CredentialSpec {
     pub name: String,
     #[serde(rename = "type")]
     pub kind: CredentialType,
-    /// Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und
-    /// `git_https`, sonst Override der Default-Hosts.
+    /// Gebundene Hosts (exakt oder `*.domain`, optional mit `:port`; ohne Port nur 443); Pflicht
+    /// für `bearer`, `basic` und `git_https`, sonst Override der Default-Hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts: Option<Vec<String>>,
     /// Benutzername für `basic` (Pflicht) bzw. `git_https`.
@@ -312,6 +312,10 @@ pub struct CredentialSpec {
     /// Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
+    /// Ohne Platzhalter und ohne `Authorization`-Header einsetzen (Default `true`; nur
+    /// `git_https` mit `username`, `github` und `gitlab`, nie `bearer`/`basic`; PRX-006, #295).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit: Option<bool>,
 }
 
 /// Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der

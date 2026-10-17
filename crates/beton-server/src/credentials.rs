@@ -220,6 +220,10 @@ impl CredentialService {
         if value.is_empty() {
             return Err(failed("Die Quelle lieferte einen leeren Wert"));
         }
+        // Steuerzeichen (Tab, CR/LF, DEL) taugen in keinem Header; schon hier ablehnen (#295).
+        if value.iter().any(u8::is_ascii_control) {
+            return Err(failed("Der Wert enthält Steuerzeichen"));
+        }
         Ok((value, ttl))
     }
 
@@ -489,6 +493,30 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ProblemCode::CredentialSourceError);
         assert!(!format!("{err:?}").contains("FIXTURE"));
+    }
+
+    /// #295: Werte mit Steuerzeichen (Tab, CR/LF, DEL) lehnt schon die Quelle ab; Leerraum
+    /// am Rand fällt wie bisher weg.
+    #[tokio::test]
+    async fn prx_006_values_with_control_characters_are_rejected_at_the_source() {
+        let f = fx("{}\n").await;
+        for raw in ["ghp\tFIXTURE", "ghp\r\nX: FIXTURE", "ghp\u{7f}FIXTURE"] {
+            let env = BTreeMap::from([("V".to_owned(), raw.to_owned())]);
+            let err = f
+                .service
+                .value(None, &Source::Env("V".into()), &env)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, ProblemCode::CredentialSourceError, "{raw:?}");
+            assert!(!format!("{err:?}").contains("FIXTURE"));
+        }
+        let env = BTreeMap::from([("V".to_owned(), "  ghp_FIXTURE\n".to_owned())]);
+        let (v, _) = f
+            .service
+            .value(None, &Source::Env("V".into()), &env)
+            .await
+            .unwrap();
+        assert_eq!(&*v, b"ghp_FIXTURE");
     }
 
     #[tokio::test]

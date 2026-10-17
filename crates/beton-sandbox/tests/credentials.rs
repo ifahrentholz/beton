@@ -260,3 +260,32 @@ fn prx_006_ac4_file_source_inside_a_sandbox_grant_is_rejected() {
         outside.canonicalize().unwrap()
     );
 }
+
+/// #295: Hosts eines Bindings dürfen einen Port tragen (`host:port`, ohne Port nur 443), und
+/// `implicit: false` schaltet die implizite Injektion je Binding ab.
+#[test]
+fn prx_006_hosts_with_port_and_implicit_switch() {
+    let spec = SandboxSpec::from_yaml(
+        "credentials:\n\
+         \x20 - { name: gh, type: github, hosts: [\"ghe.test:8443\", \"*.ghe.test:8443\", ghe.test], implicit: false, source: { env: X } }\n",
+    )
+    .unwrap();
+    let c = &spec.credentials.as_ref().unwrap()[0];
+    assert_eq!(c.implicit, Some(false));
+    assert_eq!(
+        c.hosts.as_deref().unwrap(),
+        ["ghe.test:8443", "*.ghe.test:8443", "ghe.test"]
+    );
+    for bad in [
+        "ghe.test:0",
+        "ghe.test:x",
+        "ghe.test:",
+        "ghe.test:70000",
+        "10.0.0.1:443",
+    ] {
+        let (field, _) = invalid(&format!(
+            "credentials: [{{ name: a, type: github, hosts: [\"{bad}\"], source: {{ env: X }} }}]\n"
+        ));
+        assert_eq!(field, "credentials[0].hosts[0]", "{bad}");
+    }
+}
