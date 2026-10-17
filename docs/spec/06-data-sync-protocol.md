@@ -176,11 +176,13 @@ Endpunkt `GET /v1/tunnel` (lokal ausschließlich auf dem Tunnel-Socket, nicht au
 | Runner → S | `events.push {session_id, epoch, batch: [{rseq, event}]}` | Events ohne `seq`; Home vergibt `seq` |
 | S → Runner | `events.ack {session_id, upto_rseq, seq_range}` | Runner verwirft bis `upto_rseq`; ungeackte werden nach Reconnect erneut gesendet |
 | Runner → S | `transient.push {session_id, events}` | Deltas, ohne Ack |
-| S → Runner | `cmd.deliver {cmd_id, name, args, actor}` → `cmd.result` | Inputs, Approvals, Interrupts |
-| Runner → S | `system.call {call_id, tool, args}` → `system.result {call_id, result?, problem?}` | System-Tools, die der Server ausführt, z. B. `session.spawn` (AGT-007), Policy-Daten `policy.usage`, `policy.state`, `policy.state.apply` (POL-004, POL-009) und `inbox.read`; gilt immer für die gebundene Session, Arbeitsverzeichnis und Owner leitet der Server daraus ab |
+| S → Runner | `cmd.deliver {cmd_id, name, args, actor}` → `cmd.result` | Inputs, Approvals, Interrupts, Terminals (`terminal.*`), `workspace.user_write {path, sha256}` vor einem Schreibzugriff des Users (SES-017) |
+| Runner → S | `system.call {call_id, tool, args}` → `system.result {call_id, result?, problem?}` | System-Tools, die der Server ausführt, z. B. `session.spawn` (AGT-007), Policy-Daten `policy.usage`, `policy.state`, `policy.state.apply` (POL-004, POL-009), `inbox.read` und `terminal.snapshot` (DATA-011); gilt immer für die gebundene Session, Arbeitsverzeichnis und Owner leitet der Server daraus ab |
 | S → Runner | `policy.bundle {version, hash, sig, rules}` | Policy-Cache (SYNC-006) |
 | beide | `secret.lease.*` (SEC-008, siehe 05-security-identity.md), `budget.lease.*` (SYNC-007) | Leases |
 | beide | Binärframes wie Client-WS | Terminal-/Browser-Kanäle (Server mappt auf Client-Kanäle) |
+| Runner → S | `channel.open {channel_id, kind, ref}` / `channel.close {channel_id, reason?}` | Kanal des Runners (z. B. ein Terminal) anmelden bzw. beenden (PROTO-007) |
+| S → Runner | `channel.credit {channel_id, bytes}` / `channel.keyframe {channel_id}` | Kredit für Ausgabe des Runners; Keyframe für neu hinzukommende Zuschauer |
 
 Keepalive: WS-Ping alle 20 s, Abbruch nach 60 s ohne Pong. Reconnect: Backoff 0,5 s × 2ⁿ bis 30 s, ±20 % Jitter.
 
@@ -300,10 +302,10 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 ### PROTO-007 — Binärkanäle & Flusskontrolle
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Terminal-Bytes, Browser-Frames und Audio laufen als Binärframes `[ver u8][channel_id u32 BE][flags u8][payload]` im selben WebSocket. Kanäle werden per `open_channel` geöffnet (Autorisierung je Kind, z. B. Terminal-Input nur mit `drive`) und per `close_channel`/`channel_closed` beendet. Flusskontrolle ist kreditbasiert: Der Empfänger gewährt `credit {channel_id, bytes|frames}`; der Sender überschreitet das Fenster nie. Browser-Frames: max. 2 Frames unbestätigt, ältere werden verworfen (nur neuester zählt).
-- **Details:** Browser-Payload: `u16 meta_len ‖ JSON {w, h, ts, format: jpeg|webp} ‖ Bilddaten`; Audio Client → Server: PCM s16le 16 kHz mono oder Opus. Browser-/Terminal-Eingaben gehen als Textkommandos (`browser.input`, Terminal-Input als Binärframe mit Flag `INPUT`).
+- **Details:** Browser-Payload: `u16 meta_len ‖ JSON {w, h, ts, format: jpeg|webp} ‖ Bilddaten`; Audio Client → Server: PCM s16le 16 kHz mono oder Opus. Browser-/Terminal-Eingaben gehen als Textkommandos (`browser.input`, Terminal-Input als Binärframe mit Flag `INPUT`). Stand M3 (WP-51): `ver = 1`; Flags `FIN = 0x01` (letztes Fragment einer Nachricht), `KEYFRAME = 0x02` (Bildschirmzustand für neu hinzukommende Zuschauer), `INPUT = 0x04`; Payload höchstens 64 KiB je Frame. `open_channel {id, session_id, kind: terminal|browser|audio, ref}` → `channel_opened {id, channel_id, window, access: read|drive}` (`window` ist das Eingabefenster des Clients) oder `nack`; Ablehnungen von Binärframes tragen die `id` `channel:<channel_id>`. Ein Client gewährt `credit {channel_id, bytes}` (Browser: `frames`), der Server gewährt Eingabekredit mit `credit {channel_id, bytes}`. Zwischen Server und Runner gelten dieselben Frames im Tunnel (`channel.open`/`channel.close` vom Runner, `channel.credit`/`channel.keyframe` vom Server; Fenster 256 KiB). Der Server leitet ein Frame erst weiter, wenn jeder Zuschauer Kredit hat und seine Ausgangswarteschlange unter 1 MiB liegt, und gibt dem Runner erst danach Kredit zurück; ohne Zuschauer läuft der Kanal frei weiter. Ein Zuschauer ohne Kredit länger als 30 s erhält `channel_closed {reason: stalled}`; endet der Tunnel, schließt der Server alle Kanäle mit `reason: detached`. Neue Zuschauer erhalten zuerst ein Keyframe. Protokollversion `1.1` (WS und Tunnel).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Terminal mit 50 MB Ausgabe an einen langsamen Client (gedrosselt auf 100 KB/s) erhöht den Server-Speicher um < 2 MB (Kredit stoppt den Sender, PTY-Lesen pausiert).
-  - [ ] AC2 — Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet.
+  - [ ] AC2 — Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet. *(M3: als Schnittstelle `Authorizer::channel_access` mit Owner-Default, lokal hat der Owner `drive`; die Rolle `view` kommt mit COL-001/AUTH-014 in M4.)*
   - [ ] AC3 — Bei einem Client, der keine Browser-Frames bestätigt, sendet der Server nie mehr als 2 ausstehende Frames.
 - **Abhängigkeiten:** PROTO-004, BRW-005 (siehe 09-browser.md), TUI-002, WEB-010 (siehe 08-clients.md), VOI-004 (siehe 11-platform-features.md)
 
@@ -483,6 +485,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 ### DATA-011 — Ephemere Daten & Snapshots
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Terminal-Bytes, Browser-Frames, Audio und Presence werden nie dauerhaft gespeichert. Stattdessen entstehen Snapshots: `terminal.snapshot` (serialisierter Bildschirmzustand des Terminal-Emulators als Blob) beim Schließen und bei Aktivität höchstens alle 10 s; `browser.snapshot` (Screenshot + optional A11y-Baum) nach Navigation, nach Agent-Aktionen und auf Anforderung. Audio wird nach Transkription verworfen.
+- **Details:** Stand M3 (WP-51): Der Runner hält je Terminal einen Emulator (vt100, 10 000 Zeilen Scrollback) und lädt den serialisierten Zustand per Systemaufruf `terminal.snapshot` als Blob hoch (höchstens 16 MiB); `terminal.snapshot {terminal_id, blob_ref, cols, rows, cursor}` ist dauerhaft, die Bytes selbst laufen nur über den Binärkanal. Browser-Snapshots folgen mit BRW-005, Audio mit VOI-004.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Nach einer Sitzung mit 100 MB Terminal-Ausgabe enthält das Log keine `terminal.output`-Events und höchstens 6 Snapshots pro Minute Aktivität.
   - [ ] AC2 — Ein später attachender Client sieht für ein geschlossenes Terminal den letzten Bildschirmzustand.

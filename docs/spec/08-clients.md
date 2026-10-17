@@ -301,10 +301,11 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-010 — Terminals (xterm.js)
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Terminal-Tabs auf Basis xterm.js (WebGL-Renderer, Fit-, Weblinks-Addon), angebunden an den Binärkanal des Runner-PTY. Mehrere Terminals pro Session, Umbenennen, Schließen; Native-TUI-Sessions (Vendor-TUI im PTY) werden ebenfalls hier gerendert.
+- **Details:** Stand M3 (WP-51): Tab „Terminal“ in der Workspace-Rail nach dem Prototyp (`workspace-terminals`); xterm.js wird erst beim Öffnen nachgeladen. AC1 misst ein Benchmark im Runner (PTY → Kanal → Echo, Release-Build, Schwelle 30 ms p95). Native-TUI-Sessions folgen mit TUI-002. Fehlende Zustände (geschlossenes Terminal mit letztem Bildschirm, Fehler, leerer Zustand) entstehen als Entwurf im Design-Prototyp (ADR-0032).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Tastendruck-zu-Echo-Latenz lokal ≤ 30 ms (p95).
   - [ ] AC2 — Fenster-Resize sendet die neue Größe an das PTY; `vim` rendert korrekt.
-  - [ ] AC3 — Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert.
+  - [ ] AC3 — Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert. *(M3: Nur-Lese-Zugriff kommt aus `channel_opened.access`; lokal hat der Owner `drive`, Rollen kommen mit COL-001 in M4.)*
 - **Abhängigkeiten:** SES-019 (siehe 07-sessions-collaboration.md), TUI-002, PROTO-007 (siehe 06-data-sync-protocol.md)
 
 ### WEB-011 — Diff-Ansicht
