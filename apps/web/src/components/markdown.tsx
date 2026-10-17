@@ -1,7 +1,8 @@
 import { memo, useEffect, useId, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { highlight, type Lines } from '@/lib/highlight'
+import { codeThemeName, highlight, readableLines, surface, useCodeTheme, type Lines } from '@/lib/highlight'
+import { useTheme } from '@/lib/theme'
 
 /**
  * Markdown im Chat-Stream (WEB-002). Kein Roh-HTML (react-markdown rendert nur Elemente),
@@ -76,16 +77,19 @@ const MarkdownBlock = memo(function MarkdownBlock({ text, streaming }: { text: s
 
 function Highlighted({ code, lang }: { code: string; lang?: string | undefined }) {
   const [lines, setLines] = useState<Lines | undefined>()
+  // Theme-Wechsel färbt neu, ohne Neuladen (UX-005 AC1).
+  const theme = useCodeTheme()
   useEffect(() => {
     if (!lang) return
     let alive = true
-    highlight(code, lang)
-      .then((l) => alive && setLines(l))
+    highlight(code, lang, codeThemeName(theme))
+      // Lesbar auf der Fläche der Code-Blöcke (`--sunken`, WEB-016).
+      .then((l) => alive && setLines(readableLines(l, [surface('--sunken')])))
       .catch(() => undefined)
     return () => {
       alive = false
     }
-  }, [code, lang])
+  }, [code, lang, theme])
   if (!lines) return <code>{code}</code>
   return (
     <code>
@@ -107,6 +111,7 @@ function Mermaid({ code }: { code: string }) {
   const id = useId().replace(/:/g, '')
   const [svg, setSvg] = useState<string | undefined>()
   const [failed, setFailed] = useState(false)
+  const dark = useTheme((s) => s.mode === 'dark')
   useEffect(() => {
     let alive = true
     import('mermaid')
@@ -114,7 +119,7 @@ function Mermaid({ code }: { code: string }) {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
-          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'neutral',
+          theme: dark ? 'dark' : 'neutral',
         })
         const { svg } = await mermaid.render(`m${id}`, code)
         if (alive) setSvg(svg)
@@ -123,7 +128,7 @@ function Mermaid({ code }: { code: string }) {
     return () => {
       alive = false
     }
-  }, [code, id])
+  }, [code, id, dark])
   if (failed || !svg) return <code>{code}</code>
   // Mermaid erzeugt das SVG mit `securityLevel: strict` (kein HTML, keine Skripte).
   return <span className="block overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} />

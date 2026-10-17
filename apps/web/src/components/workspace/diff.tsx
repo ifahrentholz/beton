@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { ChangedFile, ChangeScope, FileDiff } from '@beton/sdk'
 import { Check, Link2, Paperclip } from 'lucide-react'
 import { client } from '@/lib/client'
-import { highlightChunked, type Lines } from '@/lib/highlight'
+import { codeThemeName, highlightChunked, readableLines, surface, useCodeTheme, type Lines } from '@/lib/highlight'
 import { diffRows, parseAnchor, shikiLang, type DiffRow } from '@/lib/workspace'
 import { cn } from '@/lib/utils'
 import { attach } from '@/store/workspace'
@@ -80,15 +80,18 @@ function useHighlight(rowsByFile: Map<string, DiffRow[]>): (rows: DiffRow[] | un
     })
   }, [])
   const abort = useRef(new AbortController())
+  // Ein Theme-Wechsel färbt den Diff neu (UX-005 AC1).
+  const theme = useCodeTheme()
   useEffect(() => {
     const ctrl = new AbortController()
     abort.current = ctrl
+    tokens.current = new WeakMap()
     return () => {
       ctrl.abort()
       cancelAnimationFrame(frame.current)
       frame.current = 0
     }
-  }, [])
+  }, [theme])
   useEffect(() => {
     for (const [path, rows] of rowsByFile) {
       if (tokens.current.has(rows)) continue
@@ -98,19 +101,23 @@ function useHighlight(rowsByFile: Map<string, DiffRow[]>): (rows: DiffRow[] | un
       tokens.current.set(rows, entry)
       const lines = (pred: (r: Extract<DiffRow, { kind: 'line' }>) => boolean) =>
         rows.filter((r): r is Extract<DiffRow, { kind: 'line' }> => r.kind === 'line' && pred(r)).map((r) => r.text)
+      // Lesbar auf den Flächen der Zeilen: unverändert (`--card`) und hinzugefügt bzw. entfernt.
+      const surfaces = { new: [surface('--card'), surface('--ok-soft')], old: [surface('--card'), surface('--deny-soft')] }
       const run = (side: 'old' | 'new', src: string[]) =>
         highlightChunked(
           src,
           lang,
           (from, chunk) => {
-            for (let i = 0; i < chunk.length; i++) entry[side][from + i] = chunk[i]!
+            const lines = readableLines(chunk, surfaces[side])
+            for (let i = 0; i < lines.length; i++) entry[side][from + i] = lines[i]!
             bump()
           },
           abort.current.signal,
+          codeThemeName(theme),
         ).catch(() => undefined)
       void run('new', lines((r) => r.type !== 'delete')).then(() => run('old', lines((r) => r.type !== 'add')))
     }
-  }, [rowsByFile, bump])
+  }, [rowsByFile, bump, theme])
   return (rows) => (rows ? tokens.current.get(rows) : undefined)
 }
 
