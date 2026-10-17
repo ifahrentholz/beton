@@ -139,6 +139,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Erster Elter des Merge-Commits eines PRs: Stand von main für die Basis des
+          # Redaction-Benchmarks (SEC-013 AC3, #307).
+          fetch-depth: 2
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -250,10 +254,6 @@ jobs:
       - name: Benchmark Event-Log-Durchsatz
         run: cargo test -p beton-store --release --lib data_002_ac3 -- --ignored --nocapture
 
-      # covers: DATA-002 AC3 (Durchsatz ≥ 5 000 Events/s, isoliert im Release-Build)
-      - name: Benchmark Event-Log-Durchsatz
-        run: cargo test -p beton-store --release --lib data_002_ac3 -- --ignored --nocapture
-
       # covers: POL-002 AC4 (200 Regeln, Phase tool_call, p99 < 2 ms im Release-Build)
       - name: Benchmark Policy-Auswertung
         run: cargo test -p beton-policy --release --test bench -- --ignored --nocapture
@@ -287,32 +287,32 @@ jobs:
         run: cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored --nocapture
 
       # covers: SEC-013 AC3 (≥ 50 MB/s pro Kern bei 1 000 bekannten Werten im Release-Build;
-      # Regression > 20 % gegenüber main schlägt fehl). Basis ist der Median der letzten fünf
-      # Messungen von main (#296): Die Basis-Datei im Actions-Cache führt die Messreihe
-      # (`history`); jeder Push auf main lädt die letzte Datei, hängt seinen Wert an
-      # (`BETON_BENCH_RECORD`, ohne Vergleich) und speichert sie unter seinem SHA. PRs
-      # vergleichen gegen den Median dieser Reihe; eine alte Datei ohne `history` gilt als
-      # Reihe mit einem Wert.
-      - name: Benchmark-Basis der Redaction von main laden
-        uses: actions/cache/restore@v4
-        with:
-          path: target/bench/redaction-main.json
-          key: bench-redaction-main-${{ github.event.pull_request.base.sha || github.event.before }}
-          restore-keys: bench-redaction-main-
+      # Regression > 20 % gegenüber main schlägt fehl). Basis und PR werden im selben Job auf
+      # derselben Hardware gemessen (#307): zuerst der Stand von main (erster Elter des
+      # Merge-Commits), dann der PR. Die Schwankung zwischen Runnern (±25–50 %) fällt so heraus;
+      # die frühere Basis im Actions-Cache (#306) entfällt, weil sie von anderer Hardware
+      # stammte. Der Basis-Lauf nutzt ein eigenes Target-Verzeichnis: Cargo hasht Pfad-Crates
+      # relativ zum Workspace, im gemeinsamen Verzeichnis überschriebe ein Build den anderen.
+      # Scheitert der Basis-Lauf, fehlt die Datei, und der PR-Lauf schlägt fehl (fail closed).
+      # Pushes auf main prüfen nur den Floor.
       - name: Benchmark Redaction
         env:
-          BETON_BENCH_BASELINE: ${{ github.workspace }}/target/bench/redaction-main.json
           BETON_BENCH_OUT: ${{ github.workspace }}/target/bench/redaction.json
-          BETON_BENCH_RECORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '' }}
-        run: cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
-      - name: Benchmark-Basis der Redaction für PRs speichern
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: cp target/bench/redaction.json target/bench/redaction-main.json
-      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: target/bench/redaction-main.json
-          key: bench-redaction-main-${{ github.sha }}
+        run: |
+          mkdir -p target/bench
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            base_dir="$RUNNER_TEMP/bench-base"
+            git worktree add --detach "$base_dir" HEAD^1
+            echo "Basis: $(git rev-parse HEAD^1) (main)"
+            (
+              cd "$base_dir"
+              BETON_BENCH_OUT="$GITHUB_WORKSPACE/target/bench/redaction-base.json" \
+              CARGO_TARGET_DIR="$RUNNER_TEMP/bench-base-target" \
+                cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
+            ) || echo "::warning title=Benchmark Redaction::Basis-Lauf auf main gescheitert"
+            export BETON_BENCH_BASELINE="$GITHUB_WORKSPACE/target/bench/redaction-base.json"
+          fi
+          cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
 
       # Coverage-Floor und Ratchet (QA-011) als Schritt dieses Jobs statt eigenem Job: jeder
       # Job muss Required Check sein (QA-010 AC3). Die Basis ist der letzte Stand von main
