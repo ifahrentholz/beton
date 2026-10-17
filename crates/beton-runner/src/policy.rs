@@ -1245,6 +1245,10 @@ impl PolicyGate {
         self.inner.seen.notify_waiters();
     }
 
+    /// MCP-Aufrufe der von beton eingebundenen Server prüft der Relay-Hub (Harness ohne volles
+    /// Gate, POL-024).
+    pub fn gate_mcp_in_hub(&self) {}
+
     /// Der Runner meldet `tool.call.requested` über [`PolicyGate::note_requested`]; danach
     /// wartet ein `policy.decision` kurz auf sein Subjekt, damit es im Log dahinter steht.
     pub fn order_after_requests(&self) {
@@ -3148,6 +3152,69 @@ mod tests {
                 "{origin:?}: {seen:?}"
             );
             assert!(!g.inner.decided.lock().unwrap()["c1"].allowed, "{origin:?}");
+        }
+    }
+
+    /// #250 (POL-025 AC1): Ein MCP-Aufruf über den Relay-Hub hat genau ein `policy.decision`
+    /// mit der Call-ID des Adapters, egal ob der Hub vor oder nach dem `tool.call.requested`
+    /// entscheidet und ob die Beobachtung (Codex, `observe_at_start`) schon läuft.
+    #[tokio::test]
+    async fn pol_025_ac1_relay_hub_and_observation_share_one_decision() {
+        use beton_mcp::hub::McpGate as _;
+        for hub_first in [true, false] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let g = PolicyGate::new(
+                PolicyOptions {
+                    harness: "codex".parse().unwrap(),
+                    ..PolicyOptions::default()
+                },
+                tx,
+            );
+            g.set_trusted_servers(vec!["beton".into()]);
+            g.order_after_requests();
+            g.gate_mcp_in_hub();
+            let observed = GateRequest {
+                call_id: "c1".into(),
+                tool: "session_status".into(),
+                kind: "system".into(),
+                args: json!({}),
+                mcp_server: Some("beton".into()),
+                ..GateRequest::default()
+            };
+            let hub = {
+                let g = g.clone();
+                async move { g.check("beton", "session_status", &json!({})).await }
+            };
+            let adapter = {
+                let g = g.clone();
+                async move {
+                    if hub_first {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    g.note_requested("c1", Some("beton"), "session_status");
+                    g.observe(observed).await
+                }
+            };
+            let (hub, _) = if hub_first {
+                tokio::join!(hub, adapter)
+            } else {
+                let (a, h) = tokio::join!(adapter, async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    hub.await
+                });
+                (h, a)
+            };
+            assert!(hub.is_ok(), "hub_first={hub_first}: {hub:?}");
+            let decisions: Vec<_> = drain(&mut rx)
+                .into_iter()
+                .filter_map(|e| match e {
+                    EventPayload::PolicyDecision(d) => Some(d),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(decisions.len(), 1, "hub_first={hub_first}: {decisions:?}");
+            assert_eq!(decisions[0].subject_ref["call_id"], "c1");
+            assert_eq!(decisions[0].enforcement, "full", "der Hub setzt durch");
         }
     }
 
