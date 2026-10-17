@@ -95,6 +95,18 @@ describe('Benachrichtigungs-Einstellungen (UX-006)', () => {
   })
 })
 
+describe('Vorschau (DESK-005)', () => {
+  it('DESK-005 AC3: Schalter „Vorschau in Mitteilungen“ speichert preview', async () => {
+    api.get.mockResolvedValue(defaults)
+    render(<NotificationSettingsView />)
+    const sw = await screen.findByRole('switch', { name: 'Vorschau in Mitteilungen' })
+    expect(sw.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(sw)
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+    expect((api.put.mock.calls[0]![0] as NotificationSettings).preview).toBe(false)
+  })
+})
+
 describe('Deep-Links (DESK-006)', () => {
   it('DESK-006 AC3: `?seq=N` zielt auf das Element, das Event N zeigt', () => {
     expect(validateSessionSearch({ seq: 214, opened: 'link' })).toMatchObject({ seq: 214, opened: 'link' })

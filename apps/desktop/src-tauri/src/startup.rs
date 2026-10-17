@@ -38,6 +38,10 @@ pub struct IncompatibleView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StartupView {
     pub home: String,
+    /// „beton startet“ bzw. „beton startet nicht“.
+    pub title: &'static str,
+    /// Zustand „Start fehlgeschlagen“: Erneut versuchen, Logs anzeigen, Beenden.
+    pub failed: bool,
     pub steps: Vec<StepView>,
     pub incompatible: Option<IncompatibleView>,
 }
@@ -50,6 +54,13 @@ fn step(text: impl Into<String>, state: &'static str) -> StepView {
 }
 
 impl Startup {
+    /// Neuer Versuch nach einem fehlgeschlagenen Start.
+    pub fn retry(&mut self) {
+        self.error = None;
+        self.existing = None;
+        self.connected = false;
+    }
+
     pub fn apply(&mut self, s: &Step) {
         match s {
             Step::SidecarFound { version } => self.sidecar = Some(version.clone()),
@@ -95,6 +106,12 @@ impl Startup {
         ));
         StartupView {
             home: home.to_owned(),
+            title: if self.error.is_some() {
+                "beton startet nicht"
+            } else {
+                "beton startet"
+            },
+            failed: self.error.is_some(),
             steps,
             incompatible: self.incompatible.as_ref().map(|v| IncompatibleView {
                 daemon: v.daemon.clone(),
@@ -156,6 +173,25 @@ mod tests {
         assert!(!v.steps.iter().any(|s| s.state == "failed"));
         let inc = v.incompatible.unwrap();
         assert_eq!((inc.daemon.as_str(), inc.app.as_str()), ("0.1.0", "0.3.2"));
+    }
+
+    #[test]
+    fn desk_002_start_failure_offers_retry_logs_and_quit() {
+        let mut s = Startup {
+            sidecar: Some("0.1.0".into()),
+            existing: Some(false),
+            error: Some("Daemon-Start fehlgeschlagen: Port 7420 ist belegt".into()),
+            ..Startup::default()
+        };
+        let v = s.view("~/.beton/");
+        assert!(v.failed, "Zustand „Start fehlgeschlagen“");
+        assert_eq!(v.title, "beton startet nicht");
+        assert_eq!(states(&s), ["done", "done", "failed", "todo"]);
+        s.retry();
+        let v = s.view("~/.beton/");
+        assert!(!v.failed);
+        assert_eq!(v.title, "beton startet");
+        assert_eq!(states(&s), ["done", "active", "active", "todo"]);
     }
 
     #[test]

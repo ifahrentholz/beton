@@ -90,3 +90,42 @@ pub fn daemon_logs(core: State<'_, Arc<Core>>, window: WebviewWindow) -> Result<
         "lines": lines,
     }))
 }
+
+/// Der Link, der den Hinweis „Link auf einen anderen Server“ ausgelöst hat (DESK-006 AC2).
+#[tauri::command]
+pub fn link_info(core: State<'_, Arc<Core>>, window: WebviewWindow) -> Result<Value, String> {
+    ensure_local(&window)?;
+    let link = core.link.lock().map_err(|e| e.to_string())?.clone();
+    Ok(match link {
+        Some(c) => json!({
+            "kind": match c.kind {
+                beton_desktop::deeplink::ConfirmationKind::Server => "server",
+                beton_desktop::deeplink::ConfirmationKind::Pair => "pair",
+            },
+            "host": c.host,
+            "link": c.link,
+        }),
+        None => Value::Null,
+    })
+}
+
+/// „Erneut versuchen“ nach einem fehlgeschlagenen Start (Entwurf `desktop-daemon`).
+#[tauri::command]
+pub fn retry_start(
+    app: AppHandle,
+    core: State<'_, Arc<Core>>,
+    window: WebviewWindow,
+) -> Result<(), String> {
+    ensure_local(&window)?;
+    core.startup.lock().map_err(|e| e.to_string())?.retry();
+    core::connect(&app);
+    Ok(())
+}
+
+/// „Logs anzeigen“ vom Startbildschirm.
+#[tauri::command]
+pub fn open_logs(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    ensure_local(&window)?;
+    core::local_window(&app, core::LOGS, "logs.html", "Daemon-Logs", 900.0, 560.0);
+    Ok(())
+}

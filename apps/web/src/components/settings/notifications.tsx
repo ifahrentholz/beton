@@ -33,7 +33,7 @@ function timeZone(): string {
 }
 
 /**
- * Benachrichtigungs-Einstellungen (UX-006): Matrix Ereignis × Kanal und Ruhezeiten. Gespeichert
+ * Benachrichtigungs-Einstellungen (UX-006): Matrix Ereignis × Kanal, Vorschau (DESK-005) und Ruhezeiten. Gespeichert
  * wird je User auf dem Server, sofort bei jeder Änderung; sie gelten damit auf allen Geräten.
  * Web-Push (WEB-014) kommt mit M4 und ist hier nur als ausgegraute Spalte sichtbar.
  */
@@ -130,6 +130,22 @@ export function NotificationSettingsView() {
               </tbody>
             </table>
           </div>
+
+          <SectionTitle>Inhalt</SectionTitle>
+          <Row
+            label="Vorschau in Mitteilungen"
+            hint="Session-Titel und erste Zeile, z. B. der Befehl einer Freigabe. Aus: nur Session und Ereignis, kein Nachrichtentext."
+          >
+            <Switch
+              checked={s.preview}
+              label="Vorschau in Mitteilungen"
+              onChange={(v) =>
+                update((d) => {
+                  d.preview = v
+                })
+              }
+            />
+          </Row>
 
           <SectionTitle>Ruhezeiten</SectionTitle>
           <Row label="Ruhezeiten" hint="In dieser Zeit bleiben Desktop-Mitteilung und Ton stumm; die Inbox sammelt weiter.">

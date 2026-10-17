@@ -10,9 +10,18 @@
   <body>
     <main class="start grain">
       <div class="glyph" aria-hidden="true">b</div>
-      <h1 class="wide">beton startet</h1>
+      <h1 class="wide" id="title">beton startet</h1>
       <ul class="steps" id="steps" aria-live="polite"></ul>
-      <p class="note muted">Kein Konto, kein Server im Internet. Deine Sessions liegen unter <code id="home">~/.beton/</code>.</p>
+      <p class="note muted" id="note">Kein Konto, kein Server im Internet. Deine Sessions liegen unter <code id="home">~/.beton/</code>.</p>
+      <p class="note muted" id="failed-note" hidden>
+        Deine Sessions unter <code id="failed-home">~/.beton/</code> sind unverändert. Die Logs nennen den Grund; ein anderer Port lässt sich mit
+        <code>beton config set server.listen '[127.0.0.1:7421]'</code> setzen.
+      </p>
+      <div class="actions" id="failed-actions" hidden>
+        <button class="primary" id="retry">Erneut versuchen</button>
+        <button id="logs">Logs anzeigen</button>
+        <button id="quit-failed">Beenden</button>
+      </div>
     </main>
     <div class="overlay" id="incompatible" role="dialog" aria-modal="true" aria-labelledby="incompatible-title" hidden>
       <div class="dialog">

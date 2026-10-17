@@ -76,6 +76,9 @@ fn main() {
             commands::quit_choice,
             commands::close_self,
             commands::daemon_logs,
+            commands::link_info,
+            commands::retry_start,
+            commands::open_logs,
         ])
         .on_menu_event(menu::on_menu)
         .setup(|app| {

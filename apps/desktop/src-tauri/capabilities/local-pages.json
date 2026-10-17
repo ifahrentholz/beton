@@ -1,9 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "local-pages",
-  "description": "Nur die mitgelieferten lokalen Seiten (Start, Beenden, Logs) dürfen die App aufrufen. Die Web-UI des Daemons ist eine entfernte Origin und hat keinen Zugriff.",
+  "description": "Nur die mitgelieferten lokalen Seiten (Start, Beenden, Logs, Link-Hinweis) dürfen die App aufrufen. Die Web-UI des Daemons ist eine entfernte Origin und hat keinen Zugriff.",
   "local": true,
-  "windows": ["main", "quit", "logs"],
+  "windows": [
+    "main",
+    "quit",
+    "logs",
+    "link"
+  ],
   "permissions": [
     "allow-startup-state",
     "allow-daemon-upgrade",
@@ -11,6 +16,9 @@
     "allow-working-sessions",
     "allow-quit-choice",
     "allow-close-self",
-    "allow-daemon-logs"
+    "allow-daemon-logs",
+    "allow-link-info",
+    "allow-retry-start",
+    "allow-open-logs"
   ]
 }

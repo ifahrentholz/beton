@@ -10,6 +10,9 @@ fn main() {
             "quit_choice",
             "close_self",
             "daemon_logs",
+            "link_info",
+            "retry_start",
+            "open_logs",
         ]),
     ))
     .expect("tauri-build");

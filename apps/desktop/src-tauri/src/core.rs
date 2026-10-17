@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use beton_desktop::daemon::{Connection, DaemonError, Manager, Step};
-use beton_desktop::deeplink::{self, DeepLink};
+use beton_desktop::deeplink;
 use beton_desktop::notify::Focus;
 use beton_desktop::poller::{Poller, Shared, Update};
 use beton_desktop::status::TrayModel;
@@ -24,6 +24,7 @@ use crate::startup::Startup;
 pub const MAIN: &str = "main";
 pub const QUIT: &str = "quit";
 pub const LOGS: &str = "logs";
+pub const LINK: &str = "link";
 
 pub struct Core {
     pub manager: Manager,
@@ -36,6 +37,8 @@ pub struct Core {
     pub reachable: AtomicBool,
     pub tray: Mutex<TrayModel>,
     pub badge: AtomicU32,
+    /// Zuletzt geöffneter Link, der erst eine Zustimmung braucht (DESK-006 AC2).
+    pub link: Mutex<Option<beton_desktop::deeplink::Confirmation>>,
     /// Routen aus Deep-Links, bevor die App verbunden ist.
     pending: Mutex<Vec<String>>,
     poller: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -55,6 +58,7 @@ impl Core {
             reachable: AtomicBool::new(false),
             tray: Mutex::new(TrayModel::default()),
             badge: AtomicU32::new(0),
+            link: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
             poller: Mutex::new(None),
             next_window: AtomicU32::new(2),
@@ -168,7 +172,7 @@ pub fn open_windows(app: &AppHandle) -> Vec<(OpenWindow, WebviewWindow)> {
     let mut out: Vec<(OpenWindow, WebviewWindow)> = app
         .webview_windows()
         .into_iter()
-        .filter(|(label, _)| label != QUIT && label != LOGS)
+        .filter(|(label, _)| label != QUIT && label != LOGS && label != LINK)
         .filter_map(|(label, w)| {
             let url = w.url().ok()?.to_string();
             let focused = w.is_focused().unwrap_or(false);
@@ -264,24 +268,35 @@ fn allowed_remote(core: &Core, url: &Url) -> bool {
         .is_some_and(|b| b.origin() == url.origin())
 }
 
-/// Ein `beton://`-Link (DESK-006). Links öffnen nur Ansichten; unbekannte Server und Koppeln
-/// brauchen Server-Profile (ab M4): Die App verbindet sich dafür nie von selbst.
+/// Ein `beton://`-Link (DESK-006). Links öffnen nur Ansichten. Ein Link auf einen anderen
+/// Server bzw. zum Koppeln zeigt erst einen Hinweis (Entwurf `desktop-deeplink`, Zustand
+/// „Server-Link vor M4“); eine Verbindung baut die App dafür nie von selbst auf (AC2).
 pub fn handle_link(app: &AppHandle, raw: &str) {
     match deeplink::parse(raw) {
-        Ok(link) => match link.route() {
-            Some(route) => open_route(app, &route),
-            None => {
-                let what = match &link {
-                    DeepLink::UnknownServer { host } => format!("Server {host}"),
-                    DeepLink::Pair { .. } => "Koppeln".to_owned(),
-                    DeepLink::Session { .. } => String::new(),
-                };
-                tracing::info!(
-                    "Link auf {what} nicht geöffnet: Server-Profile kommen mit M4; keine Verbindung aufgebaut"
-                );
-                focus_any(app);
+        Ok(link) => {
+            if let Some(route) = link.route() {
+                open_route(app, &route);
+            } else if let Some(c) = link.confirmation(raw) {
+                tracing::info!(host = %c.host, "Link auf einen anderen Server: Hinweis statt Verbindung");
+                if let Ok(mut l) = core(app).link.lock() {
+                    *l = Some(c);
+                }
+                if let Some(w) = app.get_webview_window(LINK) {
+                    // Schon offen: neu laden, damit der neue Link erscheint.
+                    let _ = w.eval("location.reload()");
+                    let _ = w.set_focus();
+                } else {
+                    local_window(
+                        app,
+                        LINK,
+                        "link.html",
+                        "Link auf einen anderen Server",
+                        480.0,
+                        300.0,
+                    );
+                }
             }
-        },
+        }
         Err(e) => tracing::warn!("Link nicht geöffnet: {e}"),
     }
 }

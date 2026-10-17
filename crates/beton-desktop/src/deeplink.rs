@@ -4,7 +4,8 @@
 //!   App (Single-Instance), mit `seq` an Event N (AC1, AC3).
 //! - Ein Link auf einen anderen Host oder `beton://pair?…` braucht Server-Profile (DESK-003,
 //!   ab M4): Er führt nie zu einer Verbindung, bevor der User zugestimmt hat (AC2). Bis dahin
-//!   öffnet die App ihn nicht und baut keine Verbindung auf.
+//!   zeigt die App einen Hinweis ([`DeepLink::confirmation`]), öffnet ihn nicht und baut keine
+//!   Verbindung auf.
 //! - Ein Link öffnet nur Ansichten. Er entscheidet keine Freigabe, sendet nichts und startet
 //!   nichts; alles andere (unbekannte Pfade, Parameter mit Aktionen) wird abgelehnt.
 
@@ -145,7 +146,46 @@ pub fn parse(url: &str) -> Result<DeepLink, DeepLinkError> {
     })
 }
 
+/// Wozu ein Link erst die Zustimmung des Users braucht (DESK-006 AC2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationKind {
+    /// Session auf einem Server ohne Profil.
+    Server,
+    /// Koppeln mit einem anderen Rechner.
+    Pair,
+}
+
+/// Inhalt des Dialogs, den ein Link auf einen anderen Server auslöst. Bis zur Zustimmung
+/// (ab M4: Profil anlegen bzw. koppeln) baut die App keine Verbindung auf.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirmation {
+    pub kind: ConfirmationKind,
+    /// Der Server, z. B. `beton.team.example.com`.
+    pub host: String,
+    /// Der Link zur Anzeige (höchstens 200 Zeichen).
+    pub link: String,
+}
+
+fn host_of(server: &str) -> String {
+    let rest = server.split_once("://").map_or(server, |(_, r)| r);
+    rest.split(['/', '?', '#'])
+        .next()
+        .unwrap_or(rest)
+        .to_owned()
+}
+
 impl DeepLink {
+    /// Dialog vor dem Öffnen; `None` für Links, die nur eine lokale Ansicht öffnen.
+    pub fn confirmation(&self, raw: &str) -> Option<Confirmation> {
+        let (kind, host) = match self {
+            Self::Session { .. } => return None,
+            Self::UnknownServer { host } => (ConfirmationKind::Server, host.clone()),
+            Self::Pair { server, .. } => (ConfirmationKind::Pair, host_of(server)),
+        };
+        let link: String = raw.trim().chars().take(200).collect();
+        Some(Confirmation { kind, host, link })
+    }
+
     /// Route der Web-UI, die der Link öffnet; `None`, wenn erst der User zustimmen muss.
     /// `opened=link` lässt die Web-UI den Hinweis „Geöffnet über beton://…“ zeigen.
     pub fn route(&self) -> Option<String> {
@@ -243,6 +283,36 @@ mod tests {
             }
         );
         assert_eq!(pair.route(), None);
+    }
+
+    #[test]
+    fn desk_006_ac2_server_links_ask_first_and_name_the_server() {
+        let raw = "beton://beton.team.example.com/s/ses_9a1b?comment=c_42";
+        let c = parse(raw).unwrap().confirmation(raw).unwrap();
+        assert_eq!(c.kind, ConfirmationKind::Server);
+        assert_eq!(c.host, "beton.team.example.com");
+        assert_eq!(c.link, raw);
+        let raw = "beton://pair?server=https%3A%2F%2Fingo-laptop.tail5c2e.ts.net&code=K7Q-4MX";
+        let c = parse(raw).unwrap().confirmation(raw).unwrap();
+        assert_eq!(c.kind, ConfirmationKind::Pair);
+        assert_eq!(c.host, "ingo-laptop.tail5c2e.ts.net");
+        let local = "beton://local/s/ses_01JB8Y2D0M3K4J5H6G7F8E9D0C";
+        assert_eq!(
+            parse(local).unwrap().confirmation(local),
+            None,
+            "lokale Links öffnen direkt"
+        );
+        let long = format!("beton://x.example/{}", "a".repeat(500));
+        assert!(
+            parse(&long)
+                .unwrap()
+                .confirmation(&long)
+                .unwrap()
+                .link
+                .chars()
+                .count()
+                <= 200
+        );
     }
 
     #[test]

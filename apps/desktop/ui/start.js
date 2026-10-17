@@ -1,5 +1,6 @@
 // Startbildschirm (DESK-002, Entwurf `desktop-daemon` Zustand „Start“) und Dialog für einen
-// inkompatiblen Daemon (Zustand „Daemon inkompatibel“). Den Stand liefert die App; sobald sie
+// inkompatiblen Daemon (Zustand „Daemon inkompatibel“) bzw. gescheiterten Start (Zustand „Start
+// fehlgeschlagen“). Den Stand liefert die App; sobald sie
 // verbunden ist, öffnet sie in diesem Fenster die Web-UI des Daemons.
 import { el, invoke } from './ipc.js'
 
@@ -12,6 +13,11 @@ function render(state) {
   if (key === last) return
   last = key
   document.getElementById('home').textContent = state.home
+  document.getElementById('failed-home').textContent = state.home
+  document.getElementById('title').textContent = state.title
+  document.getElementById('note').hidden = state.failed
+  document.getElementById('failed-note').hidden = !state.failed
+  document.getElementById('failed-actions').hidden = !state.failed
   steps.replaceChildren(
     ...state.steps.map((s) => el('li', { class: s.state }, el('span', { class: `mark ${s.state}`, 'aria-hidden': 'true' }), s.text)),
   )
@@ -39,5 +45,8 @@ async function tick() {
 
 document.getElementById('upgrade').addEventListener('click', () => void invoke('daemon_upgrade'))
 document.getElementById('quit').addEventListener('click', () => void invoke('quit_now'))
+document.getElementById('retry').addEventListener('click', () => void invoke('retry_start'))
+document.getElementById('logs').addEventListener('click', () => void invoke('open_logs'))
+document.getElementById('quit-failed').addEventListener('click', () => void invoke('quit_now'))
 void tick()
 setInterval(tick, 200)
