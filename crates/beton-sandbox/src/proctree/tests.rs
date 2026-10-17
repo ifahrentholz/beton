@@ -105,3 +105,39 @@ async fn sbx_013_ac2_signal_then_drop_finds_setsid_descendants() {
     drop(child);
     assert_gone(&marker).await;
 }
+
+/// SBX-013 AC2 (#244): Ein Prozess, der beim Stoppen laufend Kinder startet (jedes per
+/// `setsid` abgelöst), verliert keines: Zwischen Erfassung und SIGKILL entstandene Kinder
+/// hingen sonst nach dem Tod des Elternprozesses unerkannt an launchd. Der Baum wird vor dem
+/// Beenden eingefroren (SIGSTOP), erfasst, bis nichts Neues hinzukommt, und dann beendet. Das
+/// Zeitfenster ist kurz; mehrere Durchläufe machen den Fall verlässlich.
+#[tokio::test]
+async fn sbx_013_ac2_stop_keeps_children_forked_while_stopping() {
+    for round in 0..4 {
+        let marker = format!("10{round}4.{}", std::process::id());
+        let script = format!(
+            "use POSIX; for (1..4000) {{ my $p = fork(); if (defined $p && $p == 0) {{ \
+             POSIX::setsid(); exec \"sleep\", \"{marker}\"; }} select(undef, undef, undef, 0.0005); }} \
+             sleep 60"
+        );
+        let spec = CommandSpec::new("/usr/bin/perl").stdio(Stdio::Null, Stdio::Null, Stdio::Null);
+        let mut cmd = crate::child::command(std::path::Path::new("/usr/bin/perl"), &spec).unwrap();
+        cmd.args(["-e", &script]);
+        let child = crate::child::spawn(cmd, false).unwrap();
+        let root = child.id().unwrap();
+        let tracker = Tracker::start(root, SandboxStage::Tools, None, Violations::default(), None);
+        let mut child = child.with_guard(Box::new(tracker), Violations::default());
+        let start = std::time::Instant::now();
+        while processes_with(&format!("sleep {marker}")).len() < 40 {
+            assert!(
+                start.elapsed() < Duration::from_secs(20),
+                "Kinder starten nicht"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        child.start_kill().unwrap();
+        let _ = child.wait().await;
+        drop(child);
+        assert_gone(&marker).await;
+    }
+}
