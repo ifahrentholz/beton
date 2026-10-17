@@ -241,9 +241,11 @@ mod beneath {
         .union(OFlags::DIRECTORY)
         .union(OFlags::NOFOLLOW)
         .union(OFlags::CLOEXEC);
-    /// Datei lesen, ohne einem Symlink zu folgen.
+    /// Datei lesen, ohne einem Symlink zu folgen; `O_NONBLOCK`, damit eine FIFO im Workspace
+    /// das Öffnen nicht blockiert (sie scheitert danach an der Prüfung auf eine reguläre Datei).
     pub(super) const FILE: OFlags = OFlags::RDONLY
         .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
         .union(OFlags::CLOEXEC);
 
     /// Aufgelöster Pfad: gehaltenes Verzeichnis, sein Pfad unter der Wurzel und der letzte Name
@@ -611,7 +613,7 @@ impl Workspace {
             Err(PathError::Invalid(..)) => {
                 return Err(PathError::Invalid(
                     raw.to_owned(),
-                    "ist ein Verzeichnis".into(),
+                    "ist keine Datei (z. B. ein Verzeichnis)".into(),
                 ));
             }
             Err(e) => return Err(e),
@@ -1172,6 +1174,29 @@ mod tests {
             .unwrap();
         assert!(!more);
         assert_eq!(second[0].path, "src/main.rs");
+    }
+
+    /// #92: Eine FIFO im Workspace (vom Agent angelegt) blockiert Lesen und Schreiben nicht;
+    /// sie ist keine Datei.
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "Testaufbau: mkfifo")]
+    fn ses_017_fifo_in_the_workspace_does_not_block() {
+        let (_tmp, ws, _) = ws();
+        let fifo = ws.root().join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(ws.read("fifo"), Err(PathError::Invalid(..))));
+        assert!(matches!(ws.open_file("fifo"), Err(PathError::Invalid(..))));
+        assert!(matches!(
+            ws.write("fifo", b"x", None),
+            Err(PathError::Invalid(..))
+        ));
     }
 
     /// #92: Ersetzt ein gleichzeitig laufender Prozess (der Agent im Workspace) ein
