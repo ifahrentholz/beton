@@ -750,6 +750,7 @@ impl Conn {
                         status: 200,
                         content_type: "application/json".into(),
                         body: serde_json::to_vec(&result).unwrap_or_default(),
+                        location: None,
                     };
                     let _ = store.idempotency_save(org, k, &stored).await;
                 }
