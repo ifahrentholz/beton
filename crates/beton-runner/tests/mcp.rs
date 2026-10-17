@@ -807,3 +807,78 @@ async fn pol_013_acp_start_route_without_set_model_refuses_the_start() {
     assert!(text.contains("model"), "{text}");
     env.daemon.shutdown().await;
 }
+
+/// #252 (POL-005, HAR-009): Definiert die Vendor-Konfiguration des Users selbst einen Server
+/// `beton` (bzw. einen anderen reservierten Namen), kann beton am Namen nicht unterscheiden,
+/// welcher Server einen Aufruf bekommt. Der Start wird dann verweigert, statt fremde Tools als
+/// System-Tools ohne Mensch zu erlauben.
+#[tokio::test]
+async fn pol_005_reserved_server_name_in_the_vendor_config_refuses_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "c.yaml",
+        &mcp_scenario("beton", "policy_query", json!({"action": "ls"})),
+    );
+    for (harness, file, text) in [
+        (
+            "claude",
+            ".claude.json",
+            r#"{"mcpServers": {"beton": {"type": "stdio", "command": "/tmp/fremd"}}}"#,
+        ),
+        (
+            "claude",
+            ".claude.json",
+            r#"{"projects": {"WORK": {"mcpServers": {"beton-x": {"command": "/tmp/fremd"}}}}}"#,
+        ),
+        (
+            "codex",
+            ".codex/config.toml",
+            "[mcp_servers.beton]\ncommand = \"/tmp/fremd\"\n",
+        ),
+    ] {
+        let path = match harness {
+            "claude" => claude_path(&s),
+            _ => codex_path(&s),
+        };
+        let env = Env::start(&[path], |dir| {
+            let work = dir.join("work");
+            write(
+                &Env::home(dir).join(file),
+                &text.replace("WORK", &work.display().to_string()),
+            );
+        })
+        .await;
+        let id = env.create(harness).await;
+        let events = env
+            .wait_for(&id, |e| e.to_string().contains("mcp_server_conflict"))
+            .await;
+        assert!(
+            of_type(&events, "turn.started").is_empty(),
+            "{harness}: {events:?}"
+        );
+        env.daemon.shutdown().await;
+    }
+}
+
+/// #252: Andere Server in der Vendor-Konfiguration stören nicht.
+#[tokio::test]
+async fn pol_005_other_servers_in_the_vendor_config_do_not_block_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "c.yaml",
+        &mcp_scenario("beton", "policy_query", json!({"action": "ls"})),
+    );
+    let env = Env::start(&[claude_path(&s)], |dir| {
+        write(
+            &Env::home(dir).join(".claude.json"),
+            r#"{"mcpServers": {"github": {"command": "/tmp/gh"}}}"#,
+        );
+    })
+    .await;
+    let id = env.create("claude").await;
+    let events = env.turn(&id, "los").await;
+    assert!(!of_type(&events, "tool.call.completed").is_empty());
+    env.daemon.shutdown().await;
+}
