@@ -414,6 +414,23 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
         .collect();
     let expected: Vec<String> = (0..30).map(|i| format!("Zeile {i}")).collect();
     assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    // #72: Der Runner meldet den gescheiterten Push und das erneute Senden als `runner.status`.
+    let retried = events.iter().any(|e| {
+        matches!(e.payload(), Some(EventPayload::RunnerStatus(s))
+            if s.reason.as_deref().is_some_and(|r| r.contains("push_failed")))
+    });
+    assert!(
+        retried,
+        "runner.status mit push_failed fehlt: {:?}",
+        events
+            .iter()
+            .filter_map(|e| match e.payload() {
+                Some(EventPayload::RunnerStatus(s)) =>
+                    Some(format!("{}→{} {:?}", s.from, s.to, s.reason)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    );
     f.provider
         .terminate(&h, beton_host::TerminateMode::Force)
         .await

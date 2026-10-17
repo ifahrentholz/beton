@@ -1528,6 +1528,9 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let (observed_tx, mut observed_rx) =
         mpsc::unbounded_channel::<(beton_policy::load::RuleRef, String)>();
     let mut backoff = Backoff::default();
+    // Letzter vom Server abgelehnter Push (PROTO-015, #72): Der Server trennt danach; der
+    // Runner sendet nach dem Reconnect mit wachsendem Abstand erneut und meldet es.
+    let mut push_failed: Option<String> = None;
     let mut parent_check = tokio::time::interval(Duration::from_millis(500));
     // HAR-017 AC4: Wechsel während eines Turns warten auf dessen Ende.
     let mut deferred: Option<settings::Change> = None;
@@ -1593,7 +1596,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         // übernommen (POL-010 AC4); ab jetzt zählt die Verbindung, nicht der Elternprozess.
         adopted |= !parent_alive(boot.parent_pid);
         detached_at = None;
-        backoff.reset();
+        // Nach einem abgelehnten Push wächst der Abstand weiter, bis ein Push bestätigt ist.
+        if push_failed.is_none() {
+            backoff.reset();
+        }
         let hello = TunnelUp::Hello {
             kind: PeerKind::Runner,
             version: env!("CARGO_PKG_VERSION").into(),
@@ -1613,7 +1619,14 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             let _ = lifecycle.go(RunnerState::Reconnecting, None);
         }
         let mut extra = Vec::new();
-        status(&mut lifecycle, RunnerState::Connected, None, &mut extra);
+        status(
+            &mut lifecycle,
+            RunnerState::Connected,
+            push_failed
+                .as_ref()
+                .map(|code| format!("push_failed: {code}; Unbestätigtes wird erneut gesendet")),
+            &mut extra,
+        );
         status(&mut lifecycle, RunnerState::Idle, None, &mut extra);
         if !turn_running {
             tracker.set(&boot, SessionStatus::Idle, &mut extra);
@@ -2196,7 +2209,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                             if !ok || !send(&mut ws, &msg).await { break None; }
                         }
-                        TunnelDown::EventsAck { upto_rseq, .. } => unacked.ack(upto_rseq),
+                        TunnelDown::EventsAck { upto_rseq, .. } => {
+                            unacked.ack(upto_rseq);
+                            if push_failed.take().is_some() {
+                                backoff.reset();
+                            }
+                        }
                         TunnelDown::Bound { acked_rseq, .. } => unacked.ack(acked_rseq),
                         TunnelDown::CmdDeliver { cmd_id, name, args, .. } if name == ONE_SHOT_CMD => {
                             // Kann dauern (Modellaufruf): nicht im Lese-Loop warten.
@@ -2303,6 +2321,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                                 return Err(RunnerError::StaleEpoch);
                             }
                             tracing::warn!(?problem, "Tunnel-Problem");
+                            // Ein nicht gespeicherter Push: Der Server trennt gleich (4500).
+                            push_failed = Some(problem["code"].as_str().unwrap_or("internal").to_owned());
                         }
                         TunnelDown::SystemResult { call_id, result, problem } => {
                             if let Some(reply) = pending_calls.remove(&call_id) {
@@ -2391,6 +2411,18 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         if let Some(exit) = outcome {
             terminals.shutdown();
             return finish(session, exit).await;
+        }
+        // Scheiterte ein Senden, weil der Server nach einem nicht gespeicherten Push trennte,
+        // steht sein `problem` noch im Socket (PROTO-015, #72).
+        while let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(Duration::from_millis(200), ws.next()).await
+        {
+            if let Ok(TunnelDown::Problem { problem }) = serde_json::from_str::<TunnelDown>(&text)
+                && problem["code"] != "stale_epoch"
+            {
+                tracing::warn!(?problem, "Push nicht gespeichert");
+                push_failed = Some(problem["code"].as_str().unwrap_or("internal").to_owned());
+            }
         }
         // Verbindung verloren: weiterlaufen, puffern, neu verbinden; Terminals lesen frei weiter.
         terminals.disconnected();
