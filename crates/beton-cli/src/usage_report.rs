@@ -37,7 +37,8 @@ pub fn init_local_offset() {
     let _ = LOCAL_OFFSET.set(offset);
 }
 
-fn local_offset() -> UtcOffset {
+/// Versatz der lokalen Zeitzone (aus [`init_local_offset`], sonst UTC).
+pub fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::UTC)
 }
 

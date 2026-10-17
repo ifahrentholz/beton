@@ -33,6 +33,7 @@ beton-sdk.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
+beton-tui.workspace = true
 beton-voice.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
@@ -56,6 +57,7 @@ rustix = { workspace = true, features = ["termios"] }
 
 [dev-dependencies]
 beton-desktop.workspace = true
+crossterm.workspace = true
 beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 sqlx.workspace = true
 tempfile.workspace = true

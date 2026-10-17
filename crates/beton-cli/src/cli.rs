@@ -66,6 +66,8 @@ pub enum Command {
     Attach(AttachArgs),
     /// Web-UI im Browser öffnen (Anmeldung per Einmal-Link).
     Open(OpenArgs),
+    /// Vollbild-Oberfläche im Terminal: Sessions, Verlauf, Panes ohne tmux, Freigaben per Taste.
+    Tui(TuiArgs),
     /// Sessions verwalten.
     #[command(subcommand)]
     Session(SessionCommand),
@@ -366,6 +368,12 @@ pub struct AttachArgs {
     /// Nur zuschauen: keine Eingaben, keine Freigaben.
     #[arg(long)]
     pub read_only: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TuiArgs {
+    /// Session (ID, eindeutiges Präfix oder `last`); ohne: die zuletzt aktive.
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Args)]

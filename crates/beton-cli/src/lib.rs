@@ -22,6 +22,7 @@ pub mod serve;
 pub mod sessionref;
 pub mod setup;
 pub mod transfer;
+pub mod tui;
 pub mod usage;
 pub mod usage_report;
 pub mod voice;

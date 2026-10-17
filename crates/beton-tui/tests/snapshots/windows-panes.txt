@@ -1,0 +1,36 @@
+ beton tui  Rate-Limiter für die Login-API · 3 Panes · Windows                                                    Windows Terminal · ConPTY
+┌ 0 Agent · Claude Code ──────────────────────────────────── ● läuft ┐┌ 1 dev-server · pnpm dev ──────────────────────────────── PTY 68×14 ┐
+│ Du ▸ Die Login-Route braucht einen Rate-Limiter: höchstens 5       ││VITE v7.1.4  ready in 412 ms                                        │
+│ Versuche pro Minute und IP. Bitte mit Tests.                       ││                                                                    │
+│                                                                    ││  ➜  Local:   http://localhost:5173/                                │
+│ Claude Code ▸ Ich lege eine Express-Middleware mit Token-Bucket    ││09:41:02 [vite] hmr update /src/routes/auth.ts                      │
+│ pro IP an.                                                         ││                                                                    │
+│   ▸ Suche       rg 'auth.post' src/           ✓ 0,2 s              ││                                                                    │
+│   ▸ Lesen       src/routes/auth.ts            ✓ 0,1 s              ││                                                                    │
+│   ▾ Bearbeiten  src/routes/auth.ts (+2 −1)    ✓ 0,3 s              ││                                                                    │
+│       − auth.post('/login', login)                                 ││                                                                    │
+│       + import { rateLimit } from '../middleware/rate-limit'       ││                                                                    │
+│       + auth.post('/login', rateLimit({ window: '1m', max: 5, key… ││                                                                    │
+│   ▸ Shell       pnpm vitest run auth          ✓ 4,8 s              ││                                                                    │
+│                                                                    ││                                                                    │
+│ Claude Code ▸ Die Login-Route ist auf 5 Versuche pro Minute und IP ││                                                                    │
+│ begrenzt; danach kommt 429 mit Retry-After. Ich schreibe noch den  │└────────────────────────────────────────────────────────────────────┘
+│ Test für den Header █                                              │┌ 2 htop ───────────────────────────────────────────────── PTY 68×15 ┐
+│                                                                    ││  1 [||||||||||       42.1%]   Tasks: 312                           │
+│                                                                    ││  2 [|||||            21.4%]   Load average: 2.31                   │
+│                                                                    ││                                                                    │
+│                                                                    ││  PID USER   CPU% Command                                           │
+│                                                                    ││48121 ingo   12.4 node vite                                         │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│ >                                                                  ││                                                                    │
+└────────────────────────────────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────┘
+ Panes laufen im Runner (beton-pty) – kein tmux                                                               crossterm · Panes über ConPTY
+  ^G |  teilen  ^G -  teilen  ^G o  nächster  ^G z  zoomen  ^G c  Terminal  ^G d  trennen  ^G ?  Hilfe
