@@ -338,6 +338,13 @@
             "type": "string"
           }
         },
+        "implicit": {
+          "description": "Ohne Platzhalter und ohne `Authorization`-Header einsetzen (Default `true`; nur\n`git_https` mit `username`, `github` und `gitlab`, nie `bearer`/`basic`; PRX-006, #295).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "name": {
           "description": "Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.",
           "type": "string"

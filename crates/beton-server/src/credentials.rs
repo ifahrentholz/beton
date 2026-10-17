@@ -220,6 +220,10 @@ impl CredentialService {
         if value.is_empty() {
             return Err(failed("Die Quelle lieferte einen leeren Wert"));
         }
+        // Steuerzeichen (Tab, CR/LF, DEL) taugen in keinem Header; schon hier ablehnen (#295).
+        if value.iter().any(u8::is_ascii_control) {
+            return Err(failed("Der Wert enthält Steuerzeichen"));
+        }
         Ok((value, ttl))
     }
 

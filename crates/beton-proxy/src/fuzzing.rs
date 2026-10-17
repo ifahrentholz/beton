@@ -75,7 +75,7 @@ pub async fn substitute_credentials(
     query: Option<&str>,
     mut headers: HeaderMap,
 ) -> CredentialOutcome {
-    let plan = match credentials.plan(scheme, host, path, query, &headers) {
+    let plan = match credentials.plan(scheme, host, 443, path, query, &headers) {
         Ok(None) => return CredentialOutcome::Untouched,
         Ok(Some(plan)) => plan,
         Err(refusal) => {

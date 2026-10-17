@@ -592,7 +592,7 @@ fn tools_binding(c: &beton_sandbox::spec::CredentialSpec, placeholder: Placehold
         hosts: c.hosts.clone().unwrap_or_default(),
         username: c.username.clone(),
         placeholder,
-        implicit: true,
+        implicit: c.implicit.unwrap_or(true),
     }
 }
 
@@ -994,7 +994,8 @@ async fn compose_unix(
                 vec![Binding {
                     name: route.binding.clone(),
                     kind: CredentialKind::Bearer,
-                    hosts: vec![route.host.clone()],
+                    // Mit Port, falls nicht 443 (#295).
+                    hosts: vec![target.clone()],
                     username: None,
                     placeholder: p.clone(),
                     implicit: false,
