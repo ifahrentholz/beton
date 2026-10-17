@@ -854,6 +854,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 source: Some(s.source.clone()),
                 hash: Some(s.hash.clone()),
             }),
+            vendor_dirs: Vec::new(),
         },
         gate_tx,
     )

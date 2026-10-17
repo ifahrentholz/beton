@@ -238,6 +238,9 @@ pub struct PolicyOptions {
     pub dirs: Vec<(Scope, PathBuf)>,
     pub approval_timeout: Duration,
     pub agent: Option<AgentVars>,
+    /// Weitere Konfigurationsverzeichnisse der Vendor-CLIs (`$CLAUDE_CONFIG_DIR`,
+    /// `$CODEX_HOME`), die die Regel `policy-files` schützt (#258).
+    pub vendor_dirs: Vec<PathBuf>,
 }
 
 impl Default for PolicyOptions {
@@ -251,6 +254,7 @@ impl Default for PolicyOptions {
             dirs: Vec::new(),
             approval_timeout: APPROVAL_TIMEOUT,
             agent: None,
+            vendor_dirs: Vec::new(),
         }
     }
 }

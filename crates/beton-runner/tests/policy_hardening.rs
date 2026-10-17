@@ -1061,3 +1061,102 @@ async fn pol_013_declined_cost_raise_drops_the_route_and_is_remembered_per_sessi
         }
     }
 }
+
+/// #258 R4: Ohne Sandbox könnte ein Tool-Call einen User-Hook (`PreToolUse.updatedInput`) in
+/// `~/.claude/settings*.json`, `~/.claude.json` bzw. `$CLAUDE_CONFIG_DIR` anlegen, der in allen
+/// folgenden Sessions die Prüfung unterläuft; ebenso die Konfiguration von Codex. Die Regel
+/// `policy-files` schützt diese Pfade gegen Schreibzugriffe von Tools.
+#[tokio::test]
+async fn pol_001_tools_cannot_write_vendor_hook_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let home = root.join("home");
+    let config_dir = root.join("claude-config");
+    for d in [
+        home.join(".claude"),
+        home.join(".codex"),
+        config_dir.clone(),
+    ] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::create_dir_all(root.join("wt/.claude")).unwrap();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let g = PolicyGate::new(
+        PolicyOptions {
+            harness: "claude".parse::<HarnessId>().unwrap(),
+            workdir: root.join("wt"),
+            home: Some(home.clone()),
+            vendor_dirs: vec![config_dir.clone()],
+            dirs: vec![(Scope::User, root.join("user"))],
+            ..PolicyOptions::default()
+        },
+        tx,
+    );
+    let file = |call: &str, tool: &str, kind: &str, path: &std::path::Path| GateRequest {
+        call_id: call.into(),
+        tool: tool.into(),
+        kind: kind.into(),
+        args: serde_json::json!({ "file_path": path, "content": "{\"hooks\":{}}" }),
+        origin: GateOrigin::PreTool,
+        ..GateRequest::default()
+    };
+    for (i, (tool, kind, path)) in [
+        ("Write", "file_write", home.join(".claude/settings.json")),
+        (
+            "Edit",
+            "file_edit",
+            home.join(".claude/settings.local.json"),
+        ),
+        ("Write", "file_write", home.join(".claude.json")),
+        ("Write", "file_write", config_dir.join("settings.json")),
+        ("Edit", "file_edit", home.join(".codex/config.toml")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g.decide(file(&format!("v{i}"), tool, kind, &path)).await;
+        let GateDecision::Deny { reason } = &d else {
+            panic!("{tool} {}: {d:?}", path.display())
+        };
+        assert!(
+            reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("policy-files"),
+            "{reason:?}"
+        );
+    }
+    for (i, command) in [
+        "echo '{}' > ~/.claude/settings.json",
+        "cp /tmp/x $HOME/.claude.json",
+        "X=~/.codex; cat /tmp/c >> $X/config.toml",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g
+            .decide(bash(&format!("s{i}"), command, GateOrigin::PreTool))
+            .await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{command}: {d:?}");
+    }
+    // Lesen bleibt erlaubt, ebenso Projekt-Dateien unter `.claude/` (die Projekt-Einstellungen
+    // lädt Claude nicht, #233).
+    let d = g
+        .decide(file(
+            "r1",
+            "Read",
+            "file_read",
+            &home.join(".claude/settings.json"),
+        ))
+        .await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+    let d = g
+        .decide(file(
+            "r2",
+            "Write",
+            "file_write",
+            &root.join("wt/.claude/commands/x.md"),
+        ))
+        .await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+}
