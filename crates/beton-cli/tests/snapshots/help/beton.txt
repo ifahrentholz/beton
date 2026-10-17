@@ -18,6 +18,7 @@ Commands:
   usage       Verbrauch: Tokens, Kosten und Abo-Fenster; ohne Daemon direkt aus der lokalen
               Datenbank (nur lesend)
   agent       Agent-Definitionen auflisten, anzeigen, prüfen und anlegen
+  policy      Policies testen, auswerten und Entscheidungen erklären
   auth        Lokale Anmeldung verwalten
   secrets     Secrets verwalten (API-Keys, Tokens); Werte werden nie angezeigt
   audit       Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen

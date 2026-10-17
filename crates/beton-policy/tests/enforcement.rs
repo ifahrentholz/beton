@@ -14,9 +14,7 @@ use beton_policy::load::{LoadedSet, Scope, parse_set};
 
 fn set(body: &str) -> Arc<LoadedSet> {
     let text = format!("spec_version: 1\nname: guard\nrules:\n{body}");
-    Arc::new(
-        parse_set(Scope::Project, "guard.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")),
-    )
+    Arc::new(parse_set(Scope::User, "guard.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
 }
 
 fn rule(id: &str, when: &str, action: &str) -> String {
@@ -147,9 +145,21 @@ fn pol_024_other_phases_use_their_level() {
 
 #[test]
 fn pol_024_builtin_rule_types_are_checked_for_all_classes_of_their_phases() {
-    let body = "  - id: guard\n    type: git_guard\n";
+    // Noch nicht entzuckert (POL-019): alle Klassen seiner Phasen.
+    let body = "  - id: guard\n    type: pii_redaction\n";
     let check = check_start(&EffectiveSet::new(vec![set(body)]), &codex_like());
     assert_eq!(check.refused_rules(), vec!["guard".to_owned()]);
+    // Entzuckert (WP-42): über die Klassen der Teilregeln. `git_guard` betrifft Shell
+    // (`approval_only`: Warnung) und MCP (`full`).
+    let body = "  - id: guard\n    type: git_guard\n";
+    let check = check_start(&EffectiveSet::new(vec![set(body)]), &codex_like());
+    assert!(check.refused.is_empty(), "{check:?}");
+    assert!(
+        check
+            .degraded_rules()
+            .contains(&"guard/force-push".to_owned()),
+        "{check:?}"
+    );
 }
 
 #[test]
@@ -220,7 +230,11 @@ fn pol_024_gaps_describe_themselves_without_file_contents() {
     let check = check_start(&EffectiveSet::new(vec![set(&body)]), &m);
     assert!(!check.is_clean());
     assert_eq!(check.refused_rules(), vec!["no-opus".to_owned()]);
-    assert_eq!(check.degraded_rules(), vec!["soft-model".to_owned()]);
+    // `no-push` auf `shell` (approval_only) ist eingeschränkt durchsetzbar (#234).
+    assert_eq!(
+        check.degraded_rules(),
+        vec!["no-push".to_owned(), "soft-model".to_owned()]
+    );
     let text = check.refused[0].describe();
     assert!(
         text.contains("no-opus") && text.contains("observe_only"),
@@ -254,4 +268,29 @@ fn pol_024_dry_run_sets_and_weakest_level_across_classes() {
     );
     assert_eq!(Level::Full.to_string(), "full");
     assert_eq!(Level::ObserveOnly.to_string(), "observe_only");
+}
+
+/// M5 (#234): `approval_only` setzt nur durch, wenn der Vendor fragt; Calls, die er selbst
+/// erlaubt (Safelist, Allowlist, `accept_edits`), laufen ohne Gate. Eine Pflichtregel auf einer
+/// solchen Klasse ist daher nur eingeschränkt wirksam: Start mit `policy.enforcement_degraded`.
+#[test]
+fn pol_024_approval_only_is_reported_as_degraded() {
+    let effective = EffectiveSet::new(vec![set(&rule(
+        "no-push",
+        "tool.kind == \"shell\"",
+        "deny",
+    ))]);
+    let check = check_start(&effective, &codex_like());
+    assert!(check.refused.is_empty(), "{check:?}");
+    let [gap] = &check.degraded[..] else {
+        panic!("{check:?}");
+    };
+    assert_eq!(gap.rule.rule_id, "no-push");
+    assert_eq!(gap.kinds, vec!["shell".to_owned()]);
+    assert_eq!(gap.level, Level::ApprovalOnly);
+    assert!(
+        gap.describe().contains("approval_only"),
+        "{}",
+        gap.describe()
+    );
 }

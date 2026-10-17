@@ -44,7 +44,7 @@
   "anchor": "har-003--harness-registry-binary-auflösung--versionsprüfung",
   "summary": "Eingebaute Adapter registrieren sich statisch; Out-of-Process-Harness-Plugins (PLG-002, ab M5, siehe 10-runners-extensibility.md) über denselben Katalog. Das zu startende Binary wird deterministisch aufgelöst, die Version geprüft und das Ergebnis gecacht.",
   "acs": [
-   "Given `BETON_CLAUDE_PATH` und `harnesses.claude.command` sind gesetzt, Then wird der Env-Pfad verwendet; ein Test deckt alle vier Präzedenzstufen ab.",
+   "Given `BETON_CLAUDE_PATH` und `harnesses.claude.command` sind gesetzt, Then wird der Env-Pfad verwendet; ein Test deckt alle drei Präzedenzstufen ab und zeigt, dass ein `command` der Projekt-Config nie gilt.",
    "Hängt `<bin> --version` länger als 5 s, wird der Harness als `probe_failed` markiert, ohne den Daemon zu blockieren.",
    "`beton doctor` listet pro Harness Pfad, Version, Kompatibilität und Auth-Status."
   ]
@@ -127,7 +127,7 @@
   "chapter": "01-harnesses.md",
   "chapterTitle": "01 — Harnesses",
   "anchor": "har-008--acp-agent-registrierung--presets",
-  "summary": "ACP-Agents werden in der User- oder Projekt-Config registriert (interaktiv über `beton setup acp add` oder per Datei). beton liefert Presets für verbreitete Agents mit, die nur aktiv werden, wenn das Binary gefunden wird.",
+  "summary": "ACP-Agents werden in der User-Config registriert (interaktiv über `beton setup acp add` oder per Datei); die Projekt-Config darf keine ACP-Agents setzen, weil ein Repo sonst wählt, was in Stufe 1 läuft (SBX-002, Security-Review #228). beton liefert Presets für verbreitete Agents mit, die nur aktiv werden, wenn das Binary gefunden wird.",
   "acs": [
    "`beton setup acp add mein-agent --command ./agent --arg acp` schreibt einen validen Eintrag in `~/.beton/config.yaml`; danach erscheint `acp:mein-agent` im Katalog.",
    "Ein Preset, dessen Binary nicht im `PATH` liegt, erscheint im Katalog als `installed: false` und ist nicht startbar.",
@@ -353,7 +353,7 @@
   "acs": [
    "Nach jedem Claude-Turn steht genau ein `cost.delta` mit den Werten aus der `result`-Nachricht im Log (bei mehreren Modellen in `modelUsage` eins je Modell, *präzisiert WP-44*).",
    "Bei `auth_source: vendor_cli` ist `cost_micro` leer und `source: subscription`; ein API-Äquivalent erscheint nie als tatsächliche Ausgabe (USE-004).",
-   "(ab M2) `session.cost_usd` (Policy-Variable) ist nach jedem `cost.delta` aktualisiert (Test über Policy-Explain, POL-027)."
+   "(ab M2) `session.cost_usd` (Policy-Variable) ist nach jedem `cost.delta` aktualisiert (Test über Policy-Explain, POL-027). *(Präzisiert, WP-40: geprüft über `POST /v1/policies/evaluate` bzw. `beton policy eval --session`, deren Erklärung die benutzten Kontextwerte nennt.)*"
   ]
  },
  {
@@ -679,7 +679,7 @@
   "chapter": "02-agents.md",
   "chapterTitle": "02 — Agents & Automation",
   "anchor": "agt-014--agent-policies--sandbox-block",
-  "summary": "`policies` im Agent bildet die Agent-Ebene der Policy-Hierarchie (POL-007): Einträge sind Policy-Datei-Referenzen (`ref`) oder Inline-Regeln (Format POL-001). `sandbox` beschreibt die Sandbox-Anforderungen des Agents (Semantik in SBX-003, SBX-006); beide können nur verschärfen, was höhere Ebenen vorgeben.",
+  "summary": "`policies` im Agent bildet die Agent-Ebene der Policy-Hierarchie (POL-007): Einträge sind Policy-Datei-Referenzen (`ref`) oder Inline-Regeln (Format POL-001). `sandbox` beschreibt die Sandbox-Anforderungen des Agents (Semantik in SBX-003, SBX-006); beide können nur verschärfen, was höhere Ebenen vorgeben. *Umsetzung (M2, WP-49):* Inline-Regeln bilden ein Set mit dem Namen des Agents, jede `ref` (relativ zum Agent-Verzeichnis bzw. Snapshot, AGT-004; absolute Pfade, `..` und Symlinks hinaus sind ein Ladefehler, dessen Meldung nichts aus der Datei enthält) ein eigenes Set der Ebene `agent`; `beton policy test` lädt beide ebenso. Ladefehler verhindern den Start (fail closed). Nur verschärfen heißt auf der Agent-Ebene: `modify.permission_mode` und `modify.args` sind ein Ladefehler (POL-007), `effects` schreiben nur eigenen Zustand der Session (Scope `session`/`run`, Key `agent/<set>/…`, nie `user`/`user_day`, #268; den Präfix `agent/` nutzen Regeln anderer Ebenen nicht), `approval.on_timeout: allow` ist ein Ladefehler. `sandbox` verschärft die Sandbox der Session nur (Regeln in 04-sandbox.md, Sandbox-Konfiguration); eine Backend-Anforderung, die der Host nicht erfüllt oder die vom Backend der Session abweicht, ergibt `sandbox_unavailable`. Ein Projekt-Agent (Quelle `project`, Repo-Inhalt) setzt `executor.permission_mode: yolo` oder `accept_edits` nicht selbst (`422 agent_invalid`); beides nur ausdrücklich in der Anfrage (#258 R7).",
   "acs": [
    "Eine Inline-Regel `git_guard` im Agent erscheint im effektiven Policy-Set mit `scope: agent` (`beton policy explain`).",
    "Eine Agent-Regel `allow` kann ein `deny` der Projekt-Ebene nicht aufheben (Policy-Test).",
@@ -893,7 +893,7 @@
   "summary": "Policy-Sets sind YAML-Dateien gemäß veröffentlichtem JSON-Schema `schemas/v1/policy.schema.json` (Struktur siehe Design). Ladeorte je Ebene: User `~/.beton/policies/*.yaml`, Projekt `.beton/policies/*.yaml` im Repo plus Projekt-Policies der Project-Entität (SES-014, ab M3, siehe 07-sessions-collaboration.md), Agent `policies:` im `agent.yaml` (AGT-014 in 02), Org/Team serverseitig (POL-008). Änderungen an Dateien werden vor jeder Auswertung über den Inhalts-Hash der Policy-Dateien erkannt (unabhängig von der Latenz eines Dateisystem-Watchers) und gelten ab der nächsten Auswertung.",
   "acs": [
    "Das Beispiel-Set dieses Kapitels lädt fehlerfrei; Snapshot-Test des generierten Schemas läuft in CI.",
-   "Wird eine Projekt-Policy-Datei während einer laufenden Session geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart.",
+   "Wird eine Projekt- oder User-Policy-Datei während einer laufenden Session verschärfend geändert, nutzt die nächste Tool-Call-Auswertung die neue Version (`policy_set_hash` ändert sich) ohne Session-Neustart *(lockernde Änderungen erst in einer neuen Session, #253)*.",
    "Eine fehlerhafte Änderung lässt die alte Version aktiv und erzeugt `policy.set_invalid` mit Datei, Zeile und Fehler.",
    "Doppelte Regel-IDs in einem Set sind ein Ladefehler."
   ]
@@ -990,12 +990,12 @@
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
   "anchor": "pol-007--hierarchie--kombination-lokale-ebenen",
-  "summary": "Die Ebenen User → Projekt → Agent werden gemäß Kombinationsalgorithmus zusammengeführt: strengere Entscheidung gewinnt, Defaults werden nur durch `allow` derselben Ebene aufgehoben, Modifikations-Konflikte nach \"erster Schreiber gewinnt\" bzw. JSON-Pointer-Priorität. Ein Repo kann so nur verschärfen; ein `allow` im Agent kann kein `deny`/`ask` aus Projekt oder User aufheben.",
+  "summary": "Die Ebenen User → Projekt → Agent werden gemäß Kombinationsalgorithmus zusammengeführt: strengere Entscheidung gewinnt, Defaults werden nur durch `allow` derselben Ebene aufgehoben, Modifikations-Konflikte nach \"erster Schreiber gewinnt\" bzw. JSON-Pointer-Priorität. Ein Repo kann so nur verschärfen; ein `allow` im Agent kann kein `deny`/`ask` aus Projekt oder User aufheben. Modell und Effort kann ein Repo bzw. Agent nur mit Freigabe verteuern (#286, POL-013). *(Ergänzt nach dem Security-Review, #231/#234:)* `modify.permission_mode` und `modify.args` dürfen nur Sets ab der User-Ebene enthalten; auf Projekt- und Agent-Ebene sind sie ein Ladefehler (ein Repo könnte sonst den Modus lockern oder Befehle in Tool-Calls einschleusen). `model`, `reasoning_effort` und `redact` bleiben auf jeder Ebene erlaubt.",
   "acs": [
    "User `deny` + Agent `allow` auf dieselbe Aktion → `deny` (Policy-Test).",
    "Projekt-Default `browser_navigate: deny` + Agent-`allow` für `github.com` → `deny`; zusätzliches Projekt-`allow` für `github.com` → `allow`.",
    "User-Regel `modify model: A` und Agent-Regel `modify model: B` → Modell A; `policy.decision.conflicts` enthält den verworfenen Wert B mit Regel-ID.",
-   "Zwei `args`-Patches auf denselben Pointer mit unterschiedlichen Werten → Wert der autoritativeren Ebene; disjunkte Pointer werden beide angewendet.",
+   "Zwei `args`-Patches auf denselben Pointer mit unterschiedlichen Werten → Wert der autoritativeren Ebene (ab User-Ebene, #234); disjunkte Pointer werden beide angewendet.",
    "Die Auswertung ist unabhängig von der Datei-Lade-Reihenfolge (Property-Test mit permutierten Sets)."
   ]
  },
@@ -1181,7 +1181,7 @@
   "id": "POL-019",
   "prefix": "POL",
   "title": "Regeltyp `pii_redaction`",
-  "milestone": "M2",
+  "milestone": "M3",
   "priority": "Could",
   "chapter": "03-policies.md",
   "chapterTitle": "03 — Policies",
@@ -1366,7 +1366,7 @@
   "anchor": "sbx-002--zweistufiges-modell--exec-broker",
   "summary": "Harness-Prozesse laufen in Stufe 1, jede Tool-Ausführung in einer frischen Stufe-2-Sandbox, gestartet vom Exec-Broker in Stufe 0. Das vermeidet verschachtelte Sandboxes (Seatbelt kann nicht verschachtelt werden) und stellt sicher, dass Tools die Credential-Grants der Stufe 1 nicht erben. Adapter deklarieren ihre Credential-Pfade (`credential_paths`), Keychain-Bedarf (`keychain`), Env-Familien und Passthrough-Hosts; nur diese erhält Stufe 1.",
   "acs": [
-   "Given Claude Code in Stufe 1, when das Bash-Tool `cat ~/.claude/.credentials.json` ausführt, then scheitert der Befehl (Permission denied/No such file), während der Harness selbst authentifiziert bleibt.",
+   "Given Claude Code in Stufe 1, when das Bash-Tool `cat ~/.claude/.credentials.json` ausführt, then scheitert der Befehl (Permission denied/No such file), während der Harness selbst authentifiziert bleibt (manuell mit der angemeldeten CLI, Checkliste im PR; automatisiert mit Fixture-Credentials und `bt-exec`).",
    "Ein Kommando über `bt-exec` läuft nachweislich in einer Stufe-2-Sandbox (Probe meldet `stage=tools`, Keychain-Mach-Lookup bzw. D-Bus-Zugriff scheitert).",
    "Ein Broker-Request mit `cwd=/etc` oder `env_overrides={\"LD_PRELOAD\": …}` wird mit Fehler abgelehnt.",
    "Ein Adapter mit `tool_isolation: inherited` startet nur, wenn `require_tool_isolation: false` gesetzt ist; sonst `sandbox_unavailable` mit Hinweis.",
@@ -1537,9 +1537,9 @@
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
   "anchor": "sbx-012--eingebaute-presets",
-  "summary": "Presets liefern sinnvolle Startpunkte: `default` (Workspace rw, kein Netz außer Stufe-1-Vendor-Hosts), `dev` (zusätzlich lesender Zugriff auf gängige Paket-Registries und Toolchain-Caches), `readonly` (Workspace ro, kein Netz; z. B. für Side-Chats und Reviewer-Agents). Eigene Felder überschreiben bzw. ergänzen Presets gemäß Merge-Regeln.",
+  "summary": "Presets liefern sinnvolle Startpunkte: `default` (Workspace rw, kein Netz außer Stufe-1-Vendor-Hosts), `dev` (zusätzlich lesender Zugriff auf gängige Paket-Registries und Toolchain-Caches), `readonly` (Workspace ro, kein Netz für die Tools; Stufe 1 erreicht weiter nur ihre Vendor-Hosts; z. B. für Side-Chats und Reviewer-Agents). Eigene Felder überschreiben bzw. ergänzen Presets gemäß Merge-Regeln.",
   "acs": [
-   "Mit `preset: dev` gelingt `npm install` eines öffentlichen Pakets; `npm publish` scheitert (PUT nicht erlaubt).",
+   "Mit `preset: dev` gelingt `npm install` eines öffentlichen Pakets; `npm publish` scheitert (PUT nicht erlaubt). (Test gegen eine lokale Registry-Attrappe, ADR-0033.)",
    "Mit `preset: readonly` scheitert jedes Schreiben im Workspace.",
    "`beton sandbox explain` zeigt, welche Werte aus dem Preset und welche aus eigener Konfiguration stammen."
   ]
@@ -1564,7 +1564,7 @@
   "id": "SBX-014",
   "prefix": "SBX",
   "title": "Verstoß-Reporting",
-  "milestone": "M2",
+  "milestone": "M3",
   "priority": "Could",
   "chapter": "04-sandbox.md",
   "chapterTitle": "04 — Sandbox & Egress-/Credential-Proxy",
@@ -1705,7 +1705,7 @@
   "anchor": "prx-005--passthrough-für-vendor-hosts-stufe-1",
   "summary": "Damit beton Subscription-Tokens nie sieht (HAR-015, siehe 01-harnesses.md), werden die vom Adapter deklarierten Vendor-Hosts in Stufe 1 als Passthrough behandelt: CONNECT wird ohne TLS-Terminierung getunnelt, geprüft werden nur Host, Port, private IP (PRX-007) und dass die SNI im ClientHello dem CONNECT-Host entspricht. Weitere Stufe-1-Ziele (z. B. Remote-MCP-Server aus der Agent-Konfiguration) laufen normal über Regeln und MITM.",
   "acs": [
-   "Eine Claude-Code-Session mit Subscription funktioniert in Stufe 1; ein Proxy-Debug-Dump zeigt für `api.anthropic.com` keine entschlüsselten Header.",
+   "Eine Claude-Code-Session mit Subscription funktioniert in Stufe 1; ein Proxy-Debug-Dump (`BETON_LOG=beton_proxy=trace`) zeigt für `api.anthropic.com` keine entschlüsselten Header (manuell mit der angemeldeten CLI, Checkliste im PR; automatisiert gegen einen lokalen TLS-Upstream).",
    "Ein ClientHello mit SNI `evil.test` in einem CONNECT zu `api.anthropic.com` wird getrennt.",
    "Aus Stufe 2 ist `api.anthropic.com` ohne explizite Regel nicht erreichbar."
   ]
@@ -1759,7 +1759,7 @@
   "acs": [
    "`curl`, `git`, `npm`, `pip`, `cargo` und Node-`fetch` erreichen über Regeln erlaubte Hosts in Stufe 2 ohne weitere Konfiguration (Integrationstest je Tool).",
    "Ein Tool, das Proxy-Variablen ignoriert und direkt verbindet, scheitert auf macOS und Linux (Escape-Test).",
-   "Auf Linux erreicht ein Tool einen in derselben Sandbox gestarteten Dev-Server auf `127.0.0.1:3000`, aber keinen Host-Dienst auf `127.0.0.1`."
+   "Auf Linux erreicht ein Tool mit `sandbox.dev_ports: [3000]` einen in derselben Sandbox gestarteten Dev-Server auf `127.0.0.1:3000`, aber keinen Host-Dienst auf `127.0.0.1`; ohne `dev_ports` scheitert schon `bind` (#210)."
   ]
  },
  {
@@ -2286,7 +2286,7 @@
   "chapter": "05-security-identity.md",
   "chapterTitle": "05 — Security & Identity",
   "anchor": "sec-012--audit-log",
-  "summary": "Sicherheitsrelevante Aktionen werden in einem Append-only-Audit-Log protokolliert: Secret erstellt/geändert/gelöscht/genutzt/Lease, Credential-Fehlgebrauch, Logins und Fehlschläge, Pairing/Widerruf, Token-Erstellung/-Widerruf, Rollen- und Share-Änderungen, Policy-Änderungen, Sandbox `backend: none`, CA-Rotation, Master-Key-Rotation. Jeder Eintrag enthält Zeit, Principal, Aktion, Ziel, Session/Host, IP/User-Agent (zentral) und Details — nie Secret-Werte. Einträge bilden eine Hash-Kette (`hash = SHA-256(prev_hash ‖ entry)`). Lokal ab M2, zentral mit Org-Bezug ab M4.",
+  "summary": "Sicherheitsrelevante Aktionen werden in einem Append-only-Audit-Log protokolliert: Secret erstellt/geändert/gelöscht/genutzt/Lease, Credential-Fehlgebrauch, Logins und Fehlschläge, Pairing/Widerruf, Token-Erstellung/-Widerruf, Rollen- und Share-Änderungen, Policy-Änderungen, Sandbox `backend: none` (Aktion `sandbox.backend_none` je bestätigter Session, SBX-006), CA-Rotation, Master-Key-Rotation. Jeder Eintrag enthält Zeit, Principal, Aktion, Ziel, Session/Host, IP/User-Agent (zentral) und Details — nie Secret-Werte. Einträge bilden eine Hash-Kette (`hash = SHA-256(prev_hash ‖ entry)`). Lokal ab M2, zentral mit Org-Bezug ab M4.",
   "acs": [
    "`beton audit verify` erkennt eine nachträglich in der DB geänderte oder gelöschte Zeile und nennt die erste ungültige Position.",
    "Test mit markiertem Secret-Wert: Der Wert kommt in keinem Audit-Eintrag vor, auch nicht bei Fehlermeldungen.",
@@ -2307,7 +2307,7 @@
   "acs": [
    "Gibt ein Tool einen per `env.passthrough` durchgereichten echten Token-Wert aus, enthält das persistierte `tool.call.completed` nur `[REDACTED:…]`; Live-Clients erhalten ebenfalls die redigierte Fassung.",
    "Ein PEM-Private-Key in einer Agent-Nachricht wird vollständig (BEGIN bis END) ersetzt.",
-   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der zuletzt auf `main` gemessene Wert im Actions-Cache des Jobs „test (linux)“.)*",
+   "Die Redaction verarbeitet ≥ 50 MB/s pro Kern bei 1 000 bekannten Werten (Benchmark in CI, Regression > 20 % schlägt fehl). *(Basis ist der Median der letzten fünf auf `main` gemessenen Werte; die Messreihe liegt im Actions-Cache des Jobs „test (linux)“ und wird von jedem Push auf `main` fortgeschrieben, damit eine einzelne Ausreißer-Messung nicht zur Basis wird (#296). Floor und Toleranz gelten unverändert.)*",
    "(ab M3, mit OBS-006) `beton diagnose` enthält nach Redaction keinen der Test-Secret-Werte (Grep über das Bundle). *(`beton diagnose` entsteht erst mit OBS-006 in M3; die Pipeline steht dafür bereit.)*"
   ]
  },
@@ -2486,7 +2486,7 @@
   "acs": [
    "Paginieren über 1 000 Sessions mit `limit=50` liefert jede genau einmal, auch wenn währenddessen neue entstehen.",
    "Gleicher `Idempotency-Key` mit anderem Body liefert 422 `idempotency_key_reused`.",
-   "`PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts.",
+   "(ab M4, mit POL-008: erster schreibender Policy-Endpunkt `PUT /v1/orgs/{org}/policies/{name}`) `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts. *(Verschoben, WP-40, #255: In M2 gibt es keinen schreibenden Policy-Endpunkt; lokale Policies sind Dateien. `extract::check_if_match` steht bereit.)*",
    "Ein Lint über das OpenAPI-Dokument erzwingt `snake_case`, Cursor-Pagination auf allen Listen-Endpunkten und Problem-Responses für 4xx/5xx."
   ]
  },
@@ -2563,12 +2563,13 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "proto-015--tunnel-protokoll-hostrunner--server",
-  "summary": "Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); scheitert das Speichern eines Pushs, antwortet der Server mit `problem` statt ihn still zu verwerfen. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.",
+  "summary": "Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); kein Event verschwindet still: Lehnt der Server ein einzelnes Event fachlich ab (4xx, z. B. `payload_too_large` über dem Blob-Limit oder `validation_failed`), speichert er an dessen Stelle `event.rejected {original_type, rseq, reason}` (Actor `system`/`server`, ohne den abgelehnten Inhalt) und bestätigt den Push regulär, damit der Runner es nicht endlos erneut sendet. Scheitert das Speichern eines Pushs als Ganzes, antwortet der Server mit `problem` statt ihn still zu verwerfen und trennt danach die Verbindung (Close 4500), damit spätere Pushes die Lücke nicht überspringen; der Runner sendet nach dem Reconnect alles Unbestätigte erneut (vorübergehende Fehler wie `database is locked` oder `seq_conflict`; eine gelöschte Session weist schon `session.bind` ab). Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.",
   "acs": [
    "Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.",
    "Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.",
    "Der Host öffnet keinen lauschenden Port (Test: `ss -ltn`/`lsof` zeigt keine Listener des Host-/Runner-Prozesses außer Loopback-Proxy).",
-   "(ab M4) Ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen."
+   "(ab M4) Ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen.",
+   "Überschreitet die Nutzlast eines Events das Blob-Limit, steht im Log an seiner Stelle genau ein `event.rejected` ohne den Inhalt; alle folgenden Events bleiben lückenlos erhalten, und die Verbindung bleibt bestehen."
   ]
  },
  {
@@ -2612,11 +2613,12 @@
   "chapter": "06-data-sync-protocol.md",
   "chapterTitle": "06 — Daten, Sync & Protokoll",
   "anchor": "data-003--sqlite-backend--migrationen",
-  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.",
+  "summary": "Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Schreibzugriffe eines Prozesses laufen über eine faire Schreibsperre im Store (Warteschlange in Ankunftsreihenfolge, Wartezeit höchstens wie `busy_timeout`), damit ein Dauerschreiber andere Schreiber nicht verdrängt; SQLites Busy-Handler pollt nur und regelt weiter den Zugriff anderer Prozesse. Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.",
   "acs": [
    "Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.",
    "Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.",
-   "Zwei gleichzeitig startende Daemons migrieren nicht doppelt (Lock-Test)."
+   "Zwei gleichzeitig startende Daemons migrieren nicht doppelt (Lock-Test).",
+   "Während drei Sessions dauerhaft Batches à 256 Events schreiben, gelingt jeder parallele interaktive Schreibzugriff (Session anlegen, Idempotency-Lookup, einzelnes Event) in unter 1 s."
   ]
  },
  {
@@ -5380,7 +5382,7 @@
    "Die Seite zeigt für den Fake-Harness-Datensatz dieselben Summen wie `GET /v1/usage` (E2E-Test).",
    "Klick auf eine Session in der Tabelle öffnet die Session.",
    "CSV-Export enthält die sichtbaren Spalten und Filter im Dateinamen.",
-   "Records ohne Preis werden mit Hinweis „ohne Preis – Override anlegen“ und Link zu den Pricing-Einstellungen dargestellt."
+   "Records ohne Preis werden mit Hinweis „ohne Preis – eigenen Preis anlegen“ und Link zu den Pricing-Einstellungen dargestellt."
   ]
  },
  {
@@ -5412,7 +5414,7 @@
   "acs": [
    "Nach einem `context.usage {used_tokens: 150000, window_tokens: 200000}` zeigt der Ring 75 % im Warnstil.",
    "Ohne bekanntes Fenster erscheint „150 k Tokens“ ohne Prozentangabe.",
-   "Die TUI zeigt denselben Wert in der Statuszeile."
+   "(ab M3) Die TUI zeigt denselben Wert in der Statuszeile. *(Verschoben, WP-47, #265: Die TUI kommt mit TUI-001 in M3.)*"
   ]
  },
  {
@@ -5851,7 +5853,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "obs-008--opt-in-crash-reports",
-  "summary": "Ein Panic-Hook schreibt Crash-Berichte lokal nach `~/.beton/crashes/` (Panic-Nachricht redigiert, symbolisierter Backtrace, Version, OS/Arch, Komponente). Versand nur, wenn der User Crash-Reports separat aktiviert hat (`crash_reports.enabled`, eigener Consent im Onboarding) oder einen einzelnen Bericht bestätigt; Ziel ist ein konfigurierbarer, Sentry-kompatibler Endpoint *(Annahme)*. Prompts, Env-Variablen, Kommandozeilen-Argumente und Pfade sind nie enthalten.",
+  "summary": "Ein Panic-Hook schreibt Crash-Berichte lokal nach `~/.beton/crashes/` (Panic-Nachricht redigiert, symbolisierter Backtrace, Version, OS/Arch, Komponente). Versand nur, wenn der User Crash-Reports separat aktiviert hat (`crash_reports.enabled`, eigener Consent im Onboarding) oder einen einzelnen Bericht bestätigt; Ziel ist ein konfigurierbarer, Sentry-kompatibler Endpoint *(Annahme)*. *Entscheidung des Maintainers (2026-10-17): In Release 0.1 gibt es keinen Endpunkt; Crash-Berichte bleiben lokal und lassen sich nur von Hand dem Diagnose-Bundle (OBS-004) beilegen.* Prompts, Env-Variablen, Kommandozeilen-Argumente und Pfade sind nie enthalten.",
   "acs": [
    "Ein provozierter Panic (Test-Build-Flag) erzeugt eine lokale Crash-Datei ohne Env-Variablen und ohne Marker-Prompt.",
    "Ohne Consent erfolgt kein Versand; die Desktop-App bietet beim nächsten Start „Bericht ansehen / senden / verwerfen“ an.",

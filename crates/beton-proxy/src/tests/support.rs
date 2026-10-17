@@ -174,6 +174,11 @@ impl Upstream {
                 let Ok((tcp, _)) = listener.accept().await else {
                     return;
                 };
+                // Wie ein Server im Produktivbetrieb (und wie der Proxy selbst): ohne Nagle.
+                // Sonst hält der Kernel kleine HTTP/2-Frames bis zum verzögerten ACK zurück
+                // (unter Linux 40 ms), und das trifft nur den Weg durch den Proxy, der zum
+                // Upstream h2 spricht (#221).
+                let _ = tcp.set_nodelay(true);
                 let (r, s, tls) = (r.clone(), s.clone(), tls.clone());
                 tokio::spawn(async move {
                     let service = service_fn(move |req| handle(req, r.clone(), s.clone()));
@@ -257,13 +262,80 @@ async fn handle(
             }
         });
         let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
-        return Ok(Response::builder()
+        let mut res = Response::builder()
             .status(StatusCode::SWITCHING_PROTOCOLS)
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
-            .header("sec-websocket-accept", accept)
-            .body(full(""))
+            .header("sec-websocket-accept", accept);
+        // Spiegelt `Authorization` in einem Header der `101`-Antwort (PRX-010).
+        if let Some(auth) = req.headers().get("authorization") {
+            res = res.header("x-echo-auth", auth.clone());
+        }
+        return Ok(res.body(full("")).unwrap());
+    }
+    if path == "/echo-body" {
+        let body = req.into_body().collect().await.unwrap().to_bytes();
+        return Ok(Response::builder()
+            .header("content-type", "application/octet-stream")
+            .body(full(body))
             .unwrap());
+    }
+    // Spiegelt `Authorization` zurück (PRX-010): als JSON, als Header und in Varianten.
+    if let Some(variant) = path.strip_prefix("/echo-auth") {
+        let auth = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let token = auth
+            .split_whitespace()
+            .last()
+            .unwrap_or_default()
+            .to_owned();
+        let json = serde_json::json!({ "authorization": auth, "token": token }).to_string();
+        let mut res = Response::builder().header("x-echo-auth", token.as_str());
+        let body: Vec<u8> = match variant {
+            "" => {
+                res = res.header("content-type", "application/json; charset=utf-8");
+                json.into_bytes()
+            }
+            "/gzip" => {
+                use std::io::Write as _;
+                res = res
+                    .header("content-type", "application/json")
+                    .header("content-encoding", "gzip");
+                let mut enc =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                enc.write_all(json.as_bytes()).unwrap();
+                enc.finish().unwrap()
+            }
+            "/binary" => {
+                res = res.header("content-type", "application/octet-stream");
+                json.into_bytes()
+            }
+            "/big" => {
+                res = res.header("content-type", "application/json");
+                let pad = "x".repeat(crate::credentials::REDACT_LIMIT + 1024);
+                serde_json::json!({ "pad": pad, "token": token })
+                    .to_string()
+                    .into_bytes()
+            }
+            "/chunked" => {
+                // Ohne Content-Length, der Wert über zwei Frames verteilt.
+                let (a, b) = json.split_at(json.find(&token).unwrap_or(0) + token.len() / 2);
+                let frames = futures_util::stream::iter(vec![
+                    Ok::<_, std::convert::Infallible>(Frame::data(Bytes::from(a.to_owned()))),
+                    Ok(Frame::data(Bytes::from(b.to_owned()))),
+                ]);
+                return Ok(res
+                    .header("content-type", "text/plain")
+                    .body(StreamBody::new(frames).boxed())
+                    .unwrap());
+            }
+            _ => b"unbekannt".to_vec(),
+        };
+        return Ok(res.body(full(body)).unwrap());
     }
     if path == "/grpc" {
         let mut trailers = HeaderMap::new();
@@ -404,6 +476,24 @@ impl Harness {
                 label: "test".into(),
                 rules: RuleSet::compile(rules).unwrap(),
                 allow_private: PrivateAllowList::parse(allow_private).unwrap(),
+                ..InstanceSpec::default()
+            })
+            .await
+            .unwrap()
+    }
+
+    /// Instanz mit Passthrough-Zielen (PRX-005).
+    pub async fn instance_passthrough(
+        &self,
+        rules: &[&str],
+        passthrough: &[&str],
+    ) -> ProxyInstance {
+        self.proxy
+            .start(InstanceSpec {
+                label: "test/harness".into(),
+                rules: RuleSet::compile(rules).unwrap(),
+                passthrough: crate::Passthrough::parse(passthrough).unwrap(),
+                ..InstanceSpec::default()
             })
             .await
             .unwrap()
@@ -503,6 +593,7 @@ pub async fn connect(
     auth: Option<&str>,
 ) -> (TcpStream, Raw) {
     let mut stream = TcpStream::connect(instance.addr()).await.unwrap();
+    let _ = stream.set_nodelay(true);
     let mut req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n");
     if let Some(auth) = auth {
         req.push_str(&format!("Proxy-Authorization: {auth}\r\n"));
@@ -601,6 +692,16 @@ pub fn origin(method: &str, host: &str, path: &str) -> Request<Body> {
         .header("host", host)
         .body(Body::default())
         .unwrap()
+}
+
+/// Fertiger Klartext-Request (absolute Form, Header vom Aufrufer) über den Proxy.
+pub async fn plain_req(instance: &ProxyInstance, r: Request<Body>) -> Got {
+    let stream = TcpStream::connect(instance.addr()).await.unwrap();
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    tokio::spawn(conn);
+    collect(sender.send_request(r).await.unwrap()).await
 }
 
 /// Klartext-Request über den Proxy (absolute Form), mit oder ohne Auth.

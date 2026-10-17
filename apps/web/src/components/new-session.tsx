@@ -6,13 +6,14 @@ import { X } from 'lucide-react'
 import { client } from '@/lib/client'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { harnessName } from './harness'
-import { EFFORT_LABEL, MODE_TEXT, YOLO_AVAILABLE } from './settings-picker'
+import { EFFORT_LABEL, MODE_TEXT } from './settings-picker'
 
 const LAST_CWD = 'beton.lastCwd'
 
 /**
  * Dialog „Neue Session“: Harness, Modell, Effort und Permission-Mode (aus den Capabilities,
- * WEB-004) sowie Arbeitsverzeichnis. YOLO bietet er ohne Sandbox nicht an (HAR-027 AC1).
+ * WEB-004) sowie Arbeitsverzeichnis. YOLO bietet er nur mit Sandbox und Egress-Proxy an
+ * (HAR-027 AC1, SBX-006).
  */
 export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
@@ -39,7 +40,11 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
   const caps = info?.capabilities[0]
   const models = caps?.models ?? []
   const efforts = caps?.efforts ?? []
-  const modes = (caps?.permission_modes ?? []).filter((m) => m !== 'yolo' || YOLO_AVAILABLE)
+  // YOLO nur, wenn der Host Sandbox und Egress-Proxy hat und der Harness Tools in Stufe 2
+  // ausführt (`GET /v1/info`, SBX-006, HAR-027); der Server prüft es beim Anlegen erneut.
+  const host = useQuery({ queryKey: ['info'], queryFn: () => client.info(), staleTime: 60_000 })
+  const yolo = !!host.data?.sandbox?.yolo && caps?.tool_isolation !== 'inherited'
+  const modes = (caps?.permission_modes ?? []).filter((m) => m !== 'yolo' || yolo)
   useEffect(() => {
     // Ein anderer Harness kennt evtl. andere Stufen und Modi.
     setEffort('')

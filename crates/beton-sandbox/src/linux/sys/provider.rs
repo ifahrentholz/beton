@@ -126,6 +126,7 @@ impl LinuxProvider {
                 "Launcher v{PLAN_VERSION}, Landlock-ABI {abi}, Kernel {}, seccomp{extra}",
                 util::kernel_release()
             ),
+            kernel: None,
         }
     }
 
@@ -265,13 +266,19 @@ impl LinuxProvider {
             hidden: Vec::new(),
             git: None,
             net: NetMode::None,
+            unix_sockets: Vec::new(),
+            unix_socket_dirs: Vec::new(),
+            dev_ports: Vec::new(),
+            read_only: Vec::new(),
+            no_symlinks: Vec::new(),
+            private: Vec::new(),
             limits: Limits::default(),
             abi_cap: self.cfg().abi_cap,
             cgroup: None,
             mask_file: None,
             inner: false,
         };
-        let (cmd, pending) = command(&launcher, Stdio::Null, Stdio::Null, Stdio::Null)
+        let (cmd, pending) = command(&launcher, &Stdio::Null, &Stdio::Null, &Stdio::Null)
             .map_err(|e| format!("{}: {e}", launcher.display()))?;
         let mut cmd = cmd;
         let mut child = cmd
@@ -279,7 +286,7 @@ impl LinuxProvider {
             .map_err(|e| format!("{}: {e}", launcher.display()))?;
         // Der Status-Socket bleibt offen, bis das Ziel endet: Sein Schließen hieße „Runner tot“.
         let ctl = match pending.finish(&plan) {
-            Ok(fd) => fd,
+            Ok((fd, _)) => fd,
             Err((e, _)) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -326,22 +333,15 @@ impl Drop for Pending {
     }
 }
 
-fn stdio(s: Stdio) -> std::process::Stdio {
-    match s {
-        Stdio::Piped => std::process::Stdio::piped(),
-        Stdio::Null => std::process::Stdio::null(),
-        Stdio::Inherit => std::process::Stdio::inherit(),
-    }
-}
-
 /// `launcher __sandbox-exec` ohne Environment, mit Plan-Pipe auf FD 3 und Status-Socket auf
 /// FD 4. Nichts davon steht in argv.
 fn command(
     launcher: &Path,
-    stdin: Stdio,
-    stdout: Stdio,
-    stderr: Stdio,
+    stdin: &Stdio,
+    stdout: &Stdio,
+    stderr: &Stdio,
 ) -> std::io::Result<(std::process::Command, Pending)> {
+    let (stdin, stdout, stderr) = (stdin.to_std()?, stdout.to_std()?, stderr.to_std()?);
     let (plan_r, plan_w) = util::pipe()?;
     let (ctl, ctl_child) = match util::seqpacket_pair() {
         Ok(p) => p,
@@ -359,9 +359,9 @@ fn command(
     c.arg(LAUNCHER_ARG)
         .env_clear()
         .current_dir("/")
-        .stdin(stdio(stdin))
-        .stdout(stdio(stdout))
-        .stderr(stdio(stderr));
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr);
     // Coverage-Messung der Tests (cargo llvm-cov): nur der Launcher, nie das Ziel.
     if let Some(v) = std::env::var_os("LLVM_PROFILE_FILE") {
         c.env("LLVM_PROFILE_FILE", v);
@@ -395,8 +395,10 @@ fn command(
 }
 
 impl Pending {
-    /// Übergibt den Plan und wartet auf `Ready`. Gibt den Status-Socket zurück.
-    fn finish(mut self, plan: &LaunchPlan) -> Result<RawFd, (String, Option<i32>)> {
+    /// Übergibt den Plan und wartet auf `Ready`. Gibt den Status-Socket zurück, dazu einen
+    /// `fs`-Verstoß, falls der Launcher die Sandbox schon vor `Ready` beenden musste (das Ziel
+    /// lief dann bereits und legte eine Git-Steuerdatei an, #209).
+    fn finish(mut self, plan: &LaunchPlan) -> Result<(RawFd, Option<Ctl>), (String, Option<i32>)> {
         close(self.plan_r);
         self.plan_r = -1;
         close(self.ctl_child);
@@ -420,7 +422,12 @@ impl Pending {
                 Ok(Some(Ctl::Ready)) => {
                     let fd = self.ctl;
                     self.ctl = -1;
-                    Ok(fd)
+                    Ok((fd, None))
+                }
+                Ok(Some(m @ Ctl::Fs { .. })) => {
+                    let fd = self.ctl;
+                    self.ctl = -1;
+                    Ok((fd, Some(m)))
                 }
                 Ok(Some(Ctl::Failed {
                     step,
@@ -446,18 +453,29 @@ struct LinuxGuard;
 
 impl TreeGuard for LinuxGuard {}
 
-fn watch(ctl: RawFd, stage: Stage, violations: Violations, sink: Option<ViolationSink>) {
+fn watch(
+    ctl: RawFd,
+    early: Option<Ctl>,
+    stage: Stage,
+    violations: Violations,
+    sink: Option<ViolationSink>,
+) {
     std::thread::spawn(move || {
         let mut seen: Vec<String> = Vec::new();
-        while let Ok(Some(m)) = msg::recv(ctl) {
-            let Ctl::Limit { target } = m else { continue };
+        let mut early = early;
+        while let Some(m) = early.take().or_else(|| msg::recv(ctl).ok().flatten()) {
+            let (kind, target) = match m {
+                Ctl::Limit { target } => (ViolationKind::Limit, target),
+                Ctl::Fs { target } => (ViolationKind::Fs, target),
+                _ => continue,
+            };
             if seen.contains(&target) {
                 continue;
             }
             seen.push(target.clone());
             let v = SandboxViolation {
                 stage: stage.event(),
-                kind: ViolationKind::Limit,
+                kind,
                 target: Some(target),
                 suppressed_count: 0,
             };
@@ -478,10 +496,16 @@ impl SandboxProvider for LinuxProvider {
     }
 
     fn probe(&self) -> ProbeReport {
-        match self.id {
+        let mut report = match self.id {
             ProviderId::Bwrap => self.probe_bwrap(),
             _ => self.probe_landlock(),
-        }
+        };
+        // SBX-010 AC1: ABI und Kernel auch für nicht verfügbare Backends.
+        report.kernel = Some(crate::provider::KernelInfo {
+            landlock_abi: probe::landlock_abi(),
+            kernel: util::kernel_release(),
+        });
+        report
     }
 
     fn spawn(
@@ -516,9 +540,10 @@ impl SandboxProvider for LinuxProvider {
             crate::linux::plan::ensure_git_hooks(g)
                 .map_err(|e| SandboxError::spawn(format!("Git-Hooks anlegen: {e}")))?;
         }
+        crate::resolve::ensure_read_only_dirs(policy)?;
         let launcher = &self.cfg().launcher;
         let (std_cmd, pending) =
-            command(launcher, cmd.stdin, cmd.stdout, cmd.stderr).map_err(|e| {
+            command(launcher, &cmd.stdin, &cmd.stdout, &cmd.stderr).map_err(|e| {
                 SandboxError::SpawnFailed {
                     message: format!("{}: {e}", launcher.display()),
                     kind: e.kind(),
@@ -529,8 +554,8 @@ impl SandboxProvider for LinuxProvider {
             message: format!("{}: {e}", launcher.display()),
             kind: e.kind(),
         })?;
-        let ctl = match pending.finish(&plan) {
-            Ok(fd) => fd,
+        let (ctl, early) = match pending.finish(&plan) {
+            Ok(r) => r,
             Err((e, errno)) => {
                 let _ = child.start_kill();
                 return Err(SandboxError::SpawnFailed {
@@ -542,7 +567,7 @@ impl SandboxProvider for LinuxProvider {
             }
         };
         let violations = Violations::default();
-        watch(ctl, policy.stage, violations.clone(), sink);
+        watch(ctl, early, policy.stage, violations.clone(), sink);
         Ok(child.with_guard(Box::new(LinuxGuard), violations))
     }
 }

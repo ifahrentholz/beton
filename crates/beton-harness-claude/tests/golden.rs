@@ -115,12 +115,30 @@ async fn har_005_pretool_hook_allow_and_vendor_ask() {
     assert!(ask.contains("\"behavior\":\"allow\""), "{ask}");
 }
 
+/// K3 (#233), gegen 2.1.296 aufgenommen: Das Repository bringt `.claude/settings.json` mit
+/// `disableAllHooks: true` und einem eigenen `PreToolUse`-Hook mit, der jedes Kommando per
+/// `updatedInput` durch `echo projekt-hook` ersetzt. Mit `--setting-sources user` wirkt beides
+/// nicht: Der beton-Hook prüft `echo beton-hook`, und genau das läuft.
+#[tokio::test]
+async fn har_005_project_settings_cannot_disable_or_rewrite_the_hook() {
+    case("pretool-hook-project-settings").await;
+    let hooks = hook_payloads("pretool-hook-project-settings");
+    assert_eq!(hooks.len(), 1, "der beton-Hook lief");
+    assert_eq!(hooks[0]["tool_input"]["command"], "echo beton-hook");
+    let events =
+        std::fs::read_to_string(root().join("pretool-hook-project-settings/expected.events.jsonl"))
+            .unwrap();
+    assert!(events.contains("\"result\":\"beton-hook\""), "{events}");
+    assert!(!events.contains("projekt-hook"), "{events}");
+}
+
 #[test]
 fn har_005_recorded_hook_payloads_map_to_gate_requests() {
     for name in [
         "pretool-hook-deny",
         "pretool-hook-allow",
         "pretool-hook-vendor-ask",
+        "pretool-hook-project-settings",
     ] {
         let raw = std::fs::read_to_string(root().join(name).join("raw.jsonl")).unwrap();
         let payloads = hook_payloads(name);

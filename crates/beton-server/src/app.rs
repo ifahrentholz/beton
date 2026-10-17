@@ -63,6 +63,7 @@ impl AppState {
             runners: self.runtime.runners.clone(),
             cmd_timeout: self.runtime.tunnel.cmd_timeout,
             queues: self.runtime.queues.clone(),
+            compaction: self.runtime.compaction,
         }
     }
 }
@@ -89,6 +90,8 @@ pub struct Runtime {
     pub queues: Arc<crate::queue::Queues>,
     /// Aufträge an Sub-Agents (AGT-009).
     pub subagents: Arc<crate::subagents::Registry>,
+    /// `policy_query`-Abfragen je Session-Baum (AGT-007, #276).
+    pub policy_queries: Arc<crate::policy_state::QueryBudgets>,
     /// SSE-Strom für Skripte (PROTO-012).
     pub sse: crate::sse::SseConfig,
     /// Automatische Session-Titel (SES-010).
@@ -97,6 +100,11 @@ pub struct Runtime {
     /// `usage.*` (USE-004 AC3): Inbox-Hinweis bei fast aufgebrauchtem Abo-Fenster.
     pub usage: crate::usage_notice::UsageConfig,
     pub usage_notices: Arc<crate::usage_notice::NoticeLog>,
+    /// `compaction.*` (USE-009): Automatik vor dem nächsten Turn bzw. im Direkt-API-Loop.
+    pub compaction: beton_harness::CompactionSettings,
+    /// `user.timezone` (POL-004 AC4): Tages- und Monatsgrenzen der Policy-Kosten, Tag von
+    /// `user_day` (POL-009) und Default von `tz` der Usage-API (USE-005). Default UTC.
+    pub timezone: beton_core::timezone::UserTimeZone,
     /// Grenzen für Anhänge (WEB-006).
     pub attachments: crate::attachments::AttachmentLimits,
     /// Dateiindex für die `@`-Suche (WEB-006).
@@ -127,6 +135,8 @@ impl Runtime {
                     default_runner_command(),
                     std::env::temp_dir().join("beton-runners"),
                 )),
+                connect_timeout: crate::sessions::CONNECT_TIMEOUT,
+                start_budget: crate::sessions::START_BUDGET,
                 tunnel_socket: None,
                 dev: cfg!(debug_assertions),
                 launched: Arc::default(),
@@ -141,16 +151,27 @@ impl Runtime {
                 vendor_env: beton_harness::HostEnv::from_process(),
                 import_lock: Arc::default(),
                 skill_paths: crate::session_skills::SkillPaths::from_process(),
+                sandbox: beton_sandbox::SandboxSpec::default(),
+                sandbox_probe: Arc::default(),
+                sandbox_launcher: None,
+                proxy_extra_ca_files: Vec::new(),
+                proxy_ca: None,
+                credentials: None,
+                secret_tester: None,
+                daemon_env: Arc::new(std::env::vars().collect()),
             },
             harnesses: default_registry(cfg!(debug_assertions)),
             shutdown,
             features: Arc::default(),
             queues: Arc::default(),
             subagents: Arc::default(),
+            policy_queries: Arc::default(),
             sse: crate::sse::SseConfig::default(),
             titles: crate::titles::TitlesConfig::default(),
             title_jobs: Arc::default(),
             usage: crate::usage_notice::UsageConfig::default(),
+            compaction: beton_harness::CompactionSettings::default(),
+            timezone: beton_core::timezone::UserTimeZone::utc(),
             usage_notices: Arc::default(),
             attachments: crate::attachments::AttachmentLimits::default(),
             file_index: Arc::default(),
@@ -354,7 +375,13 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_inbox::get_inbox_item))
         .routes(routes!(crate::api_inbox::resolve_inbox_item))
         .routes(routes!(crate::api_usage::get_usage))
+        .routes(routes!(crate::api_usage::get_pricing))
         .routes(routes!(crate::api_usage::get_session_usage))
+        // Policies: Explain, Dry-Run und Shadow-Ansicht (POL-027).
+        .routes(routes!(crate::api_policies::list_policies))
+        .routes(routes!(crate::api_policies::evaluate))
+        .routes(routes!(crate::api_policies::shadow))
+        .routes(routes!(crate::api_policies::explain_decision))
         .routes(routes!(crate::api_sessions::get_blob))
         .routes(crate::attachments::routes())
         .routes(routes!(crate::session_skills::list))
@@ -376,6 +403,7 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
             crate::api_secrets::delete_secret
         ))
         .routes(routes!(crate::api_secrets::unlock_secrets))
+        .routes(routes!(crate::api_secrets::test_secret))
         .routes(routes!(crate::api_secrets::list_audit))
         .routes(routes!(crate::api_secrets::verify_audit))
         .routes(routes!(crate::api_proxy::rotate_ca))
@@ -424,17 +452,50 @@ pub fn build(parts: AppParts) -> Router {
 /// zusätzlichen Routen).
 pub fn layered(router: Router<AppState>, doc: &OpenApi, parts: AppParts) -> Router {
     let openapi_json = Arc::new(doc.to_pretty_json().unwrap_or_default().into_bytes());
-    // Die Capabilities für Secret-Werte bleiben hier ungenutzt: Die REST-API gibt nie Werte
-    // heraus. Proxy, Direkt-API-Harness und Git-Provider-Client bekommen sie mit ihren
-    // Arbeitspaketen (PRX-006, HAR-011, GIT-002).
-    let secrets = parts.secrets.unwrap_or_else(|| {
-        beton_secrets::Secrets::new(
-            parts.store.clone(),
-            parts.local,
-            parts.runtime.secret_backend.clone(),
-        )
-        .0
-    });
+    // Die REST-API gibt nie Secret-Werte heraus. `beton serve` reicht den Secret-Dienst samt
+    // Redaction herein und die Proxy-Capability an die Quelle der beton-CA (PRX-002, #191).
+    // Ohne Angabe (Tests) entsteht ein eigener Dienst; dann bekommt die CA-Quelle dessen
+    // Proxy-Capability. Direkt-API-Harness und Git-Provider-Client bekommen ihre mit ihren
+    // Arbeitspaketen (HAR-011, GIT-002).
+    let mut parts = parts;
+    let secrets = match parts.secrets.take() {
+        Some(s) => s,
+        None => {
+            let (s, caps) = beton_secrets::Secrets::new(
+                parts.store.clone(),
+                parts.local,
+                parts.runtime.secret_backend.clone(),
+            );
+            let cap = Arc::new(caps.proxy);
+            if parts.runtime.sessions.proxy_ca.is_none() {
+                parts.runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+                    store: beton_proxy::CaStore::new(s.clone(), parts.store.clone(), parts.local),
+                    cap: cap.clone(),
+                    host_id: parts.runtime.host.id.to_string(),
+                }));
+            }
+            if parts.runtime.sessions.secret_tester.is_none() {
+                parts.runtime.sessions.secret_tester =
+                    Some(Arc::new(crate::secret_test::SecretTester::new(
+                        beton_proxy::CaStore::new(s.clone(), parts.store.clone(), parts.local),
+                        cap.clone(),
+                        parts.runtime.host.id.to_string(),
+                        parts.runtime.sessions.proxy_extra_ca_files.clone(),
+                    )));
+            }
+            if parts.runtime.sessions.credentials.is_none() {
+                parts.runtime.sessions.credentials =
+                    Some(Arc::new(crate::credentials::CredentialService::new(
+                        s.clone(),
+                        cap,
+                        parts.runtime.host.id.to_string(),
+                        parts.store.clone(),
+                        parts.local,
+                    )));
+            }
+            s
+        }
+    };
     let state = AppState {
         store: parts.store.clone(),
         local: parts.local,

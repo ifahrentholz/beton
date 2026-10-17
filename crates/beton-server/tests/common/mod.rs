@@ -145,9 +145,14 @@ async fn app_inner(
             hosts: vec![HOST.into(), "localhost:7420".into(), "[::1]:7420".into()],
             origins: vec![ORIGIN.into(), "tauri://localhost".into()],
             primary_host: HOST.into(),
-            runtime: customize(
-                app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands(),
-            ),
+            runtime: customize({
+                let mut r =
+                    app::Runtime::new(tokio::sync::watch::channel(false).1).with_default_commands();
+                // Ausdrücklich ohne Sandbox (SBX-006); die Sandbox prüfen eigene Tests.
+                r.sessions.sandbox =
+                    beton_sandbox::SandboxSpec::from_yaml("backend: none").expect("backend: none");
+                r
+            }),
             web_dir: Some(web),
             secrets,
         },

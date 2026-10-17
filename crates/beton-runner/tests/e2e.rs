@@ -36,14 +36,19 @@ fn runner_bin() -> &'static str {
 async fn fixture(
     customize: impl FnOnce(beton_server::app::Runtime) -> beton_server::app::Runtime,
 ) -> Fixture {
+    fixture_with(StoreOptions::default(), customize).await
+}
+
+async fn fixture_with(
+    options: StoreOptions,
+    customize: impl FnOnce(beton_server::app::Runtime) -> beton_server::app::Runtime,
+) -> Fixture {
     // Kurzer Pfad: Unix-Sockets vertragen keine langen Pfade.
     let dir = tempfile::Builder::new()
         .prefix("bt")
         .tempdir_in("/tmp")
         .unwrap();
-    let store = Store::open(dir.path(), StoreOptions::default())
-        .await
-        .unwrap();
+    let store = Store::open(dir.path(), options).await.unwrap();
     let mut cfg = ServerConfig::local(dir.path().to_path_buf());
     cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
     cfg.socket = None;
@@ -67,6 +72,7 @@ async fn fixture(
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -93,6 +99,21 @@ impl Fixture {
     }
 
     async fn launch(&self, scenario: &Path, epoch: u64) -> RunnerHandle {
+        // Ausdrücklich ohne Isolation und bestätigt (SBX-006); die Sandbox prüfen eigene Tests.
+        let none = beton_host::SandboxBoot {
+            spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+            extra_ca_files: Vec::new(),
+        };
+        self.launch_with(scenario, epoch, Some(none), true).await
+    }
+
+    async fn launch_with(
+        &self,
+        scenario: &Path,
+        epoch: u64,
+        sandbox: Option<beton_host::SandboxBoot>,
+        unsandboxed_confirmed: bool,
+    ) -> RunnerHandle {
         let token = self
             .daemon
             .runtime
@@ -128,6 +149,12 @@ impl Fixture {
                     agent_snapshot: None,
                     snapshots: None,
                     fork: None,
+                    sandbox,
+                    unsandboxed_confirmed,
+                    proxy_ca: None,
+                    compaction: Default::default(),
+                    max_cost_usd: None,
+                    spawned: false,
                 },
             )
             .await
@@ -223,6 +250,32 @@ turns:
 "#;
 
 #[tokio::test]
+async fn sbx_006_runner_refuses_backend_none_without_confirmation() {
+    // Abwehr in der Tiefe: Auch wenn der Server die Bestätigung nicht prüfte, startet der
+    // Runner ohne sie keinen Harness ohne Sandbox.
+    let fx = fixture(|r| r).await;
+    let scenario = fx.scenario("turns: []");
+    let none = beton_host::SandboxBoot {
+        spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+        extra_ca_files: Vec::new(),
+    };
+    let _h = fx.launch_with(&scenario, 1, Some(none), false).await;
+    let events = fx
+        .wait_for(|p| {
+            matches!(p, EventPayload::SessionStatus(s) if s.status == beton_core::event::SessionStatus::Failed)
+        })
+        .await;
+    let text = serde_json::to_string(&events).unwrap();
+    assert!(text.contains("sandbox_confirmation_required"), "{text}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e.payload(), Some(EventPayload::HarnessReady(_)))),
+        "Harness gestartet"
+    );
+}
+
+#[tokio::test]
 async fn proto_015_runner_streams_turn_with_approval() {
     let f = fixture(|r| r).await;
     let h = f.launch(&f.scenario(PUSH_ASK), 1).await;
@@ -310,6 +363,145 @@ async fn proto_015_ac1_events_survive_tunnel_outage_exactly_once_in_order() {
         .collect();
     let expected: Vec<String> = (0..40).map(|i| format!("Zeile {i}")).collect();
     assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
+/// Scheitert das Speichern eines Pushs (hier hält ein fremder Schreiber die SQLite-Sperre
+/// länger als `busy_timeout`, wie unter Last in der CI, #278), gehen die Events nicht verloren:
+/// Der Runner sendet sie erneut, und spätere Pushes überspringen sie nicht.
+#[tokio::test]
+async fn proto_015_ac1_failed_push_is_resent_without_gap() {
+    use sqlx::Connection as _;
+    let f = fixture(|r| r).await;
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..30 {
+        yaml.push_str(&format!(
+            "      - {{ message: \"Zeile {i}\", delay_ms: 50 }}\n"
+        ));
+    }
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    f.wait_for_count(|p| matches!(p, EventPayload::MessageCompleted(_)), 3)
+        .await;
+    // Fremde Schreibsperre, länger als der Busy-Timeout des Stores (5 s).
+    let mut blocker = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(f.dir.path().join("beton.db")),
+    )
+    .await
+    .unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut blocker)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(6_500)).await;
+    sqlx::query("ROLLBACK").execute(&mut blocker).await.unwrap();
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let lines: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => {
+                m.content[0]["text"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..30).map(|i| format!("Zeile {i}")).collect();
+    assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
+/// #288: Lehnt der Server ein Event fachlich ab (hier: Nutzlast über dem Blob-Limit), steht an
+/// seiner Stelle ein sichtbares `event.rejected` ohne den abgelehnten Inhalt. Spätere Events
+/// bleiben erhalten, und der Runner sendet das abgelehnte Event nicht endlos erneut.
+#[tokio::test]
+async fn proto_015_ac5_rejected_event_is_replaced_in_place() {
+    let options = StoreOptions {
+        max_blob_bytes: 128 * 1024,
+        ..StoreOptions::default()
+    };
+    let f = fixture_with(options, |r| r).await;
+    let big = "x".repeat(200 * 1024);
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..8 {
+        let text = if i == 3 {
+            big.clone()
+        } else {
+            format!("Zeile {i}")
+        };
+        yaml.push_str(&format!(
+            "      - {{ message: \"{text}\", delay_ms: 20 }}\n"
+        ));
+    }
+    yaml.push_str("  - emit:\n      - { message: \"danach\" }\n");
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let entries: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => m.content[0]["text"]
+                .as_str()
+                .filter(|t| t.starts_with("Zeile"))
+                .map(str::to_owned),
+            _ if e.type_name() == "event.rejected" => Some("abgelehnt".into()),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..8)
+        .map(|i| match i {
+            3 => "abgelehnt".to_owned(),
+            i => format!("Zeile {i}"),
+        })
+        .collect();
+    assert_eq!(
+        entries, expected,
+        "Ersatz an der Stelle des abgelehnten Events"
+    );
+    let rejected: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_name() == "event.rejected")
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert_eq!(rejected.len(), 1, "genau ein Ersatz, kein erneutes Senden");
+    let payload = &rejected[0]["payload"];
+    assert_eq!(payload["original_type"], "message.completed");
+    assert_eq!(payload["reason"], "payload_too_large");
+    assert!(payload["rseq"].as_u64().is_some_and(|r| r > 0));
+    assert_eq!(rejected[0]["actor"]["component"], "server");
+    assert!(
+        !rejected[0].to_string().contains("xxxxxxxx"),
+        "kein abgelehnter Inhalt im Ersatz"
+    );
+    // Die Verbindung bleibt bestehen (keine Reconnect-Schleife), weitere Events kommen an.
+    f.deliver("input.submit", json!({"text": "noch einmal"}))
+        .await;
+    f.wait_for_count(|p| matches!(p, EventPayload::TurnCompleted(_)), 2)
+        .await;
+    let events = f.events().await;
+    gapless(&events);
+    assert!(events.iter().any(|e| matches!(e.payload(),
+        Some(EventPayload::MessageCompleted(m)) if m.content[0]["text"] == "danach")));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.type_name() == "event.rejected")
+            .count(),
+        1
+    );
     f.provider
         .terminate(&h, beton_host::TerminateMode::Force)
         .await
@@ -477,6 +669,15 @@ async fn runner_token_only_opens_its_own_session() {
                 agent_snapshot: None,
                 snapshots: None,
                 fork: None,
+                sandbox: Some(beton_host::SandboxBoot {
+                    spec: beton_sandbox::SandboxSpec::from_yaml("backend: none").unwrap(),
+                    extra_ca_files: Vec::new(),
+                }),
+                unsandboxed_confirmed: true,
+                proxy_ca: None,
+                compaction: Default::default(),
+                max_cost_usd: None,
+                spawned: false,
             },
         )
         .await

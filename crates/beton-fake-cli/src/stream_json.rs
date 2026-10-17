@@ -138,6 +138,36 @@ enum HookOutcome {
     Block(String),
 }
 
+/// Führt ein Bash-Kommando wie Claude Code aus: `$CLAUDE_CODE_SHELL -c <kommando>` (im
+/// Stufenmodell `bt-exec-*`, also Stufe 2), sonst `$SHELL` bzw. `/bin/sh`. Liefert stdout und
+/// stderr samt Exit-Code und ob das Kommando scheiterte.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "Fake-Harness für Tests: führt Bash wie Claude Code über die konfigurierte Shell aus"
+)]
+fn run_shell(command: &str) -> (String, bool) {
+    let shell = std::env::var("CLAUDE_CODE_SHELL")
+        .or_else(|_| std::env::var("SHELL"))
+        .unwrap_or_else(|_| "/bin/sh".into());
+    match std::process::Command::new(&shell)
+        .arg("-c")
+        .arg(command)
+        .stdin(std::process::Stdio::null())
+        .output()
+    {
+        Ok(out) => {
+            let code = out.status.code().unwrap_or(-1);
+            let text = format!(
+                "{}{}exit={code}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            (text, !out.status.success())
+        }
+        Err(e) => (format!("{shell}: {e}"), true),
+    }
+}
+
 /// Ruft den Hook wie Claude Code per Shell auf: Hook-JSON auf stdin, Antwort auf stdout,
 /// Exit-Code 2 blockiert mit stderr als Begründung.
 #[expect(
@@ -569,11 +599,42 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 }))?;
             }
             state.call = Some(id);
+            if step.run && state.allowed && call.name == "Bash" {
+                let command = input["command"].as_str().unwrap_or_default();
+                let (text, failed) = run_shell(command);
+                crate::io::record_context("tool_result", &text);
+                if let Some(id) = state.call.take() {
+                    self.tool_result(&id, &json!(text), failed)?;
+                }
+            }
         } else if let Some(call) = &step.mcp_call {
             let id = self.next_id("toolu");
             let name = format!("mcp__{}__{}", call.server, call.tool);
-            let args = self.mcp.resolve(&call.args);
+            let mut args = self.mcp.resolve(&call.args);
             self.assistant(json!({"type": "tool_use", "id": id, "name": name, "input": args}))?;
+            // Wie 2.1.296: Der `PreToolUse`-Hook (`matcher: "*"`) läuft auch für MCP-Tools.
+            if let Some(command) = self.pre_tool_hook.clone() {
+                let payload = json!({
+                    "session_id": self.session_id,
+                    "cwd": std::env::current_dir().unwrap_or_default(),
+                    "permission_mode": self.settings.mode,
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": name,
+                    "tool_input": args,
+                    "tool_use_id": id,
+                });
+                match run_hook(&command, &payload) {
+                    HookOutcome::Pass(Some(u)) | HookOutcome::Allow(Some(u)) => args = u,
+                    HookOutcome::Pass(None) | HookOutcome::Allow(None) => {}
+                    HookOutcome::Block(reason) => {
+                        let text = format!("PreToolUse:{name} hook error: {reason}");
+                        crate::io::record_context("tool_result", &text);
+                        return self
+                            .tool_result(&id, &json!(text), true)
+                            .map(|()| TurnEnd::Done);
+                    }
+                }
+            }
             match self.mcp.call(&call.server, &call.tool, &args) {
                 Ok(result) => {
                     let is_error = result["isError"] == true;

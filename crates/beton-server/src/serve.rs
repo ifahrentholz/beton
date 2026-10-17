@@ -116,7 +116,7 @@ pub async fn start_with(
         .unwrap_or_else(|| "localhost".into());
 
     let (stop, stop_rx) = watch::channel(false);
-    let runtime = customize(
+    let mut runtime = customize(
         crate::app::Runtime::for_config(&config, stop_rx.clone()).with_default_commands(),
     );
     // Ein Secret-Dienst für REST und System-Tools. Die Redaction-Pipeline lädt ihre bekannten
@@ -127,6 +127,30 @@ pub async fn start_with(
     if let Some(redactor) = &runtime.redactor {
         caps.redaction.attach(&secrets, redactor.clone()).await?;
     }
+    // Die Proxy-Capability teilen sich die Quelle der beton-CA (PRX-002, #191) und die
+    // Credentials der Proxy-Instanzen (PRX-006); beide gehören zum Egress-Proxy.
+    let proxy_cap = Arc::new(caps.proxy);
+    // Eine eingebettete Quelle (Tests, `customize`) bleibt; sonst die aus dem Secret-Store.
+    if runtime.sessions.proxy_ca.is_none() {
+        runtime.sessions.proxy_ca = Some(Arc::new(crate::sessions::StoreCa {
+            store: beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+            cap: proxy_cap.clone(),
+            host_id: runtime.host.id.to_string(),
+        }));
+    }
+    runtime.sessions.secret_tester = Some(Arc::new(crate::secret_test::SecretTester::new(
+        beton_proxy::CaStore::new(secrets.clone(), store.clone(), local),
+        proxy_cap.clone(),
+        runtime.host.id.to_string(),
+        runtime.sessions.proxy_extra_ca_files.clone(),
+    )));
+    runtime.sessions.credentials = Some(Arc::new(crate::credentials::CredentialService::new(
+        secrets.clone(),
+        proxy_cap,
+        runtime.host.id.to_string(),
+        store.clone(),
+        local,
+    )));
     let store_for_tunnel = store.clone();
     let janitor = tokio::spawn(crate::sessions::worktree_janitor(
         store.clone(),
@@ -203,6 +227,7 @@ pub async fn start_with(
                 Arc::new(crate::usage_notice::UsageNoticeObserver(system_state)),
             ]))),
             shutdown: Some(stop_rx.clone()),
+            compaction: runtime.compaction,
         };
         tasks.push(tokio::spawn(crate::tunnel::idle_reaper(
             tstate.clone(),

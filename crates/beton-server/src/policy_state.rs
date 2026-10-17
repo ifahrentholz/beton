@@ -1,8 +1,8 @@
 //! Zustand der Policies für den Runner (POL-009) und gemerkte Freigaben (POL-010).
 //!
 //! - `policy.state`: `session`/`run` aus den `policy.state_changed` des Session-Logs (ein Fork
-//!   übernimmt sie bis zum Fork-Punkt), `user_day`/`user` aus dem Store (Tag in der Zeitzone
-//!   des Users; bis zur Einstellung `user.timezone`, #195, UTC) und die Grants der Session aus
+//!   übernimmt sie bis zum Fork-Punkt), `user_day`/`user` aus dem Store (Kalendertag in
+//!   `user.timezone`, Default UTC, POL-004 AC4) und die Grants der Session aus
 //!   `approval.requested` (Gründe mit Fingerprint) + `approval.resolved { remember: session }`.
 //! - `policy.state.apply`: eine Änderung in `user_day`/`user`, atomar im Store.
 //! - `inbox.read`: Agent-Inbox der Session (AGT-007). Erzeuger kommen mit ASY-002 (M5); bis
@@ -12,16 +12,16 @@ use std::collections::HashMap;
 
 use beton_core::event::{ApprovalDecision, EventPayload, RememberScope};
 use beton_core::id::SessionId;
-use beton_policy::state::{PolicyState, StateChange, StateOp, day_key, next_value};
+use beton_policy::state::{PolicyState, StateChange, StateOp, next_value};
 use serde_json::{Value, json};
-use time::{OffsetDateTime, UtcOffset};
+use time::OffsetDateTime;
 
 use crate::app::AppState;
 use crate::problem::{Problem, ProblemCode};
 
-/// Zeitzone des Users für `user_day` (bis zur Einstellung, #195: UTC).
-fn user_offset() -> UtcOffset {
-    UtcOffset::UTC
+/// Heutiger Tag von `user_day`: 00:00 bis 24:00 in `user.timezone` (POL-009 AC3).
+fn user_day(state: &AppState) -> String {
+    state.runtime.timezone.day_key(OffsetDateTime::now_utc())
 }
 
 /// `policy.state` für die gebundene Session.
@@ -74,7 +74,7 @@ pub async fn policy_state(state: &AppState, session: SessionId) -> Result<Value,
         }
     }
     let replayed = PolicyState::replay(changes.iter());
-    let day = day_key(OffsetDateTime::now_utc(), user_offset());
+    let day = user_day(state);
     let (user_day, user) = state
         .store
         .policy_user_state(org, record.owner, &day)
@@ -104,7 +104,7 @@ pub async fn policy_state_apply(
     };
     let org = state.local.org;
     let record = state.store.session(org, session).await?;
-    let day = day_key(OffsetDateTime::now_utc(), user_offset());
+    let day = user_day(state);
     let value = op.value.clone();
     let next = state
         .store
@@ -120,4 +120,50 @@ pub async fn policy_state_apply(
 pub async fn inbox_read(state: &AppState, session: SessionId) -> Result<Value, Problem> {
     state.store.session(state.local.org, session).await?;
     Ok(json!({ "messages": Vec::<Value>::new() }))
+}
+
+/// Höchstzahl der `policy_query`-Abfragen je Session-Baum und Turn des Root (AGT-007, #276).
+pub const QUERY_LIMIT: u32 = 20;
+
+/// Höchste Tiefe beim Suchen des Root (Schutz gegen Zyklen in `parent_id`).
+const MAX_TREE_DEPTH: usize = 64;
+
+/// Abfragen je Root: (Zahl der `turn.started` des Root, verbrauchte Abfragen).
+#[derive(Debug, Default)]
+pub struct QueryBudgets(std::sync::Mutex<HashMap<SessionId, (u64, u32)>>);
+
+/// `policy.query`: zählt eine `policy_query`-Abfrage auf das Budget des Session-Baums. Das
+/// Budget gilt je Turn des Root (Childs und Enkel teilen es); ein neuer Turn eines Childs gibt
+/// nichts frei. Antwort `{allowed, crossed, used, limit}`; `crossed` bei der ersten Abfrage über
+/// dem Limit (Hinweis im Verlauf).
+pub async fn policy_query(state: &AppState, session: SessionId) -> Result<Value, Problem> {
+    let org = state.local.org;
+    let mut root = session;
+    for _ in 0..MAX_TREE_DEPTH {
+        match state.store.session(org, root).await?.parent_id {
+            Some(parent) => root = parent,
+            None => break,
+        }
+    }
+    let turns = state.store.count_events(org, root, "turn.started").await?;
+    let used = {
+        let mut budgets = state
+            .runtime
+            .policy_queries
+            .0
+            .lock()
+            .map_err(|_| Problem::new(ProblemCode::Internal))?;
+        let entry = budgets.entry(root).or_insert((turns, 0));
+        if entry.0 != turns {
+            *entry = (turns, 0);
+        }
+        entry.1 = entry.1.saturating_add(1);
+        entry.1
+    };
+    Ok(json!({
+        "allowed": used <= QUERY_LIMIT,
+        "crossed": used == QUERY_LIMIT + 1,
+        "used": used,
+        "limit": QUERY_LIMIT,
+    }))
 }

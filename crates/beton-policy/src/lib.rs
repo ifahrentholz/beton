@@ -2,16 +2,21 @@
 
 pub mod approval;
 pub mod audit;
+pub mod budget;
 pub mod cel;
 pub mod context;
 pub mod doc;
 pub mod enforcement;
 pub mod engine;
+pub mod explain;
 pub mod grants;
 pub mod load;
 pub mod normalize;
+pub mod policytest;
+pub mod snapshot;
 pub mod state;
 pub mod store;
+mod sugar;
 pub mod types;
 pub mod value;
 pub mod vars;

@@ -150,12 +150,64 @@ describe('Composer', () => {
     expect(within(menu).getByText('Wie viel darf der Agent ohne Rückfrage?')).toBeTruthy()
     const yolo = within(menu).getByText('YOLO – keine Rückfragen des Agents').closest('button')!
     expect(yolo.disabled).toBe(true)
-    expect(within(menu).getByText(YOLO_BLOCKED)).toBeTruthy()
+    expect(yolo.textContent).toContain(YOLO_BLOCKED)
+    // Zustand „YOLO ohne Sandbox“ (Screen `harness-switching`): Weg zur Einrichtung.
+    expect(within(menu).getByText('Sandbox einrichten')).toBeTruthy()
     fireEvent.click(yolo)
     expect(patches).toEqual([])
     expect(within(menu).getByText('Claude Code übernimmt den Modus sofort.')).toBeTruthy()
     fireEvent.click(within(menu).getByText('Nur planen'))
     expect(patches).toEqual([{ permission_mode: 'plan' }])
+  })
+
+  it('HAR-027 AC1, SBX-006: Mit Sandbox und Proxy der Session ist YOLO wählbar', () => {
+    const patches: SettingsPatch[] = []
+    const all: PermissionMode[] = ['plan', 'default', 'accept_edits', 'yolo']
+    render(
+      <Composer
+        sessionId="ses_s"
+        harness="claude"
+        capabilities={{ ...base, permission_modes: all } as Capabilities}
+        sandbox={{ tool_sandbox: true, egress_proxy: true }}
+        running={false}
+        onSend={() => undefined}
+        onInterrupt={() => undefined}
+        onSettings={(p) => patches.push(p)}
+      />,
+    )
+    fireEvent.click(screen.getByLabelText('Permission-Mode'))
+    const menu = screen.getByRole('menu', { name: 'Permission-Mode' })
+    const yolo = within(menu).getByText('YOLO – keine Rückfragen des Agents').closest('button')!
+    expect(yolo.disabled).toBe(false)
+    // Zustand „Modus wählen“: Policies gelten weiter, Sandbox und Proxy aktiv.
+    expect(yolo.textContent).toContain('Deine Policies gelten weiter (z. B. kein git push --force)')
+    expect(yolo.textContent).toMatch(/Sandbox\s+aktiv · Proxy\s+aktiv/)
+    fireEvent.click(yolo)
+    expect(patches).toEqual([{ permission_mode: 'yolo' }])
+  })
+
+  it('HAR-027 AC1: Ohne Proxy (oder ohne Stufe 2) bleibt YOLO gesperrt', () => {
+    for (const sandbox of [
+      { tool_sandbox: true, egress_proxy: false },
+      { tool_sandbox: false, egress_proxy: true },
+    ]) {
+      render(
+        <Composer
+          sessionId="ses_p"
+          harness="claude"
+          capabilities={{ ...base, permission_modes: ['default', 'yolo'] } as Capabilities}
+          sandbox={sandbox}
+          running={false}
+          onSend={() => undefined}
+          onInterrupt={() => undefined}
+          onSettings={() => undefined}
+        />,
+      )
+      fireEvent.click(screen.getByLabelText('Permission-Mode'))
+      const menu = screen.getByRole('menu', { name: 'Permission-Mode' })
+      expect(within(menu).getByText('YOLO – keine Rückfragen des Agents').closest('button')!.disabled).toBe(true)
+      cleanup()
+    }
   })
 
   it('WEB-004 AC3: Der Entwurf je Session überlebt einen Reload', () => {

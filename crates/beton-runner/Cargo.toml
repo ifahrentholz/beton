@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Testbudget der Policy-Engine (#298, #304): nur als dev-dependency aktivieren, nie in
+# ausgelieferten Builds.
+test-budget = ["beton-policy/test-budget"]
+# Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1): nur als dev-dependency.
+test-sandbox = ["beton-sandbox/test-sandbox"]
+
 [dependencies]
 async-trait.workspace = true
 beton-agents.workspace = true
@@ -21,13 +28,17 @@ beton-harness-direct.workspace = true
 beton-mcp.workspace = true
 beton-policy.workspace = true
 beton-proto.workspace = true
+base64.workspace = true
+beton-proxy.workspace = true
 beton-sandbox.workspace = true
 getrandom.workspace = true
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 time.workspace = true
+zeroize.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
@@ -37,13 +48,16 @@ rustix.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+serde_norway.workspace = true
 beton-harness-direct = { workspace = true, features = ["mock"] }
-beton-host.workspace = true
+beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 futures-util.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
+sqlx.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

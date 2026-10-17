@@ -96,9 +96,24 @@ impl EventService {
         epoch: u64,
         events: Vec<Event>,
     ) -> beton_store::Result<Vec<Event>> {
+        self.append_replacing(org, session, expected_head, epoch, events, &|_, _, _| None)
+            .await
+    }
+
+    /// Wie [`EventService::append`]; fachlich abgelehnte Events ersetzt `replace`
+    /// ([`Store::append_replacing`], PROTO-015).
+    pub async fn append_replacing(
+        &self,
+        org: OrgId,
+        session: SessionId,
+        expected_head: u64,
+        epoch: u64,
+        events: Vec<Event>,
+        replace: &(dyn Fn(usize, &Event, &beton_store::Error) -> Option<Event> + Sync),
+    ) -> beton_store::Result<Vec<Event>> {
         let written = self
             .store
-            .append(org, session, expected_head, epoch, events)
+            .append_replacing(org, session, expected_head, epoch, events, replace)
             .await?;
         self.hub.publish_durable(session, &written);
         if let Some(tracer) = &self.tracer {

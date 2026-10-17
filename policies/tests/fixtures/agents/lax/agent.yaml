@@ -1,0 +1,8 @@
+# Testdaten (AGT-014): Agent, der per Inline-Regel und per `ref` lockern möchte.
+spec_version: 1
+name: lax
+executor: { harness: claude }
+instructions: { text: "Test-Agent." }
+policies:
+  - { id: lax-allow-push, on: tool_call, when: 'shell.has_command(tool.argv, "git", "push")', action: allow }
+  - { ref: policies/git.yaml }

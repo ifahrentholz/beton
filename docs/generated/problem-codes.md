@@ -33,6 +33,7 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `not_a_git_repo` | 409 | Kein Git-Repository |
 | `spawn_denied` | 409 | Sub-Agent nicht gestartet |
 | `sandbox_required` | 409 | Sandbox erforderlich |
+| `sandbox_confirmation_required` | 409 | Ohne Sandbox nur mit Bestätigung |
 | `worktree_dirty` | 409 | Worktree hat uncommittete Änderungen |
 | `worktree_unpushed` | 409 | Branch hat ungepushte Commits |
 | `imported_read_only` | 409 | Importierte Session läuft hier nicht |
@@ -58,3 +59,5 @@ Jede Fehlerantwort ist ein Problem-Objekt mit `type: urn:beton:problem:<code>`. 
 | `unavailable` | 503 | Vorübergehend nicht verfügbar |
 | `secrets_unavailable` | 503 | Secret-Store nicht verfügbar |
 | `redaction_unavailable` | 503 | Redaction nicht bereit |
+| `sandbox_unavailable` | 503 | Sandbox nicht verfügbar |
+| `credential_source_error` | 502 | Credential-Quelle gescheitert |

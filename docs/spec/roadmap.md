@@ -10,8 +10,8 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 |---|---|---:|---:|---:|---:|
 | [M0](#m0) | Fundament | 67 | 1 | 0 | 68 |
 | [M1](#m1) | Meta-Harness | 33 | 20 | 0 | 53 |
-| [M2](#m2) | Kontrolle | 64 | 9 | 2 | 75 |
-| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 68 | 15 | 2 | 85 |
+| [M2](#m2) | Kontrolle | 64 | 9 | 0 | 73 |
+| [M3](#m3) | Desktop & TUI → öffentliches Release 0.1 | 68 | 15 | 4 | 87 |
 | [M4](#m4) | Team | 61 | 8 | 1 | 70 |
 | [M5](#m5) | Autonomie & Breite → v1.0 | 35 | 9 | 3 | 47 |
 | **Summe v1.0** | | **328** | **62** | **8** | **398** |
@@ -264,7 +264,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 **Demo-Szenario (Exit-Kriterium):** Ein Agent läuft im YOLO-Mode in der Sandbox: Er kann `~/.ssh` nicht lesen und nur erlaubte Hosts erreichen, er sieht Secrets nur als `bt_cred_*`, `git push --force` erzeugt eine Approval-Card, und bei Überschreitung des Budgets wird gestoppt.
 
-<details><summary>Features (75)</summary>
+<details><summary>Features (73)</summary>
 
 
 **[02 — Agents & Automation](02-agents.md)**
@@ -294,7 +294,6 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | POL-016 | Regeltyp `path_guard` | Must |
 | POL-017 | Regeltyp `git_guard` | Must |
 | POL-018 | Regeltyp `loop_detection` | Should |
-| POL-019 | Regeltyp `pii_redaction` | Could |
 | POL-023 | Durchsetzung bei ACP (Permission-Requests) | Must |
 | POL-024 | Enforcement-Matrix & Fail-Closed beim Start | Must |
 | POL-025 | Audit: `policy.decision`-Event | Must |
@@ -318,7 +317,6 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 | SBX-011 | Sandbox-Escape-Testsuite | Must |
 | SBX-012 | Eingebaute Presets | Should |
 | SBX-013 | Ressourcenlimits & Prozessbaum-Lebenszyklus | Should |
-| SBX-014 | Verstoß-Reporting | Could |
 | PRX-001 | Proxy-Kern & Instanzmodell | Must |
 | PRX-002 | beton-CA pro Installation & TLS-MITM | Must |
 | PRX-003 | Regel-Syntax & Matching (Default-Deny) | Must |
@@ -398,7 +396,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 **Demo-Szenario (Exit-Kriterium):** Ein neuer Nutzer installiert die signierte Desktop-App, `beton setup` erkennt die CLI-Logins, und er arbeitet mit mehreren Sessions in Worktrees, nutzt den Inspect-Mode im eingebetteten Browser und diktiert Prompts per Push-to-Talk – vollständig lokal.
 
-<details><summary>Features (85)</summary>
+<details><summary>Features (87)</summary>
 
 
 **[01 — Harnesses](01-harnesses.md)**
@@ -413,6 +411,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 | ID | Feature | Priorität |
 |---|---|---|
+| POL-019 | Regeltyp `pii_redaction` | Could |
 | POL-020 | Regeltyp `browser_guard` | Must |
 | POL-022 | Durchsetzung im Native-TUI-Modus (Vendor-Hooks) | Must |
 
@@ -420,6 +419,7 @@ Grundlage: ADR-0030 (Meilensteine M0–M5, erstes öffentliches Release nach M3,
 
 | ID | Feature | Priorität |
 |---|---|---|
+| SBX-014 | Verstoß-Reporting | Could |
 | SBX-017 | PTY-/Native-TUI-Modus unter Sandbox | Must |
 | PRX-011 | Browser-Traffic über den Proxy | Must |
 

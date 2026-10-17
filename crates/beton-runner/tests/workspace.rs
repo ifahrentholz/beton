@@ -9,6 +9,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -30,6 +32,20 @@ struct Daemonized {
     daemon: Daemon,
     token: String,
     addr: SocketAddr,
+    _load: Load,
+}
+
+/// Die Latenzmessung von SES-017 AC3 (≤ 1 s) läuft ohne die übrigen Tests dieser Datei: Jeder
+/// davon startet Daemon, Runner und `git`-Prozesse, und unter dieser Last dauert ein
+/// Workspace-Snapshot über eine Sekunde (#116). Gemessen wird das System, nicht die Last des
+/// Testlaufs; die Grenze bleibt 1 s. Unter nextest (ein Prozess je Test) sorgt
+/// `.config/nextest.toml` für dasselbe.
+static LOAD: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+#[allow(dead_code, reason = "hält nur die Sperre bis zum Testende")]
+enum Load {
+    Shared(tokio::sync::RwLockReadGuard<'static, ()>),
+    Alone(tokio::sync::RwLockWriteGuard<'static, ()>),
 }
 
 struct Reply {
@@ -48,12 +64,22 @@ impl Reply {
 }
 
 async fn daemon(data: &Path) -> Daemonized {
+    daemon_with(data, Load::Shared(LOAD.read().await)).await
+}
+
+/// Wie [`daemon`], ohne parallel laufende Tests dieser Datei.
+async fn daemon_alone(data: &Path) -> Daemonized {
+    daemon_with(data, Load::Alone(LOAD.write().await)).await
+}
+
+async fn daemon_with(data: &Path, load: Load) -> Daemonized {
     let store = Store::open(data, StoreOptions::default()).await.unwrap();
     let mut cfg = ServerConfig::local(data.to_path_buf());
     cfg.listen = vec!["127.0.0.1:0".parse().unwrap()];
     cfg.socket = None;
     let runners = data.join("runners");
     let daemon = start_with(cfg, store, move |mut r| {
+        r.sessions.sandbox = support::unsandboxed();
         r.sessions.provider =
             std::sync::Arc::new(LocalProvider::new(vec![runner_bin().into()], runners));
         r.sessions.dev = true;
@@ -70,6 +96,7 @@ async fn daemon(data: &Path) -> Daemonized {
         daemon,
         token,
         addr,
+        _load: load,
     }
 }
 
@@ -126,7 +153,13 @@ impl Daemonized {
     }
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
-        self.request(method, path, body, &[]).await
+        self.request(
+            method,
+            path,
+            support::confirm_unsandboxed(method, path, body),
+            &[],
+        )
+        .await
     }
 
     async fn ws(
@@ -765,6 +798,14 @@ async fn ses_017_tree_and_search() {
     d.daemon.shutdown().await;
 }
 
+/// Schreiboperationen des Agents in [`ses_017_ac3_agent_write_reaches_all_clients_as_fs_changed_within_one_second`].
+const AC3_WRITES: usize = 5;
+
+/// Gewertet wird der Median über [`AC3_WRITES`] Schreiboperationen je Client (#312, Vorgehen
+/// wie #237): Die Latenz ist vor allem die Dauer eines Workspace-Snapshots (drei `git`-Prozesse,
+/// #116), und ein einzelner Snapshot dauert auf einem geteilten CI-Runner gelegentlich ein
+/// Vielfaches (macOS-CI: 1,21 s, lokal unter Volllast einmal 0,72 s statt sonst 0,1–0,25 s).
+/// Die Grenze bleibt 1 s; jede Einzelmessung steht im Log.
 #[tokio::test]
 async fn ses_017_ac3_agent_write_reaches_all_clients_as_fs_changed_within_one_second() {
     let dir = tmp();
@@ -772,17 +813,20 @@ async fn ses_017_ac3_agent_write_reaches_all_clients_as_fs_changed_within_one_se
     let ws = dir.path().join("ws");
     std::fs::create_dir_all(&data).unwrap();
     write(&ws, "a.txt", "a\n");
-    let d = daemon(&data).await;
-    let sc = scenario(
-        dir.path(),
-        r#"
-turns:
-  - emit:
-      - { message: "Ich schreibe." }
-      - { write_file: { path: "neu/agent.txt", content: "vom Agent\n" }, delay_ms: 300 }
-      - { message: "Fertig.", delay_ms: 3000 }
-"#,
-    );
+    let d = daemon_alone(&data).await;
+    let paths: Vec<String> = (0..AC3_WRITES)
+        .map(|k| format!("neu/agent-{k}.txt"))
+        .collect();
+    // Abstand 1 s: Jede Schreiboperation wird für sich gemeldet, bevor die nächste kommt.
+    let mut steps = String::from("      - { message: \"Ich schreibe.\" }\n");
+    for (k, path) in paths.iter().enumerate() {
+        let delay = if k == 0 { 300 } else { 1000 };
+        steps.push_str(&format!(
+            "      - {{ write_file: {{ path: \"{path}\", content: \"vom Agent\\n\" }}, delay_ms: {delay} }}\n"
+        ));
+    }
+    steps.push_str("      - { message: \"Fertig.\", delay_ms: 2000 }\n");
+    let sc = scenario(dir.path(), &format!("turns:\n  - emit:\n{steps}"));
     let r = d.create(session_body(&ws, &sc, None)).await;
     let id = r.body["id"].as_str().unwrap().to_owned();
     d.wait_idle(&id).await;
@@ -797,35 +841,54 @@ turns:
             ))
             .await
             .unwrap();
+        let paths = paths.clone();
         readers.push(tokio::spawn(async move {
+            // Pfad → (Empfang, Event) der ersten Meldung.
+            let mut seen = std::collections::HashMap::new();
             let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(20) {
+            while seen.len() < paths.len() && start.elapsed() < Duration::from_secs(30) {
                 let Ok(Some(Ok(Message::Text(t)))) =
                     tokio::time::timeout(Duration::from_secs(5), client.next()).await
                 else {
                     continue;
                 };
+                let now = Instant::now();
                 let m: Value = serde_json::from_str(&t).unwrap();
                 for e in m["events"].as_array().into_iter().flatten() {
-                    if e["type"] == "fs.changed"
-                        && e["payload"]["changes"][0]["path"] == "neu/agent.txt"
-                    {
-                        return (Instant::now(), e.clone());
+                    if e["type"] != "fs.changed" {
+                        continue;
+                    }
+                    for c in e["payload"]["changes"].as_array().into_iter().flatten() {
+                        if let Some(p) = c["path"].as_str().filter(|p| paths.iter().any(|x| x == p))
+                        {
+                            seen.entry(p.to_owned())
+                                .or_insert_with(|| (now, e.clone(), c.clone()));
+                        }
                     }
                 }
             }
-            panic!("kein fs.changed");
+            assert_eq!(
+                seen.len(),
+                paths.len(),
+                "fs.changed fehlt: {:?}",
+                seen.keys()
+            );
+            seen
         }));
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let file = ws.join("neu/agent.txt");
+    let files: Vec<PathBuf> = paths.iter().map(|p| ws.join(p)).collect();
     let watcher = tokio::spawn(async move {
-        loop {
-            if file.is_file() {
-                return Instant::now();
+        let mut written = vec![None; files.len()];
+        while written.iter().any(Option::is_none) {
+            for (w, f) in written.iter_mut().zip(&files) {
+                if w.is_none() && f.is_file() {
+                    *w = Some(Instant::now());
+                }
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
+        written.into_iter().map(Option::unwrap).collect::<Vec<_>>()
     });
     let input = d
         .http(
@@ -836,14 +899,24 @@ turns:
         .await;
     assert_eq!(input.status, 202, "{}", input.body);
     let written = watcher.await.unwrap();
-    for reader in readers {
-        let (seen, event) = reader.await.unwrap();
-        let delay = seen.saturating_duration_since(written);
-        assert!(delay <= Duration::from_secs(1), "fs.changed nach {delay:?}");
-        assert_eq!(event["actor"]["kind"], "agent");
-        assert_eq!(event["payload"]["source"], "watcher");
-        assert_eq!(event["payload"]["changes"][0]["change"], "added");
-        assert_eq!(event["turn_id"], input.body["turn_id"]);
+    for (client, reader) in readers.into_iter().enumerate() {
+        let seen = reader.await.unwrap();
+        let mut delays = Vec::new();
+        for (path, written) in paths.iter().zip(&written) {
+            let (at, event, change) = &seen[path];
+            delays.push(at.saturating_duration_since(*written));
+            assert_eq!(event["actor"]["kind"], "agent");
+            assert_eq!(event["payload"]["source"], "watcher");
+            assert_eq!(change["change"], "added");
+            assert_eq!(event["turn_id"], input.body["turn_id"]);
+        }
+        eprintln!("Client {client}: fs.changed nach {delays:?}");
+        delays.sort();
+        let median = delays[delays.len() / 2];
+        assert!(
+            median <= Duration::from_secs(1),
+            "Client {client}: fs.changed im Median nach {median:?} ({delays:?})"
+        );
     }
     d.daemon.shutdown().await;
 }

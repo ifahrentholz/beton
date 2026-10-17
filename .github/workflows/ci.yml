@@ -39,17 +39,97 @@ jobs:
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30 statt 15 min: Mit kaltem Cache brauchen Bau und Lauf der Fuzz-Targets (QA-009) bis
+    # 14 min; die Fuzz-Schritte sind einzeln begrenzt.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Basis des PRs für die Auswahl der Fuzz-Targets (QA-009 AC2).
+          fetch-depth: 0
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+      # Das Fuzz-Crate ist ein eigener Workspace mit eigener Cargo.lock (QA-009); es gelten
+      # dieselben Regeln (deny.toml im Repo-Root).
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: fuzz/Cargo.toml
+          arguments: --all-features --config deny.toml
+          command: check
+      # Fuzzing (QA-009) als Schritte dieses Jobs statt eines eigenen Jobs: Jeder Job müsste
+      # Required Check werden (QA-010 AC3). `cargo xtask` läuft mit stable (rust-toolchain.toml),
+      # nur `cargo +nightly fuzz` mit nightly.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> target
+      - name: Betroffene Fuzz-Targets bestimmen
+        id: fuzz
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # PR: nur Targets, deren Quellen, Harness oder Korpus der PR ändert; Push auf main:
+          # alle (kurz).
+          if [ -n "$BASE_REF" ]; then
+            targets=$(cargo xtask fuzz-targets --affected --range "origin/${BASE_REF}..HEAD")
+          else
+            targets=$(cargo xtask fuzz-targets)
+          fi
+          echo "Fuzz-Targets: ${targets:-keine}"
+          echo "targets=$(echo $targets)" >> "$GITHUB_OUTPUT"
+      - name: Fuzz-Targets je 60 s (parallel)
+        # covers: QA-009 AC2 (ein PR, der beton-proxy ändert, startet die Proxy-Fuzz-Targets)
+        if: steps.fuzz.outputs.targets != ''
+        timeout-minutes: 20
+        env:
+          TARGETS: ${{ steps.fuzz.outputs.targets }}
+        run: |
+          # Ohne ASan: Die eigenen Crates enthalten kein `unsafe` (Lint `unsafe_code = deny`),
+          # Panics, Hänger und verletzte Invarianten findet libFuzzer auch so; der Build ist
+          # deutlich schneller. Die Nightly-Läufe nutzen ASan.
+          # Ziel ausdrücklich: Das cargo-fuzz-Binary von install-action ist für musl gebaut und
+          # nähme sonst sein eigenes Ziel als Standard.
+          host="$(rustc +nightly -vV | sed -n 's/^host: //p')"
+          cargo +nightly fuzz build -O --sanitizer none --target "$host"
+          bin="fuzz/target/$host/release"
+          pids=()
+          for t in $TARGETS; do
+            mkdir -p "fuzz/artifacts/$t" "$RUNNER_TEMP/corpus/$t"
+            "$bin/$t" "$RUNNER_TEMP/corpus/$t" "fuzz/corpus/$t" \
+              -max_total_time=60 -timeout=10 -rss_limit_mb=2048 \
+              -artifact_prefix="fuzz/artifacts/$t/" > "fuzz/artifacts/$t.log" 2>&1 &
+            pids+=("$!")
+          done
+          failed=0
+          i=0
+          for t in $TARGETS; do
+            if wait "${pids[$i]}"; then
+              echo "$t: $(grep -E '^#[0-9]+' "fuzz/artifacts/$t.log" | tail -n 1)"
+            else
+              echo "::error title=Fuzz-Target $t::Absturz, Hänger oder verletzte Invariante (Reproducer im Artefakt fuzz-artifacts)"
+              tail -n 80 "fuzz/artifacts/$t.log"
+              failed=1
+            fi
+            i=$((i + 1))
+          done
+          exit "$failed"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          retention-days: 14
 
   test-linux:
     name: test (linux, ohne Netzwerk)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -59,6 +139,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,cargo-llvm-cov
+      # PRX-008 AC1: Node-fetch nutzt den Proxy erst ab Node 24 (NODE_USE_ENV_PROXY).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Tests bauen (mit Netzwerk für die Paket-Registry)
         # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
         # offline aus den bereits geladenen Abhängigkeiten kompiliert.
@@ -91,6 +175,16 @@ jobs:
             cargo nextest run --workspace --offline
             cargo test --workspace --doc --offline
           '
+      # Gate über alle mitgelieferten Policies und Built-in-Agents (QA-004): als Schritt dieses
+      # Jobs statt eigenem Job, weil jeder Job Required Check sein muss (QA-010 AC3).
+      # covers: QA-004 AC1 (Fehlschlag zeigt erwartete und tatsächliche Entscheidung samt Regel)
+      # covers: QA-004 AC2 (jede mitgelieferte Policy und jeder Built-in-Agent hat einen Test)
+      - name: Policy-Tests der mitgelieferten Policies und Built-in-Agents (QA-004)
+        run: |
+          mkdir -p target/policy-tests
+          cargo run --offline -q -p beton-cli -- policy test policies/tests \
+            --junit target/policy-tests/junit.xml
+          cargo test --offline -q -p beton-policy --test shipped
       # Sandbox-Fälle, die Einstellungen des Hosts brauchen; jeder Lauf prüft, dass die
       # Einstellung wirklich galt, statt Fälle zu überspringen. Danach ist alles zurückgesetzt.
       # covers: SBX-008 AC5 (AppArmor-Restriktion: mit Paketprofil nutzbar, ohne Grund und Fallback)
@@ -150,25 +244,52 @@ jobs:
       - name: Benchmark Policy-Auswertung
         run: cargo test -p beton-policy --release --test bench -- --ignored --nocapture
 
+      # Testbudget der Policy-Engine nie im ausgelieferten Build (POL-002, #304): Das Feature
+      # `test-budget` schalten nur Dev-Dependencies ein, also nur Builds mit Testzielen. Keine
+      # normale oder Build-Abhängigkeit im Workspace darf es aktivieren; ein Release-Build ohne
+      # das Feature rechnet auch mit gesetzter Variable mit den Grenzen aus POL-002
+      # (`Limits::runtime() == Limits::default()`), auch mit Debug-Assertions im Release-Profil.
+      - name: Release-Build ohne Testbudget der Policy-Engine (POL-002, #304)
+        env:
+          BETON_TEST_POLICY_BUDGET_MS: "60000"
+        run: |
+          tree=$(cargo tree --workspace -e normal,build -f '{p} {f}')
+          # Ebenso der Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1).
+          if grep -wE 'test-budget|test-sandbox' <<<"$tree"; then
+            echo "Feature test-budget bzw. test-sandbox außerhalb von Dev-Dependencies aktiv" >&2
+            exit 1
+          fi
+          for assertions in false true; do
+            out=$(CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=$assertions \
+              cargo test --release -p beton-policy --test cel -- --exact \
+              pol_002_without_the_test_budget_feature_runtime_limits_are_the_defaults 2>&1)
+            echo "$out"
+            grep -q "test result: ok. 1 passed" <<<"$out"
+          done
+
       # covers: PRX-001 AC3 (200 parallele HTTPS-Verbindungen, p99-Zusatzlatenz < 20 ms im
       # Release-Build; nur Loopback und lokale Test-Upstreams)
       - name: Benchmark Egress-Proxy
         run: cargo test -p beton-proxy --release --lib prx_001_ac3 -- --ignored --nocapture
 
       # covers: SEC-013 AC3 (≥ 50 MB/s pro Kern bei 1 000 bekannten Werten im Release-Build;
-      # Regression > 20 % gegenüber main schlägt fehl). Basis wie bei der Coverage: der letzte
-      # Stand von main im Actions-Cache, geschrieben von Pushes auf main.
+      # Regression > 20 % gegenüber main schlägt fehl). Basis ist der Median der letzten fünf
+      # Messungen von main (#296): Die Basis-Datei im Actions-Cache führt die Messreihe
+      # (`history`); jeder Push auf main lädt die letzte Datei, hängt seinen Wert an
+      # (`BETON_BENCH_RECORD`, ohne Vergleich) und speichert sie unter seinem SHA. PRs
+      # vergleichen gegen den Median dieser Reihe; eine alte Datei ohne `history` gilt als
+      # Reihe mit einem Wert.
       - name: Benchmark-Basis der Redaction von main laden
-        if: github.event_name == 'pull_request'
         uses: actions/cache/restore@v4
         with:
           path: target/bench/redaction-main.json
-          key: bench-redaction-main-${{ github.event.pull_request.base.sha }}
+          key: bench-redaction-main-${{ github.event.pull_request.base.sha || github.event.before }}
           restore-keys: bench-redaction-main-
       - name: Benchmark Redaction
         env:
           BETON_BENCH_BASELINE: ${{ github.workspace }}/target/bench/redaction-main.json
           BETON_BENCH_OUT: ${{ github.workspace }}/target/bench/redaction.json
+          BETON_BENCH_RECORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && '1' || '' }}
         run: cargo test -p beton-secrets --release --lib sec_013_ac3 -- --ignored --nocapture
       - name: Benchmark-Basis der Redaction für PRs speichern
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -199,7 +320,9 @@ jobs:
             if [ -d "crates/$c" ]; then pkgs="$pkgs -p $c"; fi
           done
           mkdir -p target/coverage
-          cargo llvm-cov $pkgs --json --output-path target/coverage/llvm-cov.json
+          # Tests wie SEC-003 AC4 beenden instrumentierte Prozesse per SIGKILL mitten im Schreiben;
+          # deren halb geschriebene .profraw überspringen statt den Merge scheitern zu lassen.
+          cargo llvm-cov $pkgs --failure-mode all --json --output-path target/coverage/llvm-cov.json
           cargo xtask coverage-gate --input target/coverage/llvm-cov.json \
             --baseline target/coverage/main.json --out target/coverage/current.json \
             --markdown "$GITHUB_STEP_SUMMARY"
@@ -215,7 +338,7 @@ jobs:
   test-macos:
     name: test (macos)
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -223,6 +346,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # PRX-008 AC1: Node-fetch nutzt den Proxy erst ab Node 24 (NODE_USE_ENV_PROXY).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       # covers: SEC-002 AC1, SEC-002 AC3 (echter Keychain, aber ein temporärer des Runners;
       # Tests berühren nie den Keychain eines Entwicklers, lokal bleiben sie aus)
       - name: Temporären Keychain als Standard anlegen (SEC-002)

@@ -1,0 +1,10 @@
+# Testdaten für die Policy-Tests (QA-004): Push ist verboten.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: deny-push
+rules:
+  - id: no-push
+    on: tool_call
+    when: 'shell.has_command(tool.argv, "git", "push")'
+    action: deny
+    reason: Push ist in diesem Projekt verboten

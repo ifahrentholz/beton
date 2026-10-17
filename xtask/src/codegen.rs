@@ -156,9 +156,19 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         InboxItemView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         InboxPage::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Usage (USE-005, USE-007).
-        use beton_server::api_usage::{SessionUsageView, UsageReportView};
+        use beton_server::api_usage::{PricingView, SessionUsageView, UsageReportView};
         UsageReportView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         SessionUsageView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        PricingView::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        // Policies: Explain, Dry-Run, Shadow-Ansicht (POL-027).
+        use beton_server::api_policies::{
+            DecisionExplain, EffectivePolicies, EvaluateRequest, PolicyEvaluation, ShadowReport,
+        };
+        EffectivePolicies::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        EvaluateRequest::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        PolicyEvaluation::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        DecisionExplain::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
+        ShadowReport::export_all(&cfg).context("TypeScript-Export fehlgeschlagen")?;
         // Workspace-API (SES-017, SES-018).
         use beton_server::api_workspace::{
             ChangesPage, FileDiff, SearchPage, TreePage, WorkspaceFile, WorkspaceInfo,

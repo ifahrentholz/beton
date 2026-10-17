@@ -47,15 +47,35 @@ pub enum InputMode {
 }
 
 /// Wie lange Eingaben auf einen frisch gestarteten Runner warten.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Standard für [`SessionsConfig::start_budget`].
+pub(crate) const START_BUDGET: Duration = Duration::from_secs(90);
 
 /// Gestartete Runner dieses Knotens.
 #[derive(Default)]
 pub struct Launched {
     handles: Mutex<HashMap<SessionId, RunnerHandle>>,
+    /// Tunnel-Token und Startzeit des zuletzt gestarteten Runners je Session. Ist das Token
+    /// gesperrt (geordneter Stopp) oder das Start-Budget abgelaufen, startet dieser Runner nicht
+    /// mehr, auch wenn sein Prozess noch läuft (#198).
+    tokens: Mutex<HashMap<SessionId, (String, Instant)>>,
+    /// Je Session höchstens ein Start gleichzeitig: Prüfen und Starten in `resume` laufen unter
+    /// dieser Sperre, sonst starteten zwei gleichzeitige Aufrufe zwei Runner.
+    starts: std::sync::Mutex<HashMap<SessionId, Arc<Mutex<()>>>>,
 }
 
 impl Launched {
+    /// Sperre für Starts der Session.
+    fn start_lock(&self, session: SessionId) -> Arc<Mutex<()>> {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(session)
+            .or_default()
+            .clone()
+    }
+
     /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
     pub async fn pid(&self, session: SessionId) -> Option<u32> {
         self.handles.lock().await.get(&session).and_then(|h| h.pid)
@@ -72,6 +92,11 @@ impl std::fmt::Debug for Launched {
 #[derive(Clone)]
 pub struct SessionsConfig {
     pub provider: Arc<dyn RunnerProvider>,
+    /// Wie lange eine Eingabe bzw. `resume` auf die Anmeldung eines Runners wartet.
+    pub connect_timeout: Duration,
+    /// Wie lange ein gestarteter Runner als „startet gerade“ gilt; danach ersetzt ihn der
+    /// nächste Start. Deutlich über dem längsten Harness-Handshake (Codex: 30 s).
+    pub start_budget: Duration,
     pub tunnel_socket: Option<PathBuf>,
     /// Entwicklermodus: Fake-Harness erlaubt (HAR-026 AC3).
     pub dev: bool,
@@ -101,6 +126,115 @@ pub struct SessionsConfig {
     pub import_lock: Arc<Mutex<()>>,
     /// Skill-Verzeichnisse des Users für das Slash-Menü (WEB-006, AGT-008).
     pub skill_paths: crate::session_skills::SkillPaths,
+    /// `sandbox:` der User-Konfiguration (SBX-003); greift im Runner als Stufenmodell
+    /// (SBX-002). Default „Sandbox erforderlich“ (SBX-006); ohne Isolation nur mit
+    /// ausdrücklichem `backend: none` und Bestätigung je Session.
+    pub sandbox: beton_sandbox::SandboxSpec,
+    /// Probe des gewählten Backends für Vorprüfung und `GET /v1/info` (SBX-006).
+    pub sandbox_probe: Arc<crate::sandbox_status::ProbeCache>,
+    /// Launcher der Linux-Probe (`__sandbox-exec`): der Runner, falls er nicht das eigene
+    /// Binary ist (eingebettete Daemons in Tests); sonst das eigene Binary.
+    pub sandbox_launcher: Option<PathBuf>,
+    /// `proxy.extra_ca_files` (PRX-002).
+    pub proxy_extra_ca_files: Vec<PathBuf>,
+    /// Lädt die beton-CA über die Proxy-Capability (PRX-002); `None`: keine Session mit Netz
+    /// im Stufenmodell (fail closed).
+    pub proxy_ca: Option<Arc<dyn ProxyCaSource>>,
+    /// Werte und Audit der Credential-Bindings (PRX-006); `None`: Sessions mit Credentials
+    /// bekommen keine Werte (fail closed).
+    pub credentials: Option<Arc<crate::credentials::CredentialService>>,
+    /// `beton secrets test` über den Proxy-Pfad (SEC-004, SEC-011 AC3).
+    pub secret_tester: Option<Arc<crate::secret_test::SecretTester>>,
+    /// Umgebung des Daemons beim Start: Quelle `env` der Credentials (PRX-006) und `HOME` für
+    /// `~` in `file`. Geht nie an Runner oder Sandbox.
+    pub daemon_env: Arc<std::collections::BTreeMap<String, String>>,
+}
+
+/// Quelle der beton-CA für den Runner einer Session (PRX-001, PRX-002, #191).
+#[async_trait::async_trait]
+pub trait ProxyCaSource: Send + Sync {
+    /// Die CA in Übergabeform; jeder Abruf ist auditiert (SEC-012).
+    async fn handover(&self, session: SessionId) -> Result<beton_proxy::CaHandover, String>;
+}
+
+/// Die CA aus dem Secret-Store, gelesen nur über die Proxy-Capability (SEC-001 AC2).
+pub struct StoreCa {
+    pub store: beton_proxy::CaStore,
+    /// Geteilt mit den Credentials der Sessions (PRX-006); beide sind der Egress-Proxy.
+    pub cap: Arc<beton_secrets::ProxyCap>,
+    pub host_id: String,
+}
+
+#[async_trait::async_trait]
+impl ProxyCaSource for StoreCa {
+    async fn handover(&self, session: SessionId) -> Result<beton_proxy::CaHandover, String> {
+        let ca = self
+            .store
+            .load_or_create(
+                &self.cap,
+                beton_secrets::UseContext {
+                    session_id: Some(session),
+                    host_id: self.host_id.clone(),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        ca.handover().map_err(|e| e.to_string())
+    }
+}
+
+/// Was der Runner für das Stufenmodell bekommt: immer die Konfiguration (auch ausdrücklich
+/// `backend: none`, damit der Runner die Bestätigung prüft) und, bei Netz, die CA. Fehlt die
+/// CA, startet die Session nicht (PRX-002, fail closed).
+pub async fn stage_boot(
+    cfg: &SessionsConfig,
+    session: SessionId,
+) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
+    stage_boot_for(cfg, session, true).await
+}
+
+/// Wie [`stage_boot`]; `harness_net = false`: Der Harness läuft im Runner (Fake-Harness) und
+/// braucht ohne Netz der Tools keinen Proxy, also auch keine CA.
+pub async fn stage_boot_for(
+    cfg: &SessionsConfig,
+    session: SessionId,
+    harness_net: bool,
+) -> Result<(Option<beton_host::SandboxBoot>, Option<beton_host::CaText>), Problem> {
+    let spec = beton_sandbox::SandboxSpec::merged(&[&cfg.sandbox]);
+    let boot = beton_host::SandboxBoot {
+        spec: cfg.sandbox.clone(),
+        extra_ca_files: cfg.proxy_extra_ca_files.clone(),
+    };
+    if !beton_host::stages_active(&spec) {
+        return Ok((Some(boot), None));
+    }
+    // Ohne Netz für die Tools braucht der Harness in Stufe 1 trotzdem seinen Proxy für die
+    // Vendor-Hosts (Passthrough): Die CA geht mit, wenn es eine Quelle gibt; fehlt sie, entscheidet
+    // der Runner (in-process Harnesses brauchen keine, alle anderen starten nicht).
+    let tools_offline = spec.allow_network == Some(false);
+    if tools_offline && !harness_net {
+        return Ok((Some(boot), None));
+    }
+    let Some(source) = cfg.proxy_ca.as_ref() else {
+        if tools_offline {
+            return Ok((Some(boot), None));
+        }
+        return Err(Problem::new(ProblemCode::SandboxUnavailable)
+            .detail("proxy_ca_missing: keine Quelle für die beton-CA"));
+    };
+    let ca = match source.handover(session).await {
+        Ok(ca) => ca,
+        Err(_) if tools_offline => return Ok((Some(boot), None)),
+        Err(e) => {
+            return Err(
+                Problem::new(ProblemCode::SandboxUnavailable).detail(format!("beton-CA: {e}"))
+            );
+        }
+    };
+    Ok((
+        Some(boot),
+        Some(beton_host::CaText::new(ca.expose().to_owned())),
+    ))
 }
 
 impl SessionsConfig {
@@ -122,6 +256,12 @@ impl SessionsConfig {
     /// Agent-Snapshot einer Session für den Runner (AGT-004).
     pub fn agent_snapshot(&self, session: SessionId) -> PathBuf {
         self.agent_snapshots_root.join(format!("{session}.json"))
+    }
+}
+
+impl std::fmt::Debug for dyn ProxyCaSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProxyCaSource")
     }
 }
 
@@ -159,8 +299,17 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             "policy.state.apply" => {
                 crate::policy_state::policy_state_apply(&self.0, session, &args).await
             }
+            // `policy_query`-Limit je Session-Baum und Turn des Root (AGT-007, #276).
+            "policy.query" => crate::policy_state::policy_query(&self.0, session).await,
+            // Set-Snapshot je Version für Explain (POL-027 AC2).
+            "policy.snapshot" => {
+                crate::api_policies::policy_snapshot(&self.0, session, &args).await
+            }
             // Agent-Inbox (`inbox_read`, AGT-007).
             "inbox.read" => crate::policy_state::inbox_read(&self.0, session).await,
+            // Credentials der Proxy-Instanzen des Runners (PRX-006, PRX-009 AC4).
+            "credential.resolve" | "credential.used" | "credential.misuse"
+            | "egress.passthrough" => credential_call(&self.0, session, tool, &args).await,
             other => {
                 return Err(
                     json!({"code": "unknown_command", "detail": format!("System-Tool {other} kennt der Server nicht")}),
@@ -168,6 +317,70 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
             }
         };
         result.map_err(problem)
+    }
+}
+
+/// Variablen aus `sandbox.env.passthrough`, die der Runner erben muss, damit die Auflösung sie
+/// in die Sandbox übernehmen kann (SBX-005): Namen bzw. Präfixe (`LC_*`) gegen die Umgebung
+/// des Daemons, nie gesperrte (SSH_AUTH_SOCK, LD_PRELOAD, …) oder `BETON_*`.
+pub fn passthrough_names(
+    spec: &beton_sandbox::SandboxSpec,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let patterns = spec
+        .env
+        .as_ref()
+        .and_then(|e| e.passthrough.clone())
+        .unwrap_or_default();
+    let mut out: Vec<String> = env
+        .keys()
+        .filter(|k| {
+            patterns.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => k.starts_with(prefix),
+                None => *k == p,
+            })
+        })
+        .filter(|k| !beton_sandbox::spec::env_denied(k) && !k.starts_with("BETON_"))
+        .cloned()
+        .collect();
+    out.sort();
+    out
+}
+
+/// Geht der Loop des Direkt-API-Harness im Stufenmodell über den Proxy (https mit Key)?
+/// Loopback-Endpunkte über `http` behalten den Key über stdin (HAR-011).
+pub fn direct_via_proxy(
+    harness: &str,
+    providers: &std::collections::BTreeMap<String, Value>,
+) -> bool {
+    let Some(name) = harness.strip_prefix("direct:") else {
+        return false;
+    };
+    providers
+        .get(name)
+        .and_then(|v| beton_harness_direct::config::parse_provider(name, v).ok())
+        .is_some_and(|p| p.key.lookup().is_some() && p.base_url.scheme() == "https")
+}
+
+/// `credential.*` aus dem Runner einer Session; ohne Credential-Dienst nie ein Wert.
+async fn credential_call(
+    state: &AppState,
+    session: SessionId,
+    tool: &str,
+    args: &Value,
+) -> Result<Value, Problem> {
+    let cfg = &state.runtime.sessions;
+    let service = cfg.credentials.as_ref().ok_or_else(|| {
+        Problem::new(ProblemCode::CredentialSourceError).detail("Credentials sind nicht verfügbar")
+    })?;
+    match tool {
+        "credential.resolve" => {
+            let record = state.store.session(state.local.org, session).await?;
+            service.resolve(cfg, session, &record.harness, args).await
+        }
+        "credential.used" => service.used(session, args).await,
+        "egress.passthrough" => service.passthrough(session, args).await,
+        _ => service.misuse(session, args).await,
     }
 }
 
@@ -190,6 +403,31 @@ pub struct CreateSession {
     pub harness_opts: Value,
     /// Eigener Worktree (SES-015).
     pub worktree: Option<WorktreeSpec>,
+    /// Session-Budget in USD (API-006 `--max-cost`, POL-011).
+    pub max_cost_usd: Option<f64>,
+    /// Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006).
+    pub confirm_unsandboxed: bool,
+}
+
+/// Audit-Aktion einer bestätigten Session ohne Sandbox (SBX-006, SEC-012).
+pub const UNSANDBOXED_ACTION: &str = "sandbox.backend_none";
+
+/// `409 sandbox_confirmation_required` (SBX-006).
+fn unconfirmed_problem() -> Problem {
+    Problem::new(ProblemCode::SandboxConfirmationRequired).detail(
+        "`sandbox.backend: none`: Diese Session liefe ohne Sandbox. Bestätigen mit `beton run \
+         --unsandboxed` (`beton resume --unsandboxed`) bzw. `confirm_unsandboxed: true`; die \
+         Bestätigung gilt nur für diese Session und steht im Audit-Log.",
+    )
+}
+
+/// Ergebnis der Sandbox-Vorprüfung beim Anlegen (SBX-006).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SandboxStart {
+    /// Schutz der Tools für `yolo` (HAR-027).
+    pub status: beton_harness::SandboxStatus,
+    /// Ausdrücklich `backend: none`, bestätigt.
+    pub unsandboxed: bool,
 }
 
 /// Worktree-Wunsch beim Anlegen einer Session (SES-015).
@@ -353,13 +591,25 @@ impl<'a> SessionManager<'a> {
         // Anlegen geprüft; `yolo` ohne Sandbox nie, auch nicht aus einem Agent (HAR-027).
         let (agent_effort, agent_mode) =
             crate::settings::executor_settings(agent.as_ref().map(|a| &a.snapshot));
+        if let Some(a) = &agent {
+            crate::settings::agent_permission_mode(
+                a.snapshot.trust_source(),
+                agent_mode.as_deref(),
+                req.permission_mode.as_deref(),
+            )?;
+        }
         let effort = req.effort.clone().or(agent_effort);
         let permission_mode = req.permission_mode.clone().or(agent_mode);
+        let caps = self.harness_capabilities(&harness, Path::new(&req.cwd));
+        // SBX-006: Sandbox erforderlich, ohne nur ausdrücklich und bestätigt.
+        let sandbox = self
+            .sandbox_start(caps.as_ref(), req.confirm_unsandboxed)
+            .await?;
         crate::settings::validate_start(
-            self.harness_capabilities(&harness, Path::new(&req.cwd))
-                .as_ref(),
+            caps.as_ref(),
             effort.as_deref(),
             permission_mode.as_deref(),
+            sandbox.status,
         )?;
         let id = SessionId::new();
         let worktree = match &req.worktree {
@@ -389,6 +639,7 @@ impl<'a> SessionManager<'a> {
                     trigger: SessionTrigger::Api,
                     home_node: self.state.local.node,
                     harness_opts: req.harness_opts.clone(),
+                    max_cost_usd: req.max_cost_usd,
                 },
             )
             .await;
@@ -401,6 +652,10 @@ impl<'a> SessionManager<'a> {
                 return Err(e.into());
             }
         };
+        if sandbox.unsandboxed {
+            self.record_unsandboxed(session.id, PrincipalId::User(by), None)
+                .await?;
+        }
         if let Some(a) = &agent {
             self.record_agent(session.id, &a.snapshot, &a.notices)
                 .await?;
@@ -421,6 +676,101 @@ impl<'a> SessionManager<'a> {
         }
         self.launch(&session, None).await?;
         Ok(self.state.store.session(self.org(), session.id).await?)
+    }
+
+    /// Sandbox des Hosts für Clients und Vorprüfungen (SBX-006).
+    pub async fn sandbox_info(&self) -> crate::sandbox_status::SandboxInfo {
+        let cfg = self.cfg();
+        cfg.sandbox_probe
+            .info_with(
+                &cfg.sandbox,
+                cfg.proxy_ca.is_some(),
+                cfg.sandbox_launcher.as_deref(),
+            )
+            .await
+    }
+
+    /// Vorprüfung der Sandbox vor dem Anlegen einer Session (SBX-006, SBX-002 AC4): Ohne
+    /// nutzbares Backend `503 sandbox_unavailable`; `backend: none` nur mit Bestätigung
+    /// (`409 sandbox_confirmation_required`). Liefert, was für `yolo` gilt. Maßgeblich bleibt
+    /// der Runner.
+    pub(crate) async fn sandbox_start(
+        &self,
+        caps: Option<&beton_harness::Capabilities>,
+        confirmed: bool,
+    ) -> Result<SandboxStart, Problem> {
+        let spec = beton_sandbox::SandboxSpec::merged(&[&self.cfg().sandbox]);
+        if spec.unsandboxed() {
+            if !confirmed {
+                return Err(unconfirmed_problem());
+            }
+            return Ok(SandboxStart {
+                status: beton_harness::SandboxStatus::NONE,
+                unsandboxed: true,
+            });
+        }
+        let info = self.sandbox_info().await;
+        if !info.active {
+            return Err(info.unavailable());
+        }
+        let inherited =
+            caps.is_some_and(|c| c.tool_isolation == beton_harness::ToolIsolation::Inherited);
+        if inherited && spec.require_tool_isolation != Some(false) {
+            let provider = info
+                .provider
+                .clone()
+                .unwrap_or_else(|| info.backend.clone());
+            let hint = "Der Harness führt Tools selbst aus (tool_isolation: inherited) und \
+                        kann Stufe 2 nicht erzwingen; mit sandbox.require_tool_isolation: false \
+                        startet die Session als degraded";
+            return Err(Problem::new(ProblemCode::SandboxUnavailable)
+                .detail(format!("sandbox_unavailable: {provider}: {hint}"))
+                .sandbox(provider, Vec::new(), Some(hint.into())));
+        }
+        Ok(SandboxStart {
+            status: info.status(inherited),
+            unsandboxed: false,
+        })
+    }
+
+    /// Bestätigtes `backend: none` (SBX-006): Audit-Eintrag (SEC-012); im Log der Session
+    /// zeigt es `sandbox.started` (`backend: none`, `degraded`). `from`: Quelle bzw. Parent,
+    /// deren Bestätigung ein Fork oder Sub-Agent übernimmt.
+    pub(crate) async fn record_unsandboxed(
+        &self,
+        session: SessionId,
+        by: PrincipalId,
+        from: Option<SessionId>,
+    ) -> Result<(), Problem> {
+        self.state
+            .store
+            .append_audit(
+                self.org(),
+                beton_store::NewAuditEntry {
+                    at: beton_core::time::Timestamp::now(),
+                    actor: by,
+                    action: UNSANDBOXED_ACTION.into(),
+                    target_kind: "session".into(),
+                    target_id: session.to_string(),
+                    session_id: Some(session),
+                    host_id: None,
+                    details: match from {
+                        Some(f) => json!({"confirmed": "inherited", "from_session": f}),
+                        None => json!({"confirmed": "request"}),
+                    },
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Hat die Session `backend: none` bestätigt (sie selbst oder geerbt)?
+    pub(crate) async fn unsandboxed_confirmed(&self, session: SessionId) -> Result<bool, Problem> {
+        Ok(self
+            .state
+            .store
+            .audit_has_session_entry(self.org(), UNSANDBOXED_ACTION, session)
+            .await?)
     }
 
     /// Legt den Worktree einer neuen Session an (SES-015).
@@ -590,20 +940,53 @@ impl<'a> SessionManager<'a> {
         let settings = crate::settings::current(&self.all_events(session.id).await?);
         let fork = self.fork_boot(session, resume.as_deref()).await?;
         let agent_snapshot = self.snapshot_file(session.id).await?;
+        let (sandbox, proxy_ca) = stage_boot_for(
+            cfg,
+            session.id,
+            session.harness != beton_harness::HarnessId::FAKE,
+        )
+        .await?;
+        // Die Bestätigung von `backend: none` steht im Audit-Log und gilt für die ganze
+        // Session, auch nach Resume (SBX-006).
+        let unsandboxed_confirmed = self
+            .state
+            .store
+            .audit_has_session_entry(self.org(), UNSANDBOXED_ACTION, session.id)
+            .await?;
+        if !beton_host::stages_active(&beton_sandbox::SandboxSpec::merged(&[&cfg.sandbox]))
+            && !unsandboxed_confirmed
+        {
+            // Z. B. eine importierte Session: erst mit Bestätigung (Resume mit
+            // `confirm_unsandboxed`), nie still ohne Sandbox (SBX-006).
+            return Err(unconfirmed_problem());
+        }
         let token = self
             .state
             .runtime
             .runners
             .mint_token(session.id)
             .map_err(|e| Problem::internal(&e))?;
+        let boot_token = token.clone();
         let spec = RunnerSpec {
             runner_id: RunnerId::new(),
             session_id: session.id,
             harness: session.harness.clone(),
             workspace,
-            env_allowlist: Vec::new(),
+            // `sandbox.env.passthrough` (SBX-005): Der Runner erbt nur diese Variablen, damit
+            // die Auflösung sie in die Sandbox übernehmen kann.
+            env_allowlist: if sandbox.is_some() {
+                passthrough_names(&cfg.sandbox, &cfg.daemon_env)
+            } else {
+                Vec::new()
+            },
             // API-Keys für `direct:*` (HAR-011) gehen über stdin, nie in die Runner-Umgebung.
-            secret_env: beton_harness_direct::key_vars(&session.harness, &cfg.providers),
+            // Im Stufenmodell nicht für https-Provider: Dort sieht der Loop nur einen
+            // Platzhalter, den der Proxy ersetzt (HAR-011 AC2, PRX-006).
+            secret_env: if sandbox.is_some() && direct_via_proxy(&session.harness, &cfg.providers) {
+                Vec::new()
+            } else {
+                beton_harness_direct::key_vars(&session.harness, &cfg.providers)
+            },
         };
         let provisioned = cfg
             .provider
@@ -616,7 +999,7 @@ impl<'a> SessionManager<'a> {
                 &provisioned,
                 &RunnerBoot {
                     tunnel_socket: socket,
-                    token,
+                    token: boot_token,
                     session_id: session.id,
                     epoch: session.epoch,
                     harness: session.harness.clone(),
@@ -639,18 +1022,31 @@ impl<'a> SessionManager<'a> {
                     },
                     snapshots: Some(cfg.snapshots_dir(session.id)),
                     fork,
+                    sandbox,
+                    unsandboxed_confirmed,
+                    proxy_ca,
+                    compaction: self.state.runtime.compaction,
+                    max_cost_usd: created.max_cost_usd,
+                    spawned: created.trigger == SessionTrigger::Spawn,
                 },
             )
             .await
             .map_err(|e| Problem::new(ProblemCode::Unavailable).detail(e.to_string()))?;
         cfg.launched.handles.lock().await.insert(session.id, handle);
+        cfg.launched
+            .tokens
+            .lock()
+            .await
+            .insert(session.id, (token, Instant::now()));
         Ok(())
     }
 
     pub(crate) async fn wait_connected(&self, session: SessionId) -> Result<(), Problem> {
         let start = Instant::now();
         while !self.state.runtime.runners.connected(session) {
-            if start.elapsed() > CONNECT_TIMEOUT {
+            if start.elapsed() > self.cfg().connect_timeout {
+                // Der Runner startet weiter (Harness-Handshake, MCP-Server); der nächste
+                // Versuch wartet auf ihn, ersetzt wird er erst nach dem Start-Budget.
                 return Err(
                     Problem::new(ProblemCode::Unavailable).detail("Runner meldet sich nicht")
                 );
@@ -660,12 +1056,51 @@ impl<'a> SessionManager<'a> {
         Ok(())
     }
 
+    /// Räumt den vorigen Start vor einem neuen ab: Token sperren, Prozess beenden (falls er nach
+    /// dem Start-Budget noch läuft). Nur unter der Start-Sperre der Session aufrufen; dann gehört
+    /// der Eintrag sicher zur Generation vor dem neuen Start.
+    async fn replace_start(&self, session: SessionId) {
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            self.state.runtime.runners.revoke_token(&token);
+        }
+        if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
+            let _ = self
+                .cfg()
+                .provider
+                .terminate(&h, TerminateMode::Force)
+                .await;
+        }
+    }
+
+    /// Wie [`Self::resume`]; `confirm_unsandboxed` bestätigt `backend: none` für eine Session,
+    /// die noch keine Bestätigung hat (z. B. importiert, SBX-006).
+    pub async fn resume_confirmed(
+        &self,
+        session: SessionId,
+        by: PrincipalId,
+        confirm_unsandboxed: bool,
+    ) -> Result<SessionRecord, Problem> {
+        if confirm_unsandboxed
+            && beton_sandbox::SandboxSpec::merged(&[&self.cfg().sandbox]).unsandboxed()
+            && !self.unsandboxed_confirmed(session).await?
+        {
+            self.state.store.session(self.org(), session).await?;
+            self.record_unsandboxed(session, by, None).await?;
+        }
+        self.resume(session).await
+    }
+
     /// Setzt eine gestoppte Session mit neuem Runner fort (SES-003).
     pub async fn resume(&self, session: SessionId) -> Result<SessionRecord, Problem> {
         let record = self.state.store.session(self.org(), session).await?;
-        if !self.await_adopted(session).await {
-            let reference = self.last_native_ref(session).await?;
-            self.launch(&record, reference).await?;
+        {
+            let starts = self.cfg().launched.start_lock(session);
+            let _start = starts.lock().await;
+            if !self.await_adopted(session).await && !self.runner_starting(session).await {
+                self.replace_start(session).await;
+                let reference = self.last_native_ref(session).await?;
+                self.launch(&record, reference).await?;
+            }
         }
         self.wait_connected(session).await?;
         Ok(self.state.store.session(self.org(), session).await?)
@@ -688,8 +1123,27 @@ impl<'a> SessionManager<'a> {
 
     /// Läuft (oder startet gerade) ein Runner für die Session?
     async fn runner_alive(&self, session: SessionId) -> bool {
-        if self.await_adopted(session).await {
-            return true;
+        self.await_adopted(session).await || self.runner_starting(session).await
+    }
+
+    /// Ist der zuletzt gestartete Runner noch auf dem Weg zum Tunnel? Sein Prozess läuft, sein
+    /// Token gilt, und das Start-Budget ist nicht abgelaufen. Nach einem geordneten Stopp ist
+    /// das Token gesperrt: Ein Prozess, der sich nur noch beendet, meldet sich nicht wieder
+    /// (#198).
+    async fn runner_starting(&self, session: SessionId) -> bool {
+        let launched = self
+            .cfg()
+            .launched
+            .tokens
+            .lock()
+            .await
+            .get(&session)
+            .cloned();
+        let budget = self.cfg().start_budget;
+        if !launched.is_some_and(|(t, at)| {
+            at.elapsed() < budget && self.state.runtime.runners.token_valid(&t)
+        }) {
+            return false;
         }
         let handle = self
             .cfg()
@@ -713,27 +1167,9 @@ impl<'a> SessionManager<'a> {
         if self.await_adopted(session).await {
             return Ok(());
         }
-        // Ein frisch gestarteter Runner verbindet sich gleich; ein beendeter wird ersetzt.
-        let handle = self
-            .cfg()
-            .launched
-            .handles
-            .lock()
-            .await
-            .get(&session)
-            .cloned();
-        let starting = match &handle {
-            Some(h) => matches!(
-                self.cfg().provider.status(h).await,
-                Ok(beton_host::RunnerStatus::Running)
-            ),
-            None => false,
-        };
-        if !starting {
-            self.cfg().launched.handles.lock().await.remove(&session);
-            self.resume(session).await?;
-        }
-        self.wait_connected(session).await
+        // Ein startender Runner verbindet sich gleich; ein beendeter, geordnet gestoppter oder
+        // über das Start-Budget hängender wird unter der Start-Sperre ersetzt.
+        self.resume(session).await.map(|_| ())
     }
 
     /// Kann der Harness der Session Eingaben in den laufenden Turn nehmen? Laut den
@@ -1181,6 +1617,11 @@ impl<'a> SessionManager<'a> {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
+        // Auch ein Runner, der sich noch nicht gemeldet hat, kommt danach nicht mehr in den
+        // Tunnel (Security-Review zu #198).
+        if let Some((token, _)) = self.cfg().launched.tokens.lock().await.remove(&session) {
+            runners.revoke_token(&token);
+        }
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1233,6 +1674,7 @@ impl<'a> SessionManager<'a> {
             .map_err(|e| Problem::internal(&e))??;
         }
         self.state.runtime.runners.revoke_tokens(session);
+        self.cfg().launched.tokens.lock().await.remove(&session);
         if let Some(h) = self.cfg().launched.handles.lock().await.remove(&session) {
             let _ = self
                 .cfg()
@@ -1287,6 +1729,7 @@ pub(crate) async fn discard_worktree(wt: beton_git::worktree::Created) {
 pub async fn shutdown_all(cfg: &SessionsConfig, runners: &crate::tunnel::RunnerRegistry) {
     let handles: Vec<(SessionId, RunnerHandle)> =
         cfg.launched.handles.lock().await.drain().collect();
+    cfg.launched.tokens.lock().await.clear();
     // Runner mit offener Freigabe überdauern den Daemon (POL-010 AC4): abkoppeln statt beenden;
     // der nächste Daemon nimmt ihr Token bis zum Ablauf der Freigabe an.
     let mut candidates: Vec<SessionId> = runners.connected_sessions();
@@ -1399,4 +1842,140 @@ async fn tidy_worktrees(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stage_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn sbx_005_runner_inherits_only_configured_passthrough_variables() {
+        let spec = beton_sandbox::SandboxSpec::from_yaml(
+            "env:\n  passthrough: [RUST_LOG, \"LC_*\", NODE_OPTIONS]\n",
+        )
+        .unwrap();
+        let env: std::collections::BTreeMap<String, String> = [
+            ("RUST_LOG", "debug"),
+            ("LC_ALL", "C"),
+            ("LC_CTYPE", "C"),
+            ("AWS_SECRET_ACCESS_KEY", "FIXTURE"),
+            ("SSH_AUTH_SOCK", "/tmp/agent"),
+            ("BETON_TOKEN", "x"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        assert_eq!(
+            passthrough_names(&spec, &env),
+            ["LC_ALL", "LC_CTYPE", "RUST_LOG"]
+        );
+        assert!(passthrough_names(&beton_sandbox::SandboxSpec::default(), &env).is_empty());
+    }
+
+    #[test]
+    fn har_011_ac2_only_https_providers_with_key_go_via_the_proxy() {
+        let providers: std::collections::BTreeMap<String, Value> = [
+            ("or", json!({"kind": "openai", "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OR_KEY"})),
+            ("local", json!({"kind": "openai", "base_url": "http://127.0.0.1:4000/v1", "api_key_env": "L_KEY"})),
+            ("ollama", json!({"kind": "openai", "base_url": "http://127.0.0.1:11434/v1", "api_key": "none"})),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v))
+        .collect();
+        assert!(direct_via_proxy("direct:or", &providers));
+        assert!(!direct_via_proxy("direct:local", &providers));
+        assert!(!direct_via_proxy("direct:ollama", &providers));
+        assert!(!direct_via_proxy("claude", &providers));
+    }
+
+    struct FixedCa(Result<(), String>);
+
+    #[async_trait::async_trait]
+    impl ProxyCaSource for FixedCa {
+        async fn handover(&self, _: SessionId) -> Result<beton_proxy::CaHandover, String> {
+            self.0.clone()?;
+            beton_proxy::BetonCa::generate("stagetest", time::OffsetDateTime::now_utc())
+                .unwrap()
+                .handover()
+                .map_err(|e| e.to_string())
+        }
+    }
+
+    fn cfg(yaml: &str, ca: Option<Result<(), String>>) -> SessionsConfig {
+        let tmp = std::env::temp_dir();
+        SessionsConfig {
+            provider: Arc::new(beton_host::LocalProvider::new(Vec::new(), tmp.clone())),
+            tunnel_socket: None,
+            dev: false,
+            launched: Arc::default(),
+            harnesses_user: Default::default(),
+            providers: Default::default(),
+            worktrees_root: tmp.clone(),
+            snapshots_root: tmp.clone(),
+            forks_root: tmp.clone(),
+            fresh_root: tmp.clone(),
+            agent_snapshots_root: tmp.clone(),
+            beton_home: tmp,
+            vendor_env: beton_harness::HostEnv::default(),
+            import_lock: Arc::default(),
+            skill_paths: crate::session_skills::SkillPaths::from_process(),
+            sandbox: beton_sandbox::SandboxSpec::from_yaml(yaml).unwrap(),
+            sandbox_probe: Arc::default(),
+            sandbox_launcher: None,
+            proxy_extra_ca_files: vec![PathBuf::from("/etc/firmen-ca.pem")],
+            proxy_ca: ca.map(|r| Arc::new(FixedCa(r)) as Arc<dyn ProxyCaSource>),
+            credentials: None,
+            secret_tester: None,
+            daemon_env: Arc::default(),
+            connect_timeout: CONNECT_TIMEOUT,
+            start_budget: START_BUDGET,
+        }
+    }
+
+    #[tokio::test]
+    async fn sbx_006_runner_gets_stage_config_by_default_and_backend_none_explicitly() {
+        // SBX-006: Ohne `backend` gilt „Sandbox erforderlich“ (mit CA für den Proxy).
+        let (sb, ca) = stage_boot(&cfg("{}\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        assert!(sb.is_some() && ca.unwrap().ca().is_ok());
+        // `backend: none` geht ausdrücklich an den Runner (er prüft die Bestätigung), ohne CA.
+        let (sb, ca) = stage_boot(&cfg("backend: none\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            sb.unwrap().spec.backend,
+            Some(beton_sandbox::BackendChoice::Provider(
+                beton_sandbox::ProviderId::None
+            ))
+        );
+        assert!(ca.is_none());
+        let (sb, ca) = stage_boot(&cfg("backend: auto\n", Some(Ok(()))), SessionId::new())
+            .await
+            .unwrap();
+        let sb = sb.unwrap();
+        assert!(sb.spec.backend.is_some());
+        assert_eq!(sb.extra_ca_files, vec![PathBuf::from("/etc/firmen-ca.pem")]);
+        assert!(ca.unwrap().ca().is_ok());
+    }
+
+    #[tokio::test]
+    async fn prx_002_session_with_network_but_without_ca_does_not_start() {
+        for source in [None, Some(Err("secrets_locked".to_owned()))] {
+            let err = stage_boot(&cfg("backend: auto\n", source), SessionId::new())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, ProblemCode::SandboxUnavailable, "{err:?}");
+        }
+        // Ohne Netz braucht es keine CA.
+        let (sb, ca) = stage_boot(
+            &cfg("backend: auto\nallow_network: false\n", None),
+            SessionId::new(),
+        )
+        .await
+        .unwrap();
+        assert!(sb.is_some() && ca.is_none());
+    }
 }

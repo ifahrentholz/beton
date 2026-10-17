@@ -84,6 +84,18 @@ pub struct CreateSessionRequest {
     #[serde(default)]
     #[ts(optional)]
     pub worktree: Option<WorktreeRequest>,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);
+    /// erreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab.
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_cost_usd: Option<f64>,
+    /// Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): ohne Bestätigung
+    /// `409 sandbox_confirmation_required`; mit ihr ein Audit-Eintrag `sandbox.backend_none`.
+    /// Eine User-Policy kann `backend: none` trotzdem verbieten (SBX-006 AC4).
+    #[serde(default)]
+    #[ts(optional)]
+    pub confirm_unsandboxed: Option<bool>,
 }
 
 /// Worktree-Wunsch beim Anlegen einer Session (SES-015).
@@ -109,6 +121,7 @@ pub struct WorktreeRequest {
 #[utoipa::path(post, path = "/v1/sessions", tag = "sessions",
     request_body = CreateSessionRequest,
     responses((status = 201, description = "Session angelegt", body = SessionSummary),
+              (status = 400, description = "`validation_failed`, z. B. `max_cost_usd` nicht positiv", body = Problem, content_type = "application/problem+json"),
               (status = 404, description = "Agent nicht gefunden (`agent_not_found`)", body = Problem, content_type = "application/problem+json"),
               (status = 409, description = "Worktree gewünscht, aber kein Git-Repository; `sandbox_required` bei `yolo` ohne Sandbox; `capability_unsupported`, wenn der Harness Effort bzw. Permission-Mode nicht kennt", body = Problem, content_type = "application/problem+json"),
               (status = 422, description = "Base nicht auflösbar (`base_not_found`), Agent ungültig (`agent_invalid`), Parameter ungültig (`invalid_param`) oder Pflichtparameter fehlen (`params_required`), Harness passt nicht zum Agent (`harness_incompatible`)", body = Problem, content_type = "application/problem+json")))]
@@ -118,6 +131,12 @@ pub async fn create_session(
     ApiJson(req): ApiJson<CreateSessionRequest>,
 ) -> ApiResult<Response> {
     let (user, _) = principal(auth);
+    if let Some(max) = req.max_cost_usd
+        && !(max.is_finite() && max > 0.0)
+    {
+        return Err(Problem::new(ProblemCode::ValidationFailed)
+            .detail("`max_cost_usd` muss ein positiver Betrag in USD sein"));
+    }
     let record = state
         .sessions()
         .create(
@@ -144,6 +163,8 @@ pub async fn create_session(
                     base: w.base,
                     fetch: w.fetch.unwrap_or(true),
                 }),
+                max_cost_usd: req.max_cost_usd,
+                confirm_unsandboxed: req.confirm_unsandboxed.unwrap_or(false),
             },
         )
         .await?;
@@ -192,6 +213,11 @@ pub struct ForkRequest {
     #[schema(value_type = Object)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub harness_opts: Value,
+    /// Bestätigt `sandbox.backend: none` für den Fork (SBX-006); der Fork einer bestätigten
+    /// Session übernimmt deren Bestätigung (Audit-Eintrag mit Quelle).
+    #[serde(default)]
+    #[ts(optional)]
+    pub confirm_unsandboxed: Option<bool>,
 }
 
 /// Ergebnis eines Forks.
@@ -291,6 +317,7 @@ pub async fn fork_session(
                 workspace: req.workspace,
                 title: req.title,
                 harness_opts: req.harness_opts,
+                confirm_unsandboxed: req.confirm_unsandboxed.unwrap_or(false),
             },
         )
         .await?;
@@ -484,15 +511,36 @@ pub async fn compact_session(
     Ok((StatusCode::ACCEPTED, axum::Json(serde_json::json!({}))).into_response())
 }
 
+/// Parameter von `POST /v1/sessions/{id}/resume`.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ResumeQuery {
+    /// Bestätigt `sandbox.backend: none` für eine Session ohne Bestätigung, z. B. eine
+    /// importierte (SBX-006); Audit-Eintrag `sandbox.backend_none`.
+    #[serde(default)]
+    pub confirm_unsandboxed: Option<bool>,
+}
+
 /// Gestoppte Session fortsetzen (SES-003).
 #[utoipa::path(post, path = "/v1/sessions/{id}/resume", tag = "sessions",
-    params(("id" = String, Path)),
-    responses((status = 200, description = "Runner läuft", body = SessionSummary)))]
+    params(("id" = String, Path), ResumeQuery),
+    responses((status = 200, description = "Runner läuft", body = SessionSummary),
+              (status = 409, description = "`sandbox_confirmation_required`: `backend: none` ohne Bestätigung für diese Session", body = Problem, content_type = "application/problem+json")))]
 pub async fn resume_session(
     State(state): State<AppState>,
+    Extension(auth): Extension<Authenticated>,
     Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<ResumeQuery>,
 ) -> ApiResult<axum::Json<SessionSummary>> {
-    let record = state.sessions().resume(session_id(&id)?).await?;
+    let (user, _) = principal(auth);
+    let record = state
+        .sessions()
+        .resume_confirmed(
+            session_id(&id)?,
+            PrincipalId::User(user),
+            q.confirm_unsandboxed.unwrap_or(false),
+        )
+        .await?;
     Ok(axum::Json(summary_of(&state, record.id).await?))
 }
 

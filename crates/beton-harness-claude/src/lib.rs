@@ -29,8 +29,8 @@ use beton_harness::{
     ExitInfo, ForkHistory, Gate, GateDecision, GateOrigin, GateRequest, HarnessAdapter,
     HarnessError, HarnessId, HarnessSession, HostEnv, InstructionsDelivery, Mode, ModelRequestGate,
     NormalizedEvent, OneShotReply, OneShotRequest, PermissionMode, ProbeReport, ResumeSupport,
-    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, Transport,
-    UsageReporting, UserInput,
+    SessionSpec, Shutdown, Subagents, SwitchOutcome, SwitchSupport, ToolCallGate, ToolIsolation,
+    Transport, UsageReporting, UserInput,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -143,10 +143,48 @@ pub fn capabilities() -> Capabilities {
         permission_modes: PermissionMode::ALL.to_vec(),
         // Standard-Kontextfenster der Claude-Modelle (Handover-Budget, HAR-018).
         context_window: Some(200_000),
-        // Claude Code liest `CLAUDE.md` selbst, `AGENTS.md` nicht (AGT-005).
-        native_project_files: vec!["CLAUDE.md".into()],
+        // Mit `--setting-sources user` liest Claude Code weder `CLAUDE.md` noch Skills des
+        // Projekts (gegen 2.1.296 geprüft, #233); beton liefert beide (AGT-005, AGT-008).
+        // Bash-Tool über `CLAUDE_CODE_SHELL=<bt-exec-zsh>` in Stufe 2 (SBX-002, gegen 2.1.296
+        // verifiziert; nicht `CLAUDE_CODE_SHELL_PREFIX`, der auch Hooks und MCP-Server umhüllt).
+        tool_isolation: ToolIsolation::ShellOverride,
+        native_project_files: Vec::new(),
     }
 }
+
+/// Variablen der zweistufigen Sandbox (SBX-002, verifiziert gegen 2.1.296): Das Bash-Tool
+/// startet `CLAUDE_CODE_SHELL -c <kommando>`, also `bt-exec-<shell>` und damit Stufe 2; die
+/// cwd-Datei (`claude-<id>-cwd`) und Hintergrund-Ausgaben legt Claude in
+/// `CLAUDE_CODE_TMPDIR` ab, dem Austausch mit Stufe 2. Der Pfad der Shell muss `zsh` bzw.
+/// `bash` enthalten; gewählt wird die Familie aus `SHELL`.
+pub fn stage_env(stage: Option<&beton_harness::StageEnv>) -> Vec<(String, String)> {
+    let Some(stage) = stage else {
+        return Vec::new();
+    };
+    let flavor = if std::env::var("SHELL").is_ok_and(|s| s.contains("zsh")) {
+        "zsh"
+    } else {
+        "bash"
+    };
+    vec![
+        (
+            "CLAUDE_CODE_SHELL".into(),
+            stage
+                .shim_dir
+                .join(format!("bt-exec-{flavor}"))
+                .display()
+                .to_string(),
+        ),
+        (
+            "CLAUDE_CODE_TMPDIR".into(),
+            stage.exchange.display().to_string(),
+        ),
+    ]
+}
+
+/// Tools, die Claude über `CLAUDE_CODE_SHELL` startet (Integritätsprüfung des Runners,
+/// SBX-002). `BashOutput`/`KillShell` starten nichts.
+pub const SHELL_TOOLS: [&str; 1] = ["Bash"];
 
 /// Tool-Klassen, für die Claude Code im Modus `default` selbst um Freigabe fragt
 /// (`can_use_tool`); Lesen, Suchen und sichere Shell-Kommandos wie `echo` erlaubt die CLI ohne
@@ -160,12 +198,37 @@ pub fn kind_of(tool: &str) -> String {
 
 /// Settings mit dem `PreToolUse`-Hook (HAR-005): `command` ist die shell-gequotete
 /// Kommandozeile von `beton hook claude …`, `timeout_s` die Frist der CLI für den Hook.
+/// `disableAllHooks: false` hat Vorrang vor `disableAllHooks: true` aus anderen Quellen (gegen
+/// 2.1.296 geprüft, #233).
 pub fn hook_settings(command: &str, timeout_s: u64) -> String {
-    json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [
-        {"type": "command", "command": command, "timeout": timeout_s}
-    ]}]}})
-    .to_string()
+    Value::Object(session_settings(Some((command, timeout_s)))).to_string()
 }
+
+/// Inhalt des `--settings`-JSON einer Session als Objekt: `disableAllHooks: false` und – mit
+/// Hook – `hooks.PreToolUse`. Weitere Schlüssel (z. B. `env`) ergänzt der Aufrufer mit
+/// `insert`, bevor er das Objekt serialisiert; alles, was beton der CLI über Einstellungen
+/// vorgibt, gehört in dieses eine JSON (die CLI kennt nur ein `--settings`).
+pub fn session_settings(hook: Option<(&str, u64)>) -> serde_json::Map<String, Value> {
+    let mut settings = serde_json::Map::new();
+    settings.insert("disableAllHooks".into(), Value::Bool(false));
+    if let Some((command, timeout_s)) = hook {
+        settings.insert(
+            "hooks".into(),
+            json!({"PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": command, "timeout": timeout_s}
+            ]}]}),
+        );
+    }
+    settings
+}
+
+/// Einstellungsquellen der CLI (#233): nur die des Nutzers. `.claude/settings.json` und
+/// `.claude/settings.local.json` liegen im Repository und damit in der Hand des Agents bzw.
+/// eines fremden Repos; sie könnten den beton-Hook abschalten (`disableAllHooks`), eigene
+/// Hooks mit `updatedInput` nach der Prüfung einschleusen oder per `apiKeyHelper`/
+/// `statusLine`/Hooks Code außerhalb des Gates ausführen (gegen 2.1.296 geprüft). Damit lädt
+/// die CLI auch `CLAUDE.md`, Skills, Agents, Kommandos und `.mcp.json` des Projekts nicht.
+pub const SETTING_SOURCES: &str = "user";
 
 /// Name der Instructions-Datei im privaten Verzeichnis der Session.
 pub const INSTRUCTIONS_FILE: &str = "instructions.md";
@@ -237,6 +300,8 @@ pub fn command_args_with(
         "--include-partial-messages",
         "--permission-prompt-tool",
         "stdio",
+        "--setting-sources",
+        SETTING_SOURCES,
     ]
     .iter()
     .map(|s| (*s).to_owned())
@@ -278,9 +343,11 @@ pub fn command_args_with(
         if let Some(dir) = &spec.mcp.skills_dir {
             args.extend(["--plugin-dir".into(), dir.display().to_string()]);
         }
-        if let Some(settings) = settings {
-            args.extend(["--settings".into(), settings.to_owned()]);
-        }
+    }
+    // Isoliert schaltet `--safe-mode` Hooks auch aus `--settings` ab, `env` wirkt weiter
+    // (verifiziert gegen 2.1.296); Hook-Settings gibt es isoliert ohnehin nicht.
+    if let Some(settings) = settings {
+        args.extend(["--settings".into(), settings.to_owned()]);
     }
     args
 }
@@ -304,6 +371,9 @@ pub fn one_shot_args(req: &OneShotRequest, isolated: bool) -> Vec<String> {
         // `--tools`), und der Modus ausdrücklich, damit `.claude/settings.json` ihn nicht lockert:
         // `dontAsk` lehnt alles ab, was nicht vorab erlaubt ist (HAR-027).
         "--strict-mcp-config",
+        // Keine Projekt-Einstellungen (`apiKeyHelper`, Hooks; #233).
+        "--setting-sources",
+        SETTING_SOURCES,
         "--permission-mode",
         "dontAsk",
         "--model",
@@ -400,14 +470,9 @@ impl HarnessAdapter for ClaudeAdapter {
             } else {
                 ToolCallGate::Full
             },
-            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009), und Claude liest
-            // auch `CLAUDE.md` nicht (laut `claude --help` 2.1.285).
+            // Isoliert (`--safe-mode`) kommen keine MCP-Server an (HAR-009). `CLAUDE.md` liest
+            // Claude in keinem Modus selbst (`--safe-mode` bzw. `--setting-sources user`).
             mcp_injection: !self.isolated,
-            native_project_files: if self.isolated {
-                Vec::new()
-            } else {
-                caps.native_project_files.clone()
-            },
             ..caps
         }
     }
@@ -484,7 +549,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_env(ctx.stage.as_ref()),
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(request.workdir.clone()),
@@ -514,6 +579,17 @@ impl HarnessAdapter for ClaudeAdapter {
         spec: SessionSpec,
         ctx: AdapterContext,
     ) -> Result<Box<dyn HarnessSession>, HarnessError> {
+        Ok(Box::new(self.launch(spec, ctx).await?))
+    }
+}
+
+impl ClaudeAdapter {
+    /// Startet die CLI und liefert die konkrete Session (für [`HarnessAdapter::start`]).
+    async fn launch(
+        &self,
+        spec: SessionSpec,
+        ctx: AdapterContext,
+    ) -> Result<ClaudeSession, HarnessError> {
         // Installiert-Prüfung macht `Registry::start` über den Probe; ohne Auflösung bleibt
         // der Name, damit Replays (Golden-Tests) ohne CLI laufen.
         let (program, mut args) = match resolve_binary(&harness_id(), "claude", &ctx.env) {
@@ -554,9 +630,26 @@ impl HarnessAdapter for ClaudeAdapter {
             }
             _ => None,
         };
-        let settings = hook.as_ref().map(|(_, line)| {
+        let stage_vars = stage_env(ctx.stage.as_ref());
+        // Ein `--settings`-JSON (die CLI kennt nur eines): Hook (HAR-005, nur nicht isoliert)
+        // und die Variablen des Stufenmodells zusätzlich als `env` (SBX-002). Gegen 2.1.296
+        // verifiziert: Die Prozess-Umgebung gewinnt gegen `env` aus Einstellungen, `--settings`
+        // ist unter den Einstellungen vorrangig und wirkt auch mit `--safe-mode`; so bleibt die
+        // Shell von beton, auch wenn eine spätere Version Einstellungen über die Umgebung stellt.
+        let settings = (hook.is_some() || !stage_vars.is_empty()).then(|| {
             // Frist der CLI: Wartezeit auf eine Freigabe plus Puffer (HAR-013).
-            hook_settings(line, self.gate_timeout.as_secs() + 30)
+            let mut settings = session_settings(
+                hook.as_ref()
+                    .map(|(_, line)| (line.as_str(), self.gate_timeout.as_secs() + 30)),
+            );
+            if !stage_vars.is_empty() {
+                let vars: serde_json::Map<String, Value> = stage_vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                    .collect();
+                settings.insert("env".into(), Value::Object(vars));
+            }
+            Value::Object(settings).to_string()
         });
         args.extend(command_args_with(
             &spec,
@@ -578,7 +671,7 @@ impl HarnessAdapter for ClaudeAdapter {
         let launch = LaunchSpec {
             program,
             args,
-            env: Vec::new(),
+            env: stage_vars,
             env_remove: self.env_remove(),
             clear_env: false,
             cwd: Some(spec.workdir.clone()),
@@ -586,7 +679,8 @@ impl HarnessAdapter for ClaudeAdapter {
         let mut process = ctx.launcher.launch(launch).await?;
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
-        state.lock().await.session_ref = session_ref;
+        state.lock().await.session_ref.clone_from(&session_ref);
+        let native_ref: NativeRef = Arc::new(std::sync::Mutex::new(session_ref));
         let mut caps = HarnessAdapter::capabilities(self, Mode::Native, &ProbeReport::default());
         if hook.is_none() {
             caps.tool_call_gate = ToolCallGate::ApprovalOnly;
@@ -595,11 +689,20 @@ impl HarnessAdapter for ClaudeAdapter {
         let process = Arc::new(Mutex::new(process));
         let closing = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        write_json(
+        let init = write_json(
             &stdin,
             &json!({"type": "control_request", "request_id": "beton_init", "request": {"subtype": "initialize"}}),
         )
-        .await?;
+        .await;
+        match init {
+            // Die CLI ist schon beendet (#316): kein Startfehler, sondern ein unerwarteter
+            // Exit; die Leseschleife sieht das Ende von stdout und meldet `harness.exited` mit
+            // Code und stderr (HAR-001), wie bei einem Exit kurz nach diesem Schreiben.
+            Err(HarnessError::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                tracing::debug!("claude: CLI endete vor initialize");
+            }
+            other => other?,
+        }
 
         tokio::spawn(read_loop(
             io.stdout,
@@ -612,11 +715,13 @@ impl HarnessAdapter for ClaudeAdapter {
                 plan_locked: spec.plan_locked,
                 process: process.clone(),
                 closing: closing.clone(),
+                native_ref: native_ref.clone(),
             },
         ));
-        Ok(Box::new(ClaudeSession {
+        Ok(ClaudeSession {
             stdin,
             state,
+            native_ref,
             tx,
             rx: Some(rx),
             process,
@@ -625,11 +730,16 @@ impl HarnessAdapter for ClaudeAdapter {
             _instructions: instructions.map(|(dir, _)| dir),
             _hook: hook.map(|(server, _)| server),
             caps,
-        }))
+        })
     }
 }
 
 type Writer = Arc<Mutex<Option<Box<dyn AsyncWrite + Send + Unpin>>>>;
+
+/// Native Session-Referenz, lesbar ohne den Zustand der Leseschleife (HAR-020 AC2, #305):
+/// Mit `try_lock` auf den Zustand kam `None`, solange die Leseschleife eine Zeile abbildete.
+/// Die `std`-Sperre wird nie über ein `await` gehalten, Lesen wartet höchstens kurz.
+type NativeRef = Arc<std::sync::Mutex<Option<String>>>;
 
 async fn write_json(stdin: &Writer, v: &Value) -> Result<(), HarnessError> {
     let mut guard = stdin.lock().await;
@@ -649,6 +759,7 @@ struct Reader {
     plan_locked: bool,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
     closing: Arc<std::sync::atomic::AtomicBool>,
+    native_ref: NativeRef,
 }
 
 async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Reader) {
@@ -686,7 +797,15 @@ async fn read_loop(stdout: Box<dyn tokio::io::AsyncRead + Send + Unpin>, r: Read
                 let (events, turn) = {
                     let mut st = r.state.lock().await;
                     let turn = st.turn;
-                    (map_line(&v, &mut st), turn)
+                    let events = map_line(&v, &mut st);
+                    // `system/init` meldet die Referenz der CLI (beim Abzweigen eine neue).
+                    if st.session_ref.is_some() {
+                        r.native_ref
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone_from(&st.session_ref);
+                    }
+                    (events, turn)
                 };
                 if events
                     .iter()
@@ -1025,6 +1144,7 @@ async fn plan_locked_deny(
 pub struct ClaudeSession {
     stdin: Writer,
     state: Arc<Mutex<MapState>>,
+    native_ref: NativeRef,
     tx: mpsc::Sender<NormalizedEvent>,
     rx: Option<mpsc::Receiver<NormalizedEvent>>,
     process: Arc<Mutex<Box<dyn ProcessHandle>>>,
@@ -1153,6 +1273,7 @@ impl HarnessSession for ClaudeSession {
                 EventPayload::CompactionStarted(beton_core::event::Compaction {
                     before_tokens: before,
                     after_tokens: None,
+                    trigger: None,
                 }),
                 None,
             ))
@@ -1173,10 +1294,10 @@ impl HarnessSession for ClaudeSession {
     }
 
     fn native_session_ref(&self) -> Option<String> {
-        self.state
-            .try_lock()
-            .ok()
-            .and_then(|s| s.session_ref.clone())
+        self.native_ref
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn capabilities(&self) -> Option<Capabilities> {
@@ -1390,6 +1511,40 @@ mod mcp_tests {
         );
     }
 
+    /// K3 (#233, gegen 2.1.296 geprüft): `.claude/settings.json` bzw. `settings.local.json` des
+    /// Repositorys kann mit `disableAllHooks: true` den beton-Hook abschalten und eigene
+    /// `PreToolUse`-Hooks mit `updatedInput` nach der beton-Prüfung einschleusen. beton lädt
+    /// daher nur die User-Einstellungen und setzt `disableAllHooks: false` im `--settings`-JSON.
+    #[test]
+    fn har_005_project_settings_cannot_disable_or_add_hooks() {
+        let settings = hook_settings("/bin/beton hook claude", 60);
+        let v: Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(v["disableAllHooks"], false, "{settings}");
+        // Erweiterbar: weitere Schlüssel landen im selben JSON.
+        let mut extended = session_settings(None);
+        extended.insert("env".into(), json!({"A": "1"}));
+        assert_eq!(Value::Object(extended)["disableAllHooks"], false);
+        assert_eq!(v["hooks"]["PreToolUse"][0]["matcher"], "*");
+        for isolated in [false, true] {
+            let args = command_args_with(&spec(), isolated, None, Some(&settings));
+            assert_eq!(
+                arg_after(&args, "--setting-sources"),
+                Some("user"),
+                "isolated={isolated}: {args:?}"
+            );
+        }
+        let one_shot = one_shot_args(&OneShotRequest::default(), false);
+        assert_eq!(arg_after(&one_shot, "--setting-sources"), Some("user"));
+        // Ohne Projekt-Einstellungen liest die CLI auch `CLAUDE.md` des Projekts nicht (gegen
+        // 2.1.296 geprüft); beton liefert sie über die Instructions (AGT-005).
+        assert!(
+            ClaudeAdapter::default()
+                .capabilities(Mode::Native, &ProbeReport::default())
+                .native_project_files
+                .is_empty()
+        );
+    }
+
     #[test]
     fn agt_007_system_tools_are_classified_as_system() {
         assert_eq!(kind_of("mcp__beton__policy_query"), "system");
@@ -1454,5 +1609,181 @@ mod attachment_tests {
             user_content(&UserInput::from("nur Text")),
             vec![json!({"type": "text", "text": "nur Text"})]
         );
+    }
+}
+
+#[cfg(test)]
+mod session_ref_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::golden::{RawLine, ReplayLauncher};
+    use beton_harness::{AllowAll, HostEnv};
+
+    async fn launch(spec: SessionSpec, lines: Vec<RawLine>) -> ClaudeSession {
+        let ctx = AdapterContext {
+            stage: None,
+            gate: Arc::new(AllowAll),
+            launcher: Arc::new(ReplayLauncher::new(lines, 0)),
+            env: HostEnv::default(),
+        };
+        ClaudeAdapter::default()
+            .launch(
+                SessionSpec {
+                    workdir: std::env::temp_dir(),
+                    ..spec
+                },
+                ctx,
+            )
+            .await
+            .unwrap()
+    }
+
+    /// #305: Der Runner liest die Referenz für `session.started` direkt nach dem Start, während
+    /// die Leseschleife schon Zeilen der CLI verarbeitet und dafür den Zustand sperrt. Die
+    /// Referenz darf davon nicht abhängen (HAR-020 AC2, Grundlage für das Resume aus AC1).
+    #[tokio::test]
+    async fn har_020_ac2_session_ref_is_readable_while_the_reader_holds_the_state() {
+        let s = launch(SessionSpec::default(), Vec::new()).await;
+        let held = s.state.lock().await;
+        let id = s.native_session_ref().expect("eigene --session-id");
+        drop(held);
+        assert_eq!(s.native_session_ref().as_deref(), Some(id.as_str()));
+
+        let resumed = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                ..SessionSpec::default()
+            },
+            Vec::new(),
+        )
+        .await;
+        let _held = resumed.state.lock().await;
+        assert_eq!(
+            resumed.native_session_ref().as_deref(),
+            Some("2b1c5d1e-0000-4000-8000-000000000001")
+        );
+    }
+
+    /// Beim Abzweigen vergibt die CLI die Referenz; sie gilt, sobald `system/init` gelesen ist.
+    #[tokio::test]
+    async fn har_020_ac2_forked_session_ref_comes_from_init() {
+        let init = r#"{"type":"system","subtype":"init","session_id":"9f0e8d7c-0000-4000-8000-000000000002","model":"m","tools":[],"mcp_servers":[]}"#;
+        let mut s = launch(
+            SessionSpec {
+                resume: Some("2b1c5d1e-0000-4000-8000-000000000001".into()),
+                fork_session: true,
+                ..SessionSpec::default()
+            },
+            vec![RawLine {
+                ms: 0,
+                after_stdin: 0,
+                out: init.into(),
+            }],
+        )
+        .await;
+        let mut rx = s.events().unwrap();
+        while let Some(e) = rx.recv().await {
+            if matches!(e.payload, EventPayload::HarnessReady(_)) {
+                break;
+            }
+        }
+        let _held = s.state.lock().await;
+        assert_eq!(
+            s.native_session_ref().as_deref(),
+            Some("9f0e8d7c-0000-4000-8000-000000000002")
+        );
+    }
+}
+
+#[cfg(test)]
+mod early_exit_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use beton_harness::process::{ProcessIo, ProcessLauncher};
+    use beton_harness::{AllowAll, ExitInfo, HostEnv};
+
+    /// CLI, die schon beendet ist, wenn der Adapter `initialize` schreibt: stdin liefert
+    /// `BrokenPipe`, stdout ist leer, der Exit-Status steht fest.
+    struct Exited;
+
+    struct ExitedProcess(Option<ProcessIo>);
+
+    fn exit() -> ExitInfo {
+        ExitInfo {
+            code: Some(1),
+            signal: None,
+            stderr_tail: "Fehler beim Start".into(),
+        }
+    }
+
+    #[async_trait]
+    impl ProcessLauncher for Exited {
+        async fn launch(&self, _spec: LaunchSpec) -> std::io::Result<Box<dyn ProcessHandle>> {
+            // Die andere Seite ist sofort zu: Schreiben scheitert mit `BrokenPipe`.
+            let (stdin, _closed) = tokio::io::duplex(64);
+            Ok(Box::new(ExitedProcess(Some(ProcessIo {
+                stdin: Box::new(stdin),
+                stdout: Box::new(tokio::io::empty()),
+            }))))
+        }
+    }
+
+    #[async_trait]
+    impl ProcessHandle for ExitedProcess {
+        fn take_io(&mut self) -> Option<ProcessIo> {
+            self.0.take()
+        }
+        fn id(&self) -> Option<u32> {
+            None
+        }
+        async fn wait(&mut self) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+        async fn terminate(&mut self, _t: ShutdownTimeouts) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+        async fn kill(&mut self) -> std::io::Result<ExitInfo> {
+            Ok(exit())
+        }
+    }
+
+    /// #316: Endet die CLI sofort nach dem Start, scheiterte `start` je nach Timing mit
+    /// `BrokenPipe` (Schreiben von `initialize`) oder lieferte eine Session mit
+    /// `harness.exited`. Ein unerwarteter Exit erzeugt immer `harness.exited` mit Code und
+    /// stderr (HAR-001), unabhängig davon, wann er passiert.
+    #[tokio::test]
+    async fn har_001_cli_exiting_before_initialize_reports_harness_exited() {
+        let ctx = AdapterContext {
+            stage: None,
+            gate: Arc::new(AllowAll),
+            launcher: Arc::new(Exited),
+            env: HostEnv::default(),
+        };
+        let mut session = ClaudeAdapter::default()
+            .start(
+                SessionSpec {
+                    workdir: std::env::temp_dir(),
+                    ..SessionSpec::default()
+                },
+                ctx,
+            )
+            .await
+            .expect("Start gelingt; das Ende meldet harness.exited");
+        let mut rx = session.events().unwrap();
+        let exited = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(e) = rx.recv().await {
+                if let EventPayload::HarnessExited(x) = e.payload {
+                    return Some(x);
+                }
+            }
+            None
+        })
+        .await
+        .unwrap()
+        .expect("harness.exited");
+        assert_eq!(exited.code, Some(1));
+        assert_eq!(exited.stderr_tail, "Fehler beim Start");
     }
 }

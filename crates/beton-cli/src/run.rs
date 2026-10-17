@@ -63,10 +63,22 @@ fn agent_error(e: beton_sdk::Error) -> CliError {
 }
 
 /// Startet eine gestoppte oder fehlgeschlagene Session neu (SES-003); sonst nichts.
-async fn ensure_live(client: &Client, id: &str) -> CliResult<Value> {
+async fn ensure_live(client: &Client, id: &str, unsandboxed: bool) -> CliResult<Value> {
     let session = client.session(id).await?;
     if matches!(session["status"].as_str(), Some("stopped" | "failed")) {
-        return Ok(client.resume(id).await?);
+        // SBX-006: Eine Session ohne Bestätigung von `backend: none` (z. B. importiert)
+        // braucht sie beim Fortsetzen.
+        let resumed = if unsandboxed {
+            client.resume_unsandboxed(id).await
+        } else {
+            match client.resume(id).await {
+                Err(e) if needs_unsandboxed_confirmation(&e) && confirm_unsandboxed() => {
+                    client.resume_unsandboxed(id).await
+                }
+                other => other,
+            }
+        };
+        return Ok(resumed?);
     }
     Ok(session)
 }
@@ -116,7 +128,7 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
 
     let (id, from_seq) = match continued {
         Some(id) => {
-            let session = ensure_live(&client, &id).await?;
+            let session = ensure_live(&client, &id, args.unsandboxed).await?;
             // Einstellungen einer fortgesetzten Session per PATCH (HAR-017, HAR-027); beim
             // Fork gehen sie in den Fork-Request.
             let settings = settings_body(&args);
@@ -184,6 +196,10 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                 body["title"] = Value::String(t.clone());
             }
             merge(&mut body, settings_body(&args));
+            // API-006: Session-Budget als `spend_cap`-Regel der Session (POL-011).
+            if let Some(max) = args.max_cost {
+                body["max_cost_usd"] = json!(max);
+            }
             // SES-015: eigener Worktree, optional mit Branch-Name und Base.
             if let Some(branch) = &args.worktree {
                 let mut wt = json!({});
@@ -195,7 +211,18 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
                 }
                 body["worktree"] = wt;
             }
-            let created = client.create_session(&body).await.map_err(|e| {
+            if args.unsandboxed {
+                body["confirm_unsandboxed"] = Value::Bool(true);
+            }
+            let created = match client.create_session(&body).await {
+                // SBX-006: `backend: none` nur mit Bestätigung für diese Session.
+                Err(e) if needs_unsandboxed_confirmation(&e) && confirm_unsandboxed() => {
+                    body["confirm_unsandboxed"] = Value::Bool(true);
+                    client.create_session(&body).await
+                }
+                other => other,
+            }
+            .map_err(|e| {
                 if agent.is_some() {
                     agent_error(e)
                 } else {
@@ -246,9 +273,37 @@ pub async fn run(ctx: &Ctx, args: RunArgs) -> CliResult {
             on_ask: args.on_ask,
             from_seq,
             quiet: ctx.global.quiet,
+            max_cost: args.max_cost.is_some(),
         },
     )
     .await
+}
+
+/// Verlangt der Server die Bestätigung von `sandbox.backend: none` (SBX-006)?
+fn needs_unsandboxed_confirmation(e: &beton_sdk::Error) -> bool {
+    matches!(e, beton_sdk::Error::Problem { code, .. } if code == "sandbox_confirmation_required")
+}
+
+/// Fragt im Terminal, ob diese eine Session ohne Sandbox starten soll (SBX-006). Ohne
+/// Terminal (Skripte, CI) nie: dort gilt nur `--unsandboxed`.
+fn confirm_unsandboxed() -> bool {
+    use std::io::{IsTerminal as _, Write as _};
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return false;
+    }
+    eprint!(
+        "`sandbox.backend: none`: Diese Session ohne Sandbox starten? Gilt nur für diese \
+         Session, steht im Audit-Log; YOLO bleibt gesperrt. [j/N] "
+    );
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(
+        line.trim().to_lowercase().as_str(),
+        "j" | "ja" | "y" | "yes"
+    )
 }
 
 /// `--model`, `--effort` und `--permission-mode` als Felder für Anlegen, Fork bzw. PATCH.
@@ -313,7 +368,16 @@ async fn fork(ctx: &Ctx, client: &Client, args: &RunArgs, reference: &str) -> Cl
             .with_context(|| format!("Szenario {}", scenario.display()))?;
         body["harness_opts"] = json!({ "scenario": path.display().to_string() });
     }
-    let forked = client.fork_session(&source, &body).await?;
+    if args.unsandboxed {
+        body["confirm_unsandboxed"] = Value::Bool(true);
+    }
+    let forked = match client.fork_session(&source, &body).await {
+        Err(e) if needs_unsandboxed_confirmation(&e) && confirm_unsandboxed() => {
+            body["confirm_unsandboxed"] = Value::Bool(true);
+            client.fork_session(&source, &body).await
+        }
+        other => other,
+    }?;
     let effective = forked["effective_seq"].as_u64().unwrap_or_default();
     if let Some(at) = at_seq.filter(|at| *at != effective) {
         ctx.note(format!(
@@ -340,7 +404,7 @@ async fn fork(ctx: &Ctx, client: &Client, args: &RunArgs, reference: &str) -> Cl
 pub async fn resume(ctx: &Ctx, args: ResumeArgs) -> CliResult {
     let client = crate::daemon::ensure_running(ctx).await?;
     let id = sessionref::resolve(&client, &args.session).await?;
-    ensure_live(&client, &id).await?;
+    ensure_live(&client, &id, args.unsandboxed).await?;
     ctx.note(format!("Session {id} · {}", client.session_url(&id)));
     drive(
         ctx,
@@ -351,6 +415,7 @@ pub async fn resume(ctx: &Ctx, args: ResumeArgs) -> CliResult {
             on_ask: crate::cli::OnAsk::Wait,
             from_seq: 0,
             quiet: ctx.global.quiet,
+            max_cost: false,
         },
     )
     .await
@@ -371,6 +436,7 @@ pub async fn attach(ctx: &Ctx, args: AttachArgs) -> CliResult {
             on_ask: crate::cli::OnAsk::Wait,
             from_seq: 0,
             quiet: ctx.global.quiet,
+            max_cost: false,
         },
     )
     .await

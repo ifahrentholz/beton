@@ -1,0 +1,4 @@
+2GET /b HTTP/1.1
+Host: api.test
+Authorization: Basic dXNlcjpidF9jcmVkX2FhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh
+

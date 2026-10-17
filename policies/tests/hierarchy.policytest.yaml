@@ -1,0 +1,30 @@
+# Policy-Test (POL-026, QA-004): Hierarchie User → Projekt → Agent, „strengere gewinnt“.
+spec_version: 1
+layers:
+  user: [fixtures/model-a.yaml]
+  project: [fixtures/deny-push.yaml, fixtures/browser-default-deny.yaml]
+  agent: [fixtures/allow-all.yaml, fixtures/model-b.yaml]
+cases:
+  - name: Projekt-deny schlägt Agent-allow
+    phase: tool_call
+    input: { tool: { name: Bash, kind: shell, args: { command: "git push" } } }
+    expect: { outcome: deny, rules: [no-push] }
+  - name: Agent-allow gilt, wo keine höhere Ebene widerspricht
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: "cargo test" } } }
+    expect: { outcome: allow, rules: [allow-tools] }
+  - name: Agent-allow hebt den Projekt-Default nicht auf
+    phase: browser_navigate
+    input: { browser: { host: github.com, url: "https://github.com/" } }
+    expect: { outcome: deny, rules: [defaults.browser_navigate] }
+  - name: Projekt-allow hebt den Projekt-Default auf
+    phase: browser_navigate
+    input: { browser: { host: docs.rs, url: "https://docs.rs/" } }
+    expect: { outcome: allow, rules: [allow-docs] }
+  - name: Erster Schreiber (User) gewinnt beim Modell
+    phase: model_request
+    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    expect:
+      outcome: allow
+      modified: { model: claude-sonnet-4-5 }
+      conflicts: [{ field: model, kept: claude-sonnet-4-5, discarded: claude-haiku-4-5 }]

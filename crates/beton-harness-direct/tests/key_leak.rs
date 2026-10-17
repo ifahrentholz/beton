@@ -148,6 +148,7 @@ async fn har_011_ac5_key_value_never_reaches_events_or_logs() {
         &DirectOptions {
             keys: Arc::new(KeyMap::new(keys)),
             discover_models: false,
+            egress: None,
         },
     );
     a.http = HttpOptions {
@@ -155,6 +156,7 @@ async fn har_011_ac5_key_value_never_reaches_events_or_logs() {
         ..HttpOptions::default()
     };
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(Allow),
         launcher: Arc::new(RealLauncher),
         env: HostEnv::default(),

@@ -1,0 +1,8 @@
+# Latenzmessungen mit Zeitgrenze aus dem AC laufen allein, nicht parallel zum übrigen Testlauf:
+# Unter dessen Last dauert ein Workspace-Snapshot über eine Sekunde (#116), ein 256er-Batch im
+# Store ein Vielfaches (#319). Gemessen wird das System, die Grenze im Test bleibt unverändert.
+# Unter `cargo test` übernimmt das für `ses_017_ac3` eine Sperre in der Testdatei
+# (`crates/beton-runner/tests/workspace.rs`).
+[[profile.default.overrides]]
+filter = 'test(/^ses_017_ac3_/) | test(/data_003_ac4_interactive_writer_is_not_starved/)'
+threads-required = 'num-test-threads'

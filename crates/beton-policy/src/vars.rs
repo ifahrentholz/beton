@@ -86,6 +86,14 @@ pub struct SessionVars {
     /// Kosten der Session in USD aus der Usage-Projektion (ohne Subscriptions).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Listenpreis-Äquivalent der Subscription-Nutzung der Session in USD laut Preis-Katalog;
+    /// nie Geld (ADR-0034). Budgets zählen `cost_usd + equivalent_usd` (POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equivalent_usd: Option<f64>,
+    /// Modelle der Session, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat (ohne
+    /// Katalogpreis); Budgets fragen dann nach (`on_unpriced`, POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpriced_models: Option<Vec<String>>,
     /// Eingabe-Tokens bisher.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_in: Option<i64>,
@@ -122,6 +130,10 @@ pub struct SessionVars {
     /// Arbeitsverzeichnis (absolut).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree: Option<String>,
+    /// Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die
+    /// Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
     /// Git-Branch des Arbeitsverzeichnisses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -143,9 +155,21 @@ pub struct RunVars {
     /// Kosten des Runs in USD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Listenpreis-Äquivalent der Subscription-Nutzung des Runs in USD (ADR-0034).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equivalent_usd: Option<f64>,
+    /// Modelle des Runs ohne Preis (POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpriced_models: Option<Vec<String>>,
     /// Kosten des Runs inklusive aller Child-Sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subtree_cost_usd: Option<f64>,
+    /// Listenpreis-Äquivalent des Runs inklusive aller Child-Sessions in USD (ADR-0034).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtree_equivalent_usd: Option<f64>,
+    /// Modelle ohne Preis im Run inklusive aller Child-Sessions (POL-011).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subtree_unpriced_models: Option<Vec<String>>,
     /// Laufzeit in Sekunden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_s: Option<f64>,
@@ -179,6 +203,12 @@ pub struct UserVars {
     /// Kosten des Users heute (00:00 in `user.timezone`) in USD über alle Sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daily_cost_usd: Option<f64>,
+    /// Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_equivalent_usd: Option<f64>,
+    /// Modelle ohne Preis, die der User heute genutzt hat (POL-012).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub daily_unpriced_models: Option<Vec<String>>,
     /// Kosten des Users im laufenden Monat in USD.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monthly_cost_usd: Option<f64>,
@@ -239,6 +269,9 @@ pub struct HostVars {
     /// Lokaler Host (derselbe Rechner wie der Server).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local: Option<bool>,
+    /// Home-Verzeichnis des Users auf dem Host (absolut); `~` und `${home}` in `path_guard`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// Wer die Aktion auslöst.
@@ -423,6 +456,11 @@ pub struct ToolVars {
     /// Betroffene Pfade, absolut und normalisiert.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
+    /// Pfade aus `paths`, in die der Call schreibt: Datei-Tools der Klassen `file_write` und
+    /// `file_edit`, bei Shell-Kommandos Umleitungsziele und Ziele bekannter Datei-Kommandos
+    /// (best effort, POL-016).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_paths: Option<Vec<String>>,
     /// URLs in den Argumenten.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub urls: Option<Vec<String>>,

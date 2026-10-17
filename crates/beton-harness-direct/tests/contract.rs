@@ -96,6 +96,7 @@ impl ContractSubject for DirectSubject {
                 ..SessionSpec::default()
             },
             AdapterContext {
+                stage: None,
                 gate,
                 launcher: Arc::new(RealLauncher),
                 env: HostEnv::default(),

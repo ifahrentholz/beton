@@ -7,6 +7,9 @@ Commands:
            dem Grund (ändert nichts)
   explain  Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln und
            die Namen der Environment-Variablen (nie ihre Werte)
+  exec     Ein Kommando von Hand in der Sandbox einer Stufe ausführen (ohne Netz): z. B. `beton
+           sandbox exec --stage tools -- cat ~/.ssh/config` scheitert. Ein Kommando, das scheitert,
+           endet mit Exit-Code 1 und einem Hinweis auf `beton sandbox explain`
 
 Options:
       --server <URL>

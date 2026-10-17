@@ -1,0 +1,14 @@
+# Testdaten zum Regeltyp path_guard (POL-016, POL-026 AC4).
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: paths
+rules:
+  # Standard: Schreiben nur im Worktree, sensible Muster weder lesen noch schreiben.
+  - id: worktree-only
+    type: path_guard
+  - id: docs-ask
+    type: path_guard
+    params:
+      read: { allow: ["**"], deny: ["${project_root}/private/**"] }
+      write: { allow: ["**"], deny: ["${worktree}/docs/**"] }
+      on_violation: ask

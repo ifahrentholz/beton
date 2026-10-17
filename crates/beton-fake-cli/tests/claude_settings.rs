@@ -45,6 +45,7 @@ async fn start(
         ),
     );
     let ctx = AdapterContext {
+        stage: None,
         gate: Arc::new(AllowAll),
         launcher: Arc::new(RealLauncher),
         env,
@@ -332,6 +333,7 @@ async fn agt_011_plan_bound_by_the_agent_denies_exit_plan_mode_with_a_reason() {
     );
     let gate = Arc::new(CountingGate::default());
     let ctx = AdapterContext {
+        stage: None,
         gate: gate.clone(),
         launcher: Arc::new(RealLauncher),
         env,

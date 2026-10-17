@@ -109,6 +109,23 @@ describe('Timeline', () => {
     expect(items[2]).toMatchObject({ text: 'Wei', streaming: true })
   })
 
+  it('PROTO-015 AC5: event.rejected erscheint an seiner Stelle, unbekannte Typen brechen nichts', () => {
+    const events = [
+      ev('message.completed', { message_id: 'a', role: 'assistant', content: [{ type: 'text', text: 'vorher' }] }),
+      ev('event.rejected', { original_type: 'message.completed', rseq: 7, reason: 'payload_too_large' }, { actor: { kind: 'system', component: 'server' } } as Partial<Event>),
+      ev('event.kuenftig', { egal: true }),
+      ev('message.completed', { message_id: 'b', role: 'assistant', content: [{ type: 'text', text: 'nachher' }] }),
+    ]
+    const items = timeline({ ...empty, events })
+    expect(items.map((i) => i.kind)).toEqual(['assistant', 'error', 'assistant'])
+    expect(items[1]).toEqual({
+      kind: 'error',
+      key: 'e2',
+      title: 'Ein Ereignis wurde nicht gespeichert',
+      detail: 'message.completed · zu groß. Der Server hat es abgelehnt; der Inhalt fehlt im Verlauf.',
+    })
+  })
+
   it('PROTO-001 AC4: ausgelagerte Nutzlast wird zum Platzhalter', () => {
     const offloaded = { ...ev('message.completed', {}), payload_ref: 'sha256:abc' } as Record<string, unknown>
     delete offloaded.payload

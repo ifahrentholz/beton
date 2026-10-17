@@ -17,6 +17,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 beton-agents.workspace = true
 beton-core.workspace = true
+beton-policy.workspace = true
 beton-git.workspace = true
 beton-harness.workspace = true
 beton-harness-claude.workspace = true
@@ -53,6 +54,7 @@ zeroize.workspace = true
 rustix = { workspace = true, features = ["termios"] }
 
 [dev-dependencies]
+beton-host = { workspace = true, features = ["test-budget", "test-sandbox"] }
 sqlx.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

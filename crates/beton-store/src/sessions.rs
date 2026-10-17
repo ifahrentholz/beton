@@ -43,6 +43,9 @@ pub struct NewSession {
     pub home_node: NodeId,
     /// Harness-spezifische Startoptionen (landen in `session.created`).
     pub harness_opts: serde_json::Value,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006); der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (POL-011).
+    pub max_cost_usd: Option<f64>,
 }
 
 /// Eine Session mit ihren Projektionsfeldern (Session-Liste, DATA-005).
@@ -237,6 +240,7 @@ impl Store {
     }
 
     pub async fn create_org(&self, org: OrgId, name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO orgs (id, name, created_at) VALUES (?, ?, ?)")
             .bind(org.to_string())
             .bind(name)
@@ -247,6 +251,7 @@ impl Store {
     }
 
     pub async fn create_user(&self, org: OrgId, user: UserId, display_name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO users (id, org_id, display_name, created_at) VALUES (?, ?, ?, ?)")
             .bind(user.to_string())
             .bind(org.to_string())
@@ -258,6 +263,7 @@ impl Store {
     }
 
     pub async fn create_node(&self, org: OrgId, node: NodeId, name: &str) -> Result<()> {
+        let _writer = self.write_guard().await?;
         sqlx::query("INSERT INTO nodes (id, org_id, name, created_at) VALUES (?, ?, ?, ?)")
             .bind(node.to_string())
             .bind(org.to_string())
@@ -270,6 +276,7 @@ impl Store {
 
     /// Löscht einen User. Besitzt er noch Sessions, schlägt das fehl (DATA-001 AC3).
     pub async fn delete_user(&self, org: OrgId, user: UserId) -> Result<()> {
+        let _writer = self.write_guard().await?;
         let result = sqlx::query("DELETE FROM users WHERE org_id = ? AND id = ?")
             .bind(org.to_string())
             .bind(user.to_string())
@@ -307,6 +314,7 @@ impl Store {
                 parent_session_id: new.parent_id,
                 trigger: new.trigger,
                 harness_opts: new.harness_opts.clone(),
+                max_cost_usd: new.max_cost_usd,
             }),
         );
         let created_at = event.ts.to_string();
@@ -655,6 +663,8 @@ async fn delete_tree(
             "DELETE FROM inbox_items WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM policy_shadow_daily WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM policy_set_snapshots WHERE org_id = ? AND session_id = ?",
             "DELETE FROM blob_refs WHERE org_id = ? AND session_id = ?",
             "DELETE FROM events WHERE org_id = ? AND session_id = ?",
             "DELETE FROM sessions WHERE org_id = ? AND id = ?",

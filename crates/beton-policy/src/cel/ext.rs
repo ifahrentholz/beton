@@ -14,7 +14,12 @@ pub fn regex(pattern: &str) -> Result<Regex, String> {
         .size_limit(REGEX_SIZE_LIMIT)
         .dfa_size_limit(REGEX_SIZE_LIMIT)
         .build()
-        .map_err(|e| format!("ungültiger Regex `{pattern}`: {e}"))
+        // Ohne Muster und ohne die Meldung des `regex`-Crates (sie zitiert das Muster): es kann
+        // aus den Tool-Argumenten stammen (POL-025 AC2).
+        .map_err(|e| match e {
+            regex::Error::CompiledTooBig(_) => "Regex zu groß".to_owned(),
+            _ => "ungültiger Regex (Syntaxfehler)".to_owned(),
+        })
 }
 
 /// Glob → verankertes Regex. `*` passt auf alles außer `/`, `**` auch über `/` hinweg
@@ -98,7 +103,7 @@ pub struct LexicalResolver;
 
 impl PathResolver for LexicalResolver {
     fn resolve(&self, path: &str) -> Result<String, String> {
-        normalize_path(path).ok_or_else(|| format!("Pfad `{path}` ist nicht absolut"))
+        normalize_path(path).ok_or_else(|| "Pfad ist nicht absolut".to_owned())
     }
 }
 
@@ -113,6 +118,15 @@ pub fn under(resolver: &dyn PathResolver, path: &str, root: &str) -> Result<bool
 }
 
 /// `bytes_human(n)`: `512 B`, `1.5 KiB`, `5.0 MiB` …
+/// `priced(model)`: Hat das Modell (ID oder Alias) einen Listenpreis im eingebetteten
+/// Preis-Katalog (USE-002)? Ohne IO; Grundlage dafür, ob ein Budget die Kosten einer
+/// Subscription-Nutzung zählen kann (POL-011, ADR-0034).
+pub fn priced(model: &str) -> bool {
+    beton_core::pricing::Catalog::embedded()
+        .resolve(model)
+        .is_some()
+}
+
 pub fn bytes_human(n: u64) -> String {
     const UNITS: [&str; 6] = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
     if n < 1024 {
@@ -129,23 +143,24 @@ pub fn bytes_human(n: u64) -> String {
 
 /// `url.host(u)`: Host nach WHATWG-URL-Regeln (wie ihn ein HTTP-Client auflöst), klein
 /// geschrieben; Fehler, wenn `u` keine URL mit Host ist.
+/// Fehlertexte nennen den Wert nicht: er stammt oft aus den Tool-Argumenten (POL-025 AC2).
 pub fn url_host(u: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL `{u}`: {e}"))?;
+    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL: {e}"))?;
     parsed
         .host_str()
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| format!("URL `{u}` hat keinen Host"))
+        .ok_or_else(|| "URL hat keinen Host".to_owned())
 }
 
 /// `url.path(u)`: Pfad der URL (ohne Query und Fragment).
 pub fn url_path(u: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL `{u}`: {e}"))?;
+    let parsed = url::Url::parse(u).map_err(|e| format!("keine URL: {e}"))?;
     Ok(parsed.path().to_owned())
 }
 
 /// Dauer im CEL-Format: `1h30m`, `90s`, `1.5h`, `250ms`, `-5m`.
 pub fn parse_duration(s: &str) -> Result<time::Duration, String> {
-    let bad = || format!("ungültige Dauer `{s}` (z. B. `30m`, `1h30m`, `250ms`)");
+    let bad = || "ungültige Dauer (z. B. `30m`, `1h30m`, `250ms`)".to_owned();
     let (neg, mut rest) = match s.strip_prefix('-') {
         Some(r) => (true, r),
         None => (false, s.strip_prefix('+').unwrap_or(s)),

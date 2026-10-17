@@ -603,7 +603,18 @@ pub fn pricing(settings: Option<&crate::config::Settings>, central: bool) -> Che
 
 /// Sandbox-Fähigkeiten (OBS-005, ab M2; SBX-008, SBX-009): Linux braucht Landlock (Kernel
 /// ≥ 5.19, ABI ≥ 2) und dazu unprivilegierte User-Namespaces oder bwrap; macOS `sandbox-exec`.
+/// Die Probe aller Backends (SBX-010, wie `beton sandbox probe --json`) steht in `details`.
 pub fn sandbox_check(
+    os: beton_sandbox::Os,
+    reports: &[beton_sandbox::ProbeReport],
+    landlock_abi: Option<u32>,
+) -> Check {
+    let mut c = sandbox_status(os, reports, landlock_abi);
+    c.details = Some(json!({ "providers": reports }));
+    c
+}
+
+fn sandbox_status(
     os: beton_sandbox::Os,
     reports: &[beton_sandbox::ProbeReport],
     landlock_abi: Option<u32>,
@@ -680,11 +691,17 @@ pub fn sandbox_check(
                 Some("beton nicht innerhalb einer anderen Sandbox starten"),
             ),
         },
+        // SBX-006 (Windows-Beta bis SBX-016): Default „Sandbox erforderlich“ heißt hier, dass
+        // keine Session ohne ausdrücklich bestätigtes `backend: none` startet.
         Os::Windows => check(
             "sandbox.windows",
             CheckStatus::Warn,
-            "Die Windows-Sandbox (Beta) folgt mit M5 (SBX-016)",
-            Some("bis dahin backend: none oder WSL2"),
+            "Die Windows-Sandbox (Beta) folgt mit M5 (SBX-016); bis dahin starten Sessions nur \
+             mit `sandbox.backend: none` und Bestätigung je Session, YOLO bleibt gesperrt",
+            Some(
+                "`sandbox: { backend: none }` in ~/.beton/config.yaml und jede Session mit \
+                 `beton run --unsandboxed` bestätigen (steht im Audit-Log); mit Sandbox: WSL2",
+            ),
         ),
         Os::Other => check(
             "sandbox",
@@ -935,6 +952,41 @@ mod tests {
             (c.id.as_str(), c.status),
             ("sandbox.windows", CheckStatus::Warn)
         );
+    }
+
+    /// SBX-006, Windows-Beta: Ohne Backend startet eine Session nur mit bestätigtem
+    /// `backend: none`; `doctor` sagt das samt Weg.
+    #[test]
+    fn sbx_006_windows_doctor_explains_backend_none_with_confirmation() {
+        let c = sandbox_check(beton_sandbox::Os::Windows, &[], None);
+        assert!(c.message.contains("backend: none"), "{}", c.message);
+        assert!(c.message.contains("YOLO"), "{}", c.message);
+        let hint = c.hint.unwrap_or_default();
+        assert!(hint.contains("--unsandboxed"), "{hint}");
+        assert!(hint.contains("Audit-Log"), "{hint}");
+    }
+
+    /// SBX-010: `doctor` bindet die Probe ein; die Angaben stehen in `details` des Checks
+    /// `sandbox.<os>` (wie `beton sandbox probe --json`).
+    #[test]
+    fn sbx_010_doctor_sandbox_check_carries_the_probe() {
+        use beton_sandbox::{Os, ProbeReport, ProviderId};
+        let reports = [
+            ProbeReport::unavailable(ProviderId::Landlock, "Landlock ist nicht aktiv"),
+            ProbeReport::unavailable(ProviderId::Bwrap, "bwrap fehlt"),
+        ];
+        for (os, abi) in [(Os::Linux, None), (Os::Linux, Some(4)), (Os::MacOs, None)] {
+            let c = sandbox_check(os, &reports, abi);
+            let details = c.details.unwrap_or_else(|| panic!("{os:?}: keine details"));
+            let ids: Vec<&str> = details["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, ["landlock", "bwrap"], "{details}");
+            assert_eq!(details["providers"][1]["available"], false);
+        }
     }
 
     #[test]

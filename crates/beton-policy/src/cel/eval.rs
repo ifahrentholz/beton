@@ -10,7 +10,7 @@ use time::format_description::well_known::Rfc3339;
 use super::check::{Compr, Func, Node};
 use super::{EvalError, Meter, ext};
 use crate::context::Activation;
-use crate::normalize::shell;
+use crate::normalize::{git, shell};
 use crate::value::{Key, Value, numeric_cmp};
 
 type Res = Result<Value, EvalError>;
@@ -304,7 +304,17 @@ impl Ctx<'_, '_> {
             Func::Under => ext::under(self.act.resolver(), s(0)?, s(1)?)
                 .map(Value::Bool)
                 .map_err(fail),
+            Func::Resolve => {
+                let path = s(0)?;
+                self.meter.charge(10 + text_cost(path.len()))?;
+                self.act
+                    .resolver()
+                    .resolve(path)
+                    .map(|p| Value::String(p.into()))
+                    .map_err(fail)
+            }
             Func::DomainMatches => Ok(Value::Bool(ext::domain_matches(s(0)?, s(1)?))),
+            Func::Priced => Ok(Value::Bool(ext::priced(s(0)?))),
             Func::BytesHuman => match &args[0] {
                 Value::Int(i) => u64::try_from(*i)
                     .map(|n| Value::String(ext::bytes_human(n).into()))
@@ -327,6 +337,39 @@ impl Ctx<'_, '_> {
                     }
                     _ => shell::has_flag(&refs, s(1)?),
                 }))
+            }
+            Func::GitOps | Func::GitPushTargets | Func::GitElsewhere => {
+                let argv = argv(&args[0])?;
+                self.meter
+                    .charge(argv.iter().map(|c| c.len() as u64).sum::<u64>())?;
+                let refs: Vec<Vec<&str>> = argv
+                    .iter()
+                    .map(|c| c.iter().map(String::as_str).collect())
+                    .collect();
+                if matches!(func, Func::GitElsewhere) {
+                    return Ok(Value::Bool(git::git_elsewhere(&refs)));
+                }
+                let elsewhere = match args.get(1) {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(other) => {
+                        return Err(fail(format!(
+                            "shell.git_push_targets(): bool erwartet, gefunden {}",
+                            other.type_name()
+                        )));
+                    }
+                };
+                let items: Vec<Value> = match func {
+                    Func::GitOps => git::git_ops(&refs)
+                        .into_iter()
+                        .map(|op| Value::String(op.into()))
+                        .collect(),
+                    _ => git::git_push_targets(&refs, elsewhere)
+                        .into_iter()
+                        .map(|b| Value::String(b.into()))
+                        .collect(),
+                };
+                Ok(Value::list(items))
             }
             Func::UrlHost => ext::url_host(s(0)?)
                 .map(|h| Value::String(h.into()))
@@ -478,7 +521,8 @@ fn index(target: &Value, key: &Value) -> Res {
         }
         Value::Map(map) => Key::from_value(key)
             .and_then(|k| map.get(&k).cloned())
-            .ok_or_else(|| fail(format!("Schlüssel `{key}` fehlt"))),
+            // Ohne den Schlüssel selbst: er kann aus den Tool-Argumenten stammen (#234).
+            .ok_or_else(|| fail(format!("Schlüssel ({}) fehlt", key.type_name()))),
         other => Err(fail(format!("Index auf {}", other.type_name()))),
     }
 }
@@ -488,9 +532,7 @@ fn to_int(v: &Value) -> Result<i64, EvalError> {
         Value::Int(i) => Ok(*i),
         Value::Uint(u) => i64::try_from(*u).map_err(|_| fail("Überlauf")),
         Value::Double(d) if d.is_finite() && d.abs() < 9.2e18 => Ok(d.trunc() as i64),
-        Value::String(s) => s
-            .parse()
-            .map_err(|_| fail(format!("`{s}` ist keine ganze Zahl"))),
+        Value::String(s) => s.parse().map_err(|_| fail("String ist keine ganze Zahl")),
         Value::Timestamp(t) => Ok(t.unix_timestamp()),
         other => Err(fail(format!("int() auf {}", other.type_name()))),
     }

@@ -31,6 +31,7 @@ async fn session(t: &TestStore, harness: &str) -> SessionRecord {
                 trigger: SessionTrigger::User,
                 home_node: t.local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await
@@ -93,6 +94,7 @@ fn query(from: &str, to: &str, group_by: &[UsageDimension]) -> UsageQuery {
         from: from.parse().unwrap(),
         to: to.parse().unwrap(),
         utc_offset_s: 0,
+        offset_changes: Vec::new(),
         group_by: group_by.to_vec(),
         project: None,
         harness: None,
@@ -269,6 +271,46 @@ async fn use_005_day_follows_the_users_utc_offset_and_filters_apply() {
             .groups
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn pol_004_ac4_days_follow_the_offset_changes_of_the_users_timezone() {
+    // Europe/Berlin um das Ende der Sommerzeit (25.10.2026, 01:00 UTC): vorher +02:00,
+    // danach +01:00. 22:30 UTC ist davor schon der nächste Tag, danach noch derselbe.
+    let t = store().await;
+    let s = session(&t, "codex").await;
+    for ts in ["2026-10-23T22:30:00.000Z", "2026-10-26T22:30:00.000Z"] {
+        append_at(
+            &t.store,
+            &s,
+            ts,
+            vec![EventPayload::CostDelta(cost(
+                "codex",
+                "m",
+                AuthSource::ApiKey,
+                1,
+                0,
+            ))],
+        )
+        .await;
+    }
+    let mut q = query(
+        "2026-10-22T22:00:00.000Z",
+        "2026-10-27T23:00:00.000Z",
+        &[UsageDimension::Day],
+    );
+    q.utc_offset_s = 7200;
+    q.offset_changes = vec![("2026-10-25T01:00:00.000Z".parse().unwrap(), 3600)];
+    let days: Vec<String> = t
+        .store
+        .usage_report(org(&t), &q)
+        .await
+        .unwrap()
+        .groups
+        .iter()
+        .map(|g| g.day.clone().unwrap())
+        .collect();
+    assert_eq!(days, ["2026-10-24", "2026-10-26"]);
 }
 
 #[tokio::test]

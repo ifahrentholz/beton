@@ -1,7 +1,8 @@
 //! Gemerkte Freigaben einer Session (`approve_session`, POL-010).
 //!
 //! Ein Grant erfüllt genau eine `ask`-Regel (Ebene, Set, Regel-ID) für einen Fingerprint
-//! (`remember_key` der Regel bzw. `tool.kind:tool.command` oder Hash der Argumente). Er gilt
+//! (`remember_key` der Regel bzw. Klasse, Server, Tool und Befehl samt Arbeitsverzeichnis oder
+//! Hash der Argumente, eindeutig als JSON-Array kodiert, #242). Er gilt
 //! unabhängig von der Version des Sets, solange die Regel dieselbe ID behält; ein anderer
 //! Befehl oder eine andere Regel erzeugt wieder eine Card.
 

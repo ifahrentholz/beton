@@ -1,0 +1,3 @@
+0GET http://api.test/ HTTP/1.0
+Proxy-Authorization: @@AUTH@@
+

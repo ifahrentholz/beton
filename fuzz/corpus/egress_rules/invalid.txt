@@ -1,0 +1,9 @@
+R GET
+R GET  api.test
+R FOO api.test/**
+R GET ftp://api.test/
+R GET api.test/a/**b
+R GET api.test/./x
+R GET api.test:0/
+R GET [::1/
+R GET *.1.2.3.4/

@@ -76,6 +76,27 @@ pub struct LaunchPlan {
     pub hidden: Vec<HiddenDotfiles>,
     pub git: Option<GitProtection>,
     pub net: NetMode,
+    /// Unix-Sockets, mit denen sich das Ziel verbinden darf (Stufe 1: Exec-Broker).
+    #[serde(default)]
+    pub unix_sockets: Vec<PathBuf>,
+    /// Verzeichnisse, in denen sich das Ziel mit Unix-Sockets verbinden darf (Stufe 1:
+    /// Laufzeitverzeichnis mit Hook- und Hub-Socket, #206).
+    #[serde(default)]
+    pub unix_socket_dirs: Vec<PathBuf>,
+    /// Loopback-Ports für Dev-Server (PRX-008 AC3).
+    #[serde(default)]
+    pub dev_ports: Vec<u16>,
+    /// Verzeichnisse, die read-only gebunden werden (Stufe 2: Projekt-Konfiguration, SBX-002).
+    #[serde(default)]
+    pub read_only: Vec<PathBuf>,
+    /// Schreib-Wurzeln ohne Recht, Symlinks anzulegen oder etwas hinein umzubenennen (Stufe 2:
+    /// Austausch, SBX-002).
+    #[serde(default)]
+    pub no_symlinks: Vec<PathBuf>,
+    /// Verzeichnisse, die ein leeres tmpfs verdeckt; Wurzeln darin werden wieder eingebunden
+    /// (Stufe 2: Session-Verzeichnis, SBX-002).
+    #[serde(default)]
+    pub private: Vec<PathBuf>,
     pub limits: Limits,
     /// Höchste genutzte Landlock-ABI (Tests).
     pub abi_cap: Option<u8>,
@@ -117,6 +138,12 @@ impl LaunchPlan {
             hidden: policy.hidden.clone(),
             git: policy.git.clone(),
             net: policy.net,
+            unix_sockets: policy.unix_sockets.clone(),
+            unix_socket_dirs: policy.unix_socket_dirs.clone(),
+            dev_ports: policy.dev_ports.clone(),
+            read_only: policy.read_only.clone(),
+            no_symlinks: policy.no_symlinks.clone(),
+            private: policy.private.clone(),
             limits: policy.limits,
             abi_cap: None,
             cgroup: None,
@@ -152,7 +179,7 @@ pub struct MaskTargets {
     pub rebind: Vec<PathBuf>,
 }
 
-fn glob_match(glob: &str, name: &str) -> bool {
+pub(crate) fn glob_match(glob: &str, name: &str) -> bool {
     fn rec(g: &[char], n: &[char]) -> bool {
         match (g.first(), n.first()) {
             (None, None) => true,
@@ -279,9 +306,21 @@ pub fn mask_targets(plan: &LaunchPlan) -> Result<MaskTargets, SandboxError> {
     let roots: Vec<&PathBuf> = plan.roots().collect();
     c.dirs.retain(|d| !roots.contains(&d));
     c.files.retain(|f| !roots.contains(&f));
+    // Private Verzeichnisse (Session-Verzeichnis in Stufe 2): ein leeres tmpfs verdeckt sie
+    // (siehe `mount_ops`), die Wurzeln darin (Scratch, Austausch, CA-Bundle) kommen wieder
+    // hinein.
+    for p in &plan.private {
+        if !p.is_dir() {
+            return Err(SandboxError::spawn(format!(
+                "{} fehlt; privat nicht durchsetzbar",
+                p.display()
+            )));
+        }
+    }
     let dirs: Vec<PathBuf> = c.dirs.iter().cloned().collect();
     let mut shadows: Vec<PathBuf> = PRIVATE_TMPFS.iter().map(PathBuf::from).collect();
     shadows.extend(dirs.iter().cloned());
+    shadows.extend(plan.private.iter().cloned());
     let mut rebind: Vec<PathBuf> = roots
         .iter()
         .filter(|r| shadows.iter().any(|s| r.starts_with(s) && **r != s))
@@ -402,6 +441,9 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             }
         }
     }
+    // Private Verzeichnisse wie eine Zwischenebene: leeres tmpfs (durchquerbar, am Ende
+    // read-only), darin nur die wieder eingebundenen Wurzeln.
+    anchors.extend(plan.private.iter().cloned());
     ops.extend(anchors.into_iter().map(|path| MountOp::Anchor { path }));
     for r in &targets.rebind {
         ops.push(MountOp::Rebind {
@@ -481,6 +523,20 @@ pub fn mount_ops(plan: &LaunchPlan) -> Result<(Vec<MountOp>, MaskTargets), Sandb
             .into_iter()
             .map(|path| MountOp::ReadOnly { path }),
     );
+    // Projekt-Konfiguration (SBX-002): als eigener read-only Mount weder änderbar noch
+    // umbenennbar oder ersetzbar. Der Provider legt fehlende Verzeichnisse vorher an; fehlt
+    // eines trotzdem, könnte die Sandbox es anlegen (fail closed).
+    for path in &plan.read_only {
+        if !path.is_dir()
+            || std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(SandboxError::spawn(format!(
+                "{} fehlt oder ist kein Verzeichnis; read-only nicht durchsetzbar",
+                path.display()
+            )));
+        }
+        ops.push(MountOp::ReadOnly { path: path.clone() });
+    }
     sort_ops(&mut ops);
     Ok((ops, targets))
 }
@@ -537,12 +593,37 @@ fn modules(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             continue;
         }
         let name = e.file_name();
-        if name == "hooks" || name == "config" {
+        // Steuerdateien nur als Datei (ein Submodul darf `commondir` heißen).
+        let control = ft.is_file()
+            && name
+                .to_str()
+                .is_some_and(|n| crate::git::CONTROL_FILES.contains(&n));
+        if name == "hooks" || name == "config" || control {
             out.push(p);
         } else if ft.is_dir() {
             modules(&p, out, depth + 1);
         }
     }
+}
+
+fn is_real_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
+}
+
+/// Git-Verzeichnisse, in denen der Launcher das Entstehen von `commondir`/`gitdir` überwacht
+/// (#209): Git-Dir und Common-Dir, soweit sie in einer Schreib-Wurzel liegen. Fehlende Dateien
+/// lassen sich nicht per Mount sperren, und `git` muss dort beliebige Lock-Dateien anlegen.
+pub fn git_watch_dirs(plan: &LaunchPlan) -> Vec<PathBuf> {
+    let Some(g) = &plan.git else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for d in [&g.git_dir, &g.common_dir] {
+        if !out.contains(d) && is_real_dir(d) && plan.write_roots.iter().any(|w| d.starts_with(w)) {
+            out.push(d.clone());
+        }
+    }
+    out
 }
 
 /// Die Git-Mounts eines Plans.
@@ -561,9 +642,23 @@ pub fn git_mounts(plan: &LaunchPlan) -> GitMounts {
             ro.push(d.join(name));
         }
         modules(&d.join("modules"), &mut ro, 0);
-        if let Ok(entries) = std::fs::read_dir(d.join("worktrees")) {
+        // Einträge anderer Worktrees: Steuerdateien read-only; liegt `worktrees` in einer
+        // Schreib-Wurzel, werden es und seine Einträge zu Mountpunkten (weder umbenennbar noch
+        // ersetzbar, sonst ließe sich ein vorbereiteter Eintrag einsetzen, #209).
+        let wt = d.join("worktrees");
+        let pin = is_real_dir(&wt) && plan.write_roots.iter().any(|w| wt.starts_with(w));
+        if pin {
+            m.pinned.push(wt.clone());
+        }
+        if let Ok(entries) = std::fs::read_dir(&wt) {
             for e in entries.flatten() {
-                ro.push(e.path().join("config.worktree"));
+                let p = e.path();
+                for name in ["config.worktree", "commondir", "gitdir"] {
+                    ro.push(p.join(name));
+                }
+                if pin && e.file_type().is_ok_and(|t| t.is_dir()) {
+                    m.pinned.push(p);
+                }
             }
         }
     }
@@ -590,6 +685,9 @@ pub enum Access {
     Device,
     /// Alles (Lesen, Schreiben, Anlegen, Löschen, Umbenennen, Ausführen).
     Write,
+    /// Wie `Write`, aber ohne Symlinks anzulegen (auch nicht per Umbenennen; Austausch,
+    /// SBX-002).
+    WriteNoSymlink,
 }
 
 /// Die Landlock-Regeln eines Plans (nach den Mounts im Mount-Namespace aufzulösen).
@@ -617,6 +715,11 @@ pub fn landlock_rules(plan: &LaunchPlan, missing_in_write: &[PathBuf]) -> Vec<(P
     }
     for w in &plan.write_roots {
         expand_write(w, missing_in_write, &mut rules);
+    }
+    for (path, acc) in &mut rules {
+        if *acc == Access::Write && plan.no_symlinks.contains(path) {
+            *acc = Access::WriteNoSymlink;
+        }
     }
     rules
 }
@@ -671,6 +774,10 @@ mod tests {
         write(&ws.join(".env"));
         write(&ws.join("a/.env.local"));
         write(&ws.join("src/main.rs"));
+        // Legt sonst der Provider an (read-only Mounts der Projekt-Konfiguration).
+        for d in crate::resolve::PROJECT_CONFIG_DIRS {
+            std::fs::create_dir_all(ws.join(d)).unwrap();
+        }
         std::fs::create_dir_all(&scratch).unwrap();
         let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
         ctx.adapters = crate::masks::builtin_harness_grants();
@@ -714,6 +821,69 @@ mod tests {
                 r.starts_with("/tmp") || r.starts_with("/run"),
                 "{r:?}: {t:?}"
             );
+        }
+    }
+
+    /// SBX-002: Projekt-Konfiguration read-only gebunden (fehlt sie, scheitert der Start),
+    /// im Austausch kein Recht auf Symlinks; unter `/tmp` lehnt die Auflösung ihn ab.
+    #[test]
+    fn sbx_002_project_config_read_only_and_exchange_without_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let base = tempfile::tempdir_in(crate::session_base()).unwrap();
+        let xchg = base.path().canonicalize().unwrap().join("xchg");
+        std::fs::create_dir_all(&xchg).unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let ws = root.join("ws");
+        let (ops, _) = mount_ops(&plan).unwrap();
+        for d in [".beton", ".claude"] {
+            assert!(
+                ops.contains(&MountOp::ReadOnly { path: ws.join(d) }),
+                "{d}: {ops:?}"
+            );
+        }
+        std::fs::remove_dir(ws.join(".claude")).unwrap();
+        assert!(mount_ops(&plan).is_err(), "fehlendes Ziel: fail closed");
+        plan.write_roots.push(xchg.clone());
+        plan.no_symlinks.push(xchg.clone());
+        let rules = landlock_rules(&plan, &[]);
+        assert!(
+            rules.contains(&(xchg.clone(), Access::WriteNoSymlink)),
+            "{rules:?}"
+        );
+        // Session-Verzeichnis privat: leeres tmpfs, der Austausch kommt wieder hinein.
+        let session = base.path().canonicalize().unwrap();
+        plan.private.push(session.clone());
+        std::fs::create_dir_all(ws.join(".claude")).unwrap();
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::Anchor {
+                path: session.clone()
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::Rebind {
+                path: xchg.clone(),
+                write: true
+            }),
+            "{ops:?}"
+        );
+        assert!(rules.contains(&(ws.clone(), Access::Write)), "{rules:?}");
+
+        // Austausch unter `/tmp` bzw. in einer anderen Schreib-Wurzel: abgelehnt.
+        let home = root.join("home");
+        let scratch = root.join("scratch");
+        let inside = ws.join("xchg");
+        std::fs::create_dir_all(&inside).unwrap();
+        let mut ctx = ResolveCtx::new(Stage::Tools, &ws, &home, &scratch);
+        ctx.exchange = Some(inside);
+        let err = resolve(ProviderId::Landlock, &SandboxSpec::default(), &ctx).unwrap_err();
+        assert!(err.to_string().contains("Symlinks"), "{err}");
+        let under_tmp = tempfile::tempdir_in("/tmp").unwrap();
+        ctx.exchange = Some(under_tmp.path().canonicalize().unwrap());
+        if ctx.exchange.as_ref().unwrap().starts_with("/tmp") {
+            assert!(resolve(ProviderId::Landlock, &SandboxSpec::default(), &ctx).is_err());
         }
     }
 
@@ -822,6 +992,93 @@ mod tests {
         }
         // Nicht vorhandene Dateien werden nicht gebunden.
         assert!(!m.read_only.contains(&git.join("commondir")), "{m:?}");
+    }
+
+    #[test]
+    fn sbx_003_git_mounts_protect_worktree_control_files_and_pin_their_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let git = root.join("ws/.git");
+        let admin = git.join("worktrees/wt2");
+        write(&admin.join("commondir"));
+        write(&admin.join("gitdir"));
+        write(&git.join("config"));
+        plan.git = Some(GitProtection {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git.clone(),
+        });
+        let m = git_mounts(&plan);
+        for p in ["commondir", "gitdir"] {
+            assert!(m.read_only.contains(&admin.join(p)), "{p}: {m:?}");
+        }
+        // `.git` liegt im Workspace (Schreib-Wurzel): `worktrees` und seine Einträge sind
+        // Mountpunkte.
+        for p in [&git, &git.join("worktrees"), &admin] {
+            assert!(m.pinned.contains(p), "{}: {m:?}", p.display());
+        }
+        // Fehlende `commondir`/`gitdir` im Git-Dir überwacht der Launcher.
+        assert_eq!(git_watch_dirs(&plan), vec![git.clone()]);
+        let (ops, _) = mount_ops(&plan).unwrap();
+        assert!(
+            ops.contains(&MountOp::Pin {
+                path: admin.clone(),
+                writable: false
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&MountOp::ReadOnly {
+                path: admin.join("commondir")
+            }),
+            "{ops:?}"
+        );
+    }
+
+    #[test]
+    fn sbx_003_git_mounts_protect_existing_module_control_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let git = root.join("ws/.git");
+        for p in ["modules/a/commondir", "modules/a/b/gitdir"] {
+            write(&git.join(p));
+        }
+        plan.git = Some(GitProtection {
+            dot_git: git.clone(),
+            dot_git_is_file: false,
+            git_dir: git.clone(),
+            common_dir: git.clone(),
+        });
+        let m = git_mounts(&plan);
+        for p in ["modules/a/commondir", "modules/a/b/gitdir"] {
+            assert!(m.read_only.contains(&git.join(p)), "{p}: {m:?}");
+        }
+    }
+
+    #[test]
+    fn sbx_003_git_dirs_outside_the_write_roots_are_neither_pinned_nor_watched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let mut plan = plan_for(&root, "{}\n");
+        let common = root.join("repo/.git");
+        let admin = common.join("worktrees/wt");
+        write(&admin.join("commondir"));
+        write(&admin.join("gitdir"));
+        plan.git = Some(GitProtection {
+            dot_git: root.join("ws/.git"),
+            dot_git_is_file: true,
+            git_dir: admin.clone(),
+            common_dir: common.clone(),
+        });
+        plan.write_roots.push(admin.clone());
+        let m = git_mounts(&plan);
+        assert!(m.pinned.is_empty(), "{m:?}");
+        assert!(m.read_only.contains(&admin.join("commondir")), "{m:?}");
+        // Nur das eigene Git-Dir ist beschreibbar; dessen Steuerdateien gibt es.
+        assert_eq!(git_watch_dirs(&plan), vec![admin]);
     }
 
     #[test]

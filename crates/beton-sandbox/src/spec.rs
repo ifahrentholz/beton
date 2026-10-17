@@ -84,6 +84,44 @@ impl JsonSchema for BackendChoice {
     }
 }
 
+/// Eingebautes Preset (SBX-012): Startpunkt, den eigene Felder gemäß den Merge-Regeln
+/// überschreiben bzw. ergänzen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// Workspace rw, in Stufe 2 kein Netz (keine Egress-Regel); Stufe 1 erreicht nur ihre
+    /// Vendor-Hosts.
+    #[default]
+    Default,
+    /// Wie `default`, zusätzlich lesend gängige Paket-Registries und Toolchain-Caches.
+    Dev,
+    /// Workspace read-only, kein Netz (z. B. Side-Chats, Reviewer-Agents).
+    Readonly,
+}
+
+impl Preset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Preset::Default => "default",
+            Preset::Dev => "dev",
+            Preset::Readonly => "readonly",
+        }
+    }
+}
+
+/// `sandbox.harness` (Stufe 1, selten nötig).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HarnessSandboxConfig {
+    /// Zusätzliche Egress-Regeln der Stufe 1 (z. B. Remote-MCP-Server), mit MITM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_extra: Option<Vec<String>>,
+    /// Zusätzliche Passthrough-Hosts der Stufe 1 (`host` oder `host:port`), ohne
+    /// TLS-Terminierung (PRX-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_passthrough: Option<Vec<String>>,
+}
+
 /// Zugriff auf den Workspace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -183,6 +221,99 @@ impl Limits {
     }
 }
 
+/// Typ eines Credential-Bindings (PRX-006): Injektionsformat im Proxy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialType {
+    /// `Authorization: Bearer <wert>`; `hosts` ist Pflicht.
+    Bearer,
+    /// `Authorization: Basic base64(username:<wert>)`; `hosts` und `username` sind Pflicht.
+    Basic,
+    /// Git über HTTPS (Platzhalter als Passwort); `hosts` ist Pflicht.
+    GitHttps,
+    /// GitHub (Default-Hosts `github.com`, `api.github.com`, `uploads.github.com`,
+    /// `objects.githubusercontent.com`; GHE über `hosts`).
+    Github,
+    /// GitLab (Default-Host `gitlab.com`; self-hosted über `hosts`).
+    Gitlab,
+}
+
+impl CredentialType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bearer => "bearer",
+            Self::Basic => "basic",
+            Self::GitHttps => "git_https",
+            Self::Github => "github",
+            Self::Gitlab => "gitlab",
+        }
+    }
+}
+
+/// Quelle eines Credentials (PRX-006): genau eines der Felder. Gelesen wird nur in Stufe 0.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSourceSpec {
+    /// SecretRef im Secret-Store (SEC-001), z. B. `secret://user/github.com/me`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    /// Variable im Environment des Daemons beim Session-Start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    /// Datei außerhalb aller Sandbox-Grants (keine Hardlinks, höchstens 64 KiB, 0600
+    /// empfohlen).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Kommando (argv, ohne Shell) in Stufe 0; Timeout 30 s, stdout ohne Leerraum am Rand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Gültigkeit eines Kommando-Ergebnisses, z. B. `15m` (`s`, `m`, `h`); danach läuft es neu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
+}
+
+impl CredentialSourceSpec {
+    /// `ttl` in Sekunden (`None` ohne Angabe).
+    pub fn ttl_secs(&self) -> Result<Option<u64>, String> {
+        let Some(raw) = &self.ttl else {
+            return Ok(None);
+        };
+        let (num, unit) = raw.split_at(raw.len().saturating_sub(1));
+        let factor = match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => 3600,
+            _ => return Err(format!("`{raw}`: erwartet z. B. `30s`, `15m` oder `1h`")),
+        };
+        match num.parse::<u64>() {
+            Ok(n) if n > 0 => Ok(Some(n * factor)),
+            _ => Err(format!("`{raw}`: erwartet z. B. `30s`, `15m` oder `1h`")),
+        }
+    }
+}
+
+/// Ein Credential-Binding (PRX-006): Die Sandbox sieht nur einen Platzhalter `bt_cred_*`
+/// (in den Variablen aus `env`), der Proxy setzt den Wert für die gebundenen Hosts ein.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialSpec {
+    /// Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: CredentialType,
+    /// Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und
+    /// `git_https`, sonst Override der Default-Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<Vec<String>>,
+    /// Benutzername für `basic` (Pflicht) bzw. `git_https`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub source: CredentialSourceSpec,
+    /// Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+}
+
 /// Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der
 /// weniger spezifischen Ebene.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -193,6 +324,13 @@ pub struct SandboxSpec {
     /// `none` (keine Isolation, nur ausdrücklich).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendChoice>,
+    /// Eingebautes Preset `default`, `dev` oder `readonly` (SBX-012).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<Preset>,
+    /// Startet ein Harness nur, wenn er Tools in Stufe 2 erzwingt (Default `true`, SBX-002
+    /// AC4); `false` erlaubt `tool_isolation: inherited` als *degraded*.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_tool_isolation: Option<bool>,
     /// `rw` (Default) oder `ro`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceAccess>,
@@ -222,9 +360,23 @@ pub struct SandboxSpec {
     /// Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_allow_private: Option<Vec<String>>,
+    /// Passthrough in Stufe 2 (`host` oder `host:port`): nur ausdrücklich, ohne
+    /// TLS-Terminierung und ohne Credential-Injection (PRX-005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_passthrough: Option<Vec<String>>,
+    /// Loopback-Ports für Dev-Server in der Sandbox (PRX-008 AC3, #210): `bind` und `connect`
+    /// nur auf diesen Ports. Linux: im eigenen Net-Namespace; macOS: Loopback des Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_ports: Option<Vec<u16>>,
     /// Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<Limits>,
+    /// Stufe-1-Overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessSandboxConfig>,
+    /// Credential-Bindings der Stufe 2 (PRX-006); Grant der spezifischsten Ebene.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialSpec>>,
 }
 
 /// Environment-Variablen, die nie in eine Sandbox gelangen, auch nicht per `passthrough`
@@ -255,6 +407,12 @@ pub fn env_denied(name: &str) -> bool {
 }
 
 impl SandboxSpec {
+    /// Ausdrücklich ohne Isolation (`backend: none`). Ohne `backend` gilt `auto`: Die Sandbox
+    /// ist erforderlich (SBX-006).
+    pub fn unsandboxed(&self) -> bool {
+        self.backend == Some(BackendChoice::Provider(ProviderId::None))
+    }
+
     /// Liest eine Ebene aus YAML (der Inhalt unter `sandbox:`) und prüft sie.
     pub fn from_yaml(text: &str) -> Result<Self, SandboxError> {
         let value: serde_json::Value = serde_norway::from_str(text)
@@ -275,38 +433,79 @@ impl SandboxSpec {
         crate::paths::validate_spec(self)
     }
 
-    /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`.
+    /// Effektive Konfiguration aus den Ebenen `user` < `project` < `agent`. Setzt eine Ebene
+    /// ein Preset (SBX-012), liegt das Preset der spezifischsten solchen Ebene direkt unter ihr.
     pub fn merged(layers: &[&SandboxSpec]) -> SandboxSpec {
+        Self::merged_with_origins(&layers.iter().map(|l| ("config", *l)).collect::<Vec<_>>()).0
+    }
+
+    /// Wie [`SandboxSpec::merged`] mit Herkunft je Feld (`explain`, SBX-012 AC3): Schlüssel
+    /// ist der Feldname (bei vereinigten Listen `masks[<eintrag>]`, bei `env.set` und
+    /// `limits` der Pfad des Eintrags), Wert der Name der Ebene bzw. `preset:<name>`.
+    pub fn merged_with_origins(
+        layers: &[(&str, &SandboxSpec)],
+    ) -> (SandboxSpec, BTreeMap<String, String>) {
+        // Das Preset der spezifischsten Ebene, die eines setzt, gilt an deren Stelle: über den
+        // weniger spezifischen Ebenen (ein `readonly` des Agents verschärft, was der Benutzer
+        // freigibt), unter den eigenen Feldern dieser Ebene.
+        let at = layers.iter().rposition(|(_, l)| l.preset.is_some());
+        let mut all: Vec<(String, SandboxSpec)> = Vec::new();
+        for (i, (name, layer)) in layers.iter().enumerate() {
+            if Some(i) == at
+                && let Some(p) = layer.preset
+            {
+                all.push((format!("preset:{}", p.as_str()), crate::preset::layer(p)));
+            }
+            all.push(((*name).to_owned(), (*layer).clone()));
+        }
         let mut out = SandboxSpec::default();
-        for layer in layers {
-            if layer.backend.is_some() {
-                out.backend = layer.backend;
+        let mut origins = BTreeMap::new();
+        for (name, layer) in &all {
+            let mut set = |field: &str| {
+                origins.insert(field.to_owned(), name.clone());
+            };
+            macro_rules! scalar {
+                ($($f:ident),*) => {$(
+                    if layer.$f.is_some() {
+                        out.$f = layer.$f.clone();
+                        set(stringify!($f));
+                    }
+                )*};
             }
-            if layer.workspace.is_some() {
-                out.workspace = layer.workspace;
-            }
-            if layer.allow_network.is_some() {
-                out.allow_network = layer.allow_network;
-            }
-            for (field, value) in [
-                (&mut out.read_paths, &layer.read_paths),
-                (&mut out.write_paths, &layer.write_paths),
-                (&mut out.allow_hidden, &layer.allow_hidden),
-                (&mut out.egress_rules, &layer.egress_rules),
-                (&mut out.egress_allow_private, &layer.egress_allow_private),
-            ] {
-                if value.is_some() {
-                    field.clone_from(value);
-                }
-            }
+            scalar!(
+                backend,
+                preset,
+                require_tool_isolation,
+                workspace,
+                allow_network,
+                read_paths,
+                write_paths,
+                allow_hidden,
+                egress_rules,
+                egress_allow_private,
+                egress_passthrough,
+                dev_ports,
+                credentials
+            );
             if let Some(l) = &layer.limits {
+                for (field, present) in [
+                    ("limits.memory_mb", l.memory_mb.is_some()),
+                    ("limits.pids", l.pids.is_some()),
+                    ("limits.cpu_seconds", l.cpu_seconds.is_some()),
+                    ("limits.file_size_mb", l.file_size_mb.is_some()),
+                ] {
+                    if present {
+                        set(field);
+                    }
+                }
                 out.limits = Some(out.limits.unwrap_or_default().merged_with(l));
             }
             if let Some(masks) = &layer.masks {
-                let all = out.masks.get_or_insert_with(Vec::new);
+                let list = out.masks.get_or_insert_with(Vec::new);
                 for m in masks {
-                    if !all.contains(m) {
-                        all.push(m.clone());
+                    if !list.contains(m) {
+                        list.push(m.clone());
+                        set(&format!("masks[{m}]"));
                     }
                 }
             }
@@ -314,12 +513,27 @@ impl SandboxSpec {
                 let target = out.env.get_or_insert_with(SandboxEnvConfig::default);
                 if env.passthrough.is_some() {
                     target.passthrough.clone_from(&env.passthrough);
+                    set("env.passthrough");
                 }
                 for (k, v) in &env.set {
                     target.set.insert(k.clone(), v.clone());
+                    set(&format!("env.set.{k}"));
+                }
+            }
+            if let Some(h) = &layer.harness {
+                let target = out
+                    .harness
+                    .get_or_insert_with(HarnessSandboxConfig::default);
+                if h.egress_extra.is_some() {
+                    target.egress_extra.clone_from(&h.egress_extra);
+                    set("harness.egress_extra");
+                }
+                if h.egress_passthrough.is_some() {
+                    target.egress_passthrough.clone_from(&h.egress_passthrough);
+                    set("harness.egress_passthrough");
                 }
             }
         }
-        out
+        (out, origins)
     }
 }

@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,7 +24,7 @@ fn set(scope: Scope, name: &str, body: &str) -> Arc<LoadedSet> {
 }
 
 fn eval(sets: Vec<Arc<LoadedSet>>, act: &Activation) -> Decision {
-    EffectiveSet::new(sets).evaluate(act, &EvalOptions::default())
+    EffectiveSet::new(sets).evaluate(act, &common::opts())
 }
 
 fn tool(kind: &str, args: Value) -> Activation {
@@ -83,6 +85,36 @@ fn pol_007_ac1_user_deny_beats_agent_allow() {
     let d = eval(vec![agent, user], &tool("shell", json!({})));
     assert_eq!(deny_reasons(&d), ["no-shell"]);
     assert!(d.matched.iter().any(|m| m.rule.rule_id == "yes-shell"));
+}
+
+/// AGT-014 AC2: Eine Inline-Regel `allow` im Agent (`policies:` im `agent.yaml`) hebt ein
+/// `deny` der Projekt-Ebene nicht auf.
+#[test]
+fn agt_014_ac2_agent_allow_cannot_lift_a_project_deny() {
+    let project = set(
+        Scope::Project,
+        "p",
+        &format!(
+            "rules:\n{}",
+            rule("no-push", "tool_call", "tool.kind == \"shell\"", "deny")
+        ),
+    );
+    let agent = std::sync::Arc::new(
+        beton_policy::load::inline_set(
+            Scope::Agent,
+            "lax",
+            "agents/lax/agent.yaml",
+            &[json!({ "id": "lax-allow", "on": "tool_call", "when": "tool.kind == \"shell\"", "action": "allow" })],
+        )
+        .unwrap(),
+    );
+    let d = eval(vec![agent, project], &tool("shell", json!({})));
+    assert_eq!(deny_reasons(&d), ["no-push"]);
+    assert!(
+        d.matched
+            .iter()
+            .any(|m| m.rule.rule_id == "lax-allow" && m.rule.scope == Scope::Agent)
+    );
 }
 
 #[test]
@@ -211,13 +243,14 @@ fn pol_007_ac3_first_writer_wins_for_model() {
 
 #[test]
 fn pol_007_ac4_args_patches_by_pointer() {
+    // `args` ändern nur Ebenen ab User (#234); Team ist autoritativer als User.
     let project = set(
-        Scope::Project,
+        Scope::Team,
         "p",
         "rules:\n  - id: p\n    on: tool_call\n    action: modify\n    modify: { args: { timeout: 10, env: { A: \"1\" } } }\n",
     );
     let agent = set(
-        Scope::Agent,
+        Scope::User,
         "a",
         "rules:\n  - id: a\n    on: tool_call\n    action: modify\n    modify: { args: { timeout: 99, env: { B: \"2\" }, dry: true } }\n",
     );
@@ -235,18 +268,18 @@ fn pol_007_ac4_args_patches_by_pointer() {
     assert_eq!(conflict.field, "/args/timeout");
     assert_eq!(conflict.kept, json!(10));
     assert_eq!(conflict.discarded, json!(99));
-    assert_eq!(conflict.discarded_rule.scope, Scope::Agent);
+    assert_eq!(conflict.discarded_rule.scope, Scope::User);
 }
 
 #[test]
 fn pol_007_ac4_overlapping_pointers_conflict() {
     let user = set(
-        Scope::User,
+        Scope::Org,
         "u",
         "rules:\n  - id: u\n    on: tool_call\n    action: modify\n    modify: { args: { env: null } }\n",
     );
     let agent = set(
-        Scope::Agent,
+        Scope::User,
         "a",
         "rules:\n  - id: a\n    on: tool_call\n    action: modify\n    modify: { args: { env: { B: \"2\" } } }\n",
     );
@@ -291,7 +324,7 @@ fn mixed_sets() -> Vec<Arc<LoadedSet>> {
             ),
         ),
         set(
-            Scope::Project,
+            Scope::Team,
             "p-b",
             "rules:\n  - id: m\n    on: tool_call\n    action: modify\n    modify: { args: { safe: false, note: p } }\n",
         ),
@@ -305,7 +338,7 @@ fn mixed_sets() -> Vec<Arc<LoadedSet>> {
             ),
         ),
         set(
-            Scope::Agent,
+            Scope::Org,
             "a-b",
             "rules:\n  - id: m\n    on: tool_call\n    action: modify\n    modify: { args: { note: a } }\n  - id: n\n    on: tool_call\n    action: notify\n",
         ),
@@ -362,7 +395,9 @@ fn pol_007_mixed_outcomes() {
     // file_read: Projekt-Default ask ist durch p1 aufgehoben
     let d = eval(sets.clone(), &tool("file_read", json!({})));
     assert_eq!(d.outcome, Outcome::Allow);
-    assert_eq!(d.modified.args, Some(json!({ "safe": true, "note": "p" })));
+    // `args`-Patches ab User (#234): Org `note: a` vor Team `note: p`, Team `safe: false` vor
+    // User `safe: true`.
+    assert_eq!(d.modified.args, Some(json!({ "safe": false, "note": "a" })));
     // other: Projekt-Default ask greift (Agent-allow hebt ihn nicht auf)
     let d = eval(sets, &tool("other", json!({})));
     assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:?}");
@@ -529,7 +564,7 @@ fn pol_007_grants_turn_ask_into_allow() {
     let grants = GrantFor("confirm");
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![s]).evaluate(&tool("shell", json!({})), &opts);
     assert_eq!(d.outcome, Outcome::Allow);
@@ -549,7 +584,7 @@ fn pol_007_unsupported_modification() {
     };
     let opts = EvalOptions {
         capabilities: caps,
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let run = |s: &str| {
         EffectiveSet::new(vec![set(Scope::User, "u", &body(s))])
@@ -568,10 +603,10 @@ fn pol_007_builtin_rule_types_fail_closed_until_implemented() {
     let s = set(
         Scope::User,
         "u",
-        "rules:\n  - id: budget\n    type: spend_cap\n    params: { scope: session, limit_usd: 25 }\n",
+        "rules:\n  - id: browser\n    type: browser_guard\n    params: { allow_hosts: [docs.rs] }\n",
     );
-    let d = eval(vec![s.clone()], &model_request("opus"));
-    assert_eq!(deny_reasons(&d), ["budget"]);
+    let d = eval(vec![s.clone()], &navigate("docs.rs"));
+    assert_eq!(deny_reasons(&d), ["browser"]);
     // in anderen Phasen wirkt der Regeltyp nicht
     assert_eq!(
         eval(vec![s], &tool("shell", json!({}))).outcome,
@@ -611,6 +646,44 @@ fn pol_007_time_budget_exceeded_denies() {
         panic!("{d:?}")
     };
     assert!(reasons[0].reason.contains("Zeitbudget"), "{reasons:?}");
+}
+
+/// Uhr, die bei jedem Lesen um 1 µs vorrückt: zählt die Zugriffe der Auswertung.
+struct TickClock(AtomicU64);
+
+impl Clock for TickClock {
+    fn now_us(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+/// #263 (POL-002 AC4, POL-027): Die Spur gegriffener Regeln (Explain) verbraucht nicht das
+/// Zeitbudget der Entscheidung. Früher wertete sie jeden Teilausdruck erneut innerhalb des
+/// Budgets aus; eine lange `&&`-Kette konnte so die nächste Regel über die Frist schieben und
+/// die Entscheidung zu `deny` machen. Die Spur selbst bleibt vollständig.
+#[test]
+fn pol_027_trace_does_not_spend_the_time_budget_of_the_decision() {
+    let parts = ["tool.kind == \"shell\""; 12].join(" && ");
+    let rules = format!(
+        "{}{}",
+        rule("long", "tool_call", &parts, "allow"),
+        rule("later", "tool_call", "tool.kind == \"nie\"", "deny")
+    );
+    let s = set(Scope::User, "u", &format!("rules:\n{rules}"));
+    let clock = TickClock(AtomicU64::new(0));
+    let opts = EvalOptions {
+        clock: Some(&clock),
+        limits: Limits {
+            eval_budget_us: 8,
+            ..Limits::default()
+        },
+        ..EvalOptions::default()
+    };
+    let d = EffectiveSet::new(vec![s]).evaluate(&tool("shell", json!({})), &opts);
+    assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
+    let trace = &d.matched[0].trace;
+    assert_eq!(trace.len(), 12, "{trace:?}");
+    assert!(trace.iter().all(|p| p.value == Some(true)), "{trace:?}");
 }
 
 #[test]
@@ -703,6 +776,7 @@ fn pol_005_args_patch_recomputes_derived_fields_for_pass_two() {
         mcp_server: None,
         cwd: "/work/repo".into(),
         home: None,
+        trusted_servers: None,
     });
     let original = json!({ "command": "rm -rf /tmp/x" });
     let normalized = normalize_source(&source, &original).unwrap();
@@ -761,6 +835,7 @@ fn pol_005_failed_renormalization_after_args_patch_denies() {
         mcp_server: None,
         cwd: "relativ/kein/pfad".into(),
         home: None,
+        trusted_servers: None,
     });
     let act = tool("shell", json!({ "command": "ls" })).with_tool_source(source);
     let user = set(
@@ -816,7 +891,7 @@ fn pol_006_no_capabilities_means_every_modification_is_unsupported() {
     );
     let opts = EvalOptions {
         capabilities: Capabilities::none(),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![s]).evaluate(&model_request("opus"), &opts);
     assert_eq!(deny_reasons(&d), ["route"]);

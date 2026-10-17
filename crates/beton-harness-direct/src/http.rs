@@ -3,8 +3,9 @@
 //! Sicherheitsregeln (fail closed):
 //! - Keine Weiterleitungen: Ein 3xx endet mit Fehler, statt den Key an ein anderes Ziel zu
 //!   schicken.
-//! - Kein impliziter Proxy aus der Umgebung (`HTTPS_PROXY` u. a.); der Egress-Proxy von
-//!   beton kommt mit M2 (PRX-006) und wird dann ausdrücklich konfiguriert.
+//! - Kein impliziter Proxy aus der Umgebung (`HTTPS_PROXY` u. a.). Im Stufenmodell geht jeder
+//!   Request ausdrücklich über die Proxy-Instanz der Session ([`crate::Egress`]), die nur der
+//!   beton-CA vertraut und den Platzhalter des Keys ersetzt (HAR-011 AC2, PRX-006).
 //! - Key-Header sind als sensibel markiert; Header, Bodies und Antworten werden nie geloggt.
 //!   Fehlertexte des Anbieters laufen durch [`ApiKey::scrub`].
 //!
@@ -135,15 +136,26 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(options: HttpOptions) -> Result<Self, String> {
-        let http = reqwest::Client::builder()
+    pub fn new(options: HttpOptions, egress: Option<&crate::Egress>) -> Result<Self, String> {
+        let mut builder = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(options.connect_timeout)
             .timeout(options.request_timeout)
-            .user_agent(concat!("beton/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| format!("HTTP-Client: {e}"))?;
+            .user_agent(concat!("beton/", env!("CARGO_PKG_VERSION")));
+        if let Some(e) = egress {
+            // Nur über den Proxy und nur mit der beton-CA (er terminiert TLS und setzt den Key
+            // ein); Fehler hier verhindern den Start (fail closed).
+            let proxy = reqwest::Proxy::all(&e.proxy_url)
+                .map_err(|_| "HTTP-Client: ungültige Proxy-URL".to_owned())?;
+            let ca = reqwest::Certificate::from_pem(e.ca_pem.as_bytes())
+                .map_err(|_| "HTTP-Client: beton-CA nicht lesbar".to_owned())?;
+            builder = builder
+                .proxy(proxy)
+                .tls_built_in_root_certs(false)
+                .add_root_certificate(ca);
+        }
+        let http = builder.build().map_err(|e| format!("HTTP-Client: {e}"))?;
         Ok(Self { http, options })
     }
 

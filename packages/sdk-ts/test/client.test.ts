@@ -44,6 +44,51 @@ describe('REST-Client', () => {
     ])
   })
 
+  it('POL-027 AC4: Policies auswerten, erklären und Shadow-Treffer lesen', async () => {
+    const seen: string[] = []
+    const url = await serve((req, text) => {
+      seen.push(`${req.method} ${req.url} ${text}`)
+      if (req.url?.startsWith('/v1/policies/shadow')) return [200, { days: ['2026-10-14'], rules: [] }]
+      return [200, { outcome: 'deny' }]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    const report = await client.policies.shadow(1)
+    expect(report.days).toEqual(['2026-10-14'])
+    await client.policies.shadow()
+    await client.policies.effective('ses_1')
+    await client.policies.effective()
+    const ev = await client.policies.evaluate({ phase: 'tool_call', input: { tool: { name: 'Bash' } } })
+    expect(ev.outcome).toBe('deny')
+    await client.policies.explain('ses_1', 12)
+    expect(seen).toEqual([
+      'GET /v1/policies/shadow?days=1 ',
+      'GET /v1/policies/shadow ',
+      'GET /v1/policies?session_id=ses_1 ',
+      'GET /v1/policies ',
+      'POST /v1/policies/evaluate {"phase":"tool_call","input":{"tool":{"name":"Bash"}}}',
+      'GET /v1/sessions/ses_1/policy-decisions/12 ',
+    ])
+  })
+
+  it('USE-006: Verbrauch mit Zeitraum und Gruppierung, Preise und Usage einer Session', async () => {
+    const seen: string[] = []
+    const url = await serve((req) => {
+      seen.push(`${req.method} ${req.url}`)
+      return [200, {}]
+    })
+    const client = new BetonClient({ baseUrl: url, token: 'tok' })
+    await client.usage.report({ from: '2026-10-01', to: '2026-10-14', tz: '+02:00', groupBy: ['day', 'harness'] })
+    await client.usage.report()
+    await client.usage.pricing()
+    await client.session('ses_1').usage()
+    expect(seen).toEqual([
+      'GET /v1/usage?from=2026-10-01&to=2026-10-14&tz=%2B02%3A00&group_by=day%2Charness',
+      'GET /v1/usage',
+      'GET /v1/usage/pricing',
+      'GET /v1/sessions/ses_1/usage',
+    ])
+  })
+
   it('legt Sessions an und sendet Eingaben mit Bearer-Token', async () => {
     const seen: string[] = []
     const url = await serve((req, text) => {

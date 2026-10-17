@@ -47,6 +47,10 @@ pub enum TunnelUp {
         session_id: SessionId,
         epoch: u64,
         last_acked_rseq: u64,
+        /// Vorab-Verbindung vor dem Start des Harness (Policy `session_start`, #218): nur
+        /// System-Calls und Events, keine Kommandos; der Server wartet auf die Hauptschleife.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        prestart: bool,
     },
     #[serde(rename = "events.push")]
     EventsPush {
@@ -80,8 +84,9 @@ pub enum TunnelUp {
     },
 }
 
-/// Nachrichten an Runner bzw. Host.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+/// Nachrichten an Runner bzw. Host. `Debug` zeigt keine Ergebnisse von System-Calls: Sie
+/// können Credential-Werte enthalten (`credential.resolve`, PRX-006).
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum TunnelDown {
     Welcome {
@@ -127,6 +132,22 @@ pub enum TunnelDown {
     RunnerStop { session_id: SessionId, grace_s: u64 },
     /// Fehler als RFC-9457-Problem, z. B. `stale_epoch`.
     Problem { problem: Value },
+}
+
+impl std::fmt::Debug for TunnelDown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SystemResult {
+                call_id, problem, ..
+            } => f
+                .debug_struct("SystemResult")
+                .field("call_id", call_id)
+                .field("result", &"***")
+                .field("problem", problem)
+                .finish(),
+            other => f.write_str(&serde_json::to_string(other).unwrap_or_default()),
+        }
+    }
 }
 
 impl TunnelUp {
@@ -205,9 +226,12 @@ mod tests {
             session_id: "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C".parse().unwrap(),
             epoch: 1,
             last_acked_rseq: 0,
+            prestart: false,
         })
         .unwrap();
         assert_eq!(v["t"], "session.bind");
+        // Ohne `prestart` (ältere Runner) ist es die Verbindung der Hauptschleife (#218).
+        assert!(v.get("prestart").is_none());
         let ack: TunnelDown = serde_json::from_value(serde_json::json!({
             "t": "events.ack", "session_id": "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C", "upto_rseq": 5, "seq_range": [2, 6]
         }))
@@ -220,5 +244,22 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::*;
+
+    #[test]
+    fn prx_006_system_results_never_show_credential_values_in_debug() {
+        let down = TunnelDown::SystemResult {
+            call_id: "sys_1".into(),
+            result: Some(serde_json::json!({ "value_b64": "RklYVFVSRS1TRUNSRVQ=", "ttl_s": 60 })),
+            problem: None,
+        };
+        let text = format!("{down:?}");
+        assert!(text.contains("sys_1"), "{text}");
+        assert!(!text.contains("RklYVFVSRS1TRUNSRVQ="), "{text}");
     }
 }

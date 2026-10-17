@@ -427,6 +427,14 @@ string_enum!(AuthSource {
     None
 });
 string_enum!(ContextSource { Harness, Estimated });
+string_enum!(
+    /// Auslöser einer Compaction (USE-009): `user` über Button, `/compact` oder API, `beton`
+    /// automatisch vor dem nächsten Turn (`compaction.auto: beton`), `harness` vom Harness selbst.
+    CompactionTrigger {
+    User,
+    Beton,
+    Harness
+});
 string_enum!(FsChangeKind {
     Added,
     Modified,
@@ -517,6 +525,9 @@ payload!(SessionCreated {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     #[ts(optional, as = "Option<Value>")]
     harness_opts: Value,
+    /// Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als
+    /// `spend_cap` der User-Ebene durch (Regel `max-cost`, POL-011).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] max_cost_usd: Option<f64>,
 });
 payload!(SessionStarted {
     runner_id: RunnerId,
@@ -525,6 +536,16 @@ payload!(SessionStarted {
     harness_version: String,
     capabilities: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] harness_session_ref: Option<String>,
+    /// Was die Sandbox dieser Session durchsetzt (SBX-006); Grundlage für `yolo` (HAR-027).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] sandbox: Option<SessionSandbox>,
+});
+payload!(
+    /// Schutz der Tools einer Session (SBX-006, HAR-027): Stufe 2 und Netz nur über den Proxy.
+    SessionSandbox {
+    /// Tools laufen in Stufe 2, getrennt vom Harness.
+    tool_sandbox: bool,
+    /// Netz der Tools nur über den Egress-Proxy (oder gar keins).
+    egress_proxy: bool,
 });
 payload!(SessionStatusChanged {
     status: SessionStatus,
@@ -770,6 +791,17 @@ payload!(PolicyNotified {
     channels: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] message: Option<String>,
 });
+// Eine Abfrage per `policy_query` (AGT-007 AC3, POL-027): ohne Klartext der Aktion, nur
+// `subject_hash`, Ergebnis und die Regeln der Gründe (`deny`/`ask`); `limited` bei
+// überschrittenem Abfragelimit des Turns.
+payload!(PolicyQueried {
+    subject_hash: String,
+    tool: String,
+    kind: String,
+    outcome: PolicyOutcome,
+    rules: Vec<String>,
+    #[serde(default)] limited: bool,
+});
 payload!(BudgetExhausted {
     scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] lease_id: Option<String>,
@@ -824,6 +856,8 @@ payload!(ContextUsage {
 payload!(Compaction {
     before_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] after_tokens: Option<u64>,
+    /// Wer die Compaction ausgelöst hat (USE-009); setzt der Runner. Fehlt in Logs vor M2.
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] trigger: Option<CompactionTrigger>,
 });
 
 payload!(FsChange {
@@ -1037,6 +1071,19 @@ payload!(EventRedacted {
     by: PrincipalId,
     reason: String
 });
+payload!(
+    /// Ersatz für ein Event, das der Server fachlich abgelehnt hat (z. B. Nutzlast über dem
+    /// Blob-Limit): steht an dessen Stelle im Log, damit nichts still verschwindet (PROTO-015,
+    /// #288). Enthält bewusst nicht den abgelehnten Inhalt.
+    EventRejected {
+        /// Typ des abgelehnten Events, z. B. `message.completed`.
+        original_type: String,
+        /// Runner-Sequenz des abgelehnten Events.
+        rseq: u64,
+        /// Problem-Code, z. B. `payload_too_large` oder `validation_failed`.
+        reason: String,
+    }
+);
 payload!(HarnessUnmapped { raw: Value });
 payload!(Notice {
     level: NoticeLevel,
@@ -1147,6 +1194,7 @@ catalog! {
     PolicySetInvalid = "policy.set_invalid", Durable, PolicySetInvalid;
     PolicyStateChanged = "policy.state_changed", Durable, PolicyStateChanged;
     PolicyNotified = "policy.notified", Durable, PolicyNotified;
+    PolicyQueried = "policy.queried", Durable, PolicyQueried;
     PolicyEnforcementDegraded = "policy.enforcement_degraded", Durable, PolicyRuleIssue;
     PolicyRuleInapplicable = "policy.rule_inapplicable", Durable, PolicyRuleIssue;
     BudgetExhausted = "budget.exhausted", Durable, BudgetExhausted;
@@ -1207,6 +1255,7 @@ catalog! {
     ShareRevoked = "share.revoked", Durable, ShareChange;
     PresenceUpdated = "presence.updated", Transient, PresenceUpdated;
     EventRedacted = "event.redacted", Durable, EventRedacted;
+    EventRejected = "event.rejected", Durable, EventRejected;
     HarnessUnmapped = "harness.unmapped", Durable, HarnessUnmapped;
     Notice = "notice", Durable, Notice;
     Error = "error", Durable, ErrorEvent;

@@ -20,6 +20,7 @@ fn raw<'a>(harness: &'a str, name: &'a str, args: &'a Value) -> RawToolCall<'a> 
         args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     }
 }
 
@@ -274,6 +275,31 @@ fn pol_005_codex_command_with_shell_wrapper_is_parsed() {
     );
 }
 
+/// #242 N4: Codex nennt das Arbeitsverzeichnis eines Shell-Calls `workdir` (`exec_command`,
+/// `shell`). Es ist `tool.cwd`, die Basis relativer Pfade und Teil des Grant-Fingerprints; ein
+/// relatives Verzeichnis gilt relativ zum Arbeitsverzeichnis der Session.
+#[test]
+fn pol_005_codex_workdir_is_the_tool_cwd() {
+    for name in ["exec_command", "shell"] {
+        let args =
+            json!({ "command": ["bash", "-lc", "rm -rf ./build"], "workdir": "/work/other" });
+        let tool = normalize(&raw("codex", name, &args)).unwrap();
+        assert_eq!(tool.cwd, "/work/other", "{name}");
+        assert!(
+            tool.paths.contains(&"/work/other/build".to_owned()),
+            "{name}: {:?}",
+            tool.paths
+        );
+        let args = json!({ "command": ["ls"], "workdir": "sub/../pkg" });
+        let tool = normalize(&raw("codex", name, &args)).unwrap();
+        assert_eq!(tool.cwd, "/work/repo/pkg", "{name}");
+    }
+    // Auch ein relatives `cwd` (app-server) gilt relativ zur Session statt gar nicht.
+    let args = json!({ "command": "ls", "cwd": "pkg" });
+    let tool = normalize(&raw("codex", "commandExecution", &args)).unwrap();
+    assert_eq!(tool.cwd, "/work/repo/pkg");
+}
+
 #[test]
 fn pol_005_context_shape_matches_declaration() {
     let args = json!({ "command": "ls" });
@@ -288,4 +314,93 @@ fn pol_005_harness_family_groups_acp_and_direct() {
     assert_eq!(harness_family("acp:gemini"), "acp");
     assert_eq!(harness_family("direct:anthropic"), "direct");
     assert_eq!(harness_family("claude"), "claude");
+}
+
+/// K2 (#232): Der Claude-Hook meldet `tool_name = "mcp__<server>__<tool>"` und zusätzlich
+/// `mcp_server`. `tool.name` ist trotzdem der Name ohne Präfix, damit serverbezogene Regeln
+/// und Tabelleneinträge greifen.
+#[test]
+fn pol_005_claude_hook_mcp_tool_name_without_prefix() {
+    let none = json!({});
+    for (name, server, want_name, kind, spawn) in [
+        (
+            "mcp__github__delete_repo",
+            "github",
+            "delete_repo",
+            "mcp",
+            false,
+        ),
+        (
+            "mcp__beton__session_spawn",
+            "beton",
+            "session_spawn",
+            "system",
+            true,
+        ),
+    ] {
+        let call = RawToolCall {
+            mcp_server: Some(server),
+            ..raw("claude", name, &none)
+        };
+        let tool = normalize(&call).unwrap();
+        assert_eq!(
+            (tool.server.as_str(), tool.name.as_str()),
+            (server, want_name),
+            "{name}"
+        );
+        assert_eq!(tool.kind, kind, "{name}");
+        assert_eq!(tool.is_subagent_spawn, spawn, "{name}");
+        assert_eq!(tool.native_name, name);
+    }
+    // Die Regel aus dem Angriff greift.
+    let call = RawToolCall {
+        mcp_server: Some("github"),
+        ..raw("claude", "mcp__github__delete_repo", &none)
+    };
+    let tool = normalize(&call).unwrap();
+    assert!(cel(
+        "tool.server == \"github\" && tool.name == \"delete_repo\"",
+        tool.to_context()
+    ));
+}
+
+/// M1 (#234): Die Klassen der beton-Server (`beton` → `system`, `beton-workspace/fs_read` →
+/// `file_read`) gelten nur für Server, die beton selbst eingebunden hat. Ein gleichnamiger Server
+/// aus der Vendor-Konfiguration ist ein gewöhnliches MCP-Tool.
+#[test]
+fn pol_005_beton_server_classes_only_for_servers_beton_injected() {
+    let none = json!({});
+    let trusted = vec!["beton".to_owned()];
+    let untrusted: Vec<String> = Vec::new();
+    for (list, name, server, kind) in [
+        (&trusted, "mcp__beton__session_list", None, "system"),
+        (&untrusted, "mcp__beton__session_list", None, "mcp"),
+        (
+            &untrusted,
+            "mcp__beton__session_spawn",
+            Some("beton"),
+            "mcp",
+        ),
+        (&untrusted, "fs_read", Some("beton-workspace"), "mcp"),
+        (&untrusted, "mcp__github__x", None, "mcp"),
+    ] {
+        let call = RawToolCall {
+            mcp_server: server,
+            trusted_servers: Some(list),
+            ..raw("claude", name, &none)
+        };
+        let tool = normalize(&call).unwrap();
+        assert_eq!(tool.kind, kind, "{name} {list:?}");
+        assert!(!tool.is_subagent_spawn || kind == "system", "{name}");
+    }
+}
+
+/// Claude Code 2.1.296 heißt das Sub-Agent-Tool `Agent` (vorher `Task`; bei der Verifikation zu
+/// #233 aufgefallen): `system` mit `is_subagent_spawn`.
+#[test]
+fn pol_005_claude_agent_tool_is_a_subagent_spawn() {
+    let none = json!({});
+    let tool = normalize(&raw("claude", "Agent", &none)).unwrap();
+    assert_eq!(tool.kind, "system");
+    assert!(tool.is_subagent_spawn);
 }

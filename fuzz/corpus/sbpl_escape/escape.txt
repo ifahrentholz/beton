@@ -1,0 +1,4 @@
+E /Users/me/My (Project) [v2]/*.rs
+E ^$.|?*+()[]{}\
+E "quoted"
+E ümlaut-日本

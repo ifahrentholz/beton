@@ -1,0 +1,6 @@
+# Testdaten für die Policy-Tests (QA-004): Modell-Routing auf Ebene User.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: model-a
+rules:
+  - { id: route-a, on: model_request, action: modify, modify: { model: claude-sonnet-4-5 } }

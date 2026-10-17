@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -126,6 +127,134 @@ impl Spawner for RealSpawner {
             .await
             .is_ok_and(|s| s.success())
     }
+}
+
+/// Fragt eine CLI ab und liefert Erfolg und stdout (im Test ersetzbar, damit kein Test die
+/// echten `gh`-/`glab`-Konfigurationen des Entwicklers liest).
+#[async_trait]
+pub trait CliOutput: Send + Sync {
+    /// Liegt das Programm im `PATH`? Startet nichts.
+    fn installed(&self, program: &str) -> bool;
+    /// `None`: Programm nicht startbar.
+    async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)>;
+}
+
+#[async_trait]
+impl CliOutput for RealSpawner {
+    fn installed(&self, program: &str) -> bool {
+        std::env::var_os("PATH")
+            .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(program).is_file()))
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Stufe 0: Token einer Git-CLI nach Zustimmung des Benutzers übernehmen (SEC-011)"
+    )]
+    async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+        let run = tokio::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(Duration::from_secs(10), run).await {
+            Ok(Ok(out)) => Some((out.status.success(), out.stdout)),
+            _ => None,
+        }
+    }
+}
+
+/// Eine Git-CLI, deren Login `beton setup` übernehmen kann (SEC-011).
+#[derive(Debug, Clone, Copy)]
+pub struct GitCli {
+    pub command: &'static str,
+    pub host: &'static str,
+    /// Typ des Credential-Bindings (`sandbox.credentials[].type`).
+    pub kind: &'static str,
+    /// Variable der Stufe 2, die den Platzhalter bekommt.
+    pub env: &'static str,
+    /// Gibt den Token auf stdout aus (ohne Netzzugriff); läuft erst nach Zustimmung.
+    pub token: &'static [&'static str],
+}
+
+pub const GIT_CLIS: [GitCli; 2] = [
+    GitCli {
+        command: "gh",
+        host: "github.com",
+        kind: "github",
+        env: "GH_TOKEN",
+        token: &["auth", "token", "--hostname", "github.com"],
+    },
+    GitCli {
+        command: "glab",
+        host: "gitlab.com",
+        kind: "gitlab",
+        env: "GITLAB_TOKEN",
+        token: &["config", "get", "token", "--host", "gitlab.com"],
+    },
+];
+
+/// Bietet an, den Login installierter `gh`-/`glab`-CLIs in den Secret-Store zu übernehmen
+/// (SEC-011 AC2): nie still und nie im nicht-interaktiven Modus. Die CLI wird erst nach der
+/// Zustimmung gefragt (ohne Netzzugriff, ADR-0033); der Token wird nie ausgegeben.
+pub async fn offer_git_token_import(
+    clis: &[GitCli],
+    probe: &dyn CliOutput,
+    interactive: bool,
+    prompt: &mut dyn Prompt,
+    importer: &dyn KeyImporter,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    for cli in clis {
+        if !probe.installed(cli.command) {
+            continue;
+        }
+        let secret_ref = format!("secret://user/{}/default", cli.host);
+        if !interactive {
+            writeln!(
+                out,
+                "{} gefunden; Login übernehmen: beton setup (interaktiv) oder `{} {} | beton secrets add {} --stdin`",
+                cli.command,
+                cli.command,
+                cli.token.join(" "),
+                cli.host
+            )?;
+            continue;
+        }
+        if !prompt.confirm(&format!(
+            "{} ist installiert: dessen Login ({}) als {secret_ref} in den Secret-Store übernehmen?",
+            cli.command, cli.host
+        )) {
+            writeln!(out, "  {}: nicht übernommen", cli.command)?;
+            continue;
+        }
+        let token = match probe.output(cli.command, cli.token).await {
+            Some((true, stdout)) => SecretValue::from_bytes(stdout.trim_ascii().to_vec()),
+            _ => SecretValue::from_bytes(Vec::new()),
+        };
+        if token.is_empty() {
+            writeln!(
+                out,
+                "  {}: nicht übernommen (kein Login für {})",
+                cli.command, cli.host
+            )?;
+            continue;
+        }
+        match importer.import(&secret_ref, &token).await {
+            Ok(()) => {
+                writeln!(out, "  {}: übernommen als {secret_ref}", cli.command)?;
+                writeln!(
+                    out,
+                    "  Für Tools in der Sandbox (nur als Platzhalter) in ~/.beton/config.yaml unter \
+                     sandbox.credentials eintragen:\n    - {{ name: {}, type: {}, source: {{ secret: \"{secret_ref}\" }}, env: [{}] }}",
+                    cli.kind, cli.kind, cli.env
+                )?;
+            }
+            Err(e) => writeln!(out, "  {}: nicht übernommen: {e}", cli.command)?,
+        }
+    }
+    Ok(())
 }
 
 /// `[y/N]` auf stderr, Antwort von stdin.
@@ -312,6 +441,34 @@ fn auth_text(status: AuthStatus) -> &'static str {
         AuthStatus::LoggedIn => "angemeldet",
         AuthStatus::LoggedOut => "nicht angemeldet",
         AuthStatus::Unknown | AuthStatus::NotApplicable => "Anmeldung unbekannt",
+    }
+}
+
+/// Legt die sicheren Policy-Defaults der User-Ebene an (POL-001):
+/// `<beton_home>/policies/defaults.yaml` mit [`beton_policy::doc::USER_DEFAULTS`], wenn es die
+/// Datei noch nicht gibt (eine vorhandene, auch geänderte, bleibt unangetastet), und das
+/// Policy-Schema als lokale Datei `<beton_home>/schemas/v1/policy.schema.json`, auf die der
+/// Kopfkommentar zeigt (ADR-0033). Liefert den Pfad, wenn die Datei neu ist.
+pub fn write_policy_defaults(beton_home: &Path) -> std::io::Result<Option<PathBuf>> {
+    let schema = beton_home.join(beton_policy::doc::SCHEMA_PATH);
+    if let Some(dir) = schema.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&schema, beton_policy::doc::schema_json())?;
+    let dir = beton_policy::store::policies_dir(beton_home);
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join("defaults.yaml");
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file);
+    match created {
+        Ok(mut f) => {
+            f.write_all(beton_policy::doc::USER_DEFAULTS.as_bytes())?;
+            Ok(Some(file))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(e),
     }
 }
 
@@ -631,6 +788,168 @@ mod tests {
             .unwrap();
         assert!(prompt.1.is_empty());
         assert!(imports.0.lock().unwrap().is_empty());
+    }
+
+    /// `gh`/`glab`-Attrappe: zeichnet Aufrufe auf; liest nie echte Konfigurationen.
+    struct FakeGit {
+        logged_in: bool,
+        calls: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl CliOutput for FakeGit {
+        fn installed(&self, program: &str) -> bool {
+            program == "gh"
+        }
+
+        async fn output(&self, program: &str, args: &[&str]) -> Option<(bool, Vec<u8>)> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{program} {}", args.join(" ")));
+            match (program, self.logged_in) {
+                ("gh", true) => Some((true, b"gho_FIXTUREgh0123456789\n".to_vec())),
+                ("gh", false) => Some((false, Vec::new())),
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sec_011_ac2_gh_token_is_taken_over_only_after_explicit_confirmation() {
+        let git = FakeGit {
+            logged_in: true,
+            calls: Mutex::default(),
+        };
+        // Ohne Zustimmung: nichts gespeichert, gh nicht einmal gefragt.
+        let imports = Imports::default();
+        let mut prompt = Answer(false, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert_eq!(prompt.1.len(), 1, "genau eine Rückfrage für gh");
+        assert!(git.calls.lock().unwrap().is_empty());
+        // Nicht interaktiv: keine Rückfrage, nichts gelesen, nichts gespeichert.
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, false, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(prompt.1.is_empty());
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert!(git.calls.lock().unwrap().is_empty());
+        assert!(String::from_utf8(out).unwrap().contains("gh auth token"));
+        // Mit Zustimmung: genau dieser Token unter secret://user/github.com/default.
+        let mut prompt = Answer(true, Vec::new());
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert_eq!(
+            *imports.0.lock().unwrap(),
+            vec![(
+                "secret://user/github.com/default".to_owned(),
+                "gho_FIXTUREgh0123456789".to_owned()
+            )]
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("FIXTURE"), "{text}");
+        assert!(text.contains("sandbox.credentials"), "{text}");
+        // Nicht angemeldet: nichts gespeichert.
+        let git = FakeGit {
+            logged_in: false,
+            calls: Mutex::default(),
+        };
+        let mut prompt = Answer(true, Vec::new());
+        let imports = Imports::default();
+        let mut out = Vec::new();
+        offer_git_token_import(&GIT_CLIS, &git, true, &mut prompt, &imports, &mut out)
+            .await
+            .unwrap();
+        assert!(imports.0.lock().unwrap().is_empty());
+        assert!(String::from_utf8(out).unwrap().contains("kein Login"));
+    }
+
+    #[test]
+    fn pol_001_setup_writes_policy_defaults_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_policy_defaults(dir.path()).unwrap().unwrap();
+        assert_eq!(file, dir.path().join("policies/defaults.yaml"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            beton_policy::doc::USER_DEFAULTS
+        );
+        let schema = dir.path().join("schemas/v1/policy.schema.json");
+        assert_eq!(
+            std::fs::read_to_string(&schema).unwrap(),
+            beton_policy::doc::schema_json()
+        );
+        // Lädt als Policy-Set der User-Ebene, wie der Runner es liest.
+        beton_policy::load::load_file(beton_policy::load::Scope::User, &file).unwrap();
+        // Eine geänderte Datei überschreibt setup nie.
+        std::fs::write(&file, "spec_version: 1\nname: mine\nrules: []\n").unwrap();
+        assert_eq!(write_policy_defaults(dir.path()).unwrap(), None);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("mine"));
+    }
+
+    /// Die Defaults verhindern bei keinem Katalog-Harness den Start (POL-024): Klassen, die ein
+    /// Harness nicht vorab prüfen kann, ergeben nur eine Warnung (`enforcement: best_effort`).
+    #[test]
+    fn pol_001_user_defaults_do_not_refuse_any_catalog_harness() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::User,
+            "defaults.yaml",
+            beton_policy::doc::USER_DEFAULTS,
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        for harness in ["claude", "codex", "fake", "acp:gemini"] {
+            let matrix = crate::policy::matrix_for(harness).unwrap();
+            let check = beton_policy::enforcement::check_start(&effective, &matrix);
+            assert!(check.refused.is_empty(), "{harness}: {check:?}");
+        }
+        // Direkt-Harness (Provider aus der Konfiguration): beton prüft jeden Call selbst.
+        use beton_harness::HarnessAdapter as _;
+        use beton_harness_direct::config::{KeyRef, Provider, WireKind};
+        let direct = beton_harness_direct::DirectAdapter::new(
+            Provider {
+                name: "local".into(),
+                wire: WireKind::Anthropic,
+                base_url: "http://127.0.0.1:1".parse().unwrap(),
+                key: KeyRef::None,
+                prompt_caching: false,
+                models: Vec::new(),
+            },
+            &beton_harness_direct::DirectOptions::default(),
+        );
+        let matrix = direct
+            .capabilities(
+                beton_harness::Mode::Native,
+                &beton_harness::ProbeReport::default(),
+            )
+            .enforcement();
+        let check = beton_policy::enforcement::check_start(&effective, &matrix);
+        assert!(check.is_clean(), "direct: {check:?}");
+    }
+
+    /// Review #285 B2: Eine Allowlist (Default `deny` der Ebene) verweigert unter Codex den
+    /// Start, weil MCP-Tools dort nur beobachtbar sind.
+    #[test]
+    fn pol_024_tool_allowlist_is_refused_under_codex() {
+        let set = beton_policy::load::parse_set(
+            beton_policy::load::Scope::Project,
+            "p.yaml",
+            "spec_version: 1\nname: p\nrules:\n  - id: list\n    type: tool_allowlist\n    params: { allow_kinds: [file_read] }\n",
+        )
+        .unwrap();
+        let effective = beton_policy::engine::EffectiveSet::new(vec![std::sync::Arc::new(set)]);
+        let codex = crate::policy::matrix_for("codex").unwrap();
+        let check = beton_policy::enforcement::check_start(&effective, &codex);
+        assert_eq!(check.refused_rules(), ["list"], "{check:?}");
+        let claude = crate::policy::matrix_for("claude").unwrap();
+        assert!(beton_policy::enforcement::check_start(&effective, &claude).is_clean());
     }
 
     #[test]

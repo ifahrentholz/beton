@@ -9,14 +9,16 @@
 //! nicht entzuckerten Regeltyp): Fehlt die Durchsetzung bei einer mutierenden Tool-Klasse und
 //! ist die Regel `required` (Default), verweigert der Runner den Start; Lücken nur bei
 //! lesenden Klassen (`file_read`, `search`, `web_fetch`) und bei `best_effort`-Regeln ergeben
-//! eine Warnung (`policy.enforcement_degraded`), die Sandbox ist dann der Backstop.
+//! eine Warnung (`policy.enforcement_degraded`), die Sandbox ist dann der Backstop. Klassen mit
+//! `approval_only` sind eingeschränkt durchsetzbar (nur an Rückfragen des Vendors) und ergeben
+//! ebenfalls eine Warnung (#234).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::Phase;
-use crate::doc::{Action, Enforcement, Mode};
+use crate::doc::{Action, DefaultAction, Enforcement, Mode};
 use crate::engine::{Capabilities, EffectiveSet};
 use crate::load::{LoadedRule, RuleKind, RuleRef};
 
@@ -236,7 +238,10 @@ impl StartCheck {
     }
 }
 
-/// Prüft alle Regeln des effektiven Sets gegen die Matrix (POL-024).
+/// Prüft alle Regeln des effektiven Sets gegen die Matrix (POL-024). Defaults `deny`/`ask`
+/// einer Ebene (aus `defaults:` oder einer `tool_allowlist`) wirken auf alle Klassen ihrer Phase
+/// und werden wie eine blockierende Regel geprüft (Review #285 B2); ein Default eines
+/// Regeltyps nimmt dessen `enforcement`, einer aus `defaults:` gilt als `required`.
 pub fn check_start(set: &EffectiveSet, matrix: &Matrix) -> StartCheck {
     let mut out = StartCheck::default();
     for s in set.sets() {
@@ -260,50 +265,94 @@ pub fn check_start(set: &EffectiveSet, matrix: &Matrix) -> StartCheck {
             let required =
                 rule.doc.enforcement.unwrap_or(Enforcement::Required) == Enforcement::Required;
             let t = targets(rule);
-            for phase in &t.phases {
-                let gap = |kinds: Vec<String>, level| Gap {
-                    rule: s.rule_ref(&rule.id),
-                    phase: *phase,
-                    kinds,
-                    level,
+            check_target(
+                &mut out,
+                matrix,
+                &s.rule_ref(&rule.id),
+                &t.phases,
+                t.kinds.as_ref(),
+                required,
+            );
+        }
+        for (phase, default) in &s.defaults {
+            if *default == DefaultAction::Allow {
+                continue;
+            }
+            let (rule, required) = match s.type_defaults.get(phase) {
+                Some(d) => (
+                    s.rule_ref(&d.rule_id),
+                    d.enforcement.unwrap_or(Enforcement::Required) == Enforcement::Required,
+                ),
+                None => (s.rule_ref(&format!("defaults.{phase}")), true),
+            };
+            check_target(&mut out, matrix, &rule, &[*phase], None, required);
+        }
+    }
+    out
+}
+
+/// Lücken einer blockierenden Regel bzw. eines Defaults in `phases` für `kinds` (`None` = alle
+/// Klassen).
+fn check_target(
+    out: &mut StartCheck,
+    matrix: &Matrix,
+    rule: &RuleRef,
+    phases: &[Phase],
+    kinds: Option<&BTreeSet<String>>,
+    required: bool,
+) {
+    for phase in phases {
+        let gap = |kinds: Vec<String>, level| Gap {
+            rule: rule.clone(),
+            phase: *phase,
+            kinds,
+            level,
+        };
+        match phase {
+            Phase::ToolCall | Phase::ToolResult => {
+                let kinds: Vec<String> = match kinds {
+                    Some(k) => k.iter().cloned().collect(),
+                    None => KINDS.iter().map(|k| (*k).to_owned()).collect(),
                 };
-                match phase {
-                    Phase::ToolCall | Phase::ToolResult => {
-                        let kinds: Vec<String> = match &t.kinds {
-                            Some(k) => k.iter().cloned().collect(),
-                            None => KINDS.iter().map(|k| (*k).to_owned()).collect(),
-                        };
-                        let mut weak: Vec<String> = kinds
-                            .into_iter()
-                            .filter(|k| !matrix.level(*phase, Some(k)).enforces())
-                            .collect();
-                        if weak.is_empty() {
-                            continue;
-                        }
-                        weak.sort();
-                        let mutating = weak.iter().any(|k| !READING_KINDS.contains(&k.as_str()));
-                        let g = gap(weak, Level::ObserveOnly);
-                        if required && mutating {
-                            out.refused.push(g);
-                        } else {
-                            out.degraded.push(g);
-                        }
-                    }
-                    _ => {
-                        let level = matrix.level(*phase, None);
-                        if level.enforces() {
-                            continue;
-                        }
-                        let g = gap(Vec::new(), level);
-                        if required {
-                            out.refused.push(g);
-                        } else {
-                            out.degraded.push(g);
-                        }
-                    }
+                // `approval_only` wirkt nur an Rückfragen des Vendors: eingeschränkt
+                // durchsetzbar, nie ein Grund zur Startverweigerung (#234).
+                let mut partial: Vec<String> = kinds
+                    .iter()
+                    .filter(|k| matrix.level(*phase, Some(k)) == Level::ApprovalOnly)
+                    .cloned()
+                    .collect();
+                if !partial.is_empty() {
+                    partial.sort();
+                    out.degraded.push(gap(partial, Level::ApprovalOnly));
+                }
+                let mut weak: Vec<String> = kinds
+                    .into_iter()
+                    .filter(|k| !matrix.level(*phase, Some(k)).enforces())
+                    .collect();
+                if weak.is_empty() {
+                    continue;
+                }
+                weak.sort();
+                let mutating = weak.iter().any(|k| !READING_KINDS.contains(&k.as_str()));
+                let g = gap(weak, Level::ObserveOnly);
+                if required && mutating {
+                    out.refused.push(g);
+                } else {
+                    out.degraded.push(g);
+                }
+            }
+            _ => {
+                let level = matrix.level(*phase, None);
+                if level.enforces() {
+                    continue;
+                }
+                let g = gap(Vec::new(), level);
+                if required {
+                    out.refused.push(g);
+                } else {
+                    out.degraded.push(g);
                 }
             }
         }
     }
-    out
 }

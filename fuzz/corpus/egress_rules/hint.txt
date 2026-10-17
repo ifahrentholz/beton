@@ -1,0 +1,4 @@
+R GET other.test/**
+Q PATCH http weird_host.test 8080 /a/*/b?/**
+Q GET https [2001:db8::1] 443 /x
+Q PUT https api.test 443 /

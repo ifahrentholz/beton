@@ -19,6 +19,7 @@ beton-core.workspace = true
 beton-harness-claude.workspace = true
 beton-harness-codex.workspace = true
 beton-harness-acp.workspace = true
+beton-sandbox.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 

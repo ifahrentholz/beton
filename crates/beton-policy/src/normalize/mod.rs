@@ -5,6 +5,7 @@
 //! Die Abbildung nativer Tools liegt als Daten in `data/tool-map.yaml` (AC3). Die
 //! Normalisierung ist rein (ohne IO); Symlinks löst sie nicht auf.
 
+pub mod git;
 pub mod shell;
 
 use std::collections::BTreeMap;
@@ -36,6 +37,24 @@ pub struct RawToolCall<'a> {
     pub cwd: &'a str,
     /// Home-Verzeichnis für `~`, falls bekannt.
     pub home: Option<&'a str>,
+    /// Server, die beton selbst eingebunden hat (Relay-Hub, Workspace-Tools des Direkt-
+    /// Harness). Nur für sie gelten die Klassen der reservierten Namen (`beton*`) aus der
+    /// Abbildungstabelle; ein gleichnamiger fremder Server ist `mcp` (#234). `None`: keine
+    /// Herkunftsprüfung (Policy-Tests ohne Session).
+    pub trusted_servers: Option<&'a [String]>,
+}
+
+/// Server-Name eingebauter Tools in `tool.server`; kein MCP-Server darf so heißen (Review #285
+/// B1: Policies unterscheiden eingebaute Tools über `tool.server == "builtin"`).
+pub const BUILTIN_SERVER: &str = "builtin";
+
+/// Präfix, unter dem ein reservierter Server, den beton nicht selbst eingebunden hat, in
+/// `tool.server` erscheint (`untrusted:beton`), damit Regeln auf `beton` ihn nicht treffen.
+pub const UNTRUSTED_PREFIX: &str = "untrusted:";
+
+/// Reservierter Server-Name von beton (`beton`, `beton-*`, `beton_*`).
+pub fn reserved_server(name: &str) -> bool {
+    name == "beton" || name.starts_with("beton-") || name.starts_with("beton_")
 }
 
 /// Fehler der Normalisierung; der Aufrufer lehnt dann ab (fail closed).
@@ -57,6 +76,8 @@ pub struct NormalizedTool {
     pub argv: Vec<Vec<String>>,
     pub cwd: String,
     pub paths: Vec<String>,
+    /// Pfade aus `paths`, in die der Call schreibt (POL-016).
+    pub write_paths: Vec<String>,
     pub urls: Vec<String>,
     pub is_subagent_spawn: bool,
     pub parse_uncertain: bool,
@@ -75,6 +96,7 @@ impl NormalizedTool {
             "argv": self.argv,
             "cwd": self.cwd,
             "paths": self.paths,
+            "write_paths": self.write_paths,
             "urls": self.urls,
             "is_subagent_spawn": self.is_subagent_spawn,
             "parse_uncertain": self.parse_uncertain,
@@ -95,6 +117,10 @@ pub struct ToolSpec {
     pub patch: Option<String>,
     #[serde(default)]
     pub changes: Option<String>,
+    /// Argument mit dem Arbeitsverzeichnis eines Shell-Calls (Default `cwd`; Codex
+    /// `exec_command`/`shell`: `workdir`, #242).
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub subagent_spawn: bool,
 }
@@ -132,6 +158,8 @@ struct Lookup<'a> {
     spec: std::borrow::Cow<'a, ToolSpec>,
     server: String,
     name: String,
+    /// Tool eines MCP-Servers (nicht aus der Tabelle des Harness).
+    mcp: bool,
 }
 
 impl ToolMap {
@@ -169,16 +197,26 @@ impl ToolMap {
         acp_kind: Option<&str>,
         server: Option<&str>,
     ) -> Option<Lookup<'_>> {
+        let table = self.harnesses.get(harness);
         if let Some(server) = server {
-            return Some(self.server_tool(server, name));
+            // Der Claude-Hook meldet den vollen Namen `mcp__<server>__<tool>` und den Server
+            // (#232): `tool.name` ist der Name ohne Präfix.
+            let prefixed = table
+                .and_then(|t| t.mcp_prefix.as_deref())
+                .and_then(|p| name.strip_prefix(p))
+                .and_then(|rest| rest.strip_prefix(server))
+                .and_then(|rest| rest.strip_prefix("__"))
+                .filter(|tool| !tool.is_empty());
+            return Some(self.server_tool(server, prefixed.unwrap_or(name)));
         }
-        let table = self.harnesses.get(harness)?;
+        let table = table?;
         let key = if table.by_kind { acp_kind? } else { name };
         if let Some(spec) = table.tools.get(key) {
             return Some(Lookup {
                 spec: std::borrow::Cow::Borrowed(spec),
                 server: "builtin".into(),
                 name: name.into(),
+                mcp: false,
             });
         }
         let rest = name.strip_prefix(table.mcp_prefix.as_deref()?)?;
@@ -204,6 +242,7 @@ impl ToolMap {
             spec,
             server: server.into(),
             name: tool.into(),
+            mcp: true,
         }
     }
 
@@ -261,6 +300,8 @@ pub struct ToolSource {
     pub mcp_server: Option<String>,
     pub cwd: String,
     pub home: Option<String>,
+    /// Siehe [`RawToolCall::trusted_servers`].
+    pub trusted_servers: Option<Vec<String>>,
 }
 
 impl ToolSource {
@@ -273,6 +314,7 @@ impl ToolSource {
             args,
             cwd: &self.cwd,
             home: self.home.as_deref(),
+            trusted_servers: self.trusted_servers.as_deref(),
         }
     }
 }
@@ -300,7 +342,33 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         )));
     }
     let found = map.lookup(raw.harness, raw.native_name, raw.acp_kind, raw.mcp_server);
+    // Ein MCP-Server namens `builtin` gäbe seine Tools als eingebaute aus (fail closed).
+    if raw.mcp_server == Some(BUILTIN_SERVER)
+        || found
+            .as_ref()
+            .is_some_and(|l| l.mcp && l.server == BUILTIN_SERVER)
+    {
+        return Err(NormalizeError(
+            "MCP-Server `builtin` ist nicht erlaubt (Name eingebauter Tools)".into(),
+        ));
+    }
     let (spec, server, name) = match found {
+        // Reservierter Name, aber nicht von beton eingebunden: gewöhnliches MCP-Tool (#234),
+        // unter eigenem Namen, damit Regeln auf `beton` es nicht treffen (Review #285 B1).
+        Some(l)
+            if l.mcp
+                && reserved_server(&l.server)
+                && raw.trusted_servers.is_some_and(|t| !t.contains(&l.server)) =>
+        {
+            (
+                ToolSpec {
+                    kind: "mcp".into(),
+                    ..ToolSpec::default()
+                },
+                format!("{UNTRUSTED_PREFIX}{}", l.server),
+                l.name,
+            )
+        }
         Some(l) => (l.spec.into_owned(), l.server, l.name),
         None => (
             ToolSpec {
@@ -311,11 +379,14 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
             raw.native_name.to_owned(),
         ),
     };
-    let cwd = match raw.args.get("cwd").and_then(Value::as_str) {
-        Some(c) if spec.command.is_some() && c.starts_with('/') => {
-            normalize_path(c).unwrap_or_else(|| raw.cwd.to_owned())
+    // Arbeitsverzeichnis eines Shell-Calls aus seinen Argumenten; relativ zur Session (#242).
+    let base = normalize_path(raw.cwd).unwrap_or_default();
+    let cwd_key = spec.cwd.as_deref().unwrap_or("cwd");
+    let cwd = match raw.args.get(cwd_key).and_then(Value::as_str) {
+        Some(c) if spec.command.is_some() && !c.is_empty() => {
+            absolute(c, &base, raw.home).unwrap_or_else(|| base.clone())
         }
-        _ => normalize_path(raw.cwd).unwrap_or_default(),
+        _ => base,
     };
     let abs = |p: &str| absolute(p, &cwd, raw.home);
 
@@ -363,6 +434,12 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         .as_ref()
         .and_then(|key| raw.args.get(key))
         .and_then(command_string);
+    // Datei-Tools, die schreiben: alle ihre Pfade (POL-016).
+    let mut write_paths: Vec<String> = if matches!(spec.kind.as_str(), "file_write" | "file_edit") {
+        paths.clone()
+    } else {
+        Vec::new()
+    };
     let mut argv = Vec::new();
     let mut parse_uncertain = false;
     if let Some(cmd) = &command {
@@ -370,12 +447,19 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         for target in &parsed.redirects {
             if target != "/dev/null" {
                 push(abs(target), &mut paths);
+                push(abs(target), &mut write_paths);
             }
         }
         for sub in &parsed.argv {
             for word in sub.iter().skip(1) {
                 if looks_like_path(word) {
                     push(abs(word), &mut paths);
+                }
+            }
+            let words: Vec<&str> = sub.iter().map(String::as_str).collect();
+            for word in shell::written_args(&words) {
+                if looks_like_path(word) {
+                    push(abs(word), &mut write_paths);
                 }
             }
         }
@@ -393,10 +477,30 @@ pub fn normalize(raw: &RawToolCall) -> Result<NormalizedTool, NormalizeError> {
         argv,
         cwd,
         paths,
+        write_paths,
         urls: urls(raw.args),
         is_subagent_spawn: spec.subagent_spawn,
         parse_uncertain,
     })
+}
+
+/// Identität eines Tool-Calls für `tool.repeat_count` (POL-018): Klasse, Name und SHA-256
+/// der kanonischen Argumente (Schlüssel sortiert). Runner und Policy-Tests zählen gleich.
+pub fn call_identity(kind: &str, name: &str, args: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    fn canonical(v: &Value) -> Value {
+        match v {
+            Value::Object(m) => {
+                let sorted: BTreeMap<&String, Value> =
+                    m.iter().map(|(k, v)| (k, canonical(v))).collect();
+                Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+            }
+            Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+            other => other.clone(),
+        }
+    }
+    let bytes = serde_json::to_vec(&canonical(args)).unwrap_or_default();
+    format!("{kind}:{name}:{}", hex::encode(Sha256::digest(&bytes)))
 }
 
 /// Das Kommando als String; Listen (`["bash", "-lc", "…"]`) werden shell-gequotet verbunden.

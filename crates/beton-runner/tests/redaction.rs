@@ -10,6 +10,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -115,6 +117,7 @@ impl Env {
         }
         let runners = dir.path().join("runners");
         let daemon = start_with(cfg, store, move |mut r| {
+            r.sessions.sandbox = support::unsandboxed();
             r.sessions.provider = Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -151,7 +154,9 @@ impl Env {
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, String) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -369,6 +374,7 @@ async fn ses_007_ac3_handover_contains_no_secret_values_only_placeholders() {
                 trigger: SessionTrigger::Api,
                 home_node: local.node,
                 harness_opts: json!({ "scenario": scenario }),
+                max_cost_usd: None,
             },
         )
         .await

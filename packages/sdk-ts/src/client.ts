@@ -9,6 +9,11 @@ import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
 import type { InboxItemView } from './gen/InboxItemView.js'
 import type { InboxPage } from './gen/InboxPage.js'
+import type { DecisionExplain } from './gen/DecisionExplain.js'
+import type { EffectivePolicies } from './gen/EffectivePolicies.js'
+import type { EvaluateRequest } from './gen/EvaluateRequest.js'
+import type { PolicyEvaluation } from './gen/PolicyEvaluation.js'
+import type { ShadowReport } from './gen/ShadowReport.js'
 import type { ResolveApprovalRequest } from './gen/ResolveApprovalRequest.js'
 import type { SessionPage } from './gen/SessionPage.js'
 import type { SubagentTree } from './gen/SubagentTree.js'
@@ -27,6 +32,9 @@ import type { TreePage } from './gen/TreePage.js'
 import type { WorkspaceFile } from './gen/WorkspaceFile.js'
 import type { WorkspaceInfo } from './gen/WorkspaceInfo.js'
 import type { WrittenFile } from './gen/WrittenFile.js'
+import type { PricingView } from './gen/PricingView.js'
+import type { SessionUsageView } from './gen/SessionUsageView.js'
+import type { UsageReportView } from './gen/UsageReportView.js'
 import { defaultWebSocketFactory, eventStream, type StreamOptions, type WebSocketFactory } from './stream.js'
 
 export interface ClientOptions {
@@ -60,6 +68,20 @@ export interface InboxListOptions {
   sessionId?: string
   limit?: number
   cursor?: string
+}
+
+/** Parameter von `GET /v1/usage` (USE-005). */
+export interface UsageOptions {
+  /** RFC 3339 oder `YYYY-MM-DD` (00:00 in `tz`). */
+  from?: string
+  /** RFC 3339 oder `YYYY-MM-DD` (der Tag zählt mit). */
+  to?: string
+  /** Versatz wie `+02:00`; bestimmt die Tagesgrenzen. */
+  tz?: string
+  groupBy?: Array<'day' | 'session' | 'project' | 'harness' | 'model' | 'auth_source'>
+  project?: string
+  harness?: string
+  sessionId?: string
 }
 
 /** Client der beton-API (API-004). */
@@ -121,6 +143,39 @@ export class BetonClient {
     /** Freigabe oder Frage entscheiden, ohne die Session zu öffnen (UX-001 AC2). */
     resolve: (id: string, req: ResolveApprovalRequest): Promise<void> =>
       this.request('POST', `/v1/inbox/${enc(id)}/resolve`, req),
+  }
+
+  /** Policies (POL-027): geltende Regeln, Auswertung ohne Seiteneffekte, Explain, Shadow-Modus. */
+  readonly policies = {
+    /** Effektives Set; mit `sessionId` samt Projekt-Policies der Session. */
+    effective: (sessionId?: string): Promise<EffectivePolicies> =>
+      this.request('GET', `/v1/policies${sessionId ? `?session_id=${enc(sessionId)}` : ''}`),
+    /** Hypothetische Anfrage auswerten: keine Events, keine Freigaben, kein Zustand. */
+    evaluate: (req: EvaluateRequest): Promise<PolicyEvaluation> => this.request('POST', '/v1/policies/evaluate', req),
+    /** Erklärung einer Entscheidung (`seq` eines `policy.decision` oder Tool-Calls). */
+    explain: (sessionId: string, seq: number): Promise<DecisionExplain> =>
+      this.request('GET', `/v1/sessions/${enc(sessionId)}/policy-decisions/${seq}`),
+    /** Treffer der Regeln im Shadow-Betrieb je Regel und Tag (Default 7 Tage). */
+    shadow: (days?: number): Promise<ShadowReport> =>
+      this.request('GET', `/v1/policies/shadow${days !== undefined ? `?days=${days}` : ''}`),
+  }
+
+  /** Verbrauch (USE-005, USE-006): Summen je Gruppe und Abrechnungsart, Abo-Fenster. */
+  readonly usage = {
+    report: (opts: UsageOptions = {}): Promise<UsageReportView> => {
+      const q = new URLSearchParams()
+      if (opts.from) q.set('from', opts.from)
+      if (opts.to) q.set('to', opts.to)
+      if (opts.tz) q.set('tz', opts.tz)
+      if (opts.groupBy?.length) q.set('group_by', opts.groupBy.join(','))
+      if (opts.project) q.set('project', opts.project)
+      if (opts.harness) q.set('harness', opts.harness)
+      if (opts.sessionId) q.set('session_id', opts.sessionId)
+      const qs = q.toString()
+      return this.request('GET', `/v1/usage${qs ? `?${qs}` : ''}`)
+    },
+    /** Eigene Preise und Preis-Katalog (USE-002, USE-003). */
+    pricing: (): Promise<PricingView> => this.request('GET', '/v1/usage/pricing'),
   }
 
   /** Handle für eine vorhandene Session. */
@@ -276,6 +331,11 @@ export class Session {
 
   pin(pinned: boolean): Promise<SessionSummary> {
     return this.client.request('PUT', `/v1/sessions/${enc(this.id)}/pin`, { pinned })
+  }
+
+  /** Tokens, Kosten und Preisquelle je Turn (USE-007 AC2). */
+  usage(): Promise<SessionUsageView> {
+    return this.client.request('GET', `/v1/sessions/${enc(this.id)}/usage`)
   }
 
   /** Kontext kompaktieren (SES-011); Ergebnis als `compaction.*`-Events. */

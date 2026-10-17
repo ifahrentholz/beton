@@ -233,11 +233,62 @@ impl RunnerProvider for LocalProvider {
                 vars.push((beton_runner::env::FORK_LOGGED.into(), "1".into()));
             }
         }
+        if let Some(max) = boot.max_cost_usd {
+            vars.push((beton_runner::env::MAX_COST.into(), max.to_string()));
+        }
+        if boot.spawned {
+            vars.push((beton_runner::env::SPAWNED.into(), "1".into()));
+        }
+        if let Some(sb) = &boot.sandbox {
+            vars.push((
+                beton_runner::env::SANDBOX.into(),
+                serde_json::to_string(sb).unwrap_or_default(),
+            ));
+        }
+        if boot.unsandboxed_confirmed {
+            vars.push((beton_runner::env::UNSANDBOXED_CONFIRMED.into(), "1".into()));
+        }
+        if boot.compaction != beton_harness::CompactionSettings::default() {
+            vars.push((
+                beton_runner::env::COMPACTION.into(),
+                serde_json::to_string(&boot.compaction).unwrap_or_default(),
+            ));
+        }
         if boot.harnesses != beton_harness::registry::HarnessLayers::default() {
             vars.push((
                 beton_runner::env::HARNESSES.into(),
                 serde_json::to_string(&boot.harnesses).unwrap_or_default(),
             ));
+        }
+        // Großzügiges Zeitbudget der Policy-Engine für Integrationstests (#298): nur Builds mit
+        // dem Feature `test-budget` reichen die Variable weiter (#304). Sie kommt aus der
+        // Umgebung des Daemons, weil die Test-Helfer die geerbte Umgebung ohne `BETON_*`
+        // übergeben.
+        #[cfg(feature = "test-budget")]
+        if let Some(v) = self
+            .inherit
+            .get(beton_runner::env::TEST_POLICY_BUDGET)
+            .cloned()
+            .or_else(|| std::env::var(beton_runner::env::TEST_POLICY_BUDGET).ok())
+        {
+            vars.push((beton_runner::env::TEST_POLICY_BUDGET.into(), v));
+        }
+        // Abgeschaltete Sandbox-Backends (SBX-006 AC1): nur Builds mit dem Feature
+        // `test-sandbox` (wie `test-budget` nur über Dev-Dependencies); der Runner sieht dann
+        // dieselbe Registry wie der Daemon.
+        #[cfg(feature = "test-sandbox")]
+        for name in [
+            beton_runner::env::TEST_SANDBOX_UNAVAILABLE,
+            beton_runner::env::TEST_SANDBOX_PROXY_DOWN,
+        ] {
+            if let Some(v) = self
+                .inherit
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+            {
+                vars.push((name.into(), v));
+            }
         }
         let (program, args) = self
             .command
@@ -259,9 +310,16 @@ impl RunnerProvider for LocalProvider {
             stdin
                 .write_all(format!("{}\n", boot.token).as_bytes())
                 .await?;
-            if !secrets.is_empty() {
+            // Zweite Zeile: API-Keys (HAR-011); dritte: beton-CA (PRX-002). Beide nur über
+            // stdin, nie über Env oder argv.
+            if !secrets.is_empty() || boot.proxy_ca.is_some() {
                 let line = serde_json::to_string(&secrets).unwrap_or_default();
                 stdin.write_all(format!("{line}\n").as_bytes()).await?;
+            }
+            if let Some(ca) = &boot.proxy_ca {
+                let mut line = zeroize::Zeroizing::new(ca.expose().to_owned());
+                line.push('\n');
+                stdin.write_all(line.as_bytes()).await?;
             }
             stdin.flush().await?;
             drop(stdin);

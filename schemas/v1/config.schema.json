@@ -18,6 +18,14 @@
         "ws_allowed_origins": []
       }
     },
+    "compaction": {
+      "description": "Automatische Compaction (USE-009): `auto: harness | beton | off`, `threshold` (0,8).",
+      "$ref": "#/$defs/CompactionSettings",
+      "default": {
+        "auto": "harness",
+        "threshold": 0.8
+      }
+    },
     "events": {
       "$ref": "#/$defs/EventsSettings",
       "default": {
@@ -63,6 +71,13 @@
       },
       "default": {}
     },
+    "proxy": {
+      "description": "Egress-Proxy (PRX-002); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/ProxySettings",
+      "default": {
+        "extra_ca_files": []
+      }
+    },
     "sandbox": {
       "description": "Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)\ndarf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.",
       "$ref": "#/$defs/SandboxSpec",
@@ -100,6 +115,11 @@
       "default": {
         "rate_limit_notice": true
       }
+    },
+    "user": {
+      "description": "Angaben zum User, z. B. `timezone` (POL-004 AC4); nur in der User-Konfiguration.",
+      "$ref": "#/$defs/UserSettings",
+      "default": {}
     }
   },
   "additionalProperties": false,
@@ -194,6 +214,26 @@
       },
       "additionalProperties": false
     },
+    "AutoCompaction": {
+      "description": "Wer automatisch kompaktiert (`compaction.auto`, USE-009).",
+      "oneOf": [
+        {
+          "description": "Der Harness entscheidet selbst (Vendor-CLIs; Direkt-API-Harness ab `threshold`).",
+          "type": "string",
+          "const": "harness"
+        },
+        {
+          "description": "beton kompaktiert vor dem nächsten Turn, wenn der zuletzt gemeldete Kontext über\n`threshold` liegt – einmal je Überschreitung, bei Harnesses mit `compaction: native`.",
+          "type": "string",
+          "const": "beton"
+        },
+        {
+          "description": "Nie automatisch, nur über den Button, `/compact` oder die API.",
+          "type": "string",
+          "const": "off"
+        }
+      ]
+    },
     "BackendChoice": {
       "description": "Konfiguration `secrets.backend`.",
       "oneOf": [
@@ -211,6 +251,145 @@
           "description": "Nur die verschlüsselte Datei `~/.beton/secrets/store.v1`.",
           "type": "string",
           "const": "file"
+        }
+      ]
+    },
+    "CompactionSettings": {
+      "description": "`compaction:` in der User-Konfiguration (USE-009).",
+      "type": "object",
+      "properties": {
+        "auto": {
+          "description": "`harness` (Default), `beton` oder `off`.",
+          "$ref": "#/$defs/AutoCompaction",
+          "default": "harness"
+        },
+        "threshold": {
+          "description": "Anteil des Kontextfensters (größer 0, höchstens 1), ab dem automatisch kompaktiert\nwird; Default 0,8.",
+          "type": "number",
+          "format": "double",
+          "default": 0.8
+        }
+      },
+      "additionalProperties": false
+    },
+    "CredentialSourceSpec": {
+      "description": "Quelle eines Credentials (PRX-006): genau eines der Felder. Gelesen wird nur in Stufe 0.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "Kommando (argv, ohne Shell) in Stufe 0; Timeout 30 s, stdout ohne Leerraum am Rand.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "description": "Variable im Environment des Daemons beim Session-Start.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "description": "Datei außerhalb aller Sandbox-Grants (keine Hardlinks, höchstens 64 KiB, 0600\nempfohlen).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret": {
+          "description": "SecretRef im Secret-Store (SEC-001), z. B. `secret://user/github.com/me`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ttl": {
+          "description": "Gültigkeit eines Kommando-Ergebnisses, z. B. `15m` (`s`, `m`, `h`); danach läuft es neu.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "CredentialSpec": {
+      "description": "Ein Credential-Binding (PRX-006): Die Sandbox sieht nur einen Platzhalter `bt_cred_*`\n(in den Variablen aus `env`), der Proxy setzt den Wert für die gebundenen Hosts ein.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "description": "Gebundene Hosts (exakt oder `*.domain`, ohne Port); Pflicht für `bearer`, `basic` und\n`git_https`, sonst Override der Default-Hosts.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name (`[a-z0-9_-]`, höchstens 64 Zeichen); steht im Audit und in `${secret:<name>}`.",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CredentialSourceSpec"
+        },
+        "type": {
+          "$ref": "#/$defs/CredentialType"
+        },
+        "username": {
+          "description": "Benutzername für `basic` (Pflicht) bzw. `git_https`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "source"
+      ]
+    },
+    "CredentialType": {
+      "description": "Typ eines Credential-Bindings (PRX-006): Injektionsformat im Proxy.",
+      "oneOf": [
+        {
+          "description": "`Authorization: Bearer <wert>`; `hosts` ist Pflicht.",
+          "type": "string",
+          "const": "bearer"
+        },
+        {
+          "description": "`Authorization: Basic base64(username:<wert>)`; `hosts` und `username` sind Pflicht.",
+          "type": "string",
+          "const": "basic"
+        },
+        {
+          "description": "Git über HTTPS (Platzhalter als Passwort); `hosts` ist Pflicht.",
+          "type": "string",
+          "const": "git_https"
+        },
+        {
+          "description": "GitHub (Default-Hosts `github.com`, `api.github.com`, `uploads.github.com`,\n`objects.githubusercontent.com`; GHE über `hosts`).",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "GitLab (Default-Host `gitlab.com`; self-hosted über `hosts`).",
+          "type": "string",
+          "const": "gitlab"
         }
       ]
     },
@@ -237,6 +416,13 @@
       "description": "Ein Eintrag unter `harnesses.<id>` in `.beton/config.yaml` bzw. `~/.beton/config.yaml`.",
       "type": "object",
       "properties": {
+        "api_key": {
+          "description": "Key für `auth: api_key` als SecretRef (`secret://…`, HAR-015 AC4); ohne Angabe die\nVariable der Vendor-CLI aus der Umgebung des Daemons. Die CLI sieht nur einen\nPlatzhalter `bt_cred_*`, der Proxy setzt den Wert ein. Nur in der User-Konfiguration.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "auth": {
           "description": "Auth-Herkunft (HAR-015); ohne Angabe `subscription`. Nur in der User-Konfiguration.",
           "anyOf": [
@@ -280,6 +466,33 @@
             "boolean",
             "null"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HarnessSandboxConfig": {
+      "description": "`sandbox.harness` (Stufe 1, selten nötig).",
+      "type": "object",
+      "properties": {
+        "egress_extra": {
+          "description": "Zusätzliche Egress-Regeln der Stufe 1 (z. B. Remote-MCP-Server), mit MITM.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_passthrough": {
+          "description": "Zusätzliche Passthrough-Hosts der Stufe 1 (`host` oder `host:port`), ohne\nTLS-Terminierung (PRX-005).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -442,6 +655,26 @@
       },
       "additionalProperties": false
     },
+    "Preset": {
+      "description": "Eingebautes Preset (SBX-012): Startpunkt, den eigene Felder gemäß den Merge-Regeln\nüberschreiben bzw. ergänzen.",
+      "oneOf": [
+        {
+          "description": "Workspace rw, in Stufe 2 kein Netz (keine Egress-Regel); Stufe 1 erreicht nur ihre\nVendor-Hosts.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Wie `default`, zusätzlich lesend gängige Paket-Registries und Toolchain-Caches.",
+          "type": "string",
+          "const": "dev"
+        },
+        {
+          "description": "Workspace read-only, kein Netz (z. B. Side-Chats, Reviewer-Agents).",
+          "type": "string",
+          "const": "readonly"
+        }
+      ]
+    },
     "PriceOverride": {
       "description": "Eigener Preis für Gateway- und Self-hosted-Modelle (`pricing.overrides[]`).",
       "type": "object",
@@ -576,6 +809,21 @@
         "base_url"
       ]
     },
+    "ProxySettings": {
+      "description": "`proxy:` (PRX-002).",
+      "type": "object",
+      "properties": {
+        "extra_ca_files": {
+          "description": "Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut\noder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "SandboxBackend": {
       "description": "Isolations-Backend; `auto` wählt je Betriebssystem (SBX-001).",
       "type": "string",
@@ -647,8 +895,41 @@
             }
           ]
         },
+        "credentials": {
+          "description": "Credential-Bindings der Stufe 2 (PRX-006); Grant der spezifischsten Ebene.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/CredentialSpec"
+          }
+        },
+        "dev_ports": {
+          "description": "Loopback-Ports für Dev-Server in der Sandbox (PRX-008 AC3, #210): `bind` und `connect`\nnur auf diesen Ports. Linux: im eigenen Net-Namespace; macOS: Loopback des Hosts.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0
+          }
+        },
         "egress_allow_private": {
           "description": "Ausdrücklich erlaubte private Ziele, z. B. `127.0.0.1:5432` (PRX-007).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "egress_passthrough": {
+          "description": "Passthrough in Stufe 2 (`host` oder `host:port`): nur ausdrücklich, ohne\nTLS-Terminierung und ohne Credential-Injection (PRX-005).",
           "type": [
             "array",
             "null"
@@ -677,6 +958,17 @@
             }
           ]
         },
+        "harness": {
+          "description": "Stufe-1-Overrides.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HarnessSandboxConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "limits": {
           "description": "Ressourcenlimits des Prozessbaums (SBX-013); je Feld gilt die spezifischste Ebene.",
           "anyOf": [
@@ -698,6 +990,17 @@
             "type": "string"
           }
         },
+        "preset": {
+          "description": "Eingebautes Preset `default`, `dev` oder `readonly` (SBX-012).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Preset"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "read_paths": {
           "description": "Zusätzliche Lese-Wurzeln: absolut oder mit `~` (keine `$VAR`-Expansion).",
           "type": [
@@ -707,6 +1010,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "require_tool_isolation": {
+          "description": "Startet ein Harness nur, wenn er Tools in Stufe 2 erzwingt (Default `true`, SBX-002\nAC4); `false` erlaubt `tool_isolation: inherited` als *degraded*.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "workspace": {
           "description": "`rw` (Default) oder `ro`.",
@@ -832,6 +1142,32 @@
         }
       },
       "additionalProperties": false
+    },
+    "UserSettings": {
+      "description": "Angaben zum User (POL-004 AC4).",
+      "type": "object",
+      "properties": {
+        "timezone": {
+          "description": "Zeitzone des Users als IANA-Name (z. B. `Europe/Berlin`, mit Sommerzeit), `UTC` oder\nfester Versatz (`+02:00`). Bestimmt Tages- und Monatsgrenzen von\n`user.daily_cost_usd`/`user.monthly_cost_usd`, den Tag von `user_day` (POL-009) und\nden Default von `tz` in `GET /v1/usage`; `beton usage` rechnet damit statt mit dem\nlokalen Versatz. Ohne Angabe gilt UTC. Ein unbekannter Name ist ein\nKonfigurationsfehler.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserTimeZone"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "UserTimeZone": {
+      "description": "IANA-Zeitzone (z. B. `Europe/Berlin`), `UTC` oder fester Versatz (`+02:00`).",
+      "type": "string",
+      "examples": [
+        "Europe/Berlin",
+        "UTC"
+      ]
     },
     "WireKind": {
       "description": "Wire-Familie eines Providers.",

@@ -56,7 +56,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | Gruppe | Typ | D/T | Payload |
 | --- | --- | :-: | --- |
 | Session | `session.created` | D | `owner, kind: main\|side_chat\|subagent\|async, harness, agent_ref?, model?, effort?, permission_mode?, cwd, project_id?, parent_session_id?, trigger: user\|api\|schedule\|timer\|spawn\|webhook, harness_opts?` |
-| | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?` |
+| | `session.started` | D | `runner_id, host_id, harness, harness_version, capabilities, harness_session_ref?, sandbox? {tool_sandbox, egress_proxy}` (SBX-006, HAR-027) |
 | | `session.status` | D | `status: starting\|idle\|running\|waiting_approval\|paused\|stopped\|failed, reason?` |
 | | `session.resumed` | D | `mode: native\|handover` |
 | | `session.settings_changed` | D | `model?, effort?, requested_effort?, permission_mode?, mechanism?: live\|restart, effective_from_turn?` (kein `harness`: Harness-Wechsel nur per Fork, SES-007) |
@@ -92,8 +92,9 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `policy.set_changed` / `policy.set_invalid` | D | `scope, set, version` bzw. `file, line, error` (POL-001) |
 | | `policy.state_changed` | D | `scope, key, op, value` (POL-009; `value` nach der Operation) |
 | | `policy.notified` | D | `rule_id, scope, set, channels, message?` (Zustellung von `notify`, POL-006, UX-001) |
+| | `policy.queried` | D | `subject_hash, tool, kind, outcome: allow\|deny\|ask, rules[], limited` (Abfrage per `policy_query` ohne Klartext; `rules` nur aus den Gründen von `deny`/`ask`; AGT-007, POL-027) |
 | | `policy.enforcement_degraded` / `policy.rule_inapplicable` | D | `rule_ids, reason` (POL-024, POL-011) |
-| | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` |
+| | `budget.exhausted` | D | `scope, lease_id?, action: ask\|deny` (Lease aufgebraucht, SYNC-007; ohne `lease_id` ein Budget-Limit von `spend_cap`/`daily_budget`, POL-011) |
 | | `budget.lease_overdrawn` | D | `lease_id, overrun_micro` (POL-021, SYNC-007) |
 | Kosten & Kontext | `cost.delta` | D | `harness, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_micro?, currency, source: reported\|estimated\|subscription, auth_source: vendor_cli\|api_key\|gateway\|none, purpose?, cost_source?: override\|harness\|catalog\|none\|subscription, pricing_version?, equivalent_micro?` (die letzten drei setzt der Server beim Append, USE-001) |
 | | `usage.subscription` | D | `vendor, window, used_pct, resets_at` (`window` einheitlich: `5h`, `7d`, `7d_opus`; USE-004) |
@@ -134,6 +135,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `share.granted` / `.changed` / `.revoked` | D | `principal, role, by` |
 | | `presence.updated` | T | `users: [{user_id, devices, typing}]` (COL-004, siehe 07-sessions-collaboration.md) |
 | System | `event.redacted` | D | `target_seq, by, reason` |
+| | `event.rejected` | D | `original_type, rseq, reason` (Ersatz für ein Runner-Event, das der Server fachlich abgelehnt hat, ohne dessen Inhalt; PROTO-015) |
 | | `harness.unmapped` | D | `raw` (unbekanntes Vendor-Event, für Golden-Tests) |
 | | `notice` | D | `level: info\|warn, text` |
 | | `error` | D | `problem` |
@@ -328,7 +330,7 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Paginieren über 1 000 Sessions mit `limit=50` liefert jede genau einmal, auch wenn währenddessen neue entstehen.
   - [ ] AC2 — Gleicher `Idempotency-Key` mit anderem Body liefert 422 `idempotency_key_reused`.
-  - [ ] AC3 — `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts.
+  - [ ] AC3 — (ab M4, mit POL-008: erster schreibender Policy-Endpunkt `PUT /v1/orgs/{org}/policies/{name}`) `PUT` einer Policy mit veraltetem `If-Match` liefert 412 und verändert nichts. *(Verschoben, WP-40, #255: In M2 gibt es keinen schreibenden Policy-Endpunkt; lokale Policies sind Dateien. `extract::check_if_match` steht bereit.)*
   - [ ] AC4 — Ein Lint über das OpenAPI-Dokument erzwingt `snake_case`, Cursor-Pagination auf allen Listen-Endpunkten und Problem-Responses für 4xx/5xx.
 - **Abhängigkeiten:** PROTO-011, PROTO-013
 
@@ -372,12 +374,13 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### PROTO-015 — Tunnel-Protokoll Host/Runner → Server
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); scheitert das Speichern eines Pushs, antwortet der Server mit `problem` statt ihn still zu verwerfen. Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
+- **Beschreibung:** Hosts und Runner verbinden sich ausschließlich ausgehend über `/v1/tunnel` (lokal Unix-Socket, ab M4 auch remote über WSS) gemäß Design-Tabelle. Runner liefern Events ohne `seq` mit Runner-Sequenz `rseq`; der Home-Knoten vergibt `seq`, persistiert und bestätigt per `events.ack`. Nach einem Reconnect meldet `bound.acked_rseq` den gespeicherten Stand; erneut gesendete Events mit `rseq ≤ acked_rseq` verwirft der Server (genau einmal). Ein neuer Runner-Prozess (neues Runner-Token, z. B. nach `resume`) beginnt wieder bei `rseq` 1; der Server setzt den gespeicherten Stand dafür zurück. Tunnel- und WS-Nachrichten mit Events lesen Server und SDK so, dass `raw` byte-genau erhalten bleibt (intern getaggte Enums puffern sonst und verlieren `RawValue`); kein Event verschwindet still: Lehnt der Server ein einzelnes Event fachlich ab (4xx, z. B. `payload_too_large` über dem Blob-Limit oder `validation_failed`), speichert er an dessen Stelle `event.rejected {original_type, rseq, reason}` (Actor `system`/`server`, ohne den abgelehnten Inhalt) und bestätigt den Push regulär, damit der Runner es nicht endlos erneut sendet. Scheitert das Speichern eines Pushs als Ganzes, antwortet der Server mit `problem` statt ihn still zu verwerfen und trennt danach die Verbindung (Close 4500), damit spätere Pushes die Lücke nicht überspringen; der Runner sendet nach dem Reconnect alles Unbestätigte erneut (vorübergehende Fehler wie `database is locked` oder `seq_conflict`; eine gelöschte Session weist schon `session.bind` ab). Unbestätigte Events hält der Runner (begrenzt auf 64 MiB, darüber pausiert er den Harness) und sendet sie nach Reconnect erneut.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Wird der Tunnel während eines Turns 30 s getrennt, enthält das Log nach Reconnect alle Events genau einmal und in Runner-Reihenfolge.
   - [ ] AC2 — Ein Runner, der `events.push` mit veralteter `epoch` sendet, erhält ein Problem `stale_epoch` und stoppt das Schreiben.
   - [ ] AC3 — Der Host öffnet keinen lauschenden Port (Test: `ss -ltn`/`lsof` zeigt keine Listener des Host-/Runner-Prozesses außer Loopback-Proxy).
   - [ ] AC4 — (ab M4) Ein Remote-Host ohne gültiges Device-Token wird vor dem Upgrade mit 401 abgewiesen.
+  - [ ] AC5 — Überschreitet die Nutzlast eines Events das Blob-Limit, steht im Log an seiner Stelle genau ein `event.rejected` ohne den Inhalt; alle folgenden Events bleiben lückenlos erhalten, und die Verbindung bleibt bestehen.
 - **Abhängigkeiten:** PROTO-001, DATA-002, AUTH-001, AUTH-011 (ab M4, siehe 05-security-identity.md), RUN-002, RUN-004 (ab M4, siehe 10-runners-extensibility.md)
 - **Referenz:** ADR-0003; Omnigent Runner-/Host-Tunnel (1.6)
 
@@ -402,11 +405,12 @@ Beträge sind Ganzzahlen in Mikro-Einheiten (`1 USD = 1 000 000`; Geldbeträge s
 
 ### DATA-003 — SQLite-Backend & Migrationen
 - **Meilenstein:** M0 · **Priorität:** Must
-- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.
+- **Beschreibung:** Lokal nutzt `beton-store` SQLite via `sqlx` (`~/.beton/beton.db`, WAL, `synchronous=FULL`, `busy_timeout=5000`, `foreign_keys=ON`). Schreibzugriffe eines Prozesses laufen über eine faire Schreibsperre im Store (Warteschlange in Ankunftsreihenfolge, Wartezeit höchstens wie `busy_timeout`), damit ein Dauerschreiber andere Schreiber nicht verdrängt; SQLites Busy-Handler pollt nur und regelt weiter den Zugriff anderer Prozesse. Migrationen liegen in `crates/beton-store/migrations/{sqlite,postgres}/NNNN_<name>.sql` mit identischer Nummerierung, sind ins Binary eingebettet und laufen beim Start unter Lock. Vor jeder Migration wird `beton.db.bak-<version>` angelegt; Down-Migrationen gibt es nicht; ein älteres Binary verweigert eine DB mit neuerer Schema-Version.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Ein Paritätstest stellt sicher, dass jede Migrationsnummer in beiden Dialekten existiert und die resultierenden Schemas (Tabellen, Spalten, Indizes) äquivalent sind.
   - [ ] AC2 — Ein Binary der Vorversion startet gegen eine migrierte DB nicht und meldet `schema_too_new`.
   - [ ] AC3 — Zwei gleichzeitig startende Daemons migrieren nicht doppelt (Lock-Test).
+  - [ ] AC4 — Während drei Sessions dauerhaft Batches à 256 Events schreiben, gelingt jeder parallele interaktive Schreibzugriff (Session anlegen, Idempotency-Lookup, einzelnes Event) in unter 1 s.
 - **Abhängigkeiten:** DATA-001
 - **Referenz:** ADR-0009
 

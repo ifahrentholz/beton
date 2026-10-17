@@ -1,0 +1,18 @@
+# Policy-Test (POL-015 AC2): Allowlists auf Projekt- und Agent-Ebene wirken als Schnittmenge.
+spec_version: 1
+layers:
+  project: [tool_allowlist.yaml]
+  agent: [tool_allowlist-agent.yaml]
+cases:
+  - name: in beiden Listen erlaubt
+    phase: tool_call
+    input: { tool: { name: Read, args: { file_path: /repo/a } } }
+    expect: { outcome: allow, rules: [read-only, agent-list] }
+  - name: nur in der Projekt-Liste
+    phase: tool_call
+    input: { tool: { name: Glob, args: { pattern: "*.rs", path: /repo } } }
+    expect: { outcome: deny, rules: [read-only, defaults.tool_call] }
+  - name: in keiner Liste
+    phase: tool_call
+    input: { tool: { name: Bash, args: { command: ls } } }
+    expect: { outcome: deny, rules: [defaults.tool_call] }

@@ -325,3 +325,75 @@ async fn sec_012_concurrent_appends_keep_the_chain_intact() {
     let report = t.store.verify_audit(org(&t)).await.unwrap();
     assert_eq!((report.entries, report.first_invalid), (20, None));
 }
+
+#[tokio::test]
+async fn prx_006_ac6_prx_009_ac4_credential_uses_are_counted_per_binding_session_and_host() {
+    let t = store().await;
+    let session = SessionId::new();
+    let key = |host: &str| UsageKey {
+        secret_ref: format!("{}github", crate::audit::CREDENTIAL_PREFIX),
+        session_id: Some(session),
+        host_id: host.into(),
+        actor: PrincipalId::User(t.local.user),
+        purpose: "proxy".into(),
+    };
+    let start = Timestamp::now();
+    for i in 0..5u64 {
+        let when = at(start, Duration::from_secs(i));
+        t.store
+            .record_audit_usage(org(&t), &key("api.github.com"), when)
+            .await
+            .unwrap();
+    }
+    t.store
+        .record_audit_usage(org(&t), &key("github.com"), start)
+        .await
+        .unwrap();
+    t.store
+        .append_audit(org(&t), entry(&t, "secret.created", 1))
+        .await
+        .unwrap();
+    t.store
+        .seal_audit_windows(org(&t), at(start, AUDIT_USAGE_WINDOW))
+        .await
+        .unwrap();
+    // `--kind credential`: nur die Credential-Einträge, je Host einer mit Zähler.
+    let items = t
+        .store
+        .audit_page(
+            org(&t),
+            &AuditQuery {
+                target_kind: Some("credential".into()),
+                ..AuditQuery::default()
+            },
+        )
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(items.len(), 2, "{items:?}");
+    let api = items
+        .iter()
+        .find(|e| e.host_id.as_deref() == Some("api.github.com"))
+        .unwrap();
+    assert_eq!(api.action, "credential.used");
+    assert_eq!(api.target_kind, "credential");
+    assert_eq!(api.target_id, "github");
+    assert_eq!(api.count, 5);
+    assert_eq!(api.session_id, Some(session));
+    assert_eq!(api.details["binding"], "github");
+    let all = t
+        .store
+        .audit_page(org(&t), &AuditQuery::default())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(all.len(), 3);
+    assert!(
+        t.store
+            .verify_audit(org(&t))
+            .await
+            .unwrap()
+            .first_invalid
+            .is_none()
+    );
+}

@@ -30,7 +30,7 @@ test('OBS-001 AC1, OBS-001 AC4: Logs sind JSON mit Pflichtfeldern und enthalten 
   )
 
   // Prompt über die CLI (cli.log, daemon.log, runner.log) …
-  const { stderr } = await run(BETON, ['run', 'fake', '--scenario', scenario, '-p', `${marker} cli`], {
+  const { stderr } = await run(BETON, ['run', '--unsandboxed', 'fake', '--scenario', scenario, '-p', `${marker} cli`], {
     env: daemon.env({ BROWSER: 'true' }),
     cwd: daemon.work,
   })

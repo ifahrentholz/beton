@@ -89,6 +89,20 @@ pub enum KeyRef {
     None,
     /// Umgebungsvariable des Daemons.
     Env(String),
+    /// SecretRef im Secret-Store (`secret://…`, ab M2). Der Loop sieht nur einen
+    /// Platzhalter `bt_cred_*`; der Egress-Proxy setzt den Wert ein (HAR-011 AC2, PRX-006).
+    Secret(String),
+}
+
+impl KeyRef {
+    /// Name, unter dem der Runner den Key (bzw. Platzhalter) bereitstellt.
+    pub fn lookup(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Env(var) => Some(var),
+            Self::Secret(r) => Some(r),
+        }
+    }
 }
 
 /// Ein geprüfter Provider.
@@ -226,12 +240,10 @@ pub fn parse_provider(name: &str, value: &Value) -> Result<Provider, ConfigProbl
             ));
         }
         (Some(Value::String(v)), None) if v == "none" => KeyRef::None,
-        (Some(Value::String(v)), None) if v.starts_with("secret://") => {
-            return Err(problem(
-                name,
-                "api_key",
-                "secret://-Referenzen gibt es ab M2 (SEC-001); in M1 api_key_env: <VARIABLE> verwenden",
-            ));
+        (Some(Value::String(v)), None)
+            if v.starts_with("secret://") && v.len() > "secret://".len() =>
+        {
+            KeyRef::Secret(v.clone())
         }
         (Some(_), None) => {
             return Err(problem(
@@ -441,11 +453,21 @@ ollama:
         );
         assert_eq!(e.path, "providers.x.api_key");
         assert!(!e.to_string().contains(secret), "{e}");
+        // Ab M2 ist `secret://` eine Quelle (HAR-011); der Loop sieht nur einen Platzhalter.
+        let p = parse_provider(
+            "x",
+            &json!({"kind": "openai", "base_url": "https://a.example", "api_key": "secret://user/openrouter/default"}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.key,
+            KeyRef::Secret("secret://user/openrouter/default".into())
+        );
         let e = err(
             "x",
-            json!({"kind": "openai", "base_url": "https://a.example", "api_key": "secret://openrouter/default"}),
+            json!({"kind": "openai", "base_url": "https://a.example", "api_key": "secret://"}),
         );
-        assert!(e.reason.contains("M2"), "{e}");
+        assert_eq!(e.path, "providers.x.api_key");
         let e = err(
             "x",
             json!({"kind": "openai", "base_url": "https://a.example", "api_key_env": "BETON_TOKEN"}),

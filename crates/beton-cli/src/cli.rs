@@ -92,6 +92,9 @@ pub enum Command {
     /// Agent-Definitionen auflisten, anzeigen, prüfen und anlegen.
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Policies testen, auswerten und Entscheidungen erklären.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
     /// Lokale Anmeldung verwalten.
     #[command(subcommand)]
     Auth(AuthCommand),
@@ -211,12 +214,26 @@ pub struct RunArgs {
     /// Abbruch nach dieser Dauer, z. B. `90s`, `5m` (Skript-Modus).
     #[arg(long, value_name = "DUR", value_parser = parse_duration)]
     pub timeout: Option<std::time::Duration>,
+    /// Session-Budget in USD (API-006): eine `spend_cap`-Regel der Session (POL-011). Bei
+    /// Subscriptions zählt das Listenpreis-Äquivalent; erreicht, endet der Lauf mit Exit-Code 5.
+    #[arg(
+        long,
+        value_name = "USD",
+        value_parser = parse_usd,
+        conflicts_with_all = ["continue_last", "resume", "fork"]
+    )]
+    pub max_cost: Option<f64>,
     /// Szenario-Datei, nur für den Harness `fake` (HAR-026).
     #[arg(long, value_name = "FILE")]
     pub scenario: Option<std::path::PathBuf>,
     /// Parameter des Agents (AGT-010), mehrfach: `--param max_attempts=5`.
     #[arg(long = "param", value_name = "NAME=WERT")]
     pub params: Vec<String>,
+    /// Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): Sie läuft ohne
+    /// Sandbox, das Audit-Log vermerkt es, YOLO bleibt gesperrt. Ohne die Angabe fragt die CLI
+    /// im Terminal nach; eine User-Policy kann `backend: none` trotzdem verbieten.
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 /// Reasoning-Effort (HAR-017).
@@ -302,6 +319,16 @@ pub enum OnAsk {
 }
 
 /// `90s`, `5m`, `1h` oder Sekunden.
+/// Positiver Betrag in USD (`--max-cost`).
+pub fn parse_usd(raw: &str) -> Result<f64, String> {
+    match raw.trim().parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(format!(
+            "`{raw}` ist kein positiver Betrag in USD (z. B. 0.50)"
+        )),
+    }
+}
+
 pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
     let raw = raw.trim();
     let (num, unit) = raw
@@ -323,6 +350,10 @@ pub fn parse_duration(raw: &str) -> Result<std::time::Duration, String> {
 pub struct ResumeArgs {
     /// Session (ID, eindeutiges Präfix oder `last`).
     pub session: String,
+    /// Bestätigt `sandbox.backend: none` für diese Session, falls sie noch keine Bestätigung
+    /// hat, z. B. eine importierte (SBX-006).
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 #[derive(Debug, Args)]
@@ -554,6 +585,67 @@ pub struct ConfigSetArgs {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum PolicyCommand {
+    /// Deklarative Policy-Tests (`*.policytest.yaml`) ausführen; Exit 0 bestanden, 1 Fehlschlag.
+    Test(PolicyTestArgs),
+    /// Eine hypothetische Anfrage auswerten, ohne Events, Freigaben oder Zustand.
+    Eval(PolicyEvalArgs),
+    /// Eine Entscheidung einer Session erklären (Regeln, Teilausdrücke, Set-Version).
+    Explain(PolicyExplainArgs),
+    /// Geltende Regeln mit Ebene und Herkunft anzeigen.
+    Show(PolicyShowArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyTestArgs {
+    /// Testdateien oder Verzeichnisse (rekursiv); Default `.beton/policies/tests/`.
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+    /// Ergebnis zusätzlich als JUnit-XML schreiben.
+    #[arg(long, value_name = "FILE")]
+    pub junit: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyEvalArgs {
+    /// Phase: session_start, model_request, tool_call, tool_result, browser_navigate, browser_action.
+    #[arg(long)]
+    pub phase: String,
+    /// Eingabe als JSON-Datei (`-` = stdin), z. B. `{"tool": {"name": "Bash", "args": {"command": "git push"}}}`.
+    #[arg(long, value_name = "FILE")]
+    pub input: PathBuf,
+    /// Kontext dieser Session (Projekt-Policies, Kosten, Zustand); sonst lokal mit Fixtures.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+    /// Harness für Normalisierung und Durchsetzung (Default: der der Session bzw. claude).
+    #[arg(long)]
+    pub harness: Option<String>,
+    /// Kontextwerte als JSON-Datei wie `fixtures` in Policy-Tests.
+    #[arg(long, value_name = "FILE")]
+    pub fixtures: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyExplainArgs {
+    /// Session-ID.
+    #[arg(long, value_name = "ID")]
+    pub session: String,
+    /// Seq des `policy.decision` oder des Tool-Calls.
+    #[arg(long)]
+    pub seq: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct PolicyShowArgs {
+    /// Effektives Set aller Ebenen (Default).
+    #[arg(long)]
+    pub effective: bool,
+    /// Projekt-Policies dieser Session statt des aktuellen Verzeichnisses.
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum AgentCommand {
     /// Agents im Suchpfad: Projekt, User, Built-ins (Name, Quelle, Version, Harness, Pfad).
     List(AgentListArgs),
@@ -612,6 +704,23 @@ pub enum SandboxCommand {
     /// Die aufgelöste Sandbox für das aktuelle Verzeichnis: Wurzeln, Masken, Netz, Regeln
     /// und die Namen der Environment-Variablen (nie ihre Werte).
     Explain(SandboxExplainArgs),
+    /// Ein Kommando von Hand in der Sandbox einer Stufe ausführen (ohne Netz): z. B. `beton
+    /// sandbox exec --stage tools -- cat ~/.ssh/config` scheitert. Ein Kommando, das scheitert,
+    /// endet mit Exit-Code 1 und einem Hinweis auf `beton sandbox explain`.
+    Exec(SandboxExecArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SandboxExecArgs {
+    /// Stufe: `harness` (Vendor-CLI, Stufe 1) oder `tools` (Tool-Ausführung, Stufe 2).
+    #[arg(long, value_enum, default_value_t = SandboxStageArg::Tools)]
+    pub stage: SandboxStageArg,
+    /// Harness, dessen eigene Credential- und State-Pfade Stufe 1 bekommt (`claude`, `codex`).
+    #[arg(long, value_name = "HARNESS")]
+    pub harness: Option<String>,
+    /// Kommando und Argumente nach `--`.
+    #[arg(last = true, required = true, value_name = "KOMMANDO")]
+    pub command: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -655,6 +764,9 @@ pub enum SecretsCommand {
     Rm(SecretsRmArgs),
     /// Neuen Wert für ein vorhandenes Secret setzen.
     Rotate(SecretsRotateArgs),
+    /// Secret beim Provider prüfen (GitHub `/user`, GitLab Token-Scopes) über den Proxy-Pfad,
+    /// ohne den Wert auszugeben; meldet fehlende Scopes (SEC-004, SEC-011 AC3).
+    Test(SecretsTestArgs),
     /// Verschlüsselten Datei-Store entsperren (beim ersten Mal anlegen) oder die Passphrase
     /// wechseln.
     Unlock(SecretsUnlockArgs),
@@ -716,6 +828,10 @@ pub struct SecretsAddArgs {
     /// Zusätzlicher Name, falls es mehrere Secrets je Account gibt.
     #[arg(long, value_name = "NAME")]
     pub name: Option<String>,
+    /// Host des Git-Providers, z. B. `github.com`, ein GitHub Enterprise Server oder ein
+    /// self-hosted GitLab (SEC-011); wird zum Provider der SecretRef.
+    #[arg(long, value_name = "HOST")]
+    pub host: Option<String>,
     /// Art des Secrets.
     #[arg(long = "type", value_enum, default_value_t = SecretKindArg::Token)]
     pub kind: SecretKindArg,
@@ -731,6 +847,16 @@ pub struct SecretsRmArgs {
     /// SecretRef, z. B. `secret://user/openai/default`.
     #[arg(value_name = "REF")]
     pub secret_ref: String,
+}
+
+#[derive(Debug, Args)]
+pub struct SecretsTestArgs {
+    /// SecretRef, z. B. `secret://user/github.com/default`.
+    #[arg(value_name = "REF")]
+    pub secret_ref: String,
+    /// Art des Providers, falls der Host sie nicht verrät (`github` oder `gitlab`).
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -770,6 +896,10 @@ pub struct AuditListArgs {
     /// Nur diese Aktion, z. B. `secret.used`.
     #[arg(long, value_name = "ACTION")]
     pub action: Option<String>,
+    /// Nur diese Art des Ziels: `credential` (Nutzung und Fehlgebrauch von
+    /// Credential-Bindings des Proxys), `secret`, `session` …
+    #[arg(long, value_name = "KIND")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Args)]

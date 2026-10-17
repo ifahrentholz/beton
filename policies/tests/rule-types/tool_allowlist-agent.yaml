@@ -1,0 +1,8 @@
+# Testdaten zum Regeltyp tool_allowlist (POL-015 AC2): Allowlist der Agent-Ebene.
+# yaml-language-server: $schema=../../../schemas/v1/policy.schema.json
+spec_version: 1
+name: agent-allowlist
+rules:
+  - id: agent-list
+    type: tool_allowlist
+    params: { allow: [Read, Grep] }

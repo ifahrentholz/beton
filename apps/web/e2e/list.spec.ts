@@ -1,3 +1,4 @@
+import type { Locator } from '@playwright/test'
 import { expect, PUSH_ASK, test } from './fixtures'
 
 test('WEB-003 AC1: Statuswechsel aktualisiert den Indikator ohne Reload binnen 1 s', async ({ daemon, page }) => {
@@ -40,12 +41,33 @@ test('WEB-003 AC2: 5 000 Sessions bleiben flüssig scrollbar (≥ 55 fps)', asyn
   const list = page.getByTestId('session-list')
   await expect(page.locator('[data-session]').first()).toBeVisible()
   await expect.poll(() => list.evaluate((el) => el.scrollHeight)).toBeGreaterThan(total * 40)
-  const fps = await list.evaluate(
-    (el) =>
+  // Aufwärmen (nicht gewertet): Layout, Virtualisierung und JIT fallen nicht in die Messung.
+  await frames(list, 1000)
+  // Drei Messrunden; gewertet wird die mittlere (nach Zahl der Frames). Unter fremder Last
+  // fallen einzelne Runden ab (#261: 43 statt > 100 Frames); ein echter Einbruch beim Scrollen
+  // trifft jede Runde. Die Kriterien bleiben: Median ≥ 55 fps, mehr als 100 Frames in 3 s,
+  // virtualisiert (wenige Zeilen im DOM, nach jeder Runde geprüft).
+  const rounds = []
+  for (let i = 0; i < 3; i++) {
+    rounds.push(await frames(list, 3000))
+    expect(await page.locator('[data-session]').count()).toBeLessThan(200)
+  }
+  const fps = [...rounds].sort((a, b) => a.frames - b.frames)[1]!
+  const shown = (r: { median: number; frames: number }) => ({ fpsMedian: Math.round(r.median), frames: r.frames })
+  test.info().annotations.push({ type: 'Messwerte', description: JSON.stringify({ gewertet: shown(fps), runden: rounds.map(shown) }) })
+  console.log('WEB-003 Messwerte', test.info().annotations.at(-1)?.description)
+  expect(fps.frames).toBeGreaterThan(100)
+  expect(fps.median).toBeGreaterThanOrEqual(55)
+})
+
+/** Scrollt `list` für `ms` Millisekunden je Frame um 120 px und misst die Frame-Abstände. */
+async function frames(list: Locator, ms: number) {
+  return list.evaluate(
+    (el, duration) =>
       new Promise<{ median: number; frames: number }>((resolve) => {
         const times: number[] = []
         let last = performance.now()
-        const end = last + 3000
+        const end = last + duration
         const step = (t: number) => {
           times.push(t - last)
           last = t
@@ -58,7 +80,6 @@ test('WEB-003 AC2: 5 000 Sessions bleiben flüssig scrollbar (≥ 55 fps)', asyn
         }
         requestAnimationFrame(step)
       }),
+    ms,
   )
-  expect(fps.frames).toBeGreaterThan(100)
-  expect(fps.median).toBeGreaterThanOrEqual(55)
-})
+}

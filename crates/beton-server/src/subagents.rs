@@ -408,13 +408,46 @@ impl SessionManager<'_> {
         // Effort und Permission-Mode aus dem `executor` des Sub-Agents (HAR-017, HAR-027);
         // `yolo` ohne Sandbox endet mit `sandbox_required`, bevor etwas angelegt wird.
         let (effort, permission_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        if let Some(s) = &snapshot {
+            crate::settings::agent_permission_mode(
+                s.trust_source(),
+                permission_mode.as_deref(),
+                None,
+            )?;
+        }
+        let caps = self.harness_capabilities(&harness, std::path::Path::new(&created.cwd));
+        // SBX-006: Ohne Sandbox nur, wenn der Parent bestätigt ist; das Child übernimmt die
+        // Bestätigung (eigener Audit-Eintrag mit Parent). Sonst gilt die Sandbox auch hier.
+        let parent_confirmed = self.unsandboxed_confirmed(parent).await?;
+        let sandbox = self.sandbox_start(caps.as_ref(), parent_confirmed).await?;
         crate::settings::validate_start(
-            self.harness_capabilities(&harness, std::path::Path::new(&created.cwd))
-                .as_ref(),
+            caps.as_ref(),
             effort.as_deref(),
             permission_mode.as_deref(),
+            sandbox.status,
         )?;
 
+        // Session-Budget des Laufs (API-006 `--max-cost`): Das Child erbt, was der Teilbaum des
+        // Parents noch übrig hat; ist nichts mehr übrig, startet es nicht (Security-Review
+        // #284, M2).
+        let max_cost_usd = match created.max_cost_usd {
+            None => None,
+            Some(max) => {
+                let spent = self
+                    .state()
+                    .store
+                    .usage_totals(self.org(), beton_store::UsageScope::Subtree(parent))
+                    .await?;
+                let remaining =
+                    max - (spent.cost_micro + spent.equivalent_micro) as f64 / 1_000_000.0;
+                if remaining <= 0.0 {
+                    return Err(denied(format!(
+                        "budget: Das Session-Budget von {max} USD (--max-cost) ist erreicht"
+                    )));
+                }
+                Some(remaining)
+            }
+        };
         // Gleichzeitige Childs (AC3): Platz reservieren, bevor etwas angelegt wird.
         let id = SessionId::new();
         let generation = self
@@ -438,8 +471,10 @@ impl SessionManager<'_> {
                 effort,
                 permission_mode,
                 snapshot,
+                max_cost_usd,
                 mode: requested_worktree.unwrap_or(limits.worktree),
                 in_background,
+                unsandboxed: sandbox.unsandboxed,
             })
             .await;
         let child = match started {
@@ -520,6 +555,7 @@ impl SessionManager<'_> {
                     trigger: SessionTrigger::Spawn,
                     home_node: self.state().local.node,
                     harness_opts: Value::Null,
+                    max_cost_usd: c.max_cost_usd,
                 },
             )
             .await;
@@ -532,6 +568,14 @@ impl SessionManager<'_> {
                 return Err(e.into());
             }
         };
+        if c.unsandboxed {
+            self.record_unsandboxed(
+                child.id,
+                PrincipalId::User(c.parent.owner),
+                Some(c.parent.id),
+            )
+            .await?;
+        }
         if let Some(snapshot) = &c.snapshot {
             self.record_agent(child.id, snapshot, &[]).await?;
         }
@@ -608,18 +652,18 @@ impl SessionManager<'_> {
             )
             .await;
         if let Err(e) = delivered {
+            let detail = e.detail.unwrap_or_default();
             self.subagents().finish(
                 child.id,
                 Some(generation),
                 TaskStatus::Failed,
-                Some(format!(
-                    "Auftrag nicht zugestellt: {}",
-                    e.detail.unwrap_or_default()
-                )),
+                Some(format!("Auftrag nicht zugestellt: {detail}")),
                 None,
             );
-            return Err(Problem::new(ProblemCode::Unavailable)
-                .detail(format!("Auftrag an {agent} nicht zugestellt")));
+            return Err(Problem::new(ProblemCode::Unavailable).detail(format!(
+                "Auftrag an {agent} nicht zugestellt ({}: {detail})",
+                e.code.as_str()
+            )));
         }
         let state = self.state().clone();
         let child = child.id;
@@ -1030,8 +1074,12 @@ struct StartChild<'a> {
     effort: Option<String>,
     permission_mode: Option<String>,
     snapshot: Option<beton_agents::AgentSnapshot>,
+    /// Geerbtes Session-Budget (Rest des Parents, API-006).
+    max_cost_usd: Option<f64>,
     mode: WorktreeMode,
     in_background: bool,
+    /// Ohne Sandbox mit der Bestätigung des Parents (SBX-006).
+    unsandboxed: bool,
 }
 
 /// Session-Baum unter einer Session (WEB-012).

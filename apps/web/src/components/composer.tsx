@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BetonError, type Attachment, type Capabilities, type HarnessInfo, type PermissionMode } from '@beton/sdk'
+import { BetonError, type Attachment, type Capabilities, type HarnessInfo, type PermissionMode, type SessionSandbox } from '@beton/sdk'
 import { ArrowUp, Paperclip, Square } from 'lucide-react'
 import { client } from '@/lib/client'
 import { ACCEPT, DEFAULT_LIMITS, insertMention, kindOf, mentionAt, mimeOf, pastedName, rejection, slashQuery, type AttachmentLimits } from '@/lib/composer'
@@ -9,7 +9,7 @@ import { AttachmentStrip, type DraftAttachment, type Rejected } from './attachme
 import { MentionMenu, SlashMenu, type SlashEntry } from './composer-menus'
 import { HarnessMenu } from './fork'
 import { HarnessBadge } from './harness'
-import { ModePicker, ModelPicker, settingsOptions, type SettingsPatch } from './settings-picker'
+import { ModePicker, ModelPicker, settingsOptions, yoloAvailable, type SettingsPatch } from './settings-picker'
 
 const DRAFT_PREFIX = 'beton.draft.'
 
@@ -87,6 +87,7 @@ export function Composer({
   effort,
   permissionMode,
   capabilities,
+  sandbox,
   running,
   queue,
   onSend,
@@ -102,6 +103,8 @@ export function Composer({
   effort?: string | null | undefined
   permissionMode?: PermissionMode | null | undefined
   capabilities?: Capabilities | undefined
+  /** Schutz der Tools laut Runner (`session.started.sandbox`); ohne Angabe kein YOLO. */
+  sandbox?: SessionSandbox | null | undefined
   running: boolean
   /** Serverseitige Queue über dem Eingabefeld (WEB-005). */
   queue?: ReactNode
@@ -391,7 +394,7 @@ export function Composer({
               running={running}
               onChange={onSettings}
             />
-            <ModePicker harness={harness} mode={permissionMode} modes={modes} running={running} onChange={onSettings} />
+            <ModePicker harness={harness} mode={permissionMode} modes={modes} running={running} yolo={yoloAvailable(sandbox)} onChange={onSettings} />
             <div className="ml-auto flex items-center gap-1">
               {running && (
                 <button onClick={onInterrupt} className="flex h-7 items-center gap-1 rounded-md border border-foreground/40 px-2 text-xs" aria-label="Unterbrechen">

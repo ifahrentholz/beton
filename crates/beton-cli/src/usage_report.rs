@@ -10,18 +10,19 @@
 //!   getrennt, Mischsummen gibt es nicht (CLI-010 AC2). Harnesses ohne Meldung erscheinen als
 //!   „nicht gemeldet“ statt 0 (USE-004 AC4).
 //! - stdout enthält nur Daten (Tabellen, JSON, CSV); Hinweise gehen nach stderr (CLI-001).
-//! - Zeiten und Tagesgrenzen gelten in der lokalen Zeitzone (fester Versatz beim Start).
+//! - Zeiten und Tagesgrenzen gelten in `user.timezone` (POL-004 AC4, mit Sommerzeit), ohne
+//!   Einstellung in der lokalen Zeitzone (fester Versatz beim Start).
 
 use std::io::Write as _;
 use std::sync::OnceLock;
 
 use beton_core::id::{OrgId, SessionId};
+use beton_core::timezone::UserTimeZone;
 use beton_server::api_usage::{
     SessionUsageView, SubscriptionWindowView, UsageItem, UsageParams, UsageReportView,
-    format_offset,
 };
 use beton_store::{Store, UsageReport};
-use time::{Date, OffsetDateTime, Time, UtcOffset};
+use time::{Date, OffsetDateTime, UtcOffset};
 
 use crate::cli::UsageReportArgs;
 use crate::commands::Ctx;
@@ -38,6 +39,11 @@ pub fn init_local_offset() {
 
 fn local_offset() -> UtcOffset {
     *LOCAL_OFFSET.get_or_init(|| UtcOffset::UTC)
+}
+
+/// Zeitzone der Auswertung: `user.timezone`, wenn eingestellt, sonst der lokale Versatz.
+fn timezone(configured: Option<UserTimeZone>, local: UtcOffset) -> UserTimeZone {
+    configured.unwrap_or_else(|| UserTimeZone::fixed(local))
 }
 
 /// Woher die Zahlen kommen.
@@ -84,21 +90,21 @@ fn ts(t: OffsetDateTime) -> String {
     beton_core::time::Timestamp::from(t).to_string()
 }
 
-/// Parameter für `GET /v1/usage` aus den Flags (Zeitraum in der Zeitzone `offset`).
+/// Parameter für `GET /v1/usage` aus den Flags (Zeitraum in der Zeitzone `tz`).
 pub fn params(
     args: &UsageReportArgs,
     now: OffsetDateTime,
-    offset: UtcOffset,
+    tz: &UserTimeZone,
 ) -> CliResult<UsageParams> {
     let mut p = UsageParams {
-        tz: Some(format_offset(offset)),
+        tz: Some(tz.name().to_owned()),
         ..UsageParams::default()
     };
     if let Some(since) = &args.since {
         let from = if let Some(d) = duration(since) {
             now - d
         } else if let Some(d) = parse_date(since) {
-            d.with_time(Time::MIDNIGHT).assume_offset(offset)
+            tz.start_of(d)
         } else {
             return Err(CliError::usage(format!(
                 "--since `{since}` ist ungültig: Dauer wie 7d, 12h, 30m oder Datum JJJJ-MM-TT"
@@ -133,7 +139,7 @@ pub fn params(
         p.group_by = Some(dims.join(","));
     }
     // Vorab prüfen: dieselben Regeln wie der Server, aber als Usage-Fehler (Exit 2).
-    p.to_query(now).map_err(CliError::usage)?;
+    p.to_query(now, tz).map_err(CliError::usage)?;
     Ok(p)
 }
 
@@ -174,7 +180,8 @@ async fn report(
     match source {
         Source::Api(client) => decode(client.usage(&query_pairs(p)).await?),
         Source::Local(store) => {
-            let q = p.to_query(now).map_err(CliError::usage)?;
+            let tz = p.timezone(&UserTimeZone::utc()).map_err(CliError::usage)?;
+            let q = p.to_query(now, &tz).map_err(CliError::usage)?;
             let report = match store {
                 Some(store) => store
                     .usage_report(OrgId::LOCAL, &q)
@@ -182,7 +189,7 @@ async fn report(
                     .map_err(|e| CliError::new(Exit::General, e))?,
                 None => UsageReport::default(),
             };
-            Ok(UsageReportView::new(&q, &report, now))
+            Ok(UsageReportView::new(&q, &report, now, &tz))
         }
     }
 }
@@ -226,7 +233,15 @@ pub async fn run(ctx: &Ctx, args: &UsageReportArgs) -> CliResult {
         return Err(CliError::usage("--json und --csv schließen sich aus"));
     }
     let now = OffsetDateTime::now_utc();
-    let offset = local_offset();
+    // Ungültige Konfiguration (z. B. unbekannte `user.timezone`) ist ein Fehler, nie UTC.
+    let configured = ctx
+        .layers()?
+        .daemon_settings()
+        .map_err(|e| CliError::new(Exit::General, e))?
+        .user
+        .timezone;
+    let tz = timezone(configured, local_offset());
+    let offset = tz.offset_at(now);
     // Flags prüfen, bevor etwas geöffnet wird.
     let default_view = args.by.is_empty()
         && args.since.is_none()
@@ -238,7 +253,7 @@ pub async fn run(ctx: &Ctx, args: &UsageReportArgs) -> CliResult {
     } else if args.session.is_some() {
         Some(UsageParams::default())
     } else {
-        Some(params(args, now, offset)?)
+        Some(params(args, now, &tz)?)
     };
     let source = source(ctx).await?;
     let style = Output::from(ctx, args);
@@ -263,7 +278,7 @@ pub async fn run(ctx: &Ctx, args: &UsageReportArgs) -> CliResult {
         // Ohne Angaben: heute und die letzten 7 Tage je Harness (USE-007).
         let today = UsageReportArgs {
             by: vec!["harness".into(), "auth_source".into()],
-            since: Some(now.to_offset(offset).date().to_string()),
+            since: Some(tz.local_date(now).to_string()),
             ..UsageReportArgs::default()
         };
         let week = UsageReportArgs {
@@ -271,12 +286,12 @@ pub async fn run(ctx: &Ctx, args: &UsageReportArgs) -> CliResult {
             since: Some("7d".into()),
             ..UsageReportArgs::default()
         };
-        let week_report = report(&source, &params(&week, now, offset)?, now).await?;
+        let week_report = report(&source, &params(&week, now, &tz)?, now).await?;
         if style != Output::Table {
             close(source).await;
             return emit(&week_report, style, &mut out);
         }
-        let today_report = report(&source, &params(&today, now, offset)?, now).await?;
+        let today_report = report(&source, &params(&today, now, &tz)?, now).await?;
         close(source).await;
         let weekday = weekday(now.to_offset(offset).date());
         writeln!(
@@ -1096,7 +1111,7 @@ mod tests {
     #[test]
     fn use_007_since_accepts_durations_and_dates() {
         let now = datetime!(2026-10-03 12:00 UTC);
-        let plus2 = UtcOffset::from_hms(2, 0, 0).unwrap();
+        let plus2 = UserTimeZone::fixed(UtcOffset::from_hms(2, 0, 0).unwrap());
         let p = params(
             &UsageReportArgs {
                 since: Some("1d".into()),
@@ -1104,7 +1119,7 @@ mod tests {
                 ..UsageReportArgs::default()
             },
             now,
-            plus2,
+            &plus2,
         )
         .unwrap();
         assert_eq!(p.from.as_deref(), Some("2026-10-02T12:00:00.000Z"));
@@ -1117,7 +1132,7 @@ mod tests {
                 ..UsageReportArgs::default()
             },
             now,
-            plus2,
+            &plus2,
         )
         .unwrap();
         assert_eq!(p.from.as_deref(), Some("2026-09-30T22:00:00.000Z"));
@@ -1127,7 +1142,7 @@ mod tests {
                 ..UsageReportArgs::default()
             },
             now,
-            plus2,
+            &plus2,
         )
         .unwrap();
         assert_eq!(p.from.as_deref(), Some("2026-10-01"));
@@ -1137,8 +1152,32 @@ mod tests {
                 since: Some(bad.into()),
                 ..UsageReportArgs::default()
             };
-            assert_eq!(params(&args, now, plus2).unwrap_err().exit, Exit::Usage);
+            assert_eq!(params(&args, now, &plus2).unwrap_err().exit, Exit::Usage);
         }
+    }
+
+    #[test]
+    fn pol_004_ac4_usage_uses_the_configured_user_timezone() {
+        let plus2 = UtcOffset::from_hms(2, 0, 0).unwrap();
+        // Ohne Einstellung: lokaler Versatz (wie bisher).
+        assert_eq!(timezone(None, plus2).name(), "+02:00");
+        // Mit `user.timezone`: IANA-Name, Tage mit Sommerzeit; `--since` ab 00:00 Ortszeit.
+        let berlin = UserTimeZone::parse("Europe/Berlin").unwrap();
+        let tz = timezone(Some(berlin), plus2);
+        let now = datetime!(2026-11-02 12:00 UTC);
+        let p = params(
+            &UsageReportArgs {
+                since: Some("2026-10-24".into()),
+                by: vec!["day".into()],
+                ..UsageReportArgs::default()
+            },
+            now,
+            &tz,
+        )
+        .unwrap();
+        assert_eq!(p.tz.as_deref(), Some("Europe/Berlin"));
+        assert_eq!(p.from.as_deref(), Some("2026-10-23T22:00:00.000Z"));
+        assert_eq!(tz.offset_at(now), UtcOffset::from_hms(1, 0, 0).unwrap());
     }
 
     #[test]

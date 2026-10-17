@@ -20,7 +20,7 @@ use beton_mcp::system::{SpawnTarget, SystemBackend, SystemServer, ToolFailure};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-/// Antwort von `policy_query`, solange es keine Policy-Engine gibt (POL-027, ab M2).
+/// Antwort von `policy_query` ohne Policy-Gate (z. B. Werkzeuge ohne Session): nie `allow`.
 pub fn policy_answer(args: &Value) -> Value {
     json!({
         "decision": "ask",
@@ -49,16 +49,27 @@ pub trait Asker: Send + Sync {
     ) -> Option<String>;
 }
 
+/// Beantwortet `policy_query` mit der Entscheidung, die die Engine bei tatsächlicher
+/// Ausführung träfe (AGT-007 AC3, POL-027); im Runner das Policy-Gate.
+#[async_trait]
+pub trait PolicyOracle: Send + Sync {
+    async fn query(&self, args: &Value) -> Value;
+}
+
 /// System-Tools im Runner.
 struct RunnerBackend {
     calls: mpsc::UnboundedSender<SystemRequest>,
     asker: Option<Arc<dyn Asker>>,
+    oracle: Option<Arc<dyn PolicyOracle>>,
 }
 
 #[async_trait]
 impl SystemBackend for RunnerBackend {
     async fn policy_query(&self, args: &Value) -> Result<Value, ToolFailure> {
-        Ok(policy_answer(args))
+        Ok(match &self.oracle {
+            Some(o) => o.query(args).await,
+            None => policy_answer(args),
+        })
     }
 
     async fn session_spawn(
@@ -165,6 +176,10 @@ pub struct McpSetup {
     pub timeout: Option<std::time::Duration>,
     /// `executor.permission_mode` des Agents (HAR-027); `plan` bindet die Session (AGT-011).
     pub agent_permission_mode: Option<beton_harness::PermissionMode>,
+    /// `policies:` des Agents als Sets der Agent-Ebene (AGT-014).
+    pub agent_policies: Vec<beton_policy::load::LoadedSet>,
+    /// `sandbox:` des Agents (AGT-014, verschärft die Sandbox der Session nur).
+    pub agent_sandbox: Option<beton_agents::spec::Sandbox>,
 }
 
 /// Woher der Agent einer Session kommt.
@@ -234,6 +249,19 @@ pub fn native_skills(harness: &HarnessId) -> Option<Option<VendorDir>> {
     }
 }
 
+/// Liest der Harness diesen Skill selbst? Claude Code lädt mit `--setting-sources user` nur
+/// noch `~/.claude/skills`, nicht `.claude/skills` des Projekts (gegen 2.1.296 geprüft, #233);
+/// Codex liest `.agents/skills` in Projekt und Home.
+pub fn reads_skill_itself(harness: &HarnessId, skill: &skills::Skill) -> bool {
+    match native_skills(harness) {
+        Some(Some(VendorDir::Claude)) => {
+            skill.vendor == Some(VendorDir::Claude) && skill.origin == skills::Origin::User
+        }
+        Some(Some(dir)) => skill.vendor == Some(dir),
+        _ => false,
+    }
+}
+
 fn random_suffix() -> String {
     let mut b = [0u8; 4];
     let _ = getrandom::fill(&mut b);
@@ -270,6 +298,45 @@ fn load(
             Ok(Some((LoadedAgent { spec, dir }, snapshot.params.clone())))
         }
     }
+}
+
+/// `policies:` eines Agents als Sets der Agent-Ebene (AGT-014): Inline-Regeln und Dateien per
+/// `ref` aus dem Agent-Verzeichnis (bzw. Snapshot).
+pub fn agent_policies(
+    spec: &beton_agents::spec::AgentSpec,
+    dir: &beton_agents::AgentDir,
+) -> Result<Vec<beton_policy::load::LoadedSet>, String> {
+    if spec.policies.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<serde_json::Value> = spec
+        .policies
+        .iter()
+        .map(|p| match &p.reference {
+            Some(r) => serde_json::json!({ "ref": r }),
+            None => {
+                let mut rule = serde_json::Map::new();
+                if let Some(id) = &p.id {
+                    rule.insert("id".into(), serde_json::Value::String(id.clone()));
+                }
+                rule.extend(p.rule.iter().map(|(k, v)| (k.clone(), v.clone())));
+                serde_json::Value::Object(rule)
+            }
+        })
+        .collect();
+    beton_policy::load::agent_sets(
+        beton_policy::load::Scope::Agent,
+        spec.name.as_str(),
+        &format!("agent:{}/agent.yaml", spec.name),
+        &entries,
+        |rel| {
+            let bytes = dir
+                .read(rel)
+                .ok_or_else(|| format!("{rel} nicht im Agent-Verzeichnis"))?;
+            String::from_utf8(bytes).map_err(|_| format!("{rel} ist kein UTF-8"))
+        },
+    )
+    .map_err(|e| format!("Agent `{}`: Policy ungültig: {e}", spec.name))
 }
 
 /// Instructions des Agents für diesen Harness (AGT-005); Fehler verhindern den Start.
@@ -314,6 +381,92 @@ pub async fn harness_unavailable(
     None
 }
 
+/// Löst `${secret:<name>}` in `env` und `headers` zum Platzhalter des Credential-Bindings
+/// `<name>` auf (AGT-001 AC3, AGT-006 AC3), nie zum Wert. HTTP-Server mit Credential in
+/// `headers` verbinden sich über eine eigene Proxy-Instanz, die den Platzhalter für die
+/// gebundenen Hosts ersetzt; stdio-Server laufen in Stufe 2 und erreichen das Netz ohnehin nur
+/// über deren Proxy. Ohne Binding bzw. Stufenmodell startet der Server nicht
+/// (`mcp.server_failed`).
+pub async fn resolve_secrets(
+    servers: Vec<beton_mcp::config::ConfiguredServer>,
+    session_id: beton_core::id::SessionId,
+    stages: Option<&mut crate::stages::SessionStages>,
+    agent_trusted: bool,
+) -> (Vec<beton_mcp::config::ConfiguredServer>, Vec<EventPayload>) {
+    let mut stages = stages;
+    let mut kept = Vec::with_capacity(servers.len());
+    let mut failures = Vec::new();
+    for mut server in servers {
+        let refs = server.secret_refs();
+        if refs.is_empty() {
+            kept.push(server);
+            continue;
+        }
+        // Bis #200 entschieden ist, ob Repo-Inhalt Credentials referenzieren darf: nur Server der
+        // User-Ebene und von User- bzw. eingebauten Agents (fail closed, Review #291). Sonst
+        // bestimmte das Repository Pfad und Methode, mit denen ein Credential an einen
+        // gebundenen Host geht, an den `egress_rules` des Benutzers vorbei.
+        let trusted = match server.layer {
+            beton_mcp::config::Layer::User => true,
+            beton_mcp::config::Layer::Agent => agent_trusted,
+            beton_mcp::config::Layer::Project => false,
+        };
+        if !trusted {
+            failures.push(failed(
+                &server.name,
+                "${secret:…} gilt nur für MCP-Server der User-Konfiguration bzw. von User- und \
+                 eingebauten Agents; Projekt-Dateien und Projekt-Agents sind Repo-Inhalt (#200)",
+            ));
+            continue;
+        }
+        let resolved = match stages.as_deref() {
+            Some(st) => server.resolve_secrets(|n| st.placeholder(n).map(ToString::to_string)),
+            None => Err(
+                "${secret:…} braucht das Stufenmodell (sandbox.backend) mit \
+                         Credential-Bindings (sandbox.credentials, PRX-006)"
+                    .to_owned(),
+            ),
+        };
+        if let Err(e) = resolved {
+            failures.push(failed(&server.name, e));
+            continue;
+        }
+        if let (Some(url), Some(st)) = (server.server.url.clone(), stages.as_deref_mut()) {
+            let Some(target) = https_target(&url) else {
+                failures.push(failed(
+                    &server.name,
+                    "Credentials in `headers` nur für https://-Server",
+                ));
+                continue;
+            };
+            let label = format!("{session_id}/mcp-{}", server.name);
+            match st.runner_egress(&label, &[target], &refs).await {
+                Ok((proxy_url, ca_pem)) => {
+                    server.egress = Some(beton_mcp::config::HttpEgress {
+                        proxy_url: proxy_url.to_string(),
+                        ca_pem,
+                    });
+                }
+                Err(e) => {
+                    failures.push(failed(&server.name, format!("Egress-Proxy: {e}")));
+                    continue;
+                }
+            }
+        }
+        kept.push(server);
+    }
+    (kept, failures)
+}
+
+/// `host` bzw. `host:port` einer https-URL (ohne Zugangsdaten), sonst `None`.
+fn https_target(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let hostport = authority.rsplit('@').next()?;
+    let target = hostport.strip_suffix(":443").unwrap_or(hostport);
+    (!target.is_empty()).then(|| target.to_ascii_lowercase())
+}
+
 /// Bereitet die MCP-Injektion einer Session vor, dazu Instructions und Grenzen des Agents.
 /// Mit `harnesses` prüft der Runner, welche Sub-Agents hier startbar sind.
 #[allow(clippy::too_many_arguments)]
@@ -328,9 +481,23 @@ pub async fn prepare(
     harnesses: Option<(&beton_harness::registry::Registry, &beton_harness::HostEnv)>,
     gate: Option<Arc<dyn beton_mcp::hub::McpGate>>,
     asker: Option<Arc<dyn Asker>>,
+    tools: Option<beton_sandbox::Sandbox>,
+    oracle: Option<Arc<dyn PolicyOracle>>,
+    stages: Option<&mut crate::stages::SessionStages>,
 ) -> Result<McpSetup, String> {
     let mut setup = McpSetup::default();
+    // Agents aus der User-Ebene oder eingebaute dürfen `${secret:…}` nutzen (Review #291).
+    let agent_trusted = matches!(
+        source,
+        AgentSource::Snapshot(snap) if snap.source == "user" || snap.source == "builtin"
+    );
     let loaded = load(source, workdir, paths)?;
+    // AGT-014: `policies` des Agents bilden die Agent-Ebene; jeder Ladefehler (auch eine
+    // lockernde Angabe) verhindert den Start (fail closed).
+    if let Some((a, _)) = &loaded {
+        setup.agent_policies = agent_policies(&a.spec, &a.dir)?;
+        setup.agent_sandbox.clone_from(&a.spec.sandbox);
+    }
     if let Some((a, params)) = &loaded {
         let composed = compose_instructions(a, params, caps, workdir)?;
         setup.instructions = composed.text;
@@ -349,6 +516,21 @@ pub async fn prepare(
             .as_ref()
             .and_then(beton_agents::spec::DurationText::to_duration);
     }
+    if loaded.is_none() {
+        // Ohne Agent wie `project_files: auto` (AGT-005): Was der Harness nicht selbst liest,
+        // kommt über die Instructions (Claude seit #233 auch `CLAUDE.md`).
+        let composed =
+            beton_agents::instructions::compose_project_files(workdir, &caps.native_project_files);
+        setup.instructions = composed.text;
+        setup
+            .initial
+            .extend(composed.notices.into_iter().map(|text| {
+                EventPayload::Notice(Notice {
+                    level: NoticeLevel::Warn,
+                    text,
+                })
+            }));
+    }
     let agent: Option<LoadedAgent> = loaded.map(|(a, _)| a);
     setup.max_turns = agent.as_ref().and_then(|a| a.spec.executor.max_turns);
     setup.agent_permission_mode = agent.as_ref().and_then(|a| a.spec.executor.permission_mode);
@@ -364,7 +546,7 @@ pub async fn prepare(
         }
         None => None,
     };
-    let plan: SessionPlan = plan::build(&PlanInput {
+    let mut plan: SessionPlan = plan::build(&PlanInput {
         workdir,
         beton_home: &paths.beton_home,
         home: paths.home.as_deref(),
@@ -378,6 +560,17 @@ pub async fn prepare(
             text: text.clone(),
         })
     }));
+
+    // AGT-001 AC3, AGT-006 AC3: `${secret:<name>}` → Platzhalter, nie der Wert.
+    let (servers, failures) = resolve_secrets(
+        std::mem::take(&mut plan.servers),
+        session_id,
+        stages,
+        agent_trusted,
+    )
+    .await;
+    plan.servers = servers;
+    setup.initial.extend(failures);
 
     let unavailable = |setup: &mut McpSetup, why: &str| {
         for s in &plan.servers {
@@ -415,6 +608,7 @@ pub async fn prepare(
             Arc::new(RunnerBackend {
                 calls: calls_tx,
                 asker,
+                oracle,
             }),
         ))
     });
@@ -430,6 +624,7 @@ pub async fn prepare(
             prefix: Vec::new(),
         },
         gate,
+        tools,
     })
     .await;
     #[cfg(not(unix))]
@@ -453,8 +648,13 @@ pub async fn prepare(
     }
 
     // Native Skills (AGT-008): Session-Skill-Verzeichnis für Claude bzw. Codex.
-    if let Some(reads_itself) = native_skills(harness) {
-        let native = plan.native_skills(reads_itself);
+    if native_skills(harness).is_some() {
+        let native: Vec<skills::Skill> = plan
+            .skills
+            .iter()
+            .filter(|s| !reads_skill_itself(harness, s))
+            .cloned()
+            .collect();
         if !native.is_empty() {
             let dir = paths.run_dir.join(format!("mcp-{suffix}.skills"));
             match skills::materialize(&native, &dir) {
@@ -513,8 +713,9 @@ mod tests {
             })
             .unwrap(),
         );
+        // ACP-Agents kommen nur aus der User-Konfiguration (SBX-002).
         let layers = HarnessLayers {
-            project: acp,
+            user: acp,
             ..HarnessLayers::default()
         };
         let mine: HarnessId = "acp:mein-agent".parse().unwrap();

@@ -10,6 +10,8 @@
 #   paths:    Argumente mit Dateipfaden (→ tool.paths, absolut und normalisiert)
 #   patch:    Argument mit einem apply_patch-Text (Pfade aus den Kopfzeilen)
 #   changes:  Argument mit einer Liste `{ path, kind: { move_path } }` (Codex fileChange)
+#   cwd:      Argument mit dem Arbeitsverzeichnis eines Shell-Calls (→ tool.cwd; Default `cwd`,
+#             relativ zum Arbeitsverzeichnis der Session)
 #   subagent_spawn: startet einen Sub-Agent (→ tool.is_subagent_spawn)
 spec_version: 1
 
@@ -35,6 +37,8 @@ harnesses:
       WebFetch: { kind: web_fetch }
       WebSearch: { kind: web_fetch }
       Task: { kind: system, subagent_spawn: true }
+      # Seit 2.1.29x heißt das Sub-Agent-Tool `Agent` (gegen 2.1.296 geprüft, #233).
+      Agent: { kind: system, subagent_spawn: true }
       TodoWrite: { kind: system }
       ExitPlanMode: { kind: system }
   codex:
@@ -45,8 +49,8 @@ harnesses:
       webSearch: { kind: web_fetch }
       imageView: { kind: file_read, paths: [path] }
       # Funktionsnamen älterer Codex-Versionen
-      exec_command: { kind: shell, command: command }
-      shell: { kind: shell, command: command }
+      exec_command: { kind: shell, command: command, cwd: workdir }
+      shell: { kind: shell, command: command, cwd: workdir }
       apply_patch: { kind: file_edit, patch: input }
   acp:
     # ACP ordnet über `tool_call.kind` zu, nicht über den Namen (der ist ein Titel).

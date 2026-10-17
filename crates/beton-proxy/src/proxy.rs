@@ -39,10 +39,15 @@ use tokio::sync::watch;
 use tokio_rustls::TlsAcceptor;
 use zeroize::{Zeroize as _, Zeroizing};
 
+use beton_core::event::{EgressBlocked, EgressSource};
+
 use crate::ca::{BetonCa, CaInfo, LeafIssuer};
+use crate::credentials::{Credentials, Plan, Prefixed, REDACT_LIMIT, ResponseRedactor, Treatment};
+use crate::egress::{Counted, EgressEvents, Traffic};
 use crate::ip::{PrivateAllowList, destination_allowed};
-use crate::net::{ConnectError, Connector, Idle, Net, find_connect_error};
+use crate::net::{ConnectError, Connector, Idle, Net, dial_checked, find_connect_error};
 use crate::normalize::{Host, Scheme, normalize_path};
+use crate::passthrough::{Hello, Passthrough, client_hello_sni};
 use crate::rules::{Decision, DenyReason, Request as RulesRequest, RuleSet};
 
 /// Timeout für den Verbindungsaufbau zum Upstream (inkl. DNS und TLS).
@@ -71,12 +76,34 @@ pub enum ProxyError {
 }
 
 /// Regeln und Freigaben einer Proxy-Instanz (eine pro Session-Stufe).
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct InstanceSpec {
     /// Kennung für Logs, z. B. `ses_…/tools`; nie ein Secret.
     pub label: String,
     pub rules: RuleSet,
     pub allow_private: PrivateAllowList,
+    /// Vendor-Hosts ohne TLS-Terminierung (PRX-005); nur in Stufe 1 bzw. ausdrücklich.
+    pub passthrough: Passthrough,
+    /// Credential-Bindings mit Platzhaltern (PRX-006); nie auf Passthrough-Verbindungen.
+    pub credentials: Credentials,
+    /// Herkunft für `egress.blocked` (PRX-009).
+    pub source: EgressSource,
+    /// Empfänger von `egress.blocked` (PRX-009 AC1); ohne Empfänger nur Logs.
+    pub events: Option<Arc<dyn EgressEvents>>,
+    /// Zähler für `egress.summary` (PRX-009 AC3), je Session geteilt.
+    pub traffic: Option<Traffic>,
+}
+
+impl fmt::Debug for InstanceSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InstanceSpec")
+            .field("label", &self.label)
+            .field("rules", &self.rules)
+            .field("passthrough", &self.passthrough)
+            .field("credentials", &self.credentials)
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
 }
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
@@ -111,6 +138,12 @@ fn extra_roots(files: &[PathBuf]) -> Result<Vec<CertificateDer<'static>>, ProxyE
         out.extend(certs);
     }
     Ok(out)
+}
+
+/// Prüft `proxy.extra_ca_files` (beim Laden der Konfiguration): Jede Datei muss lesbar sein und
+/// mindestens ein Zertifikat enthalten (PRX-002).
+pub fn check_extra_ca_files(files: &[PathBuf]) -> Result<(), ProxyError> {
+    extra_roots(files).map(|_| ())
 }
 
 /// TLS-Client-Konfiguration für Upstreams: strikte webpki-Prüfung gegen `roots`, kein
@@ -197,6 +230,36 @@ impl EgressProxy {
         self.shared.ca.cert_pem()
     }
 
+    /// CA-Bundle für die Sandbox (PRX-008): beton-CA plus System-Roots als PEM. Werkzeuge in
+    /// der Sandbox sehen sonst nur Leafs der beton-CA; die System-Roots braucht der Harness für
+    /// seine Passthrough-Verbindungen (PRX-005).
+    pub fn ca_bundle_pem(&self) -> String {
+        let mut pem = self.ca_pem();
+        for root in native_roots() {
+            pem.push_str(&crate::ca::pem_certificate(root.as_ref()));
+        }
+        pem
+    }
+
+    /// Nur für Tests anderer Crates (Feature `test-net`, nie in Produktionsbuilds): Jeder Name
+    /// aus `hosts` löst auf eine öffentlich wirkende Adresse auf, die der Dialer auf den
+    /// lokalen Test-Upstream abbildet; alle anderen Namen sind NXDOMAIN, alle anderen Adressen
+    /// unerreichbar. Upstream-TLS vertraut nur `upstream_roots`. Die Private-IP-Sperre gilt
+    /// unverändert (ADR-0033: kein Test erreicht ein echtes Netz).
+    #[cfg(any(test, feature = "test-net"))]
+    pub fn with_test_hosts(
+        ca: BetonCa,
+        upstream_roots: Vec<CertificateDer<'static>>,
+        hosts: &[(&str, std::net::SocketAddr)],
+    ) -> Self {
+        let mut roots = RootCertStore::empty();
+        for r in upstream_roots {
+            roots.add(r).unwrap_or_else(|e| panic!("Test-CA: {e}"));
+        }
+        Self::build(ca, &roots, crate::net::Net::test_hosts(hosts))
+            .unwrap_or_else(|e| panic!("Test-Proxy: {e}"))
+    }
+
     /// Startet eine Instanz auf `127.0.0.1:<zufälliger Port>` mit eigenem Token, eigenem
     /// Leaf-Schlüssel und eigenem Upstream-Pool.
     pub async fn start(&self, spec: InstanceSpec) -> Result<ProxyInstance, ProxyError> {
@@ -223,6 +286,12 @@ impl EgressProxy {
         let instance = Arc::new(Instance {
             label: spec.label,
             rules: spec.rules,
+            passthrough: spec.passthrough,
+            credentials: spec.credentials,
+            source: spec.source,
+            events: spec.events,
+            traffic: spec.traffic,
+            net: self.shared.net.clone(),
             allow_private: allow.clone(),
             expected,
             leafs: LeafIssuer::new(self.shared.ca.clone())?,
@@ -231,7 +300,12 @@ impl EgressProxy {
             stopped,
         });
         let accept = instance.clone();
+        // Lebt, solange die Annahme-Schleife läuft; endet sie (Stopp, Abbruch, Panik), fällt der
+        // Wächter und `down()` meldet es (SBX-006 AC3).
+        let (alive_tx, alive) = watch::channel(true);
+        let guard = AliveGuard(alive_tx);
         spawn_until(instance.stopped.clone(), async move {
+            let _guard = guard;
             loop {
                 match listener.accept().await {
                     Ok((tcp, _)) => {
@@ -251,7 +325,17 @@ impl EgressProxy {
             addr,
             token: ProxyToken(token),
             stop,
+            alive,
         })
+    }
+}
+
+/// Setzt beim Fallenlassen „läuft nicht mehr“ (auch bei Abbruch oder Panik der Aufgabe).
+struct AliveGuard(watch::Sender<bool>);
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        let _ = self.0.send(false);
     }
 }
 
@@ -288,6 +372,8 @@ pub struct ProxyInstance {
     addr: SocketAddr,
     token: ProxyToken,
     stop: watch::Sender<bool>,
+    /// `true`, solange die Annahme-Schleife läuft.
+    alive: watch::Receiver<bool>,
 }
 
 impl Drop for ProxyInstance {
@@ -313,6 +399,20 @@ impl ProxyInstance {
         &self.token
     }
 
+    /// Endet, sobald die Instanz keine Verbindungen mehr annimmt, gleich aus welchem Grund
+    /// (Stopp, Absturz der Aufgabe). Grundlage für „Proxy weg → Session pausiert“ (SBX-006 AC3).
+    pub fn down(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut alive = self.alive.clone();
+        async move {
+            let _ = alive.wait_for(|a| !*a).await;
+        }
+    }
+
+    /// Beendet die Instanz sofort (Listener, Tunnel, Verbindungen), wie ein Absturz.
+    pub fn shutdown(&self) {
+        let _ = self.stop.send(true);
+    }
+
     /// Proxy-URL für die Sandbox: `http://bt:<token>@127.0.0.1:<port>` (enthält das Token).
     pub fn proxy_url(&self) -> Zeroizing<String> {
         Zeroizing::new(format!(
@@ -327,6 +427,14 @@ impl ProxyInstance {
 struct Instance {
     label: String,
     rules: RuleSet,
+    /// Vendor-Hosts ohne TLS-Terminierung (PRX-005).
+    passthrough: Passthrough,
+    /// Credential-Bindings (PRX-006).
+    credentials: Credentials,
+    source: EgressSource,
+    events: Option<Arc<dyn EgressEvents>>,
+    traffic: Option<Traffic>,
+    net: Net,
     allow_private: Arc<PrivateAllowList>,
     /// Erwarteter Klartext von `Proxy-Authorization: Basic …` (`bt:<token>`).
     expected: Zeroizing<Vec<u8>>,
@@ -388,6 +496,33 @@ fn private_destination(ip: IpAddr) -> Response<ProxyBody> {
     )
 }
 
+/// Antwort auf einen gescheiterten Verbindungsaufbau (wie bei weitergeleiteten Requests).
+fn connect_problem(e: &ConnectError) -> Response<ProxyBody> {
+    match e {
+        ConnectError::PrivateDestination(ip) => private_destination(*ip),
+        ConnectError::InvalidHost => invalid("ungültiger Host"),
+        ConnectError::Dns(_) => problem(StatusCode::BAD_GATEWAY, "dns_error", e.to_string(), None),
+        ConnectError::Tls(_) => problem(
+            StatusCode::BAD_GATEWAY,
+            "upstream_tls_error",
+            e.to_string(),
+            None,
+        ),
+        ConnectError::Timeout => problem(
+            StatusCode::GATEWAY_TIMEOUT,
+            "upstream_timeout",
+            e.to_string(),
+            None,
+        ),
+        ConnectError::Connect(_) => problem(
+            StatusCode::BAD_GATEWAY,
+            "upstream_connect_error",
+            e.to_string(),
+            None,
+        ),
+    }
+}
+
 fn empty(status: StatusCode) -> Response<ProxyBody> {
     let mut res = Response::new(Empty::new().map_err(|never| match never {}).boxed());
     *res.status_mut() = status;
@@ -404,7 +539,7 @@ fn log_path(path: &str) -> &str {
 
 /// Entfernt Hop-by-Hop-Header (RFC 9110 §7.6.1), auch die in `Connection` genannten.
 /// `TE: trailers` bleibt (gRPC); bei Upgrades bleiben `Upgrade` und `Connection: upgrade`.
-fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
+pub(crate) fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     let listed: Vec<HeaderName> = headers
         .get_all(CONNECTION)
         .iter()
@@ -445,7 +580,7 @@ fn strip_hop_by_hop(headers: &mut HeaderMap, upgrade: bool) {
     }
 }
 
-fn is_upgrade<B>(req: &Request<B>) -> bool {
+pub(crate) fn is_upgrade<B>(req: &Request<B>) -> bool {
     req.version() == Version::HTTP_11
         && req.headers().contains_key(UPGRADE)
         && req.headers().get_all(CONNECTION).iter().any(|v| {
@@ -458,7 +593,7 @@ fn is_upgrade<B>(req: &Request<B>) -> bool {
 
 /// Host und Port eines Requests im Tunnel: `:authority`/absolute URI und `Host`-Header; beide
 /// müssen, wenn vorhanden, übereinstimmen.
-fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
+pub(crate) fn request_authorities<B>(req: &Request<B>) -> Result<Vec<(Host, Option<u16>)>, ()> {
     let mut out = Vec::new();
     if let Some(a) = req.uri().authority() {
         out.push((Host::parse(a.host()).map_err(|_| ())?, a.port_u16()));
@@ -519,27 +654,54 @@ impl Instance {
             return res;
         }
         if req.method() == Method::CONNECT {
-            self.connect(req)
+            self.connect(req).await
         } else {
             self.forward_absolute(req).await
         }
     }
 
     fn log_deny(&self, method: &str, host: &Host, port: u16, path: &str, reason: &str) {
+        self.deny_with_hint(method, host, port, path, reason, None);
+    }
+
+    /// Protokolliert eine Ablehnung (ohne Query, Header-Werte oder Bodies) und meldet sie als
+    /// `egress.blocked` (PRX-009 AC1).
+    fn deny_with_hint(
+        &self,
+        method: &str,
+        host: &Host,
+        port: u16,
+        path: &str,
+        reason: &str,
+        rule_hint: Option<String>,
+    ) {
+        let path = log_path(path);
         tracing::debug!(
             instance = %self.label,
             method,
             host = %host,
             port,
-            path = log_path(path),
+            path,
             decision = "deny",
             reason,
             "Egress abgelehnt"
         );
+        if let Some(events) = &self.events {
+            events.blocked(EgressBlocked {
+                method: method.to_owned(),
+                host: host.to_string(),
+                path: path.to_owned(),
+                reason: reason.to_owned(),
+                rule_hint,
+                source: self.source,
+                tool_call_id: None,
+            });
+        }
     }
 
-    /// CONNECT: Vorprüfung (PRX-003 AC5) ohne TLS-Handshake, dann Tunnel mit MITM.
-    fn connect(self: Arc<Self>, req: Request<Incoming>) -> Response<ProxyBody> {
+    /// CONNECT: Vorprüfung (PRX-003 AC5) ohne TLS-Handshake, dann Tunnel mit MITM bzw. für
+    /// Passthrough-Ziele ohne TLS-Terminierung (PRX-005).
+    async fn connect(self: Arc<Self>, req: Request<Incoming>) -> Response<ProxyBody> {
         let Some(authority) = req.uri().authority().cloned() else {
             return invalid("CONNECT braucht host:port");
         };
@@ -553,8 +715,10 @@ impl Instance {
             self.log_deny("CONNECT", &host, port, "", "private_destination");
             return private_destination(*ip);
         }
+        if self.passthrough.contains(&host, port) {
+            return self.passthrough(req, host, port).await;
+        }
         if !self.rules.may_connect(Scheme::Https, &host, port) {
-            self.log_deny("CONNECT", &host, port, "", "no_matching_rule");
             let hint = RuleSet::rule_hint(&RulesRequest {
                 method: "GET",
                 scheme: Scheme::Https,
@@ -562,6 +726,14 @@ impl Instance {
                 port,
                 path: "/**",
             });
+            self.deny_with_hint(
+                "CONNECT",
+                &host,
+                port,
+                "",
+                "no_matching_rule",
+                Some(hint.clone()),
+            );
             return problem(
                 StatusCode::FORBIDDEN,
                 "egress_denied",
@@ -587,6 +759,108 @@ impl Instance {
             }
         });
         empty(StatusCode::OK)
+    }
+
+    /// Passthrough (PRX-005): Upstream nach Auflösung und Private-IP-Prüfung verbinden, erst
+    /// dann `200`; danach muss das erste, was der Client schickt, ein `ClientHello` mit der SNI
+    /// des CONNECT-Hosts sein. Sonst wird getrennt, bevor ein Byte den Upstream erreicht.
+    /// Protokolliert werden nur Host, Port, Entscheidung und Byte-Zahlen.
+    async fn passthrough(
+        self: Arc<Self>,
+        req: Request<Incoming>,
+        host: Host,
+        port: u16,
+    ) -> Response<ProxyBody> {
+        let dial = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            dial_checked(&self.net, &self.allow_private, &host, port),
+        )
+        .await
+        .unwrap_or(Err(ConnectError::Timeout));
+        let upstream = match dial {
+            Ok(tcp) => tcp,
+            Err(ConnectError::PrivateDestination(ip)) => {
+                self.log_deny("CONNECT", &host, port, "", "private_destination");
+                return private_destination(ip);
+            }
+            Err(e) => {
+                tracing::debug!(instance = %self.label, host = %host, port, "Passthrough: {e}");
+                return connect_problem(&e);
+            }
+        };
+        let inst = self.clone();
+        spawn_until(self.stopped.clone(), async move {
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    inst.splice(TokioIo::new(upgraded), upstream, host, port)
+                        .await
+                }
+                Err(e) => tracing::debug!("CONNECT-Upgrade: {e}"),
+            }
+        });
+        empty(StatusCode::OK)
+    }
+
+    async fn splice(
+        self: Arc<Self>,
+        mut client: TokioIo<Upgraded>,
+        upstream: TcpStream,
+        host: Host,
+        port: u16,
+    ) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let mut hello = Vec::with_capacity(2048);
+        let mut chunk = [0u8; 4096];
+        let verdict = tokio::time::timeout(CONNECT_TIMEOUT, async {
+            loop {
+                match client_hello_sni(&hello) {
+                    Hello::Incomplete => {}
+                    done => return done,
+                }
+                match client.read(&mut chunk).await {
+                    Ok(0) | Err(_) => return Hello::Invalid,
+                    Ok(n) => hello.extend_from_slice(&chunk[..n]),
+                }
+            }
+        })
+        .await
+        .unwrap_or(Hello::Invalid);
+        let expected = match &host {
+            Host::Domain(d) => Some(d.as_str()),
+            Host::Ip(_) => None,
+        };
+        let reason = match &verdict {
+            Hello::Sni(Some(sni)) if Some(sni.as_str()) == expected => None,
+            Hello::Sni(Some(_)) => Some("sni_mismatch"),
+            Hello::Sni(None) => Some("sni_missing"),
+            Hello::Incomplete | Hello::Invalid => Some("no_client_hello"),
+        };
+        if let Some(reason) = reason {
+            self.log_deny("CONNECT", &host, port, "", reason);
+            return;
+        }
+        tracing::debug!(
+            instance = %self.label,
+            host = %host,
+            port,
+            decision = "passthrough",
+            "Egress durchgereicht (ohne TLS-Terminierung)"
+        );
+        let mut upstream = Idle::new(upstream, IDLE_TIMEOUT);
+        if upstream.write_all(&hello).await.is_err() {
+            return;
+        }
+        let mut client = Idle::new(client, IDLE_TIMEOUT);
+        let copied = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+        let (up, down) = copied.unwrap_or((0, 0));
+        tracing::trace!(
+            instance = %self.label,
+            host = %host,
+            port,
+            bytes_up = up + hello.len() as u64,
+            bytes_down = down,
+            "Passthrough beendet"
+        );
     }
 
     async fn serve_tunnel(
@@ -678,6 +952,21 @@ impl Instance {
                 return invalid(e.to_string());
             }
         };
+        let query = req.uri().query().map(str::to_owned);
+        // PRX-006: Platzhalter vor der Regelprüfung erkennen, damit auch ein Fehlgebrauch an
+        // einen sonst gesperrten Host auditiert wird.
+        let plan =
+            match self
+                .credentials
+                .plan(scheme, &host, &path, query.as_deref(), req.headers())
+            {
+                Ok(plan) => plan,
+                Err(refusal) => {
+                    self.log_deny(&method, &host, port, &path, refusal.error);
+                    refusal.audit(&host).await;
+                    return problem(refusal.status, refusal.error, refusal.reason, None);
+                }
+            };
         let rreq = RulesRequest {
             method: &method,
             scheme,
@@ -687,6 +976,10 @@ impl Instance {
         };
         match self.rules.decide(&rreq) {
             Decision::Allow { rule } => {
+                let bindings = plan
+                    .as_ref()
+                    .map(|p| p.names().join(","))
+                    .unwrap_or_default();
                 tracing::debug!(
                     instance = %self.label,
                     method = %method,
@@ -695,12 +988,13 @@ impl Instance {
                     path = log_path(&path),
                     decision = "allow",
                     rule = %rule,
+                    bindings = %bindings,
                     "Egress erlaubt"
                 );
-                self.forward(scheme, &host, port, &path, req).await
+                self.forward(scheme, &host, port, &path, query, plan, req)
+                    .await
             }
             Decision::Deny { reason, rule } => {
-                self.log_deny(&method, &host, port, &path, reason.as_str());
                 let (text, hint) = match (reason, rule) {
                     (DenyReason::DeniedByRule, Some(rule)) => {
                         (format!("Abgelehnt durch Regel `{rule}`"), None)
@@ -714,6 +1008,7 @@ impl Instance {
                         Some(RuleSet::rule_hint(&rreq)),
                     ),
                 };
+                self.deny_with_hint(&method, &host, port, &path, reason.as_str(), hint.clone());
                 problem(StatusCode::FORBIDDEN, "egress_denied", text, hint)
             }
         }
@@ -721,22 +1016,47 @@ impl Instance {
 
     /// Leitet einen geprüften Request weiter. Der Upstream bekommt genau den geprüften,
     /// normalisierten Pfad (plus Query).
+    #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
         scheme: Scheme,
         host: &Host,
         port: u16,
         path: &str,
+        query: Option<String>,
+        plan: Option<Plan>,
         mut req: Request<Incoming>,
     ) -> Response<ProxyBody> {
+        let started = std::time::Instant::now();
         let upgrade = is_upgrade(&req);
-        let query = req
-            .uri()
-            .query()
-            .map(|q| format!("?{q}"))
-            .unwrap_or_default();
+        let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
+        let (mut parts, body) = req.into_parts();
+        // PRX-006: Werte erst jetzt (Request erlaubt) holen, auditieren und einsetzen.
+        let (upstream_path, query, redactor) = match &plan {
+            Some(plan) => {
+                match plan
+                    .apply(host, path, query.as_deref(), &mut parts.headers)
+                    .await
+                {
+                    Ok((p, q, r)) => (p, q, Some(r)),
+                    Err(refusal) => {
+                        tracing::debug!(
+                            instance = %self.label,
+                            host = %host,
+                            port,
+                            path = log_path(path),
+                            error = refusal.error,
+                            "Credential nicht eingesetzt"
+                        );
+                        return problem(refusal.status, refusal.error, refusal.reason, None);
+                    }
+                }
+            }
+            None => (path.to_owned(), query, None),
+        };
+        let query = query.map(|q| format!("?{q}")).unwrap_or_default();
         let uri: Uri = match format!(
-            "{}://{}:{port}{path}{query}",
+            "{}://{}:{port}{upstream_path}{query}",
             scheme.as_str(),
             host.to_uri_host()
         )
@@ -745,8 +1065,12 @@ impl Instance {
             Ok(uri) => uri,
             Err(_) => return invalid("ungültige URI"),
         };
-        let client_upgrade = upgrade.then(|| hyper::upgrade::on(&mut req));
-        let (mut parts, body) = req.into_parts();
+        let sent = parts
+            .headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
         parts.uri = uri;
         parts.version = Version::HTTP_11;
         strip_hop_by_hop(&mut parts.headers, upgrade);
@@ -756,6 +1080,16 @@ impl Instance {
             Ok(res) => res,
             Err(e) => return self.upstream_error(&e),
         };
+        tracing::debug!(
+            instance = %self.label,
+            host = %host,
+            port,
+            // Der geprüfte Pfad (mit Platzhaltern, nie mit eingesetzten Werten).
+            path = log_path(path),
+            status = res.status().as_u16(),
+            duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "Egress beantwortet"
+        );
         let switching = upgrade && res.status() == StatusCode::SWITCHING_PROTOCOLS;
         if switching && let Some(on_client) = client_upgrade {
             let on_upstream = hyper::upgrade::on(&mut res);
@@ -768,36 +1102,41 @@ impl Instance {
         }
         strip_hop_by_hop(res.headers_mut(), switching);
         res.headers_mut().remove(ALT_SVC);
-        res.map(BodyExt::boxed)
+        if let Some(traffic) = &self.traffic {
+            traffic.record(&host.to_string(), 0, sent);
+        }
+        let traffic = (!switching).then(|| self.traffic.clone()).flatten();
+        let host = host.to_string();
+        let Some(r) = redactor else {
+            return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
+        };
+        // PRX-010: zurückgespiegelte Werte durch die Platzhalter ersetzen. Header immer, auch
+        // bei `101`; der Byte-Strom nach dem Upgrade bleibt unberührt.
+        r.headers(res.headers_mut());
+        if switching {
+            return res.map(|b| Counted::new(b, traffic, &host, 1).boxed());
+        }
+        let r = Arc::new(r);
+        let (mut parts, body) = res.into_parts();
+        match r.treatment(&mut parts.headers) {
+            Treatment::Pass => {
+                Response::from_parts(parts, Counted::new(body, traffic, &host, 1).boxed())
+            }
+            Treatment::Stream => {
+                let body = Counted::new(r.stream(body), traffic, &host, 1);
+                Response::from_parts(parts, body.boxed())
+            }
+            Treatment::Buffer { gzip } => {
+                buffered(parts, body, &r, gzip, Counted::new((), traffic, &host, 1)).await
+            }
+        }
     }
 
     fn upstream_error(&self, err: &hyper_util::client::legacy::Error) -> Response<ProxyBody> {
         let found = find_connect_error(err);
         tracing::debug!(instance = %self.label, "Upstream: {err} ({found:?})");
         match found {
-            Some(ConnectError::PrivateDestination(ip)) => private_destination(*ip),
-            Some(ConnectError::InvalidHost) => invalid("ungültiger Host"),
-            Some(e @ ConnectError::Dns(_)) => {
-                problem(StatusCode::BAD_GATEWAY, "dns_error", e.to_string(), None)
-            }
-            Some(e @ ConnectError::Tls(_)) => problem(
-                StatusCode::BAD_GATEWAY,
-                "upstream_tls_error",
-                e.to_string(),
-                None,
-            ),
-            Some(e @ ConnectError::Timeout) => problem(
-                StatusCode::GATEWAY_TIMEOUT,
-                "upstream_timeout",
-                e.to_string(),
-                None,
-            ),
-            Some(e @ ConnectError::Connect(_)) => problem(
-                StatusCode::BAD_GATEWAY,
-                "upstream_connect_error",
-                e.to_string(),
-                None,
-            ),
+            Some(e) => connect_problem(e),
             None => problem(
                 StatusCode::BAD_GATEWAY,
                 "upstream_error",
@@ -806,6 +1145,58 @@ impl Instance {
             ),
         }
     }
+}
+
+/// Komprimierte, textartige Antwort mit eingesetztem Credential (PRX-010): bis
+/// [`REDACT_LIMIT`] puffern, dekodieren, redigieren und unkomprimiert ausliefern; größer oder
+/// nicht dekodierbar → unverändert.
+async fn buffered(
+    mut parts: http::response::Parts,
+    mut body: Incoming,
+    r: &ResponseRedactor,
+    gzip: bool,
+    mut count: Counted<()>,
+) -> Response<ProxyBody> {
+    let mut buf = bytes::BytesMut::new();
+    loop {
+        match body.frame().await {
+            None => break,
+            Some(Err(e)) => {
+                tracing::debug!("Upstream-Body: {e}");
+                return problem(
+                    StatusCode::BAD_GATEWAY,
+                    "upstream_error",
+                    "Fehler beim Lesen der Antwort",
+                    None,
+                );
+            }
+            Some(Ok(frame)) => {
+                if let Some(d) = frame.data_ref() {
+                    buf.extend_from_slice(d);
+                    count.add(d.len());
+                }
+                if buf.len() > REDACT_LIMIT {
+                    let body = Prefixed::new(buf.freeze(), body);
+                    return Response::from_parts(parts, count.around(body).boxed());
+                }
+            }
+        }
+    }
+    let out = match r.decoded(&buf, gzip) {
+        Some(plain) => {
+            parts.headers.remove(http::header::CONTENT_ENCODING);
+            parts
+                .headers
+                .insert(http::header::CONTENT_LENGTH, HeaderValue::from(plain.len()));
+            Bytes::from(plain)
+        }
+        None => buf.freeze(),
+    };
+    drop(count);
+    Response::from_parts(
+        parts,
+        Full::new(out).map_err(|never| match never {}).boxed(),
+    )
 }
 
 /// Ein TLS-terminierter Tunnel zu `host:port`; jeder Request (bzw. HTTP/2-Stream) wird

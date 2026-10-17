@@ -33,7 +33,7 @@ tools:
 
 skills: [plan, fanout, cross-review, investigate]
 
-# Ausgewertet ab M2 (POL-015, POL-017); bis dahin nur gelesen und geprüft.
+# Agent-Policies (AGT-014): maestra schreibt keinen Code und merged bzw. pusht nie (AGT-011).
 policies:
   - { id: maestra-no-code, type: tool_allowlist, params: { allow_kinds: [system, file_read, search] } }
   - { id: maestra-no-merge, type: git_guard, params: { merge: deny, push: deny } }

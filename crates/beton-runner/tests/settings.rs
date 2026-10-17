@@ -10,6 +10,8 @@
 #![allow(clippy::unwrap_used)]
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -94,6 +96,7 @@ impl Env {
         }
         let daemon = start_with(cfg, store.clone(), move |mut r| {
             r.sessions.vendor_env = vendor_env;
+            r.sessions.sandbox = support::unsandboxed();
             r.sessions.provider = std::sync::Arc::new(
                 LocalProvider::new(vec![runner_bin().into()], runners).with_inherited_env(inherit),
             );
@@ -118,7 +121,9 @@ impl Env {
 
     async fn http(&self, method: &str, path: &str, body: Option<Value>) -> (u16, Value) {
         let mut stream = tokio::net::TcpStream::connect(self.addr).await.unwrap();
-        let body = body.map(|b| b.to_string()).unwrap_or_default();
+        let body = support::confirm_unsandboxed(method, path, body)
+            .map(|b| b.to_string())
+            .unwrap_or_default();
         let req = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
             port = self.addr.port(),
@@ -818,13 +823,26 @@ async fn har_027_agent_executor_sets_effort_and_mode_but_never_yolo() {
         env.turn(&id, "eins").await.last().unwrap(),
         "model=fake-model effort=high mode=default"
     );
-    // Ein Agent (z. B. aus dem Repository) kann YOLO nicht erzwingen (fail closed).
+    // Ein Agent aus dem Repository kann YOLO nicht erzwingen (fail closed, AGT-014/#258 R7);
+    // auch ausdrücklich angefragt nicht ohne Sandbox (`sandbox_required`).
     agent(&env, "reckless", "{ harness: fake, permission_mode: yolo }");
     let (status, body) = env
         .http(
             "POST",
             "/v1/sessions",
             Some(json!({"agent": "reckless", "cwd": env.work(), "harness_opts": {"scenario": scenario}})),
+        )
+        .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (422, Some("agent_invalid")),
+        "{body}"
+    );
+    let (status, body) = env
+        .http(
+            "POST",
+            "/v1/sessions",
+            Some(json!({"agent": "reckless", "cwd": env.work(), "permission_mode": "yolo", "harness_opts": {"scenario": scenario}})),
         )
         .await;
     assert_eq!(

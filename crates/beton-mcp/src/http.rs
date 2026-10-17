@@ -63,10 +63,30 @@ pub(crate) async fn proxy_http<R, W>(
             }
         }
     }
-    let client = match reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-    {
+    let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+    if let Some(e) = &server.egress {
+        // Header mit Credential-Platzhalter: nur über die Proxy-Instanz des Runners, die ihn
+        // für die gebundenen Hosts ersetzt, und nur mit der beton-CA (AGT-006 AC3).
+        let proxy = reqwest::Proxy::all(&e.proxy_url).map_err(|_| "ungültige Proxy-URL");
+        let ca = reqwest::Certificate::from_pem(e.ca_pem.as_bytes()).map_err(|_| "beton-CA");
+        match (proxy, ca) {
+            (Ok(p), Ok(ca)) => {
+                builder = builder
+                    .proxy(p)
+                    .tls_built_in_root_certs(false)
+                    .add_root_certificate(ca);
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                let msg = format!("HTTP-Client: {e}");
+                failed(&events, &server.name, msg.clone());
+                crate::hub::refuse_rest(r, out, msg).await;
+                return;
+            }
+        }
+    } else {
+        builder = builder.no_proxy();
+    }
+    let client = match builder.build() {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("HTTP-Client: {}", e.without_url());

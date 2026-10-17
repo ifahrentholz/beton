@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
-import type { Capabilities, HarnessInfo, PermissionMode } from '@beton/sdk'
+import type { Capabilities, HarnessInfo, PermissionMode, SessionSandbox } from '@beton/sdk'
 import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
+import { compacting as compactingOf, contextOf } from '@/lib/context'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
@@ -26,6 +27,7 @@ import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
 import { ApprovalBar } from './approval-bar'
+import { ContextBar } from './context-bar'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
 
 /** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
@@ -41,6 +43,7 @@ function useMeta(sessionId: string) {
     let effort: string | null | undefined
     let permissionMode: PermissionMode | null | undefined
     let capabilities: Capabilities | undefined
+    let sandbox: SessionSandbox | undefined
     let status = summary?.status ?? 'starting'
     for (const e of events ?? []) {
       const created = payloadOf(e, 'session.created')
@@ -51,7 +54,10 @@ function useMeta(sessionId: string) {
         permissionMode = created.permission_mode as PermissionMode | undefined
       }
       const started = payloadOf(e, 'session.started')
-      if (started) capabilities = started.capabilities as unknown as Capabilities
+      if (started) {
+        capabilities = started.capabilities as unknown as Capabilities
+        sandbox = started.sandbox
+      }
       const st = payloadOf(e, 'session.status')
       if (st) status = st.status
       // Wirksame Einstellungen: der letzte Stand aus `session.settings_changed` (HAR-017, HAR-027).
@@ -62,7 +68,7 @@ function useMeta(sessionId: string) {
     }
     // Titel des Users gewinnt gegen später erzeugte (UX-009 AC2).
     const { title, source } = titleFrom(summary, events)
-    return { harness, model, effort, permissionMode, capabilities, title, titleSource: source, status }
+    return { harness, model, effort, permissionMode, capabilities, sandbox, title, titleSource: source, status }
   }, [events, summary])
 }
 
@@ -83,7 +89,7 @@ function StreamItem({ item, sessionId, harness }: { item: Item; sessionId: strin
     case 'error':
       return <ErrorCard title={item.title} detail={item.detail} />
     case 'note':
-      return <SystemNote text={item.text} tone={item.tone} />
+      return <SystemNote text={item.text} tone={item.tone} detail={item.detail} />
     case 'offloaded':
       return <Offloaded sessionId={sessionId} item={item} harness={harness} />
   }
@@ -181,22 +187,26 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       .session(sessionId)
       .rename(title)
       .then((s) => useSessions.getState().upsert([s]))
+  // Kontext und Compaction (USE-008, USE-009): letzter `context.usage`, laufende Compaction.
+  const context = useMemo(() => contextOf(log?.events), [log?.events])
+  const isCompacting = useMemo(() => compactingOf(log?.events), [log?.events])
+  const compact = () => {
+    setSendError(undefined)
+    client
+      .session(sessionId)
+      .compact()
+      .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Kompaktieren fehlgeschlagen'))
+  }
   // beton-eigene Slash-Befehle, die es schon gibt (WEB-006): `/compact` (SES-011) und `/fork`
   // (SES-006).
   const compaction = meta.capabilities?.compaction
   const commands: BetonCommand[] = []
-  if (compaction && compaction !== 'none' && !running) {
+  if (compaction && compaction !== 'none' && !running && !isCompacting) {
     commands.push({
       name: 'compact',
       title: 'Kontext komprimieren',
       description: 'Verlauf vom Harness zusammenfassen lassen und Kontext freigeben',
-      run: () => {
-        setSendError(undefined)
-        client
-          .session(sessionId)
-          .compact()
-          .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Komprimieren fehlgeschlagen'))
-      },
+      run: compact,
     })
   }
   if (meta.harness) {
@@ -329,6 +339,14 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       )}
       <ApprovalBar sessionId={sessionId} approvals={approvals} />
       <AttachmentChips sessionId={sessionId} />
+      <ContextBar
+        harness={meta.harness}
+        capabilities={meta.capabilities}
+        context={context}
+        compacting={isCompacting}
+        running={running}
+        onCompact={compact}
+      />
       <Composer
         sessionId={sessionId}
         harness={meta.harness || 'claude'}
@@ -336,6 +354,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         effort={meta.effort}
         permissionMode={meta.permissionMode}
         capabilities={meta.capabilities}
+        sandbox={meta.sandbox}
         running={running}
         continueWith={targets}
         onContinue={meta.harness ? continueWith : undefined}

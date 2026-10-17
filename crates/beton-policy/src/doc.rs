@@ -19,6 +19,10 @@ pub const SCHEMA_PATH: &str = "schemas/v1/policy.schema.json";
 /// Schema-Datei, nie auf eine URL (ADR-0033).
 pub const SCHEMA_COMMENT: &str = "# yaml-language-server: $schema=../schemas/v1/policy.schema.json";
 
+/// Sichere Defaults der User-Ebene, die `beton setup` als `~/.beton/policies/defaults.yaml`
+/// anlegt (POL-001): `git_guard` und `loop_detection`. Quelle: `policies/user-defaults.yaml`.
+pub const USER_DEFAULTS: &str = include_str!("../../../policies/user-defaults.yaml");
+
 /// Muster für Regel-IDs und Set-Namen: `[a-z0-9-]`, höchstens 64 Zeichen.
 pub const ID_PATTERN: &str = "^[a-z0-9][a-z0-9-]{0,63}$";
 

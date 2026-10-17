@@ -171,6 +171,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Nur diese Art des Ziels, z. B. `credential` (Nutzung und Fehlgebrauch von\nCredential-Bindings, PRX-009 AC4) oder `secret`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1152,6 +1161,223 @@
         }
       }
     },
+    "/v1/policies": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Das effektive Set: User-Ebene und mit `session_id` die Projekt-Ebene der Session.",
+        "operationId": "list_policies",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Session, deren Projekt-Policies mitzählen; ohne Angabe nur die User-Ebene.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Geltende Regeln mit Ebene und Herkunft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EffectivePolicies"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/policies/evaluate": {
+      "post": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Wertet eine hypothetische Anfrage aus – ohne Events, Approvals oder Zustandsänderungen.",
+        "operationId": "evaluate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Entscheidung mit Erklärung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyEvaluation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/policies/shadow": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Treffer der Regeln im Shadow-Betrieb je Regel und Tag (POL-027 AC4).",
+        "operationId": "shadow",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Anzahl Tage bis heute (1–31, Default 7).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Treffer je Regel und Tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShadowReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/proxy/ca/rotate": {
       "post": {
         "tags": [
@@ -1586,6 +1812,107 @@
         }
       }
     },
+    "/v1/secrets/test": {
+      "post": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Secret beim Provider prüfen (SEC-004, SEC-011 AC3): über den Egress-Proxy des Daemons,\nder den Wert nur für die API des Providers einsetzt; die Antwort nennt nie den Wert.",
+        "operationId": "test_secret",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Ergebnis der Prüfung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSecretView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unbekannte Ref",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "423": {
+            "description": "Datei-Store gesperrt (`secrets_locked`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Provider bzw. Proxy nicht erreichbar",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/secrets/unlock": {
       "post": {
         "tags": [
@@ -1833,7 +2160,7 @@
             }
           },
           "400": {
-            "description": "Ungültige Anfrage",
+            "description": "`validation_failed`, z. B. `max_cost_usd` nicht positiv",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3604,6 +3931,87 @@
         }
       }
     },
+    "/v1/sessions/{id}/policy-decisions/{seq}": {
+      "get": {
+        "tags": [
+          "policies"
+        ],
+        "summary": "Explain einer Entscheidung der Session (POL-027 AC1/AC2): `seq` eines `policy.decision`\noder eines `tool.call.requested`.",
+        "operationId": "explain_decision",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entscheidung mit Erklärung",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionExplain"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/queue": {
       "get": {
         "tags": [
@@ -4178,6 +4586,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "confirm_unsandboxed",
+            "in": "query",
+            "description": "Bestätigt `sandbox.backend: none` für eine Session ohne Bestätigung, z. B. eine\nimportierte (SBX-006); Audit-Eintrag `sandbox.backend_none`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -4213,6 +4630,16 @@
           },
           "403": {
             "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`sandbox_confirmation_required`: `backend: none` ohne Bestätigung für diese Session",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5417,7 +5844,7 @@
           {
             "name": "tz",
             "in": "query",
-            "description": "Zeitzone des Users als Versatz (`+02:00`, `-05:00`, `Z`); bestimmt Tagesgrenzen von\n`day` und Datumsangaben. Default UTC.",
+            "description": "Zeitzone der Tagesgrenzen von `day` und Datumsangaben: IANA-Name (`Europe/Berlin`, mit\nSommerzeit je Tag), `UTC` oder fester Versatz (`+02:00`). Default: `user.timezone`.",
             "required": false,
             "schema": {
               "type": "string"
@@ -5482,6 +5909,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/UsageReportView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Ungültige Anfrage",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Nicht angemeldet",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host, Origin oder Berechtigung abgelehnt",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Interner Fehler (mit trace_id)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/usage/pricing": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Preise, mit denen der Server bewertet (USE-002, USE-003): eigene Preise in\nPrüfreihenfolge und der mitgelieferte Katalog.",
+        "operationId": "get_pricing",
+        "responses": {
+          "200": {
+            "description": "Eigene Preise und Preis-Katalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingView"
                 }
               }
             }
@@ -5790,6 +6278,99 @@
           }
         }
       },
+      "BudgetExhaustedView": {
+        "type": "object",
+        "description": "Ein erreichtes Budget-Limit einer Auswertung.",
+        "required": [
+          "rule_id",
+          "scope",
+          "set",
+          "budget_scope",
+          "action"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "description": "Regel-ID (`max-cost` beim Session-Budget, API-006)."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Ebene des Sets."
+          },
+          "set": {
+            "type": "string"
+          },
+          "budget_scope": {
+            "type": "string",
+            "description": "Kostenbereich: `session`, `run`, `subtree` oder `user`."
+          },
+          "action": {
+            "type": "string",
+            "description": "`deny` oder `ask`."
+          }
+        }
+      },
+      "CatalogEntryView": {
+        "type": "object",
+        "description": "Ein Modell des mitgelieferten Preis-Katalogs (USE-002); USD je 1 Mio. Tokens, wie im\nKatalog angegeben (fehlende Cache-Raten bleiben leer).",
+        "required": [
+          "model",
+          "aliases",
+          "provider",
+          "input_per_mtok",
+          "output_per_mtok",
+          "valid_from"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Weitere IDs desselben Modells, z. B. datierte Snapshots."
+          },
+          "provider": {
+            "type": "string"
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "input_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "output_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_read_per_mtok": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "cache_write_per_mtok": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "valid_from": {
+            "type": "string",
+            "description": "Ab wann der Preis gilt (`YYYY-MM-DD`)."
+          }
+        }
+      },
       "ChangeScope": {
         "type": "string",
         "description": "Sicht der Änderungsübersicht.",
@@ -5983,6 +6564,21 @@
                 "type": "null"
               }
             ]
+          },
+          "max_cost_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Session-Budget in USD (`beton run --max-cost`, API-006): Der Runner setzt es als\n`spend_cap` der User-Ebene durch (Regel `max-cost` im Set `session-budget`, POL-011);\nerreicht die Session es, lehnt er den nächsten Model-Request bzw. Turn ab."
+          },
+          "confirm_unsandboxed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Bestätigt `sandbox.backend: none` für genau diese Session (SBX-006): ohne Bestätigung\n`409 sandbox_confirmation_required`; mit ihr ein Audit-Eintrag `sandbox.backend_none`.\nEine User-Policy kann `backend: none` trotzdem verbieten (SBX-006 AC4)."
           }
         }
       },
@@ -5993,6 +6589,44 @@
           "deny",
           "answer"
         ]
+      },
+      "DecisionExplain": {
+        "type": "object",
+        "description": "Explain einer gespeicherten Entscheidung.",
+        "required": [
+          "session_id",
+          "seq",
+          "decision",
+          "explanation",
+          "explain"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Seq des `policy.decision`.",
+            "minimum": 0
+          },
+          "decision": {
+            "type": "object"
+          },
+          "explanation": {
+            "type": "object"
+          },
+          "explain": {
+            "type": "string"
+          },
+          "snapshot_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Warum der Snapshot nicht nutzbar war (fehlt oder beschädigt)."
+          }
+        }
       },
       "DiffHunk": {
         "type": "object",
@@ -6082,6 +6716,34 @@
           "delete"
         ]
       },
+      "EffectivePolicies": {
+        "type": "object",
+        "description": "Das effektive Set (POL-027 `show --effective`).",
+        "required": [
+          "policy_set_hash",
+          "sets",
+          "invalid"
+        ],
+        "properties": {
+          "policy_set_hash": {
+            "type": "string"
+          },
+          "sets": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Sets mit Ebene, Herkunft, Version, Modus und Regeln (`id`, `phases`, `action`, `when`)."
+          },
+          "invalid": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dateien, die gerade nicht laden (Pfad)."
+          }
+        }
+      },
       "EntryKind": {
         "type": "string",
         "description": "Art eines Eintrags im Dateibaum.",
@@ -6091,6 +6753,45 @@
           "symlink",
           "other"
         ]
+      },
+      "EvaluateRequest": {
+        "type": "object",
+        "description": "Anfrage für `POST /v1/policies/evaluate`.",
+        "required": [
+          "phase",
+          "input"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Phase: `session_start`, `model_request`, `tool_call`, `tool_result`, …"
+          },
+          "input": {
+            "type": "object",
+            "description": "Phasenspezifische Eingabe wie in Policy-Tests, z. B.\n`{ \"tool\": { \"name\": \"Bash\", \"args\": { \"command\": \"git push\" } } }`."
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kontext dieser Session (Policies, Kosten, Zustand, Grants)."
+          },
+          "harness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Harness für Normalisierung und Durchsetzung; Default: der der Session bzw. `claude`."
+          },
+          "fixtures": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Weitere Kontextwerte (wie `fixtures` in Policy-Tests); gelten vor denen der Session."
+          }
+        }
       },
       "EventPage": {
         "type": "object",
@@ -6248,6 +6949,13 @@
           "harness_opts": {
             "type": "object",
             "description": "Harness-spezifische Startoptionen (wie bei `POST /v1/sessions`); ohne Angabe die der\nQuelle, falls der Harness gleich bleibt."
+          },
+          "confirm_unsandboxed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Bestätigt `sandbox.backend: none` für den Fork (SBX-006); der Fork einer bestätigten\nSession übernimmt deren Bestätigung (Audit-Eintrag mit Quelle)."
           }
         }
       },
@@ -6726,7 +7434,8 @@
           "mode",
           "org_id",
           "features",
-          "attachments"
+          "attachments",
+          "sandbox"
         ],
         "properties": {
           "version": {
@@ -6759,6 +7468,10 @@
           "attachments": {
             "$ref": "#/components/schemas/AttachmentLimitsView",
             "description": "Grenzen für Anhänge (WEB-006)."
+          },
+          "sandbox": {
+            "$ref": "#/components/schemas/SandboxInfo",
+            "description": "Sandbox des Hosts (SBX-006): aktiv, Egress-Proxy, ob `yolo` startbar ist (HAR-027)."
           }
         }
       },
@@ -6890,6 +7603,145 @@
           }
         }
       },
+      "PolicyEvaluation": {
+        "type": "object",
+        "description": "Ergebnis einer seiteneffektfreien Auswertung.",
+        "required": [
+          "outcome",
+          "enforcement",
+          "decision",
+          "explanation",
+          "explain",
+          "budget_exhausted"
+        ],
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "description": "`allow`, `deny` oder `ask`."
+          },
+          "enforcement": {
+            "type": "string",
+            "description": "Durchsetzung, die der Harness in dieser Phase erreicht."
+          },
+          "decision": {
+            "type": "object",
+            "description": "Die Entscheidung in der Form von `policy.decision` (ohne `decision_id`)."
+          },
+          "explanation": {
+            "type": "object",
+            "description": "Strukturierte Erklärung samt benutzter Kontextwerte."
+          },
+          "explain": {
+            "type": "string",
+            "description": "Erklärung als Text."
+          },
+          "budget_exhausted": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BudgetExhaustedView"
+            },
+            "description": "Budget-Limits, die diese Auswertung erreicht (POL-011, POL-012; wie `budget.exhausted`)."
+          }
+        }
+      },
+      "PriceOverrideView": {
+        "type": "object",
+        "description": "Ein eigener Preis (USE-003) in Prüfreihenfolge: `pricing.overrides`, danach die Preise der\nProvider-Konfiguration. Raten wirksam, d. h. fehlende Cache-Raten geschätzt.",
+        "required": [
+          "position",
+          "free",
+          "input_per_mtok",
+          "output_per_mtok",
+          "cache_read_per_mtok",
+          "cache_write_per_mtok",
+          "cache_estimated"
+        ],
+        "properties": {
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Position in der Prüfreihenfolge, ab 1; der erste Treffer gewinnt.",
+            "minimum": 0
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Glob auf den Provider; fehlt = jeder."
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Glob auf das Modell; fehlt = jedes."
+          },
+          "free": {
+            "type": "boolean",
+            "description": "Kostenlos (z. B. lokales Ollama)."
+          },
+          "input_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "output_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_read_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_write_per_mtok": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_estimated": {
+            "type": "boolean",
+            "description": "Die Cache-Raten sind geschätzt (0,1 × bzw. 1,25 × Eingabe, USE-003 AC2)."
+          },
+          "context_window": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PricingView": {
+        "type": "object",
+        "description": "Antwort von `GET /v1/usage/pricing`: womit der Server neue Turns bewertet (USE-002,\nUSE-003); Ziel des Hinweises „ohne Preis“ der Usage-Seite (USE-006 AC4).",
+        "required": [
+          "catalog_version",
+          "currency",
+          "overrides",
+          "catalog"
+        ],
+        "properties": {
+          "catalog_version": {
+            "type": "string",
+            "description": "Version des eingebauten Katalogs; kommt mit jedem beton-Release, kein Online-Abruf."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "overrides": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PriceOverrideView"
+            }
+          },
+          "catalog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogEntryView"
+            }
+          }
+        }
+      },
       "Problem": {
         "type": "object",
         "description": "Problem-Objekt nach RFC 9457.",
@@ -6938,6 +7790,27 @@
             "items": {
               "$ref": "#/components/schemas/FieldError"
             }
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Nur `sandbox_unavailable` (SBX-006): das geforderte Backend, …"
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "… die Capabilities, die ihm fehlen (z. B. `net`), …"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "… und ein Hinweis zur Abhilfe."
           }
         },
         "additionalProperties": false
@@ -6973,6 +7846,7 @@
           "not_a_git_repo",
           "spawn_denied",
           "sandbox_required",
+          "sandbox_confirmation_required",
           "worktree_dirty",
           "worktree_unpushed",
           "imported_read_only",
@@ -6997,7 +7871,9 @@
           "secrets_corrupt",
           "unavailable",
           "secrets_unavailable",
-          "redaction_unavailable"
+          "redaction_unavailable",
+          "sandbox_unavailable",
+          "credential_source_error"
         ]
       },
       "ProviderInfo": {
@@ -7281,6 +8157,55 @@
             ],
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "SandboxInfo": {
+        "type": "object",
+        "description": "Sandbox-Status des Hosts für Clients (`GET /v1/info`, SBX-006, HAR-027).",
+        "required": [
+          "backend",
+          "active",
+          "proxy",
+          "yolo"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string",
+            "description": "Konfiguriertes Backend: `auto` (Default), `seatbelt`, `landlock`, `bwrap`, … oder\n`none` (ausdrücklich ohne Isolation, je Session zu bestätigen)."
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Gewähltes Backend dieses Rechners (bei `auto`); fehlt bei `none`."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Sessions starten mit Sandbox: Das Backend ist auf diesem Rechner nutzbar."
+          },
+          "proxy": {
+            "type": "boolean",
+            "description": "Netz der Tools nur über den Egress-Proxy (oder gar keins, `allow_network: false`)."
+          },
+          "yolo": {
+            "type": "boolean",
+            "description": "`yolo` ist startbar (für Harnesses, deren Tools in Stufe 2 laufen)."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Was dem Backend fehlt, wenn es nicht nutzbar ist (z. B. `net`)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hinweis zur Einrichtung, wenn keine Sandbox aktiv ist."
           }
         }
       },
@@ -7742,6 +8667,114 @@
           }
         }
       },
+      "ShadowLastHit": {
+        "type": "object",
+        "description": "Letzter Treffer einer Shadow-Regel.",
+        "required": [
+          "session_id",
+          "session_title",
+          "seq",
+          "at"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "session_title": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Kurzform der Aktion (z. B. Tool und Kommando), falls bekannt."
+          }
+        }
+      },
+      "ShadowReport": {
+        "type": "object",
+        "description": "Shadow-Treffer der letzten Tage (POL-027 AC4).",
+        "required": [
+          "days",
+          "rules"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tage (UTC, `YYYY-MM-DD`), ältester zuerst, heute zuletzt."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShadowRule"
+            }
+          }
+        }
+      },
+      "ShadowRule": {
+        "type": "object",
+        "description": "Eine Regel im Shadow-Betrieb mit Treffern je Tag.",
+        "required": [
+          "rule_id",
+          "scope",
+          "set",
+          "verdict",
+          "counts",
+          "total"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "set": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "description": "Verdikt ohne Shadow-Betrieb: `deny` (würde ablehnen), `ask`, `modify`, …"
+          },
+          "counts": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "description": "Treffer je Tag in der Reihenfolge von `days`."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShadowLastHit"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "SubagentNode": {
         "type": "object",
         "description": "Eine Session im Sub-Agent-Baum.",
@@ -7913,6 +8946,89 @@
           "expired": {
             "type": "boolean",
             "description": "Reset-Zeitpunkt liegt in der Vergangenheit: der Wert ist überholt."
+          }
+        }
+      },
+      "TestSecretRequest": {
+        "type": "object",
+        "description": "Anfrage an `POST /v1/secrets/test`.",
+        "required": [
+          "secret_ref"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`github` oder `gitlab`, falls der Provider der Ref die Art nicht verrät."
+          }
+        },
+        "additionalProperties": false
+      },
+      "TestSecretView": {
+        "type": "object",
+        "description": "Ergebnis der Prüfung beim Provider; enthält nie den Wert.",
+        "required": [
+          "secret_ref",
+          "provider",
+          "kind",
+          "status",
+          "ok",
+          "missing"
+        ],
+        "properties": {
+          "secret_ref": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Host der geprüften API."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "HTTP-Status der Antwort des Providers.",
+            "minimum": 0
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "Gültig und alle nötigen Scopes vorhanden."
+          },
+          "login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Scopes laut Provider; `null`, wenn er keine nennt (z. B. fine-grained PAT)."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Fehlende Scopes für Git und API (GitHub `repo`, GitLab `api`)."
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -8274,7 +9390,7 @@
           },
           "tz": {
             "type": "string",
-            "description": "Zeitzone der Tagesgrenzen, z. B. `+02:00`."
+            "description": "Zeitzone der Tagesgrenzen, z. B. `Europe/Berlin` oder `+02:00`."
           },
           "group_by": {
             "type": "array",

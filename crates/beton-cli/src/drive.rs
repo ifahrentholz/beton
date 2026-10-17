@@ -42,6 +42,8 @@ pub struct Options {
     /// Replay ab dieser `seq` (exklusiv).
     pub from_seq: u64,
     pub quiet: bool,
+    /// Die Session hat ein Session-Budget (`--max-cost`, API-006).
+    pub max_cost: bool,
 }
 
 /// Wie der Lauf endete (für Exit-Code und JSON-Ergebnis).
@@ -73,6 +75,8 @@ struct State {
     cost_micro: i64,
     usage: Value,
     outcome: Option<Outcome>,
+    /// Ein Budget-Limit hat abgelehnt (`budget.exhausted`, POL-011; Exit-Code 5).
+    budget_exhausted: Option<String>,
 }
 
 /// `Strg+C` als Strom mit Ankunftszeit. Ein dauerhafter Listener verliert keine Signale,
@@ -161,6 +165,7 @@ pub async fn drive(
         cost_micro: 0,
         usage: Value::Null,
         outcome: None,
+        budget_exhausted: None,
     };
     if let Mode::Script { prompt, .. } = &opts.mode {
         st.queue.push_back(prompt.clone());
@@ -321,8 +326,30 @@ pub async fn drive(
     drop(sub);
 
     let outcome = st.outcome.unwrap_or(Outcome::Detached);
+    // API-006 AC4: Erreicht der Lauf sein Budget, lehnt die `spend_cap`-Regel den nächsten
+    // Model-Request ab. Ohne weiteren Turn fragt die CLI die Policy danach (ohne Seiteneffekte).
+    if script && opts.max_cost && outcome == Outcome::Completed && st.budget_exhausted.is_none() {
+        let probe = json!({
+            "session_id": st.id,
+            "phase": "model_request",
+            "input": { "request": { "granularity": "turn" } },
+        });
+        match client.evaluate_policy(&probe).await {
+            Ok(v) => {
+                if let Some(e) = v["budget_exhausted"]
+                    .as_array()
+                    .and_then(|a| a.iter().find(|e| e["action"] == "deny"))
+                {
+                    st.budget_exhausted =
+                        Some(e["rule_id"].as_str().unwrap_or_default().to_owned());
+                }
+            }
+            Err(e) => eprintln!("Warnung: Budget nicht prüfbar: {e}"),
+        }
+    }
     if let Mode::Script { format, .. } = &opts.mode {
         let status = match outcome {
+            _ if st.budget_exhausted.is_some() => "denied",
             Outcome::Completed if st.denied_by_on_ask => "denied",
             Outcome::Completed => "completed",
             Outcome::Failed => "failed",
@@ -348,6 +375,12 @@ pub async fn drive(
             OutputFormat::StreamJson => {}
         }
         let _ = ctx;
+        if let Some(rule) = &st.budget_exhausted {
+            return Err(CliError::new(
+                Exit::BudgetExhausted,
+                anyhow::anyhow!("Budget erreicht (Regel `{rule}`, --max-cost bzw. spend_cap)"),
+            ));
+        }
         return match outcome {
             Outcome::Completed if st.denied_by_on_ask => Err(CliError::new(
                 Exit::ApprovalDenied,
@@ -446,6 +479,12 @@ fn on_event(st: &mut State, e: &Value, script: bool) {
         }
         "cost.delta" => {
             st.cost_micro += p["cost_micro"].as_i64().unwrap_or(0);
+        }
+        // Ein Budget-Limit lehnt ab (POL-011, POL-012): Exit-Code 5 (API-006 AC4).
+        "budget.exhausted" if p["action"] == "deny" => {
+            st.budget_exhausted.get_or_insert_with(|| {
+                format!("Budget {}", p["scope"].as_str().unwrap_or_default())
+            });
         }
         "harness.exited" | "harness.incompatible" | "harness.auth_required"
             if script && st.live =>

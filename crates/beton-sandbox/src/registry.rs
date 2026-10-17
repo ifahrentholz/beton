@@ -48,6 +48,10 @@ pub fn auto_backend(os: Os) -> Option<ProviderId> {
     }
 }
 
+/// Nur mit dem Feature `test-sandbox` (Tests): Backends, die die Registry als nicht verfügbar
+/// meldet (`all` oder IDs mit Komma, z. B. `landlock,bwrap`).
+pub const TEST_UNAVAILABLE_ENV: &str = "BETON_TEST_SANDBOX_UNAVAILABLE";
+
 /// Ein registriertes, auf dieser Plattform (noch) nicht nutzbares Backend.
 #[derive(Debug, Clone)]
 pub struct UnavailableProvider {
@@ -148,7 +152,38 @@ impl Registry {
             r.register(unavailable(id, "Container-Backend folgt mit SBX-015 (M5)"));
         }
         r.register(Arc::new(NoneProvider));
+        #[cfg(feature = "test-sandbox")]
+        r.disable_for_tests();
         r
+    }
+
+    /// Nur mit dem Feature `test-sandbox` (Dev-Dependencies, nie ausgeliefert):
+    /// [`TEST_UNAVAILABLE_ENV`] schaltet Backends ab (`all` bzw. IDs mit Komma), z. B. „Linux
+    /// ohne Landlock und bwrap“ für SBX-006 AC1. Der Schalter macht die Sandbox nie
+    /// verfügbarer als sie ist; `none` bleibt, wie es ist.
+    #[cfg(feature = "test-sandbox")]
+    fn disable_for_tests(&mut self) {
+        let Ok(list) = std::env::var(TEST_UNAVAILABLE_ENV) else {
+            return;
+        };
+        tracing::warn!("Test-Schalter {TEST_UNAVAILABLE_ENV} aktiv: Sandbox-Backends abgeschaltet");
+        let ids: Vec<ProviderId> = self
+            .providers
+            .keys()
+            .copied()
+            .filter(|id| *id != ProviderId::None)
+            .filter(|id| {
+                list.split(',')
+                    .map(str::trim)
+                    .any(|w| w == "all" || w == id.as_str())
+            })
+            .collect();
+        for id in ids {
+            self.register(unavailable(
+                id,
+                &format!("abgeschaltet über {TEST_UNAVAILABLE_ENV} (Test)"),
+            ));
+        }
     }
 
     /// Das Backend für `auto` auf diesem Rechner. Linux: `landlock`; sind unprivilegierte
@@ -219,6 +254,9 @@ pub struct Sandbox {
     policy: ResolvedPolicy,
     events: Option<EventSink>,
     violations: Option<ViolationSink>,
+    /// Gesetzt, sobald eine Voraussetzung der Sandbox fehlt (z. B. der Proxy, SBX-006 AC3):
+    /// Danach startet kein Prozess mehr. Gilt für alle Klone.
+    halted: Arc<std::sync::OnceLock<String>>,
 }
 
 impl std::fmt::Debug for Sandbox {
@@ -241,7 +279,19 @@ impl Sandbox {
             policy,
             events,
             violations: None,
+            halted: Arc::default(),
         }
+    }
+
+    /// Hält die Sandbox an (SBX-006 AC3): Jeder weitere Start scheitert mit
+    /// `sandbox_unavailable` und `reason`; auch für alle Klone. Wirkt nur einmal.
+    pub fn halt(&self, reason: &str) {
+        let _ = self.halted.set(reason.to_owned());
+    }
+
+    /// Grund, falls die Sandbox angehalten ist.
+    pub fn halted(&self) -> Option<&str> {
+        self.halted.get().map(String::as_str)
     }
 
     /// Meldet erkannte Verstöße (z. B. ein erreichtes Limit) als `sandbox.violation`.
@@ -276,11 +326,18 @@ impl Sandbox {
             stage: self.policy.stage.event(),
             backend: self.policy.backend.as_str().to_owned(),
             caps: serde_json::json!(caps),
-            degraded: !self.policy.degraded.is_empty(),
+            degraded: !self.policy.degraded.is_empty() || self.policy.inherited_tools,
         }
     }
 
     pub fn spawn(&self, cmd: CommandSpec) -> Result<SandboxedChild, SandboxError> {
+        if let Some(reason) = self.halted() {
+            return Err(SandboxError::Unavailable {
+                provider: self.provider.id(),
+                missing: [crate::Cap::Net].into_iter().collect(),
+                hint: format!("Sandbox angehalten ({reason}): keine neuen Prozesse"),
+            });
+        }
         let child = self
             .provider
             .spawn_observed(&self.policy, cmd, self.violations.clone())?;

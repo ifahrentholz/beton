@@ -1,0 +1,4 @@
+0GET http://api.test/v1/items?x=1 HTTP/1.1
+Host: api.test
+Proxy-Authorization: @@AUTH@@
+

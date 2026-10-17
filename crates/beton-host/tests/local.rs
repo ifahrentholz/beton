@@ -61,6 +61,12 @@ fn boot() -> RunnerBoot {
         agent_snapshot: None,
         snapshots: None,
         fork: None,
+        sandbox: None,
+        unsandboxed_confirmed: false,
+        proxy_ca: None,
+        compaction: Default::default(),
+        max_cost_usd: None,
+        spawned: false,
     }
 }
 
@@ -127,6 +133,45 @@ async fn run_002_ac4_env_outside_allowlist_is_not_visible() {
     assert!(!env.contains("ANTHROPIC_API_KEY"));
 }
 
+/// #298: Builds mit dem Feature `test-budget` (#304) reichen das großzügige Zeitbudget der
+/// Policy-Engine für Integrationstests an den Runner weiter, aus der geerbten Umgebung oder,
+/// weil die Test-Helfer `BETON_*` herausfiltern, aus der des Daemons (`.cargo/config.toml`).
+#[cfg(feature = "test-budget")]
+#[tokio::test]
+async fn pol_002_debug_builds_pass_the_test_policy_budget_to_the_runner() {
+    let var = beton_runner::env::TEST_POLICY_BUDGET;
+    for (inherited, expected) in [
+        (Some("1234"), Some("1234".to_owned())),
+        (None, std::env::var(var).ok()),
+    ] {
+        let (state, work) = (ws(), ws());
+        let out = work.path().join("env.txt");
+        let mut inherit = BTreeMap::new();
+        inherit.insert("PATH".to_owned(), std::env::var("PATH").unwrap());
+        if let Some(v) = inherited {
+            inherit.insert(var.to_owned(), v.to_owned());
+        }
+        let p = beton_host::LocalProvider::new(
+            vec![
+                "sh".into(),
+                "-c".into(),
+                format!("read t; env > '{}'", out.display()),
+            ],
+            state.path().to_path_buf(),
+        )
+        .with_inherited_env(inherit);
+        let prov = p.provision(&spec(work.path())).await.unwrap();
+        let h = p.start(&prov, &boot()).await.unwrap();
+        wait_exit(&p, &h).await;
+        let env = std::fs::read_to_string(&out).unwrap();
+        let got = env
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{var}=")))
+            .map(str::to_owned);
+        assert_eq!(got, expected, "{inherited:?}: {env}");
+    }
+}
+
 /// HAR-011 AC5: Der API-Key einer Session kommt als zweite stdin-Zeile, nie als
 /// Env-Variable des Runners (die alle Kindprozesse erben würden).
 #[tokio::test]
@@ -170,6 +215,52 @@ async fn har_011_ac5_api_key_goes_via_stdin_not_env() {
             .any(|l| l.contains("MARKER") || l.starts_with("OPENROUTER_API_KEY")),
         "{env:?}"
     );
+}
+
+/// #191, PRX-002: Die beton-CA kommt als dritte stdin-Zeile (nie Env oder argv), die
+/// Sandbox-Konfiguration als JSON in der Umgebung.
+#[tokio::test]
+async fn prx_002_proxy_ca_goes_via_stdin_and_sandbox_config_via_env() {
+    let (state, work) = (ws(), ws());
+    let out = work.path().join("aus.txt");
+    let p = beton_host::LocalProvider::new(
+        vec![
+            "sh".into(),
+            "-c".into(),
+            format!(
+                "read t; read k; read c; echo \"$k\" > '{0}'; echo \"$c\" >> '{0}'; env >> '{0}'",
+                out.display()
+            ),
+        ],
+        state.path().to_path_buf(),
+    )
+    .with_inherited_env(BTreeMap::from([(
+        "PATH".to_owned(),
+        std::env::var("PATH").unwrap(),
+    )]));
+    let prov = p.provision(&spec(work.path())).await.unwrap();
+    let mut b = boot();
+    b.sandbox = Some(beton_runner::stages::SandboxBoot {
+        spec: beton_sandbox::SandboxSpec::from_yaml("backend: auto\n").unwrap(),
+        extra_ca_files: Vec::new(),
+    });
+    b.proxy_ca = Some(beton_runner::stages::CaText::new(
+        "{\"v\":1,\"key\":\"FIXTURE-CA-KEY\"}".into(),
+    ));
+    let h = p.start(&prov, &b).await.unwrap();
+    wait_exit(&p, &h).await;
+    let text = std::fs::read_to_string(&out).unwrap();
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("{}"), "Zeile 2: keine Keys");
+    assert_eq!(lines.next(), Some("{\"v\":1,\"key\":\"FIXTURE-CA-KEY\"}"));
+    let env: Vec<&str> = lines.collect();
+    assert!(!env.iter().any(|l| l.contains("FIXTURE-CA-KEY")), "{env:?}");
+    let sandbox = env
+        .iter()
+        .find_map(|l| l.strip_prefix("BETON_RUNNER_SANDBOX="))
+        .expect("BETON_RUNNER_SANDBOX");
+    let parsed: beton_runner::stages::SandboxBoot = serde_json::from_str(sandbox).unwrap();
+    assert!(parsed.spec.backend.is_some());
 }
 
 #[tokio::test]

@@ -1,0 +1,1 @@
+duration("1h") > duration("30m")

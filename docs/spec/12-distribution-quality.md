@@ -306,13 +306,14 @@ release-please PR gemergt → Tag
   - [ ] AC1 — Ein fehlschlagender Fall zeigt erwartete vs. tatsächliche Entscheidung samt auslösender Regel.
   - [ ] AC2 — Jede mitgelieferte Policy-Datei hat mindestens eine Testdatei (CI-Check).
   - [ ] AC3 — Property-Test: Hinzufügen einer `deny`-Regel macht keine Entscheidung weniger streng (Monotonie).
+- *(Präzisiert, WP-40:)* Mitgeliefert sind die Tests unter `policies/tests/` (Hierarchie, Built-in-Agents `maestra` und `duetto`, je entzuckertem Regeltyp `policies/tests/rule-types/<typ>.policytest.yaml`); mitgelieferte Policy-Dateien liegen unter `policies/*.yaml` (`defaults.yaml` aus `beton setup` folgt mit WP-42). Das Gate ist ein Schritt im Job `test (linux, ohne Netzwerk)`: `beton policy test policies/tests --junit …` und der Test `shipped` (jede mitgelieferte Policy und jeder Built-in-Agent steht in den `layers` mindestens einer Testdatei, und jede mitgelieferte Regel-ID steht in `expect.rules` eines Tests, der diese Datei lädt; Dateien ohne Fälle und Erwartungen ohne `outcome` bestehen nicht). Der Monotonie-Test prüft zusätzlich, dass eine `dry_run`-Regel keine Entscheidung ändert.
 - **Abhängigkeiten:** POL-026 (siehe 03-policies.md), QA-010
 - **Referenz:** ADR-0008, ADR-0031
 
 ### QA-005 — Sandbox-Escape-Suite pro OS
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** Das Probe-Binary `bt-escape-probe` versucht innerhalb der Sandbox (Stufe 1 und 2, siehe 04-sandbox.md) verbotene Aktionen; Suite, Fälle und Plattform-Matrix: Owner SBX-011, QA-005 regelt Gate und Reporting; jeder Fall muss scheitern und den erwarteten Mechanismus zeigen. CI läuft auf macOS, Linux und (ab M5) Windows. macOS/Linux: jeder Fehlschlag blockiert den Merge. Windows Beta: Regressionen blockieren; bekannte Lücken stehen in `tests/sandbox/known_gaps.windows.yaml` und werden im Release-Text genannt.
-- **Details:** Fälle (Auszug): `~/.ssh/id_*` und `~/.aws/credentials` lesen; Keychain/Secret-Service abfragen; `/etc/hosts` bzw. außerhalb des Workspace schreiben; Shell-RC-Dateien ändern; direkter TCP-Connect an Internet-IP (Proxy-Bypass); HTTPS über Proxy an nicht freigegebene Domain; `169.254.169.254` und `127.0.0.1:<Daemon-Port>`; DNS-Rebinding-Fixture; UDP/Raw-Sockets; `/var/run/docker.sock`; Symlink- und Hardlink-Ausbruch; `ptrace` des Elternprozesses; Lesen der Env anderer Prozesse via `/proc`; Env-Leak (keine Secrets in `env`); Fork-Bomb gegen Limits; verschachteltes `sandbox-exec`/`unshare`.
+- **Details:** Fälle (Auszug): `~/.ssh/id_*` und `~/.aws/credentials` lesen; Keychain/Secret-Service abfragen; `/etc/hosts` bzw. außerhalb des Workspace schreiben; Shell-RC-Dateien ändern; direkter TCP-Connect an Internet-IP (Proxy-Bypass); HTTPS über Proxy an nicht freigegebene Domain; `169.254.169.254` und `127.0.0.1:<Daemon-Port>`; DNS-Rebinding-Fixture; UDP/Raw-Sockets; `/var/run/docker.sock`; Symlink- und Hardlink-Ausbruch; `ptrace` des Elternprozesses; Lesen der Env anderer Prozesse via `/proc`; Env-Leak (keine Secrets in `env`); Fork-Bomb gegen Limits; verschachteltes `sandbox-exec`/`unshare`. *(Stand M2-Abschluss: Probe, Gate und JUnit-Report sind beim Maintainer zurückgestellt, #171, ADR-0040; die Linux-VM-Jobs als Required Checks beschreibt #301.)*
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Alle Fälle für macOS und Linux sind implementiert und schlagen in der Sandbox fehl; derselbe Probe **ohne** Sandbox gelingt (Kontrollgruppe, beweist Testwirksamkeit).
   - [ ] AC2 — Ein absichtlich gelockertes Profil (Test-Fixture) lässt die Suite fehlschlagen.
@@ -353,6 +354,7 @@ release-please PR gemergt → Tag
 ### QA-009 — Property- & Fuzz-Tests (Proxy-Parser, CEL)
 - **Meilenstein:** M2 · **Priorität:** Must
 - **Beschreibung:** `cargo-fuzz`-Targets für sicherheitskritische Parser: HTTP/1.1-Request- und CONNECT-Parser des Egress-Proxys, TLS-ClientHello/SNI-Extraktion, Egress-Regel-Parser und -Matcher, Credential-Platzhalter-Ersetzung, CEL-Parse+Eval mit zufälligem Kontext, Policy-YAML-Loader, WS-Frame-Decoder, SBPL-Pfad-Escaping. `proptest`-Eigenschaften u.a.: Regel-Matcher ≡ Referenzimplementierung, CEL-Auswertung deterministisch und zeitbegrenzt, Pfad-Kanonisierung idempotent, Platzhalter nie an fremde Hosts. PR-Läufe 60 s pro betroffenem Target, Nightly 30 min; Korpora im Repo, jeder Fund wird Regressionstest.
+- **Details:** Targets unter `fuzz/` (eigener Workspace, im Wurzel-Workspace ausgeschlossen), Liste und Quellpfade in `cargo xtask fuzz-targets`. Einen eigenen HTTP/1.1-, CONNECT- oder WS-Frame-Parser hat beton nicht (hyper parst, nach `101` kopiert der Proxy Bytes, der Daemon dekodiert Frames mit tungstenite): Die Targets `http_request` und `http_connect` fuzzen deshalb den ganzen Weg durch eine Proxy-Instanz (nur Loopback, Test-Resolver, ADR-0033), `ws_upgrade` die Upgrade- und Hop-by-Hop-Behandlung des Proxys und `ws_client_msg` den Inhalt der Text-Frames des Daemons. PR-Läufe als Schritte des Jobs `cargo deny` ohne ASan (Zeitbudget), Nightly mit ASan.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Für jedes genannte Target existiert ein Fuzz-Harness mit Seed-Korpus; Nightly-Läufe laufen ohne Crash/Timeout.
   - [ ] AC2 — Ein PR, der `beton-proxy` ändert, startet automatisch die Proxy-Fuzz-Targets (60 s je Target).
@@ -397,7 +399,7 @@ release-please PR gemergt → Tag
   - [ ] AC2 — Ein solcher PR ohne Teständerung schlägt im Check `security-tests-touched` fehl.
   - [ ] AC3 — Die PR-Vorlage enthält für diese Pfade die Checkliste „Test zuerst (rot) — Implementierung (grün) — Escape-/Policy-Suite grün“.
 - **Abhängigkeiten:** QA-010
-- **Referenz:** ADR-0031, ADR-0036
+- **Referenz:** ADR-0031, ADR-0036, ADR-0040 (vorgeschlagen: Praxis der delegierten Agent-Reviews bis zur eigenen Agent-Identität)
 
 ### QA-014 — Agent-Workflow & Feature-IDs
 - **Meilenstein:** M0 · **Priorität:** Must

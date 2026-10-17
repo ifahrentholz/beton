@@ -16,6 +16,7 @@ mod analyze;
 mod check;
 mod eval;
 pub mod ext;
+mod trace;
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -26,6 +27,7 @@ use crate::types::Ty;
 use crate::value::Value;
 
 pub(crate) use check::Node;
+pub use trace::TracePart;
 
 /// Ladefehler eines Ausdrucks mit 1-basierter Position im Ausdruck.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -104,6 +106,63 @@ impl Default for Limits {
     }
 }
 
+/// Umgebungsvariable, mit der Integrationstests das Zeitbudget je `evaluate` großzügig
+/// setzen (Millisekunden, #298). Nur Builds mit dem Feature `test-budget` kennen und lesen sie;
+/// das Feature schalten nur Dev-Dependencies ein (#304), gesetzt wird die Variable für alle
+/// Testläufe in `.cargo/config.toml`.
+#[cfg(feature = "test-budget")]
+pub const TEST_BUDGET_ENV: &str = "BETON_TEST_POLICY_BUDGET_MS";
+
+/// Obergrenze für [`TEST_BUDGET_ENV`]: großzügig, aber nie ohne Zeitbudget.
+#[cfg(feature = "test-budget")]
+const TEST_BUDGET_MAX_US: u64 = 60_000_000;
+
+impl Limits {
+    /// Grenzen der Auswertung im Betrieb (Runner, Server, CLI): die Werte aus POL-002.
+    ///
+    /// Nur mit dem Feature `test-budget` hebt `BETON_TEST_POLICY_BUDGET_MS` das Zeitbudget an:
+    /// Unter Last auf geteilten CI-Runnern überschreitet eine unoptimierte Auswertung sonst die
+    /// 10 ms in Tests, die das Budget gar nicht prüfen (#298). Das Feature schalten nur
+    /// Dev-Dependencies ein, unabhängig vom Profil (#304); ohne es liest der Build keine
+    /// Variable.
+    pub fn runtime() -> Self {
+        #[cfg(feature = "test-budget")]
+        {
+            static RUNTIME: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
+            RUNTIME
+                .get_or_init(|| {
+                    Limits::default()
+                        .with_test_budget(std::env::var(TEST_BUDGET_ENV).ok().as_deref())
+                })
+                .clone()
+        }
+        #[cfg(not(feature = "test-budget"))]
+        {
+            Self::default()
+        }
+    }
+
+    /// Zeitbudget je `evaluate` in Millisekunden, wenn [`Limits::runtime`] von den Grenzen aus
+    /// POL-002 abweicht (Testbudget aktiv, nur mit dem Feature `test-budget`). Daemon und
+    /// Runner schreiben dann beim Start eine Warnung (#304).
+    pub fn active_test_budget_ms() -> Option<u64> {
+        let runtime = Self::runtime();
+        (runtime != Self::default()).then_some(runtime.eval_budget_us / 1_000)
+    }
+
+    /// Hebt das Zeitbudget auf `raw` Millisekunden an (höchstens 60 s). Kleinere, fehlende
+    /// oder ungültige Werte lassen die Grenzen unverändert; das Kostenbudget bleibt immer
+    /// gleich. Nur mit dem Feature `test-budget` (#298, #304).
+    #[cfg(feature = "test-budget")]
+    pub fn with_test_budget(mut self, raw: Option<&str>) -> Self {
+        if let Some(ms) = raw.and_then(|r| r.trim().parse::<u64>().ok()) {
+            let us = ms.saturating_mul(1_000).min(TEST_BUDGET_MAX_US);
+            self.eval_budget_us = self.eval_budget_us.max(us);
+        }
+        self
+    }
+}
+
 /// Zählt Kosten je Ausdruck und überwacht das Zeitbudget einer gesamten Auswertung.
 pub struct Meter<'a> {
     max_cost: u64,
@@ -124,6 +183,18 @@ impl<'a> Meter<'a> {
             used: 0,
             deadline_us: clock.now_us().saturating_add(limits.eval_budget_us),
             clock: Some(clock),
+            ticks: 0,
+        }
+    }
+
+    /// Nur mit dem Kostenlimit je Ausdruck, ohne Zeitbudget: für die Spur nach der
+    /// Entscheidung (#263), deren Aufwand Ausdrucksgröße und Kostenlimit begrenzen.
+    pub fn cost_only(limits: &Limits) -> Self {
+        Self {
+            max_cost: limits.max_cost,
+            used: 0,
+            deadline_us: u64::MAX,
+            clock: None,
             ticks: 0,
         }
     }
@@ -203,11 +274,25 @@ impl Program {
         analyze::tool_kinds(&self.node)
     }
 
+    /// Vergleicht der Ausdruck rohe Pfade (`tool.paths`, `tool.write_paths`, `tool.cwd`)
+    /// lexikalisch, statt sie mit `resolve()`/`under()` aufzulösen (#248)?
+    pub fn compares_raw_paths(&self) -> bool {
+        analyze::compares_raw_paths(&self.node)
+    }
+
     /// Benutzte Variablen (`session`) und Felder (`session.cost_usd`).
     pub fn fields(&self) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         analyze::fields(&self.node, &mut out);
         out
+    }
+
+    /// Spur für Explain (POL-027): die Teilausdrücke einer `&&`- bzw. `||`-Verknüpfung auf
+    /// oberster Ebene mit ihren Ergebnissen; sonst der ganze Ausdruck. Jeder Teil wird mit
+    /// eigenem Kostenbudget ausgewertet; die Engine ruft das erst nach der Entscheidung mit
+    /// eigenem Meter auf (#263).
+    pub fn trace(&self, act: &Activation, meter: &mut Meter) -> Vec<TracePart> {
+        trace::trace(&self.source, &self.node, act, meter)
     }
 
     /// Wie [`Program::eval`], erwartet aber `bool`.

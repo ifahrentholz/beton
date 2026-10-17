@@ -193,6 +193,19 @@ pub struct Step {
     /// Vor der Ausführung eine Entscheidung einholen.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gate: bool,
+    /// Den Tool-Call trotz vollem Gate ohne Gate-Anfrage ausführen – wie ein Vendor, dessen
+    /// Hook ausgehebelt wurde (Integritätsprüfung, HAR-005, #233).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skip_gate: bool,
+    /// Einen erlaubten `Bash`-Aufruf wirklich ausführen, wie Claude Code über
+    /// `$CLAUDE_CODE_SHELL -c <command>` (im Stufenmodell `bt-exec`, also Stufe 2, SBX-002);
+    /// Ausgabe und Exit-Code sind das Ergebnis. Nur die Fake-CLI (`stream-json`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run: bool,
+    /// Nur ACP-Test-Agent: `fs/write_text_file` beim Client aufrufen (HAR-007, POL-023) und das
+    /// Ergebnis als Nachricht melden (`fs_write ok` bzw. `fs_write error <code>: <text>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_write: Option<WriteFileStep>,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,
@@ -202,6 +215,10 @@ pub struct Step {
     /// Fehlerergebnis des letzten Tool-Calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_error: Option<String>,
+    /// Abbruch des letzten Tool-Calls nach seinem Start (Status `cancelled`, z. B. Interrupt
+    /// während der Ausführung; Integritätsprüfung, HAR-005, #268).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_cancelled: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// Abo-Fenster eines Subscription-Logins melden (USE-004): die Fake-CLI als
@@ -351,9 +368,15 @@ pub struct Usage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Kontextfenster für `context.usage` (Fake-CLI `stream-json`:
-    /// `modelUsage.<modell>.contextWindow` im `result`, SES-011).
+    /// `modelUsage.<modell>.contextWindow` im `result`, SES-011). Der Fake-Harness meldet damit
+    /// `context.usage` mit Eingabe plus Cache als belegtem Kontext; `0` heißt „Fenster
+    /// unbekannt“ (USE-008).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// Nutzung über ein Abo (Fake-Harness): `auth_source: vendor_cli`, ohne Geldbetrag; der
+    /// Server rechnet das Listenpreis-Äquivalent (ADR-0034, POL-011).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -429,6 +452,7 @@ impl Step {
         add(self.on_gate.is_some(), "on_gate");
         add(self.tool_result.is_some(), "tool_result");
         add(self.tool_error.is_some(), "tool_error");
+        add(self.tool_cancelled.is_some(), "tool_cancelled");
         add(self.usage.is_some(), "usage");
         add(self.rate_limit.is_some(), "rate_limit");
         add(self.error.is_some(), "error");
@@ -437,6 +461,7 @@ impl Step {
         add(self.hang, "hang");
         add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
+        add(self.fs_write.is_some(), "fs_write");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
         add(self.echo_settings, "echo_settings");

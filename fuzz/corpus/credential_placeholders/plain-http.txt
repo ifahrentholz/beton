@@ -1,0 +1,3 @@
+S http
+T api.test
+H X-Api-Key: {A}

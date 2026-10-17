@@ -24,7 +24,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::Phase;
-use crate::cel::{Clock, EvalError, Limits, Meter, SystemClock};
+use crate::cel::{Clock, EvalError, Limits, Meter, SystemClock, TracePart};
 use crate::context::Activation;
 use crate::doc::{
     Action, ApprovalDoc, Channel, DefaultAction, EffectDoc, Mode, OnUnsupported, Severity,
@@ -138,6 +138,9 @@ pub struct Match {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     pub dry_run: bool,
+    /// Teilausdrücke der Bedingung mit Ergebnis (POL-027 AC1); leer ohne `when`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<TracePart>,
 }
 
 /// Ein Grund für `deny` oder `ask`.
@@ -151,8 +154,8 @@ pub struct Reason {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalDoc>,
     /// Grant-Fingerprint einer merkbaren `ask`-Regel in Phase `tool_call` (POL-010):
-    /// `remember_key` der Regel, sonst `kind:server/name@cwd:command` (Shell) bzw.
-    /// `kind:server/name:sha256:…` über die kanonischen Argumente.
+    /// `remember_key` der Regel, sonst das JSON-Array `[kind, server, name, cwd, command]`
+    /// (Shell) bzw. `[kind, server, name, "sha256:…"]` über die kanonischen Argumente.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
 }
@@ -283,13 +286,17 @@ impl EffectiveSet {
                 .cmp(&(b.scope, &b.name, &b.origin, &b.version))
         });
         let mut hasher = Sha256::new();
+        // Längenpräfixe statt Trennzeichen; Herkunft und Format gehören dazu, weil sie die
+        // Bedeutung eines Sets prägen (z. B. Zustands-Keys von `daily_budget`, #263).
         for s in &sets {
-            hasher.update(s.scope.as_str());
-            hasher.update([0]);
-            hasher.update(&s.name);
-            hasher.update([0]);
-            hasher.update(&s.version);
-            hasher.update([0]);
+            let format = match s.format {
+                crate::load::SourceFormat::Yaml => "yaml",
+                crate::load::SourceFormat::Inline => "inline",
+            };
+            for part in [s.scope.as_str(), &s.name, &s.origin, &s.version, format] {
+                hasher.update((part.len() as u64).to_be_bytes());
+                hasher.update(part.as_bytes());
+            }
         }
         invalid.sort();
         Self {
@@ -371,6 +378,15 @@ struct Run<'a> {
     opts: &'a EvalOptions<'a>,
     meter: Meter<'a>,
     decision: Decision,
+    /// Die geladene Regel je Eintrag in `decision.matched` (gleiche Reihenfolge): Regeltypen
+    /// haben mehrere Teile mit derselben ID (POL-011 bis POL-013), die Effects gehören zum
+    /// Teil, der gegriffen hat.
+    hits: Vec<&'a LoadedRule>,
+    /// Regel, deren Modell Pass 1 übernommen hat (erster Schreiber).
+    model_writer: Option<RuleRef>,
+    /// Spuren, die nach der Entscheidung berechnet werden (#263): (Dry-Run?, Index in
+    /// `would` bzw. `matched`, Regel, Pass 2 mit modifiziertem Kontext?).
+    pending_traces: Vec<(bool, usize, &'a LoadedRule, bool)>,
 }
 
 /// Ein Verdikt mit Herkunft (für die Kombination).
@@ -409,6 +425,9 @@ impl<'a> Run<'a> {
                 policy_set_hash: set.hash.clone(),
                 eval_us: 0,
             },
+            hits: Vec::new(),
+            model_writer: None,
+            pending_traces: Vec::new(),
         }
     }
 
@@ -435,6 +454,38 @@ impl<'a> Run<'a> {
         }
     }
 
+    /// Merkt die Spur der Bedingung einer gegriffenen Regel vor (Explain, POL-027 AC1).
+    fn defer_trace(&mut self, dry: bool, rule: &'a LoadedRule, modified: bool) {
+        let index = if dry {
+            self.decision.would.len()
+        } else {
+            self.decision.matched.len()
+        };
+        self.pending_traces.push((dry, index, rule, modified));
+    }
+
+    /// Spuren nach der Entscheidung (#263): mit eigenem Meter (Kostenlimit je Teilausdruck,
+    /// ohne Zeitbudget), damit Explain weder das Zeitbudget der Entscheidung verbraucht noch
+    /// sie ändern kann. Den Aufwand begrenzen Ausdrucksgröße (4 KiB) und Kostenlimit.
+    fn fill_traces(&mut self, original: &Activation, modified: &Activation) {
+        let mut meter = Meter::cost_only(&self.opts.limits);
+        for (dry, index, rule, pass2) in std::mem::take(&mut self.pending_traces) {
+            let ctx = if pass2 { modified } else { original };
+            let trace = match &rule.kind {
+                RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut meter),
+                _ => Vec::new(),
+            };
+            let list = if dry {
+                &mut self.decision.would
+            } else {
+                &mut self.decision.matched
+            };
+            if let Some(entry) = list.get_mut(index) {
+                entry.trace = trace;
+            }
+        }
+    }
+
     fn deadline_deny(&mut self) -> Outcome {
         let rule = RuleRef {
             scope: Scope::Org,
@@ -458,14 +509,14 @@ impl<'a> Run<'a> {
         }
     }
 
-    fn combine(&mut self, ctx: &Activation) -> Outcome {
+    fn combine(&mut self, original: &Activation) -> Outcome {
         let mut verdicts = Verdicts {
             deny: Vec::new(),
             ask: Vec::new(),
             allowed_scopes: Vec::new(),
         };
         // Pass 1 – Modifikation
-        let mut ctx = ctx.clone();
+        let mut ctx = original.clone();
         match self.pass_modify(&ctx, &mut verdicts) {
             Ok(()) => {}
             Err(_) => return self.deadline_deny(),
@@ -490,6 +541,7 @@ impl<'a> Run<'a> {
                 fingerprint: None,
             });
         }
+        self.unpriced_route(&mut verdicts);
         // Pass 2 – Entscheidung
         if self.pass_decide(&ctx, &mut verdicts).is_err() {
             return self.deadline_deny();
@@ -521,7 +573,38 @@ impl<'a> Run<'a> {
             Outcome::Allow
         };
         self.effects(&outcome, &ctx);
+        self.fill_traces(original, &ctx);
         outcome
+    }
+
+    /// Eine Regel unterhalb der User-Ebene (Projekt, Agent) darf nicht auf ein Modell ohne
+    /// Katalogpreis umrouten, solange ein Budget gilt: dessen Kosten wären sonst unbekannt
+    /// (POL-011, POL-013; Security-Review #284).
+    fn unpriced_route(&mut self, verdicts: &mut Verdicts) {
+        let (Some(model), Some(writer)) = (&self.decision.modified.model, &self.model_writer)
+        else {
+            return;
+        };
+        if writer.scope <= Scope::User || crate::cel::ext::priced(model) {
+            return;
+        }
+        // Jede Regel, die Kosten liest, wirkt als Budget (auch handgeschriebenes CEL, #297).
+        let Some(budget) = crate::budget::first_budget(self.set) else {
+            return;
+        };
+        verdicts.deny.push(Reason {
+            rule: writer.clone(),
+            reason: format!(
+                "Umrouten auf `{model}` abgelehnt: Das Modell hat keinen Katalogpreis, und \
+                 solange ein Budget gilt (`{}`), darf eine Regel der Ebene {} nicht darauf \
+                 umleiten",
+                budget.rule_id,
+                writer.scope.as_str()
+            ),
+            severity: None,
+            approval: None,
+            fingerprint: None,
+        });
     }
 
     /// Die geladene Regel zu einer Referenz (gleiche Version).
@@ -557,27 +640,29 @@ impl<'a> Run<'a> {
             _ => None,
         };
         // Bindung an Klasse, Server und Tool (Security-Review B1): ein Grant gilt nie für ein
-        // anderes Tool mit denselben Argumenten.
-        let kind = text("kind").unwrap_or_else(|| "other".into());
-        let tool = format!(
-            "{}/{}",
+        // anderes Tool mit denselben Argumenten. Die Teile stehen als JSON-Array im
+        // Fingerprint, damit kein Trennzeichen in einem Teil zwei Calls gleich macht (#242).
+        let mut parts = vec![
+            text("kind").unwrap_or_else(|| "other".into()),
             text("server").unwrap_or_else(|| "builtin".into()),
-            text("name").unwrap_or_default()
-        );
+            text("name").unwrap_or_default(),
+        ];
         if let Some(command) = text("command") {
             // Shell: der ausgeführte Befehl im selben Arbeitsverzeichnis.
-            let cwd = text("cwd").unwrap_or_default();
-            return Some(format!("{kind}:{tool}@{cwd}:{command}"));
+            parts.push(text("cwd").unwrap_or_default());
+            parts.push(command);
+        } else {
+            let args = ctx
+                .field("tool", "args")
+                .map(|a| a.to_json())
+                .unwrap_or(Value::Null);
+            let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
+            parts.push(format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(&canonical))
+            ));
         }
-        let args = ctx
-            .field("tool", "args")
-            .map(|a| a.to_json())
-            .unwrap_or(Value::Null);
-        let canonical = serde_json::to_vec(&canonical_json(&args)).unwrap_or_default();
-        Some(format!(
-            "{kind}:{tool}:sha256:{}",
-            hex::encode(Sha256::digest(&canonical))
-        ))
+        serde_json::to_string(&parts).ok()
     }
 
     fn is_dry(set: &LoadedSet, rule: &LoadedRule) -> bool {
@@ -671,17 +756,20 @@ impl<'a> Run<'a> {
             if !hit {
                 continue;
             }
+            self.defer_trace(dry, rule, false);
             let entry = Match {
                 rule: set.rule_ref(&rule.id),
                 verdict: Verdict::Modify,
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
+                trace: Vec::new(),
             };
             if dry {
                 self.decision.would.push(entry);
                 continue;
             }
             self.decision.matched.push(entry);
+            self.hits.push(rule);
             let Some(m) = &rule.doc.modify else { continue };
             let unsupported: Vec<&str> = m
                 .fields()
@@ -694,9 +782,20 @@ impl<'a> Run<'a> {
                     unsupported.join("`, `"),
                     self.phase
                 );
+                // Die Begründung der Regel allein erklärt nicht, warum abgelehnt wird.
+                let explained = |mut r: Reason| {
+                    if r.reason != what {
+                        r.reason = format!("{} ({what})", r.reason);
+                    }
+                    r
+                };
                 match rule.doc.on_unsupported.unwrap_or(OnUnsupported::Deny) {
-                    OnUnsupported::Deny => verdicts.deny.push(Self::reason(set, rule, &what)),
-                    OnUnsupported::Ask => verdicts.ask.push((Self::reason(set, rule, &what), true)),
+                    OnUnsupported::Deny => verdicts
+                        .deny
+                        .push(explained(Self::reason(set, rule, &what))),
+                    OnUnsupported::Ask => verdicts
+                        .ask
+                        .push((explained(Self::reason(set, rule, &what)), true)),
                     OnUnsupported::Skip => self
                         .decision
                         .warnings
@@ -705,6 +804,17 @@ impl<'a> Run<'a> {
                 continue;
             }
             let me = set.rule_ref(&rule.id);
+            // Unterhalb der User-Ebene nur verschärfen (POL-007, #286): Ein teureres Modell oder
+            // ein höherer Effort gilt erst nach Freigabe.
+            if set.scope > Scope::User
+                && let Some(why) = self.raises_cost(set.scope, m, &written, ctx)
+            {
+                let mut r = Self::reason(set, rule, &why);
+                if r.reason != why {
+                    r.reason = format!("{} ({why})", r.reason);
+                }
+                verdicts.ask.push((r, false));
+            }
             for (field, value) in [
                 ("model", &m.model),
                 ("reasoning_effort", &m.reasoning_effort),
@@ -750,6 +860,7 @@ impl<'a> Run<'a> {
                 }
             }
         }
+        self.model_writer = written.get("model").map(|(_, r)| r.clone());
         let text = |f: &str| {
             written
                 .get(f)
@@ -769,6 +880,58 @@ impl<'a> Run<'a> {
     }
 
     /// Überträgt Pass-1-Ergebnisse in den Kontext (Pass 2 sieht das modifizierte Subjekt).
+    /// Würde die Modifikation einer Regel Modell oder Effort gegenüber der Anfrage verteuern
+    /// (#286)? Felder, die schon eine autoritativere Regel geschrieben hat, zählen nicht (sie
+    /// werden ohnehin verworfen). `Some(begründung)`, wenn nicht nachweisbar günstiger.
+    fn raises_cost(
+        &self,
+        scope: Scope,
+        m: &crate::doc::ModifyDoc,
+        written: &BTreeMap<&'static str, (Value, RuleRef)>,
+        ctx: &Activation,
+    ) -> Option<String> {
+        let object = match self.phase {
+            Phase::SessionStart => "start",
+            Phase::ModelRequest => "request",
+            _ => return None,
+        };
+        let current = |field: &str| match ctx.field(object, field) {
+            Some(crate::value::Value::String(s)) if !s.is_empty() => Some(s.to_string()),
+            _ => None,
+        };
+        let shown = |v: &Option<String>| v.as_deref().unwrap_or("unbekannt").to_owned();
+        let mut why = Vec::new();
+        if let Some(to) = &m.model
+            && !written.contains_key("model")
+        {
+            let from = current("model");
+            if !crate::budget::model_not_more_expensive(from.as_deref(), to) {
+                why.push(format!(
+                    "Modell `{}` → `{to}` ist laut Preis-Katalog nicht nachweisbar günstiger",
+                    shown(&from)
+                ));
+            }
+        }
+        if let Some(to) = &m.reasoning_effort
+            && !written.contains_key("reasoning_effort")
+        {
+            let from = current("reasoning_effort");
+            if !crate::budget::effort_not_higher(from.as_deref(), to) {
+                why.push(format!(
+                    "Effort `{}` → `{to}` ist nicht nachweisbar niedriger",
+                    shown(&from)
+                ));
+            }
+        }
+        (!why.is_empty()).then(|| {
+            format!(
+                "Regel der Ebene {} würde verteuern: {}; Freigabe nötig",
+                scope.as_str(),
+                why.join("; ")
+            )
+        })
+    }
+
     fn apply_modifications(&self, ctx: &mut Activation) -> Result<(), String> {
         let m = &self.decision.modified;
         let object = match self.phase {
@@ -807,6 +970,7 @@ impl<'a> Run<'a> {
                     ("argv", serde_json::json!(tool.argv)),
                     ("cwd", serde_json::json!(tool.cwd)),
                     ("paths", serde_json::json!(tool.paths)),
+                    ("write_paths", serde_json::json!(tool.write_paths)),
                     ("urls", serde_json::json!(tool.urls)),
                     ("parse_uncertain", serde_json::json!(tool.parse_uncertain)),
                 ] {
@@ -852,17 +1016,20 @@ impl<'a> Run<'a> {
             if !hit {
                 continue;
             }
+            self.defer_trace(dry, rule, true);
             let entry = Match {
                 rule: set.rule_ref(&rule.id),
                 verdict: Verdict::of(action),
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
+                trace: Vec::new(),
             };
             if dry {
                 self.decision.would.push(entry);
                 continue;
             }
             self.decision.matched.push(entry);
+            self.hits.push(rule);
             match action {
                 Action::Deny => verdicts.deny.push(Self::reason(
                     set,
@@ -931,18 +1098,23 @@ impl<'a> Run<'a> {
             if lifted {
                 continue;
             }
+            // Begründung eines Regeltyps (`deny_reason` einer Allowlist, POL-015), sonst
+            // allgemein.
+            let text = set.type_defaults.get(&self.phase).map(|d| d.reason.clone());
             let reason = Reason {
                 rule: set.rule_ref(&format!("defaults.{}", self.phase)),
-                reason: format!(
-                    "Default der Ebene {} für {}: {}",
-                    scope.as_str(),
-                    self.phase,
-                    if default == DefaultAction::Deny {
-                        "deny"
-                    } else {
-                        "ask"
-                    }
-                ),
+                reason: text.unwrap_or_else(|| {
+                    format!(
+                        "Default der Ebene {} für {}: {}",
+                        scope.as_str(),
+                        self.phase,
+                        if default == DefaultAction::Deny {
+                            "deny"
+                        } else {
+                            "ask"
+                        }
+                    )
+                }),
                 severity: None,
                 approval: None,
                 fingerprint: None,
@@ -965,16 +1137,14 @@ impl<'a> Run<'a> {
             Outcome::Deny { .. } => DefaultAction::Deny,
             Outcome::Ask { .. } => DefaultAction::Ask,
         };
-        let matched: Vec<RuleRef> = self
+        let matched: Vec<(RuleRef, &'a LoadedRule)> = self
             .decision
             .matched
             .iter()
             .map(|m| m.rule.clone())
+            .zip(self.hits.iter().copied())
             .collect();
-        for rule_ref in matched {
-            let Some(rule) = self.loaded(&rule_ref) else {
-                continue;
-            };
+        for (rule_ref, rule) in matched {
             if rule.doc.effects.is_empty() {
                 continue;
             }

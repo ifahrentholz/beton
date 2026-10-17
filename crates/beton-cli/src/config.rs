@@ -52,11 +52,26 @@ pub struct Settings {
     pub pricing: PricingSettings,
     /// Usage-Anzeige und -Hinweise (USE-004).
     pub usage: UsageSettings,
+    /// Angaben zum User, z. B. `timezone` (POL-004 AC4); nur in der User-Konfiguration.
+    pub user: UserSettings,
+    /// Automatische Compaction (USE-009): `auto: harness | beton | off`, `threshold` (0,8).
+    pub compaction: beton_harness::CompactionSettings,
     /// Sandbox (SBX-003); nur in der User-Konfiguration. Ein Projekt (also ein Repository)
     /// darf sich keine Grants geben; Agent-Ebene und Policies folgen mit SBX-006/POL-024.
     pub sandbox: beton_sandbox::SandboxSpec,
+    /// Egress-Proxy (PRX-002); nur in der User-Konfiguration.
+    pub proxy: ProxySettings,
     /// Betreiber-Observability (OBS-003); nur in der User-Konfiguration.
     pub observability: ObservabilitySettings,
+}
+
+/// `proxy:` (PRX-002).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProxySettings {
+    /// Zusätzliche vertrauenswürdige CAs (PEM) für Upstream-TLS, z. B. eine Firmen-CA; absolut
+    /// oder mit `~`. Eine fehlende oder leere Datei ist ein Konfigurationsfehler.
+    pub extra_ca_files: Vec<String>,
 }
 
 /// Traces je Session (OBS-003). Ohne Endpoint gibt es keinen Export (ADR-0025, ADR-0033).
@@ -81,6 +96,19 @@ pub struct OtlpSettings {
 }
 
 impl Settings {
+    /// `proxy.extra_ca_files` mit expandiertem `~` (PRX-002).
+    pub fn proxy_extra_ca_files(&self) -> Vec<std::path::PathBuf> {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        self.proxy
+            .extra_ca_files
+            .iter()
+            .map(|f| match (f.strip_prefix("~/"), &home) {
+                (Some(rest), Some(h)) => h.join(rest),
+                _ => std::path::PathBuf::from(f),
+            })
+            .collect()
+    }
+
     /// Preis-Overrides in Deklarationsreihenfolge: zuerst `pricing.overrides`, danach die
     /// Preise unter `providers.<name>.models[].pricing` (HAR-011) mit genau diesem Provider
     /// und Modell. Ungültige Provider-Einträge meldet die Registry; sie liefern keine Preise.
@@ -139,6 +167,20 @@ impl Default for UsageSettings {
             rate_limit_notice: true,
         }
     }
+}
+
+/// Angaben zum User (POL-004 AC4).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct UserSettings {
+    /// Zeitzone des Users als IANA-Name (z. B. `Europe/Berlin`, mit Sommerzeit), `UTC` oder
+    /// fester Versatz (`+02:00`). Bestimmt Tages- und Monatsgrenzen von
+    /// `user.daily_cost_usd`/`user.monthly_cost_usd`, den Tag von `user_day` (POL-009) und
+    /// den Default von `tz` in `GET /v1/usage`; `beton usage` rechnet damit statt mit dem
+    /// lokalen Versatz. Ohne Angabe gilt UTC. Ein unbekannter Name ist ein
+    /// Konfigurationsfehler.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<beton_core::timezone::UserTimeZone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -557,14 +599,10 @@ fn check_project_layer(layer: &Value) -> Result<(), (String, String)> {
             ));
         }
     }
-    if let Some(harnesses) = map.get("harnesses").and_then(Value::as_object) {
-        for (id, entry) in harnesses {
-            if entry.get("auth").is_some() {
-                return Err((
-                    format!("harnesses.{id}.auth"),
-                    "die Auth-Herkunft wählt nur der Benutzer (User-Konfiguration, HAR-015)".into(),
-                ));
-            }
+    if let Some(harnesses) = map.get("harnesses") {
+        // Typfehler meldet die übliche Prüfung; hier zählt nur, was das Projekt setzen darf.
+        if let Ok(cfg) = serde_json::from_value::<HarnessesConfig>(harnesses.clone()) {
+            cfg.check_project()?;
         }
     }
     Ok(())
@@ -585,11 +623,28 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
             message,
         })?;
     }
+    settings
+        .compaction
+        .validate()
+        .map_err(|message| ConfigError::Invalid {
+            origin: origin.to_owned(),
+            key: "compaction.threshold".into(),
+            message,
+        })?;
     validate_sandbox(&settings.sandbox).map_err(|(key, message)| ConfigError::Invalid {
         origin: origin.to_owned(),
         key,
         message,
     })?;
+    for (i, file) in settings.proxy_extra_ca_files().iter().enumerate() {
+        beton_proxy::check_extra_ca_files(std::slice::from_ref(file)).map_err(|e| {
+            ConfigError::Invalid {
+                origin: origin.to_owned(),
+                key: format!("proxy.extra_ca_files[{i}]"),
+                message: e.to_string(),
+            }
+        })?;
+    }
     Ok(settings)
 }
 
@@ -823,6 +878,25 @@ mod tests {
     }
 
     #[test]
+    fn pol_004_ac4_user_timezone_defaults_to_utc_and_rejects_unknown_names() {
+        let f = fixture();
+        let settings = |f: &Fixture| f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(settings(&f).user.timezone, None);
+        f.write_user("user:\n  timezone: Europe/Berlin\n");
+        let tz = settings(&f).user.timezone.unwrap();
+        assert_eq!(tz.name(), "Europe/Berlin");
+        // Fail closed: kein stilles UTC bei einem Tippfehler, der Fehler nennt den Schlüssel.
+        f.write_user("user:\n  timezone: Europe/Berln\n");
+        let err = f.load(&[]).unwrap_err().to_string();
+        assert!(err.contains("user.timezone"), "{err}");
+        assert!(err.contains("Europe/Berln"), "{err}");
+        // Nur in der User-Konfiguration, nicht im Projekt (Repository).
+        f.write_user("");
+        f.write_project("user:\n  timezone: Europe/Berlin\n");
+        assert!(f.load(&[]).is_err());
+    }
+
+    #[test]
     fn use_004_ac3_rate_limit_notice_is_on_by_default_and_can_be_switched_off() {
         let f = fixture();
         let on = f.load(&[]).unwrap().daemon_settings().unwrap();
@@ -842,6 +916,25 @@ mod tests {
                 .usage
                 .rate_limit_notice
         );
+    }
+
+    /// USE-009: `compaction.auto` und `compaction.threshold` aus der User-Konfiguration; eine
+    /// Schwelle außerhalb von (0, 1] wird mit Schlüssel abgelehnt.
+    #[test]
+    fn use_009_compaction_settings_load_and_are_checked() {
+        let f = fixture();
+        let default = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(
+            default.compaction,
+            beton_harness::CompactionSettings::default()
+        );
+        f.write_user("compaction:\n  auto: beton\n  threshold: 0.7\n");
+        let set = f.load(&[]).unwrap().daemon_settings().unwrap();
+        assert_eq!(set.compaction.auto, beton_harness::AutoCompaction::Beton);
+        assert!((set.compaction.threshold - 0.7).abs() < f64::EPSILON);
+        f.write_user("compaction:\n  threshold: 1.5\n");
+        let err = f.load(&[]).and_then(|c| c.daemon_settings()).unwrap_err();
+        assert!(err.to_string().contains("compaction.threshold"), "{err}");
     }
 
     #[test]
@@ -908,7 +1001,7 @@ mod tests {
             .set(Scope::User, "server.listen", "[\"127.0.0.1:7421\"]")
             .unwrap();
         layers
-            .set(Scope::Project, "harnesses.claude.command", "./claude")
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
             .unwrap();
         let again = f.load(&[]).unwrap();
         assert_eq!(
@@ -921,8 +1014,8 @@ mod tests {
         );
         assert!(f.project.join(".beton/config.yaml").is_file());
         assert_eq!(
-            again.get("harnesses.claude.command", Some(Scope::Project)),
-            Some(Value::String("./claude".into()))
+            again.get("harnesses.claude.isolated", Some(Scope::Project)),
+            Some(Value::Bool(true))
         );
         let mut layers = again;
         assert!(layers.unset(Scope::User, "events.store_raw").unwrap());
@@ -952,6 +1045,42 @@ mod tests {
         // In der User-Datei ist sie erlaubt.
         layers
             .set(Scope::User, "harnesses.claude.auth", "api_key")
+            .unwrap();
+    }
+
+    /// SBX-002: Die Projektdatei ist Repo-Inhalt, den auch die Sandbox schreiben kann; sie
+    /// darf Harnesses nur verschärfen (`isolated: true`, `mcp_bridge`) und nie wählen, was in
+    /// Stufe 1 läuft.
+    #[test]
+    fn sbx_002_project_may_only_tighten_harnesses() {
+        let f = fixture();
+        let mut layers = f.load(&[]).unwrap();
+        for (key, value) in [
+            ("harnesses.claude.command", "./x"),
+            ("harnesses.claude.extra_args", "[\"--settings\", \"{}\"]"),
+            (
+                "harnesses.claude.env_passthrough",
+                "[\"AWS_SECRET_ACCESS_KEY\"]",
+            ),
+            ("harnesses.claude.isolated", "false"),
+            ("harnesses.acp.agents.gemini", "{\"command\": \"./x\"}"),
+        ] {
+            let err = layers.set(Scope::Project, key, value).unwrap_err();
+            assert!(err.to_string().contains("SBX-002"), "{key}: {err}");
+        }
+        assert!(!f.project.join(".beton/config.yaml").exists());
+        layers
+            .set(Scope::Project, "harnesses.claude.isolated", "true")
+            .unwrap();
+        layers
+            .set(Scope::Project, "harnesses.claude.mcp_bridge", "false")
+            .unwrap();
+        // Von Hand geschrieben: Laden scheitert (fail closed).
+        f.write_project("harnesses:\n  claude:\n    command: ./x\n");
+        assert!(f.load(&[]).is_err());
+        // In der User-Datei ist alles erlaubt.
+        layers
+            .set(Scope::User, "harnesses.claude.command", "claude")
             .unwrap();
     }
 

@@ -3,13 +3,15 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 
 use beton_core::event::PolicyStateChanged;
 use beton_policy::Phase;
 use beton_policy::context::Activation;
 use beton_policy::doc::{EffectOp, StateScope};
-use beton_policy::engine::{EffectiveSet, EvalOptions, Outcome};
+use beton_policy::engine::{EffectiveSet, Outcome};
 use beton_policy::grants::SessionGrants;
 use beton_policy::load::{LoadedSet, Scope, parse_set};
 use beton_policy::state::{PolicyState, StateChange, next_value, op_str, scope_str};
@@ -17,12 +19,12 @@ use serde_json::json;
 
 fn set(body: &str) -> Arc<LoadedSet> {
     let text = format!("spec_version: 1\nname: p\n{body}");
-    Arc::new(parse_set(Scope::Project, "p.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
+    Arc::new(parse_set(Scope::User, "p.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
 }
 
 fn load_err(body: &str) -> String {
     parse_set(
-        Scope::Project,
+        Scope::User,
         "p.yaml",
         &format!("spec_version: 1\nname: p\n{body}"),
     )
@@ -148,7 +150,7 @@ fn pol_009_operation_errors_leave_the_value_alone() {
 #[test]
 fn pol_010_grants_are_deduplicated_and_listed() {
     let s = set("rules:\n  - id: c\n    on: tool_call\n    action: ask\n");
-    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &common::opts());
     let Outcome::Ask { reasons } = d.outcome else {
         panic!("{d:?}")
     };
@@ -167,7 +169,7 @@ fn pol_010_remember_key_without_text_is_not_rememberable() {
     let s = set(
         "rules:\n  - id: k\n    on: tool_call\n    action: ask\n    remember_key: 'tool.args.missing'\n",
     );
-    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &common::opts());
     let Outcome::Ask { reasons } = &d.outcome else {
         panic!("{d:?}")
     };
@@ -183,7 +185,7 @@ fn pol_009_broken_templates_and_effect_values_do_not_change_the_decision() {
     let s = set(
         "rules:\n  - id: n\n    on: tool_call\n    action: notify\n    notify: { message: 'Wert {{ tool.args.missing }} fertig' }\n    effects:\n      - { op: set, scope: session, key: v, value: 'tool.args.missing' }\n      - { op: increment, scope: session, key: n }\n",
     );
-    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s]).evaluate(&shell("ls"), &common::opts());
     assert_eq!(d.outcome, Outcome::Allow);
     assert_eq!(d.notifications[0].message.as_deref(), Some("Wert ? fertig"));
     // Der fehlerhafte Effect fehlt, der andere bleibt.
@@ -220,7 +222,7 @@ fn pol_014_param_types_are_checked() {
         json!({ "tool": { "name": "x", "server": "github", "kind": "mcp", "args": {} } }),
     )
     .unwrap();
-    let d = EffectiveSet::new(vec![s]).evaluate(&act, &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s]).evaluate(&act, &common::opts());
     let Outcome::Ask { reasons } = d.outcome else {
         panic!("{d:?}")
     };
@@ -234,7 +236,7 @@ fn pol_009_has_on_missing_state_is_an_error_not_false() {
     let s = set(
         "rules:\n  - id: d\n    on: tool_call\n    when: '!has(state.session) || state.session.n > 3'\n    action: deny\n",
     );
-    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&shell("ls"), &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&shell("ls"), &common::opts());
     assert!(matches!(d.outcome, Outcome::Deny { .. }), "{d:?}");
     assert!(!d.errors.is_empty(), "als Fehler protokolliert: {d:?}");
     // Mit Zustand normal.
@@ -243,6 +245,6 @@ fn pol_009_has_on_missing_state_is_an_error_not_false() {
         json!({ "tool": { "name": "Bash", "kind": "shell", "args": {} }, "state": { "session": { "n": 1 } } }),
     )
     .unwrap();
-    let d = EffectiveSet::new(vec![s]).evaluate(&act, &EvalOptions::default());
+    let d = EffectiveSet::new(vec![s]).evaluate(&act, &common::opts());
     assert_eq!(d.outcome, Outcome::Allow);
 }

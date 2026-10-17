@@ -275,6 +275,13 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     })
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))
     .ok();
+    // #304: Ein Testbudget der Policy-Engine (Feature `test-budget`) gehört nie in den Betrieb.
+    if let Some(ms) = beton_policy::cel::Limits::active_test_budget_ms() {
+        tracing::warn!(
+            budget_ms = ms,
+            "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
+        );
+    }
 
     // UX-007: Flags aus Config und Env; Unbekanntes und Entferntes nur als Warnung.
     let mut features = beton_core::feature::FeatureSet::from_sources(
@@ -303,10 +310,16 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     let runner_command = vec![exe.display().to_string(), "__runner".to_owned()];
     let runners_dir = ctx.home.join("runners");
     let harnesses_user = settings.harnesses.clone();
+    // Stufenmodell und Egress-Proxy (SBX-002, #191): nur aus der User-Konfiguration.
+    let sandbox_user = settings.sandbox.clone();
+    let proxy_extra_ca_files = settings.proxy_extra_ca_files();
     let titles = titles_config(&settings.titles);
     let usage = beton_server::usage_notice::UsageConfig {
         rate_limit_notice: settings.usage.rate_limit_notice,
     };
+    let compaction = settings.compaction;
+    // `user.timezone` (POL-004 AC4); beim Laden geprüft, ohne Angabe UTC.
+    let timezone = settings.user.timezone.clone().unwrap_or_default();
     let attachments = beton_server::attachments::AttachmentLimits {
         max_file_bytes: settings.attachments.max_file_bytes,
         max_files: settings.attachments.max_files,
@@ -325,6 +338,7 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         &beton_harness_direct::DirectOptions {
             keys: Arc::new(beton_harness_direct::secret::ProcessEnv),
             discover_models: true,
+            egress: None,
         },
     );
     for p in problems {
@@ -404,11 +418,15 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
         r.sessions.provider = Arc::new(beton_host::LocalProvider::new(runner_command, runners_dir));
         r.sessions.dev = dev;
         r.sessions.harnesses_user = harnesses_user;
+        r.sessions.sandbox = sandbox_user;
+        r.sessions.proxy_extra_ca_files = proxy_extra_ca_files;
         r.sessions.providers = providers;
         r.harnesses = registry;
         r.features = Arc::new(features);
         r.titles = titles;
         r.usage = usage;
+        r.compaction = compaction;
+        r.timezone = timezone;
         r.attachments = attachments;
         r.secret_backend = secret_backend;
         r.redactor = Some(redactor);

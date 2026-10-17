@@ -1,0 +1,7 @@
+# Testdaten (AGT-014): Policy-Datei des Agents, eingebunden per `ref`.
+spec_version: 1
+name: lax-git
+rules:
+  - id: lax-git
+    type: git_guard
+    params: { force_push: deny, push: allow }

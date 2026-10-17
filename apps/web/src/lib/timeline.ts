@@ -1,4 +1,4 @@
-import type { Attachment, Event } from '@beton/sdk'
+import type { Attachment, Compaction, Event } from '@beton/sdk'
 import { harnessName } from '@/components/harness'
 import { effortLabel } from '@/components/settings-picker'
 import type { SessionLog } from '@/store/events'
@@ -72,7 +72,7 @@ export type Item =
   | ApprovalItem
   | { kind: 'policy'; key: string; rule: string; reason: string }
   | { kind: 'error'; key: string; title: string; detail?: string }
-  | { kind: 'note'; key: string; text: string; tone: 'neutral' | 'deny' | 'ok' }
+  | { kind: 'note'; key: string; text: string; tone: 'neutral' | 'deny' | 'ok'; detail?: string }
   | { kind: 'offloaded'; key: string; eventType: string; ref: string; seq: number }
 
 function toolState(status: string): ToolState {
@@ -90,6 +90,18 @@ function problemText(problem: unknown): { title: string; detail?: string } {
   const p = (problem ?? {}) as { title?: unknown; detail?: unknown }
   const title = typeof p.title === 'string' ? p.title : 'Fehler'
   return typeof p.detail === 'string' ? { title, detail: p.detail } : { title }
+}
+
+/** Grund eines `event.rejected` in Klartext (Problem-Code aus PROTO-015). */
+function rejectReason(code: string): string {
+  switch (code) {
+    case 'payload_too_large':
+      return 'zu groß'
+    case 'validation_failed':
+      return 'ungültig'
+    default:
+      return code
+  }
 }
 
 /** Erste passende Regel einer Policy-Entscheidung (Name und Begründung). */
@@ -162,6 +174,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
   let turns = 0
   let harness = ''
   let model: string | null | undefined
+  let compacting: Extract<Item, { kind: 'note' }> | undefined
 
   for (const e of log.events as Event[]) {
     const key = `e${e.seq}`
@@ -258,6 +271,15 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
       case 'error':
         items.push({ kind: 'error', key, ...problemText(e.payload.problem) })
         break
+      // Vom Server abgelehntes Runner-Event (PROTO-015): sichtbar an seiner Stelle, ohne Inhalt.
+      case 'event.rejected':
+        items.push({
+          kind: 'error',
+          key,
+          title: 'Ein Ereignis wurde nicht gespeichert',
+          detail: `${e.payload.original_type} · ${rejectReason(e.payload.reason)}. Der Server hat es abgelehnt; der Inhalt fehlt im Verlauf.`,
+        })
+        break
       case 'harness.exited':
         items.push({
           kind: 'error',
@@ -291,6 +313,17 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
       case 'notice':
         items.push({ kind: 'note', key, text: e.payload.text, tone: 'neutral' })
         break
+      // Compaction im Verlauf (USE-009): solange sie läuft ein Hinweis, danach das Ergebnis.
+      case 'compaction.started':
+        compacting = { kind: 'note', key, text: `Kontext wird kompaktiert …${triggerSuffix(e.payload.trigger, true)}`, tone: 'neutral' }
+        items.push(compacting)
+        break
+      case 'compaction.completed': {
+        if (compacting) items.splice(items.indexOf(compacting), 1)
+        compacting = undefined
+        items.push(compactedNote(key, e.payload, harness))
+        break
+      }
       default:
         break
     }
@@ -306,6 +339,29 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
     items.push({ kind: 'assistant', key: `s-${id}`, text, streaming: true })
   }
   return items
+}
+
+/**
+ * Herkunft der Compaction im Hinweis (USE-009). Für die Automatik und den Harness selbst steht
+ * der Entwurf noch aus; bis dahin ohne Zusatz.
+ */
+function triggerSuffix(trigger: Compaction['trigger'], running: boolean): string {
+  if (trigger !== 'user') return ''
+  return running ? ' (von dir ausgelöst)' : ' · von dir ausgelöst'
+}
+
+const tokens = (n: number) => n.toLocaleString('de-DE')
+
+/** „Kontext kompaktiert · 186.400 → 38.200 Tokens · von dir ausgelöst“ (Entwurf `usage-context`). */
+function compactedNote(key: string, c: Compaction, harness: string): Extract<Item, { kind: 'note' }> {
+  const numbers = c.after_tokens !== undefined ? ` · ${tokens(c.before_tokens)} → ${tokens(c.after_tokens)} Tokens` : ''
+  return {
+    kind: 'note',
+    key,
+    text: `Kontext kompaktiert${numbers}${triggerSuffix(c.trigger, false)}`,
+    tone: 'neutral',
+    detail: `${harness ? harnessName(harness) : 'Der Harness'} hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.`,
+  }
 }
 
 /** Offene Freigaben (für Status und Tastenkürzel), älteste zuerst. */

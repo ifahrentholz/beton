@@ -94,6 +94,7 @@ async fn data_002_ac2_log_survives_kill() {
                 trigger: SessionTrigger::User,
                 home_node: local.node,
                 harness_opts: serde_json::Value::Null,
+                max_cost_usd: None,
             },
         )
         .await

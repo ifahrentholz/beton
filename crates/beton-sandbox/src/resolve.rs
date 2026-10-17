@@ -44,10 +44,60 @@ impl Stage {
     }
 }
 
-/// Endpunkt der Proxy-Instanz dieser Stufe (PRX-001); das Token geht nie ins Profil.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Ein Geheimnis im Environment einer Stufe (Proxy-URL mit Token, Broker-Token): `Debug`
+/// zeigt es nie, beim Fallenlassen wird der Speicher überschrieben.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(zeroize::Zeroizing<String>);
+
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Self(zeroize::Zeroizing::new(value))
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
+
+/// Endpunkt der Proxy-Instanz dieser Stufe (PRX-001); das Token geht nie ins Profil, nur als
+/// Proxy-URL ins Environment (PRX-008).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyEndpoint {
     pub port: u16,
+    /// `http://bt:<token>@127.0.0.1:<port>`; ohne URL setzt die Auflösung keine
+    /// Proxy-Variablen.
+    pub url: Option<Secret>,
+    /// CA-Bundle (beton-CA plus System-Roots); in der Sandbox lesbar.
+    pub ca_bundle: Option<PathBuf>,
+}
+
+impl ProxyEndpoint {
+    /// Nur der Port (ohne Proxy-Variablen im Environment).
+    pub fn port(port: u16) -> Self {
+        Self {
+            port,
+            url: None,
+            ca_bundle: None,
+        }
+    }
+}
+
+/// Zugang der Stufe 1 zum Exec-Broker (SBX-002): Socket, Verzeichnis des `bt-exec`-Shims und
+/// Token der Session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecAccess {
+    pub socket: PathBuf,
+    pub shim_dir: PathBuf,
+    pub token: Secret,
+    /// Variablen, die `bt-exec` aus Stufe 1 an Stufe 2 weitergeben darf (über die Basis- und
+    /// Werkzeug-Variablen hinaus; #259): die konfigurierten Namen der Stufe 2.
+    pub forward_env: Vec<String>,
 }
 
 /// Kontext der Auflösung.
@@ -70,6 +120,30 @@ pub struct ResolveCtx {
     pub proxy: Option<ProxyEndpoint>,
     /// Environment des Daemons (Quelle für Basis-Variablen und `passthrough`).
     pub host_env: BTreeMap<String, String>,
+    /// Session (Marker `BETON_SESSION_ID`).
+    pub session_id: Option<String>,
+    /// Nur Stufe 1: Zugang zum Exec-Broker.
+    pub exec: Option<ExecAccess>,
+    /// Nur Stufe 1: Laufzeitverzeichnis der Session (`PreToolUse`-Hook, MCP-Relay-Hub, ihre
+    /// Token-Dateien, Session-Skills; #206). Lesbar, Unix-Sockets darin verbindbar, nicht
+    /// beschreibbar; Stufe 2 bekommt es nie.
+    pub runtime: Option<PathBuf>,
+    /// Von beton verwaltete Schreib-Wurzeln der Stufe 1.
+    pub shared: Vec<PathBuf>,
+    /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
+    /// beschreibbar, in Stufe 2 ohne Symlinks.
+    pub exchange: Option<PathBuf>,
+    /// Verzeichnis der Session (Stufenmodell): In Stufe 2 bis auf die eigenen Wurzeln
+    /// verdeckt (Linux: leeres tmpfs; macOS gibt Seatbelt ohnehin nur die Wurzeln frei).
+    pub session_dir: Option<PathBuf>,
+    /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
+    /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
+    pub untrusted_path: Vec<PathBuf>,
+    /// Lesbare Programme bzw. deren Verzeichnisse (beton für `bt-exec`, die Harness-CLI).
+    pub programs: Vec<PathBuf>,
+    /// Credential-Variablen dieser Stufe mit ihrem Platzhalter (PRX-006, SBX-005); gewinnen
+    /// gegen `passthrough` und `set`.
+    pub credential_env: BTreeMap<String, String>,
 }
 
 impl ResolveCtx {
@@ -84,6 +158,15 @@ impl ResolveCtx {
             adapters: Vec::new(),
             proxy: None,
             host_env: BTreeMap::new(),
+            session_id: None,
+            exec: None,
+            runtime: None,
+            shared: Vec::new(),
+            exchange: None,
+            session_dir: None,
+            untrusted_path: Vec::new(),
+            programs: Vec::new(),
+            credential_env: BTreeMap::new(),
         }
     }
 }
@@ -146,25 +229,49 @@ pub struct ResolvedPolicy {
     pub git: Option<GitProtection>,
     /// Mach-Services bzw. Secret Service des Keychains (nur Stufe 1 mit `keychain: true`).
     pub keychain: bool,
+    /// Unix-Sockets, mit denen sich die Stufe verbinden darf (Stufe 1: Exec-Broker).
+    pub unix_sockets: Vec<PathBuf>,
+    /// Verzeichnisse, in denen sich die Stufe mit jedem Unix-Socket verbinden darf (Stufe 1:
+    /// Laufzeitverzeichnis mit Hook- und Hub-Socket, #206).
+    pub unix_socket_dirs: Vec<PathBuf>,
+    /// Verzeichnisse in Schreib-Wurzeln, die nur lesbar sind und nicht entstehen, umbenannt
+    /// oder ersetzt werden dürfen (Stufe 2: Projekt-Konfiguration, SBX-002).
+    pub read_only: Vec<PathBuf>,
+    /// Schreib-Wurzeln, in denen keine Symlinks (und unter macOS keine Verzeichnisse) entstehen
+    /// und in die nichts hinein umbenannt werden darf (Stufe 2: Austausch mit Stufe 1, SBX-002).
+    pub no_symlinks: Vec<PathBuf>,
+    /// Verzeichnisse, die bis auf die Wurzeln darin unsichtbar sind (Stufe 2: Session-
+    /// Verzeichnis mit Scratch und Sockets der Stufe 1, SBX-002).
+    pub private: Vec<PathBuf>,
     /// Vollständiges, explizites Environment (kein Erben).
     #[serde(skip)]
     pub env: BTreeMap<String, String>,
+    /// Variablen mit Credential-Platzhalter (nur Namen; PRX-006). Der Exec-Broker lässt sie
+    /// nicht überschreiben.
+    pub credential_env: Vec<String>,
     pub net: NetMode,
     pub egress_rules: Vec<String>,
     pub egress_allow_private: Vec<String>,
+    /// Passthrough-Ziele dieser Stufe (PRX-005).
+    pub egress_passthrough: Vec<String>,
+    /// Loopback-Ports für Dev-Server (`bind`/`connect`, PRX-008 AC3).
+    pub dev_ports: Vec<u16>,
     /// Ressourcenlimits des Prozessbaums (SBX-013).
     pub limits: Limits,
     /// Capabilities, die das Backend erzwingen muss.
     pub required: CapSet,
     /// Ausdrücklich nicht erzwungene Capabilities (Opt-out, z. B. `backend: none`).
     pub degraded: CapSet,
+    /// Stufe 1 eines Harness, der Tools selbst ausführt (`tool_isolation: inherited`, nur mit
+    /// `require_tool_isolation: false`): *degraded* (SBX-002 AC4).
+    pub inherited_tools: bool,
     /// Hinweise der Auflösung (z. B. übersprungene, nicht vorhandene Grants).
     pub notes: Vec<String>,
 }
 
 impl ResolvedPolicy {
-    /// Policy ohne Isolation (`backend: none`): Bis SBX-006 (WP-49) laufen Harness- und
-    /// Tool-Prozesse so, ausdrücklich über den Provider `none`.
+    /// Policy ohne Isolation: nur ausdrücklich `backend: none`, je Session bestätigt
+    /// (SBX-006), über den Provider `none`.
     pub fn unsandboxed(stage: Stage) -> Self {
         Self {
             backend: ProviderId::None,
@@ -177,20 +284,140 @@ impl ResolvedPolicy {
             masks: Vec::new(),
             git: None,
             keychain: false,
+            unix_sockets: Vec::new(),
+            unix_socket_dirs: Vec::new(),
+            read_only: Vec::new(),
+            no_symlinks: Vec::new(),
+            private: Vec::new(),
             env: BTreeMap::new(),
+            credential_env: Vec::new(),
             net: NetMode::None,
             egress_rules: Vec::new(),
             egress_allow_private: Vec::new(),
+            egress_passthrough: Vec::new(),
+            dev_ports: Vec::new(),
             limits: Limits::default(),
             required: CapSet::new(),
             degraded: caps::required_default(),
+            inherited_tools: false,
             notes: Vec::new(),
         }
     }
 }
 
 /// Variablen der Basis-Umgebung, die aus dem Daemon übernommen werden (SBX-005).
+/// Verzeichnisse der Projekt-Konfiguration im Workspace, die Stufe 2 nicht ändern darf
+/// (beton und Claude Code; SBX-002).
+pub const PROJECT_CONFIG_DIRS: [&str; 2] = [".beton", ".claude"];
+
+/// Legt fehlende read-only Verzeichnisse vor dem Start leer an (leere Verzeichnisse sieht Git
+/// nicht): Linux braucht ein Ziel für den read-only Mount, und unter macOS gibt es dann keinen
+/// Namen in anderer Groß-/Kleinschreibung (`.Claude`), der neben der Regel entstehen könnte.
+pub(crate) fn ensure_read_only_dirs(policy: &ResolvedPolicy) -> Result<(), SandboxError> {
+    for d in &policy.read_only {
+        if std::fs::symlink_metadata(d).is_err() {
+            std::fs::create_dir(d)
+                .map_err(|e| SandboxError::spawn(format!("{} anlegen: {e}", d.display())))?;
+        }
+    }
+    Ok(())
+}
+
 const BASE_ENV: [&str; 6] = ["PATH", "USER", "LOGNAME", "SHELL", "TERM", "LANG"];
+
+/// Locale-Kategorien (POSIX und glibc), die als `LC_*` in eine Sandbox gelangen; kein Präfix
+/// für beliebige Namen (SBX-005).
+pub const LOCALE_ENV: [&str; 13] = [
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+];
+
+/// Proxy-Variablen (PRX-008), groß und klein.
+pub const PROXY_ENV: [&str; 6] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+];
+
+/// Ausnahmen vom Proxy (PRX-008).
+pub const NO_PROXY_ENV: [&str; 2] = ["NO_PROXY", "no_proxy"];
+
+/// CA-Variablen gängiger Toolchains; alle zeigen auf das CA-Bundle der Stufe (PRX-008).
+pub const CA_ENV: [&str; 9] = [
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "GIT_SSL_CAINFO",
+    "PIP_CERT",
+    "CARGO_HTTP_CAINFO",
+    "AWS_CA_BUNDLE",
+    "DENO_CERT",
+];
+
+/// Loopback, wenn er sandbox-lokal ist (Linux) bzw. Dev-Ports freigegeben sind.
+pub const NO_PROXY_LOOPBACK: &str = "localhost,127.0.0.1,::1";
+
+/// Variablen, die beton je Stufe selbst setzt: weder `env.set` noch Overrides an den
+/// Exec-Broker dürfen sie ändern (SBX-002 AC3, SBX-005, PRX-008).
+pub fn controlled_env(name: &str) -> bool {
+    name.starts_with("BETON_")
+        || PROXY_ENV.contains(&name)
+        || NO_PROXY_ENV.contains(&name)
+        || CA_ENV.contains(&name)
+        || matches!(
+            name,
+            "HOME"
+                | "TMPDIR"
+                | "XDG_RUNTIME_DIR"
+                | "SSL_CERT_DIR"
+                | "NODE_USE_ENV_PROXY"
+                | "PIP_USE_DEPRECATED"
+        )
+}
+
+/// Von beton verwaltete Worktrees (SES-015) unter dem sonst maskierten `~/.beton`.
+pub const BETON_WORKTREES: &str = "~/.beton/worktrees";
+
+/// Liegt `p` als eigener Worktree unter `<home>/.beton/worktrees/<…>`?
+fn beton_worktree(p: &Path, home: &Path) -> bool {
+    let root = crate::paths::expand(BETON_WORKTREES, home);
+    p.starts_with(&root) && p != root
+}
+
+/// Ein beton-eigener Grant (Programm, Austausch): kanonisch, vorhanden, nicht verboten. Anders
+/// als Grants der Konfiguration dürfen Programme mehrere Hardlinks haben (Cargo verlinkt
+/// Binaries hart), sie sind nur lesbar.
+fn own_grant(
+    field: &str,
+    p: &Path,
+    forbidden: &Forbidden,
+    write: bool,
+) -> Result<PathBuf, SandboxError> {
+    let canon = std::fs::canonicalize(p)
+        .map_err(|e| SandboxError::invalid(field, format!("{}: {e}", p.display())))?;
+    if let Some(reason) = forbidden.reason(&canon, write) {
+        return Err(SandboxError::escape(
+            field,
+            format!("{} {reason}", canon.display()),
+        ));
+    }
+    Ok(canon)
+}
 
 fn push_unique(list: &mut Vec<PathBuf>, p: PathBuf) {
     if !list.contains(&p) {
@@ -293,6 +520,15 @@ pub fn resolve(
     ctx: &ResolveCtx,
 ) -> Result<ResolvedPolicy, SandboxError> {
     spec.validate()?;
+    // Das Preset gilt immer, auch wenn der Aufrufer nicht gemergt hat (SBX-012); auf eine
+    // schon gemergte Konfiguration angewendet ändert es nichts.
+    let merged;
+    let spec = if spec.preset.is_some() {
+        merged = SandboxSpec::merged(&[spec]);
+        &merged
+    } else {
+        spec
+    };
     let home = std::fs::canonicalize(&ctx.home)
         .map_err(|e| SandboxError::invalid("home", format!("{}: {e}", ctx.home.display())))?;
     let forbidden = Forbidden::new(&home);
@@ -308,7 +544,9 @@ pub fn resolve(
             format!("{} ist kein Verzeichnis", workspace.display()),
         ));
     }
-    if let Some(reason) = forbidden.reason(&workspace, writable_ws) {
+    if !beton_worktree(&workspace, &home)
+        && let Some(reason) = forbidden.reason(&workspace, writable_ws)
+    {
         return Err(SandboxError::invalid(
             "workspace",
             format!("{} {reason}", workspace.display()),
@@ -436,6 +674,120 @@ pub fn resolve(
         }
     }
     let keychain = own.as_ref().is_some_and(|h| h.keychain);
+    // Keychain (macOS): Die Keychain-Dateien liest und aktualisiert der Client selbst (z. B.
+    // beim Erneuern eines Logins); geschützt sind einzelne Einträge nur durch ihre ACLs
+    // (Restrisiko, siehe Bedrohungsmodell). Dazu die Suchliste des Benutzers.
+    if keychain && cfg!(target_os = "macos") {
+        for (raw, write) in [
+            (KEYCHAINS, true),
+            ("~/Library/Preferences/com.apple.security.plist", false),
+        ] {
+            let field = format!("harness.keychain ({raw})");
+            if let Some(p) = grant(&field, raw, &home, &forbidden, write, &mut notes)? {
+                if write {
+                    push_unique(&mut write_roots, p);
+                } else {
+                    push_unique(&mut read_roots, p);
+                }
+            }
+        }
+    }
+
+    // Von beton verwaltete Grants: Austausch mit Stufe 2, Programme, Broker-Zugang (nur
+    // Stufe 1).
+    for (i, p) in ctx.shared.iter().enumerate() {
+        let p = own_grant(&format!("shared[{i}]"), p, &forbidden, true)?;
+        push_unique(&mut write_roots, p);
+    }
+    let mut no_symlinks = Vec::new();
+    if let Some(x) = &ctx.exchange {
+        let p = own_grant("exchange", x, &forbidden, true)?;
+        // Stufe 1 liest, was Stufe 2 hier ablegt: In Stufe 2 entstehen keine Symlinks (sonst
+        // folgte Stufe 1 einem Link auf ihre Credentials). Unter Linux erben Landlock-Regeln
+        // die Rechte der Vorfahren, daher darf der Austausch in keiner anderen Schreib-Wurzel
+        // und nicht unter einem privaten tmpfs mit Schreibrecht liegen.
+        if ctx.stage == Stage::Tools {
+            let inherited = write_roots
+                .iter()
+                .chain([&scratch])
+                .find(|w| p.starts_with(w) && **w != p)
+                .cloned()
+                .or_else(|| {
+                    matches!(backend, ProviderId::Landlock | ProviderId::Bwrap)
+                        .then(|| {
+                            ["/tmp", "/dev/shm"]
+                                .into_iter()
+                                .map(PathBuf::from)
+                                .find(|t| p.starts_with(t))
+                        })
+                        .flatten()
+                });
+            if let Some(w) = inherited {
+                return Err(SandboxError::escape(
+                    "exchange",
+                    format!(
+                        "{} liegt in {}; dort ließen sich Symlinks nicht sperren",
+                        p.display(),
+                        w.display()
+                    ),
+                ));
+            }
+            no_symlinks.push(p.clone());
+        }
+        push_unique(&mut write_roots, p);
+    }
+    for (i, p) in ctx.programs.iter().enumerate() {
+        let field = format!("programs[{i}]");
+        let canon = own_grant(&field, p, &forbidden, false)?;
+        push_unique(&mut read_roots, canon);
+        // Ein Programm, das über einen Symlink aufgerufen wird (z. B. `~/.local/bin/claude`),
+        // braucht auch den Link selbst (sonst scheitert `execve` unter Seatbelt).
+        if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
+            if let Some(reason) = forbidden.reason(p, false) {
+                return Err(SandboxError::escape(
+                    field,
+                    format!("{} {reason}", p.display()),
+                ));
+            }
+            push_unique(&mut read_roots, p.clone());
+        }
+    }
+    let mut unix_sockets = Vec::new();
+    if let Some(exec) = &ctx.exec {
+        if ctx.stage != Stage::Harness {
+            return Err(SandboxError::invalid(
+                "exec",
+                "Zugang zum Exec-Broker gibt es nur in Stufe 1 (SBX-002)",
+            ));
+        }
+        let shim = own_grant("exec.shim_dir", &exec.shim_dir, &forbidden, false)?;
+        push_unique(&mut read_roots, shim);
+        let dir = exec
+            .socket
+            .parent()
+            .ok_or_else(|| SandboxError::invalid("exec.socket", "Socket ohne Verzeichnis"))?;
+        let dir = own_grant("exec.socket", dir, &forbidden, false)?;
+        let name = exec
+            .socket
+            .file_name()
+            .ok_or_else(|| SandboxError::invalid("exec.socket", "Socket ohne Namen"))?;
+        // Das Verzeichnis muss unter Linux sichtbar sein (Mount-Namespace); verbunden wird
+        // nur mit dem Socket selbst.
+        push_unique(&mut read_roots, dir.clone());
+        unix_sockets.push(dir.join(name));
+    }
+    let mut unix_socket_dirs = Vec::new();
+    if let Some(runtime) = &ctx.runtime {
+        if ctx.stage != Stage::Harness {
+            return Err(SandboxError::invalid(
+                "runtime",
+                "Das Laufzeitverzeichnis mit Hook- und Hub-Socket gibt es nur in Stufe 1 (#206)",
+            ));
+        }
+        let dir = own_grant("runtime", runtime, &forbidden, false)?;
+        push_unique(&mut read_roots, dir.clone());
+        unix_socket_dirs.push(dir);
+    }
 
     // Masken: Default (Stufe 1 und 2), in Stufe 2 alle Adapter-Pfade, eigene Masken.
     let mut masks = Vec::new();
@@ -495,7 +847,7 @@ pub fn resolve(
     // Ein Workspace oder Grant in einem maskierten Pfad wäre unsichtbar bzw. eine Lücke.
     for m in &masks {
         if let Mask::Path { path, .. } = m {
-            if workspace.starts_with(path) {
+            if workspace.starts_with(path) && !beton_worktree(&workspace, &home) {
                 return Err(SandboxError::invalid(
                     "workspace",
                     format!(
@@ -506,7 +858,7 @@ pub fn resolve(
                 ));
             }
             for root in read_roots.iter().chain(&write_roots) {
-                if root.starts_with(path) {
+                if root.starts_with(path) && !beton_worktree(root, &home) {
                     return Err(SandboxError::escape(
                         "grants",
                         format!("{} liegt in der Maske {}", root.display(), path.display()),
@@ -525,14 +877,34 @@ pub fn resolve(
     }
     env.entry("PATH".to_owned())
         .or_insert_with(|| "/usr/bin:/bin:/usr/sbin:/sbin".to_owned());
+    // Nur absolute Einträge: Ein relativer (oder leerer) Eintrag hinge vom Arbeitsverzeichnis
+    // ab, also vom Workspace, den die Sandbox schreiben kann (SBX-002). Was Stufe 2 schreiben
+    // kann, entfernt der Runner zusätzlich aus dem `PATH` der Stufe 1 (`untrusted_path`).
+    if let Some(path) = env.get_mut("PATH") {
+        *path = path
+            .split(':')
+            .filter(|d| d.starts_with('/'))
+            .filter(|d| {
+                !ctx.untrusted_path
+                    .iter()
+                    .any(|u| Path::new(d).starts_with(u))
+            })
+            .collect::<Vec<_>>()
+            .join(":");
+    }
     for (k, v) in &ctx.host_env {
-        if k.starts_with("LC_") || k == "TZ" {
+        if LOCALE_ENV.contains(&k.as_str()) || k == "TZ" {
             env.insert(k.clone(), v.clone());
         }
     }
-    env.insert("HOME".into(), home.to_string_lossy().into_owned());
-    env.insert("TMPDIR".into(), scratch.to_string_lossy().into_owned());
-    env.insert("BETON_STAGE".into(), ctx.stage.as_str().into());
+    // Stufe 1: die Env-Familie des eigenen Harness (z. B. `CLAUDE_CONFIG_DIR`).
+    if let Some(h) = &own {
+        for (k, v) in &ctx.host_env {
+            if h.env_families.iter().any(|f| k.starts_with(f.as_str())) {
+                env.insert(k.clone(), v.clone());
+            }
+        }
+    }
     if let Some(cfg) = &spec.env {
         for pattern in cfg.passthrough.iter().flatten() {
             match pattern.strip_suffix('*') {
@@ -554,10 +926,48 @@ pub fn resolve(
             env.insert(k.clone(), v.clone());
         }
     }
-    env.retain(|k, _| !env_denied(k));
+    env.retain(|k, _| !env_denied(k) && !controlled_env(k));
+    // Credential-Variablen nur mit Platzhalter (PRX-006, SBX-005 AC3); sie gewinnen gegen
+    // `passthrough`, `set` und die Harness-Familie.
+    for (k, v) in &ctx.credential_env {
+        if env_denied(k) || controlled_env(k) {
+            return Err(SandboxError::invalid(
+                "credentials",
+                format!("`{k}` kann keinen Platzhalter bekommen"),
+            ));
+        }
+        env.insert(k.clone(), v.clone());
+    }
+    env.insert("HOME".into(), home.to_string_lossy().into_owned());
+    env.insert("TMPDIR".into(), scratch.to_string_lossy().into_owned());
+    // `XDG_RUNTIME_DIR` des Hosts nie (SBX-005), stattdessen der Scratch der Stufe.
+    env.insert(
+        "XDG_RUNTIME_DIR".into(),
+        scratch.to_string_lossy().into_owned(),
+    );
+    env.insert("BETON_STAGE".into(), ctx.stage.as_str().into());
+    if let Some(id) = &ctx.session_id {
+        env.insert("BETON_SESSION_ID".into(), id.clone());
+    }
+    if let Some(exec) = &ctx.exec {
+        env.insert(
+            "BETON_EXEC_SOCKET".into(),
+            unix_sockets
+                .first()
+                .unwrap_or(&exec.socket)
+                .to_string_lossy()
+                .into_owned(),
+        );
+        env.insert("BETON_EXEC_TOKEN".into(), exec.token.expose().to_owned());
+        // Namen der Variablen, die `bt-exec` an Stufe 2 weitergibt (#259); keine Werte.
+        env.insert(
+            crate::broker::ENV_FORWARD.into(),
+            exec.forward_env.join(","),
+        );
+    }
 
     // Netz: nur über den Proxy, ohne Proxy gar nicht.
-    let net = match (spec.allow_network.unwrap_or(true), ctx.proxy) {
+    let net = match (spec.allow_network.unwrap_or(true), ctx.proxy.as_ref()) {
         (true, Some(p)) => NetMode::ProxyOnly { port: p.port },
         (true, None) => {
             notes.push("allow_network: kein Proxy angebunden, daher kein Netz".into());
@@ -565,6 +975,67 @@ pub fn resolve(
         }
         (false, _) => NetMode::None,
     };
+    let dev_ports = spec.dev_ports.clone().unwrap_or_default();
+    // Proxy- und CA-Variablen für die Toolchains (PRX-008).
+    if let (NetMode::ProxyOnly { .. }, Some(p)) = (net, ctx.proxy.as_ref()) {
+        if let Some(url) = &p.url {
+            for k in PROXY_ENV {
+                env.insert(k.into(), url.expose().to_owned());
+            }
+            // Unter Linux ist Loopback sandbox-lokal (eigener Net-Namespace); unter macOS teilt
+            // die Sandbox das Loopback des Hosts, dort geht es über den Proxy, außer für
+            // ausdrücklich freigegebene Dev-Ports (die Seatbelt-Regel sperrt alle anderen).
+            let local = matches!(backend, ProviderId::Landlock | ProviderId::Bwrap)
+                || !dev_ports.is_empty();
+            for k in NO_PROXY_ENV {
+                env.insert(k.into(), if local { NO_PROXY_LOOPBACK } else { "" }.into());
+            }
+            env.insert("NODE_USE_ENV_PROXY".into(), "1".into());
+        }
+        if let Some(bundle) = &p.ca_bundle {
+            let bundle = own_grant("proxy.ca_bundle", bundle, &forbidden, false)?;
+            for k in CA_ENV {
+                env.insert(k.into(), bundle.to_string_lossy().into_owned());
+            }
+            // pip ≥ 24.2 prüft unter macOS mit `truststore` gegen den Trust-Store des Systems
+            // (ohne beton-CA) statt gegen `PIP_CERT`; unter Linux wertet `truststore`
+            // `SSL_CERT_FILE` aus. Ältere pip kennen den Wert nicht, daher nur unter macOS.
+            if backend == ProviderId::Seatbelt {
+                env.insert("PIP_USE_DEPRECATED".into(), "legacy-certs".into());
+            }
+            push_unique(&mut read_roots, bundle);
+        }
+    }
+
+    // Projekt-Konfiguration, aus der der nächste Start Stufe 1 aufbaut (`.beton/config.yaml`,
+    // Projekt-Agents, `.claude/settings.json` mit Hooks): in Stufe 2 nur lesbar (SBX-002).
+    let read_only = if ctx.stage == Stage::Tools && writable_ws {
+        PROJECT_CONFIG_DIRS
+            .iter()
+            .map(|d| workspace.join(d))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut private = Vec::new();
+    if ctx.stage == Stage::Tools
+        && let Some(d) = &ctx.session_dir
+    {
+        let d = std::fs::canonicalize(d)
+            .map_err(|e| SandboxError::invalid("session_dir", format!("{}: {e}", d.display())))?;
+        if read_roots
+            .iter()
+            .chain(&write_roots)
+            .any(|r| d.starts_with(r))
+        {
+            return Err(SandboxError::escape(
+                "session_dir",
+                format!("{} liegt in einer Freigabe der Stufe 2", d.display()),
+            ));
+        }
+        private.push(d);
+    }
 
     let (required, degraded) = if backend == ProviderId::None {
         (CapSet::new(), caps::required_default())
@@ -582,13 +1053,22 @@ pub fn resolve(
         masks,
         git,
         keychain,
+        unix_sockets,
+        unix_socket_dirs,
+        read_only,
+        no_symlinks,
+        private,
         env,
+        credential_env: ctx.credential_env.keys().cloned().collect(),
         net,
         egress_rules: spec.egress_rules.clone().unwrap_or_default(),
         egress_allow_private: spec.egress_allow_private.clone().unwrap_or_default(),
+        egress_passthrough: spec.egress_passthrough.clone().unwrap_or_default(),
+        dev_ports,
         limits: spec.limits.unwrap_or_default(),
         required,
         degraded,
+        inherited_tools: false,
         notes,
     })
 }
@@ -642,4 +1122,65 @@ pub fn check_caps(probe: &ProbeReport, policy: &ResolvedPolicy) -> Result<(), Sa
         missing,
         hint,
     })
+}
+
+/// Größte Credential-Datei (PRX-006).
+pub const CREDENTIAL_FILE_MAX: u64 = 64 * 1024;
+
+/// Prüft eine Credential-Datei (`source.file`, PRX-006 AC4) gegen die aufgelösten Policies
+/// aller Stufen: Sie muss existieren, außerhalb jeder Lese- und Schreib-Wurzel liegen (auch
+/// über Symlinks), darf keine weiteren Hardlinks haben und höchstens 64 KiB groß sein.
+/// Liefert den kanonischen Pfad.
+pub fn check_credential_file(
+    path: &Path,
+    home: &Path,
+    policies: &[&ResolvedPolicy],
+) -> Result<PathBuf, SandboxError> {
+    const FIELD: &str = "credentials.source.file";
+    let expanded = crate::paths::expand(&path.to_string_lossy(), home);
+    let canonical = std::fs::canonicalize(&expanded)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", expanded.display())))?;
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|e| SandboxError::invalid(FIELD, format!("{}: {e}", canonical.display())))?;
+    if !meta.is_file() {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist keine Datei", canonical.display()),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        if meta.nlink() > 1 {
+            return Err(SandboxError::escape(
+                FIELD,
+                format!(
+                    "{} hat weitere Hardlinks (auch in einer Freigabe möglich)",
+                    canonical.display()
+                ),
+            ));
+        }
+    }
+    if meta.len() > CREDENTIAL_FILE_MAX {
+        return Err(SandboxError::invalid(
+            FIELD,
+            format!("{} ist größer als 64 KiB", canonical.display()),
+        ));
+    }
+    for policy in policies {
+        for root in policy.read_roots.iter().chain(&policy.write_roots) {
+            if canonical.starts_with(root) || expanded.starts_with(root) {
+                return Err(SandboxError::escape(
+                    FIELD,
+                    format!(
+                        "{} liegt in der Freigabe {} der Stufe {}",
+                        canonical.display(),
+                        root.display(),
+                        policy.stage.as_str()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(canonical)
 }

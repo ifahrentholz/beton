@@ -62,6 +62,9 @@ pub struct ForkSession {
     /// Startoptionen des Ziel-Harness; ohne Angabe die der Quelle, falls der Harness gleich
     /// bleibt.
     pub harness_opts: Value,
+    /// Bestätigt `sandbox.backend: none` für den Fork (SBX-006); eine bestätigte Quelle
+    /// vererbt ihre Bestätigung.
+    pub confirm_unsandboxed: bool,
 }
 
 /// Ergebnis eines Forks.
@@ -174,12 +177,26 @@ impl SessionManager<'_> {
         // Angabe die des Agents der Quelle (`executor`, AGT-004), sonst die Defaults.
         let snapshot = self.load_snapshot(source).await?;
         let (agent_effort, agent_mode) = crate::settings::executor_settings(snapshot.as_ref());
+        if let Some(s) = &snapshot {
+            crate::settings::agent_permission_mode(
+                s.trust_source(),
+                agent_mode.as_deref(),
+                req.permission_mode.as_deref(),
+            )?;
+        }
         let effort = req.effort.clone().or(agent_effort);
         let permission_mode = req.permission_mode.clone().or(agent_mode);
+        // SBX-006: Der Fork einer bestätigten Session ohne Sandbox übernimmt die Bestätigung
+        // (Audit-Eintrag mit Quelle); sonst braucht er eine eigene.
+        let inherited = !req.confirm_unsandboxed && self.unsandboxed_confirmed(source).await?;
+        let sandbox = self
+            .sandbox_start(Some(&target_caps), req.confirm_unsandboxed || inherited)
+            .await?;
         crate::settings::validate_start(
             Some(&target_caps),
             effort.as_deref(),
             permission_mode.as_deref(),
+            sandbox.status,
         )?;
         let in_repo = {
             let root = source_root.clone();
@@ -267,6 +284,7 @@ impl SessionManager<'_> {
                     trigger: SessionTrigger::User,
                     home_node: self.state().local.node,
                     harness_opts,
+                    max_cost_usd: None,
                 },
             )
             .await;
@@ -282,6 +300,14 @@ impl SessionManager<'_> {
                 return Err(e.into());
             }
         };
+        if sandbox.unsandboxed {
+            self.record_unsandboxed(
+                session.id,
+                PrincipalId::User(by),
+                inherited.then_some(source),
+            )
+            .await?;
+        }
         let user = Actor::User {
             id: PrincipalId::User(by),
             device_id: None,

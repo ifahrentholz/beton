@@ -29,6 +29,7 @@ impl SandboxProvider for NoneProvider {
             degraded_reasons: Cap::ALL.iter().map(|c| (*c, REASON.to_owned())).collect(),
             unavailable_reason: None,
             version: String::new(),
+            kernel: None,
         }
     }
 
@@ -43,7 +44,10 @@ impl SandboxProvider for NoneProvider {
                 policy.backend
             )));
         }
-        let mut c = child::command(&cmd.program, &cmd);
+        let mut c = child::command(&cmd.program, &cmd).map_err(|e| SandboxError::SpawnFailed {
+            message: format!("{}: {e}", cmd.program.display()),
+            kind: e.kind(),
+        })?;
         if cmd.env.clear {
             c.env_clear();
         }

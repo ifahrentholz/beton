@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,6 +42,7 @@ fn shell_tool(command: &str) -> Value {
         args: &args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     })
     .unwrap()
     .to_context()
@@ -50,7 +53,7 @@ fn shell(command: &str) -> Activation {
 }
 
 fn eval(sets: &[Arc<LoadedSet>], act: &Activation) -> Decision {
-    EffectiveSet::new(sets.to_vec()).evaluate(act, &EvalOptions::default())
+    EffectiveSet::new(sets.to_vec()).evaluate(act, &common::opts())
 }
 
 fn ask_reasons(d: &Decision) -> Vec<Reason> {
@@ -170,11 +173,12 @@ fn pol_010_allow_on_timeout_only_without_veto() {
         &shell("npm test"),
     ));
     assert_eq!(plan(&reasons, None).on_timeout, TimeoutAction::Deny);
-    // Ein Verbot auf einer niedrigeren Ebene hebt das `allow` einer höheren nicht auf.
+    // Ein Verbot auf einer niedrigeren Ebene hebt das `allow` einer höheren nicht auf. (Die
+    // Agent-Ebene kennt `on_timeout: allow` gar nicht, AGT-014; hier die Projekt-Ebene.)
     let reasons = ask_reasons(&eval(
         &[
             lenient(Scope::User, "u", "lenient", ""),
-            lenient(Scope::Agent, "a", "strict", ", allow_on_timeout: false"),
+            lenient(Scope::Project, "a", "strict", ", allow_on_timeout: false"),
         ],
         &shell("npm test"),
     ));
@@ -225,14 +229,14 @@ fn pol_010_ac2_grant_allows_same_command_only() {
     let fp = reasons[0].fingerprint.clone().expect("Fingerprint");
     assert_eq!(
         fp,
-        "shell:builtin/Bash@/work/repo:git push origin feature/x"
+        r#"["shell","builtin","Bash","/work/repo","git push origin feature/x"]"#
     );
 
     let mut grants = SessionGrants::default();
     let id = grants.add(&reasons[0].rule, &fp);
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let effective = EffectiveSet::new(sets.to_vec());
     let same = effective.evaluate(&shell("git push origin feature/x"), &opts);
@@ -264,7 +268,7 @@ fn pol_010_grant_survives_a_new_set_version() {
     );
     let opts = EvalOptions {
         grants: Some(&grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     let d = EffectiveSet::new(vec![v2]).evaluate(&shell("git push"), &opts);
     assert_eq!(d.outcome, Outcome::Allow);
@@ -309,7 +313,7 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
     let c = ask_reasons(&eval(&[s], &act(json!({"a": 3}))));
     let fp = a[0].fingerprint.clone().unwrap();
     assert!(
-        fp.starts_with("mcp:github/create_pull_request:sha256:"),
+        fp.starts_with(r#"["mcp","github","create_pull_request","sha256:"#),
         "{fp}"
     );
     assert_eq!(
@@ -317,6 +321,61 @@ fn pol_010_fingerprint_without_command_hashes_the_args() {
         "unabhängig von der Reihenfolge"
     );
     assert_ne!(a[0].fingerprint, c[0].fingerprint);
+}
+
+/// #242 N1/N2: Die Teile des Default-Fingerprints sind eindeutig kodiert. Mit Trennzeichen
+/// (`:`, `/`, `@`) kollidierten `echo a:rm -rf ~` in `/repo` und `rm -rf ~` in `/repo:echo a`
+/// bzw. Server `a/b` mit Tool `c` und Server `a` mit Tool `b/c`; ein Grant für den einen Call
+/// erlaubte dann den anderen.
+#[test]
+fn pol_010_default_fingerprint_encodes_its_parts_unambiguously() {
+    let s = set(
+        Scope::Project,
+        "p",
+        "rules:\n  - id: any\n    on: tool_call\n    action: ask\n",
+    );
+    let fp = |tool: Value| {
+        let act = Activation::new(Phase::ToolCall, json!({ "tool": tool })).unwrap();
+        ask_reasons(&eval(std::slice::from_ref(&s), &act))[0]
+            .fingerprint
+            .clone()
+            .expect("Fingerprint")
+    };
+    let shell = |cwd: &str, command: &str| {
+        json!({ "kind": "shell", "server": "builtin", "name": "Bash", "cwd": cwd,
+                "command": command, "args": { "command": command } })
+    };
+    assert_ne!(
+        fp(shell("/repo", "echo a:rm -rf ~")),
+        fp(shell("/repo:echo a", "rm -rf ~"))
+    );
+    assert_ne!(
+        fp(shell("/repo@x", "y")),
+        fp(
+            json!({ "kind": "shell", "server": "builtin", "name": "Bash@/repo", "cwd": "x",
+                   "command": "y", "args": { "command": "y" } })
+        )
+    );
+    let mcp = |server: &str, name: &str| json!({ "kind": "mcp", "server": server, "name": name, "args": {} });
+    assert_ne!(fp(mcp("a/b", "c")), fp(mcp("a", "b/c")));
+    // Ein Grant gilt also nur für genau diesen Call.
+    let rule = ask_reasons(&eval(
+        std::slice::from_ref(&s),
+        &Activation::new(Phase::ToolCall, json!({ "tool": mcp("a/b", "c") })).unwrap(),
+    ))[0]
+        .rule
+        .clone();
+    let mut grants = SessionGrants::default();
+    grants.add(&rule, &fp(mcp("a/b", "c")));
+    let opts = EvalOptions {
+        grants: Some(&grants),
+        ..common::opts()
+    };
+    let other = EffectiveSet::new(vec![s.clone()]).evaluate(
+        &Activation::new(Phase::ToolCall, json!({ "tool": mcp("a", "b/c") })).unwrap(),
+        &opts,
+    );
+    assert!(matches!(other.outcome, Outcome::Ask { .. }), "{other:?}");
 }
 
 #[test]
@@ -349,6 +408,7 @@ fn tool_act(harness: &str, name: &str, acp_kind: Option<&str>, args: Value) -> A
         args: &args,
         cwd: "/work/repo",
         home: Some("/home/u"),
+        trusted_servers: None,
     })
     .unwrap();
     Activation::new(Phase::ToolCall, json!({ "tool": tool.to_context() })).unwrap()
@@ -515,7 +575,7 @@ fn pol_014_static_kinds_feed_the_enforcement_check() {
 #[test]
 fn pol_009_effect_values_and_notify_messages_are_evaluated() {
     let s = set(
-        Scope::Project,
+        Scope::User,
         "p",
         "rules:\n  - id: count-pushes\n    on: tool_call\n    when: 'shell.has_command(tool.argv, \"git\", \"push\")'\n    action: notify\n    notify: { channels: [inbox], message: 'Push Nr. {{ state.session.pushes + 1 }}' }\n    effects:\n      - { op: increment, scope: session, key: pushes }\n      - { op: set, scope: session, key: last, value: 'tool.command' }\n",
     );
@@ -663,7 +723,7 @@ fn granted_after(sets: &[Arc<LoadedSet>], first: &Activation) -> SessionGrants {
 fn outcome_with(sets: &[Arc<LoadedSet>], grants: &SessionGrants, act: &Activation) -> Outcome {
     let opts = EvalOptions {
         grants: Some(grants),
-        ..EvalOptions::default()
+        ..common::opts()
     };
     EffectiveSet::new(sets.to_vec())
         .evaluate(act, &opts)

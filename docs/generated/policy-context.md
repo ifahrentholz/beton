@@ -12,6 +12,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.cost_usd` | `double` | alle | Kosten der Session in USD aus der Usage-Projektion (ohne Subscriptions). |
 | `session.depth` | `int` | alle | Tiefe im Sub-Agent-Baum (0 = Wurzel). |
 | `session.duration_s` | `double` | alle | Laufzeit in Sekunden. |
+| `session.equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung der Session in USD laut Preis-Katalog; nie Geld (ADR-0034). Budgets zählen `cost_usd + equivalent_usd` (POL-011). |
 | `session.harness` | `string` | alle | Harness, z. B. `claude`, `codex`, `acp:gemini`. |
 | `session.id` | `string` | alle | ID der Session (`ses_…`). |
 | `session.is_async` | `bool` | alle | Asynchroner Lauf (Timer, Schedule, Spawn mit `async`). |
@@ -21,6 +22,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.parent_id` | `string` | alle | Eltern-Session eines Sub-Agents. |
 | `session.permission_mode` | `string` | alle | Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`). |
 | `session.project` | `string` | alle | Projekt der Session. |
+| `session.project_root` | `string` | alle | Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`. |
 | `session.reasoning_effort` | `string` | alle | Aktueller Reasoning-Effort. |
 | `session.started_at` | `timestamp` | alle | Start der Session. |
 | `session.title` | `string` | alle | Titel der Session. |
@@ -28,15 +30,22 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.tokens_out` | `int` | alle | Ausgabe-Tokens bisher. |
 | `session.tool_calls` | `int` | alle | Tool-Calls bisher. |
 | `session.turns` | `int` | alle | Abgeschlossene oder laufende Turns. |
+| `session.unpriced_models` | `list(string)` | alle | Modelle der Session, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat (ohne Katalogpreis); Budgets fragen dann nach (`on_unpriced`, POL-011). |
 | `session.worktree` | `string` | alle | Arbeitsverzeichnis (absolut). |
 | `run.budget_usd` | `double` | alle | Budget des Runs in USD. |
 | `run.cost_usd` | `double` | alle | Kosten des Runs in USD. |
 | `run.duration_s` | `double` | alle | Laufzeit in Sekunden. |
+| `run.equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Runs in USD (ADR-0034). |
 | `run.id` | `string` | alle | ID des Runs. |
 | `run.subtree_cost_usd` | `double` | alle | Kosten des Runs inklusive aller Child-Sessions. |
+| `run.subtree_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent des Runs inklusive aller Child-Sessions in USD (ADR-0034). |
+| `run.subtree_unpriced_models` | `list(string)` | alle | Modelle ohne Preis im Run inklusive aller Child-Sessions (POL-011). |
 | `run.trigger` | `string` | alle | `interactive`, `spawn`, `timer`, `schedule`, `webhook`, `fork` oder `import`. |
 | `run.turns` | `int` | alle | Turns des Runs. |
+| `run.unpriced_models` | `list(string)` | alle | Modelle des Runs ohne Preis (POL-011). |
 | `user.daily_cost_usd` | `double` | alle | Kosten des Users heute (00:00 in `user.timezone`) in USD über alle Sessions. |
+| `user.daily_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034). |
+| `user.daily_unpriced_models` | `list(string)` | alle | Modelle ohne Preis, die der User heute genutzt hat (POL-012). |
 | `user.email` | `string` | alle | E-Mail-Adresse (nur mit Identität, ab M4). |
 | `user.id` | `string` | alle | ID (`usr_…`). |
 | `user.monthly_cost_usd` | `double` | alle | Kosten des Users im laufenden Monat in USD. |
@@ -50,6 +59,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `agent.source` | `string` | alle | Herkunft (`builtin`, `project`, `user`, Pfad). |
 | `agent.version` | `string` | alle | Version des Agents. |
 | `host.arch` | `string` | alle | Architektur (`aarch64`, `x86_64`). |
+| `host.home` | `string` | alle | Home-Verzeichnis des Users auf dem Host (absolut); `~` und `${home}` in `path_guard`. |
 | `host.id` | `string` | alle | ID (`hst_…`). |
 | `host.labels` | `list(string)` | alle | Labels des Hosts. |
 | `host.local` | `bool` | alle | Lokaler Host (derselbe Rechner wie der Server). |
@@ -101,6 +111,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `tool.repeat_count` | `int` | `tool_call`, `tool_result` | Wiederholungen eines identischen Calls im Fenster (POL-018). |
 | `tool.server` | `string` | `tool_call`, `tool_result` | MCP-Server oder `builtin`. |
 | `tool.urls` | `list(string)` | `tool_call`, `tool_result` | URLs in den Argumenten. |
+| `tool.write_paths` | `list(string)` | `tool_call`, `tool_result` | Pfade aus `paths`, in die der Call schreibt: Datei-Tools der Klassen `file_write` und `file_edit`, bei Shell-Kommandos Umleitungsziele und Ziele bekannter Datei-Kommandos (best effort, POL-016). |
 | `result.bytes` | `int` | `tool_result` | Größe in Bytes. |
 | `result.duration_ms` | `int` | `tool_result` | Dauer in Millisekunden. |
 | `result.error` | `string` | `tool_result` | Fehlertext. |

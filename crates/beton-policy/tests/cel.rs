@@ -363,3 +363,81 @@ fn pol_002_deep_or_long_expressions_are_load_errors_not_crashes() {
         assert_eq!(ok, Ok(true));
     }
 }
+
+/// #298: Integrationstests heben das Zeitbudget über eine Variable an, die nur Builds mit dem
+/// Feature `test-budget` lesen (#304); andere Builds kennen weder die Variable noch
+/// [`Limits::with_test_budget`].
+#[cfg(feature = "test-budget")]
+mod test_budget {
+    use beton_policy::cel::{Limits, TEST_BUDGET_ENV};
+
+    #[test]
+    fn pol_002_test_budget_raises_only_the_time_budget() {
+        let limits = Limits::default().with_test_budget(Some("1000"));
+        assert_eq!(limits.eval_budget_us, 1_000_000);
+        assert_eq!(limits.max_cost, Limits::default().max_cost);
+        assert_eq!(limits.max_expr_bytes, Limits::default().max_expr_bytes);
+    }
+
+    #[test]
+    fn pol_002_test_budget_never_lowers_and_ignores_invalid_values() {
+        for raw in [
+            None,
+            Some(""),
+            Some("1"),
+            Some("0"),
+            Some("-5"),
+            Some("1s"),
+            Some("abc"),
+        ] {
+            assert_eq!(
+                Limits::default().with_test_budget(raw),
+                Limits::default(),
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pol_002_test_budget_is_capped() {
+        let limits = Limits::default().with_test_budget(Some("999999999999"));
+        assert_eq!(limits.eval_budget_us, 60_000_000);
+    }
+
+    /// #304: Daemon und Runner warnen beim Start, wenn das Testbudget die 10 ms anhebt.
+    #[test]
+    fn pol_002_active_test_budget_is_reported_only_when_it_raises_the_budget() {
+        let expected = std::env::var(TEST_BUDGET_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|ms| *ms > 10)
+            .map(|ms| ms.min(60_000));
+        assert_eq!(Limits::active_test_budget_ms(), expected);
+    }
+
+    #[test]
+    fn pol_002_runtime_limits_are_the_defaults_plus_the_test_budget() {
+        assert_eq!(TEST_BUDGET_ENV, "BETON_TEST_POLICY_BUDGET_MS");
+        let raw = std::env::var(TEST_BUDGET_ENV).ok();
+        assert_eq!(
+            Limits::runtime(),
+            Limits::default().with_test_budget(raw.as_deref())
+        );
+    }
+}
+
+/// #304: Ohne das Feature `test-budget` gelten im Betrieb immer die Grenzen aus POL-002, auch
+/// wenn `BETON_TEST_POLICY_BUDGET_MS` gesetzt ist (in Testläufen über `.cargo/config.toml`).
+/// Das Feature schalten nur Dev-Dependencies ein; die CI prüft diesen Test zusätzlich im
+/// Release-Build mit gesetzter Variable.
+#[cfg(not(feature = "test-budget"))]
+#[test]
+fn pol_002_without_the_test_budget_feature_runtime_limits_are_the_defaults() {
+    assert_eq!(Limits::runtime(), Limits::default());
+    assert_eq!(Limits::active_test_budget_ms(), None);
+}
+
+#[test]
+fn pol_002_default_time_budget_stays_10_ms() {
+    assert_eq!(Limits::default().eval_budget_us, 10_000);
+}

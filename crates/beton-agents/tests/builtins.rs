@@ -92,6 +92,7 @@ fn agt_011_maestra_is_valid_and_matches_the_spec() {
             "investigate".into()
         ]))
     );
+    // Agent-Policies (AGT-014): kein Code, kein Merge/Push (AGT-011 AC2).
     let ids: Vec<_> = spec.policies.iter().filter_map(|p| p.id.clone()).collect();
     assert_eq!(ids, ["maestra-no-code", "maestra-no-merge"]);
 

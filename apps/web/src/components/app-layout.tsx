@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Inbox, MessagesSquare } from 'lucide-react'
+import { Gauge, Inbox, MessagesSquare, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSessions } from '@/store/sessions'
 import { useInboxCount } from './inbox'
@@ -19,6 +19,9 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
   const [newOpen, setNewOpen] = useState(false)
   const path = useRouterState({ select: (s) => s.location.pathname })
   const inbox = path.startsWith('/inbox')
+  // Verbrauch (USE-006) ohne Session-Liste, wie im Entwurf `usage-overview`.
+  const usage = path.startsWith('/usage')
+  const policies = path.startsWith('/policies')
   const count = useInboxCount()
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background text-foreground">
@@ -27,8 +30,8 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
           to="/"
           title="Sessions"
           aria-label="Sessions"
-          aria-current={!inbox ? 'page' : undefined}
-          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && 'bg-accent text-foreground')}
+          aria-current={!inbox && !usage && !policies ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && !usage && !policies && 'bg-accent text-foreground')}
         >
           <MessagesSquare className="size-[18px]" />
         </Link>
@@ -47,6 +50,26 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
             </span>
           )}
         </Link>
+        <Link
+          to="/usage"
+          title="Verbrauch"
+          aria-label="Verbrauch"
+          aria-current={usage ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', usage && 'bg-accent text-foreground')}
+          data-testid="nav-usage"
+        >
+          <Gauge className="size-[18px]" />
+        </Link>
+        <Link
+          to="/policies/shadow"
+          title="Policies: Shadow-Modus"
+          aria-label="Policies: Shadow-Modus"
+          aria-current={policies ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', policies && 'bg-accent text-foreground')}
+          data-testid="nav-policies"
+        >
+          <ShieldCheck className="size-[18px]" />
+        </Link>
         <div className="mt-auto flex flex-col items-center gap-2 pb-1">
           <span
             title={offline ? 'Daemon nicht erreichbar' : 'Lokaler Server auf diesem Rechner'}
@@ -54,9 +77,11 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
           />
         </div>
       </div>
-      <div className="hidden w-64 shrink-0 border-r border-border lg:block">
-        <SessionList active={active} onNew={() => setNewOpen(true)} />
-      </div>
+      {!usage && (
+        <div className="hidden w-64 shrink-0 border-r border-border lg:block">
+          <SessionList active={active} onNew={() => setNewOpen(true)} />
+        </div>
+      )}
       {listOpen && (
         <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-label="Sessions">
           <button className="absolute inset-0 bg-foreground/30" aria-label="Liste schließen" onClick={closeList} />

@@ -4,16 +4,17 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use beton_core::event::PolicySetInvalid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::Phase;
 use crate::cel::{CompileError, Program, compile_bool, compile_expr, ext};
 use crate::doc::{
-    Action, ApprovalDoc, DefaultAction, Mode, PolicySetDoc, Remember, RuleDoc, RuleType,
-    SPEC_VERSION, TimeoutAction, modifiable,
+    Action, ApprovalDoc, DefaultAction, Enforcement, Mode, PolicySetDoc, Remember, RuleDoc,
+    RuleType, SPEC_VERSION, TimeoutAction, modifiable,
 };
 use crate::types::Ty;
 use crate::yaml::{self, Document, Style};
@@ -21,11 +22,16 @@ use crate::yaml::{self, Document, Style};
 /// Größte Policy-Datei (1 MiB).
 pub const MAX_FILE_BYTES: u64 = 1 << 20;
 
+/// Modifikationen, die nur Policies ab der User-Ebene vornehmen dürfen: Ein Repo bzw. ein Agent
+/// könnte damit sonst Schutz lockern (#231: Permission-Mode) oder Befehle in Tool-Calls
+/// einschleusen (#234: Argumente).
+pub const USER_ONLY_MODIFY: [&str; 2] = ["permission_mode", "args"];
+
 /// Kanonische Tool-Klassen (POL-005), gültig in `kinds:`.
 use crate::enforcement::KINDS;
 
 /// Ebene eines Policy-Sets; die Reihenfolge ist die Autorität (`Org` zuerst).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Org,
@@ -45,6 +51,27 @@ impl Scope {
             Scope::Agent => "agent",
         }
     }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "org" => Scope::Org,
+            "team" => Scope::Team,
+            "user" => Scope::User,
+            "project" => Scope::Project,
+            "agent" => Scope::Agent,
+            _ => return None,
+        })
+    }
+}
+
+/// Format des Inhalts, aus dem ein Set geladen wurde (Snapshot im Blob-Store, POL-027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    /// Policy-Datei (YAML-Text).
+    Yaml,
+    /// Inline-Regeln (z. B. `policies:` im `agent.yaml`) als kanonisches JSON-Array.
+    Inline,
 }
 
 /// Verweis auf eine Regel (für Gründe, Konflikte, Audit).
@@ -66,7 +93,9 @@ pub enum RuleKind {
         action: Action,
     },
     /// Eingebauter Regeltyp ohne Entzuckerung. `require_approval` (POL-014) wird beim Laden
-    /// zu einer `ask`-Regel; die übrigen folgen mit ihren Regeltyp-Paketen (WP-42, WP-43) und
+    /// zu einer `ask`-Regel, die Typen aus WP-42 über [`crate::sugar`], `spend_cap`,
+    /// `daily_budget` und `model_route` (POL-011 bis POL-013) über [`crate::budget`] zu
+    /// mehreren CEL-Regeln derselben ID; die übrigen folgen mit ihren Regeltyp-Paketen und
     /// gelten bis dahin in ihren Phasen als Fehler (fail closed).
     Builtin(RuleType),
 }
@@ -105,6 +134,17 @@ impl LoadedRule {
     }
 }
 
+/// Ein Default der Ebene, den ein Regeltyp gesetzt hat (`tool_allowlist`, POL-015).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeDefault {
+    /// ID der Typ-Regel (für die Start-Prüfung, POL-024).
+    pub rule_id: String,
+    /// Begründung der Ablehnung (`deny_reason`).
+    pub reason: String,
+    /// `enforcement` der Typ-Regel; ohne Angabe `required`.
+    pub enforcement: Option<Enforcement>,
+}
+
 /// Ein geladenes Policy-Set.
 #[derive(Debug, Clone)]
 pub struct LoadedSet {
@@ -115,11 +155,57 @@ pub struct LoadedSet {
     /// `sha256:<hex>` über den Inhalt.
     pub version: String,
     pub mode: Mode,
+    /// `defaults` der Datei, verschärft um die Defaults entzuckerter Regeltypen (POL-015).
     pub defaults: BTreeMap<Phase, DefaultAction>,
+    /// Defaults, die ein Regeltyp gesetzt hat (POL-015), mit Herkunft.
+    pub type_defaults: BTreeMap<Phase, TypeDefault>,
     pub rules: Vec<LoadedRule>,
+    /// Inhalt, aus dem das Set geladen wurde; `version` ist sein SHA-256 (POL-027 AC2).
+    pub format: SourceFormat,
+    pub source: Arc<[u8]>,
 }
 
 impl LoadedSet {
+    /// Hinweise zu handgeschriebenen Regeln (kein Ladefehler): `(Regel-ID, Text)`. Der Runner
+    /// meldet sie als Warnung (`notice`). Entzuckerte Regeltypen erzeugen keine.
+    pub fn lints(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for rule in self.rules.iter().filter(|r| r.doc.rule_type.is_none()) {
+            // #242 N3: ohne Tool und Server gilt ein Grant auch für andere Tools.
+            if let Some(key) = &rule.remember_key {
+                let fields = key.fields();
+                if !fields.contains("tool.name") || !fields.contains("tool.server") {
+                    out.push((
+                        rule.id.clone(),
+                        "`remember_key` enthält nicht `tool.name` und `tool.server`: ein Grant \
+                         gilt dann auch für andere Tools bzw. Server mit demselben Schlüssel \
+                         (POL-010)"
+                            .to_owned(),
+                    ));
+                }
+            }
+            // #248: lexikalische Vergleiche auf rohen Pfaden.
+            let when = match &rule.kind {
+                RuleKind::Cel { when: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            if when
+                .into_iter()
+                .chain(rule.aux())
+                .any(Program::compares_raw_paths)
+            {
+                out.push((
+                    rule.id.clone(),
+                    "vergleicht `tool.paths`, `tool.write_paths` bzw. `tool.cwd` lexikalisch \
+                     (ohne Symlinks und Groß-/Kleinschreibung des Dateisystems); für Pfade \
+                     `resolve(p)` bzw. `under(p, root)` verwenden (POL-002)"
+                        .to_owned(),
+                ));
+            }
+        }
+        out
+    }
+
     pub fn rule_ref(&self, rule_id: &str) -> RuleRef {
         RuleRef {
             scope: self.scope,
@@ -169,6 +255,8 @@ struct Locator<'a> {
     doc: Option<&'a Document>,
     /// Präfix des Feldpfads (`policies` bei Inline-Regeln aus `agent.yaml`).
     prefix: &'a str,
+    /// Name des Sets (Zustands-Keys der Regeltypen, POL-011/POL-012).
+    set: &'a str,
 }
 
 impl Locator<'_> {
@@ -275,6 +363,7 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
         text,
         doc: Some(&doc),
         prefix: "",
+        set: "",
     };
     let set: PolicySetDoc = serde_path_to_error::deserialize(doc.value.clone())
         .map_err(|e| loc.at(&error_path(&e), e.inner()))?;
@@ -293,15 +382,24 @@ pub fn parse_set(scope: Scope, origin: &str, text: &str) -> Result<LoadedSet, Lo
             format!("name `{}` muss [a-z0-9-] sein (max. 64)", set.name),
         ));
     }
-    let rules = check_rules(&set.rules, &loc)?;
+    let loc = Locator {
+        set: &set.name,
+        ..loc
+    };
+    let checked = check_rules(scope, &set.rules, &loc, set.mode == Mode::DryRun)?;
+    let mut defaults = set.defaults;
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: set.name,
         origin: origin.to_owned(),
         version: version_of(text.as_bytes()),
         mode: set.mode,
-        defaults: set.defaults,
-        rules,
+        defaults,
+        type_defaults,
+        rules: checked.rules,
+        format: SourceFormat::Yaml,
+        source: Arc::from(text.as_bytes()),
     })
 }
 
@@ -336,6 +434,7 @@ pub fn inline_set(
         text: "",
         doc: None,
         prefix: "policies",
+        set: name,
     };
     let docs: Vec<RuleDoc> = rules
         .iter()
@@ -352,30 +451,140 @@ pub fn inline_set(
             })
         })
         .collect::<Result<_, _>>()?;
-    let checked = check_rules_with(&docs, &loc, |i| format!("[{i}]"))?;
+    let checked = check_rules_with(scope, &docs, &loc, false, |i| format!("[{i}]"))?;
     let canonical = serde_json::to_vec(rules).unwrap_or_default();
+    let mut defaults = BTreeMap::new();
+    let type_defaults = checked.merge_defaults(&mut defaults);
     Ok(LoadedSet {
         scope,
         name: name.to_owned(),
         origin: origin.to_owned(),
         version: version_of(&canonical),
         mode: Mode::Enforce,
-        defaults: BTreeMap::new(),
-        rules: checked,
+        defaults,
+        type_defaults,
+        rules: checked.rules,
+        format: SourceFormat::Inline,
+        source: Arc::from(canonical),
     })
 }
 
-fn check_rules(rules: &[RuleDoc], loc: &Locator) -> Result<Vec<LoadedRule>, LoadError> {
-    check_rules_with(rules, loc, |i| format!("rules[{i}]"))
+/// Die `policies:` eines Agents als Sets der Agent-Ebene (AGT-014): Inline-Regeln bilden ein
+/// Set namens `name`, jede Referenz `{ref: <pfad>}` ein eigenes Set aus der Datei, die `read`
+/// relativ zum Agent-Verzeichnis liefert. Beide verschärfen nur (Ladefehler sonst, POL-007).
+pub fn agent_sets(
+    scope: Scope,
+    name: &str,
+    origin: &str,
+    entries: &[serde_json::Value],
+    read: impl Fn(&str) -> Result<String, String>,
+) -> Result<Vec<LoadedSet>, LoadError> {
+    let mut inline = Vec::new();
+    let mut index = Vec::new();
+    let mut sets = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        match e.get("ref").and_then(serde_json::Value::as_str) {
+            Some(rel) => {
+                let file = format!("{origin} → {rel}");
+                // Nur relativ und innerhalb des Agent-Verzeichnisses; sonst wird nichts gelesen
+                // (Security-Review #327). Symlinks hinaus lehnt `read` ab.
+                let inside = !rel.is_empty()
+                    && std::path::Path::new(rel)
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                if !inside {
+                    return Err(LoadError {
+                        file,
+                        line: 1,
+                        column: 1,
+                        message: format!(
+                            "policies[{i}].ref: Pfad außerhalb des Agent-Verzeichnisses \
+                             (nur relativ, ohne `..`)"
+                        ),
+                    });
+                }
+                let text = read(rel).map_err(|m| LoadError {
+                    file: file.clone(),
+                    line: 1,
+                    column: 1,
+                    message: format!("policies[{i}].ref: {m}"),
+                })?;
+                sets.push(parse_set(scope, &file, &text)?);
+            }
+            None => {
+                inline.push(e.clone());
+                index.push(i);
+            }
+        }
+    }
+    if !inline.is_empty() {
+        let set = inline_set(scope, name, origin, &inline).map_err(|mut err| {
+            // Feldpfade nennen die Position im `agent.yaml`, nicht die unter den Inline-Regeln.
+            if let Some(rest) = err.message.strip_prefix("policies[")
+                && let Some((k, tail)) = rest.split_once(']')
+                && let Some(orig) = k.parse::<usize>().ok().and_then(|k| index.get(k))
+            {
+                err.message = format!("policies[{orig}]{tail}");
+            }
+            err
+        })?;
+        sets.insert(0, set);
+    }
+    Ok(sets)
+}
+
+/// Geprüfte Regeln eines Sets und die Defaults, die entzuckerte Regeltypen setzen.
+struct Checked {
+    rules: Vec<LoadedRule>,
+    defaults: Vec<(Phase, DefaultAction, TypeDefault)>,
+}
+
+impl Checked {
+    /// Verschärft `defaults` um die Defaults der Regeltypen; liefert deren Herkunft. Ein Default,
+    /// den schon die Datei (`defaults:`) so streng setzt, bleibt einer der Datei (`required`);
+    /// setzen mehrere Typ-Regeln denselben, gilt das strengere `enforcement`.
+    fn merge_defaults(
+        &self,
+        defaults: &mut BTreeMap<Phase, DefaultAction>,
+    ) -> BTreeMap<Phase, TypeDefault> {
+        let mut out: BTreeMap<Phase, TypeDefault> = BTreeMap::new();
+        for (phase, default, origin) in &self.defaults {
+            let current = defaults.get(phase).copied().unwrap_or(DefaultAction::Allow);
+            if *default > current {
+                defaults.insert(*phase, *default);
+                out.insert(*phase, origin.clone());
+            } else if *default == current
+                && let Some(existing) = out.get_mut(phase)
+                && origin.enforcement != Some(Enforcement::BestEffort)
+            {
+                existing.enforcement = None;
+            }
+        }
+        out
+    }
+}
+
+fn check_rules(
+    scope: Scope,
+    rules: &[RuleDoc],
+    loc: &Locator,
+    shadow: bool,
+) -> Result<Checked, LoadError> {
+    check_rules_with(scope, rules, loc, shadow, |i| format!("rules[{i}]"))
 }
 
 fn check_rules_with(
+    scope: Scope,
     rules: &[RuleDoc],
     loc: &Locator,
+    shadow: bool,
     base: impl Fn(usize) -> String,
-) -> Result<Vec<LoadedRule>, LoadError> {
+) -> Result<Checked, LoadError> {
     let mut seen = HashSet::new();
-    let mut out = Vec::with_capacity(rules.len());
+    let mut out = Checked {
+        rules: Vec::with_capacity(rules.len()),
+        defaults: Vec::new(),
+    };
     for (i, rule) in rules.iter().enumerate() {
         let at = base(i);
         let field = |f: &str| format!("{at}.{f}");
@@ -388,33 +597,209 @@ fn check_rules_with(
         if !seen.insert(rule.id.as_str()) {
             return Err(loc.at(&field("id"), format!("Regel-ID `{}` ist doppelt", rule.id)));
         }
-        out.push(check_rule(rule, loc, &at)?);
+        // Zustands-Keys der Regeltypen schreiben nur diese selbst (#268).
+        for (j, effect) in rule.effects.iter().enumerate() {
+            if let Some(t) = crate::budget::reserved_prefix(&effect.key) {
+                return Err(loc.at(
+                    &field(&format!("effects[{j}].key")),
+                    format!(
+                        "Key `{}` ist für den Regeltyp {} reserviert ({}/…)",
+                        effect.key,
+                        t.as_str(),
+                        t.as_str()
+                    ),
+                ));
+            }
+        }
+        // Die Präfixe `project/` und `agent/` gehören dem Zustand ihrer Ebene (Security-Review
+        // #327, #268).
+        for (prefix, owner) in [("agent/", Scope::Agent), ("project/", Scope::Project)] {
+            if scope != owner
+                && let Some(j) = rule.effects.iter().position(|e| e.key.starts_with(prefix))
+            {
+                return Err(loc.at(
+                    &field(&format!("effects[{j}].key")),
+                    format!(
+                        "Key `{}`: der Präfix `{prefix}` ist für Regeln der Ebene {} reserviert",
+                        rule.effects[j].key,
+                        owner.as_str()
+                    ),
+                ));
+            }
+        }
+        // Unterhalb der User-Ebene verschärfen Regeln nur (POL-007, AGT-014, #268): Effects nur
+        // auf eigenen Session-Zustand, nie auf Zähler oder Zustand anderer Ebenen.
+        if matches!(scope, Scope::Project | Scope::Agent) {
+            let own = format!("{}/{}/", scope.as_str(), loc.set);
+            for (j, effect) in rule.effects.iter().enumerate() {
+                let own_scope = matches!(
+                    effect.scope,
+                    crate::doc::StateScope::Session | crate::doc::StateScope::Run
+                );
+                if !own_scope || !effect.key.starts_with(&own) {
+                    return Err(loc.at(
+                        &field(&format!("effects[{j}]")),
+                        format!(
+                            "Effects der Ebene {} schreiben nur eigenen Zustand der Session \
+                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen",
+                            scope.as_str()
+                        ),
+                    ));
+                }
+            }
+        }
+        // Keine automatische Freigabe nach Ablauf einer Rückfrage auf der Agent-Ebene.
+        if scope == Scope::Agent
+            && rule
+                .approval
+                .as_ref()
+                .is_some_and(|a| a.on_timeout == Some(crate::doc::TimeoutAction::Allow))
+        {
+            return Err(loc.at(
+                &field("approval.on_timeout"),
+                "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
+            ));
+        }
+        if let Some(parts) = desugar_parts(scope, rule, loc, &at)? {
+            out.rules.extend(parts);
+            continue;
+        }
+        if let Some(rule_type) = rule.rule_type
+            && let Some(sugar) = crate::sugar::desugar(rule_type, rule, shadow || rule.dry_run)
+        {
+            check_type_fields(rule, rule_type, loc, &at)?;
+            let sugar = sugar.map_err(|e| {
+                let path = if e.field.is_empty() {
+                    format!("{at}.params")
+                } else {
+                    format!("{at}.params.{}", e.field)
+                };
+                loc.at(&path, e.message)
+            })?;
+            out.rules.extend(sugar_rules(rule, sugar.rules, loc, &at)?);
+            out.defaults
+                .extend(sugar.defaults.into_iter().map(|(phase, default, reason)| {
+                    (
+                        phase,
+                        default,
+                        TypeDefault {
+                            rule_id: rule.id.clone(),
+                            reason,
+                            enforcement: rule.enforcement,
+                        },
+                    )
+                }));
+            continue;
+        }
+        out.rules.push(check_rule(scope, rule, loc, &at)?);
     }
     Ok(out)
 }
 
-fn check_rule(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, LoadError> {
+/// Felder, die neben `type` nicht erlaubt sind (sie gehören zu den entzuckerten Regeln).
+fn check_type_fields(
+    rule: &RuleDoc,
+    rule_type: RuleType,
+    loc: &Locator,
+    at: &str,
+) -> Result<(), LoadError> {
     let field = |f: &str| format!("{at}.{f}");
-    if let Some(rule_type) = rule.rule_type {
-        let forbidden = [
-            ("on", rule.on.is_some()),
-            ("when", rule.when.is_some()),
-            ("action", rule.action.is_some()),
-            ("modify", rule.modify.is_some()),
-            ("notify", rule.notify.is_some()),
-            ("approval", rule.approval.is_some()),
-            ("effects", !rule.effects.is_empty()),
-            ("remember_key", rule.remember_key.is_some()),
-        ];
-        if let Some((name, _)) = forbidden.iter().find(|(_, set)| *set) {
+    let forbidden = [
+        ("on", rule.on.is_some()),
+        ("when", rule.when.is_some()),
+        ("action", rule.action.is_some()),
+        ("modify", rule.modify.is_some()),
+        ("notify", rule.notify.is_some()),
+        ("approval", rule.approval.is_some()),
+        ("effects", !rule.effects.is_empty()),
+        ("remember_key", rule.remember_key.is_some()),
+    ];
+    if let Some((name, _)) = forbidden.iter().find(|(_, set)| *set) {
+        return Err(loc.at(
+            &field(name),
+            format!(
+                "`{name}` ist mit `type` ({}) nicht erlaubt",
+                rule_type.as_str()
+            ),
+        ));
+    }
+    for (j, kind) in rule.kinds.iter().flatten().enumerate() {
+        if !KINDS.contains(&kind.as_str()) {
             return Err(loc.at(
-                &field(name),
+                &field(&format!("kinds[{j}]")),
                 format!(
-                    "`{name}` ist mit `type` ({}) nicht erlaubt",
-                    rule_type.as_str()
+                    "unbekannte Tool-Klasse `{kind}` (erlaubt: {})",
+                    KINDS.join(", ")
                 ),
             ));
         }
+    }
+    Ok(())
+}
+
+/// Kompiliert die entzuckerten Regeln eines Regeltyps (`<id>` bzw. `<id>/<teil>`). Eigene
+/// `reason` und `kinds` der Typ-Regel gelten für alle Teile.
+fn sugar_rules(
+    rule: &RuleDoc,
+    parts: Vec<crate::sugar::SugarRule>,
+    loc: &Locator,
+    at: &str,
+) -> Result<Vec<LoadedRule>, LoadError> {
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        let id = match part.part {
+            Some(p) => format!("{}/{p}", rule.id),
+            None => rule.id.clone(),
+        };
+        // Der CEL-Text stammt aus der Entzuckerung; ein Fehler darin betrifft die Parameter.
+        let when = compile_bool(&part.when, part.phase).map_err(|e| {
+            loc.at(
+                &format!("{at}.params"),
+                format!("Entzuckerung zu `{id}` fehlgeschlagen: {}", e.message),
+            )
+        })?;
+        let mut doc = rule.clone();
+        doc.reason.get_or_insert(part.reason);
+        if doc.kinds.is_none() {
+            doc.kinds = part.kinds;
+        }
+        if doc.enforcement.is_none() {
+            doc.enforcement = part.enforcement;
+        }
+        let mut notify_exprs = Vec::new();
+        if let Some(message) = part.notify.as_ref().and_then(|n| n.message.as_ref()) {
+            for expr in template_exprs(message) {
+                notify_exprs.push(
+                    compile_expr(expr, part.phase, Ty::Dyn)
+                        .map_err(|e| loc.at(&format!("{at}.params"), &e))?,
+                );
+            }
+        }
+        doc.notify = part.notify;
+        out.push(LoadedRule {
+            id,
+            kind: RuleKind::Cel {
+                phase: part.phase,
+                when: Some(when),
+                action: part.action,
+            },
+            doc,
+            notify_exprs,
+            effect_values: Vec::new(),
+            remember_key: None,
+        });
+    }
+    Ok(out)
+}
+
+fn check_rule(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<LoadedRule, LoadError> {
+    if let Some(rule_type) = rule.rule_type {
+        check_type_fields(rule, rule_type, loc, at)?;
         if rule_type == RuleType::RequireApproval {
             return require_approval(rule, loc, at);
         }
@@ -427,6 +812,62 @@ fn check_rule(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, Loa
             remember_key: None,
         });
     }
+    check_cel_rule(scope, rule, loc, at)
+}
+
+/// Regeltypen, die zu mehreren CEL-Regeln derselben ID werden (POL-011 bis POL-013,
+/// [`crate::budget`]). Jeder Teil durchläuft die Prüfung einer handgeschriebenen Regel seiner
+/// Ebene; `doc` behält Typ und Parameter (Explain, Hot-Reload).
+fn desugar_parts(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<Option<Vec<LoadedRule>>, LoadError> {
+    let Some(rule_type) = rule.rule_type else {
+        return Ok(None);
+    };
+    check_type_fields(rule, rule_type, loc, at)?;
+    let Some(parts) = crate::budget::desugar(rule_type, rule, scope, loc.set, loc.file) else {
+        return Ok(None);
+    };
+    let params = |path: &str| {
+        if path.is_empty() {
+            format!("{at}.params")
+        } else {
+            format!("{at}.params.{path}")
+        }
+    };
+    let parts = parts.map_err(|e| match e {
+        crate::budget::ParamError::At { path, message } => loc.at(&params(&path), message),
+        crate::budget::ParamError::Cel { path, error } => loc.cel(&params(&path), &error),
+    })?;
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        let mut loaded = check_cel_rule(scope, &part, loc, at).map_err(|e| LoadError {
+            message: format!(
+                "{}: Entzuckerung von {} fehlgeschlagen: {}",
+                loc.path(&params("")),
+                rule_type.as_str(),
+                e.message
+            ),
+            ..e
+        })?;
+        loaded.doc.rule_type = Some(rule_type);
+        loaded.doc.params.clone_from(&rule.params);
+        out.push(loaded);
+    }
+    Ok(Some(out))
+}
+
+/// Eine Regel mit Phase, Bedingung und Aktion (handgeschrieben oder entzuckert).
+fn check_cel_rule(
+    scope: Scope,
+    rule: &RuleDoc,
+    loc: &Locator,
+    at: &str,
+) -> Result<LoadedRule, LoadError> {
+    let field = |f: &str| format!("{at}.{f}");
     if rule.params.is_some() {
         return Err(loc.at(&field("params"), "`params` gibt es nur mit `type`"));
     }
@@ -457,6 +898,15 @@ fn check_rule(rule: &RuleDoc, loc: &Locator, at: &str) -> Result<LoadedRule, Loa
                     return Err(loc.at(
                         &field(&format!("modify.{f}")),
                         format!("`{f}` ist in Phase {phase} nicht modifizierbar"),
+                    ));
+                }
+                if scope > Scope::User && USER_ONLY_MODIFY.contains(&f) {
+                    return Err(loc.at(
+                        &field(&format!("modify.{f}")),
+                        format!(
+                            "`{f}` darf nur eine Policy ab der User-Ebene ändern, nicht die Ebene {}",
+                            scope.as_str()
+                        ),
                     ));
                 }
             }

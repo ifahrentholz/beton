@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use beton_sdk::{Client, DaemonInfo};
 use common::{
-    BackgroundDaemon, Serve, background_home, beton, events, fake_claude, run, status, stderr,
-    stdout, wait_until,
+    BackgroundDaemon, Serve, background_home, beton, events, fake_claude, fake_cli, run, status,
+    stderr, stdout, wait_until,
 };
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ async fn cli_002_ac1_run_claude_starts_the_daemon_and_streams_the_answer() {
     let mut child = beton(home.path())
         .current_dir(project.path())
         .env("BETON_CLAUDE_PATH", fake_claude(&scenario))
-        .args(["run", "claude", "-p", "-"])
+        .args(["run", "--unsandboxed", "claude", "-p", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -79,7 +79,7 @@ async fn api_006_ac1_prompt_from_stdin_writes_only_the_answer() {
     let scenario = serve.scenario(HELLO);
     let mut child = beton(serve.home())
         .current_dir(serve.work.path())
-        .args(["run", "fake", "--scenario"])
+        .args(["run", "--unsandboxed", "fake", "--scenario"])
         .arg(&scenario)
         .args(["-p", "-"])
         .stdin(Stdio::piped())
@@ -102,6 +102,7 @@ async fn api_006_ac2_json_output_is_exactly_one_object() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--output-format",
             "json",
@@ -131,6 +132,7 @@ async fn api_006_ac3_on_ask_deny_exits_4_without_hanging() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--on-ask",
             "deny",
@@ -145,6 +147,181 @@ async fn api_006_ac3_on_ask_deny_exits_4_without_hanging() {
 }
 
 #[tokio::test]
+async fn api_006_ac4_exceeding_max_cost_exits_5_via_a_spend_cap_rule() {
+    let serve = Serve::start();
+    let scenario = serve.scenario(
+        "turns:\n  - emit: [{ message: \"teuer\" }, { usage: { input_tokens: 10, output_tokens: 10, cost_usd: 1.0 } }]\n",
+    );
+    let script = |max: &str| {
+        run(beton(serve.home())
+            .current_dir(serve.work.path())
+            .args([
+                "run",
+                "--unsandboxed",
+                "fake",
+                "--max-cost",
+                max,
+                "--output-format",
+                "json",
+                "-p",
+                "los",
+                "--scenario",
+            ])
+            .arg(&scenario))
+    };
+    let out = script("0.5");
+    assert_eq!(out.status.code(), Some(5), "{}", stderr(&out));
+    let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(v["status"], "denied", "{v}");
+    assert!(stderr(&out).contains("max-cost"), "{}", stderr(&out));
+    // Durchgesetzt hat es eine `spend_cap`-Regel der Session.
+    let id = v["session_id"].as_str().unwrap();
+    let show = run(beton(serve.home()).current_dir(serve.work.path()).args([
+        "--json",
+        "policy",
+        "show",
+        "--effective",
+        "--session",
+        id,
+    ]));
+    assert!(show.status.success(), "{}", stderr(&show));
+    let text = stdout(&show);
+    assert!(
+        text.contains("max-cost") && text.contains("spend_cap"),
+        "{text}"
+    );
+    // Unter dem Budget endet der Lauf normal; ungültige Budgets sind ein Usage-Fehler.
+    let out = script("5");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(script("0").status.code(), Some(2));
+}
+
+/// Security-Review #284 (M2): `--max-cost` gilt für den Lauf samt Sub-Agents. Ein Agent
+/// (Codex) startet einen teuren Sub-Agent (Claude über ein Abo, Listenpreis 3 USD); der Lauf
+/// endet mit Exit-Code 5, und das Child erbt das verbleibende Budget.
+#[cfg(unix)]
+#[tokio::test]
+async fn api_006_ac4_max_cost_counts_the_sub_agents_of_the_run() {
+    let vendor = tempfile::tempdir().unwrap();
+    let claude_s = vendor.path().join("claude.yaml");
+    let codex_s = vendor.path().join("codex.yaml");
+    std::fs::write(
+        &claude_s,
+        "turns:\n  - expect_input: rechne\n    emit:\n      - { message: \"42\" }\n      - { usage: { input_tokens: 1000000, output_tokens: 0, model: claude-sonnet-4-5 } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &codex_s,
+        "turns:\n  - expect_input: los\n    emit:\n      - { mcp_call: { server: beton, tool: session_spawn, args: { agent: helfer, prompt: rechne } } }\n      - { message: \"fertig\" }\n",
+    )
+    .unwrap();
+    let link = vendor.path().join("bin/codex");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(fake_cli(), &link).unwrap();
+    let env = [
+        (
+            "BETON_CLAUDE_PATH".to_owned(),
+            format!(
+                "{} --protocol stream-json --scenario {}",
+                fake_cli().display(),
+                claude_s.display()
+            ),
+        ),
+        (
+            "BETON_CODEX_PATH".to_owned(),
+            format!(
+                "{} --protocol app-server --scenario {}",
+                link.display(),
+                codex_s.display()
+            ),
+        ),
+    ];
+    let pairs: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let serve = Serve::start_without_api_keys(&pairs);
+    let work = serve.work.path();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "."],
+        &[
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Start",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(work)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    std::fs::create_dir_all(work.join(".beton/agents/lead")).unwrap();
+    write(
+        &work.join(".beton/agents/lead"),
+        "agent.yaml",
+        "spec_version: 1\nname: lead\nexecutor: { harness: codex }\nagents:\n  helfer:\n    executor: { harness: claude, model: claude-sonnet-4-5 }\nspawn: { agents: [helfer] }\n",
+    );
+    let mut cmd = beton(serve.home());
+    cmd.current_dir(work);
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    for (k, _) in std::env::vars() {
+        if k.ends_with("_API_KEY") {
+            cmd.env_remove(k);
+        }
+    }
+    let out = run(cmd.args([
+        "run",
+        "--unsandboxed",
+        "lead",
+        "--max-cost",
+        "0.5",
+        "--output-format",
+        "json",
+        "-p",
+        "los",
+    ]));
+    let v: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    if out.status.code() != Some(5) {
+        // Diagnose: Verlauf von Parent und Child.
+        let client = serve.client();
+        let ev = events(&client, v["session_id"].as_str().unwrap()).await;
+        let mut text = serde_json::to_string_pretty(&ev).unwrap();
+        for e in ev.iter().filter(|e| e["type"] == "agent.spawned") {
+            if let Some(child) = e["payload"]["child_session_id"].as_str() {
+                let child_events = events(&client, child).await;
+                text.push_str(&format!(
+                    "\n--- Child {child}\n{}",
+                    serde_json::to_string_pretty(&child_events).unwrap()
+                ));
+            }
+        }
+        panic!("{}\n{text}", stderr(&out));
+    }
+    assert_eq!(v["status"], "denied", "{v}");
+    // Das Child erbt das verbleibende Budget des Laufs.
+    let client = serve.client();
+    let parent = events(&client, v["session_id"].as_str().unwrap()).await;
+    let spawned = parent
+        .iter()
+        .find(|e| e["type"] == "agent.spawned")
+        .unwrap_or_else(|| panic!("{parent:#?}"));
+    let child = spawned["payload"]["child_session_id"].as_str().unwrap();
+    let created = events(&client, child).await;
+    let max = created[0]["payload"]["max_cost_usd"].as_f64().unwrap();
+    assert!(max > 0.0 && max <= 0.5, "{max}");
+}
+
+#[tokio::test]
 async fn cli_002_ac2_continue_picks_the_last_session_in_this_directory() {
     let serve = Serve::start();
     let scenario = serve.scenario(
@@ -155,6 +332,7 @@ async fn cli_002_ac2_continue_picks_the_last_session_in_this_directory() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--output-format",
             "json",
@@ -168,12 +346,13 @@ async fn cli_002_ac2_continue_picks_the_last_session_in_this_directory() {
     // Eine jüngere Session in einem anderen Verzeichnis darf nicht gewählt werden.
     let decoy = run(beton(serve.home())
         .current_dir(other.path())
-        .args(["run", "fake", "--detach", "--scenario"])
+        .args(["run", "--unsandboxed", "fake", "--detach", "--scenario"])
         .arg(&scenario));
     assert!(decoy.status.success(), "{}", stderr(&decoy));
 
     let second = run(beton(serve.home()).current_dir(serve.work.path()).args([
         "run",
+        "--unsandboxed",
         "-c",
         "--output-format",
         "json",
@@ -196,7 +375,7 @@ async fn cli_002_ac4_ctrl_c_interrupts_and_twice_detaches() {
     );
     let mut child = beton(serve.home())
         .current_dir(serve.work.path())
-        .args(["run", "fake", "--scenario"])
+        .args(["run", "--unsandboxed", "fake", "--scenario"])
         .arg(&scenario)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -322,6 +501,7 @@ async fn har_026_ac1_identical_input_gives_an_identical_event_log() {
             .current_dir(serve.work.path())
             .args([
                 "run",
+                "--unsandboxed",
                 "fake",
                 "--on-ask",
                 "deny",
@@ -378,7 +558,7 @@ async fn run_002_ac1_run_claude_starts_exactly_one_runner_in_the_project() {
     let out = run(beton(home.path())
         .current_dir(project.path())
         .env("BETON_CLAUDE_PATH", fake_claude(&scenario))
-        .args(["run", "claude", "-p", "sag hallo"]));
+        .args(["run", "--unsandboxed", "claude", "-p", "sag hallo"]));
     assert!(out.status.success(), "{}", stderr(&out));
     let pid = daemon.pid().unwrap().to_string();
     let children = run(std::process::Command::new("pgrep").args(["-P", &pid]));
@@ -405,6 +585,7 @@ async fn ses_002_ac3_attach_from_a_second_terminal_shows_the_running_turn() {
             "target": "fake",
             "cwd": serve.work.path(),
             "harness_opts": {"scenario": scenario},
+            "confirm_unsandboxed": true,
         }))
         .await
         .unwrap();
@@ -512,6 +693,7 @@ async fn cli_003_resume_restarts_a_stopped_session() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--output-format",
             "json",
@@ -569,7 +751,8 @@ async fn cli_004_serve_without_foreground_runs_in_the_background() {
 
 #[tokio::test]
 async fn api_005_ac2_stream_example_prints_the_deltas() {
-    let serve = Serve::start();
+    // Das Beispiel legt eine Session ohne Bestätigung an: mit Sandbox (Default, ohne Netz).
+    let serve = Serve::start_with_config("sandbox:\n  allow_network: false\n", &[]);
     let example = {
         let beton = std::path::PathBuf::from(env!("CARGO_BIN_EXE_beton"));
         let path = beton
@@ -605,6 +788,7 @@ async fn web_018_ac3_without_tty_on_ask_wait_leaves_the_decision_to_the_web() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "-p",
             "Bitte pushen",
@@ -705,7 +889,15 @@ async fn cli_002_ac3_run_with_worktree_starts_the_session_in_a_new_worktree() {
     let scenario = serve.scenario("turns: []");
     let out = run(beton(serve.home())
         .current_dir(&repo)
-        .args(["run", "fake", "--detach", "--json", "--title", "Neue Suche"])
+        .args([
+            "run",
+            "--unsandboxed",
+            "fake",
+            "--detach",
+            "--json",
+            "--title",
+            "Neue Suche",
+        ])
         .args(["--worktree", "--base", "main", "--scenario"])
         .arg(&scenario));
     assert!(out.status.success(), "{}", stderr(&out));
@@ -727,6 +919,7 @@ async fn cli_002_ac3_run_with_worktree_starts_the_session_in_a_new_worktree() {
         .current_dir(&repo)
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--detach",
             "--worktree=feature/x",
@@ -739,7 +932,7 @@ async fn cli_002_ac3_run_with_worktree_starts_the_session_in_a_new_worktree() {
     assert!(stderr(&out).contains("main"), "{}", stderr(&out));
     assert_eq!(serve.client().all_sessions(true).await.unwrap().len(), 1);
     // `--base` ohne `--worktree` ist ein Usage-Fehler.
-    let out = run(beton(serve.home()).args(["run", "fake", "--base", "main"]));
+    let out = run(beton(serve.home()).args(["run", "--unsandboxed", "fake", "--base", "main"]));
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -752,7 +945,7 @@ async fn ses_016_ac1_session_delete_asks_before_losing_uncommitted_work() {
         .client()
         .create_session(&json!({
             "target": "fake", "cwd": repo, "harness_opts": {"scenario": scenario},
-            "worktree": {}
+            "worktree": {}, "confirm_unsandboxed": true
         }))
         .await
         .unwrap();
@@ -798,7 +991,7 @@ async fn ses_006_ac4_run_fork_creates_the_same_fork_as_the_api() {
     let created = client
         .create_session(&json!({
             "target": "fake", "cwd": serve.work.path(), "title": "Quelle",
-            "harness_opts": {"scenario": scenario},
+            "harness_opts": {"scenario": scenario}, "confirm_unsandboxed": true,
         }))
         .await
         .unwrap();
@@ -832,8 +1025,13 @@ async fn ses_006_ac4_run_fork_creates_the_same_fork_as_the_api() {
         .fork_session(&source, &json!({"at_seq": mid}))
         .await
         .unwrap();
-    let out =
-        run(beton(serve.home()).args(["run", "--fork", &format!("{source}@{mid}"), "--detach"]));
+    let out = run(beton(serve.home()).args([
+        "run",
+        "--unsandboxed",
+        "--fork",
+        &format!("{source}@{mid}"),
+        "--detach",
+    ]));
     assert!(out.status.success(), "{}", stderr(&out));
     let cli = stdout(&out).trim().to_owned();
     assert!(
@@ -891,6 +1089,7 @@ async fn agt_010_ac1_cli_rejects_a_param_above_maximum_before_the_start() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "pr-fixer",
             "--param",
             "max_attempts=20",
@@ -920,7 +1119,14 @@ async fn agt_010_ac2_cli_aborts_when_a_required_param_is_missing() {
     let scenario = serve.scenario(HELLO);
     let out = run(beton(serve.home())
         .current_dir(serve.work.path())
-        .args(["run", "pr-fixer", "-p", "sag hallo", "--scenario"])
+        .args([
+            "run",
+            "--unsandboxed",
+            "pr-fixer",
+            "-p",
+            "sag hallo",
+            "--scenario",
+        ])
         .arg(&scenario));
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     let err = stderr(&out);
@@ -935,6 +1141,7 @@ async fn agt_010_ac2_cli_aborts_when_a_required_param_is_missing() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "pr-fixer",
             "--param",
             "ticket=CI-7",
@@ -969,6 +1176,7 @@ async fn agt_004_ac3_run_agent_ends_with_timed_out_after_executor_timeout() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "pr-fixer",
             "--output-format",
             "json",
@@ -990,19 +1198,23 @@ const ECHO_SETTINGS: &str =
 
 #[tokio::test]
 async fn har_027_ac1_run_claude_yolo_without_sandbox_fails_with_sandbox_required() {
-    let serve = Serve::start();
-    let scenario = serve.scenario(HELLO);
-    let out = run(beton(serve.home())
-        .current_dir(serve.work.path())
-        .env("BETON_CLAUDE_PATH", fake_claude(&scenario))
-        .args([
-            "run",
-            "claude",
-            "--permission-mode",
-            "yolo",
-            "-p",
-            "sag hallo",
-        ]));
+    // Ohne Sandbox heißt ausdrücklich `backend: none` (SBX-006), auch bestätigt.
+    let fx = tempfile::tempdir().unwrap();
+    let scenario = write(fx.path(), "hallo.yaml", HELLO);
+    let claude = fake_claude(&scenario);
+    let serve = Serve::start_with_config(
+        "sandbox:\n  backend: none\n",
+        &[("BETON_CLAUDE_PATH", claude.as_str())],
+    );
+    let out = run(beton(serve.home()).current_dir(serve.work.path()).args([
+        "run",
+        "--unsandboxed",
+        "claude",
+        "--permission-mode",
+        "yolo",
+        "-p",
+        "sag hallo",
+    ]));
     assert!(!out.status.success(), "{}", stdout(&out));
     assert!(
         stderr(&out).contains("sandbox_required"),
@@ -1022,6 +1234,7 @@ async fn cli_002_run_passes_effort_and_permission_mode_to_the_harness() {
         .current_dir(serve.work.path())
         .args([
             "run",
+            "--unsandboxed",
             "fake",
             "--effort",
             "xhigh",
@@ -1044,6 +1257,7 @@ async fn cli_002_run_passes_effort_and_permission_mode_to_the_harness() {
     // Fortsetzen mit neuen Einstellungen: Wechsel per PATCH, wirksam im nächsten Turn.
     let out = run(beton(serve.home()).current_dir(serve.work.path()).args([
         "run",
+        "--unsandboxed",
         "-c",
         "--model",
         "fake-large",

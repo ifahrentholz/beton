@@ -32,4 +32,9 @@ workspace?: ForkWorkspace, title?: string,
  * Harness-spezifische Startoptionen (wie bei `POST /v1/sessions`); ohne Angabe die der
  * Quelle, falls der Harness gleich bleibt.
  */
-harness_opts?: Record<string, unknown>, };
+harness_opts?: Record<string, unknown>, 
+/**
+ * Bestätigt `sandbox.backend: none` für den Fork (SBX-006); der Fork einer bestätigten
+ * Session übernimmt deren Bestätigung (Audit-Eintrag mit Quelle).
+ */
+confirm_unsandboxed?: boolean, };

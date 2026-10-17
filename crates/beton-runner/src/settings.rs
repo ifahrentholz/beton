@@ -209,6 +209,59 @@ pub fn plan_bound(agent: Option<PermissionMode>, start: Option<PermissionMode>) 
     agent == Some(PermissionMode::Plan) && start == Some(PermissionMode::Plan)
 }
 
+/// Wie streng ein Permission-Mode ist; kleiner ist strenger (`plan` < `default` <
+/// `accept_edits` < `yolo`).
+pub fn strictness(mode: PermissionMode) -> u8 {
+    match mode {
+        PermissionMode::Plan => 0,
+        PermissionMode::Default => 1,
+        PermissionMode::AcceptEdits => 2,
+        PermissionMode::Yolo => 3,
+    }
+}
+
+/// Permission-Mode aus `modify` in `session_start` (POL-003, HAR-027, #231): nur strenger als
+/// der angefragte Modus; ohne angefragten Modus gilt `default` als Vergleichsbasis (die CLI
+/// startet sonst mit ihrem eigenen Default). Ein lockernder Wert wird verworfen (`Ok(None)`),
+/// ebenso einer, den der Harness nicht abbilden kann. Danach prüft beton `yolo` erneut gegen
+/// die Sandbox (fail closed), weil die Prüfung in [`at_start`] vor den Policies lief.
+pub fn policy_start_mode(
+    requested: Option<PermissionMode>,
+    policy: Option<&str>,
+    caps: &Capabilities,
+    sandbox: SandboxStatus,
+) -> Result<Option<PermissionMode>, Rejected> {
+    let Some(value) = policy else {
+        return Ok(None);
+    };
+    let mode: PermissionMode = value
+        .parse()
+        .map_err(|e| Rejected::invalid(format!("Policy-Modifikation permission_mode: {e}")))?;
+    let base = requested.unwrap_or(PermissionMode::Default);
+    if strictness(mode) > strictness(base) || !caps.permission_modes.contains(&mode) {
+        return Ok(None);
+    }
+    if mode == PermissionMode::Yolo && !sandbox.allows_yolo() {
+        return Err(HarnessError::SandboxRequired(
+            "YOLO startet nur mit Tool-Sandbox (Stufe 2) und Egress-Proxy".into(),
+        )
+        .into());
+    }
+    Ok(Some(mode))
+}
+
+/// Ist die Session an `plan` gebunden (`SessionSpec.plan_locked`, HAR-027)? Wie
+/// [`plan_bound`], zusätzlich wenn eine Policy den Modus beim Start auf `plan` gesetzt hat
+/// (Re-Review R3 zu #253): Dann verlässt die Session `plan` nicht per `ExitPlanMode`.
+pub fn plan_locked(
+    agent: Option<PermissionMode>,
+    start: Option<PermissionMode>,
+    policy: Option<PermissionMode>,
+) -> bool {
+    plan_bound(agent, start)
+        || (policy == Some(PermissionMode::Plan) && start == Some(PermissionMode::Plan))
+}
+
 /// Einstellungen beim Start einer Session (aus `session.created` bzw. den letzten
 /// `session.settings_changed`). Der Effort wird gegen die Stufen des Harness gemappt; ob der
 /// Harness den Permission-Mode abbilden kann, prüft der Adapter beim Start (manche kennen ihre
@@ -294,7 +347,7 @@ mod tests {
     }
 
     fn sandbox() -> SandboxStatus {
-        SandboxStatus::current()
+        SandboxStatus::NONE
     }
 
     #[test]

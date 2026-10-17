@@ -52,6 +52,7 @@ impl Store {
         req: ManualRedaction,
     ) -> Result<ManualRedactionOutcome> {
         let prepared = self.prepare(session, vec![req.record])?;
+        let writer = self.write_guard().await?;
         let mut conn = self.pool.acquire().await?;
         // Gelöschte Inhalte werden mit Nullen überschrieben, statt in freien Seiten zu bleiben.
         sqlx::query("PRAGMA secure_delete = ON")
@@ -66,6 +67,7 @@ impl Store {
             .execute(&mut *conn)
             .await;
         drop(conn);
+        drop(writer);
         let (outcome, dropped) = result?;
         for blob in &dropped {
             self.blobs.remove(blob)?;

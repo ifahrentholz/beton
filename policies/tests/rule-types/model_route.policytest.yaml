@@ -1,0 +1,28 @@
+# Policy-Test (POL-026 AC4): Regeltyp model_route (POL-013).
+spec_version: 1
+layers: { user: [model_route.yaml] }
+fixtures:
+  session: { is_async: false }
+cases:
+  - name: Ein Start mit Opus wird abgelehnt
+    phase: session_start
+    input: { start: { trigger: interactive, harness: claude, model: claude-opus-4-1 } }
+    expect: { outcome: deny, rules: [routing], reason_contains: "claude-sonnet-*" }
+  - name: Ein erlaubtes Modell startet
+    phase: session_start
+    input: { start: { trigger: interactive, harness: claude, model: claude-sonnet-4-5 } }
+    expect: { outcome: allow }
+  - name: Eine Async-Session bekommt Sonnet mit Effort medium
+    phase: session_start
+    given: { session: { is_async: true } }
+    input: { start: { trigger: timer, harness: claude, model: claude-opus-4-1 } }
+    expect: { outcome: allow, rules: [routing], modified: { model: claude-sonnet-4-5, reasoning_effort: medium } }
+  - name: Ab 30 USD am Tag routet jeder Turn auf Haiku
+    phase: model_request
+    given: { user: { daily_cost_usd: 31.0 } }
+    input: { request: { model: claude-sonnet-4-5, granularity: turn } }
+    expect: { outcome: allow, rules: [routing], modified: { model: claude-haiku-4-5 } }
+  - name: Ein Turn mit nicht erlaubtem Modell wird abgelehnt
+    phase: model_request
+    input: { request: { model: claude-opus-4-1, granularity: turn } }
+    expect: { outcome: deny, rules: [routing] }

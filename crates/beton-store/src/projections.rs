@@ -11,6 +11,7 @@
 //! - Usage-Aggregate Tag × Harness × Modell (`usage_daily`, je Session für saubere Rebuilds)
 //! - Abo-Fenster der Vendor-Logins je Session (`usage_subscription_windows`, USE-004)
 //! - Suchdokumente für die Volltextsuche (`search_docs` mit FTS5-Index, SES-012)
+//! - Shadow-Treffer je Tag und Regel (`policy_shadow_daily`, POL-027 AC4)
 //!
 //! Die Inbox (UX-001) projiziert `crate::inbox`; Kommentare (COL-005, COL-009) kommen mit ihren Features dazu.
 
@@ -95,6 +96,10 @@ pub struct UsageTotals {
     pub equivalent_micro: i64,
     /// Records mit `cost_source: none` („ohne Preis“).
     pub unpriced: u64,
+    /// Records ohne Geldbetrag und ohne Listenpreis-Äquivalent (API-Nutzung ohne Preis bzw.
+    /// Subscription-Nutzung eines Modells ohne Katalogpreis): Budgets kennen ihre Kosten
+    /// nicht (POL-011, `policy.rule_inapplicable`).
+    pub without_price: u64,
 }
 
 /// Auswahl für [`Store::usage_totals`].
@@ -107,6 +112,9 @@ pub enum UsageScope {
     /// Records eines Users im Zeitraum `[from, to)`, z. B. ein Kalendertag in seiner
     /// Zeitzone (`user.daily_cost_usd`).
     UserBetween(UserId, Timestamp, Timestamp),
+    /// Records einer Session und aller Nachfahren über `parent_id` (`run.subtree_cost_usd`,
+    /// POL-011 `scope: subtree`).
+    Subtree(SessionId),
 }
 
 /// Wendet ein dauerhaftes Event auf die Projektionen an.
@@ -275,6 +283,10 @@ pub(crate) async fn apply(
         EventPayload::UsageSubscription(u) => {
             crate::usage::index_window(conn, org, session, seq, ts, u).await?;
         }
+        // Shadow-Treffer je Tag und Regel (POL-027 AC4).
+        EventPayload::PolicyDecision(d) => {
+            crate::policy::project_decision(conn, org, session, seq, ts, d).await?;
+        }
         _ => {}
     }
     crate::inbox::index_event(conn, org, session, seq, ts, payload).await?;
@@ -331,6 +343,7 @@ impl Store {
             "DELETE FROM usage_daily WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_records WHERE org_id = ? AND session_id = ?",
             "DELETE FROM usage_subscription_windows WHERE org_id = ? AND session_id = ?",
+            "DELETE FROM policy_shadow_daily WHERE org_id = ? AND session_id = ?",
         ] {
             sqlx::query(sql)
                 .bind(org.to_string())
@@ -451,14 +464,7 @@ impl Store {
     /// Summen über die Usage-Records einer Auswahl. Geld enthält nie Subscriptions
     /// (USE-001 AC3); Quelle für `session.cost_usd` und `user.daily_cost_usd` (POL-004).
     pub async fn usage_totals(&self, org: OrgId, scope: UsageScope) -> Result<UsageTotals> {
-        let (filter, binds): (&str, Vec<String>) = match scope {
-            UsageScope::Org => ("", Vec::new()),
-            UsageScope::Session(id) => (" AND session_id = ?", vec![id.to_string()]),
-            UsageScope::UserBetween(user, from, to) => (
-                " AND user_id = ? AND ts >= ? AND ts < ?",
-                vec![user.to_string(), from.to_string(), to.to_string()],
-            ),
-        };
+        let (filter, binds) = usage_filter(org, scope);
         let sql = format!(
             "SELECT COUNT(*) AS records, \
              COALESCE(SUM(input_tokens), 0) AS input_tokens, \
@@ -468,7 +474,10 @@ impl Store {
              COALESCE(SUM(CASE WHEN auth_source <> 'vendor_cli' THEN cost_micro END), 0) \
                AS cost_micro, \
              COALESCE(SUM(equivalent_micro), 0) AS equivalent_micro, \
-             COALESCE(SUM(CASE WHEN cost_source = 'none' THEN 1 ELSE 0 END), 0) AS unpriced \
+             COALESCE(SUM(CASE WHEN cost_source = 'none' THEN 1 ELSE 0 END), 0) AS unpriced, \
+             COALESCE(SUM(CASE WHEN (auth_source = 'vendor_cli' AND equivalent_micro IS NULL) \
+               OR (auth_source <> 'vendor_cli' AND cost_micro IS NULL) THEN 1 ELSE 0 END), 0) \
+               AS without_price \
              FROM usage_records WHERE org_id = ?{filter}"
         );
         let mut query = sqlx::query(&sql).bind(org.to_string());
@@ -485,7 +494,28 @@ impl Store {
             cost_micro: row.try_get("cost_micro")?,
             equivalent_micro: row.try_get("equivalent_micro")?,
             unpriced: to_u64(row.try_get("unpriced")?)?,
+            without_price: to_u64(row.try_get("without_price")?)?,
         })
+    }
+
+    /// Modelle einer Auswahl, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat
+    /// (ohne Preis bzw. ohne Katalogpreis), sortiert: Budgets fragen dafür nach (POL-011).
+    pub async fn unpriced_models(&self, org: OrgId, scope: UsageScope) -> Result<Vec<String>> {
+        let (filter, binds) = usage_filter(org, scope);
+        let sql = format!(
+            "SELECT DISTINCT model FROM usage_records WHERE org_id = ?{filter} \
+             AND ((auth_source = 'vendor_cli' AND equivalent_micro IS NULL) \
+               OR (auth_source <> 'vendor_cli' AND cost_micro IS NULL)) \
+             ORDER BY model"
+        );
+        let mut query = sqlx::query(&sql).bind(org.to_string());
+        for b in &binds {
+            query = query.bind(b);
+        }
+        let rows = query.fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(|r| r.try_get::<String, _>("model").map_err(Into::into))
+            .collect()
     }
 
     /// Vollständiger, sortierter Inhalt aller Projektionen einer Org (Vergleich vor/nach Rebuild,
@@ -503,6 +533,8 @@ impl Store {
             "SELECT org_id, session_id, harness, vendor, window_name, CAST(used_pct AS TEXT), \
              resets_at, seq, ts FROM usage_subscription_windows WHERE org_id = ? \
              ORDER BY session_id, vendor, window_name",
+            "SELECT * FROM policy_shadow_daily WHERE org_id = ? \
+             ORDER BY session_id, day, scope, set_name, rule_id, verdict",
             "SELECT session_id, doc, body FROM search_docs WHERE org_id = ? \
              ORDER BY session_id, doc",
         ] {
@@ -535,5 +567,26 @@ impl Store {
             }
         }
         Ok(out)
+    }
+}
+
+/// Filter (SQL nach `org_id = ?`) und Bind-Werte einer Auswahl von Usage-Records.
+fn usage_filter(org: OrgId, scope: UsageScope) -> (&'static str, Vec<String>) {
+    match scope {
+        UsageScope::Org => ("", Vec::new()),
+        UsageScope::Session(id) => (" AND session_id = ?", vec![id.to_string()]),
+        UsageScope::UserBetween(user, from, to) => (
+            " AND user_id = ? AND ts >= ? AND ts < ?",
+            vec![user.to_string(), from.to_string(), to.to_string()],
+        ),
+        UsageScope::Subtree(root) => (
+            " AND session_id IN (WITH RECURSIVE tree (id) AS ( \
+               SELECT id FROM sessions WHERE org_id = ? AND id = ? \
+               UNION ALL \
+               SELECT c.id FROM sessions c JOIN tree t ON c.parent_id = t.id \
+               WHERE c.org_id = ? \
+             ) SELECT id FROM tree)",
+            vec![org.to_string(), root.to_string(), org.to_string()],
+        ),
     }
 }

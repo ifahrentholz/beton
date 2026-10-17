@@ -206,13 +206,32 @@ impl RpcClient {
 
     /// Anfrage senden; die Antwort kommt als [`Incoming::Response`] mit der gelieferten ID.
     pub async fn send_request(&self, method: &str, params: Value) -> Result<u64, RpcError> {
+        let id = self.reserve_id();
+        self.send_reserved(id, method, params).await?;
+        Ok(id)
+    }
+
+    /// ID für eine Anfrage, deren Antwort als [`Incoming::Response`] kommt. Der Aufrufer legt
+    /// sie ab, bevor er mit [`Self::send_reserved`] sendet: Antwortet der Harness schneller,
+    /// als `send_request` zurückkehrt, kennt die Auswertung der Antwort die ID sonst noch nicht
+    /// (#193, ACP-Turn ohne Ende).
+    pub fn reserve_id(&self) -> u64 {
         let id = self.id();
         if let Ok(mut r) = self.routed.lock() {
             r.insert(id);
         }
+        id
+    }
+
+    /// Sendet eine Anfrage mit einer ID aus [`Self::reserve_id`].
+    pub async fn send_reserved(
+        &self,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<(), RpcError> {
         self.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
-            .await?;
-        Ok(id)
+            .await
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), RpcError> {
@@ -397,6 +416,40 @@ mod tests {
         match rx.recv().await {
             Some(Incoming::Response { id, result, .. }) => {
                 assert_eq!(id, routed_id);
+                assert_eq!(result.unwrap()["stop"], "end");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// #193: Die ID steht fest, bevor die Anfrage geschrieben ist; eine sofortige Antwort kommt
+    /// als geroutete [`Incoming::Response`] mit genau dieser ID.
+    #[tokio::test]
+    async fn reserved_id_is_known_before_the_request_is_written() {
+        let (client_stdin, mut peer_in) = tokio::io::duplex(4096);
+        let (mut peer_out, client_stdout) = tokio::io::duplex(4096);
+        let (client, mut rx) = RpcClient::spawn(Box::new(client_stdin), Box::new(client_stdout));
+        let id = client.reserve_id();
+        let peer = tokio::spawn(async move {
+            let mut lines = BufReader::new(&mut peer_in).lines();
+            let req: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            let out = format!("{}\n", json!({"id": req["id"], "result": {"stop": "end"}}));
+            peer_out.write_all(out.as_bytes()).await.unwrap();
+            req
+        });
+        client
+            .send_reserved(id, "session/prompt", json!({}))
+            .await
+            .unwrap();
+        let req = peer.await.unwrap();
+        assert_eq!(req["id"], id);
+        assert_eq!(req["method"], "session/prompt");
+        match rx.recv().await {
+            Some(Incoming::Response {
+                id: got, result, ..
+            }) => {
+                assert_eq!(got, id);
                 assert_eq!(result.unwrap()["stop"], "end");
             }
             other => panic!("{other:?}"),

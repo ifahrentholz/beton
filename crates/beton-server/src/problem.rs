@@ -77,6 +77,8 @@ problem_codes! {
     SpawnDenied = "spawn_denied", 409, "Sub-Agent nicht gestartet";
     /// `yolo` ohne Tool-Sandbox Stufe 2 und Egress-Proxy (HAR-027 AC1).
     SandboxRequired = "sandbox_required", 409, "Sandbox erforderlich";
+    /// `sandbox.backend: none` startet nur mit Bestätigung für genau diese Session (SBX-006).
+    SandboxConfirmationRequired = "sandbox_confirmation_required", 409, "Ohne Sandbox nur mit Bestätigung";
     WorktreeDirty = "worktree_dirty", 409, "Worktree hat uncommittete Änderungen";
     WorktreeUnpushed = "worktree_unpushed", 409, "Branch hat ungepushte Commits";
     /// Die Session stammt aus einer Exportdatei und läuft auf diesem Host nicht (SES-009).
@@ -118,6 +120,10 @@ problem_codes! {
     /// Die Redaction-Pipeline ist nicht bereit; nichts wurde geschrieben oder gesendet
     /// (SEC-013, fail closed).
     RedactionUnavailable = "redaction_unavailable", 503, "Redaction nicht bereit";
+    /// Sandbox bzw. Egress-Proxy der Session nicht startbar (SBX-006, PRX-002, PROTO-011).
+    SandboxUnavailable = "sandbox_unavailable", 503, "Sandbox nicht verfügbar";
+    /// Die Quelle eines Credentials scheiterte (Secret-Store, Env, Datei, Kommando; PRX-006).
+    CredentialSourceError = "credential_source_error", 502, "Credential-Quelle gescheitert";
 }
 
 /// Ein Validierungsfehler mit JSON-Pointer auf das Feld.
@@ -148,6 +154,15 @@ pub struct Problem {
     pub trace_id: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub errors: Vec<FieldError>,
+    /// Nur `sandbox_unavailable` (SBX-006): das geforderte Backend, …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// … die Capabilities, die ihm fehlen (z. B. `net`), …
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<String>,
+    /// … und ein Hinweis zur Abhilfe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl Problem {
@@ -161,6 +176,9 @@ impl Problem {
             code,
             trace_id: new_trace_id(),
             errors: Vec::new(),
+            provider: None,
+            missing: Vec::new(),
+            hint: None,
         }
     }
 
@@ -176,6 +194,19 @@ impl Problem {
 
     pub fn errors(mut self, errors: Vec<FieldError>) -> Self {
         self.errors = errors;
+        self
+    }
+
+    /// Backend, fehlende Capabilities und Hinweis eines `sandbox_unavailable` (SBX-006).
+    pub fn sandbox(
+        mut self,
+        provider: impl Into<String>,
+        missing: Vec<String>,
+        hint: Option<String>,
+    ) -> Self {
+        self.provider = Some(provider.into());
+        self.missing = missing;
+        self.hint = hint;
         self
     }
 

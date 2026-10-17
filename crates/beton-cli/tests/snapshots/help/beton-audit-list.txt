@@ -19,6 +19,10 @@ Options:
       --json
           Maschinenlesbare Ausgabe (JSON) auf stdout
 
+      --kind <KIND>
+          Nur diese Art des Ziels: `credential` (Nutzung und Fehlgebrauch von Credential-Bindings
+          des Proxys), `secret`, `session` …
+
   -q, --quiet
           Keine Fortschritts- und Hinweismeldungen auf stderr
 

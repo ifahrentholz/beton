@@ -346,6 +346,44 @@ async fn sbx_008_ac1_system_secrets_unreadable_writes_only_in_workspace() {
 }
 
 #[tokio::test]
+async fn sbx_012_ac2_readonly_preset_blocks_every_write_in_the_workspace() {
+    let fx = fx();
+    let c = control(&fx, "test -w src/main.rs && test -w .").await;
+    assert!(c.ok, "Kontrollgruppe: {c:?}");
+    for p in backends() {
+        let policy = fx.policy(p.as_ref(), "preset: readonly\n", Stage::Tools);
+        for attack in [
+            "echo x > neu.txt",
+            "echo x >> src/main.rs",
+            "mkdir neu",
+            "rm src/main.rs",
+            "mv src/main.rs src/umbenannt.rs",
+            "touch src/main.rs",
+            "ln -s /etc/hosts link",
+        ] {
+            let out = sh(p.as_ref(), &policy, attack).await;
+            assert!(!out.ok, "{} {attack}: {out:?}", p.id());
+        }
+        assert_eq!(
+            std::fs::read_to_string(fx.ws.join("src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+        assert!(!fx.ws.join("neu.txt").exists() && !fx.ws.join("neu").exists());
+        let out = sh(
+            p.as_ref(),
+            &policy,
+            "cat src/main.rs && echo y > \"$TMPDIR/t\"",
+        )
+        .await;
+        assert!(
+            out.ok && out.stdout.contains("fn main"),
+            "{}: {out:?}",
+            p.id()
+        );
+    }
+}
+
+#[tokio::test]
 async fn sbx_008_ac1_shell_rc_and_autostart_are_not_writable_in_both_stages() {
     let fx = fx();
     let attack = "echo pwned >> \"$HOME/.bashrc\"; echo pwned > \"$HOME/.config/systemd/user/x.service\"; echo pwned > \"$HOME/.profile\"";
@@ -731,6 +769,7 @@ async fn sbx_008_ac2_only_loopback_and_the_relay_to_the_proxy() {
             rules: beton_proxy::RuleSet::compile(&[format!("GET 127.0.0.1:{port}/**")]).unwrap(),
             allow_private: beton_proxy::PrivateAllowList::parse(&[format!("127.0.0.1:{port}")])
                 .unwrap(),
+            ..beton_proxy::InstanceSpec::default()
         })
         .await
         .unwrap();
@@ -762,9 +801,7 @@ async fn sbx_008_ac2_only_loopback_and_the_relay_to_the_proxy() {
 
     for p in backends() {
         let mut ctx = fx.ctx(Stage::Tools);
-        ctx.proxy = Some(ProxyEndpoint {
-            port: instance.addr().port(),
-        });
+        ctx.proxy = Some(ProxyEndpoint::port(instance.addr().port()));
         let yaml = format!(
             "read_paths: [{}]\negress_rules: [\"GET 127.0.0.1/**\"]\n",
             exe_grant()
@@ -975,6 +1012,356 @@ async fn sbx_003_ac4_commits_in_a_worktree_reach_the_object_db_but_not_hooks() {
     }
 }
 
+/// Repo im Workspace mit Commit und einem zweiten Worktree (`<root>/wt2`); liefert dessen
+/// Eintrag `.git/worktrees/wt2`.
+fn repo_with_worktree(fx: &Fx) -> PathBuf {
+    init_commit(&fx.ws);
+    let wt2 = fx.root.join("wt2");
+    git_host(
+        &fx.ws,
+        &["worktree", "add", "-q", "-b", "wt2", wt2.to_str().unwrap()],
+    );
+    fx.ws.join(".git/worktrees/wt2")
+}
+
+/// `commondir`/`gitdir` lenken Host-git auf ein anderes Git-Verzeichnis (#209).
+const GIT_DIR_ATTACKS: [&str; 9] = [
+    "echo /tmp/x > .git/commondir",
+    "echo /tmp/x > .git/gitdir",
+    "ln -s /tmp/x .git/commondir",
+    "echo /tmp/x > c.txt && ln c.txt .git/commondir",
+    "echo /tmp/x > c.txt && mv c.txt .git/commondir",
+    "mkdir .git/commondir",
+    "echo /tmp/x > .git/worktrees/wt2/commondir",
+    "echo /tmp/x > .git/worktrees/wt2/gitdir",
+    // Den Eintrag als Ganzes wegbewegen (dann ließe sich ein vorbereiteter einsetzen).
+    "mv .git/worktrees/wt2 .git/wt2-alt",
+];
+
+#[tokio::test]
+async fn sbx_003_ac4_commondir_and_gitdir_cannot_be_created_or_changed() {
+    // Kontrollgruppe: ohne Sandbox gelingt jeder Angriff.
+    let fc = fx();
+    repo_with_worktree(&fc);
+    for attack in GIT_DIR_ATTACKS {
+        // Jeder Angriff für sich (ein vorheriger hätte den Namen schon belegt).
+        let c = control(&fc, &format!("rm -rf .git/commondir .git/gitdir; {attack}")).await;
+        assert!(c.ok, "Kontrollgruppe {attack}: {c:?}");
+    }
+    assert!(fc.ws.join(".git/wt2-alt").is_dir());
+
+    for p in backends() {
+        let fx = fx();
+        let admin = repo_with_worktree(&fx);
+        let before = [
+            std::fs::read(admin.join("commondir")).unwrap(),
+            std::fs::read(admin.join("gitdir")).unwrap(),
+        ];
+        let mut ctx = fx.ctx(Stage::Tools);
+        ctx.git = GitLayout::discover(&fx.ws).unwrap();
+        let policy = fx.policy_with(p.as_ref(), "{}\n", ctx);
+        for attack in GIT_DIR_ATTACKS {
+            let out = sh(p.as_ref(), &policy, attack).await;
+            assert!(!out.ok, "{}: {attack}: {out:?}", p.id());
+            assert!(
+                !fx.ws.join(".git/commondir").exists(),
+                "{}: {attack}",
+                p.id()
+            );
+            assert!(!fx.ws.join(".git/gitdir").exists(), "{}: {attack}", p.id());
+        }
+        assert_eq!(std::fs::read(admin.join("commondir")).unwrap(), before[0]);
+        assert_eq!(std::fs::read(admin.join("gitdir")).unwrap(), before[1]);
+        // git arbeitet weiter.
+        let out = sh(
+            p.as_ref(),
+            &policy,
+            &format!(
+                "{GIT_ENV} echo a > a.txt && git add a.txt && git commit -q -m c1 && \
+                 git checkout -q -b neu && git log --oneline -1"
+            ),
+        )
+        .await;
+        assert!(out.ok && out.stdout.contains("c1"), "{}: {out:?}", p.id());
+    }
+}
+
+#[tokio::test]
+async fn sbx_003_ac4_commondir_and_gitdir_of_the_own_worktree_are_read_only() {
+    let attacks = |admin: &Path| {
+        [
+            format!("echo /tmp/x > {}/commondir", admin.display()),
+            format!("echo /tmp/x > {}/gitdir", admin.display()),
+        ]
+    };
+    // Kontrollgruppe: ohne Sandbox gelingt es.
+    let fc = fx();
+    let admin = repo_with_worktree(&fc);
+    for attack in attacks(&admin) {
+        let c = control(&fc, &attack).await;
+        assert!(c.ok, "Kontrollgruppe {attack}: {c:?}");
+    }
+
+    for p in backends() {
+        let fx = fx();
+        let admin = repo_with_worktree(&fx).canonicalize().unwrap();
+        let wt = fx.root.join("wt2");
+        let before = [
+            std::fs::read(admin.join("commondir")).unwrap(),
+            std::fs::read(admin.join("gitdir")).unwrap(),
+        ];
+        let mut ctx = ResolveCtx::new(Stage::Tools, &wt, &fx.home, &fx.scratch);
+        ctx.git = GitLayout::discover(&wt).unwrap();
+        let policy = p.resolve(&SandboxSpec::default(), &ctx).unwrap();
+        for attack in attacks(&admin) {
+            let out = sh(p.as_ref(), &policy, &attack).await;
+            assert!(!out.ok, "{}: {attack}: {out:?}", p.id());
+        }
+        assert_eq!(std::fs::read(admin.join("commondir")).unwrap(), before[0]);
+        assert_eq!(std::fs::read(admin.join("gitdir")).unwrap(), before[1]);
+        let out = sh(
+            p.as_ref(),
+            &policy,
+            &format!(
+                "{GIT_ENV} echo a > a.txt && git add a.txt && git commit -q -m im-worktree && \
+                 git checkout -q -b neu && git log --oneline -1"
+            ),
+        )
+        .await;
+        assert!(
+            out.ok && out.stdout.contains("im-worktree"),
+            "{}: {out:?}",
+            p.id()
+        );
+    }
+}
+
+#[tokio::test]
+async fn ses_015_ac2_worktree_under_beton_home_writes_only_itself() {
+    for p in backends() {
+        let fx = fx();
+        let repo = fx.root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        init_commit(&repo);
+        write(&fx.home.join(".beton/run/token"), "FIXTURE-BETON-TOKEN");
+        let wt = fx.home.join(".beton/worktrees/repo-1234abcd/beton-x");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        git_host(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "beton/x",
+                wt.to_str().unwrap(),
+            ],
+        );
+        let wt = wt.canonicalize().unwrap();
+        let mut ctx = ResolveCtx::new(Stage::Tools, &wt, &fx.home, &fx.scratch);
+        ctx.adapters = beton_sandbox::masks::builtin_harness_grants();
+        ctx.git = GitLayout::discover(&wt).unwrap();
+        let policy = p.resolve(&SandboxSpec::default(), &ctx).unwrap();
+        let out = sh(
+            p.as_ref(),
+            &policy,
+            &format!("{GIT_ENV} echo a > a.txt && git add a.txt && git commit -q -m im-worktree"),
+        )
+        .await;
+        assert!(out.ok, "{}: {out:?}", p.id());
+        for attack in [
+            format!("echo x > {}/main.txt", repo.display()),
+            "cat \"$HOME/.beton/run/token\"".to_owned(),
+            "ls \"$HOME/.beton/run\"".to_owned(),
+            "echo x > \"$HOME/.beton/worktrees/repo-1234abcd/neu\"".to_owned(),
+        ] {
+            let out = sh(p.as_ref(), &policy, &attack).await;
+            assert!(!out.ok, "{}: {attack}: {out:?}", p.id());
+            assert!(!out.stdout.contains("FIXTURE"), "{attack}: {out:?}");
+        }
+        assert!(!repo.join("main.txt").exists());
+    }
+}
+
+/// #206: Stufe 1 erreicht die Sockets in ihrem Laufzeitverzeichnis (Hook, MCP-Hub), liest die
+/// Token-Datei, schreibt dort nicht; Stufe 2 sieht das Verzeichnis nicht.
+#[tokio::test]
+async fn sbx_002_stage_one_reaches_sockets_of_its_runtime_dir_stage_two_does_not() {
+    let abi = beton_sandbox::linux::kernel_landlock_abi().unwrap_or(0);
+    for p in backends() {
+        let fx = fx();
+        let runtime = fx.root.join("run");
+        std::fs::create_dir_all(runtime.join("hook-1")).unwrap();
+        let elsewhere = fx.root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let hook = runtime.join("hook-1/hook.sock");
+        let hub = runtime.join("mcp-1.sock");
+        let other = elsewhere.join("other.sock");
+        for path in [&hook, &hub, &other] {
+            let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+            std::thread::spawn(move || {
+                for c in l.incoming() {
+                    drop(c);
+                }
+            });
+        }
+        std::fs::write(runtime.join("hook-1/hook.token"), "FIXTURE-HOOK-TOKEN").unwrap();
+        let mut ctx = fx.ctx(Stage::Harness);
+        ctx.harness = beton_sandbox::masks::harness_grants("claude");
+        ctx.runtime = Some(runtime.clone());
+        let harness = fx.policy_with(p.as_ref(), &format!("read_paths: [{}]\n", exe_grant()), ctx);
+        for s in [&hook, &hub] {
+            let s = s.display().to_string();
+            let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&s])).await;
+            assert_eq!(
+                probe_result(&out),
+                "ok",
+                "{}: {s} aus Stufe 1: {out:?}",
+                p.id()
+            );
+        }
+        let token = runtime.join("hook-1/hook.token").display().to_string();
+        let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "read", &[&token])).await;
+        assert_eq!(
+            probe_result(&out),
+            "ok:FIXTURE-HOOK-TOKEN",
+            "{}: Token-Datei: {out:?}",
+            p.id()
+        );
+        if abi >= 9 {
+            let o = other.display().to_string();
+            let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&o])).await;
+            assert!(
+                probe_result(&out).starts_with("err:"),
+                "{}: fremder Socket aus Stufe 1: {out:?}",
+                p.id()
+            );
+        }
+        let tools = fx.policy(
+            p.as_ref(),
+            &format!("read_paths: [{}]\n", exe_grant()),
+            Stage::Tools,
+        );
+        for s in [&hook, &hub] {
+            let s = s.display().to_string();
+            let out = run_with(p.as_ref(), &tools, probe_cmd(&tools, "unix", &[&s])).await;
+            assert!(
+                probe_result(&out).starts_with("err:"),
+                "{}: {s} aus Stufe 2: {out:?}",
+                p.id()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn sbx_002_stage_one_reaches_its_exec_socket_stage_two_does_not() {
+    let abi = beton_sandbox::linux::kernel_landlock_abi().unwrap_or(0);
+    for p in backends() {
+        let fx = fx();
+        let dir = fx.root.join("exec");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let socket = dir.join("exec.sock");
+        let other = dir.join("other.sock");
+        for path in [&socket, &other] {
+            let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+            std::thread::spawn(move || {
+                for c in l.incoming() {
+                    drop(c);
+                }
+            });
+        }
+        let mut ctx = fx.ctx(Stage::Harness);
+        ctx.harness = beton_sandbox::masks::harness_grants("claude");
+        ctx.exec = Some(beton_sandbox::ExecAccess {
+            socket: socket.clone(),
+            shim_dir: dir.join("bin"),
+            token: beton_sandbox::Secret::new("FIXTURE-EXEC-TOKEN".into()),
+            forward_env: Vec::new(),
+        });
+        let harness = fx.policy_with(p.as_ref(), &format!("read_paths: [{}]\n", exe_grant()), ctx);
+        let s = socket.display().to_string();
+        let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&s])).await;
+        assert_eq!(
+            probe_result(&out),
+            "ok",
+            "{}: Broker aus Stufe 1: {out:?}",
+            p.id()
+        );
+        if abi >= 9 {
+            // Ab Landlock-ABI 9 nur der freigegebene Socket (vorher Restrisiko #211).
+            let o = other.display().to_string();
+            let out = run_with(p.as_ref(), &harness, probe_cmd(&harness, "unix", &[&o])).await;
+            assert!(
+                probe_result(&out).starts_with("err:"),
+                "{}: {out:?}",
+                p.id()
+            );
+        }
+        let tools = fx.policy(
+            p.as_ref(),
+            &format!("read_paths: [{}]\n", exe_grant()),
+            Stage::Tools,
+        );
+        let out = run_with(p.as_ref(), &tools, probe_cmd(&tools, "unix", &[&s])).await;
+        assert!(
+            probe_result(&out).starts_with("err:"),
+            "{}: Broker aus Stufe 2: {out:?}",
+            p.id()
+        );
+    }
+}
+
+#[tokio::test]
+async fn prx_008_ac3_dev_server_in_the_same_sandbox_but_no_host_service() {
+    let abi = beton_sandbox::linux::kernel_landlock_abi().unwrap_or(0);
+    let host = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let host_addr = host.local_addr().unwrap().to_string();
+    std::thread::spawn(move || {
+        for c in host.incoming() {
+            drop(c);
+        }
+    });
+    for p in backends() {
+        let fx = fx();
+        let yaml = format!("read_paths: [{}]\ndev_ports: [3000]\n", exe_grant());
+        let policy = fx.policy(p.as_ref(), &yaml, Stage::Tools);
+        let out = run_with(
+            p.as_ref(),
+            &policy,
+            probe_cmd(&policy, "devserver", &["3000"]),
+        )
+        .await;
+        assert_eq!(probe_result(&out), "ok:dev-ok", "{}: {out:?}", p.id());
+        // Loopback ist sandbox-lokal: Ein Host-Dienst auf 127.0.0.1 bleibt unerreichbar.
+        let out = run_with(
+            p.as_ref(),
+            &policy,
+            probe_cmd(&policy, "connect", &[&host_addr]),
+        )
+        .await;
+        assert!(
+            probe_result(&out).starts_with("err:"),
+            "{}: {out:?}",
+            p.id()
+        );
+        // Ohne dev_ports sperrt Landlock (ab ABI 4) schon bind.
+        let none = fx.policy(
+            p.as_ref(),
+            &format!("read_paths: [{}]\n", exe_grant()),
+            Stage::Tools,
+        );
+        let out = run_with(p.as_ref(), &none, probe_cmd(&none, "devserver", &["3000"])).await;
+        if abi >= 4 {
+            assert!(
+                probe_result(&out).starts_with("err:bind"),
+                "{}: {out:?}",
+                p.id()
+            );
+        }
+    }
+}
+
 #[test]
 fn sbx_001_ac3_registry_with_launcher_picks_landlock_or_bwrap() {
     let registry = Registry::with_launcher(&launcher());
@@ -1133,5 +1520,83 @@ async fn sbx_008_ac6_runner_sigkill_leaves_no_sandbox_process_within_one_second(
         let _ = runner.wait();
         let left = gone_within(&marker, Duration::from_secs(1)).await;
         assert!(left.is_ok(), "{}: nach 1 s noch da: {left:?}", p.id());
+    }
+}
+
+/// SBX-005 AC4: Weder der Launcher außerhalb noch die Prozesse in der Sandbox tragen Secret-
+/// Werte, Proxy-Tokens oder Platzhalter in `/proc/<pid>/cmdline`; alles steht nur im
+/// Environment des Kindes.
+#[tokio::test]
+async fn sbx_005_ac4_cmdlines_hold_no_secret_values_or_proxy_tokens() {
+    let fx = fx();
+    let ca = beton_proxy::BetonCa::generate("sbx-005", time::OffsetDateTime::now_utc()).unwrap();
+    let proxy = beton_proxy::EgressProxy::new(
+        ca,
+        &beton_proxy::ProxyOptions {
+            extra_ca_files: Vec::new(),
+        },
+    )
+    .unwrap();
+    let instance = proxy
+        .start(beton_proxy::InstanceSpec::default())
+        .await
+        .unwrap();
+    let token = instance.token().expose().to_owned();
+    let placeholder = "bt_cred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    for p in backends() {
+        let mut ctx = fx.ctx(Stage::Tools);
+        ctx.host_env
+            .insert("GH_TOKEN".into(), "FIXTURE-HOST-SECRET".into());
+        ctx.credential_env
+            .insert("NPM_TOKEN".into(), placeholder.into());
+        ctx.proxy = Some(ProxyEndpoint {
+            port: instance.addr().port(),
+            url: Some(beton_sandbox::Secret::new(instance.proxy_url().to_string())),
+            ca_bundle: None,
+        });
+        let spec = SandboxSpec::from_yaml("env:\n  passthrough: [GH_TOKEN]\n").unwrap();
+        let policy = p.resolve(&spec, &ctx).unwrap();
+        // Die Werte stehen im Environment des Kindes …
+        assert_eq!(policy.env["NPM_TOKEN"], placeholder);
+        assert!(policy.env["HTTPS_PROXY"].contains(&token));
+        let marker = format!("1005.{}", std::process::id());
+        let child = p
+            .spawn(
+                &policy,
+                CommandSpec::new("/bin/sleep")
+                    .arg(&marker)
+                    .cwd(&policy.workspace)
+                    .stdio(
+                        beton_sandbox::Stdio::Null,
+                        beton_sandbox::Stdio::Null,
+                        beton_sandbox::Stdio::Null,
+                    ),
+            )
+            .unwrap();
+        let mut pids = Vec::new();
+        for _ in 0..100 {
+            pids = processes_with(&marker);
+            if !pids.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!pids.is_empty(), "{}: sleep nicht gefunden", p.id());
+        pids.extend(child.id());
+        // … aber in keiner Kommandozeile (Launcher, Relay, Kind).
+        for pid in pids {
+            let Ok(argv) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+                continue;
+            };
+            let argv = String::from_utf8_lossy(&argv).replace('\0', " ");
+            for leak in ["FIXTURE", token.as_str(), "bt_cred_"] {
+                assert!(
+                    !argv.contains(leak),
+                    "{}: `{leak}` in argv von {pid}: {argv}",
+                    p.id()
+                );
+            }
+        }
+        drop(child);
     }
 }

@@ -36,6 +36,7 @@ fn new_session(t: &TestStore) -> NewSession {
         trigger: SessionTrigger::User,
         home_node: t.local.node,
         harness_opts: serde_json::Value::Null,
+        max_cost_usd: None,
     }
 }
 
@@ -1557,6 +1558,158 @@ async fn data_002_concurrent_writers_do_not_fail_with_busy() {
     }
     for task in tasks {
         task.await.unwrap().unwrap();
+    }
+}
+
+/// #288: Ein Event, das die Prüfung nicht besteht (Nutzlast über dem Blob-Limit), ersetzt
+/// `append_replacing` an derselben Stelle; ohne Ersatz scheitert der Append wie bisher.
+#[tokio::test]
+async fn proto_015_ac5_append_replacing_keeps_position_of_rejected_event() {
+    let t = store_with(StoreOptions {
+        max_blob_bytes: 100 * 1024,
+        ..StoreOptions::default()
+    })
+    .await;
+    let s = t
+        .store
+        .create_session(org(&t), new_session(&t))
+        .await
+        .unwrap();
+    let batch = || {
+        vec![
+            notice(s.id, "vorher"),
+            notice(s.id, &"x".repeat(200 * 1024)),
+            notice(s.id, "nachher"),
+        ]
+    };
+    let err = t
+        .store
+        .append(s.org_id, s.id, 1, 1, batch())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::BlobTooLarge { .. }), "{err}");
+    assert!(err.rejects_event());
+    assert_eq!(t.store.session(s.org_id, s.id).await.unwrap().head_seq, 1);
+
+    let replace = |i: usize, original: &Event, error: &Error| {
+        assert_eq!(i, 1);
+        assert!(matches!(error, Error::BlobTooLarge { .. }));
+        Some(notice(s.id, &format!("ersetzt: {}", original.type_name())))
+    };
+    let written = t
+        .store
+        .append_replacing(s.org_id, s.id, 1, 1, batch(), &replace)
+        .await
+        .unwrap();
+    let texts: Vec<String> = t
+        .store
+        .events(s.org_id, s.id, 1, 10)
+        .await
+        .unwrap()
+        .iter()
+        .map(|e| match e.payload() {
+            Some(EventPayload::Notice(n)) => n.text.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, ["vorher", "ersetzt: notice", "nachher"]);
+    assert_eq!(written.iter().map(|e| e.seq).collect::<Vec<_>>(), [2, 3, 4]);
+    assert!(
+        !db_contains(&t, &"x".repeat(1024)),
+        "abgelehnter Inhalt nicht im Log"
+    );
+}
+
+/// #287: Dauerschreiber (Tunnel-Sessions mit 256er-Batches) greifen die Schreibsperre sofort
+/// wieder. Ein paralleler, interaktiver Schreiber (REST: Session anlegen, Idempotency-Lookup,
+/// Eingabe) bekommt sie trotzdem binnen fester Frist, statt im SQLite-Busy-Handler zu pollen
+/// und nach `busy_timeout` mit `database is locked` zu scheitern.
+///
+/// Gemessen wird wie im AC jeder Schreibzugriff einzeln (#319): Jeder wartet in der
+/// Warteschlange höchstens hinter den drei Dauerschreibern. Die Summe der drei Zugriffe stand
+/// früher unter derselben 1-s-Grenze; das sind neun Batches, deren Dauer unter CI-Last mit der
+/// CPU skaliert (macOS-CI: 1,07 s).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_003_ac4_interactive_writer_is_not_starved_by_continuous_writers() {
+    let t = store().await;
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let batches = Arc::new(AtomicUsize::new(0));
+    let mut writers = Vec::new();
+    for w in 0..3 {
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        let (store, stop, batches) = (t.store.clone(), stop.clone(), batches.clone());
+        writers.push(tokio::spawn(async move {
+            let mut head = s.head_seq;
+            while !stop.load(Ordering::Relaxed) {
+                let events = (0..256)
+                    .map(|i| notice(s.id, &format!("Writer {w}, Zeile {i}")))
+                    .collect();
+                head = store
+                    .append(s.org_id, s.id, head, s.epoch, events)
+                    .await
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .seq;
+                batches.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+    }
+    while batches.load(Ordering::Relaxed) < 3 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // Je Zugriffsart die längste Dauer, dazu die längste Folge aller drei (nur fürs Log).
+    let mut worst = [Duration::ZERO; 3];
+    let mut worst_sequence = Duration::ZERO;
+    for i in 0..15 {
+        let start = Instant::now();
+        let s = t
+            .store
+            .create_session(org(&t), new_session(&t))
+            .await
+            .unwrap();
+        let created = Instant::now();
+        t.store
+            .idempotency_lookup(org(&t), &format!("key-{i}"))
+            .await
+            .unwrap();
+        let looked_up = Instant::now();
+        append_one(&t.store, &s, notice(s.id, "Eingabe")).await;
+        let appended = Instant::now();
+        for (w, d) in
+            worst
+                .iter_mut()
+                .zip([created - start, looked_up - created, appended - looked_up])
+        {
+            *w = (*w).max(d);
+        }
+        worst_sequence = worst_sequence.max(appended - start);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    for w in writers {
+        w.await.unwrap();
+    }
+    let [create, lookup, append] = worst;
+    eprintln!(
+        "interaktiver Schreiber, höchstens: Session anlegen {create:?}, Idempotency-Lookup \
+         {lookup:?}, Event {append:?} (alle drei nacheinander {worst_sequence:?}); \
+         Dauerschreiber: {} Batches",
+        batches.load(Ordering::Relaxed)
+    );
+    for (what, d) in [
+        ("Session anlegen", create),
+        ("Idempotency-Lookup", lookup),
+        ("Event schreiben", append),
+    ] {
+        assert!(
+            d < Duration::from_secs(1),
+            "{what} wartet {d:?} auf die Schreibsperre"
+        );
     }
 }
 

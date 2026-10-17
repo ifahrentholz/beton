@@ -16,7 +16,7 @@ use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use beton_core::event::{
-    Actor, Event, EventPayload, SessionStatus, SessionStatusChanged, SystemComponent,
+    Actor, Event, EventPayload, EventRejected, SessionStatus, SessionStatusChanged, SystemComponent,
 };
 use beton_core::id::SessionId;
 use beton_proto::tunnel::{PROTOCOL, SUBPROTOCOL, TunnelDown, TunnelUp};
@@ -63,6 +63,8 @@ struct RunnerConn {
     last_activity: Instant,
     busy: bool,
     pending: HashMap<String, oneshot::Sender<CmdReply>>,
+    /// Vorab-Verbindung vor dem Start des Harness (#218): kein verbundener Runner.
+    prestart: bool,
 }
 
 impl RunnerConn {
@@ -134,15 +136,35 @@ impl RunnerRegistry {
     /// Neues Runner-Token für genau eine Session.
     /// Token für einen neuen Runner-Prozess. Der zählt `rseq` wieder ab 1; der gespeicherte
     /// Stand des Vorgängers darf seine Events nicht als Duplikate verwerfen (PROTO-015).
+    ///
+    /// Je Session gilt nur das jüngste Token (Generation): Ältere, auch die nie verbundener
+    /// Starts oder eines abgekoppelten Runners, verfallen hier. Bestehende Verbindungen bleiben
+    /// davon unberührt; neu anmelden kann sich nur der neue Runner.
     pub fn mint_token(&self, session: SessionId) -> Result<String, crate::local_auth::AuthError> {
         let token = format!("bt_run_{}", crate::local_auth::random_hex(32)?);
-        lock(&self.tokens).insert(hash(&token), session);
+        {
+            let mut tokens = lock(&self.tokens);
+            tokens.retain(|_, s| *s != session);
+            tokens.insert(hash(&token), session);
+        }
+        lock(&self.expected).remove(&session);
         lock(&self.persisted).remove(&session);
         Ok(token)
     }
 
     pub fn revoke_tokens(&self, session: SessionId) {
         lock(&self.tokens).retain(|_, s| *s != session);
+    }
+
+    /// Gilt das Token noch (Runner darf sich anmelden)?
+    pub fn token_valid(&self, token: &str) -> bool {
+        self.session_for(token).is_some()
+    }
+
+    /// Sperrt genau ein Token, z. B. das eines geordnet gestoppten Runners. Das Token eines
+    /// inzwischen gestarteten Nachfolgers derselben Session bleibt gültig (#198).
+    pub fn revoke_token(&self, token: &str) {
+        lock(&self.tokens).remove(&hash(token));
     }
 
     fn session_for(&self, token: &str) -> Option<SessionId> {
@@ -154,7 +176,7 @@ impl RunnerRegistry {
     }
 
     pub fn connected(&self, session: SessionId) -> bool {
-        lock(&self.conns).contains_key(&session)
+        lock(&self.conns).get(&session).is_some_and(|c| !c.prestart)
     }
 
     /// Verfolgt offene Freigaben aus den Events des Runners (POL-010 AC4, Leerlauf).
@@ -313,9 +335,14 @@ impl RunnerRegistry {
         let cmd_id = format!("cmd_{}", self.next_cmd.fetch_add(1, Ordering::Relaxed) + 1);
         {
             let mut conns = lock(&self.conns);
-            let conn = conns.get_mut(&session).ok_or_else(|| {
-                Problem::new(ProblemCode::Unavailable).detail("Für diese Session läuft kein Runner")
-            })?;
+            // Vor dem Start nimmt der Runner nur Freigaben an (`session_start` mit `ask`, #218).
+            let conn = conns
+                .get_mut(&session)
+                .filter(|c| !c.prestart || name == "approval.resolve")
+                .ok_or_else(|| {
+                    Problem::new(ProblemCode::Unavailable)
+                        .detail("Für diese Session läuft kein Runner")
+                })?;
             conn.pending.insert(cmd_id.clone(), tx);
             conn.last_activity = Instant::now();
             let _ = conn.tx.send(TunnelDown::CmdDeliver {
@@ -417,6 +444,8 @@ pub struct TunnelState {
     pub observer: Option<Arc<dyn EventObserver>>,
     /// Herunterfahren: Verbindungen enden mit 4503, Runner verbinden sich neu (POL-010 AC4).
     pub shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Automatische Compaction vor dem nächsten Turn aus der Queue (USE-009).
+    pub compaction: beton_harness::CompactionSettings,
 }
 
 impl TunnelState {
@@ -427,6 +456,7 @@ impl TunnelState {
             runners: self.runners.clone(),
             cmd_timeout: self.config.cmd_timeout,
             queues: self.queues.clone(),
+            compaction: self.compaction,
         }
     }
 }
@@ -437,8 +467,8 @@ pub async fn tunnel_upgrade(
     headers: HeaderMap,
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
-    let Some(session) =
-        crate::security::bearer(&headers).and_then(|t| state.runners.session_for(t))
+    let Some((token, session)) = crate::security::bearer(&headers)
+        .and_then(|t| state.runners.session_for(t).map(|s| (t.to_owned(), s)))
     else {
         return Problem::new(ProblemCode::Unauthorized).into_response();
     };
@@ -448,7 +478,7 @@ pub async fn tunnel_upgrade(
             .into_response();
     };
     ws.protocols([SUBPROTOCOL])
-        .on_upgrade(move |socket| connection(socket, state, session))
+        .on_upgrade(move |socket| connection(socket, state, session, token))
 }
 
 fn problem_msg(p: Problem) -> Message {
@@ -458,6 +488,47 @@ fn problem_msg(p: Problem) -> Message {
     Message::Text(serde_json::to_string(&msg).unwrap_or_default().into())
 }
 
+/// Antwort auf einen Push, den der Server nicht gespeichert hat (z. B. `database is locked`,
+/// `seq_conflict`). Spätere Pushes derselben Verbindung dürfen die Lücke nicht überspringen,
+/// deshalb trennt sie danach. Fachlich abgelehnte Events führen nicht hierher: Sie ersetzt der
+/// Server durch `event.rejected` und bestätigt den Push ([`rejected`], #288). `stale_epoch`
+/// beendet die Verbindung ohnehin.
+fn unsaved_push(reply: &TunnelDown) -> bool {
+    matches!(reply, TunnelDown::Problem { problem } if problem["code"] != "stale_epoch")
+}
+
+/// Ersatz für ein fachlich abgelehntes Runner-Event (PROTO-015, #288): an dessen Stelle im
+/// Log, mit Typ, `rseq` und Problem-Code, aber ohne den abgelehnten Inhalt. Turn und Zeitpunkt
+/// bleiben erhalten, damit der Ersatz im Verlauf an der richtigen Stelle steht.
+fn rejected(session: SessionId, rseq: u64, original: &Event, error: &beton_store::Error) -> Event {
+    let reason = match error {
+        beton_store::Error::BlobTooLarge { .. } => ProblemCode::PayloadTooLarge,
+        _ => ProblemCode::ValidationFailed,
+    };
+    tracing::warn!(
+        %session,
+        rseq,
+        event_type = original.type_name(),
+        code = reason.as_str(),
+        "Event abgelehnt, ersetzt durch event.rejected"
+    );
+    let mut event = Event::new(
+        session,
+        0,
+        Actor::System {
+            component: SystemComponent::Server,
+        },
+        EventPayload::EventRejected(EventRejected {
+            original_type: original.type_name().into(),
+            rseq,
+            reason: reason.as_str().into(),
+        }),
+    );
+    event.ts = original.ts;
+    event.turn_id = original.turn_id;
+    event
+}
+
 fn close_msg(code: u16, reason: &str) -> Message {
     Message::Close(Some(CloseFrame {
         code,
@@ -465,7 +536,12 @@ fn close_msg(code: u16, reason: &str) -> Message {
     }))
 }
 
-async fn connection(socket: WebSocket, state: TunnelState, token_session: SessionId) {
+async fn connection(
+    socket: WebSocket,
+    state: TunnelState,
+    token_session: SessionId,
+    token: String,
+) {
     let (mut sink, mut stream) = socket.split();
     if lock(&state.runners.refuse_until)
         .get(&token_session)
@@ -507,7 +583,10 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
         return;
     };
     let Ok(TunnelUp::SessionBind {
-        session_id, epoch, ..
+        session_id,
+        epoch,
+        prestart,
+        ..
     }) = TunnelUp::from_json(&text)
     else {
         let _ = sink
@@ -588,6 +667,7 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
             last_activity: Instant::now(),
             busy: false,
             pending: HashMap::new(),
+            prestart,
         },
     );
 
@@ -621,7 +701,15 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
                         let Ok(up) = TunnelUp::from_json(&text) else { continue };
                         if let Some(reply) = handle(&state, session_id, up).await {
                             let stale = matches!(&reply, TunnelDown::Problem { problem } if problem["code"] == "stale_epoch");
+                            let unsaved = unsaved_push(&reply);
                             if sink.send(Message::Text(serde_json::to_string(&reply).unwrap_or_default().into())).await.is_err() || stale {
+                                break;
+                            }
+                            if unsaved {
+                                // Spätere Pushes dieser Verbindung dürfen die Lücke nicht
+                                // überspringen: trennen, der Runner sendet nach dem Reconnect
+                                // alles Unbestätigte erneut (PROTO-015, #278).
+                                let _ = sink.send(close_msg(close::INTERNAL, "Events nicht gespeichert")).await;
                                 break;
                             }
                         }
@@ -640,6 +728,12 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
             }
         }
     }
+    // Ein geordnet gestoppter Runner meldet sich nicht wieder an: sein Token sperren, bevor
+    // die Verbindung als getrennt gilt. Nur dieses Token, und vor `stopped`: Wer daraufhin eine
+    // Eingabe schickt, startet einen Nachfolger mit neuem Token (SES-003 AC3, #198).
+    if lock(&state.runners.stopping).contains_key(&session_id) {
+        state.runners.revoke_token(&token);
+    }
     // Abmelden (nur wenn die Verbindung noch die aktuelle ist).
     {
         let mut conns = lock(&state.runners.conns);
@@ -651,7 +745,6 @@ async fn connection(socket: WebSocket, state: TunnelState, token_session: Sessio
     if let Some(reason) = stopped {
         // RUN-003 AC2, SES-001 AC2: nach geordnetem Stopp ist die Session `stopped`.
         append_status(&state, session_id, SessionStatus::Stopped, &reason).await;
-        state.runners.revoke_tokens(session_id);
     }
 }
 
@@ -672,23 +765,32 @@ async fn append_status(
             reason: Some(reason.into()),
         }),
     );
-    if let Ok(written) = append(state, session, vec![event]).await {
+    if let Ok(written) = append(state, session, vec![event], &|_, _, _| None).await {
         state.queue().observe(session, &written);
     }
 }
 
-/// Anhängen mit Wiederholung, falls der Kopf sich parallel bewegt hat.
+/// Anhängen mit Wiederholung, falls der Kopf sich parallel bewegt hat. Fachlich abgelehnte
+/// Events ersetzt `replace` ([`EventService::append_replacing`]).
 async fn append(
     state: &TunnelState,
     session: SessionId,
     events: Vec<Event>,
+    replace: &(dyn Fn(usize, &Event, &beton_store::Error) -> Option<Event> + Sync),
 ) -> Result<Vec<Event>, Problem> {
     let org = state.local.org;
     for _ in 0..5 {
         let record = state.events.store.session(org, session).await?;
         match state
             .events
-            .append(org, session, record.head_seq, record.epoch, events.clone())
+            .append_replacing(
+                org,
+                session,
+                record.head_seq,
+                record.epoch,
+                events.clone(),
+                replace,
+            )
             .await
         {
             Err(beton_store::Error::SeqConflict { .. }) => continue,
@@ -740,13 +842,15 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                     problem: serde_json::to_value(Problem::new(ProblemCode::Forbidden)).ok()?,
                 });
             }
-            let current = state
-                .events
-                .store
-                .session(state.local.org, session)
-                .await
-                .ok()?
-                .epoch;
+            let current = match state.events.store.session(state.local.org, session).await {
+                Ok(record) => record.epoch,
+                // Ohne Antwort bliebe der Push unbestätigt, und ein späterer überspränge ihn.
+                Err(e) => {
+                    return Some(TunnelDown::Problem {
+                        problem: serde_json::to_value(Problem::from(e)).ok()?,
+                    });
+                }
+            };
             if epoch != current {
                 // PROTO-015 AC2: veraltete Epoch → Runner hört auf zu schreiben.
                 return Some(TunnelDown::Problem {
@@ -774,30 +878,32 @@ async fn handle(state: &TunnelState, session: SessionId, up: TunnelUp) -> Option
                     _ => {}
                 }
             }
-            let seq_range =
-                if fresh.is_empty() {
-                    None
-                } else {
-                    let written =
-                        match append(state, session, fresh.into_iter().map(|e| e.event).collect())
-                            .await
-                        {
-                            Ok(w) => w,
-                            Err(problem) => {
-                                // Nicht still verwerfen: ohne Ack behält der Runner die Events,
-                                // und das Problem wird sichtbar.
-                                tracing::warn!(%session, "Events nicht gespeichert");
-                                return Some(TunnelDown::Problem {
-                                    problem: serde_json::to_value(problem).ok()?,
-                                });
-                            }
-                        };
-                    state.queue().observe(session, &written);
-                    if let Some(o) = &state.observer {
-                        o.observe(session, &written);
-                    }
-                    Some((written.first()?.seq, written.last()?.seq))
+            let seq_range = if fresh.is_empty() {
+                None
+            } else {
+                let rseqs: Vec<u64> = fresh.iter().map(|e| e.rseq).collect();
+                let replace = |i: usize, original: &Event, error: &beton_store::Error| {
+                    Some(rejected(session, rseqs.get(i).copied()?, original, error))
                 };
+                let events = fresh.into_iter().map(|e| e.event).collect();
+                let written = match append(state, session, events, &replace).await {
+                    Ok(w) => w,
+                    Err(problem) => {
+                        // Nicht still verwerfen: ohne Ack behält der Runner die Events,
+                        // das Problem wird sichtbar, und die Verbindung trennt danach
+                        // (siehe `unsaved_push`).
+                        tracing::warn!(%session, code = problem.code.as_str(), "Events nicht gespeichert");
+                        return Some(TunnelDown::Problem {
+                            problem: serde_json::to_value(problem).ok()?,
+                        });
+                    }
+                };
+                state.queue().observe(session, &written);
+                if let Some(o) = &state.observer {
+                    o.observe(session, &written);
+                }
+                Some((written.first()?.seq, written.last()?.seq))
+            };
             lock(&runners.persisted).insert(session, upto);
             if let Some(conn) = lock(&runners.conns).get_mut(&session) {
                 conn.last_activity = Instant::now();
@@ -881,7 +987,109 @@ mod tests {
             last_activity: Instant::now() - Duration::from_secs(10),
             busy: false,
             pending: HashMap::new(),
+            prestart: false,
         }
+    }
+
+    /// #218 (Security-Review #284, M2): Die Vorab-Verbindung des Runners vor dem Start des
+    /// Harness (Policy `session_start` mit Verbrauchswerten bzw. Zustand) zählt nicht als
+    /// verbundener Runner; Kommandos warten auf die Verbindung der Hauptschleife.
+    #[tokio::test]
+    async fn ses_003_a_prestart_connection_is_not_a_connected_runner() {
+        let runners = RunnerRegistry::default();
+        let session = SessionId::new();
+        let bind: TunnelUp = serde_json::from_value(serde_json::json!({
+            "t": "session.bind", "session_id": session, "epoch": 0,
+            "last_acked_rseq": 0, "prestart": true
+        }))
+        .unwrap();
+        assert!(matches!(bind, TunnelUp::SessionBind { prestart: true, .. }));
+        let mut pre = conn();
+        pre.prestart = true;
+        lock(&runners.conns).insert(session, pre);
+        assert!(!runners.connected(session), "Vorab-Verbindung");
+        let err = runners
+            .deliver(
+                session,
+                "input.submit",
+                Value::Null,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ProblemCode::Unavailable);
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("kein Runner")
+        );
+        // Freigaben (`session_start` mit `ask`) erreichen den Runner schon vorab.
+        let err = runners
+            .deliver(
+                session,
+                "approval.resolve",
+                Value::Null,
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("antwortet nicht")
+        );
+        lock(&runners.conns).insert(session, conn());
+        assert!(runners.connected(session), "Hauptschleife");
+    }
+
+    /// #288: Jeder nicht gespeicherte Push trennt danach (auch 4xx wie `seq_conflict`), damit
+    /// ein späterer Push die Lücke nicht überspringt; `stale_epoch` beendet ohnehin.
+    #[test]
+    fn proto_015_ac1_every_unsaved_push_disconnects() {
+        let reply = |code| TunnelDown::Problem {
+            problem: serde_json::to_value(Problem::new(code)).unwrap(),
+        };
+        assert!(unsaved_push(&reply(ProblemCode::Internal)));
+        assert!(unsaved_push(&reply(ProblemCode::SeqConflict)));
+        assert!(unsaved_push(&reply(ProblemCode::NotFound)));
+        assert!(!unsaved_push(&reply(ProblemCode::StaleEpoch)));
+        let ack = TunnelDown::EventsAck {
+            session_id: SessionId::new(),
+            upto_rseq: 3,
+            seq_range: None,
+        };
+        assert!(!unsaved_push(&ack));
+    }
+
+    /// #288: Der Ersatz nennt Typ, `rseq` und Grund, aber nicht den abgelehnten Inhalt.
+    #[test]
+    fn proto_015_ac5_rejected_replacement_has_no_content() {
+        let session = SessionId::new();
+        let mut original = Event::new(
+            session,
+            0,
+            Actor::default(),
+            EventPayload::Notice(beton_core::event::Notice {
+                text: "geheimer Inhalt".into(),
+                ..Default::default()
+            }),
+        );
+        original.turn_id = Some(beton_core::id::TurnId::new());
+        let error = beton_store::Error::BlobTooLarge { size: 2, max: 1 };
+        let e = rejected(session, 7, &original, &error);
+        assert_eq!(e.turn_id, original.turn_id);
+        assert_eq!(e.ts, original.ts);
+        assert_ne!(e.id, original.id);
+        let json = serde_json::to_value(&e).unwrap();
+        assert_eq!(json["type"], "event.rejected");
+        assert_eq!(
+            json["payload"],
+            serde_json::json!({"original_type": "notice", "rseq": 7, "reason": "payload_too_large"})
+        );
+        assert_eq!(json["actor"]["component"], "server");
+        assert!(!json.to_string().contains("geheimer Inhalt"));
     }
 
     #[test]
@@ -897,6 +1105,38 @@ mod tests {
         c.busy = false;
         c.last_activity = Instant::now();
         assert!(!c.idle(timeout));
+    }
+
+    /// #198: Nach dem geordneten Stopp verliert nur das Token des beendeten Runners seine
+    /// Gültigkeit. Ein Nachfolger, der schon gestartet wurde (Eingabe an die gestoppte Session),
+    /// meldet sich mit seinem eigenen Token weiter an.
+    /// Security-Review zu #198: Tokens gelten je Session nur für den zuletzt gestarteten Runner
+    /// (Generation). Ein früherer, nie verbundener Start kommt danach nicht mehr in den Tunnel.
+    #[test]
+    fn ses_003_ac3_minting_revokes_older_tokens_of_the_session() {
+        let runners = RunnerRegistry::default();
+        let (session, other) = (SessionId::new(), SessionId::new());
+        let first = runners.mint_token(session).unwrap();
+        let foreign = runners.mint_token(other).unwrap();
+        let second = runners.mint_token(session).unwrap();
+        assert_eq!(runners.session_for(&first), None, "ältere Generation");
+        assert_eq!(runners.session_for(&second), Some(session));
+        assert_eq!(runners.session_for(&foreign), Some(other), "andere Session");
+    }
+
+    #[test]
+    fn ses_003_ac3_stopping_a_runner_keeps_the_token_of_its_successor() {
+        let runners = RunnerRegistry::default();
+        let session = SessionId::new();
+        let old = runners.mint_token(session).unwrap();
+        let successor = runners.mint_token(session).unwrap();
+        runners.revoke_token(&old);
+        assert_eq!(
+            runners.session_for(&old),
+            None,
+            "altes Token bleibt gesperrt"
+        );
+        assert_eq!(runners.session_for(&successor), Some(session));
     }
 
     fn approval(

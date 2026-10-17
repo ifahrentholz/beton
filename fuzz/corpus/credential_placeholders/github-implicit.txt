@@ -1,0 +1,3 @@
+T github.com
+P /owner/repo.git/info/refs
+Q service=git-upload-pack

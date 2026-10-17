@@ -45,11 +45,44 @@ impl Store {
         epoch: u64,
         events: Vec<Event>,
     ) -> Result<Vec<Event>> {
+        self.append_replacing(org, session, expected_head, epoch, events, &|_, _, _| None)
+            .await
+    }
+
+    /// Wie [`Store::append`], aber ein Event, das die Prüfung vor dem Schreiben nicht besteht
+    /// ([`Error::rejects_event`], z. B. Nutzlast über dem Blob-Limit), ersetzt `replace` durch
+    /// ein anderes Event an derselben Stelle (PROTO-015: `event.rejected`, #288). `replace`
+    /// erhält Index, Event und Fehler; `None` lässt den Append wie bisher scheitern.
+    pub async fn append_replacing(
+        &self,
+        org: OrgId,
+        session: SessionId,
+        expected_head: u64,
+        epoch: u64,
+        events: Vec<Event>,
+        replace: &(dyn Fn(usize, &Event, &Error) -> Option<Event> + Sync),
+    ) -> Result<Vec<Event>> {
         if events.is_empty() {
             return Ok(Vec::new());
         }
         let events = self.price(events);
-        let prepared = self.prepare(session, events)?;
+        let mut prepared = Vec::with_capacity(events.len());
+        for (i, event) in events.into_iter().enumerate() {
+            match self.prepare_one(session, event) {
+                Ok(p) => prepared.push(p),
+                Err(rejected) => {
+                    let (error, event) = *rejected;
+                    let replacement = error
+                        .rejects_event()
+                        .then(|| replace(i, &event, &error))
+                        .flatten();
+                    let Some(replacement) = replacement else {
+                        return Err(error);
+                    };
+                    prepared.push(self.prepare_one(session, replacement).map_err(|b| b.0)?);
+                }
+            }
+        }
         let mut tx = self.write_tx().await?;
         let written = self
             .write_prepared(&mut tx, org, session, expected_head, epoch, prepared)
@@ -75,54 +108,77 @@ impl Store {
     pub(crate) fn prepare(&self, session: SessionId, events: Vec<Event>) -> Result<Vec<Prepared>> {
         events
             .into_iter()
-            .map(|mut event| {
-                if event.session_id != session {
-                    return Err(Error::InvalidEvent(format!(
-                        "Event {} gehört zu {}, nicht zu {session}",
-                        event.id, event.session_id
-                    )));
-                }
-                let payload = match &event.body {
-                    EventBody::Inline(p) => p.clone(),
-                    EventBody::Offloaded(_) => {
-                        return Err(Error::InvalidEvent(
-                            "ausgelagerte Payloads werden vom Store selbst erzeugt".into(),
-                        ));
-                    }
-                };
-                if payload.persistence() == Persistence::Transient || event.transient {
-                    return Err(Error::InvalidEvent(format!(
-                        "{} ist transient und gehört nicht ins Log",
-                        payload.type_name()
-                    )));
-                }
-                // SEC-013: geschwärzt wird vor Persistenz, Auslagerung und Verteilung.
-                let (payload, value) = self.redacted(payload)?;
-                event.body = EventBody::Inline(payload.clone());
-                let json = value.to_string();
-                let (payload_json, payload_ref) = if json.len() > PAYLOAD_INLINE_LIMIT {
-                    let blob = self.blobs.put(json.as_bytes())?;
-                    event.body = EventBody::Offloaded(OffloadedPayload {
-                        event_type: payload.event_type(),
-                        payload_ref: blob.clone(),
-                    });
-                    (None, Some(blob))
-                } else {
-                    (Some(json), None)
-                };
-                let raw = match event.raw.take() {
-                    Some(raw) if self.options.store_raw => Some(self.redact_raw(&raw)?),
-                    _ => None,
-                };
-                Ok(Prepared {
-                    event,
-                    payload,
-                    payload_json,
-                    payload_ref,
-                    raw,
-                })
-            })
+            .map(|event| self.prepare_one(session, event).map_err(|b| b.0))
             .collect()
+    }
+
+    /// Ein Event wie [`Store::prepare`]; scheitert es, kommt es mit dem Fehler zurück
+    /// (Nutzlast ggf. schon geschwärzt), damit der Aufrufer es ersetzen kann.
+    fn prepare_one(
+        &self,
+        session: SessionId,
+        mut event: Event,
+    ) -> std::result::Result<Prepared, Box<(Error, Event)>> {
+        if event.session_id != session {
+            let e = Error::InvalidEvent(format!(
+                "Event {} gehört zu {}, nicht zu {session}",
+                event.id, event.session_id
+            ));
+            return Err(Box::new((e, event)));
+        }
+        let payload = match &event.body {
+            EventBody::Inline(p) => p.clone(),
+            EventBody::Offloaded(_) => {
+                let e = Error::InvalidEvent(
+                    "ausgelagerte Payloads werden vom Store selbst erzeugt".into(),
+                );
+                return Err(Box::new((e, event)));
+            }
+        };
+        if payload.persistence() == Persistence::Transient || event.transient {
+            let e = Error::InvalidEvent(format!(
+                "{} ist transient und gehört nicht ins Log",
+                payload.type_name()
+            ));
+            return Err(Box::new((e, event)));
+        }
+        // SEC-013: geschwärzt wird vor Persistenz, Auslagerung und Verteilung.
+        let (payload, value) = match self.redacted(payload) {
+            Ok(r) => r,
+            Err(e) => return Err(Box::new((e, event))),
+        };
+        event.body = EventBody::Inline(payload.clone());
+        let json = value.to_string();
+        let (payload_json, payload_ref) = if json.len() > PAYLOAD_INLINE_LIMIT {
+            let blob = match self.blobs.put(json.as_bytes()) {
+                Ok(b) => b,
+                Err(e) => return Err(Box::new((e, event))),
+            };
+            event.body = EventBody::Offloaded(OffloadedPayload {
+                event_type: payload.event_type(),
+                payload_ref: blob.clone(),
+            });
+            (None, Some(blob))
+        } else {
+            (Some(json), None)
+        };
+        let raw = match event.raw.take() {
+            Some(raw) if self.options.store_raw => match self.redact_raw(&raw) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    event.raw = Some(raw);
+                    return Err(Box::new((e, event)));
+                }
+            },
+            _ => None,
+        };
+        Ok(Prepared {
+            event,
+            payload,
+            payload_json,
+            payload_ref,
+            raw,
+        })
     }
 
     /// Schickt `raw` durch den Redaction-Hook. Ändert er nichts, bleiben die Original-Bytes
@@ -292,6 +348,19 @@ impl Store {
         .collect()
     }
 
+    /// Anzahl dauerhafter Events eines Typs in einer Session (z. B. `turn.started`, #276).
+    pub async fn count_events(&self, org: OrgId, session: SessionId, ty: &str) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE org_id = ? AND session_id = ? AND type = ?",
+        )
+        .bind(org.to_string())
+        .bind(session.to_string())
+        .bind(ty)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
     /// Das gespeicherte (redigierte) `raw` eines Events, falls vorhanden.
     pub async fn event_raw(
         &self,
@@ -368,6 +437,7 @@ impl Store {
         let cutoff = now.checked_sub(GC_GRACE).unwrap_or(SystemTime::UNIX_EPOCH);
         let cutoff_ts = Timestamp::from(time::OffsetDateTime::from(cutoff)).to_string();
         // Org-übergreifend: der Blob-Store ist ein gemeinsamer Inhaltsspeicher.
+        let writer = self.write_guard().await?;
         let rows_deleted = sqlx::query(
             "DELETE FROM blobs /* org-übergreifend: GC */ WHERE created_at < ? AND NOT EXISTS ( \
                SELECT 1 FROM blob_refs r WHERE r.org_id = blobs.org_id AND r.sha256 = blobs.sha256)",
@@ -376,6 +446,7 @@ impl Store {
         .execute(&self.pool)
         .await?
         .rows_affected();
+        drop(writer);
         let known: std::collections::HashSet<String> =
             sqlx::query_scalar("SELECT DISTINCT sha256 FROM blobs /* org-übergreifend: GC */")
                 .fetch_all(&self.pool)

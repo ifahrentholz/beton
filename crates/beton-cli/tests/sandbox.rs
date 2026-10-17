@@ -315,3 +315,175 @@ fn sbx_008_probe_reports_landlock_abi_and_kernel() {
         );
     }
 }
+
+#[test]
+fn sbx_012_ac3_explain_shows_which_values_come_from_the_preset() {
+    let e = env("sandbox:\n  preset: dev\n  workspace: ro\n  masks: [secrets/]\n");
+    let v = json(&sandbox(&e, &["explain", "--json", "--stage", "tools"]));
+    assert_eq!(v["origins"]["egress_rules"], "preset:dev", "{v}");
+    assert_eq!(v["origins"]["write_paths"], "preset:dev", "{v}");
+    assert_eq!(v["origins"]["workspace"], "user", "{v}");
+    assert_eq!(v["origins"]["masks[secrets/]"], "user", "{v}");
+    assert!(
+        v["egress_rules"][0]
+            .as_str()
+            .unwrap()
+            .contains("registry.npmjs.org"),
+        "{v}"
+    );
+    let o = sandbox(&e, &["explain"]);
+    let text = stdout(&o);
+    assert!(text.contains("preset:dev"), "{text}");
+}
+
+#[test]
+fn prx_002_extra_ca_files_must_exist_and_contain_a_certificate() {
+    let e = env("");
+    let missing = e.home.join("fehlt.pem");
+    std::fs::write(
+        e.beton_home.join("config.yaml"),
+        format!("proxy:\n  extra_ca_files: [\"{}\"]\n", missing.display()),
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert!(
+        stderr(&o).contains("proxy.extra_ca_files"),
+        "{}",
+        stderr(&o)
+    );
+    let empty = e.home.join("leer.pem");
+    std::fs::write(&empty, "").unwrap();
+    std::fs::write(
+        e.beton_home.join("config.yaml"),
+        format!("proxy:\n  extra_ca_files: [\"{}\"]\n", empty.display()),
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    // Im Projekt ist der Schlüssel verboten (nur User-Konfiguration).
+    std::fs::write(e.beton_home.join("config.yaml"), "").unwrap();
+    std::fs::create_dir_all(e.ws.join(".beton")).unwrap();
+    std::fs::write(
+        e.ws.join(".beton/config.yaml"),
+        "proxy:\n  extra_ca_files: [\"/etc/x.pem\"]\n",
+    )
+    .unwrap();
+    let o = sandbox(&e, &["explain", "--json"]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+}
+
+/// SBX-010 AC1: `beton sandbox probe --json` liefert pro Backend `available`, `caps`,
+/// `degraded_reasons` und unter Linux `landlock_abi` und `kernel`.
+#[test]
+fn sbx_010_ac1_probe_json_has_per_backend_fields_and_linux_kernel_info() {
+    let e = env("");
+    let v = json(&sandbox(&e, &["probe", "--json"]));
+    for p in v["providers"].as_array().unwrap() {
+        assert!(p["available"].is_boolean(), "{p}");
+        assert!(p["caps"].is_array(), "{p}");
+        assert!(p["degraded_reasons"].is_object(), "{p}");
+        let linux = cfg!(target_os = "linux") && (p["id"] == "landlock" || p["id"] == "bwrap");
+        if linux {
+            assert!(
+                p["landlock_abi"].is_u64() || p.get("landlock_abi").is_some_and(|a| a.is_null()),
+                "{p}"
+            );
+            assert!(p["kernel"].as_str().is_some_and(|k| !k.is_empty()), "{p}");
+        } else {
+            assert!(p.get("kernel").is_none(), "{p}");
+        }
+    }
+}
+
+/// SBX-010 AC2: `beton sandbox exec --stage tools -- cat ~/.ssh/config` scheitert mit Exit ≠ 0
+/// und klarer Meldung; der Inhalt erscheint nirgends. Ein erlaubtes Kommando im Workspace
+/// gelingt (Kontrollgruppe: dieselbe Sandbox lässt Erlaubtes zu).
+#[cfg(unix)]
+#[test]
+fn sbx_010_ac2_exec_in_the_tools_stage_cannot_read_ssh_config() {
+    const MARKER: &str = "FIXTURE-SSH-CONFIG";
+    let e = env("");
+    let config = e.home.join(".ssh/config");
+    std::fs::write(&config, format!("Host fixture\n  IdentityFile {MARKER}\n")).unwrap();
+    // Kontrollgruppe ohne Sandbox: Die Datei ist lesbar.
+    assert!(std::fs::read_to_string(&config).unwrap().contains(MARKER));
+    let o = sandbox(
+        &e,
+        &[
+            "exec",
+            "--stage",
+            "tools",
+            "--",
+            "cat",
+            config.to_str().unwrap(),
+        ],
+    );
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert_ne!(o.status.code(), Some(0));
+    assert!(!stdout(&o).contains(MARKER), "Inhalt in stdout");
+    let err = stderr(&o);
+    assert!(!err.contains(MARKER), "Inhalt in stderr");
+    assert!(
+        err.contains("Sandbox") && err.contains("tools") && err.contains("explain"),
+        "keine klare Meldung: {err}"
+    );
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    let o = sandbox(&e, &["exec", "--stage", "tools", "--", "cat", "hallo.txt"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(stdout(&o), "hallo");
+}
+
+/// SBX-010 AC2 (fail closed): `beton sandbox exec` startet nichts ohne volle Isolation, weder
+/// mit `backend: none` (Datei oder `BETON_CFG_SANDBOX__BACKEND`) noch mit einer *degraded*
+/// Policy (z. B. `limits.memory_mb` ohne durchsetzbares Speicherlimit).
+#[cfg(unix)]
+#[test]
+fn sbx_010_ac2_exec_refuses_backend_none_and_degraded_policies() {
+    let refused = |o: &std::process::Output| {
+        assert!(
+            !o.status.success(),
+            "lief ohne volle Isolation: {}",
+            stdout(o)
+        );
+        assert_eq!(o.status.code(), Some(1), "{}", stderr(o));
+        assert!(!stdout(o).contains("hallo"), "Kommando lief: {}", stdout(o));
+        let err = stderr(o);
+        assert!(
+            err.contains("explain") && err.contains("nichts gestartet"),
+            "{err}"
+        );
+    };
+    let e = env("sandbox:\n  backend: none\n");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    refused(&sandbox(&e, &["exec", "--", "cat", "hallo.txt"]));
+
+    let e = env("");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    let o = run(beton(&e.beton_home)
+        .env("HOME", &e.home)
+        .env("BETON_CFG_SANDBOX__BACKEND", "none")
+        .current_dir(&e.ws)
+        .args(["sandbox", "exec", "--", "cat", "hallo.txt"]));
+    refused(&o);
+
+    // Speicherlimit: nur wenn das Backend `resources` nicht erzwingt, ist die Policy degraded.
+    let e = env("sandbox:\n  limits: { memory_mb: 256 }\n");
+    std::fs::write(e.ws.join("hallo.txt"), "hallo").unwrap();
+    let probe = json(&sandbox(&e, &["probe", "--json"]));
+    let auto = probe["auto"].as_str().unwrap().to_owned();
+    let enforced = probe["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == auto.as_str())
+        .unwrap()["caps"]
+        .to_string()
+        .contains("resources");
+    let o = sandbox(&e, &["exec", "--", "cat", "hallo.txt"]);
+    if enforced {
+        assert!(o.status.success(), "{}", stderr(&o));
+    } else {
+        refused(&o);
+    }
+}

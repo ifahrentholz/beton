@@ -349,6 +349,16 @@ impl Client {
             .await
     }
 
+    /// Wie [`Client::resume`], bestätigt dabei `sandbox.backend: none` für diese Session
+    /// (SBX-006), z. B. für eine importierte Session.
+    pub async fn resume_unsandboxed(&self, id: &str) -> Result<Value> {
+        self.post(
+            &format!("/v1/sessions/{id}/resume?confirm_unsandboxed=true"),
+            &Value::Null,
+        )
+        .await
+    }
+
     /// `POST /v1/sessions/{id}/archive` bzw. `/unarchive`.
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<Value> {
         let action = if archived { "archive" } else { "unarchive" };
@@ -530,6 +540,7 @@ impl Client {
         cursor: Option<&str>,
         limit: u32,
         action: Option<&str>,
+        kind: Option<&str>,
     ) -> Result<Page<Value>> {
         let mut query = vec![("limit", limit.to_string())];
         if let Some(c) = cursor {
@@ -538,13 +549,45 @@ impl Client {
         if let Some(a) = action {
             query.push(("action", a.to_owned()));
         }
+        if let Some(k) = kind {
+            query.push(("kind", k.to_owned()));
+        }
         self.send(self.http.get(self.url("/v1/audit")).query(&query))
+            .await
+    }
+
+    /// `POST /v1/secrets/test`: Prüfung beim Provider über den Proxy-Pfad (SEC-004, SEC-011).
+    pub async fn test_secret(&self, secret_ref: &str, kind: Option<&str>) -> Result<Value> {
+        let mut body = serde_json::json!({ "secret_ref": secret_ref });
+        if let Some(k) = kind {
+            body["kind"] = Value::String(k.to_owned());
+        }
+        self.send(self.http.post(self.url("/v1/secrets/test")).json(&body))
             .await
     }
 
     /// `GET /v1/audit/verify`: Prüfung der Hash-Kette.
     pub async fn audit_verify(&self) -> Result<Value> {
         self.get("/v1/audit/verify").await
+    }
+
+    /// `GET /v1/policies`: effektives Set (POL-027), mit `session` samt Projekt-Ebene.
+    pub async fn policies(&self, session: Option<&str>) -> Result<Value> {
+        match session {
+            Some(id) => self.get(&format!("/v1/policies?session_id={id}")).await,
+            None => self.get("/v1/policies").await,
+        }
+    }
+
+    /// `POST /v1/policies/evaluate`: Auswertung ohne Seiteneffekte (POL-027 AC3).
+    pub async fn evaluate_policy(&self, request: &Value) -> Result<Value> {
+        self.post("/v1/policies/evaluate", request).await
+    }
+
+    /// `GET /v1/sessions/{id}/policy-decisions/{seq}`: Explain einer Entscheidung (POL-027).
+    pub async fn explain_decision(&self, session: &str, seq: u64) -> Result<Value> {
+        self.get(&format!("/v1/sessions/{session}/policy-decisions/{seq}"))
+            .await
     }
 
     /// `POST /v1/proxy/ca/rotate`: neue beton-CA (PRX-002); liefert Subject, Fingerabdruck
