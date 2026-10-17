@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "rules": {
+    "no-restricted-globals": [
+      "error",
+      { "name": "SpeechRecognition", "message": "VOI-008: Spracheingabe nur lokal mit Whisper über den Daemon, keine Browser-Spracherkennung." },
+      { "name": "webkitSpeechRecognition", "message": "VOI-008: Spracheingabe nur lokal mit Whisper über den Daemon, keine Browser-Spracherkennung." },
+      { "name": "SpeechGrammarList", "message": "VOI-008: keine Browser-Spracherkennung." },
+      { "name": "webkitSpeechGrammarList", "message": "VOI-008: keine Browser-Spracherkennung." }
+    ],
+    "no-restricted-properties": [
+      "error",
+      { "property": "SpeechRecognition", "message": "VOI-008: keine Browser-Spracherkennung." },
+      { "property": "webkitSpeechRecognition", "message": "VOI-008: keine Browser-Spracherkennung." },
+      { "property": "SpeechGrammarList", "message": "VOI-008: keine Browser-Spracherkennung." },
+      { "property": "webkitSpeechGrammarList", "message": "VOI-008: keine Browser-Spracherkennung." }
+    ]
+  }
+}
