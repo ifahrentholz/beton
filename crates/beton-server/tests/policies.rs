@@ -790,3 +790,32 @@ async fn agt_007_policy_queries_share_one_budget_per_session_tree() {
     .await;
     assert!(query(t, grandchild).await);
 }
+
+/// #353 Punkt 2: Ist der Root über 64 Ebenen nicht zu finden (Zyklus oder sehr tiefer Baum),
+/// antwortet der Server mit einem Fehler, statt beim zuletzt erreichten Vorfahren zu zählen
+/// (dessen Budget je nach Startpunkt ein anderes wäre); der Runner lehnt die Abfrage dann ab.
+#[tokio::test]
+async fn agt_007_policy_query_without_a_reachable_root_fails_closed() {
+    let s = setup().await;
+    let t = &s.t;
+    let root = session(t, s.project.path()).await;
+    let mut deepest = root;
+    for _ in 0..64 {
+        deepest = child_of(t, deepest, s.project.path()).await;
+    }
+    // 64 Ebenen unter dem Root: noch erreichbar.
+    assert!(query(t, deepest).await);
+    let too_deep = child_of(t, deepest, s.project.path()).await;
+    let r = post(
+        t,
+        &format!("/test/system/{too_deep}/policy.query"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        r.status >= 400,
+        "{} {}",
+        r.status,
+        String::from_utf8_lossy(&r.body)
+    );
+}
