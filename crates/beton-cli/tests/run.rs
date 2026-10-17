@@ -548,6 +548,20 @@ fn cwd_of_pid(pid: &str) -> Option<std::path::PathBuf> {
         .find_map(|l| l.strip_prefix('n').map(std::path::PathBuf::from))
 }
 
+/// Hat dieser Prozess `CAP_SYS_PTRACE` (Bit 19 in `CapEff`)? Dann liest er `/proc/<pid>/cwd`
+/// auch von nicht dumpable Prozessen.
+#[cfg(unix)]
+fn may_ptrace_anyone() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("CapEff:"))
+                .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
+        })
+        .is_some_and(|caps| caps & (1 << 19) != 0)
+}
+
 /// Kindprozesse von `pid` (über `pgrep -P`).
 #[cfg(unix)]
 fn children_of(pid: &str) -> Vec<String> {
@@ -577,13 +591,21 @@ async fn run_002_ac1_run_claude_starts_exactly_one_runner_in_the_project() {
     assert_eq!(runners.len(), 1, "Runner-Prozesse: {runners:?}");
     let expected = project.path().canonicalize().unwrap();
     if cfg!(target_os = "linux") {
-        // #364: Der Runner ist nicht dumpable.
-        let denied = std::fs::read_link(format!("/proc/{}/cwd", runners[0])).unwrap_err();
-        assert_eq!(
-            denied.kind(),
-            std::io::ErrorKind::PermissionDenied,
-            "Runner ist dumpable: {denied}"
-        );
+        // #364: Der Runner ist nicht dumpable. Mit `CAP_SYS_PTRACE` (z. B. als Root eines
+        // User-Namespace wie im CI-Job ohne Netzwerk) bleibt `/proc/<pid>/cwd` trotzdem lesbar;
+        // dann zusätzlich direkt prüfen.
+        let runner_cwd = std::fs::read_link(format!("/proc/{}/cwd", runners[0]));
+        if may_ptrace_anyone() {
+            let cwd = runner_cwd.expect("cwd des Runners mit CAP_SYS_PTRACE");
+            assert_eq!(cwd.canonicalize().unwrap(), expected);
+        } else {
+            let denied = runner_cwd.unwrap_err();
+            assert_eq!(
+                denied.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "Runner ist dumpable: {denied}"
+            );
+        }
         let harness: Vec<String> = children_of(&runners[0])
             .into_iter()
             .filter(|c| {
