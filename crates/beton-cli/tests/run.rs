@@ -548,6 +548,18 @@ fn cwd_of_pid(pid: &str) -> Option<std::path::PathBuf> {
         .find_map(|l| l.strip_prefix('n').map(std::path::PathBuf::from))
 }
 
+/// Kindprozesse von `pid` (über `pgrep -P`).
+#[cfg(unix)]
+fn children_of(pid: &str) -> Vec<String> {
+    let children = run(std::process::Command::new("pgrep").args(["-P", pid]));
+    stdout(&children).lines().map(str::to_owned).collect()
+}
+
+/// RUN-002 AC1: genau ein Runner, dessen Arbeitsverzeichnis das Projekt ist. Unter Linux ist
+/// der Runner nicht dumpable (#364, PRX-006): `/proc/<pid>/cwd` ist dann auch für Prozesse
+/// desselben Users gesperrt. Sein Arbeitsverzeichnis zeigt dort der Harness-Kindprozess: Der
+/// Runner übernimmt beim Start `std::env::current_dir()` als Arbeitsverzeichnis der Session und
+/// startet den Harness genau darin.
 #[cfg(unix)]
 #[tokio::test]
 async fn run_002_ac1_run_claude_starts_exactly_one_runner_in_the_project() {
@@ -561,14 +573,31 @@ async fn run_002_ac1_run_claude_starts_exactly_one_runner_in_the_project() {
         .args(["run", "--unsandboxed", "claude", "-p", "sag hallo"]));
     assert!(out.status.success(), "{}", stderr(&out));
     let pid = daemon.pid().unwrap().to_string();
-    let children = run(std::process::Command::new("pgrep").args(["-P", &pid]));
-    let runners: Vec<String> = stdout(&children).lines().map(str::to_owned).collect();
+    let runners = children_of(&pid);
     assert_eq!(runners.len(), 1, "Runner-Prozesse: {runners:?}");
-    let cwd = cwd_of_pid(&runners[0]).expect("cwd des Runners");
-    assert_eq!(
-        cwd.canonicalize().unwrap(),
-        project.path().canonicalize().unwrap()
-    );
+    let expected = project.path().canonicalize().unwrap();
+    if cfg!(target_os = "linux") {
+        // #364: Der Runner ist nicht dumpable.
+        let denied = std::fs::read_link(format!("/proc/{}/cwd", runners[0])).unwrap_err();
+        assert_eq!(
+            denied.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "Runner ist dumpable: {denied}"
+        );
+        let harness: Vec<String> = children_of(&runners[0])
+            .into_iter()
+            .filter(|c| {
+                std::fs::read(format!("/proc/{c}/cmdline"))
+                    .is_ok_and(|b| String::from_utf8_lossy(&b).contains("beton-fake-cli"))
+            })
+            .collect();
+        assert_eq!(harness.len(), 1, "Harness-Prozesse: {harness:?}");
+        let cwd = cwd_of_pid(&harness[0]).expect("cwd des Harness");
+        assert_eq!(cwd.canonicalize().unwrap(), expected);
+    } else {
+        let cwd = cwd_of_pid(&runners[0]).expect("cwd des Runners");
+        assert_eq!(cwd.canonicalize().unwrap(), expected);
+    }
 }
 
 // --------------------------------------------------------------------------- SES-002 AC3
