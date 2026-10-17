@@ -400,10 +400,14 @@ pub async fn main_from_env() -> std::process::ExitCode {
             "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
         );
     }
-    // Keine Core-Dumps mit Credential-Werten (#295). Nicht dumpable ist nur der Daemon: Der
-    // Runner bleibt für Diagnose und `RUN-002` über `/proc/<pid>/cwd` lesbar (Restrisiko).
+    // Keine Core-Dumps mit Credential-Werten (#295); unter Linux zusätzlich nicht dumpable,
+    // damit Prozesse desselben Users den Speicher nicht über `/proc/<pid>/mem` bzw. ptrace lesen
+    // (#364). Der Harness wird per `execve` gestartet und ist wieder dumpable.
     if let Err(e) = harden::no_core_dumps() {
         tracing::warn!("Core-Dumps nicht abschaltbar: {e}");
+    }
+    if let Err(e) = harden::not_dumpable() {
+        tracing::warn!("Runner nicht als nicht-dumpable markierbar: {e}");
     }
     let boot = match RunnerBoot::from_env_and_stdin() {
         Ok(b) => b,
