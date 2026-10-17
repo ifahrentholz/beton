@@ -4,6 +4,7 @@ import { effortLabel } from '@/components/settings-picker'
 import type { SessionLog } from '@/store/events'
 import { isInline, isOffloaded, textOf } from './events'
 import { argSummary } from './format'
+import { t } from './i18n'
 
 /** Ein Grund einer Approval-Card (POL-010). */
 export interface ApprovalReason {
@@ -315,7 +316,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
         break
       // Compaction im Verlauf (USE-009): solange sie läuft ein Hinweis, danach das Ergebnis.
       case 'compaction.started':
-        compacting = { kind: 'note', key, text: `Kontext wird kompaktiert …${triggerSuffix(e.payload.trigger, true)}`, tone: 'neutral' }
+        compacting = compactingNote(key, e.payload, harness)
         items.push(compacting)
         break
       case 'compaction.completed': {
@@ -342,25 +343,44 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
 }
 
 /**
- * Herkunft der Compaction im Hinweis (USE-009). Für die Automatik und den Harness selbst steht
- * der Entwurf noch aus; bis dahin ohne Zusatz.
+ * Herkunft der Compaction im Hinweis (USE-009, Entwurf `usage-context`): von dir, automatisch
+ * ab der Schwelle (`compaction.auto: beton`) oder vom Harness selbst. Ältere Logs ohne
+ * `trigger` bleiben ohne Zusatz.
  */
-function triggerSuffix(trigger: Compaction['trigger'], running: boolean): string {
-  if (trigger !== 'user') return ''
-  return running ? ' (von dir ausgelöst)' : ' · von dir ausgelöst'
+function triggerText(c: Compaction, harness: string): string | undefined {
+  switch (c.trigger) {
+    case 'user':
+      return t('compaction.byUser')
+    case 'beton':
+      return c.threshold ? t('compaction.byBeton', { percent: Math.round(c.threshold * 100) }) : t('compaction.byBetonPlain')
+    case 'harness':
+      return t('compaction.byHarness', { harness: harness ? harnessName(harness) : 'Harness' })
+    default:
+      return undefined
+  }
+}
+
+/** „Kontext wird kompaktiert … (von dir ausgelöst)“ bzw. „… · automatisch ab 80 % …“. */
+function compactingNote(key: string, c: Compaction, harness: string): Extract<Item, { kind: 'note' }> {
+  const by = triggerText(c, harness)
+  const suffix = !by ? '' : c.trigger === 'user' ? ` (${by})` : ` · ${by}`
+  return { kind: 'note', key, text: `${t('compaction.running')}${suffix}`, tone: 'neutral' }
 }
 
 const tokens = (n: number) => n.toLocaleString('de-DE')
 
 /** „Kontext kompaktiert · 186.400 → 38.200 Tokens · von dir ausgelöst“ (Entwurf `usage-context`). */
 function compactedNote(key: string, c: Compaction, harness: string): Extract<Item, { kind: 'note' }> {
-  const numbers = c.after_tokens !== undefined ? ` · ${tokens(c.before_tokens)} → ${tokens(c.after_tokens)} Tokens` : ''
+  const parts = [t('compaction.done')]
+  if (c.after_tokens !== undefined) parts.push(t('compaction.tokens', { before: tokens(c.before_tokens), after: tokens(c.after_tokens) }))
+  const by = triggerText(c, harness)
+  if (by) parts.push(by)
   return {
     kind: 'note',
     key,
-    text: `Kontext kompaktiert${numbers}${triggerSuffix(c.trigger, false)}`,
+    text: parts.join(' · '),
     tone: 'neutral',
-    detail: `${harness ? harnessName(harness) : 'Der Harness'} hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.`,
+    detail: t('compaction.explain', { harness: harness ? harnessName(harness) : t('compaction.theHarness') }),
   }
 }
 

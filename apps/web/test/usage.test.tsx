@@ -199,4 +199,130 @@ describe('Verbrauch (USE-006)', () => {
     expect(catalog.textContent).toContain('—')
     expect((await screen.findByTestId('unpriced-hint')).textContent).toContain('2 Turns ohne Preis')
   })
+  it('USE-006: während des Ladens stehen Platzhalter, CSV ist noch gesperrt', async () => {
+    api.report.mockImplementation(() => new Promise(() => {}))
+    renderView(<UsageView />)
+    expect(screen.getByRole('heading', { name: 'Verbrauch' })).toBeTruthy()
+    expect(screen.getByRole('radiogroup', { name: 'Zeitraum' })).toBeTruthy()
+    const kpis = screen.getByTestId('usage-kpis')
+    expect(kpis.getAttribute('aria-busy')).toBe('true')
+    expect(within(kpis).getAllByText('–')).toHaveLength(4)
+    expect(screen.getByRole('status').textContent).toBe('Verbrauch wird geladen …')
+    const csv = screen.getByRole('button', { name: /CSV exportieren/ })
+    expect(csv).toHaveProperty('disabled', true)
+    expect(csv.getAttribute('title')).toBe('Erst möglich, wenn der Verbrauch geladen ist')
+  })
+
+  it('USE-006: ist der Daemon nicht erreichbar, steht der Fehler mit „Erneut laden“', async () => {
+    api.report.mockRejectedValue(new TypeError('Failed to fetch'))
+    renderView(<UsageView />)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('Verbrauch nicht verfügbar – der lokale Daemon antwortet nicht. Läuft beton serve?Erneut laden')
+    expect(screen.queryByTestId('usage-kpis')).toBeNull()
+    expect(screen.getByRole('button', { name: /CSV exportieren/ })).toHaveProperty('disabled', true)
+    // Erneut laden holt alles neu.
+    mockApi()
+    fireEvent.click(within(alert).getByRole('button', { name: 'Erneut laden' }))
+    expect(await screen.findByTestId('usage-table')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('USE-006: eigener Zeitraum über das Popover – Von/Bis einschließlich, Kurzform im Segment und im CSV-Dateinamen', async () => {
+    renderView(<UsageView />)
+    await screen.findByTestId('usage-table')
+    // Ohne eigenen Zeitraum führt Abbrechen zurück zum vorigen.
+    fireEvent.click(screen.getByRole('radio', { name: 'Zeitraum …' }))
+    expect(screen.getByRole('radio', { name: 'Zeitraum …' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Abbrechen' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('radio', { name: '14 Tage' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('radio', { name: 'Zeitraum …' }))
+    const dialog = screen.getByRole('dialog', { name: 'Eigener Zeitraum' })
+    expect(within(dialog).getByText('Tage in deiner Zeitzone, beide einschließlich')).toBeTruthy()
+    const from = within(dialog).getByLabelText('Von')
+    const to = within(dialog).getByLabelText('Bis')
+    expect(document.activeElement).toBe(from)
+    // „Von“ nach „Bis“ sperrt „Anwenden“ mit Hinweis.
+    fireEvent.change(from, { target: { value: '2026-10-03' } })
+    fireEvent.change(to, { target: { value: '2026-09-20' } })
+    expect(within(dialog).getByRole('button', { name: 'Anwenden' })).toHaveProperty('disabled', true)
+    expect(within(dialog).getByText('„Von“ liegt nach „Bis“ – tausche die Tage.')).toBeTruthy()
+    fireEvent.change(from, { target: { value: '2026-09-20' } })
+    fireEvent.change(to, { target: { value: '2026-10-03' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Anwenden' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const segment = screen.getByRole('radio', { name: '20.09.–03.10.' })
+    expect(segment.getAttribute('aria-checked')).toBe('true')
+    expect(segment.getAttribute('title')).toBe('20.09.–03.10., beide Tage einschließlich')
+    await vi.waitFor(() => expect(api.report).toHaveBeenCalledWith(expect.objectContaining({ from: '2026-09-20', to: '2026-10-03', groupBy: ['session', 'harness'] })))
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: /CSV exportieren/ }).getAttribute('title')).toBe('verbrauch_2026-09-20_2026-10-03_nach-session.csv'))
+    // Esc bricht ab und lässt den Zeitraum, wie er war.
+    fireEvent.click(segment)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('radio', { name: '20.09.–03.10.' }).getAttribute('aria-checked')).toBe('true')
+    // Ein anderer Zeitraum und zurück: Der eigene bleibt gemerkt.
+    fireEvent.click(screen.getByRole('radio', { name: '7 Tage' }))
+    expect(screen.getByRole('radio', { name: '20.09.–03.10.' }).getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(screen.getByRole('radio', { name: '20.09.–03.10.' }))
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Abbrechen' }))
+    expect(screen.getByRole('radio', { name: '20.09.–03.10.' }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('USE-004 AC1: das API-Äquivalent erscheint nur auf Wunsch, als „informativ“ und nie als Kosten', async () => {
+    api.report.mockImplementation(async (opts: { groupBy: string[] }) => {
+      const by = opts.groupBy.join(',')
+      const sub = { billing: 'subscription', cost_usd: null }
+      if (by === 'day') return report([item({ day: TODAY, ...sub, turns: 7, input_tokens: 600_000, output_tokens: 40_000, equivalent_usd: 12.3 })])
+      if (by === 'day,harness')
+        return report([item({ day: TODAY, harness: 'claude', ...sub, turns: 7, input_tokens: 600_000, output_tokens: 40_000, equivalent_usd: 12.3 })], {
+          subscriptions: [{ harness: 'claude', vendor: 'anthropic', window: '5h', used_pct: 38, resets_at: new Date(NOW.getTime() + 3600_000).toISOString(), observed_at: '', session_id: 'ses_a', expired: false }],
+        })
+      return report([item({ session_id: 'ses_a', session_title: 'Rate-Limiter', harness: 'claude', ...sub, turns: 7, input_tokens: 600_000, output_tokens: 40_000, equivalent_usd: 4.1 })])
+    })
+    renderView(<UsageView />)
+    const row = await screen.findByTestId('subscription-row')
+    await screen.findByTestId('usage-table')
+    expect(document.body.textContent).not.toContain('$')
+    fireEvent.click(screen.getByRole('switch', { name: 'API-Äquivalent zeigen' }))
+    expect(screen.getByRole('switch', { name: 'API-Äquivalent zeigen' }).getAttribute('aria-checked')).toBe('true')
+    const eq = within(row).getByText('≈ 12,30 $ zu API-Preisen · informativ')
+    expect(eq.getAttribute('title')).toBe('Was diese Nutzung zu API-Preisen gekostet hätte (Katalog 2026-10-14). Nicht abgerechnet.')
+    const billing = screen.getByTestId('usage-table').querySelector('tr[data-key="ses_a"] td:last-child')!
+    expect(billing.textContent!.replace(/\s/g, ' ')).toBe('Subscription · ≈ 4,10 $ informativ')
+    expect(billing.querySelector('[title]')?.getAttribute('title')).toContain('Nicht abgerechnet.')
+    // Die Kennzahl „Kosten“ bleibt unberührt (ADR-0034).
+    expect(screen.getByTestId('usage-kpis').textContent).toContain('Kostenkeine')
+    // CSV bleibt ohne Äquivalent.
+    expect(toCsv('session', rowsFor('session', [item({ session_id: 'ses_a', session_title: 'X', billing: 'subscription', cost_usd: null, equivalent_usd: 4.1 })], TODAY))).not.toContain('4,1')
+  })
+
+  it('USE-004: ein abgelaufenes Abo-Fenster steht als „Kontingent zurückgesetzt“ statt als Balken', async () => {
+    api.report.mockImplementation(async (opts: { groupBy: string[] }) => {
+      const by = opts.groupBy.join(',')
+      if (by === 'day,harness')
+        return report([item({ day: TODAY, harness: 'codex', billing: 'subscription', input_tokens: 4_000_000, output_tokens: 200_000, cost_usd: null })], {
+          subscriptions: [
+            { harness: 'codex', vendor: 'openai', window: '5h', used_pct: 81, resets_at: new Date(NOW.getTime() - 60_000).toISOString(), observed_at: '', session_id: 'ses_a', expired: true },
+          ],
+          reporting: [{ harness: 'codex', sessions: 1, tokens: true, rate_limits: true }],
+        })
+      return report([item({ day: TODAY, billing: 'subscription', input_tokens: 1, cost_usd: null })])
+    })
+    renderView(<UsageView />)
+    const row = await screen.findByTestId('subscription-row')
+    expect(row.textContent).toContain('Kontingent zurückgesetzt – der nächste Turn meldet den neuen Stand. 4,2 Mio. Tokens in 14 Tagen.')
+    expect(row.textContent).toContain('heute 4,2 Mio. Tokens')
+    expect(within(row).queryByRole('meter')).toBeNull()
+    expect(row.textContent).not.toContain('nicht gemeldet')
+    expect(subscriptionRows([{ harness: 'codex', vendor: 'openai', window: '5h', used_pct: 81, resets_at: '', observed_at: '', session_id: 's', expired: true }], [], [], TODAY)[0]).toMatchObject({ windows: [], expired: true })
+  })
+
+  it('USE-003: ohne eigene Preise sagt die Tabelle, wo sie stehen', async () => {
+    api.pricing.mockResolvedValue({ catalog_version: '2026-10-14', currency: 'USD', overrides: [], catalog: [] })
+    renderView(<PricingView />)
+    const overrides = await screen.findByTestId('overrides-table')
+    expect(overrides.textContent).toContain('Noch keine eigenen Preise. Sie stehen in ~/.beton/config.yaml unter pricing.overrides; der erste Treffer gewinnt.')
+    expect(overrides.querySelectorAll('tbody tr')).toHaveLength(1)
+  })
 })

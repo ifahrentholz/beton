@@ -32,7 +32,7 @@ export function daysBetween(from: string, to: string): string[] {
   return out
 }
 
-export type PeriodId = 'today' | '7d' | '14d' | 'month'
+export type PeriodId = 'today' | '7d' | '14d' | 'month' | 'custom'
 
 /** Zeitraum der Seite; `from` und `to` sind Tage einschließlich. */
 export interface Period {
@@ -52,6 +52,16 @@ export function periods(now: Date): Period[] {
     { id: '14d', label: '14 Tage', from: addDays(today, -13), to: today },
     { id: 'month', label: now.toLocaleDateString('de-DE', { month: 'long' }), from: localDate(month), to: today },
   ]
+}
+
+/** „20.09.“ aus `2026-09-20`. */
+export function shortDay(day: string): string {
+  return `${day.slice(8, 10)}.${day.slice(5, 7)}.`
+}
+
+/** Eigener Zeitraum (Popover „Zeitraum …“): beide Tage einschließlich, kurz „20.09.–03.10.“. */
+export function customPeriod(from: string, to: string): Period {
+  return { id: 'custom', label: `${shortDay(from)}–${shortDay(to)}`, from, to }
 }
 
 // ------------------------------------------------------------------ Formatierung
@@ -141,6 +151,8 @@ export interface UsageRow {
   billing: Billing
   /** Session-ID der Zeile (Dimension Session, öffnet die Session, USE-006 AC2). */
   sessionId?: string
+  /** API-Äquivalent der Subscription-Nutzung in USD, nur informativ (USE-004 AC1, ADR-0034). */
+  equivalentUsd?: number
 }
 
 const AUTH_LABEL: Record<string, string> = {
@@ -188,7 +200,7 @@ function nameOf(dim: Dim, key: string, g: UsageItem, today: string): string {
 
 /** Fasst die Gruppen der API zu einer Zeile je Wert der Dimension zusammen. */
 export function rowsFor(dim: Dim, groups: UsageItem[], today: string): UsageRow[] {
-  const rows = new Map<string, UsageRow & { costUsd: number; unpriced: number; subscription: boolean }>()
+  const rows = new Map<string, UsageRow & { costUsd: number; unpriced: number; subscription: boolean; equivalent: number | undefined }>()
   for (const g of groups) {
     const key = keyOf(dim, g)
     let r = rows.get(key)
@@ -206,6 +218,7 @@ export function rowsFor(dim: Dim, groups: UsageItem[], today: string): UsageRow[
         costUsd: 0,
         unpriced: 0,
         subscription: false,
+        equivalent: undefined,
         ...(dim === 'session' && g.session_id ? { sessionId: g.session_id } : {}),
       }
       rows.set(key, r)
@@ -217,11 +230,13 @@ export function rowsFor(dim: Dim, groups: UsageItem[], today: string): UsageRow[
     r.output += g.output_tokens
     r.cache += g.cache_read_tokens
     r.unpriced += g.unpriced_count
-    if (g.billing === 'subscription') r.subscription = true
-    else r.costUsd += g.cost_usd ?? 0
+    if (g.billing === 'subscription') {
+      r.subscription = true
+      if (g.equivalent_usd !== null) r.equivalent = (r.equivalent ?? 0) + g.equivalent_usd
+    } else r.costUsd += g.cost_usd ?? 0
   }
   const out: UsageRow[] = []
-  for (const { costUsd, unpriced, subscription, ...row } of rows.values()) {
+  for (const { costUsd, unpriced, subscription, equivalent, ...row } of rows.values()) {
     const billing: Billing =
       unpriced > 0
         ? { kind: 'unpriced', count: unpriced }
@@ -230,7 +245,7 @@ export function rowsFor(dim: Dim, groups: UsageItem[], today: string): UsageRow[
           : subscription
             ? { kind: 'subscription' }
             : { kind: 'free' }
-    out.push({ ...row, billing })
+    out.push({ ...row, billing, ...(billing.kind === 'subscription' && equivalent !== undefined ? { equivalentUsd: equivalent } : {}) })
   }
   if (dim === 'day') return out.sort((a, b) => b.key.localeCompare(a.key))
   return out.sort((a, b) => b.input + b.output - (a.input + a.output) || a.name.localeCompare(b.name))
@@ -353,8 +368,12 @@ export interface SubscriptionRow {
   windows: SubscriptionWindowView[]
   /** Der Harness meldet Abo-Fenster (USE-004 AC4); `false` = „nicht gemeldet“. */
   reportsLimits: boolean
+  /** Alle gemeldeten Fenster sind abgelaufen: Das Kontingent ist zurückgesetzt. */
+  expired: boolean
   todayTokens: number
   periodTokens: number
+  /** API-Äquivalent von heute in USD (nur informativ); `null`, wenn keins gemeldet ist. */
+  todayEquivalentUsd: number | null
 }
 
 const WINDOW_ORDER = ['5h', '7d']
@@ -370,7 +389,15 @@ export function subscriptionRows(
   const row = (harness: string) => {
     let r = rows.get(harness)
     if (!r) {
-      r = { harness, windows: [], reportsLimits: reporting.find((x) => x.harness === harness)?.rate_limits ?? false, todayTokens: 0, periodTokens: 0 }
+      r = {
+        harness,
+        windows: [],
+        reportsLimits: reporting.find((x) => x.harness === harness)?.rate_limits ?? false,
+        expired: false,
+        todayTokens: 0,
+        periodTokens: 0,
+        todayEquivalentUsd: null,
+      }
       rows.set(harness, r)
     }
     return r
@@ -379,13 +406,17 @@ export function subscriptionRows(
     if (g.billing !== 'subscription' || !g.harness) continue
     const r = row(g.harness)
     r.periodTokens += tokensOf(g)
-    if (g.day === today) r.todayTokens += tokensOf(g)
+    if (g.day === today) {
+      r.todayTokens += tokensOf(g)
+      if (g.equivalent_usd !== null) r.todayEquivalentUsd = (r.todayEquivalentUsd ?? 0) + g.equivalent_usd
+    }
   }
   for (const w of windows) {
     const r = row(w.harness)
     r.reportsLimits = true
     if (!w.expired) r.windows.push(w)
   }
+  for (const r of rows.values()) r.expired = r.windows.length === 0 && windows.some((w) => w.harness === r.harness && w.expired)
   const rank = (w: string) => (WINDOW_ORDER.includes(w) ? WINDOW_ORDER.indexOf(w) : WINDOW_ORDER.length)
   for (const r of rows.values()) r.windows.sort((a, b) => rank(a.window) - rank(b.window) || a.window.localeCompare(b.window))
   return [...rows.values()].sort((a, b) => b.periodTokens - a.periodTokens || a.harness.localeCompare(b.harness))
