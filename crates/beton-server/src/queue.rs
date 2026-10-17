@@ -472,7 +472,7 @@ impl Guard {
             .deliver(
                 self.session,
                 "session.compact",
-                json!({"trigger": "beton"}),
+                json!({"trigger": "beton", "threshold": self.ctx.compaction.threshold}),
                 self.ctx.cmd_timeout,
             )
             .await

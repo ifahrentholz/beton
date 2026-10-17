@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs'
+import AxeBuilder from '@axe-core/playwright'
+import type { Page } from '@playwright/test'
 import type { UsageReportView } from '@beton/sdk'
 import { kpiRange, kpis, periods, rowsFor, dollars, fmtTokens, groupByFor, tzOffset } from '../src/lib/usage'
 import { Daemon, expect, test } from './fixtures'
@@ -149,4 +151,77 @@ test('USE-009 AC3: bei compaction: none ist „Kompaktieren“ deaktiviert und n
   await expect(button).toBeDisabled()
   await expect(button).toHaveAttribute('title', 'Fake-Harness kann nicht kompaktieren. Starte bei Bedarf eine neue Session.')
   await expect(page.getByTestId('context-bar')).toContainText('nicht verfügbar für diesen Harness')
+})
+
+/** Verstöße `serious`/`critical` (WEB-016). */
+async function axe(page: Page): Promise<string[]> {
+  const res = await new AxeBuilder({ page }).analyze()
+  return res.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)
+}
+
+test('USE-006: Fehler ohne Daemon mit „Erneut laden“, eigener Zeitraum über das Popover und im CSV-Dateinamen', async ({ page }) => {
+  await withDaemon(async (d) => {
+    const a = await d.session(PRICED, 'Rechnung prüfen')
+    await turns(d, a, ['eins'])
+    // Daemon antwortet nicht: Die Abfragen scheitern im Netz.
+    await page.route('**/v1/usage?**', (route) => route.abort('connectionrefused'))
+    await d.login(page, '/usage')
+    const alert = page.getByRole('alert')
+    await expect(alert).toContainText('Verbrauch nicht verfügbar – der lokale Daemon antwortet nicht. Läuft beton serve?')
+    await expect(page.getByRole('button', { name: 'CSV exportieren' })).toBeDisabled()
+    expect(await axe(page)).toEqual([])
+    await page.unroute('**/v1/usage?**')
+    await alert.getByRole('button', { name: 'Erneut laden' }).click()
+    await expect(page.getByTestId('usage-table').locator(`tr[data-key="${a}"]`)).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    // Eigener Zeitraum: gestern bis heute, beide einschließlich.
+    const now = new Date()
+    const today = periods(now)[0]!.to
+    const yesterday = periods(new Date(now.getTime() - 24 * 3600_000))[0]!.to
+    await page.getByRole('radio', { name: 'Zeitraum …' }).click()
+    const dialog = page.getByRole('dialog', { name: 'Eigener Zeitraum' })
+    await expect(dialog).toBeVisible()
+    expect(await axe(page)).toEqual([])
+    await dialog.getByLabel('Von').fill(yesterday)
+    await dialog.getByLabel('Bis').fill(today)
+    await dialog.getByRole('button', { name: 'Anwenden' }).click()
+    await expect(dialog).toHaveCount(0)
+    const short = (day: string) => `${day.slice(8, 10)}.${day.slice(5, 7)}.`
+    await expect(page.getByRole('radio', { name: `${short(yesterday)}–${short(today)}` })).toHaveAttribute('aria-checked', 'true')
+    await expect(page.getByTestId('usage-table').locator(`tr[data-key="${a}"] td`).nth(1)).toHaveText('1')
+    const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'CSV exportieren' }).click()])
+    expect(download.suggestedFilename()).toBe(`verbrauch_${yesterday}_${today}_nach-session.csv`)
+  })
+})
+
+/** Turn 1 meldet 75 % Kontext; Turn 2 läuft einige Sekunden. */
+const SLOW = `turns:
+  - emit:
+      - { message: "Viel gelesen." }
+      - { usage: { input_tokens: 150000, output_tokens: 500, context_window: 200000 } }
+  - emit:
+      - { message: "Lese weiter.", delay_ms: 3000 }
+      - { usage: { input_tokens: 160000, output_tokens: 500, context_window: 200000 } }
+`
+
+test('USE-008 USE-009: vor dem ersten Turn „Kontext: noch kein Turn“; während eines Turns ist Kompaktieren gesperrt', async ({ daemon, page }) => {
+  const id = await daemon.session(SLOW, 'Kontext-Zustände')
+  await daemon.waitStatus(id, 'idle')
+  await daemon.login(page, `/s/${id}`)
+  const bar = page.getByTestId('context-bar')
+  await expect(bar).toContainText('Kontext: noch kein Turn')
+  const button = page.getByRole('button', { name: 'Kompaktieren' })
+  await expect(button).toBeDisabled()
+  await expect(button).toHaveAttribute('title', 'Noch nichts zu kompaktieren')
+  expect(await axe(page)).toEqual([])
+  await turns(daemon, id, ['lies alles'])
+  await expect(page.getByTestId('context-ring')).toHaveText(/75 % Kontext/)
+  await expect(button).toBeEnabled()
+  // Turn läuft: gesperrt mit Tooltip und kurzem Hinweis daneben.
+  await daemon.api('POST', `/v1/sessions/${id}/input`, { text: 'weiter' })
+  await expect(button).toBeDisabled()
+  await expect(button).toHaveAttribute('title', 'Kompaktieren geht erst nach dem laufenden Turn')
+  await expect(bar).toContainText('erst nach dem Turn')
+  await expect(button).toBeEnabled({ timeout: 15_000 })
 })

@@ -204,6 +204,43 @@ describe('Tastenkürzel (UX-004)', () => {
     expect(useKeymap.getState().overrides).toEqual({})
   })
 
+  it('UX-004: „Ändern“ nimmt neue Tasten auf – Hinweis, was belegbar ist, „Abbrechen“ und Esc brechen ab', () => {
+    wrap(<ShortcutsOverlay />)
+    act(() => useUi.setState({ shortcuts: true }))
+    fireEvent.click(screen.getByRole('button', { name: '„Modell wechseln“ ändern' }))
+    // Im Rahmen steht „Tasten drücken …“ statt der bisherigen Belegung.
+    expect(screen.getByTestId('shortcut-recording').textContent).toBe('Tasten drücken …')
+    const hint = screen.getByTestId('shortcut-hint')
+    expect(hint.textContent).toContain('Neue Tasten für „Modell wechseln“ drücken. Belegbar sind Kombinationen mit ⌘, ⌥ oder Ctrl und Funktionstasten;')
+    expect(hint.textContent).toContain('bricht ab.')
+    expect(hint.querySelector('kbd')?.textContent).toBe('Esc')
+    // Tasten ohne Modifier zählen nicht; die Aufnahme läuft weiter.
+    key({ key: 'm', code: 'KeyM' })
+    expect(screen.getByTestId('shortcut-recording')).toBeTruthy()
+    // „Abbrechen“ beendet die Aufnahme, nichts ändert sich.
+    fireEvent.click(within(hint).getByRole('button', { name: 'Abbrechen' }))
+    expect(screen.queryByTestId('shortcut-recording')).toBeNull()
+    expect(screen.queryByTestId('shortcut-hint')).toBeNull()
+    expect(useKeymap.getState().overrides).toEqual({})
+    // Esc ebenso, ohne das Overlay zu schließen.
+    fireEvent.click(screen.getByRole('button', { name: '„Modell wechseln“ ändern' }))
+    key({ key: 'Escape', code: 'Escape' })
+    expect(screen.queryByTestId('shortcut-hint')).toBeNull()
+    expect(useUi.getState().shortcuts).toBe(true)
+    expect(useKeymap.getState().overrides).toEqual({})
+  })
+
+  it('UX-004: Suche ohne Treffer zeigt „Kein Kürzel passt zu …“ statt eines leeren Rasters', () => {
+    wrap(<ShortcutsOverlay />)
+    act(() => useUi.setState({ shortcuts: true }))
+    expect(screen.queryByText(/Kein Kürzel passt/)).toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Kürzel suchen' }), { target: { value: 'deploy' } })
+    expect(screen.getByText('Kein Kürzel passt zu „deploy“.')).toBeTruthy()
+    expect(screen.getByText('Gesucht wird in Namen und Tasten.')).toBeTruthy()
+    expect(document.querySelectorAll('[data-shortcut]')).toHaveLength(0)
+    expect(screen.queryByTestId('shortcut-list')).toBeNull()
+  })
+
   it('UX-004 AC3: Kürzel greifen nicht im Eingabefeld, außer `globalInInput` (z. B. ⌘K)', () => {
     const plain = vi.fn()
     const global = vi.fn()

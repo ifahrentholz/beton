@@ -110,4 +110,77 @@ describe('Compaction (USE-009)', () => {
     rerender(<ContextBar {...props} capabilities={undefined} running={false} />)
     expect(screen.getByRole('button', { name: /Kompaktieren/ })).toHaveProperty('disabled', true)
   })
+  it('USE-009: bei laufendem Turn und gestoppter Session ist der Button deaktiviert, mit Tooltip und kurzem Hinweis', () => {
+    const props = { harness: 'claude', capabilities: caps('native'), context: { used: 162_000, window: 200_000, source: 'harness' as const }, compacting: false, onCompact: vi.fn() }
+    const { rerender } = render(<ContextBar {...props} running />)
+    let button = screen.getByRole('button', { name: /Kompaktieren/ })
+    expect(button).toHaveProperty('disabled', true)
+    expect(button.getAttribute('title')).toBe('Kompaktieren geht erst nach dem laufenden Turn')
+    expect(screen.getByText('erst nach dem Turn')).toBeTruthy()
+    rerender(<ContextBar {...props} context={{ used: 150_000, window: 200_000, source: 'harness' }} running={false} stopped />)
+    button = screen.getByRole('button', { name: /Kompaktieren/ })
+    expect(button).toHaveProperty('disabled', true)
+    expect(button.getAttribute('title')).toBe('Session läuft nicht – erst fortsetzen (Nachricht senden)')
+    expect(screen.getByText('Session läuft nicht')).toBeTruthy()
+    // Der Ring zeigt den letzten bekannten Stand.
+    expect(screen.getByTestId('context-ring').textContent).toContain('75 % Kontext')
+  })
+
+  it('USE-008: vor dem ersten Turn steht „Kontext: noch kein Turn“; Kompaktieren ist deaktiviert', () => {
+    render(<ContextBar harness="claude" capabilities={caps('native')} context={undefined} fresh compacting={false} running={false} onCompact={vi.fn()} />)
+    expect(screen.getByText('Kontext: noch kein Turn')).toBeTruthy()
+    expect(screen.queryByTestId('context-ring')).toBeNull()
+    const button = screen.getByRole('button', { name: /Kompaktieren/ })
+    expect(button).toHaveProperty('disabled', true)
+    expect(button.getAttribute('title')).toBe('Noch nichts zu kompaktieren')
+    // Nur der Tooltip: Links steht schon, warum.
+    expect(screen.queryByText('erst nach dem Turn')).toBeNull()
+    cleanup()
+    // Nach Turns ohne gemeldeten Kontext bleibt die Zeile weg (Harness meldet keinen Kontext).
+    const { container } = render(<ContextBar harness="claude" capabilities={caps('native')} context={undefined} compacting={false} running={false} onCompact={vi.fn()} />)
+    expect(container.textContent).toBe('')
+  })
+
+  it('USE-009: „Kompaktieren fehlgeschlagen“ steht als Fehlerzeile; der Button ist wieder aktiv und bei 93 % hervorgehoben', () => {
+    const onCompact = vi.fn()
+    render(
+      <ContextBar
+        harness="claude"
+        capabilities={caps('native')}
+        context={{ used: 186_400, window: 200_000, source: 'harness' }}
+        compacting={false}
+        running={false}
+        error="Claude Code hat nicht geantwortet"
+        onCompact={onCompact}
+      />,
+    )
+    expect(screen.getByRole('alert').textContent).toBe('Kompaktieren fehlgeschlagen: Claude Code hat nicht geantwortet. Versuch es nach dem nächsten Turn erneut.')
+    const button = screen.getByRole('button', { name: /Kompaktieren/ })
+    expect(button).toHaveProperty('disabled', false)
+    expect(button.className).toContain('font-semibold')
+    button.click()
+    expect(onCompact).toHaveBeenCalledTimes(1)
+  })
+
+  it('USE-009: der Verlauf nennt die Herkunft – automatisch ab der Schwelle bzw. vom Harness selbst', () => {
+    resetSeq()
+    const created = ev('session.created', { harness: 'claude', owner: { kind: 'user', id: 'usr_1' }, kind: 'interactive', cwd: '/w', trigger: 'user' })
+    const notes = (events: ReturnType<typeof ev>[]) => timeline(log([created, ...events])).filter((i) => i.kind === 'note')
+    const auto = notes([
+      ev('compaction.started', { before_tokens: 172_000, trigger: 'beton', threshold: 0.8 }),
+      ev('compaction.completed', { before_tokens: 172_000, after_tokens: 38_500, trigger: 'beton', threshold: 0.8 }),
+    ])
+    expect(auto).toHaveLength(1)
+    expect(auto[0]).toMatchObject({
+      text: 'Kontext kompaktiert · 172.000 → 38.500 Tokens · automatisch ab 80 % (vor dem nächsten Turn)',
+      detail: 'Claude Code hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.',
+    })
+    // Laufend und ohne Schwelle (ältere Logs).
+    expect(notes([ev('compaction.started', { before_tokens: 172_000, trigger: 'beton' })])[0]).toMatchObject({ text: 'Kontext wird kompaktiert … · automatisch (vor dem nächsten Turn)' })
+    const harness = notes([ev('compaction.completed', { before_tokens: 186_400, after_tokens: 41_000, trigger: 'harness' })])
+    expect(harness[0]).toMatchObject({
+      text: 'Kontext kompaktiert · 186.400 → 41.000 Tokens · von Claude Code selbst ausgelöst',
+      detail: 'Claude Code hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.',
+    })
+  })
 })

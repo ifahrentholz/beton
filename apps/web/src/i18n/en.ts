@@ -58,6 +58,8 @@ export const en: Record<keyof typeof de, string> = {
   'switcher.switch': '↵ switch',
   'switcher.cycle': 'Ctrl+Tab cycle',
   'switcher.cache': 'Switches instantly from local storage',
+  'switcher.empty': 'No session matches “{q}”.',
+  'switcher.emptyHint': 'Searches the titles of all sessions except archived ones.',
 
   // Shortcuts
   'shortcuts.title': 'Keyboard shortcuts',
@@ -73,6 +75,10 @@ export const en: Record<keyof typeof de, string> = {
   'shortcuts.conflict': '{keys} is already assigned to “{other}”. Swap? “{other}” then gets {old}.',
   'shortcuts.swap': 'Swap',
   'shortcuts.cancel': 'Cancel',
+  'shortcuts.pressKeys': 'Press keys …',
+  'shortcuts.recordingHint': 'Press new keys for “{name}”. You can assign combinations with ⌘, ⌥ or Ctrl and function keys; {esc} cancels.',
+  'shortcuts.empty': 'No shortcut matches “{q}”.',
+  'shortcuts.emptyHint': 'Searches names and keys.',
   'shortcuts.footer':
     'On Windows and Linux: Ctrl instead of ⌘. Shortcuts do not fire while a text field has focus – except ⌘K and the approval shortcuts with ⌘ (⌘⌫ keeps deleting in a field with text as usual).',
 
@@ -120,6 +126,72 @@ export const en: Record<keyof typeof de, string> = {
   'settings.appearance': 'Appearance',
   'settings.notifications': 'Notifications',
   'settings.local': 'Runs locally on this computer',
+
+
+  // Workspace terminals
+  'term.tabs': 'Terminals',
+  'term.new': 'New terminal',
+  'term.empty': 'No terminal in this session yet',
+  'term.emptyText':
+    'A shell in the session’s working directory, in the same sandbox as the agent’s tools. It keeps running when you close the window and ends with the runner.',
+  'term.sandbox': 'Sandbox: profile “Tools”',
+  'term.noSandbox': 'Without sandbox (backend: none)',
+  'term.noSandboxHint': 'The shell sees everything your user can see.',
+  'term.ended': 'ended',
+  'term.hide': 'Hide {name}',
+  'term.close': 'Close {name}',
+  'term.endedAt': 'Ended at {time} (exit {code})',
+  'term.endedAtNoCode': 'Ended at {time}',
+  'term.endedWithRunner': 'Ended with the runner',
+  'term.lastScreen': 'last screen, no more input possible',
+  'term.noSnapshot': 'Nothing of the last screen was saved.',
+  'term.failed': 'Terminal not started',
+  'term.failedSandbox':
+    'The sandbox is unavailable ({reason}). Without a sandbox, beton starts no shell. Check the sandbox with {cmd} and try again.',
+
+  // Usage
+  'usage.loading': 'Loading usage …',
+  'usage.csvWait': 'Available once usage has loaded',
+  'usage.unavailable': 'Usage unavailable',
+  'usage.daemonDown': '{title} – the local daemon is not responding. Is {cmd} running?',
+  'usage.failed': '{title} – {detail}',
+  'usage.retry': 'Reload',
+  'usage.custom': 'Range …',
+  'usage.rangeTitle': 'Custom range',
+  'usage.rangeTooltip': '{range}, both days inclusive',
+  'usage.from': 'From',
+  'usage.to': 'To',
+  'usage.rangeHint': 'Days in your time zone, both inclusive',
+  'usage.rangeInvalid': '“From” is after “To” – swap the days.',
+  'usage.cancel': 'Cancel',
+  'usage.apply': 'Apply',
+  'usage.equivalentToggle': 'Show API equivalent',
+  'usage.equivalentLabel': 'Show API equivalent (informational only: what the subscription usage would have cost at API prices)',
+  'usage.equivalent': '≈ {amount} at API prices · informational',
+  'usage.equivalentShort': '≈ {amount} informational',
+  'usage.equivalentTitle': 'What this usage would have cost at API prices (catalog {version}). Not billed.',
+  'usage.windowReset': 'Quota reset – the next turn reports the new state. {tokens} tokens in {period}.',
+  'pricing.noOverrides': 'No custom prices yet. They live in {file} under {key}; the first match wins.',
+
+  // Context and compaction
+  'context.noTurn': 'Context: no turn yet',
+  'context.nothing': 'Nothing to compact yet',
+  'context.turnRunning': 'Compacting is possible after the running turn',
+  'context.turnRunningHint': 'after the turn',
+  'context.stopped': 'Session is not running – resume it first (send a message)',
+  'context.stoppedHint': 'Session not running',
+  'context.stoppedNote': 'Session stopped · context as of the last turn',
+  'context.failed': 'Compacting failed: {reason}. Try again after the next turn.',
+  'context.noAnswer': '{harness} did not respond',
+  'compaction.running': 'Compacting context …',
+  'compaction.done': 'Context compacted',
+  'compaction.tokens': '{before} → {after} tokens',
+  'compaction.byUser': 'triggered by you',
+  'compaction.byBeton': 'automatically from {percent} % (before the next turn)',
+  'compaction.byBetonPlain': 'automatically (before the next turn)',
+  'compaction.byHarness': 'triggered by {harness} itself',
+  'compaction.explain': '{harness} summarized the conversation so far. The full history stays in beton and remains visible.',
+  'compaction.theHarness': 'The harness',
 
   // Layout
   'nav.sessions': 'Sessions',

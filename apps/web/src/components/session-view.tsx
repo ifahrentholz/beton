@@ -10,6 +10,7 @@ import { tk, useCommand, useCommands } from '@/lib/commands'
 import { compacting as compactingOf, contextLevel, contextOf } from '@/lib/context'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
+import { useI18n, useT } from '@/lib/i18n'
 import { cost } from '@/lib/format'
 import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
@@ -148,10 +149,20 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   const readSeq = useSessions((s) => s.byId[sessionId]?.read_seq)
   const log = useEvents((s) => s.logs[sessionId])
   const meta = useMeta(sessionId)
-  const items = useMemo(
-    () => (log ? timeline(log) : []),
-    [log],
-  )
+  const t = useT()
+  const lang = useI18n((s) => s.lang)
+  // Kontext und Compaction (USE-008, USE-009): letzter `context.usage`, laufende Compaction.
+  const context = useMemo(() => contextOf(log?.events), [log?.events])
+  const stopped = meta.status === 'stopped' || meta.status === 'failed'
+  const items = useMemo(() => {
+    if (!log) return []
+    const list = timeline(log)
+    // Gestoppt: Der Ring zeigt den Stand vom letzten Turn (Entwurf `usage-context`, Zustand `stopped`).
+    if (stopped && context) list.push({ kind: 'note', key: 'context-stopped', text: t('context.stoppedNote'), tone: 'neutral' })
+    return list
+    // Texte folgen der Sprache (WEB-017).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [log, stopped, context, lang])
   const approvals = useMemo(() => items.filter((i): i is ApprovalItem => i.kind === 'approval'), [items])
   const waiting = openApprovals(items).length > 0
   const running = meta.status === 'running' || meta.status === 'waiting_approval'
@@ -189,15 +200,22 @@ export function SessionView({ sessionId }: { sessionId: string }) {
       .session(sessionId)
       .rename(title)
       .then((s) => useSessions.getState().upsert([s]))
-  // Kontext und Compaction (USE-008, USE-009): letzter `context.usage`, laufende Compaction.
-  const context = useMemo(() => contextOf(log?.events), [log?.events])
   const isCompacting = useMemo(() => compactingOf(log?.events), [log?.events])
+  const turns = useMemo(() => log?.events.filter((e) => e.type === 'turn.started').length ?? 0, [log?.events])
+  // Fehlgeschlagenes Kompaktieren (Entwurf `usage-context`, Zustand `compact-failed`) bis zum
+  // nächsten Versuch, zur nächsten Compaction oder zum nächsten Turn.
+  const [compactError, setCompactError] = useState<string | undefined>()
+  useEffect(() => setCompactError(undefined), [sessionId, turns, isCompacting])
   const compact = () => {
     setSendError(undefined)
+    setCompactError(undefined)
     client
       .session(sessionId)
       .compact()
-      .catch((e: unknown) => setSendError(e instanceof Error ? e.message : 'Kompaktieren fehlgeschlagen'))
+      .catch((e: unknown) => {
+        const detail = (e as { problem?: { detail?: string } }).problem?.detail
+        setCompactError(detail ?? t('context.noAnswer', { harness: harnessName(meta.harness || 'claude') }))
+      })
   }
   // beton-eigene Slash-Befehle, die es schon gibt (WEB-006): `/compact` (SES-011) und `/fork`
   // (SES-006).
@@ -382,6 +400,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         context={context}
         compacting={isCompacting}
         running={running}
+        stopped={stopped}
+        fresh={turns === 0}
+        error={compactError}
         onCompact={compact}
       />
       <Composer

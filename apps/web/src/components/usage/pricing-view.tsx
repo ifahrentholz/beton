@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import type { PriceOverrideView, UsageItem } from '@beton/sdk'
 import { client } from '@/lib/client'
+import { useT } from '@/lib/i18n'
 import { localDate, tzOffset } from '@/lib/usage'
+import { rich } from '../kbd'
 
 /*
  * Preise (Verbrauch › Preise) nach dem Entwurf `usage-pricing`: eigene Preise in Prüfreihenfolge,
@@ -66,6 +68,7 @@ function OverrideRow({ o }: { o: PriceOverrideView }) {
 }
 
 export function PricingView() {
+  const t = useT()
   const pricing = useQuery({ queryKey: ['usage', 'pricing'], queryFn: () => client.usage.pricing() })
   const now = useMemo(() => new Date(), [])
   const unpriced = useQuery({
@@ -139,9 +142,19 @@ export function PricingView() {
                   </tr>
                 </thead>
                 <tbody className="type-narrow">
-                  {p.overrides.map((o) => (
-                    <OverrideRow key={o.position} o={o} />
-                  ))}
+                  {p.overrides.length === 0 ? (
+                    // Keine eigenen Preise (Entwurf `usage-pricing`, Zustand `no-overrides`).
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-3 py-3 font-sans text-[12px] text-muted-foreground">
+                        {rich(t('pricing.noOverrides'), {
+                          file: <span className="font-mono">~/.beton/config.yaml</span>,
+                          key: <span className="font-mono">pricing.overrides</span>,
+                        })}
+                      </td>
+                    </tr>
+                  ) : (
+                    p.overrides.map((o) => <OverrideRow key={o.position} o={o} />)
+                  )}
                 </tbody>
               </table>
             </div>

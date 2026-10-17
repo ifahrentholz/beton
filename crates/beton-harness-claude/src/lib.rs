@@ -1368,6 +1368,7 @@ impl HarnessSession for ClaudeSession {
                     before_tokens: before,
                     after_tokens: None,
                     trigger: None,
+                    threshold: None,
                 }),
                 None,
             ))

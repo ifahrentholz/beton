@@ -1553,7 +1553,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     // SES-011 AC1: je Turn genau ein `context.usage` (der letzte Stand vor dem Turn-Ende).
     let mut held_context: Option<NormalizedEvent> = None;
     // Auslöser der angestoßenen Compaction (USE-009), bis `compaction.completed` kommt.
-    let mut compaction_trigger: Option<CompactionTrigger> = None;
+    let mut compaction_trigger: Option<Requested> = None;
     // Policy-Ereignisse vor dem Start (Prüfung, `session_start`) stehen vor `session.started`.
     pre_events.extend(drain_gate(&boot, &mut gate_rx, &HashMap::new()));
     pending_status.splice(0..0, pre_events);
@@ -3424,24 +3424,29 @@ fn gate_decision(args: &Value) -> policy::Human {
     }
 }
 
-/// Auslöser aus `session.compact {trigger}`: `beton` für die Automatik des Servers
-/// (`compaction.auto: beton`), sonst ein Mensch (USE-009).
-fn requested_trigger(args: &Value) -> CompactionTrigger {
+/// Angestoßene Compaction: Auslöser und bei der Automatik deren Schwelle (USE-009).
+type Requested = (CompactionTrigger, Option<f64>);
+
+/// Auslöser aus `session.compact {trigger, threshold?}`: `beton` für die Automatik des Servers
+/// (`compaction.auto: beton`, mit `compaction.threshold`), sonst ein Mensch (USE-009).
+fn requested_trigger(args: &Value) -> Requested {
     match args["trigger"].as_str() {
-        Some("beton") => CompactionTrigger::Beton,
-        _ => CompactionTrigger::User,
+        Some("beton") => (CompactionTrigger::Beton, args["threshold"].as_f64()),
+        _ => (CompactionTrigger::User, None),
     }
 }
 
 /// Setzt den Auslöser an `compaction.*` (USE-009): den des Kommandos, sonst hat der Harness
 /// selbst kompaktiert (eigene Automatik der CLI bzw. des Direkt-API-Loops).
-fn stamp_compaction(payload: &mut EventPayload, pending: &mut Option<CompactionTrigger>) {
+fn stamp_compaction(payload: &mut EventPayload, pending: &mut Option<Requested>) {
     let (EventPayload::CompactionStarted(c) | EventPayload::CompactionCompleted(c)) = payload
     else {
         return;
     };
     if c.trigger.is_none() {
-        c.trigger = Some(pending.unwrap_or(CompactionTrigger::Harness));
+        let (trigger, threshold) = pending.unwrap_or((CompactionTrigger::Harness, None));
+        c.trigger = Some(trigger);
+        c.threshold = threshold;
     }
     if matches!(payload, EventPayload::CompactionCompleted(_)) {
         *pending = None;
@@ -3742,20 +3747,33 @@ mod tests {
             }
         };
         let trigger = |p: &EventPayload| match p {
-            EventPayload::CompactionStarted(c) | EventPayload::CompactionCompleted(c) => c.trigger,
-            _ => None,
+            EventPayload::CompactionStarted(c) | EventPayload::CompactionCompleted(c) => {
+                (c.trigger, c.threshold)
+            }
+            _ => (None, None),
         };
-        let mut pending = Some(requested_trigger(&serde_json::json!({"trigger": "beton"})));
+        let mut pending = Some(requested_trigger(
+            &serde_json::json!({"trigger": "beton", "threshold": 0.8}),
+        ));
         let (mut a, mut b) = (compaction(false), compaction(true));
         stamp_compaction(&mut a, &mut pending);
         stamp_compaction(&mut b, &mut pending);
-        assert_eq!(trigger(&a), Some(CompactionTrigger::Beton));
-        assert_eq!(trigger(&b), Some(CompactionTrigger::Beton));
+        // Die Automatik nennt ihre Schwelle („automatisch ab 80 %“).
+        assert_eq!(trigger(&a), (Some(CompactionTrigger::Beton), Some(0.8)));
+        assert_eq!(trigger(&b), (Some(CompactionTrigger::Beton), Some(0.8)));
         assert_eq!(pending, None);
         let mut c = compaction(false);
         stamp_compaction(&mut c, &mut pending);
-        assert_eq!(trigger(&c), Some(CompactionTrigger::Harness));
-        assert_eq!(requested_trigger(&Value::Null), CompactionTrigger::User);
+        assert_eq!(trigger(&c), (Some(CompactionTrigger::Harness), None));
+        assert_eq!(
+            requested_trigger(&Value::Null),
+            (CompactionTrigger::User, None)
+        );
+        // Ein Mensch hat keine Schwelle, auch wenn das Kommando eine mitbrächte.
+        assert_eq!(
+            requested_trigger(&serde_json::json!({"trigger": "user", "threshold": 0.5})),
+            (CompactionTrigger::User, None)
+        );
     }
 
     /// USE-008: Ein fehlendes Fenster kommt aus dem Katalog; unbekannt bleibt es `0`.

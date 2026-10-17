@@ -302,7 +302,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-010 — Terminals (xterm.js)
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Terminal-Tabs auf Basis xterm.js (WebGL-Renderer, Fit-, Weblinks-Addon), angebunden an den Binärkanal des Runner-PTY. Mehrere Terminals pro Session, Umbenennen, Schließen; Native-TUI-Sessions (Vendor-TUI im PTY) werden ebenfalls hier gerendert.
-- **Details:** Stand M3 (WP-51): Tab „Terminal“ in der Workspace-Rail nach dem Prototyp (`workspace-terminals`); xterm.js wird erst beim Öffnen nachgeladen. AC1 misst ein Benchmark im Runner (PTY → Kanal → Echo, Release-Build, Schwelle 30 ms p95). Native-TUI-Sessions folgen mit TUI-002. Fehlende Zustände (geschlossenes Terminal mit letztem Bildschirm, Fehler, leerer Zustand) entstehen als Entwurf im Design-Prototyp (ADR-0032).
+- **Details:** Stand M3 (WP-51): Tab „Terminal“ in der Workspace-Rail nach dem Prototyp (`workspace-terminals`); xterm.js wird erst beim Öffnen nachgeladen. AC1 misst ein Benchmark im Runner (PTY → Kanal → Echo, Release-Build, Schwelle 30 ms p95). Native-TUI-Sessions folgen mit TUI-002. Zustände nach dem Entwurf: leere Rail („Noch kein Terminal“), „Ohne Sandbox (backend: none)“ mit Hinweis, beendetes Terminal mit dem letzten Bildschirm aus `terminal.snapshot` (DATA-011 AC2; Tab bleibt, bis er auf dem Gerät ausgeblendet wird) und „Terminal nicht gestartet“ bei `sandbox_unavailable`. Aktionen im Tab sind nicht fokussierbar; per Tastatur gehen Entf (Schließen bzw. Ausblenden) und F2 (Umbenennen) am Tab.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Tastendruck-zu-Echo-Latenz lokal ≤ 30 ms (p95).
   - [ ] AC2 — Fenster-Resize sendet die neue Größe an das PTY; `vim` rendert korrekt.

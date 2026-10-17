@@ -1,6 +1,7 @@
 import type { Capabilities } from '@beton/sdk'
 import { Minimize2 } from 'lucide-react'
 import { contextLevel, LEVEL_LABEL, type ContextState } from '@/lib/context'
+import { useT, type T } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 import { harnessName } from './harness'
 
@@ -54,12 +55,29 @@ export function unsupportedReason(harness: string): string {
   return `${harnessName(harness)} kann nicht kompaktieren. Starte bei Bedarf eine neue Session.`
 }
 
+/** Warum „Kompaktieren“ gerade nicht geht: Tooltip und, wo nötig, kurzer sichtbarer Hinweis (USE-009 AC3). */
+function blockedReason(
+  t: T,
+  { harness, unsupported, running, stopped, fresh }: { harness: string; unsupported: boolean; running: boolean; stopped: boolean; fresh: boolean },
+): { title: string; hint?: string } | undefined {
+  if (unsupported) return { title: unsupportedReason(harness), hint: 'nicht verfügbar für diesen Harness' }
+  // Ein Tooltip an einem deaktivierten Button erreicht die Tastatur nicht: daher der Hinweis daneben.
+  if (running) return { title: t('context.turnRunning'), hint: t('context.turnRunningHint') }
+  if (stopped) return { title: t('context.stopped'), hint: t('context.stoppedHint') }
+  // Links steht schon „Kontext: noch kein Turn“.
+  if (fresh) return { title: t('context.nothing') }
+  return undefined
+}
+
 export function ContextBar({
   harness,
   capabilities,
   context,
   compacting,
   running,
+  stopped = false,
+  fresh = false,
+  error,
   onCompact,
 }: {
   harness: string
@@ -67,35 +85,59 @@ export function ContextBar({
   context: ContextState | undefined
   compacting: boolean
   running: boolean
+  /** Session läuft nicht (gestoppt oder fehlgeschlagen): erst fortsetzen. */
+  stopped?: boolean
+  /** Noch kein Turn: Es gibt keinen Kontext und nichts zu kompaktieren. */
+  fresh?: boolean
+  /** Grund, warum das letzte Kompaktieren fehlschlug. */
+  error?: string | undefined
   onCompact: () => void
 }) {
-  // Vor dem ersten gemeldeten Kontext steht der Entwurf noch aus; bis dahin keine Zeile.
-  if (!context) return null
+  const t = useT()
+  // Nach Turns ohne gemeldeten Kontext (Harness ohne Usage-Reporting) bleibt die Zeile weg.
+  if (!context && !fresh) return null
   const unsupported = capabilities?.compaction === 'none'
-  const { level } = contextLevel(context.used, context.window)
+  const level = context ? contextLevel(context.used, context.window).level : 'plain'
+  const blocked = blockedReason(t, { harness, unsupported, running, stopped, fresh: !context })
   return (
-    <div className="flex items-center gap-3 border-t border-border px-4 py-1.5" data-testid="context-bar">
-      <ContextRing {...context} />
-      <span className="hidden text-[11px] text-muted-foreground tabular-nums sm:inline">
-        {context.window
-          ? `${context.used.toLocaleString('de-DE')} von ${context.window.toLocaleString('de-DE')} Tokens`
-          : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
-      </span>
-      <span className="ml-auto flex items-center gap-1">
-        <button
-          type="button"
-          onClick={onCompact}
-          disabled={unsupported || compacting || running || !capabilities}
-          title={unsupported ? unsupportedReason(harness) : 'Verlauf zusammenfassen, um Platz im Kontext zu schaffen (/compact)'}
-          className={cn(
-            'inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50',
-            level === 'high' || level === 'full' ? 'border-foreground font-semibold' : 'border-border hover:bg-accent',
-          )}
-        >
-          <Minimize2 className="size-3.5" /> {compacting ? 'Kompaktiert …' : 'Kompaktieren'}
-        </button>
-        {unsupported && <span className="text-[11px] text-muted-foreground">nicht verfügbar für diesen Harness</span>}
-      </span>
-    </div>
+    <>
+      {error && (
+        <p role="alert" className="mx-4 mb-2 flex items-center gap-2 rounded-md border border-deny/40 bg-deny-soft px-3 py-2 text-[13px]" data-testid="compact-error">
+          <span aria-hidden className="size-2 shrink-0 rotate-45 bg-deny" />
+          {t('context.failed', { reason: error.replace(/\.$/, '') })}
+        </p>
+      )}
+      <div className="flex items-center gap-3 border-t border-border px-4 py-1.5" data-testid="context-bar">
+        {context ? (
+          <>
+            <ContextRing {...context} />
+            <span className="hidden text-[11px] text-muted-foreground tabular-nums sm:inline">
+              {context.window
+                ? `${context.used.toLocaleString('de-DE')} von ${context.window.toLocaleString('de-DE')} Tokens`
+                : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
+            </span>
+          </>
+        ) : (
+          <span className="text-[12px] text-muted-foreground" data-testid="context-empty">
+            {t('context.noTurn')}
+          </span>
+        )}
+        <span className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onCompact}
+            disabled={!!blocked || compacting || !capabilities}
+            title={blocked ? blocked.title : 'Verlauf zusammenfassen, um Platz im Kontext zu schaffen (/compact)'}
+            className={cn(
+              'inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50',
+              level === 'high' || level === 'full' ? 'border-foreground font-semibold' : 'border-border hover:bg-accent',
+            )}
+          >
+            <Minimize2 className="size-3.5" /> {compacting ? 'Kompaktiert …' : 'Kompaktieren'}
+          </button>
+          {blocked?.hint && !compacting && <span className="text-[11px] text-muted-foreground">{blocked.hint}</span>}
+        </span>
+      </div>
+    </>
   )
 }

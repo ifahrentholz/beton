@@ -126,7 +126,14 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             <X className="size-4" />
           </button>
         </div>
-        <div className="grid min-h-0 gap-x-8 overflow-y-auto px-4 py-3 sm:grid-cols-2" data-testid="shortcut-list">
+        {rows.length === 0 && (
+          // Keine Treffer (Entwurf `inbox-shortcuts`, Zustand `none`) statt eines leeren Rasters.
+          <div className="px-4 py-6 text-center">
+            <div className="text-[13px]">{t('shortcuts.empty', { q: query.trim() })}</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">{t('shortcuts.emptyHint')}</div>
+          </div>
+        )}
+        <div className={cn('grid min-h-0 gap-x-8 overflow-y-auto px-4 py-3 sm:grid-cols-2', rows.length === 0 && 'hidden')} data-testid={rows.length ? 'shortcut-list' : undefined}>
           {SECTIONS.map((sec) => {
             const items = rows.filter((r) => r.section === sec.id)
             if (items.length === 0) return null
@@ -135,7 +142,6 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                 <div className="mb-1 text-[12px] font-medium text-muted-foreground">{t(sec.key)}</div>
                 {items.map((r) => {
                   const isEditing = editing === r.id
-                  const shown = isEditing && conflict ? conflict.chord : r.chord
                   return (
                     <div
                       key={r.id}
@@ -145,7 +151,7 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                       <span className="flex-1">{r.title}</span>
                       {isEditing ? (
                         <span className="rounded-sm border-2 border-ring px-1 font-mono text-[11px]" data-testid="shortcut-recording">
-                          {chordText(shown)}
+                          {conflict ? chordText(conflict.chord) : t('shortcuts.pressKeys')}
                         </span>
                       ) : (
                         <>
@@ -174,6 +180,16 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         <div aria-live="polite" className="sr-only">
           {editingCmd && !conflict ? t('shortcuts.recording', { name: commandTitle(editingCmd, t) }) : ''}
         </div>
+        {editingCmd && !conflict && (
+          // Aufnahme (Entwurf `inbox-shortcuts`, Zustand `recording`): was belegbar ist, Esc und „Abbrechen“.
+          <div className="mx-4 mb-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card p-2.5 text-[13px]" data-testid="shortcut-hint">
+            <Keyboard aria-hidden className="size-4 shrink-0" />
+            <span className="flex-1">{rich(t('shortcuts.recordingHint'), { name: commandTitle(editingCmd, t), esc: <Keys chord="Escape" /> })}</span>
+            <button onClick={cancel} className="rounded-md border border-border px-3 py-1 text-[12px]">
+              {t('shortcuts.cancel')}
+            </button>
+          </div>
+        )}
         {conflict && editingCmd && (
           <div className="mx-4 mb-3 flex flex-wrap items-center gap-3 rounded-md border border-border bg-card p-2.5 text-[13px]" role="alert" data-testid="shortcut-conflict">
             <CircleAlert aria-hidden className="size-4 shrink-0" />
