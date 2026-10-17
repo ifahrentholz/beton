@@ -4,9 +4,12 @@ import AxeBuilder from '@axe-core/playwright'
 import type { Page } from '@playwright/test'
 import { expect, test } from './fixtures'
 
-/** Verstöße `serious`/`critical` in der Workspace-Rail (WEB-016). */
+/**
+ * Verstöße `serious`/`critical` in der Workspace-Rail (WEB-016). Der Bildschirminhalt des
+ * Terminals ist Ausgabe der Programme (Farben der Shell), nicht UI: Er bleibt außen vor.
+ */
 async function axe(page: Page): Promise<string[]> {
-  const res = await new AxeBuilder({ page }).include('[data-testid="workspace-rail"]').analyze()
+  const res = await new AxeBuilder({ page }).include('[data-testid="workspace-rail"]').exclude('.xterm-rows').analyze()
   return res.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)
 }
 
