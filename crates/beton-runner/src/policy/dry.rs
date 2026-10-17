@@ -35,6 +35,20 @@ pub(super) struct QueryBudget {
     used: u32,
 }
 
+/// Ergebnis einer gezählten Abfrage: erlaubt, und ob diese die erste über dem Limit war.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryTaken {
+    pub allowed: bool,
+    pub crossed: bool,
+}
+
+/// Gemeinsames Abfrage-Budget je Session-Baum (#276; im Runner: System-Call `policy.query`).
+#[async_trait]
+pub trait QueryBudgetSource: Send + Sync {
+    /// Zählt eine Abfrage.
+    async fn take(&self) -> Result<QueryTaken, String>;
+}
+
 /// Ablage der Set-Snapshots (im Runner: System-Call `policy.snapshot` über den Tunnel).
 #[async_trait]
 pub trait SnapshotSink: Send + Sync {
@@ -81,6 +95,12 @@ impl crate::mcp::PolicyOracle for PolicyGate {
 }
 
 impl PolicyGate {
+    /// Gemeinsames Abfrage-Budget des Session-Baums (#276): Das Gate zählt dann nicht selbst
+    /// je Turn, sondern fragt die Quelle (Server, Turn des Root).
+    pub fn with_query_budget(self, source: Arc<dyn QueryBudgetSource>) -> Self {
+        self.rebuild(|i| i.query_source = Some(source))
+    }
+
     /// Ziel für Set-Snapshots (POL-027 AC2).
     pub fn with_snapshots(self, sink: Arc<dyn SnapshotSink>) -> Self {
         self.rebuild(|i| i.snapshots.sink = Some(sink))
@@ -158,8 +178,26 @@ impl PolicyGate {
         Some(copy.effective())
     }
 
+    /// Zählt eine Abfrage: mit Budget-Quelle dort (je Session-Baum, #276; ohne Antwort
+    /// abgelehnt), sonst im laufenden Turn. `(erlaubt, erste über dem Limit, Quelle fehlt)`.
+    async fn count_query(&self) -> (bool, bool, bool) {
+        if let Some(source) = &self.inner.query_source {
+            return match tokio::time::timeout(super::USAGE_TIMEOUT, source.take()).await {
+                Ok(Ok(t)) => (t.allowed, t.crossed, false),
+                _ => {
+                    tracing::warn!(
+                        "Policy: Abfrage-Budget nicht verfügbar; policy_query abgelehnt"
+                    );
+                    (false, false, true)
+                }
+            };
+        }
+        let (allowed, crossed) = self.count_local();
+        (allowed, crossed, false)
+    }
+
     /// Zählt eine Abfrage im laufenden Turn; `false`, wenn das Limit erreicht ist.
-    fn count_query(&self) -> (bool, bool) {
+    fn count_local(&self) -> (bool, bool) {
         let turn = self.inner.settings.lock().map(|s| s.turns).unwrap_or(-1);
         let Ok(mut q) = self.inner.queries.lock() else {
             return (false, false);
@@ -234,14 +272,25 @@ impl PolicyGate {
         let subject = json!({ "tool": tool, "server": mcp_server, "args": tool_args });
         let kind =
             beton_harness::tool_kind(&harness, &tool, acp_kind.as_deref(), mcp_server.as_deref());
-        let (allowed, crossed) = self.count_query();
+        let (allowed, crossed, unavailable) = self.count_query().await;
+        if unavailable {
+            self.log_query(
+                &subject,
+                &tool,
+                &kind,
+                PolicyOutcome::Deny,
+                Vec::new(),
+                true,
+            );
+            return denied("Abfrage-Budget des Session-Baums nicht verfügbar (fail closed)");
+        }
         if !allowed {
             if crossed {
                 self.emit(
                     EventPayload::Notice(Notice {
                         level: NoticeLevel::Warn,
                         text: format!(
-                            "policy_query: mehr als {QUERY_LIMIT} Abfragen in diesem Turn; weitere werden abgelehnt"
+                            "policy_query: mehr als {QUERY_LIMIT} Abfragen in diesem Turn (Session-Baum); weitere werden abgelehnt"
                         ),
                     }),
                     None,
@@ -424,7 +473,7 @@ rules:
     action: ask
     reason: Push bestätigen
     effects:
-      - { op: increment, scope: session, key: pushes }
+      - { op: increment, scope: session, key: project/push/pushes }
   - id: count
     on: tool_call
     action: notify
@@ -760,6 +809,51 @@ rules:
         assert!(!q.limited);
         let text = serde_json::to_string(q).unwrap();
         assert!(!text.contains("geheim-4711"), "{text}");
+    }
+
+    /// Budget-Quelle wie der Server: gemeinsamer Zähler für mehrere Gates (Session-Baum).
+    struct SharedBudget(std::sync::Mutex<u32>, bool);
+
+    #[async_trait::async_trait]
+    impl super::QueryBudgetSource for SharedBudget {
+        async fn take(&self) -> Result<super::QueryTaken, String> {
+            if self.1 {
+                return Err("unavailable".into());
+            }
+            let mut used = self.0.lock().unwrap();
+            *used += 1;
+            Ok(super::QueryTaken {
+                allowed: *used <= super::QUERY_LIMIT,
+                crossed: *used == super::QUERY_LIMIT + 1,
+            })
+        }
+    }
+
+    /// #276: Mit einer Budget-Quelle (Server, je Session-Baum) zählt das Gate nicht selbst je
+    /// Turn: Parent und Child teilen ein Budget, ein neuer Turn des Childs gibt nichts frei.
+    /// Ohne Antwort der Quelle wird abgelehnt (fail closed).
+    #[tokio::test]
+    async fn agt_007_query_budget_is_shared_across_the_session_tree() {
+        let budget = Arc::new(SharedBudget(std::sync::Mutex::new(0), false));
+        let mut parent = setup(PROBE);
+        let mut child = setup(PROBE);
+        parent.gate = parent.gate.with_query_budget(budget.clone());
+        child.gate = child.gate.with_query_budget(budget.clone());
+        let (parent_gate, child_gate) = (&parent.gate, &child.gate);
+        for i in 0..super::QUERY_LIMIT {
+            let g = if i % 2 == 0 { parent_gate } else { child_gate };
+            let v = g.query(&json!({ "action": "ls" })).await;
+            assert_eq!(v["decision"], "allow", "Abfrage {i}: {v}");
+        }
+        child_gate.note_turn();
+        let v = child_gate.query(&json!({ "action": "ls" })).await;
+        assert_eq!(v["decision"], "deny", "{v}");
+        let mut broken = setup(PROBE);
+        broken.gate = broken
+            .gate
+            .with_query_budget(Arc::new(SharedBudget(std::sync::Mutex::new(0), true)));
+        let v = broken.gate.query(&json!({ "action": "ls" })).await;
+        assert_eq!(v["decision"], "deny", "{v}");
     }
 
     #[tokio::test]

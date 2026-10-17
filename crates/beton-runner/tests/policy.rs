@@ -1071,6 +1071,25 @@ async fn har_005_tool_call_without_gate_decision_ends_the_session() {
     assert!(!error.to_string().contains("echo hi"), "{error}");
 }
 
+/// #268 (Re-Review #253): `cancelled` gilt nur dann als „nicht ausgeführt“, wenn der Call nie
+/// gestartet ist. Ein Call, der ohne Gate-Entscheidung startet und dann abgebrochen wird, ist
+/// womöglich gelaufen und damit eine Integritätsverletzung.
+#[tokio::test]
+async fn har_005_cancelled_tool_call_after_start_without_gate_decision_ends_the_session() {
+    let env = Env::start().await;
+    let s = env.scenario(
+        "turns:\n  - emit:\n      - { tool_call: { name: Bash, kind: shell, args: { command: \"rm -rf x\" } }, skip_gate: true }\n      - { tool_cancelled: \"unterbrochen\" }\n      - { message: \"fertig\" }\n",
+    );
+    let id = env.create(&s).await;
+    env.wait_status(&id, "idle").await;
+    let _ = env.input(&id, "los").await;
+    env.wait_for(&id, |e| {
+        e["type"] == "error" && e["payload"]["problem"]["code"] == "policy_integrity_violation"
+    })
+    .await;
+    env.wait_status(&id, "failed").await;
+}
+
 // ------------------------------------------------------------------ POL-001, #234 (M4)
 
 #[tokio::test]

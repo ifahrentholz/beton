@@ -808,6 +808,9 @@ impl Player {
         } else if let Some(error) = step.tool_error {
             self.complete_call(ToolStatus::Error, Value::String(error))
                 .await;
+        } else if let Some(text) = step.tool_cancelled {
+            self.complete_call(ToolStatus::Cancelled, Value::String(text))
+                .await;
         } else if let Some(usage) = step.usage {
             // Mit `context_window` auch den Kontextfüllstand wie Claude (Eingabe plus Cache,
             // SES-011); `0` heißt „Fenster unbekannt“ (USE-008 AC2).

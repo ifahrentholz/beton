@@ -57,13 +57,19 @@ pub fn sanitize(text: &str) -> String {
     text.chars()
         .filter(|c| {
             (!c.is_control() || matches!(c, '\n' | '\t'))
-                && !matches!(*c as u32, 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069)
+                && !matches!(
+                    *c as u32,
+                    0x061C | 0x200E | 0x200F | 0x202A..=0x202E | 0x2066..=0x2069
+                )
         })
         .collect()
 }
 
+/// Argumente, deren Wert die Kurzform eines Tool-Aufrufs zeigt (das erste vorhandene).
+const DETAIL_KEYS: [&str; 6] = ["command", "file_path", "path", "url", "pattern", "query"];
+
 fn detail_of(args: &Value) -> String {
-    ["command", "file_path", "path", "url", "pattern", "query"]
+    DETAIL_KEYS
         .iter()
         .find_map(|k| args[*k].as_str())
         .map(str::to_owned)
@@ -104,6 +110,34 @@ pub fn tool_summary(tool: &str, args: &Value) -> String {
 /// Höchstlänge eines Befehls in der Freigabe-Frage; länger wird deutlich als gekürzt markiert.
 const APPROVAL_MAX: usize = 4000;
 
+/// Höchstlänge eines weiteren Arguments in der Freigabe-Frage.
+const ARG_MAX: usize = 500;
+
+/// Weitere Argumente neben dem Hauptargument (#242 N5), z. B. `cwd`/`workdir` zuerst: eine
+/// eingerückte Zeile je Argument, ohne Steuerzeichen, lange Werte gekürzt.
+fn other_args(args: &Value) -> String {
+    let Some(map) = args.as_object() else {
+        return String::new();
+    };
+    let main = DETAIL_KEYS.iter().find(|k| args[**k].is_string());
+    let mut keys: Vec<&String> = map.keys().filter(|k| Some(&k.as_str()) != main).collect();
+    keys.sort_by_key(|k| (!matches!(k.as_str(), "cwd" | "workdir"), k.as_str()));
+    let mut out = String::new();
+    for key in keys {
+        let value = match &map[key] {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        let value = sanitize(&value).replace('\n', "⏎");
+        let mut shown: String = value.chars().take(ARG_MAX).collect();
+        if value.chars().count() > ARG_MAX {
+            shown.push_str("… [gekürzt]");
+        }
+        out.push_str(&format!("\n    {}: {shown}", sanitize(key)));
+    }
+    out
+}
+
 /// Freigabe-Anfrage für das Terminal (POL-010): Tool und **vollständiger** Befehl (mehrzeilig
 /// eingerückt), bei Fragen die Frage; ohne Steuerzeichen.
 pub fn approval_summary(payload: &Value) -> String {
@@ -127,8 +161,9 @@ pub fn approval_summary(payload: &Value) -> String {
         }
     };
     let detail = sanitize(&detail_of(args));
+    let extra = other_args(args);
     if detail.is_empty() {
-        return sanitize(tool);
+        return format!("{}{extra}", sanitize(tool));
     }
     let total = detail.chars().count();
     let mut shown: String = detail.chars().take(APPROVAL_MAX).collect();
@@ -141,13 +176,13 @@ pub fn approval_summary(payload: &Value) -> String {
     if shown.contains('\n') {
         let indented: Vec<String> = shown.lines().map(|l| format!("    {l}")).collect();
         format!(
-            "{} ({} Zeilen):\n{}",
+            "{} ({} Zeilen):\n{}{extra}",
             sanitize(tool),
             shown.lines().count(),
             indented.join("\n")
         )
     } else {
-        format!("{}: {shown}", sanitize(tool))
+        format!("{}: {shown}{extra}", sanitize(tool))
     }
 }
 
@@ -349,6 +384,27 @@ mod tests {
         assert!(!c.contains('\u{1b}'), "{c:?}");
         assert!(c.contains("rm -rf ~"));
         assert_eq!(sanitize("a\tb\nc\r"), "a\tb\nc");
+    }
+
+    /// #242 N5: U+061C (Arabic Letter Mark) ist ein Bidi-Steuerzeichen wie U+200E/U+200F;
+    /// die Freigabe zeigt neben dem Hauptargument auch `cwd`/`workdir` und weitere Argumente,
+    /// damit der Mensch sieht, wo und wie der Befehl läuft.
+    #[test]
+    fn pol_010_approval_shows_all_arguments_without_bidi_marks() {
+        assert_eq!(sanitize("a\u{061c}b"), "ab");
+        let text = approval_summary(
+            &json!({"kind": "policy", "subject": {"tool": {"name": "Bash",
+            "args": {"command": "rm -rf build", "cwd": "/home/u/.ssh", "timeout": 5}}}}),
+        );
+        assert!(text.starts_with("Bash: rm -rf build"), "{text}");
+        assert!(text.contains("cwd: /home/u/.ssh"), "{text}");
+        assert!(text.contains("timeout: 5"), "{text}");
+        let codex = approval_summary(&json!({"kind": "tool", "subject": {"tool": "exec_command",
+            "args": {"command": "ls", "workdir": "/etc\u{061c}"}}}));
+        assert!(
+            codex.contains("workdir: /etc") && !codex.contains('\u{061c}'),
+            "{codex:?}"
+        );
     }
 
     #[test]

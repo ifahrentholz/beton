@@ -863,3 +863,54 @@ async fn pol_001_loosening_user_change_is_not_applied_during_the_session() {
         "Lockerung übernommen: {d:?}"
     );
 }
+
+// ------------------------------------------------------------------- #297 (Re-Review #284)
+
+/// #297 Punkt 1 (POL-003 AC3): Ändern sich die Policies, während der Start auf eine Freigabe
+/// wartet, wertet das Gate `session_start` nach der Freigabe erneut aus; eine neue `deny`-Regel
+/// verweigert den Start, statt übergangen zu werden.
+#[tokio::test]
+async fn pol_003_session_start_is_rechecked_after_approval_when_policies_changed() {
+    use beton_core::event::EventPayload;
+    use beton_runner::policy::Human;
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "start",
+        "  - id: confirm-start\n    on: session_start\n    action: ask\n",
+    );
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let g2 = g.clone();
+    let task = tokio::spawn(async move { g2.check_start(start(None), None).await });
+    let key = loop {
+        let e = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("approval.requested")
+            .unwrap();
+        if let EventPayload::ApprovalRequested(r) = e.payload {
+            break r.subject["call_id"].as_str().unwrap().to_owned();
+        }
+    };
+    // Während der Wartezeit: neue Regel, die diesen Start ablehnt (Verschärfung).
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "late",
+        "  - id: no-start\n    on: session_start\n    action: deny\n    reason: Starts gesperrt\n",
+    );
+    assert!(g.resolve(
+        &key,
+        Human {
+            allow: true,
+            ..Human::default()
+        }
+    ));
+    match task.await.unwrap() {
+        Checked::Deny { reason, rules } => {
+            assert!(reason.contains("Starts gesperrt"), "{reason}");
+            assert_eq!(rules, ["no-start"]);
+        }
+        other => panic!("Start trotz neuer deny-Regel: {other:?}"),
+    }
+}

@@ -687,7 +687,7 @@ fn pol_001_new_rules_with_effects_or_approval_timeouts_count_as_loosening() {
     use beton_policy::store::only_tightens;
     let base = parse_set(Scope::Project, "g.yaml", DENY_SHELL).unwrap();
     for added in [
-        "  - id: reset\n    on: tool_call\n    action: notify\n    effects:\n      - { op: delete, scope: user_day, key: pushes }\n",
+        "  - id: reset\n    on: tool_call\n    action: notify\n    effects:\n      - { op: delete, scope: session, key: project/guard/pushes }\n",
         "  - id: fast\n    on: tool_call\n    action: ask\n    approval: { timeout: 1s }\n",
         "  - id: lax\n    on: tool_call\n    action: ask\n    approval: { on_timeout: allow }\n",
         "  - id: lax-type\n    type: require_approval\n    params: { kinds: [shell], on_timeout: allow }\n",
@@ -793,6 +793,49 @@ fn agt_014_agent_effects_only_touch_own_session_state() {
     parse_set(Scope::User, "u.yaml", text).unwrap();
 }
 
+/// POL-009 (#268): Wie auf der Agent-Ebene schreiben Effects einer Projekt-Regel nur eigenen
+/// Zustand (`project/<set>/…`, Scope `session` bzw. `run`). Sonst könnte ein Repo Zähler oder
+/// Zustand einer User-Regel löschen oder setzen – mit `user`/`user_day` sogar
+/// sessionübergreifend und schon beim Session-Start.
+#[test]
+fn pol_009_project_effects_only_touch_own_session_state() {
+    let text = |scope: &str, key: &str| {
+        format!(
+            "spec_version: 1\nname: p\nrules:\n  - id: e\n    on: tool_call\n    action: allow\n    effects: [{{ op: delete, scope: {scope}, key: {key} }}]\n"
+        )
+    };
+    for (scope, key) in [
+        ("user_day", "pushes"),
+        ("user", "project/p/x"),
+        ("user_day", "project/p/x"),
+        ("session", "pushes"),
+        ("run", "project/other/x"),
+        ("session", "project/px"),
+    ] {
+        let err = parse_set(Scope::Project, ".beton/policies/p.yaml", &text(scope, key))
+            .map(|_| panic!("{scope}/{key}: Ladefehler erwartet"))
+            .unwrap_err();
+        assert!(
+            err.message.contains("rules[0].effects[0]") && err.message.contains("project/p/"),
+            "{scope}/{key}: {err}"
+        );
+    }
+    for scope in ["session", "run"] {
+        parse_set(
+            Scope::Project,
+            ".beton/policies/p.yaml",
+            &text(scope, "project/p/zaehler"),
+        )
+        .unwrap_or_else(|e| panic!("{scope}: {e}"));
+    }
+    // Der Präfix gehört der Projekt-Ebene: User- und Agent-Regeln schreiben ihn nicht.
+    let err = parse_set(Scope::User, "u.yaml", &text("session", "project/p/zaehler")).unwrap_err();
+    assert!(err.message.contains("project/"), "{err}");
+    let rules = vec![json!({ "id": "e", "on": "tool_call", "action": "allow",
+                             "effects": [{ "op": "delete", "scope": "session", "key": "project/p/x" }] })];
+    assert!(inline_set(Scope::Agent, "a", "agents/a/agent.yaml", &rules).is_err());
+}
+
 /// AGT-014: Eine Agent-Regel lässt nach Ablauf einer Rückfrage nie automatisch zu
 /// (`on_timeout: allow` wäre eine Lockerung gegenüber höheren `ask`-Regeln).
 #[test]
@@ -891,4 +934,69 @@ fn pol_001_fields_outside_their_action_are_load_errors() {
         let err = parse_set(Scope::User, "f.yaml", &text).unwrap_err();
         assert!(err.message.contains(field), "{rule}: {err}");
     }
+}
+
+// ------------------------------------------------------------- Lint-Hinweise (#242, #248)
+
+fn lints(rules: &str) -> Vec<(String, String)> {
+    let text = format!("spec_version: 1\nname: l\nrules:\n{rules}");
+    parse_set(Scope::User, "l.yaml", &text)
+        .unwrap_or_else(|e| panic!("{e}\n{text}"))
+        .lints()
+}
+
+/// #242 N3: Ein `remember_key` ohne `tool.name` und `tool.server` bindet den Grant nicht an
+/// das Tool; das Laden gelingt, meldet aber einen Hinweis.
+#[test]
+fn pol_010_remember_key_without_tool_identity_is_linted() {
+    let rule = |key: &str| {
+        format!("  - id: push\n    on: tool_call\n    action: ask\n    remember_key: '{key}'\n")
+    };
+    let l = lints(&rule("tool.command"));
+    assert_eq!(l.len(), 1, "{l:?}");
+    assert_eq!(l[0].0, "push");
+    assert!(l[0].1.contains("remember_key"), "{l:?}");
+    assert_eq!(lints(&rule("tool.name + \":\" + tool.command")).len(), 1);
+    assert!(
+        lints(&rule(
+            "tool.server + \"/\" + tool.name + \":\" + tool.command"
+        ))
+        .is_empty()
+    );
+    // Ohne `remember_key` gilt der Default-Fingerprint (bindet Tool und Server).
+    assert!(lints("  - id: q\n    on: tool_call\n    action: ask\n").is_empty());
+}
+
+/// #248 (POL-002, POL-016): `glob()`, `startsWith` & Co. auf rohen Pfaden (`tool.paths`,
+/// `tool.write_paths`, `tool.cwd`) vergleichen lexikalisch, ohne Symlinks und
+/// Groß-/Kleinschreibung des Dateisystems; der Hinweis empfiehlt `resolve()` bzw. `under()`.
+#[test]
+fn pol_002_lexical_comparisons_on_raw_paths_are_linted() {
+    let deny = |when: &str| {
+        format!("  - id: p\n    on: tool_call\n    when: '{when}'\n    action: deny\n")
+    };
+    for when in [
+        "glob(tool.paths[0], \"/etc/**\")",
+        "tool.paths.exists(p, glob(p, \"**/.env*\"))",
+        "tool.write_paths.exists(p, p.startsWith(\"/etc\"))",
+        "tool.cwd.startsWith(\"/repo\")",
+        "tool.cwd == \"/repo\"",
+        "\"/etc/passwd\" in tool.paths",
+        "tool.paths.all(p, !p.endsWith(\".pem\"))",
+    ] {
+        let l = lints(&deny(when));
+        assert_eq!(l.len(), 1, "{when}: {l:?}");
+        assert!(l[0].1.contains("resolve("), "{when}: {l:?}");
+    }
+    for when in [
+        "tool.paths.exists(p, glob(resolve(p), \"/etc/**\"))",
+        "tool.paths.exists(p, under(p, \"/etc\"))",
+        "resolve(tool.cwd).startsWith(\"/repo\")",
+        "size(tool.paths) > 3",
+        "tool.command.startsWith(\"rm\")",
+    ] {
+        assert!(lints(&deny(when)).is_empty(), "{when}");
+    }
+    // Entzuckerte Regeltypen vergleichen aufgelöste Pfade und erzeugen keinen Hinweis.
+    assert!(lints("  - id: g\n    type: path_guard\n    params: {}\n").is_empty());
 }

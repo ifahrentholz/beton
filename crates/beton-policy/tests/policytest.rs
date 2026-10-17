@@ -288,7 +288,7 @@ rules:
         dir.path(),
         "p.policytest.yaml",
         "spec_version: 1
-layers: { project: [p.yaml] }
+layers: { user: [p.yaml] }
 cases:
   - name: zählt
     steps:

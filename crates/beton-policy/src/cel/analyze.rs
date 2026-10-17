@@ -132,3 +132,73 @@ pub(crate) fn fields(node: &Node, out: &mut BTreeSet<String>) {
         Node::Lit(_) | Node::Local(_) => {}
     }
 }
+
+/// Vergleicht der Ausdruck rohe Pfade lexikalisch (#248)? Rohe Pfade sind `tool.paths`,
+/// `tool.write_paths` und `tool.cwd`, deren Elemente (Index, Laufvariable einer Comprehension
+/// darüber) – nicht aber `resolve(…)`. Lexikalisch sind `glob`, `matches`, `startsWith`,
+/// `endsWith`, `contains`, `==`, `!=` und `in`.
+pub(crate) fn compares_raw_paths(node: &Node) -> bool {
+    walk_raw(node, &mut Vec::new())
+}
+
+fn raw_path(node: &Node, locals: &[std::sync::Arc<str>]) -> bool {
+    match node {
+        Node::Select {
+            operand,
+            field,
+            test: false,
+            ..
+        } => {
+            matches!(operand.as_ref(), Node::Var(v) if &**v == "tool")
+                && matches!(&**field, "paths" | "write_paths" | "cwd")
+        }
+        Node::Call(Func::Index, args) => args.first().is_some_and(|a| raw_path(a, locals)),
+        Node::Local(v) => locals.contains(v),
+        _ => false,
+    }
+}
+
+fn walk_raw(node: &Node, locals: &mut Vec<std::sync::Arc<str>>) -> bool {
+    match node {
+        Node::Call(f, args) => {
+            let lexical = matches!(
+                f,
+                Func::Glob(_)
+                    | Func::Matches(_)
+                    | Func::StartsWith
+                    | Func::EndsWith
+                    | Func::Contains
+                    | Func::Eq
+                    | Func::Ne
+                    | Func::In
+            );
+            (lexical && args.iter().any(|a| raw_path(a, locals)))
+                || args.iter().any(|a| walk_raw(a, locals))
+        }
+        Node::Compr(c) => {
+            if walk_raw(&c.range, locals) {
+                return true;
+            }
+            let pushed = raw_path(&c.range, locals);
+            if pushed {
+                locals.push(c.iter_var.clone());
+            }
+            let hit = [&c.init, &c.cond, &c.step, &c.result]
+                .into_iter()
+                .any(|n| walk_raw(n, locals));
+            if pushed {
+                locals.pop();
+            }
+            hit
+        }
+        Node::Select { operand, .. } => walk_raw(operand, locals),
+        Node::List(items) => items.iter().any(|a| walk_raw(a, locals)),
+        Node::And(a, b) | Node::Or(a, b) => walk_raw(a, locals) || walk_raw(b, locals),
+        Node::Not(a) | Node::NotStrictlyFalse(a) => walk_raw(a, locals),
+        Node::Cond(a, b, c) => [a, b, c].into_iter().any(|n| walk_raw(n, locals)),
+        Node::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| walk_raw(k, locals) || walk_raw(v, locals)),
+        Node::Lit(_) | Node::Var(_) | Node::Local(_) => false,
+    }
+}

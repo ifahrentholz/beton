@@ -348,6 +348,19 @@ impl Store {
         .collect()
     }
 
+    /// Anzahl dauerhafter Events eines Typs in einer Session (z. B. `turn.started`, #276).
+    pub async fn count_events(&self, org: OrgId, session: SessionId, ty: &str) -> Result<u64> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE org_id = ? AND session_id = ? AND type = ?",
+        )
+        .bind(org.to_string())
+        .bind(session.to_string())
+        .bind(ty)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u64::try_from(n).unwrap_or(0))
+    }
+
     /// Das gespeicherte (redigierte) `raw` eines Events, falls vorhanden.
     pub async fn event_raw(
         &self,

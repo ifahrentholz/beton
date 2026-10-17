@@ -648,6 +648,44 @@ fn pol_007_time_budget_exceeded_denies() {
     assert!(reasons[0].reason.contains("Zeitbudget"), "{reasons:?}");
 }
 
+/// Uhr, die bei jedem Lesen um 1 µs vorrückt: zählt die Zugriffe der Auswertung.
+struct TickClock(AtomicU64);
+
+impl Clock for TickClock {
+    fn now_us(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::SeqCst)
+    }
+}
+
+/// #263 (POL-002 AC4, POL-027): Die Spur gegriffener Regeln (Explain) verbraucht nicht das
+/// Zeitbudget der Entscheidung. Früher wertete sie jeden Teilausdruck erneut innerhalb des
+/// Budgets aus; eine lange `&&`-Kette konnte so die nächste Regel über die Frist schieben und
+/// die Entscheidung zu `deny` machen. Die Spur selbst bleibt vollständig.
+#[test]
+fn pol_027_trace_does_not_spend_the_time_budget_of_the_decision() {
+    let parts = ["tool.kind == \"shell\""; 12].join(" && ");
+    let rules = format!(
+        "{}{}",
+        rule("long", "tool_call", &parts, "allow"),
+        rule("later", "tool_call", "tool.kind == \"nie\"", "deny")
+    );
+    let s = set(Scope::User, "u", &format!("rules:\n{rules}"));
+    let clock = TickClock(AtomicU64::new(0));
+    let opts = EvalOptions {
+        clock: Some(&clock),
+        limits: Limits {
+            eval_budget_us: 8,
+            ..Limits::default()
+        },
+        ..EvalOptions::default()
+    };
+    let d = EffectiveSet::new(vec![s]).evaluate(&tool("shell", json!({})), &opts);
+    assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
+    let trace = &d.matched[0].trace;
+    assert_eq!(trace.len(), 12, "{trace:?}");
+    assert!(trace.iter().all(|p| p.value == Some(true)), "{trace:?}");
+}
+
 #[test]
 fn pol_007_no_sets_allows() {
     let d = eval(vec![], &tool("shell", json!({})));
