@@ -1,8 +1,8 @@
 # ADR-0040: Security-Review durch unabhängige Agent-Reviews und Stopp bei Sicherheitsfiltern (Übergang bis zur eigenen Agent-Identität)
 
-- **Status:** Vorgeschlagen
+- **Status:** Akzeptiert
 - **Datum:** 2026-10-16
-- **Entscheider:** Ingo Fahrentholz (Freigabe ausstehend); Entwurf eines Coding-Agents aus der Praxis von M2
+- **Entscheider:** Ingo Fahrentholz (angenommen am 2026-10-17); Entwurf eines Coding-Agents aus der Praxis von M2
 
 ## Kontext
 ADR-0036 macht bis zur eigenen Agent-Identität (#177) die ausdrückliche Zustimmung des Maintainers im Chat oder als PR-Kommentar zur Freigabe von PRs mit Label `security-review`. In M2 hat der Maintainer diese Freigabe ab dem 2026-10-14 jeweils im Chat an **unabhängige Agent-Reviews** delegiert. Die PR-Kommentare lauten dann „Unabhängiges Security-Review (Agent, stellvertretend für den Maintainer laut Freigabe im Chat vom …, ADR-0036): MERGE“ bzw. „NICHT MERGEN“ (u. a. #220, #228, #237, #253, #257, #284, #285, #291, #302, #303, #306, #308, #313, #315, #317, #327). Die Reviews fanden mehrfach Blocker, die vor dem Merge behoben wurden. Kleinere Befunde wurden als Issues angelegt (#242, #243, #247, #248, #252, #258, #263, #268, #276, #286, #293, #295, #297, #329, #330).
