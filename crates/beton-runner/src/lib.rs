@@ -18,7 +18,6 @@ pub mod stages;
 pub mod state;
 pub mod terminals;
 mod token;
-mod vendor_mcp;
 pub mod workspace;
 
 pub use token::RunnerToken;
@@ -1152,41 +1151,25 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         None => Ok(mcp::McpSetup::default()),
     };
     let mut setup = match setup {
-        Ok(s) => {
+        Ok(mut s) => {
+            // #252: Der eigene Server heißt beim Harness `beton_<nonce>`; nur dieser Name ist
+            // der System-Server. beton liest dafür keine Vendor-Konfiguration (ADR-0005).
+            match session_server::expose(&mut s.injection, &boot.harness) {
+                Ok(Some(name)) => {
+                    gate.set_session_server(&name);
+                    s.session_server = Some(name);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(format!("mcp: {e}"));
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            }
             // Nur von beton eingebundene Server tragen die Klassen reservierter Namen (#234).
             let mut trusted = s.injection.names();
             if boot.harness.as_str().starts_with("direct") {
                 trusted.push("beton-workspace".into());
-            }
-            // #252: Ein gleichnamiger Server aus der Vendor-Konfiguration wäre nicht von dem
-            // von beton zu unterscheiden: Start verweigern (fail closed).
-            let injected_reserved = s
-                .injection
-                .names()
-                .iter()
-                .any(|n| beton_mcp::config::reserved_name(n));
-            if injected_reserved {
-                let family = beton_policy::normalize::harness_family(boot.harness.as_str());
-                let vendor = vendor_mcp::VendorPaths::from_process(paths.home.clone());
-                let conflict = match vendor_mcp::reserved_servers(family, &vendor, &boot.workdir) {
-                    Ok(names) if names.is_empty() => None,
-                    Ok(names) => Some(format!(
-                        "mcp_server_conflict: Die Konfiguration von {family} definiert den reservierten MCP-Server {}; beton kann ihn nicht von seinem eigenen unterscheiden. Bitte umbenennen oder entfernen.",
-                        names
-                            .iter()
-                            .map(|n| format!("`{n}`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                    Err(why) => Some(format!(
-                        "mcp_server_conflict: MCP-Server der Konfiguration von {family} nicht prüfbar ({why})"
-                    )),
-                };
-                if let Some(reason) = conflict {
-                    let e = beton_harness::HarnessError::StartRefused(reason);
-                    report_start_failure(&boot, &e).await;
-                    return Err(e.into());
-                }
             }
             gate.set_trusted_servers(trusted);
             s
@@ -1198,6 +1181,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    let session_server = setup.session_server.clone();
     // AGT-014: Ohne Snapshot ließe sich `sandbox:` nicht vor dem Aufbau der Stufen anwenden.
     if setup.agent_sandbox.is_some() && agent_sandbox.is_none() {
         let e = beton_harness::HarnessError::StartRefused(
@@ -2040,7 +2024,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                         }
                         if done && let Some(context) = held_context.take() {
-                            batch.push(to_event(&boot, &actor, context));
+                            batch.push(to_event(&boot, &actor, context, session_server.as_deref()));
                         }
                         // Integrität (HAR-005, #233): Ein ausgeführter Call ohne Gate-Entscheidung
                         // bei Matrix `full` heißt, dass der Hook umgangen wurde.
@@ -2064,7 +2048,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             _ => None,
                         };
                         let observe = track_tool_calls(&gate, &ev, &mut unobserved, done, !harness_gates_all);
-                        let event = to_event(&boot, &actor, ev);
+                        let event = to_event(&boot, &actor, ev, session_server.as_deref());
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
                         }
@@ -3313,7 +3297,16 @@ async fn finish(session: Box<dyn HarnessSession>, exit: Exit) -> Result<Exit, Ru
     Ok(exit)
 }
 
-fn to_event(boot: &RunnerBoot, actor: &Actor, ev: NormalizedEvent) -> Event {
+fn to_event(
+    boot: &RunnerBoot,
+    actor: &Actor,
+    mut ev: NormalizedEvent,
+    session_server: Option<&str>,
+) -> Event {
+    // Im Log heißt der eigene Server `beton`, fremde reservierte `untrusted:<name>` (#252).
+    if let Some(exposed) = session_server {
+        session_server::map_event(&mut ev.payload, exposed);
+    }
     let mut e = Event::new(boot.session_id, 0, actor.clone(), ev.payload);
     e.raw = ev.raw;
     e.turn_id = ev.turn_id;

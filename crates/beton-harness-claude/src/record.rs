@@ -207,6 +207,7 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
     for (from, to) in replacements {
         text = text.replace(from.as_str(), to.as_str());
     }
+    let text = session_server_placeholder(&text);
     let Ok(mut v) = serde_json::from_str::<Value>(&text) else {
         return text;
     };
@@ -222,6 +223,29 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
     }
     clean(&mut v);
     v.to_string()
+}
+
+/// Der eigene Server heißt je Session `beton_<16 Hex>` (#252): in Aufnahmen `beton_<nonce>`.
+fn session_server_placeholder(text: &str) -> String {
+    const PREFIX: &str = "beton_";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(PREFIX) {
+        let after = &rest[i + PREFIX.len()..];
+        let hex = after
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+            .count();
+        out.push_str(&rest[..i + PREFIX.len()]);
+        if hex == 16 {
+            out.push_str("<nonce>");
+            rest = &after[16..];
+        } else {
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn clean(v: &mut Value) {

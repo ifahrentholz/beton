@@ -357,7 +357,15 @@ pub fn serve(tools: &[String]) -> std::io::Result<()> {
 }
 
 /// Siehe [`Clients::scenario_server`].
-pub fn scenario_server(_names: &[String], wanted: &str) -> String {
+pub fn scenario_server(names: &[String], wanted: &str) -> String {
+    if wanted == "beton" && !names.iter().any(|n| n == wanted) {
+        let mut session = names
+            .iter()
+            .filter(|n| n.strip_prefix("beton_").is_some_and(|r| r.len() == 16));
+        if let (Some(one), None) = (session.next(), session.next()) {
+            return one.clone();
+        }
+    }
     wanted.to_owned()
 }
 

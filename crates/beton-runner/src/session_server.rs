@@ -17,22 +17,86 @@ pub const CANONICAL: &str = beton_mcp::config::SYSTEM_SERVER;
 
 /// Ein neuer Name `beton_<16 Hex>` (64 Bit aus dem CSPRNG).
 pub fn fresh_name() -> Result<String, String> {
-    let _ = CANONICAL;
-    Err("noch nicht umgesetzt".into())
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).map_err(|e| format!("Zufallszahlen: {e}"))?;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!("{CANONICAL}_{hex}"))
+}
+
+/// Harnesses im Runner-Prozess ohne Vendor-Konfiguration (Direkt-API, Fake) behalten `beton`.
+fn in_process(harness: &HarnessId) -> bool {
+    matches!(
+        beton_policy::normalize::harness_family(harness.as_str()),
+        "direct" | "fake"
+    )
 }
 
 /// Benennt den System-Server der Injektion für Harnesses mit eigener Konfiguration um und
-/// liefert den neuen Namen.
-pub fn expose(
-    _injection: &mut McpInjection,
-    _harness: &HarnessId,
-) -> Result<Option<String>, String> {
-    Ok(None)
+/// liefert den neuen Namen. Der Relay startet weiter den internen Server (`mcp serve`).
+pub fn expose(injection: &mut McpInjection, harness: &HarnessId) -> Result<Option<String>, String> {
+    if in_process(harness) {
+        return Ok(None);
+    }
+    let Some(server) = injection.servers.iter_mut().find(|s| s.name == CANONICAL) else {
+        return Ok(None);
+    };
+    let name = fresh_name()?;
+    server.name.clone_from(&name);
+    Ok(Some(name))
 }
 
-/// Bildet Namen des Harness im Log ab: der eigene Server wird `beton` (`source: beton_mcp`),
-/// fremde reservierte Server `untrusted:<name>`.
-pub fn map_event(_payload: &mut EventPayload, _exposed: &str) {}
+/// Name eines Servers für Policies und Log: der eigene `beton`, fremde reservierte
+/// `untrusted:<name>`, alle anderen unverändert.
+pub fn canonical(server: &str, exposed: &str) -> String {
+    if server == exposed {
+        CANONICAL.to_owned()
+    } else if beton_mcp::config::reserved_name(server) {
+        format!("untrusted:{server}")
+    } else {
+        server.to_owned()
+    }
+}
+
+/// Bildet Namen des Harness im Log ab: der eigene Server wird `beton` (`source: beton_mcp`,
+/// Klasse `system`), fremde reservierte Server `untrusted:<name>`.
+pub fn map_event(payload: &mut EventPayload, exposed: &str) {
+    match payload {
+        EventPayload::ToolCallRequested(r) => {
+            let Some(server) = r.mcp_server.as_deref() else {
+                return;
+            };
+            if server == exposed {
+                r.mcp_server = Some(CANONICAL.to_owned());
+                r.source = beton_core::event::ToolSource::BetonMcp;
+                r.kind = Some("system".into());
+            } else if beton_mcp::config::reserved_name(server) {
+                r.mcp_server = Some(canonical(server, exposed));
+                if r.source == beton_core::event::ToolSource::BetonMcp {
+                    r.source = beton_core::event::ToolSource::Harness;
+                }
+                if r.kind.as_deref() == Some("system") {
+                    r.kind = Some("mcp".into());
+                }
+            }
+        }
+        EventPayload::HarnessReady(h) => {
+            for tool in &mut h.tools {
+                if let Some(rest) = tool.strip_prefix("mcp__")
+                    && let Some((server, name)) = rest.split_once("__")
+                {
+                    let mapped = canonical(server, exposed);
+                    if mapped != server {
+                        *tool = format!("mcp__{mapped}__{name}");
+                    }
+                }
+            }
+            for server in &mut h.mcp_servers {
+                *server = canonical(server, exposed);
+            }
+        }
+        _ => {}
+    }
+}
 
 #[cfg(test)]
 mod tests {

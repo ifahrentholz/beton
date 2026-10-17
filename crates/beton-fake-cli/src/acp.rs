@@ -310,17 +310,18 @@ impl<R: BufRead, W: Write> Agent<R, W> {
             let text = self.fs_write(&w.path, &w.content)?;
             self.update(json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": text}}))?;
         } else if let Some(call) = &step.mcp_call {
+            let server = self.mcp.scenario_server(&call.server);
             self.calls += 1;
             let id = format!("call_fake{:08}", self.calls);
             let args = self.mcp.resolve(&call.args);
             self.update(json!({
                 "sessionUpdate": "tool_call", "toolCallId": id,
-                "title": format!("{}/{}", call.server, call.tool), "kind": "other",
+                "title": format!("{}/{}", server, call.tool), "kind": "other",
                 "status": "pending", "rawInput": args, "locations": [],
             }))?;
             self.update(json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress"}))?;
             state.call = Some(id);
-            match self.mcp.call(&call.server, &call.tool, &args) {
+            match self.mcp.call(&server, &call.tool, &args) {
                 Ok(result) => {
                     let status = if result["isError"] == true {
                         "failed"

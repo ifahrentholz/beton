@@ -586,6 +586,8 @@ struct Inner {
     /// Von beton eingebundene MCP-Server (#234): nur für sie gelten die Klassen reservierter
     /// Namen (`beton` → `system`). Bis zur MCP-Vorbereitung keiner (fail closed).
     trusted_servers: Mutex<Vec<String>>,
+    /// Name des eigenen Servers beim Harness (`beton_<nonce>`, #252); in Policies `beton`.
+    session_server: Mutex<Option<String>>,
     /// Aufgelöste Policy-Verzeichnisse (Cache für die Regel `policy-files`).
     policy_dirs: Mutex<Option<Vec<PathBuf>>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
@@ -960,6 +962,7 @@ impl PolicyGate {
                 pending: Mutex::new(HashMap::new()),
                 decided: Mutex::new(HashMap::new()),
                 trusted_servers: Mutex::new(Vec::new()),
+                session_server: Mutex::new(None),
                 policy_dirs: Mutex::new(None),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
@@ -1221,7 +1224,39 @@ impl PolicyGate {
     }
 
     /// Name des eigenen beton-Servers dieser Session beim Harness (`beton_<nonce>`, #252).
-    pub fn set_session_server(&self, _name: &str) {}
+    pub fn set_session_server(&self, name: &str) {
+        if let Ok(mut s) = self.inner.session_server.lock() {
+            *s = Some(name.to_owned());
+        }
+    }
+
+    fn session_server(&self) -> Option<String> {
+        self.inner
+            .session_server
+            .lock()
+            .ok()
+            .and_then(|s| s.clone())
+    }
+
+    /// Server und Tool-Name eines Calls, wie Policies sie sehen (#252): der eigene Server der
+    /// Session heißt `beton`; `true`, wenn der Call an ihn geht.
+    fn own_server(&self, req: &GateRequest) -> (Option<String>, String, bool) {
+        let Some(exposed) = self.session_server() else {
+            return (req.mcp_server.clone(), req.tool.clone(), false);
+        };
+        let prefix = format!("mcp__{exposed}__");
+        let renamed = req
+            .tool
+            .strip_prefix(&prefix)
+            .map(|t| format!("mcp__{}__{t}", crate::session_server::CANONICAL));
+        let own = renamed.is_some() || req.mcp_server.as_deref() == Some(exposed.as_str());
+        let server = if own {
+            Some(crate::session_server::CANONICAL.to_owned())
+        } else {
+            req.mcp_server.clone()
+        };
+        (server, renamed.unwrap_or_else(|| req.tool.clone()), own)
+    }
 
     pub fn set_trusted_servers(&self, servers: Vec<String>) {
         if let Ok(mut t) = self.inner.trusted_servers.lock() {
@@ -1308,12 +1343,14 @@ impl PolicyGate {
 
     /// Ein `tool.call.requested` aus dem Event-Strom (Zuordnung im Relay-Hub, Reihenfolge).
     pub fn note_requested(&self, call_id: &str, mcp_server: Option<&str>, tool: &str) {
+        // Der Relay-Hub ordnet über den Namen in Policies zu (`beton`, #252).
+        let exposed = self.session_server();
+        let server = mcp_server.map(|s| match &exposed {
+            Some(x) => crate::session_server::canonical(s, x),
+            None => s.to_owned(),
+        });
         if let Ok(mut r) = self.inner.requested.lock() {
-            r.push((
-                call_id.to_owned(),
-                mcp_server.map(str::to_owned),
-                tool.to_owned(),
-            ));
+            r.push((call_id.to_owned(), server, tool.to_owned()));
             if r.len() > 256 {
                 r.remove(0);
             }
@@ -2103,11 +2140,26 @@ impl PolicyGate {
             "fake" => "claude",
             other => other,
         };
+        let (mcp_server, native_name, own) = self.own_server(req);
+        // Vergifteter Zustand: niemandem vertrauen (fail closed). Mit eigenem Server der
+        // Session gilt ein reservierter Name nur für genau ihn (#252).
+        let mut trusted = self
+            .inner
+            .trusted_servers
+            .lock()
+            .map(|t| t.clone())
+            .unwrap_or_default();
+        if self.session_server().is_some() {
+            trusted.retain(|t| !beton_mcp::config::reserved_name(t));
+            if own {
+                trusted.push(crate::session_server::CANONICAL.to_owned());
+            }
+        }
         Arc::new(ToolSource {
             harness: family.to_owned(),
-            native_name: req.tool.clone(),
+            native_name,
             acp_kind: req.acp_kind.clone(),
-            mcp_server: req.mcp_server.clone(),
+            mcp_server,
             // Das Arbeitsverzeichnis des Calls, wenn der Harness es meldet (Claude-Hook: Bash
             // behält ein `cd` zwischen Calls, #293); nur absolut, sonst das der Session.
             cwd: req
@@ -2124,14 +2176,7 @@ impl PolicyGate {
                 .home
                 .as_ref()
                 .map(|h| h.display().to_string()),
-            // Vergifteter Zustand: niemandem vertrauen (fail closed).
-            trusted_servers: Some(
-                self.inner
-                    .trusted_servers
-                    .lock()
-                    .map(|t| t.clone())
-                    .unwrap_or_default(),
-            ),
+            trusted_servers: Some(trusted),
         })
     }
 
@@ -2939,7 +2984,13 @@ impl PolicyGate {
         id
     }
 
+    /// Prüft der Relay-Hub Aufrufe an diesen Server (Name beim Harness)?
     fn trusted_server(&self, server: &str) -> bool {
+        if let Some(exposed) = self.session_server()
+            && beton_mcp::config::reserved_name(server)
+        {
+            return server == exposed;
+        }
         self.inner
             .trusted_servers
             .lock()
@@ -3233,6 +3284,12 @@ impl crate::mcp::Asker for PolicyGate {
 impl beton_mcp::hub::McpGate for PolicyGate {
     async fn check(&self, server: &str, tool: &str, args: &Value) -> Result<Option<Value>, String> {
         let call_id = self.correlate_waiting(server, tool).await;
+        // Der Hub kennt seine Server unter den internen Namen; `beton` ist der eigene Server
+        // der Session (beim Harness `beton_<nonce>`, #252).
+        let harness_name = match self.session_server() {
+            Some(exposed) if server == crate::session_server::CANONICAL => exposed,
+            _ => server.to_owned(),
+        };
         let req = GateRequest {
             call_id,
             tool: tool.to_owned(),
@@ -3243,7 +3300,7 @@ impl beton_mcp::hub::McpGate for PolicyGate {
                 Some(server),
             ),
             args: args.clone(),
-            mcp_server: Some(server.to_owned()),
+            mcp_server: Some(harness_name),
             origin: GateOrigin::PreTool,
             ..GateRequest::default()
         };
