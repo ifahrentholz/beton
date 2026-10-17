@@ -60,14 +60,14 @@ fn tensor(out: &mut impl Write, name: &str, ne: &[i32]) -> u64 {
     // Damit der Decoder sofort endet: Die letzte Norm liefert einen Einsvektor, und nur die
     // Zeile von EOT der Token-Einbettung ist ungleich null – EOT gewinnt ab dem zweiten Token.
     if name == "decoder.ln.bias" {
-        for c in bytes.chunks_exact_mut(4) {
+        for c in bytes.as_chunks_mut::<4>().0 {
             c.copy_from_slice(&1.0f32.to_le_bytes());
         }
     }
     if name == "decoder.token_embedding.weight" {
         let row = usize::try_from(ne[0]).unwrap() * 2;
         let start = TOKEN_EOT * row;
-        for c in bytes[start..start + row].chunks_exact_mut(2) {
+        for c in bytes[start..start + row].as_chunks_mut::<2>().0 {
             // 1.0 als f16
             c.copy_from_slice(&0x3c00u16.to_le_bytes());
         }

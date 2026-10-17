@@ -47,7 +47,7 @@ describe('VOI-008 AC1: keine Web Speech API', () => {
     ]) {
       const result = lint(source)
       expect(result.ok, source).toBe(false)
-      expect(result.output).toContain('VOI-008')
+      expect(result.output).toMatch(/no-restricted-(globals|properties)/)
     }
     expect(lint('export const ok = navigator.mediaDevices\n').ok).toBe(true)
   })
