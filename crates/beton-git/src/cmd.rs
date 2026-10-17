@@ -1,9 +1,16 @@
 //! Aufruf der `git`-CLI mit kontrollierter Umgebung.
 //!
 //! beton spricht Git ausschließlich über die installierte CLI: dieselbe Semantik wie im
-//! Terminal des Nutzers (`.gitignore`, Hooks, Konfiguration), keine zweite Implementierung.
+//! Terminal des Nutzers (`.gitignore`, Konfiguration), keine zweite Implementierung.
 //! Variablen wie `GIT_DIR` aus der Umgebung des Daemons würden jeden Aufruf umlenken; sie werden
 //! entfernt. Rückfragen sind abgeschaltet (`GIT_TERMINAL_PROMPT=0`, SSH im Batch-Modus).
+//!
+//! Gehärtet gegen Workspace-Inhalt aus der Sandbox (#223, Angreifer A2): Ein Agent kann
+//! Submodule, Gitlinks und verschachtelte Repositories samt deren Konfiguration anlegen (z. B.
+//! ein ganzes `.git/modules/<n>` ersetzen). beton-eigene Aufrufe laufen in Stufe 0 und dürfen
+//! daraus nichts ausführen: keine Hooks, kein `core.fsmonitor`, kein Abstieg in Submodule
+//! (`git status` in einem geänderten Submodul liest dessen Konfiguration, Filter und
+//! fsmonitor), kein `file`-/`ext`-Transport, den ein Submodul anstößt ([`HARDENING`]).
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -21,6 +28,27 @@ const REDIRECTING_VARS: [&str; 9] = [
     "GIT_NAMESPACE",
     "GIT_PREFIX",
     "GIT_QUARANTINE_PATH",
+];
+
+/// `-c`-Optionen jedes beton-eigenen Aufrufs (#223). Kommandozeilen-Konfiguration gewinnt
+/// gegen jede Datei und gilt über `GIT_CONFIG_PARAMETERS` auch in Kindprozessen von git.
+///
+/// - `core.hooksPath=/dev/null`: keine Hooks (auch nicht `post-checkout` bei `worktree add`).
+/// - `core.fsmonitor=false`: kein Programm aus der Konfiguration beim Lesen des Index.
+/// - `submodule.recurse=false`, `fetch.recurseSubmodules=false`: kein Abstieg in Submodule.
+/// - `diff.ignoreSubmodules=dirty`, `status.submoduleSummary=false`: `status` und `diff`
+///   vergleichen nur den Commit eines Submoduls und starten darin kein `git status`.
+/// - `protocol.file.allow=user`, `protocol.ext.allow=never`: lokale Pfade nur auf ausdrücklichen
+///   Wunsch (Remote des Nutzers), nie aus einem Submodul; `ext::` nie.
+pub const HARDENING: [&str; 8] = [
+    "core.hooksPath=/dev/null",
+    "core.fsmonitor=false",
+    "submodule.recurse=false",
+    "fetch.recurseSubmodules=false",
+    "diff.ignoreSubmodules=dirty",
+    "status.submoduleSummary=false",
+    "protocol.file.allow=user",
+    "protocol.ext.allow=never",
 ];
 
 /// Fehler beim Aufruf von Git.
@@ -107,7 +135,7 @@ impl Git {
         self
     }
 
-    /// Zusätzliche `-c key=value`-Optionen.
+    /// Zusätzliche `-c key=value`-Optionen (nach [`HARDENING`], gewinnen also dagegen).
     pub fn with_config(mut self, key_value: impl Into<String>) -> Self {
         self.config.push(key_value.into());
         self
@@ -144,6 +172,9 @@ impl Git {
         }
         if let Some(work_tree) = &self.work_tree {
             cmd.arg("--work-tree").arg(work_tree);
+        }
+        for c in HARDENING {
+            cmd.arg("-c").arg(c);
         }
         for c in &self.config {
             cmd.arg("-c").arg(c);
