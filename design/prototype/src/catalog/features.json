@@ -5853,7 +5853,7 @@
   "chapter": "11-platform-features.md",
   "chapterTitle": "11 — Plattform-Features",
   "anchor": "obs-008--opt-in-crash-reports",
-  "summary": "Ein Panic-Hook schreibt Crash-Berichte lokal nach `~/.beton/crashes/` (Panic-Nachricht redigiert, symbolisierter Backtrace, Version, OS/Arch, Komponente). Versand nur, wenn der User Crash-Reports separat aktiviert hat (`crash_reports.enabled`, eigener Consent im Onboarding) oder einen einzelnen Bericht bestätigt; Ziel ist ein konfigurierbarer, Sentry-kompatibler Endpoint *(Annahme)*. Prompts, Env-Variablen, Kommandozeilen-Argumente und Pfade sind nie enthalten.",
+  "summary": "Ein Panic-Hook schreibt Crash-Berichte lokal nach `~/.beton/crashes/` (Panic-Nachricht redigiert, symbolisierter Backtrace, Version, OS/Arch, Komponente). Versand nur, wenn der User Crash-Reports separat aktiviert hat (`crash_reports.enabled`, eigener Consent im Onboarding) oder einen einzelnen Bericht bestätigt; Ziel ist ein konfigurierbarer, Sentry-kompatibler Endpoint *(Annahme)*. *Entscheidung des Maintainers (2026-10-17): In Release 0.1 gibt es keinen Endpunkt; Crash-Berichte bleiben lokal und lassen sich nur von Hand dem Diagnose-Bundle (OBS-004) beilegen.* Prompts, Env-Variablen, Kommandozeilen-Argumente und Pfade sind nie enthalten.",
   "acs": [
    "Ein provozierter Panic (Test-Build-Flag) erzeugt eine lokale Crash-Datei ohne Env-Variablen und ohne Marker-Prompt.",
    "Ohne Consent erfolgt kein Versand; die Desktop-App bietet beim nächsten Start „Bericht ansehen / senden / verwerfen“ an.",
