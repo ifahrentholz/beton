@@ -919,7 +919,7 @@ fn hook_deny(reason: &str) -> HookReply {
 }
 
 /// Gate-Anfrage aus der Eingabe des `PreToolUse`-Hooks (`tool_name`, `tool_input`,
-/// `tool_use_id`; gegen 2.1.296 aufgenommen in `tests/golden/pretool-hook-*/hooks.jsonl`).
+/// `tool_use_id`, `cwd`; gegen 2.1.296 aufgenommen in `tests/golden/pretool-hook-*/hooks.jsonl`).
 pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
     let tool = payload["tool_name"].as_str().unwrap_or_default().to_owned();
     let (_, mcp_server) = mapping::split_mcp_name(&tool);
@@ -934,7 +934,8 @@ pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
         args: payload["tool_input"].clone(),
         mcp_server,
         acp_kind: None,
-        cwd: None,
+        // Arbeitsverzeichnis des Calls (#293): Bash behält ein `cd` zwischen Calls.
+        cwd: payload["cwd"].as_str().map(str::to_owned),
         origin: GateOrigin::PreTool,
         raw: None,
     }

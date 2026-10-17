@@ -1312,6 +1312,24 @@ impl PolicyGate {
         self.inner.hub_gated.store(true, Ordering::SeqCst);
     }
 
+    /// Git-Kontext des Calls (#293): `session.branch` aus dem Repo von `tool.cwd`, bei
+    /// Shell-Kommandos `session.push_redirected` aus den Konfigurationsdateien.
+    fn git_context(&self, n: &beton_policy::normalize::NormalizedTool, vars: &mut Vars) {
+        let cwd = Path::new(&n.cwd);
+        let Some(session) = vars.session.as_mut() else {
+            return;
+        };
+        if cwd != self.inner.opts.workdir.as_path() && cwd.is_absolute() {
+            session.branch = current_branch(cwd);
+        }
+        if n.kind == "shell" {
+            session.push_redirected = Some(crate::push_config::redirected(
+                cwd,
+                self.inner.opts.home.as_deref(),
+            ));
+        }
+    }
+
     /// Gemerkte Entscheidung zu einer Verteuerung (#353).
     fn raise_choice(&self, key: &str) -> Option<bool> {
         self.inner
@@ -2075,7 +2093,16 @@ impl PolicyGate {
             native_name: req.tool.clone(),
             acp_kind: req.acp_kind.clone(),
             mcp_server: req.mcp_server.clone(),
-            cwd: self.inner.opts.workdir.display().to_string(),
+            // Das Arbeitsverzeichnis des Calls, wenn der Harness es meldet (Claude-Hook: Bash
+            // behält ein `cd` zwischen Calls, #293); nur absolut, sonst das der Session.
+            cwd: req
+                .cwd
+                .as_deref()
+                .filter(|c| Path::new(c).is_absolute())
+                .map_or_else(
+                    || self.inner.opts.workdir.display().to_string(),
+                    str::to_owned,
+                ),
             home: self
                 .inner
                 .opts
@@ -2142,6 +2169,7 @@ impl PolicyGate {
                 tool.repeat_count = Some(self.note_call(&req.call_id, &n));
                 tool.consecutive_errors = Some(self.inner.errors_in_row.load(Ordering::SeqCst));
                 vars.tool = Some(tool);
+                self.git_context(&n, &mut vars);
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,
