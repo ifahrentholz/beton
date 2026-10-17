@@ -1060,10 +1060,12 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             }),
         ),
         // Tools, die beton selbst ausführt (ACP `fs/read_text_file`, `terminal/*`, #326): in
-        // Stufe 2 und über die Terminals des Runners.
+        // Stufe 2 und über die Terminals des Runners, auch solange ACP degraded ist (#329).
         Some(st)
-            if predicted_caps(&boot, caps.as_ref(), true).tool_isolation
-                == beton_harness::ToolIsolation::Beton =>
+            if beton_tools_in_stage_two(
+                &boot.harness,
+                predicted_caps(&boot, caps.as_ref(), true).tool_isolation,
+            ) =>
         {
             (
                 Arc::new(SandboxLauncher::new(st.harness.clone())),
@@ -2492,6 +2494,13 @@ enum TurnGate {
 
 /// Capabilities, mit denen der Harness laufen wird: beim Fake samt Szenario, bei Claude ohne
 /// Hook-Brücke nur die Rückfragen (POL-024).
+/// Bekommt der Harness die Stufe-2-Tools und Terminals des Runners für Tools, die beton selbst
+/// ausführt? Mit `tool_isolation: beton` immer, außerdem ACP (`fs/read_text_file`,
+/// `terminal/*`), das bis #329 als `inherited` gilt.
+fn beton_tools_in_stage_two(harness: &HarnessId, isolation: beton_harness::ToolIsolation) -> bool {
+    isolation == beton_harness::ToolIsolation::Beton || harness.is_acp()
+}
+
 fn predicted_caps(
     boot: &RunnerBoot,
     caps: Option<&beton_harness::Capabilities>,
@@ -3530,6 +3539,24 @@ async fn deliver(
 #[cfg(test)]
 mod tests {
     use beton_core::event::AuthSource;
+
+    /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals, obwohl es bis #329 als
+    /// `inherited` gilt; andere Harnesses mit `inherited` (Codex) nicht.
+    #[test]
+    fn har_007_acp_gets_stage_two_tools_while_inherited() {
+        use beton_harness::ToolIsolation::{Beton, Inherited, ShellOverride};
+        let id = |s: &str| s.parse::<super::HarnessId>().unwrap();
+        assert!(super::beton_tools_in_stage_two(
+            &id("acp:gemini"),
+            Inherited
+        ));
+        assert!(super::beton_tools_in_stage_two(&id("fake"), Beton));
+        assert!(!super::beton_tools_in_stage_two(&id("codex"), Inherited));
+        assert!(!super::beton_tools_in_stage_two(
+            &id("claude"),
+            ShellOverride
+        ));
+    }
     use beton_harness::registry::{HarnessAuth, HarnessCommandConfig, HarnessesConfig};
 
     fn layer(auth: Option<HarnessAuth>, isolated: Option<bool>) -> HarnessesConfig {

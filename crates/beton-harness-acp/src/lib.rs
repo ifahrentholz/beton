@@ -248,8 +248,10 @@ impl HarnessAdapter for AcpAdapter {
             // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
             permission_modes: vec![PermissionMode::Default],
             context_window: None,
-            // `terminal/*` und `fs/*` führt beton in Stufe 2 aus (#326, ADR-0037).
-            tool_isolation: beton_harness::ToolIsolation::Beton,
+            // `terminal/*` und `fs/read_text_file` führt beton schon in Stufe 2 aus (#326), aber
+            // `fs/write_text_file` noch in Stufe 0 (#329). ADR-0037 verlangt für `beton` beides;
+            // bis dahin degraded (`require_tool_isolation: false`, kein `yolo`).
+            tool_isolation: beton_harness::ToolIsolation::Inherited,
             native_project_files: Vec::new(),
         }
     }
