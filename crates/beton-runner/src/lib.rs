@@ -2416,12 +2416,25 @@ fn apply_start_modifications(
         caps,
         sandbox,
     )?;
+    // Zweite Linie hinter `on_unsupported` (#283): nie still verwerfen.
+    let unsupported = |what: &str| settings::Rejected {
+        code: "capability_unsupported",
+        detail: format!("Der Harness kann {what} beim Start nicht setzen (Policy-Modifikation)"),
+    };
+    if m.model.is_some() && !caps.start_model() {
+        return Err(unsupported("das Modell"));
+    }
+    let effort = match &m.reasoning_effort {
+        Some(effort) => Some(
+            beton_harness::map_effort(effort, &caps.efforts)
+                .ok_or_else(|| unsupported("diesen Effort"))?,
+        ),
+        None => None,
+    };
     if let Some(model) = &m.model {
         start.model = Some(model.clone());
     }
-    if let Some(effort) = &m.reasoning_effort
-        && let Some(mapped) = beton_harness::map_effort(effort, &caps.efforts)
-    {
+    if let Some(mapped) = effort {
         start.effort = Some(mapped);
     }
     if let Some(mode) = mode {

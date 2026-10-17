@@ -777,3 +777,33 @@ async fn pol_023_ac3_unrequested_acp_tool_call_is_observed_notified_and_cancelle
     );
     env.daemon.shutdown().await;
 }
+
+/// #283 (POL-013, HAR-017): ACP kennt keinen Start-Parameter für das Modell. Ohne
+/// `session/set_model` ist eine Modell-Route beim Start nicht anwendbar: Der Start wird
+/// abgelehnt (`on_unsupported`, Default `deny`), statt mit dem Default des Agents zu laufen.
+#[tokio::test]
+async fn pol_013_acp_start_route_without_set_model_refuses_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let s = sc(
+        tmp.path(),
+        "a.yaml",
+        "turns:\n  - expect_input: \"los\"\n    emit:\n      - { text: \"ok\" }\n",
+    );
+    let env = Env::start(&[], |dir| {
+        acp_config(&dir.join("work"), &s, Some(false));
+        write(
+            &Env::home(dir).join(".beton/policies/route.yaml"),
+            "spec_version: 1\nname: route\nrules:\n  - id: cheap\n    on: session_start\n    when: 'true'\n    action: modify\n    modify: { model: claude-haiku-4-5 }\n",
+        );
+    })
+    .await;
+    let id = env.create("acp:fake").await;
+    let events = env
+        .wait_for(&id, |e| e["type"] == "session.start_denied")
+        .await;
+    let denied = of_type(&events, "session.start_denied")[0];
+    let text = denied["payload"].to_string();
+    assert!(text.contains("cheap"), "{text}");
+    assert!(text.contains("model"), "{text}");
+    env.daemon.shutdown().await;
+}

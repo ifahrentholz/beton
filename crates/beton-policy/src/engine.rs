@@ -771,10 +771,17 @@ impl<'a> Run<'a> {
             self.decision.matched.push(entry);
             self.hits.push(rule);
             let Some(m) = &rule.doc.modify else { continue };
+            // Auf den ohnehin geltenden Wert zu ändern ist keine Änderung und braucht keine
+            // Fähigkeit des Harness (#283); solche Felder entfallen.
+            let noop: Vec<&str> = m
+                .fields()
+                .into_iter()
+                .filter(|f| !self.opts.capabilities.supports(f) && self.unchanged(m, f, ctx))
+                .collect();
             let unsupported: Vec<&str> = m
                 .fields()
                 .into_iter()
-                .filter(|f| !self.opts.capabilities.supports(f))
+                .filter(|f| !self.opts.capabilities.supports(f) && !noop.contains(f))
                 .collect();
             if !unsupported.is_empty() {
                 let what = format!(
@@ -821,6 +828,9 @@ impl<'a> Run<'a> {
                 ("permission_mode", &m.permission_mode),
             ] {
                 let Some(value) = value else { continue };
+                if noop.contains(&field) {
+                    continue;
+                }
                 let value = Value::String(value.clone());
                 match written.get(field) {
                     None => {
@@ -883,6 +893,29 @@ impl<'a> Run<'a> {
     /// Würde die Modifikation einer Regel Modell oder Effort gegenüber der Anfrage verteuern
     /// (#286)? Felder, die schon eine autoritativere Regel geschrieben hat, zählen nicht (sie
     /// werden ohnehin verworfen). `Some(begründung)`, wenn nicht nachweisbar günstiger.
+    /// Gilt der Wert der Modifikation für `field` (`model`, `reasoning_effort`,
+    /// `permission_mode`) ohnehin schon (`start.*` bzw. `request.*`)? Ohne bekannten Wert
+    /// nie.
+    fn unchanged(&self, m: &crate::doc::ModifyDoc, field: &str, ctx: &Activation) -> bool {
+        let object = match self.phase {
+            Phase::SessionStart => "start",
+            Phase::ModelRequest => "request",
+            _ => return false,
+        };
+        let wanted = match field {
+            "model" => &m.model,
+            "reasoning_effort" => &m.reasoning_effort,
+            "permission_mode" => &m.permission_mode,
+            _ => return false,
+        };
+        match (wanted, ctx.field(object, field)) {
+            (Some(w), Some(crate::value::Value::String(current))) => {
+                !w.is_empty() && **w == *current.as_ref()
+            }
+            _ => false,
+        }
+    }
+
     fn raises_cost(
         &self,
         scope: Scope,
