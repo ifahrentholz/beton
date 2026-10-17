@@ -14,7 +14,7 @@ async fn mock_daemon(home: &Path, version: &'static str) {
     let app = axum::Router::new().route(
         "/v1/info",
         axum::routing::get(move || async move {
-            axum::Json(json!({"version": version, "protocol_version": 1, "schema_version": 15}))
+            axum::Json(json!({"version": version, "protocol_version": 1, "schema_version": 14}))
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
