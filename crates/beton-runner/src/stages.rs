@@ -1147,6 +1147,7 @@ async fn compose_unix(
                 egress_proxy: true,
             },
             harness_policy,
+            terminals: None,
         },
         passthrough,
         placeholders,
