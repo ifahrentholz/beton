@@ -3399,6 +3399,37 @@ fn fork_of(plan: Option<&beton_harness::handover::ForkPlan>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// #283: Eine Modifikation beim Start, die der Harness nicht anwenden kann, lehnt den
+    /// Start ab (zweite Linie hinter `on_unsupported`), statt still verworfen zu werden.
+    #[test]
+    fn pol_013_start_modifications_are_never_dropped_silently() {
+        use beton_harness::{Capabilities, Mode, SwitchSupport, Transport};
+        let mut acp = Capabilities::minimal(Mode::Native, Transport::Acp);
+        acp.model_switch = SwitchSupport::None;
+        let model = beton_policy::engine::Modifications {
+            model: Some("claude-haiku-4-5".into()),
+            ..Default::default()
+        };
+        let mut start = super::settings::Change::default();
+        let r = super::apply_start_modifications(&mut start, &model, &acp, Default::default());
+        assert!(r.is_err(), "ACP ohne set_model: {r:?}");
+        assert_eq!(start.model, None);
+        acp.model_switch = SwitchSupport::Live;
+        let r = super::apply_start_modifications(&mut start, &model, &acp, Default::default());
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(start.model.as_deref(), Some("claude-haiku-4-5"));
+
+        // Effort ohne abbildbare Stufe.
+        let native = Capabilities::minimal(Mode::Native, Transport::Native);
+        let effort = beton_policy::engine::Modifications {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let mut start = super::settings::Change::default();
+        let r = super::apply_start_modifications(&mut start, &effort, &native, Default::default());
+        assert!(r.is_err(), "Effort ohne Stufen: {r:?}");
+    }
+
     #[test]
     fn pol_004_start_fork_of_names_the_source_of_a_fork() {
         let plan = |kind: &str| -> beton_harness::handover::ForkPlan {
