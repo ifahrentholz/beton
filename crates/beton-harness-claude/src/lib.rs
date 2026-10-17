@@ -738,6 +738,11 @@ impl ClaudeAdapter {
             cwd: Some(spec.workdir.clone()),
         };
         let mut process = ctx.launcher.launch(launch).await?;
+        // Der Hook-Socket nimmt nur noch die CLI (bzw. ihren Launcher) und deren Nachfahren an
+        // (#247); ohne PID (Replay, Attrappe) bleibt es bei Token und UID.
+        if let (Some((server, _)), Some(pid)) = (&hook, process.id()) {
+            server.restrict_to_descendants_of(pid);
+        }
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
         state.lock().await.session_ref.clone_from(&session_ref);

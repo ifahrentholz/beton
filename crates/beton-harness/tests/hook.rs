@@ -111,6 +111,10 @@ async fn har_005_command_line_is_shell_quoted_and_contains_no_token() {
 /// seinen Nachfahren an (Peer-Credentials: gleiche UID, PID im Prozessbaum der CLI). Ein
 /// fremder Prozess derselben UID mit gültigem Token wird abgelehnt.
 #[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Testprozess ohne Sandbox als Stellvertreter der CLI"
+)]
 async fn har_005_hook_server_accepts_only_descendants_of_the_cli() {
     let dir = tempfile::tempdir().unwrap();
     let server = HookServer::start(dir.path(), Arc::new(Echo)).await.unwrap();
@@ -141,6 +145,10 @@ async fn har_005_hook_server_accepts_only_descendants_of_the_cli() {
 
 /// #247: Eltern-PIDs fremder Prozesse (Grundlage der Prüfung).
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Kindprozess ohne Sandbox, nur für die Abstammung"
+)]
 fn har_005_ancestry_of_a_child_reaches_this_process() {
     let mut child = std::process::Command::new("sleep")
         .arg("30")
