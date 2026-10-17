@@ -32,6 +32,13 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      # Systembibliotheken der Desktop-App unter Linux (Tauri 2: WebKitGTK, AppIndicator,
+      # librsvg), damit der Workspace samt apps/desktop/src-tauri baut (DESK-001).
+      - name: Linux-Abhängigkeiten der Desktop-App
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       - run: cargo fmt --all --check
       # covers: QA-010 AC1 (eine neue Clippy-Warnung lässt den PR fehlschlagen)
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -143,6 +150,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # Systembibliotheken der Desktop-App unter Linux (Tauri 2: WebKitGTK, AppIndicator,
+      # librsvg), damit der Workspace samt apps/desktop/src-tauri baut (DESK-001).
+      - name: Linux-Abhängigkeiten der Desktop-App
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
       - name: Tests bauen (mit Netzwerk für die Paket-Registry)
         # Doc-Tests lassen sich nicht vorab bauen (`--doc --no-run` gibt es nicht); sie werden
         # offline aus den bereits geladenen Abhängigkeiten kompiliert.
@@ -386,8 +400,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
-      # `+1.88` überschreibt rust-toolchain.toml (stable).
-      - run: cargo +1.88 check --workspace --all-targets
+      # `+1.88` überschreibt rust-toolchain.toml (stable). Die Desktop-App braucht mit Tauri 2
+      # Rust 1.90 (eigene `rust-version`); Bibliotheken und CLI bleiben bei 1.88.
+      - run: cargo +1.88 check --workspace --all-targets --exclude beton-desktop-app
 
   spec:
     name: spec + roadmap

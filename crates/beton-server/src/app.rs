@@ -374,6 +374,10 @@ pub fn routes() -> (Router<AppState>, OpenApi) {
         .routes(routes!(crate::api_inbox::list_inbox))
         .routes(routes!(crate::api_inbox::get_inbox_item))
         .routes(routes!(crate::api_inbox::resolve_inbox_item))
+        .routes(routes!(
+            crate::api_settings::get_notifications,
+            crate::api_settings::put_notifications
+        ))
         .routes(routes!(crate::api_usage::get_usage))
         .routes(routes!(crate::api_usage::get_pricing))
         .routes(routes!(crate::api_usage::get_session_usage))

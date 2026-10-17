@@ -89,10 +89,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "policy_snapshots_shadow",
         sql: include_str!("../migrations/sqlite/0013_policy_snapshots_shadow.sql"),
     },
+    Migration {
+        version: 14,
+        name: "user_settings",
+        sql: include_str!("../migrations/sqlite/0014_user_settings.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
