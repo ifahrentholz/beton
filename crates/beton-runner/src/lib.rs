@@ -7,6 +7,7 @@
 
 mod agent_sandbox;
 mod credentials;
+pub mod harden;
 pub mod fork;
 pub mod mcp;
 pub mod policy;
