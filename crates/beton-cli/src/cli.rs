@@ -110,6 +110,9 @@ pub enum Command {
     /// Sandbox: Fähigkeiten der Backends prüfen und die aufgelöste Sandbox anzeigen.
     #[command(subcommand)]
     Sandbox(SandboxCommand),
+    /// Spracheingabe mit lokalem Whisper: Modelle verwalten (Download nur mit Zustimmung).
+    #[command(subcommand)]
+    Voice(VoiceCommand),
     /// Wartung von Datenbank und Projektionen.
     #[command(subcommand)]
     Admin(AdminCommand),
@@ -742,6 +745,53 @@ pub struct SandboxExplainArgs {
 pub enum SandboxStageArg {
     Harness,
     Tools,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VoiceCommand {
+    /// Whisper-Modelle in `~/.beton/models/whisper/` (VOI-002).
+    #[command(subcommand)]
+    Models(VoiceModelsCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum VoiceModelsCommand {
+    /// Modelle der mitgelieferten Liste: Name, Größe, installiert, SHA-256 (mit `--json`
+    /// maschinenlesbar).
+    List,
+    /// Modell von der im Programm hinterlegten Adresse laden und per SHA-256 prüfen. Fragt
+    /// vorher nach; ohne Terminal nur mit `--yes`. Abgebrochene Downloads setzt ein neuer
+    /// Aufruf fort.
+    Pull(VoiceModelsPullArgs),
+    /// Lokale Modelldatei übernehmen, ohne Netzwerk; nur wenn ihre SHA-256 zur mitgelieferten
+    /// Liste passt.
+    Import(VoiceModelsImportArgs),
+    /// Installiertes Modell entfernen.
+    Remove(VoiceModelsNameArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct VoiceModelsPullArgs {
+    /// Modellname, z. B. `small` oder `large-v3-turbo` (siehe `beton voice models list`).
+    #[arg(value_name = "MODELL")]
+    pub name: String,
+    /// Ohne Rückfrage laden (Zustimmung zum Download).
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct VoiceModelsImportArgs {
+    /// Modelldatei, z. B. `ggml-small.bin` von einem USB-Stick.
+    #[arg(value_name = "DATEI")]
+    pub file: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct VoiceModelsNameArgs {
+    /// Modellname (siehe `beton voice models list`).
+    #[arg(value_name = "MODELL")]
+    pub name: String,
 }
 
 #[derive(Debug, Subcommand)]

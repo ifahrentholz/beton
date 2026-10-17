@@ -120,10 +120,33 @@
       "description": "Angaben zum User, z. B. `timezone` (POL-004 AC4); nur in der User-Konfiguration.",
       "$ref": "#/$defs/UserSettings",
       "default": {}
+    },
+    "voice": {
+      "description": "Spracheingabe mit lokalem Whisper (VOI-001 ff.): Modell, Sprache, Entladen,\ngleichzeitige Diktate und Beschleunigung; nur in der User-Konfiguration.",
+      "$ref": "#/$defs/VoiceSettings",
+      "default": {
+        "acceleration": "auto",
+        "idle_unload": "10m",
+        "language": "auto",
+        "languages": [
+          "de",
+          "en"
+        ],
+        "max_concurrent": null,
+        "model": "auto"
+      }
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "Acceleration": {
+      "description": "`voice.acceleration` (VOI-003): `auto` wählt das beste Backend und fällt bei\nInitialisierungsfehlern auf die CPU zurück; `cpu` erzwingt die CPU.",
+      "type": "string",
+      "enum": [
+        "auto",
+        "cpu"
+      ]
+    },
     "AcpAgentConfig": {
       "description": "Ein ACP-Agent unter `harnesses.acp.agents.<slug>` (HAR-008).",
       "type": "object",
@@ -523,6 +546,34 @@
       "additionalProperties": {
         "$ref": "#/$defs/HarnessCommandConfig"
       }
+    },
+    "Lang": {
+      "description": "Sprache eines Diktats; die Erkennung ist auf diese Sprachen beschränkt (VOI-006).",
+      "type": "string",
+      "enum": [
+        "de",
+        "en"
+      ]
+    },
+    "LanguageSetting": {
+      "description": "`voice.language`: automatische Erkennung oder feste Sprache (VOI-006).",
+      "oneOf": [
+        {
+          "description": "Whisper erkennt die Sprache, beton wählt die wahrscheinlichste aus `voice.languages`.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Immer Deutsch, ohne Erkennung.",
+          "type": "string",
+          "const": "de"
+        },
+        {
+          "description": "Immer Englisch, ohne Erkennung.",
+          "type": "string",
+          "const": "en"
+        }
+      ]
     },
     "Limits": {
       "description": "`sandbox.limits` (SBX-013): Grenzen für den ganzen Prozessbaum einer Sandbox. Nicht gesetzte\nFelder begrenzen nichts.",
@@ -1175,6 +1226,55 @@
         "Europe/Berlin",
         "UTC"
       ]
+    },
+    "VoiceSettings": {
+      "description": "`voice:` in `config.yaml`.",
+      "type": "object",
+      "properties": {
+        "acceleration": {
+          "description": "`auto` (Default) oder `cpu`.",
+          "$ref": "#/$defs/Acceleration",
+          "default": "auto"
+        },
+        "idle_unload": {
+          "description": "Modell nach so langer Pause entladen, z. B. `10m` (Default), `90s` oder `1h`.",
+          "type": "string",
+          "default": "10m",
+          "pattern": "^[0-9]+(s|m|h)$"
+        },
+        "language": {
+          "description": "`auto` (Default), `de` oder `en`.",
+          "$ref": "#/$defs/LanguageSetting",
+          "default": "auto"
+        },
+        "languages": {
+          "description": "Sprachen der automatischen Erkennung (Default `[de, en]`).",
+          "type": "array",
+          "default": [
+            "de",
+            "en"
+          ],
+          "items": {
+            "$ref": "#/$defs/Lang"
+          }
+        },
+        "max_concurrent": {
+          "description": "Gleichzeitige Transkriptionen; weitere warten mit `voice.status {state: queued}`.\nDefault: 1 lokal, 2 im zentralen Betrieb.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "default": null,
+          "minimum": 0
+        },
+        "model": {
+          "description": "Modell: `auto` (Default: `large-v3-turbo` auf Apple Silicon bzw. mit GPU, sonst `small`;\nist es nicht installiert, das erste installierte der Liste) oder ein Name aus\n`beton voice models list`.",
+          "type": "string",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
     },
     "WireKind": {
       "description": "Wire-Familie eines Providers.",
