@@ -444,12 +444,34 @@ const TOOLCHAIN_SECRETS: [&str; 5] = [
     "credentials.toml",
 ];
 
+/// Freigabe für einen kanonischen `PATH`-Eintrag (SBX-012, #241): Nur Verzeichnisse namens `bin`
+/// bzw. `sbin` zählen, andere nie (kein ganzer Baum wie `/opt`). Freigegeben wird das Präfix
+/// des Pakets (Elternverzeichnis, z. B. `/opt/homebrew`, `~/.nvm/versions/node/<v>`), außer es
+/// liegt direkt unter `/` (z. B. `/opt/bin`), ist `~` bzw. ein Vorfahr davon oder liegt direkt in
+/// `~` (z. B. `~/.cargo`, `~/go`); dann nur das `bin`-Verzeichnis selbst.
+fn toolchain_root(dir: &Path, home: &Path) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_str()?;
+    if name != "bin" && name != "sbin" {
+        return None;
+    }
+    match dir.parent() {
+        Some(parent)
+            if parent.parent().is_some_and(|g| g != Path::new("/"))
+                && parent != home
+                && !home.starts_with(parent)
+                && parent.parent() != Some(home) =>
+        {
+            Some(parent.to_path_buf())
+        }
+        _ => Some(dir.to_path_buf()),
+    }
+}
+
 /// Lesende Freigaben für Toolchains aus dem `PATH` des Daemons (SBX-012, #241).
 ///
-/// Je absolutem Eintrag (kanonisch): das Präfix (Elternverzeichnis eines `bin`/`sbin`), sonst
-/// das Verzeichnis selbst. Nie `/`, `~`, Vorfahren von `~` oder ein Eintrag direkt in `~`, der
-/// mit `.` beginnt (Home-Dotfiles); liegt das Präfix direkt in `~` (z. B. `~/.cargo`, `~/go`),
-/// nur das `bin`-Verzeichnis. Nichts Verbotenes, nichts Maskiertes, nichts Schreibbares;
+/// Nur absolute Einträge namens `bin`/`sbin` (kanonisch) zählen, siehe [`toolchain_root`]. Nie
+/// `/`, `~`, Vorfahren von `~` oder ein Eintrag direkt in `~`, der mit `.` beginnt
+/// (Home-Dotfiles). Nichts Verbotenes, nichts Maskiertes, nichts Schreibbares;
 /// Systempfade und Wurzeln der Sandbox brauchen keine Freigabe. Zugangsdaten im Präfix bleiben
 /// maskiert. Liegt `rustup` in einem freigegebenen Verzeichnis, werden `toolchains` und
 /// `settings.toml` von `RUSTUP_HOME` (bzw. `~/.rustup`) lesbar; Rückgabe ist `RUSTUP_HOME`.
@@ -485,21 +507,12 @@ fn toolchains(
         if SYSTEM_PREFIXES.iter().any(|s| dir.starts_with(s)) {
             continue;
         }
-        let named_bin = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == "bin" || n == "sbin");
-        let root = match dir.parent() {
-            Some(parent)
-                if named_bin
-                    && parent != Path::new("/")
-                    && parent != home
-                    && !home.starts_with(parent)
-                    && parent.parent() != Some(home) =>
-            {
-                parent.to_path_buf()
-            }
-            _ => dir.clone(),
+        let Some(root) = toolchain_root(&dir, home) else {
+            notes.push(format!(
+                "PATH: {} nicht freigegeben (kein bin/sbin)",
+                dir.display()
+            ));
+            continue;
         };
         if home_dotfile(&root) || root == home {
             notes.push(format!(
@@ -1349,4 +1362,47 @@ pub fn check_credential_file(
         }
     }
     Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(dir: &str) -> Option<String> {
+        toolchain_root(Path::new(dir), Path::new("/Users/u")).map(|p| p.display().to_string())
+    }
+
+    /// SBX-012 (#241, Review #370): nur `bin`/`sbin`, Präfixe nie direkt unter `/` oder `~`.
+    #[test]
+    fn sbx_012_toolchain_root_only_bin_dirs_and_package_prefixes() {
+        assert_eq!(root("/opt/homebrew/bin").as_deref(), Some("/opt/homebrew"));
+        assert_eq!(root("/opt/homebrew/sbin").as_deref(), Some("/opt/homebrew"));
+        assert_eq!(
+            root("/Users/u/.nvm/versions/node/v24/bin").as_deref(),
+            Some("/Users/u/.nvm/versions/node/v24")
+        );
+        assert_eq!(
+            root("/opt/hostedtoolcache/node/24/x64/bin").as_deref(),
+            Some("/opt/hostedtoolcache/node/24/x64")
+        );
+        // Kein ganzer Baum: das Präfix läge direkt unter `/` bzw. in `~`.
+        assert_eq!(root("/opt/bin").as_deref(), Some("/opt/bin"));
+        assert_eq!(root("/nix/bin").as_deref(), Some("/nix/bin"));
+        assert_eq!(
+            root("/Users/u/.cargo/bin").as_deref(),
+            Some("/Users/u/.cargo/bin")
+        );
+        assert_eq!(root("/Users/u/bin").as_deref(), Some("/Users/u/bin"));
+        assert_eq!(root("/Users/bin").as_deref(), Some("/Users/bin"));
+        // Keine bin-Verzeichnisse: nie.
+        for dir in [
+            "/opt",
+            "/opt/tools",
+            "/Applications/X.app/Contents/MacOS",
+            "/Users/u",
+            "/",
+        ] {
+            assert_eq!(root(dir), None, "{dir}");
+        }
+    }
 }
