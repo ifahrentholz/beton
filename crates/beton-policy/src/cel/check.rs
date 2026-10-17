@@ -260,12 +260,14 @@ impl Checker<'_> {
                 let field: Arc<str> = sel.field.as_str().into();
                 let (ty, declared) = match &oty {
                     Ty::Object(obj) => match DECLS.field(obj, &sel.field) {
-                        Some(_) if let Some(why) = crate::vars::unavailable(obj, &sel.field) => {
-                            return Err(
-                                self.err(e.id, unavailable_msg(&sel.operand, &sel.field, why))
-                            );
+                        Some(t) => {
+                            if let Some(why) = crate::vars::unavailable(obj, &sel.field) {
+                                return Err(
+                                    self.err(e.id, unavailable_msg(&sel.operand, &sel.field, why))
+                                );
+                            }
+                            (t.clone(), true)
                         }
-                        Some(t) => (t.clone(), true),
                         None => {
                             return Err(self.err(
                                 e.id,
@@ -397,12 +399,17 @@ impl Checker<'_> {
             return Ok((Node::Local(name.into()), t.clone()));
         }
         match DECLS.var(name, self.phase) {
-            Ok(Ty::Object(obj)) if let Some(why) = crate::vars::unavailable(obj, "") => Err(self
-                .err(
-                    id,
-                    format!("`{name}` ist noch nicht verfügbar: {why} (POL-004)"),
-                )),
-            Ok(t) => Ok((Node::Var(name.into()), t.clone())),
+            Ok(t) => {
+                if let Ty::Object(obj) = t
+                    && let Some(why) = crate::vars::unavailable(obj, "")
+                {
+                    return Err(self.err(
+                        id,
+                        format!("`{name}` ist noch nicht verfügbar: {why} (POL-004)"),
+                    ));
+                }
+                Ok((Node::Var(name.into()), t.clone()))
+            }
             Err(Some(phases)) => {
                 let list: Vec<&str> = phases.iter().map(|p| p.as_str()).collect();
                 Err(self.err(

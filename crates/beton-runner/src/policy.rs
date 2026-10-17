@@ -2661,6 +2661,27 @@ impl PolicyGate {
                 None,
             )
             .await;
+        // Nur Verteuerungen unterhalb der User-Ebene (#353), schon entschieden: ohne neue
+        // Card; abgelehnt läuft der Turn ohne die verteuernde Modifikation weiter.
+        let remembered = match &ev.decision.outcome {
+            Outcome::Ask { reasons } => {
+                raise_key(reasons, &ev.decision).and_then(|k| self.raise_choice(&k))
+            }
+            _ => None,
+        };
+        if let Some(allowed) = remembered {
+            let outcome = if allowed {
+                FinalOutcome::Allow
+            } else {
+                FinalOutcome::Deny
+            };
+            self.apply_effects(&ev.decision, outcome, req.turn_id).await;
+            return Checked::Allow(if allowed {
+                ev.decision.modified
+            } else {
+                without_raises(ev.decision.modified, &ev.decision.cost_raises)
+            });
+        }
         match ev.decision.outcome.clone() {
             Outcome::Allow => {
                 self.apply_effects(&ev.decision, FinalOutcome::Allow, req.turn_id)
@@ -2674,24 +2695,6 @@ impl PolicyGate {
                     reason: reason_text(&reasons),
                     rules: rule_ids(&reasons),
                 }
-            }
-            // Nur Verteuerungen unterhalb der User-Ebene (#353), schon entschieden: ohne neue
-            // Card; abgelehnt läuft der Turn ohne die verteuernde Modifikation weiter.
-            Outcome::Ask { reasons }
-                if let Some(allowed) =
-                    raise_key(&reasons, &ev.decision).and_then(|k| self.raise_choice(&k)) =>
-            {
-                let outcome = if allowed {
-                    FinalOutcome::Allow
-                } else {
-                    FinalOutcome::Deny
-                };
-                self.apply_effects(&ev.decision, outcome, req.turn_id).await;
-                Checked::Allow(if allowed {
-                    ev.decision.modified
-                } else {
-                    without_raises(ev.decision.modified, &ev.decision.cost_raises)
-                })
             }
             Outcome::Ask { .. } if !ask_human => Checked::AskNeeded,
             Outcome::Ask { reasons } => {
