@@ -2,7 +2,8 @@
 //! SBX-013).
 //!
 //! Alle Homes, Dotfiles und Secrets sind Fixtures in Temp-Verzeichnissen; kein Test liest echte
-//! Nutzerdaten. Jeder Angriff hat eine Kontrollgruppe ohne Sandbox (QA-005 AC1).
+//! Nutzerdaten. Jeder Angriff hat eine Kontrollgruppe ohne Sandbox (QA-005 AC1, SBX-011 AC2:
+//! dieselbe Aktion in derselben Fixture muss ohne Sandbox gelingen, sonst ist der Fall rot).
 //!
 //! Die Sonden (`probe_*`) sind Tests dieses Binaries, die nur etwas tun, wenn sie mit
 //! `BETON_SBX_PROBE` gestartet werden: Der Test startet dasselbe Binary in der Sandbox

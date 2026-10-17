@@ -708,6 +708,11 @@ pub enum SandboxCommand {
     /// sandbox exec --stage tools -- cat ~/.ssh/config` scheitert. Ein Kommando, das scheitert,
     /// endet mit Exit-Code 1 und einem Hinweis auf `beton sandbox explain`.
     Exec(SandboxExecArgs),
+    /// Selbsttests der Sandbox-Backends dieser Plattform (die Fälle der Probe) ausführen.
+    /// Pflicht ist das Backend, das eine Session hier nähme (`sandbox.backend`, sonst `auto`);
+    /// Exit 0 nur, wenn es bestanden hat. Die vollständige Escape-Suite läuft als Tests aus
+    /// dem Quellbaum (SBX-011).
+    Test,
 }
 
 #[derive(Debug, Args)]
