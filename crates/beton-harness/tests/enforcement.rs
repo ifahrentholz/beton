@@ -94,3 +94,39 @@ fn pol_024_ac2_fake_harness_is_fully_enforceable_and_overridable() {
         Level::ObserveOnly
     );
 }
+
+/// #283 (POL-013, HAR-017): ACP kennt keinen Start-Parameter für das Modell; ohne
+/// `session/set_model` (`model_switch: live`) ist eine Modell-Modifikation beim Start nicht
+/// anwendbar (`on_unsupported` greift, Default `deny`), statt still mit dem Default des
+/// Agents zu laufen. Ebenso der Effort ohne Stufen bzw. ohne Live-Wechsel bei ACP.
+#[test]
+fn pol_013_acp_start_model_is_modifiable_only_with_set_model() {
+    let mut acp = Capabilities::minimal(Mode::Native, Transport::Acp);
+    acp.model_switch = SwitchSupport::None;
+    acp.efforts = vec!["low".into(), "high".into()];
+    let start = acp.enforcement().capabilities(Phase::SessionStart);
+    assert!(!start.model, "ACP ohne set_model");
+    assert!(!start.reasoning_effort, "ACP ohne Effort-Wechsel");
+    assert!(start.permission_mode, "Modus über session/set_mode");
+    acp.model_switch = SwitchSupport::Live;
+    acp.effort_switch = SwitchSupport::Live;
+    let start = acp.enforcement().capabilities(Phase::SessionStart);
+    assert!(start.model && start.reasoning_effort, "mit Live-Wechsel");
+
+    // Native Harnesses setzen das Modell per Startparameter; Effort nur mit Stufen.
+    let mut native = Capabilities::minimal(Mode::Native, Transport::Native);
+    native.model_switch = SwitchSupport::None;
+    let start = native.enforcement().capabilities(Phase::SessionStart);
+    assert!(start.model, "Startparameter --model");
+    assert!(
+        !start.reasoning_effort,
+        "ohne Effort-Stufen nicht abbildbar"
+    );
+    native.efforts = vec!["low".into()];
+    assert!(
+        native
+            .enforcement()
+            .capabilities(Phase::SessionStart)
+            .reasoning_effort
+    );
+}

@@ -451,6 +451,9 @@ pub struct GateRequest {
     pub mcp_server: Option<String>,
     /// ACP `tool_call.kind`.
     pub acp_kind: Option<String>,
+    /// Arbeitsverzeichnis des Calls, wenn der Harness es meldet (Claude `PreToolUse.cwd`:
+    /// Bash behält ein `cd` zwischen Calls, #293); sonst gilt das der Session.
+    pub cwd: Option<String>,
     pub origin: GateOrigin,
     /// Original-Zeile der Rückfrage (z. B. `can_use_tool`), damit kein `raw` verloren geht:
     /// Der Runner hängt sie an sein `policy.decision` (HAR-001 AC3).

@@ -608,8 +608,9 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                 }
             }
         } else if let Some(call) = &step.mcp_call {
+            let server = self.mcp.scenario_server(&call.server);
             let id = self.next_id("toolu");
-            let name = format!("mcp__{}__{}", call.server, call.tool);
+            let name = format!("mcp__{}__{}", server, call.tool);
             let mut args = self.mcp.resolve(&call.args);
             self.assistant(json!({"type": "tool_use", "id": id, "name": name, "input": args}))?;
             // Wie 2.1.296: Der `PreToolUse`-Hook (`matcher: "*"`) läuft auch für MCP-Tools.
@@ -635,7 +636,7 @@ impl<R: BufRead, W: Write> Sim<R, W> {
                     }
                 }
             }
-            match self.mcp.call(&call.server, &call.tool, &args) {
+            match self.mcp.call(&server, &call.tool, &args) {
                 Ok(result) => {
                     let is_error = result["isError"] == true;
                     self.tool_result(&id, &json!(result_text(&result)), is_error)?;

@@ -35,6 +35,7 @@ beton-policy = { path = "crates/beton-policy", version = "0.0.0" }
 beton-secrets = { path = "crates/beton-secrets", version = "0.0.0" }
 beton-proxy = { path = "crates/beton-proxy", version = "0.0.0" }
 beton-sandbox = { path = "crates/beton-sandbox", version = "0.0.0" }
+beton-voice = { path = "crates/beton-voice", version = "0.0.0" }
 beton-pty = { path = "crates/beton-pty", version = "0.0.0" }
 
 # extern
@@ -160,6 +161,12 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.sha2]
 opt-level = 3
+
+# whisper.cpp baut CMake selbst optimiert; die Rust-Bindings brauchen keine Debug-Infos. Die
+# Einstellung ändert zugleich den Fingerprint von whisper-rs-sys, damit gecachte Builds mit
+# `-march=native` (vor `GGML_NATIVE=OFF` in .cargo/config.toml) neu gebaut werden (#382).
+[profile.dev.package.whisper-rs-sys]
+debug = false
 
 [profile.dev]
 debug = "line-tables-only"

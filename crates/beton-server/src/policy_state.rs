@@ -139,11 +139,22 @@ pub struct QueryBudgets(std::sync::Mutex<HashMap<SessionId, (u64, u32)>>);
 pub async fn policy_query(state: &AppState, session: SessionId) -> Result<Value, Problem> {
     let org = state.local.org;
     let mut root = session;
-    for _ in 0..MAX_TREE_DEPTH {
+    let mut found = false;
+    for _ in 0..=MAX_TREE_DEPTH {
         match state.store.session(org, root).await?.parent_id {
             Some(parent) => root = parent,
-            None => break,
+            None => {
+                found = true;
+                break;
+            }
         }
+    }
+    // Ohne Root (Zyklus, mehr als 64 Ebenen) zählt kein Vorfahre ersatzweise: Fehler, der
+    // Runner lehnt die Abfrage ab (fail closed, #353).
+    if !found {
+        return Err(Problem::new(ProblemCode::Conflict).detail(format!(
+            "Root des Session-Baums nicht innerhalb von {MAX_TREE_DEPTH} Ebenen gefunden"
+        )));
     }
     let turns = state.store.count_events(org, root, "turn.started").await?;
     let used = {

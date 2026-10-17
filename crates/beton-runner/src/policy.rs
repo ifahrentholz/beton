@@ -76,6 +76,9 @@ const EXIT_PLAN_MODE: &str = "ExitPlanMode";
 pub const CHANGED_AFTER_CHECK: &str = "Abgelehnt von beton: Die Argumente wurden nach der Policy-Prüfung verändert (z. B. durch einen weiteren Hook).";
 /// Präfix eigener Call-IDs des Relay-Hubs (Aufruf ohne zugeordnetes `tool.call.requested`).
 const SYNTHETIC: &str = "mcp_unmatched_";
+
+/// So lange wartet der Relay-Hub auf das `tool.call.requested` eines MCP-Aufrufs (#250).
+const HUB_WAIT: Duration = Duration::from_millis(500);
 /// Höchstgröße von `request.prompt` und `result.text` (POL-004).
 pub const TEXT_MAX: usize = 64 * 1024;
 
@@ -155,6 +158,19 @@ pub struct Usage {
     pub subtree_unpriced_models: Option<Vec<String>>,
     #[serde(default)]
     pub user_daily_unpriced_models: Option<Vec<String>>,
+    /// Session-Daten, die nur der Server kennt (#196, POL-004).
+    #[serde(default)]
+    pub session_title: Option<String>,
+    #[serde(default)]
+    pub session_parent_id: Option<String>,
+    #[serde(default)]
+    pub session_depth: Option<i64>,
+    #[serde(default)]
+    pub session_is_async: Option<bool>,
+    #[serde(default)]
+    pub session_project: Option<String>,
+    #[serde(default)]
+    pub run_trigger: Option<String>,
 }
 
 impl Usage {
@@ -178,7 +194,14 @@ pub trait UsageSource: Send + Sync {
 
 /// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
 /// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
-const USAGE_FIELDS: [&str; 16] = [
+const USAGE_FIELDS: [&str; 22] = [
+    // Session-Daten des Servers (#196).
+    "session.title",
+    "session.parent_id",
+    "session.depth",
+    "session.is_async",
+    "session.project",
+    "run.trigger",
     "session.cost_usd",
     "session.equivalent_usd",
     "session.unpriced_models",
@@ -215,6 +238,9 @@ pub struct PolicyOptions {
     pub dirs: Vec<(Scope, PathBuf)>,
     pub approval_timeout: Duration,
     pub agent: Option<AgentVars>,
+    /// Weitere Konfigurationsverzeichnisse der Vendor-CLIs (`$CLAUDE_CONFIG_DIR`,
+    /// `$CODEX_HOME`), die die Regel `policy-files` schützt (#258).
+    pub vendor_dirs: Vec<PathBuf>,
 }
 
 impl Default for PolicyOptions {
@@ -228,6 +254,7 @@ impl Default for PolicyOptions {
             dirs: Vec::new(),
             approval_timeout: APPROVAL_TIMEOUT,
             agent: None,
+            vendor_dirs: Vec::new(),
         }
     }
 }
@@ -350,7 +377,7 @@ pub(crate) struct Precheck {
 /// Begründung für Tool-Calls auf Policy-Dateien (Regel `policy-files`, #234).
 fn policy_files_reason(path: &str) -> String {
     format!(
-        "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+        "Policy-Dateien und die Hook-Konfiguration der Vendor-CLIs ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
     )
 }
 
@@ -367,6 +394,9 @@ fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateReque
 struct PolicyPathGuard {
     /// Kanonische Policy-Verzeichnisse.
     dirs: Vec<PathBuf>,
+    /// Kanonische Konfiguration der Vendor-CLIs mit Hooks (`~/.claude`, `~/.claude.json`,
+    /// `$CLAUDE_CONFIG_DIR`, `~/.codex`, `$CODEX_HOME`, #258): geschützt wie Policies.
+    vendor: Vec<PathBuf>,
     cwd: String,
     home: Option<String>,
 }
@@ -379,6 +409,7 @@ impl PolicyPathGuard {
         self.dirs
             .iter()
             .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
+            || self.vendor.iter().any(|v| real.starts_with(v))
     }
 
     fn hits_word(&self, word: &str, vars: &HashMap<String, String>) -> bool {
@@ -422,10 +453,14 @@ fn resolve_fs(p: &str) -> String {
     FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned())
 }
 
-/// Erwähnt der Text ein Policy-Verzeichnis (für Wörter mit nicht auflösbaren Variablen)?
+/// Erwähnt der Text ein Policy-Verzeichnis oder die Konfiguration einer Vendor-CLI (für
+/// Wörter mit nicht auflösbaren Variablen)?
 fn mentions_policies(text: &str) -> bool {
     let lower = text.to_lowercase();
-    lower.contains("beton") || lower.contains("polic")
+    lower.contains("beton")
+        || lower.contains("polic")
+        || lower.contains(".claude")
+        || lower.contains(".codex")
 }
 
 /// `NAME=wert`-Zuweisungen aller Teilkommandos (auch nach `export`).
@@ -551,6 +586,8 @@ struct Inner {
     /// Von beton eingebundene MCP-Server (#234): nur für sie gelten die Klassen reservierter
     /// Namen (`beton` → `system`). Bis zur MCP-Vorbereitung keiner (fail closed).
     trusted_servers: Mutex<Vec<String>>,
+    /// Name des eigenen Servers beim Harness (`beton_<nonce>`, #252); in Policies `beton`.
+    session_server: Mutex<Option<String>>,
     /// Aufgelöste Policy-Verzeichnisse (Cache für die Regel `policy-files`).
     policy_dirs: Mutex<Option<Vec<PathBuf>>>,
     /// Gemeldete Tool-Calls (Call-ID, MCP-Server, Tool) für die Zuordnung im Relay-Hub.
@@ -561,6 +598,17 @@ struct Inner {
     /// dort selbst).
     started: std::sync::atomic::AtomicBool,
     seen: tokio::sync::Notify,
+    /// Der Relay-Hub prüft MCP-Aufrufe der eingebundenen Server (#250): Die Beobachtung
+    /// solcher Calls wartet auf seinen Entscheid.
+    hub_gated: std::sync::atomic::AtomicBool,
+    /// Calls, deren Entscheid gerade läuft (Hub oder Beobachtung, #250): genau einer
+    /// entscheidet (POL-025 AC1).
+    claimed: Mutex<HashSet<String>>,
+    /// Weckt die Beobachtung, sobald der Hub einen Call übernimmt.
+    claims: tokio::sync::Notify,
+    /// Entscheidungen des Menschen zu Verteuerungen unterhalb der User-Ebene (#353): Schlüssel
+    /// der Gründe → freigegeben. Gilt für die Session.
+    raise_choices: Mutex<HashMap<String, bool>>,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
     /// Zustand `session`/`run` (POL-009); gültig, sobald `state_ready`.
@@ -579,6 +627,8 @@ struct Inner {
     granted: AtomicI64,
     denied: AtomicI64,
     started_at: CelTimestamp,
+    /// Start des Gates für `session.duration_s`/`run.duration_s` (monoton).
+    started_instant: std::time::Instant,
     /// Set-Snapshots je Version für Explain (POL-027 AC2).
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
@@ -671,6 +721,48 @@ fn current_branch(workdir: &Path) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_owned())
 }
 
+/// Schlüssel der Gründe, wenn alle `ask`-Gründe Verteuerungen unterhalb der User-Ebene sind
+/// (#353): Regel samt Set-Fassung und Begründung; sonst `None`.
+fn raise_key(reasons: &[Reason], decision: &Decision) -> Option<String> {
+    if reasons.is_empty()
+        || !reasons
+            .iter()
+            .all(|r| decision.cost_raises.iter().any(|c| c.rule == r.rule))
+    {
+        return None;
+    }
+    let mut parts: Vec<String> = reasons
+        .iter()
+        .map(|r| {
+            serde_json::to_string(&json!([
+                r.rule.scope.as_str(),
+                r.rule.set,
+                r.rule.set_version,
+                r.rule.rule_id,
+                r.reason
+            ]))
+            .unwrap_or_default()
+        })
+        .collect();
+    parts.sort();
+    Some(parts.join("\n"))
+}
+
+/// Die Modifikationen ohne die verteuernden Felder (abgelehnte Verteuerung, #353).
+fn without_raises(
+    mut m: Modifications,
+    raises: &[beton_policy::engine::CostRaise],
+) -> Modifications {
+    for f in raises.iter().flat_map(|r| r.fields.iter()) {
+        match *f {
+            "model" => m.model = None,
+            "reasoning_effort" => m.reasoning_effort = None,
+            _ => {}
+        }
+    }
+    m
+}
+
 fn truncate(text: &str) -> String {
     let mut end = text.len().min(TEXT_MAX);
     while !text.is_char_boundary(end) {
@@ -756,6 +848,7 @@ fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
         notifications: Vec::new(),
         effects: Vec::new(),
         warnings: Vec::new(),
+        cost_raises: Vec::new(),
         policy_set_hash: hash.to_owned(),
         eval_us: 0,
     }
@@ -869,11 +962,16 @@ impl PolicyGate {
                 pending: Mutex::new(HashMap::new()),
                 decided: Mutex::new(HashMap::new()),
                 trusted_servers: Mutex::new(Vec::new()),
+                session_server: Mutex::new(None),
                 policy_dirs: Mutex::new(None),
                 requested: Mutex::new(Vec::new()),
                 ordered: std::sync::atomic::AtomicBool::new(false),
                 started: std::sync::atomic::AtomicBool::new(true),
                 seen: tokio::sync::Notify::new(),
+                hub_gated: std::sync::atomic::AtomicBool::new(false),
+                claimed: Mutex::new(HashSet::new()),
+                claims: tokio::sync::Notify::new(),
+                raise_choices: Mutex::new(HashMap::new()),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
                 state: Mutex::new(PolicyState::default()),
@@ -888,6 +986,7 @@ impl PolicyGate {
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
+                started_instant: std::time::Instant::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
                 query_source: None,
@@ -1124,6 +1223,41 @@ impl PolicyGate {
         }
     }
 
+    /// Name des eigenen beton-Servers dieser Session beim Harness (`beton_<nonce>`, #252).
+    pub fn set_session_server(&self, name: &str) {
+        if let Ok(mut s) = self.inner.session_server.lock() {
+            *s = Some(name.to_owned());
+        }
+    }
+
+    fn session_server(&self) -> Option<String> {
+        self.inner
+            .session_server
+            .lock()
+            .ok()
+            .and_then(|s| s.clone())
+    }
+
+    /// Server und Tool-Name eines Calls, wie Policies sie sehen (#252): der eigene Server der
+    /// Session heißt `beton`; `true`, wenn der Call an ihn geht.
+    fn own_server(&self, req: &GateRequest) -> (Option<String>, String, bool) {
+        let Some(exposed) = self.session_server() else {
+            return (req.mcp_server.clone(), req.tool.clone(), false);
+        };
+        let prefix = format!("mcp__{exposed}__");
+        let renamed = req
+            .tool
+            .strip_prefix(&prefix)
+            .map(|t| format!("mcp__{}__{t}", crate::session_server::CANONICAL));
+        let own = renamed.is_some() || req.mcp_server.as_deref() == Some(exposed.as_str());
+        let server = if own {
+            Some(crate::session_server::CANONICAL.to_owned())
+        } else {
+            req.mcp_server.clone()
+        };
+        (server, renamed.unwrap_or_else(|| req.tool.clone()), own)
+    }
+
     pub fn set_trusted_servers(&self, servers: Vec<String>) {
         if let Ok(mut t) = self.inner.trusted_servers.lock() {
             *t = servers;
@@ -1209,17 +1343,80 @@ impl PolicyGate {
 
     /// Ein `tool.call.requested` aus dem Event-Strom (Zuordnung im Relay-Hub, Reihenfolge).
     pub fn note_requested(&self, call_id: &str, mcp_server: Option<&str>, tool: &str) {
+        // Der Relay-Hub ordnet über den Namen in Policies zu (`beton`, #252).
+        let exposed = self.session_server();
+        let server = mcp_server.map(|s| match &exposed {
+            Some(x) => crate::session_server::canonical(s, x),
+            None => s.to_owned(),
+        });
         if let Ok(mut r) = self.inner.requested.lock() {
-            r.push((
-                call_id.to_owned(),
-                mcp_server.map(str::to_owned),
-                tool.to_owned(),
-            ));
+            r.push((call_id.to_owned(), server, tool.to_owned()));
             if r.len() > 256 {
                 r.remove(0);
             }
         }
         self.inner.seen.notify_waiters();
+    }
+
+    /// MCP-Aufrufe der von beton eingebundenen Server prüft der Relay-Hub (Harness ohne volles
+    /// Gate, POL-024).
+    pub fn gate_mcp_in_hub(&self) {
+        self.inner.hub_gated.store(true, Ordering::SeqCst);
+    }
+
+    /// Git-Kontext des Calls (#293): `session.branch` aus dem Repo von `tool.cwd`, bei
+    /// Shell-Kommandos `session.push_redirected` aus den Konfigurationsdateien.
+    fn git_context(&self, n: &beton_policy::normalize::NormalizedTool, vars: &mut Vars) {
+        let cwd = Path::new(&n.cwd);
+        let Some(session) = vars.session.as_mut() else {
+            return;
+        };
+        if cwd != self.inner.opts.workdir.as_path() && cwd.is_absolute() {
+            session.branch = current_branch(cwd);
+        }
+        if n.kind == "shell" {
+            session.push_redirected = Some(crate::push_config::redirected(
+                cwd,
+                self.inner.opts.home.as_deref(),
+            ));
+        }
+    }
+
+    /// Gemerkte Entscheidung zu einer Verteuerung (#353).
+    fn raise_choice(&self, key: &str) -> Option<bool> {
+        self.inner
+            .raise_choices
+            .lock()
+            .ok()
+            .and_then(|c| c.get(key).copied())
+    }
+
+    /// Übernimmt den Entscheid eines Calls; `false`, wenn ihn schon jemand entscheidet oder
+    /// entschieden hat (POL-025 AC1, #250).
+    fn claim(&self, call_id: &str) -> bool {
+        if self.decided(call_id) {
+            return false;
+        }
+        let fresh = self
+            .inner
+            .claimed
+            .lock()
+            .map(|mut c| c.insert(call_id.to_owned()))
+            .unwrap_or(false);
+        if fresh {
+            self.inner.claims.notify_waiters();
+        }
+        fresh
+    }
+
+    fn claimed(&self, call_id: &str) -> bool {
+        self.decided(call_id)
+            || self
+                .inner
+                .claimed
+                .lock()
+                .map(|c| c.contains(call_id))
+                .unwrap_or(true)
     }
 
     /// Der Runner meldet `tool.call.requested` über [`PolicyGate::note_requested`]; danach
@@ -1425,9 +1622,19 @@ impl PolicyGate {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
+        let duration_s = self.inner.started_instant.elapsed().as_secs_f64();
         Vars {
             now: Some(CelTimestamp::now()),
+            // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst
+            // (POL-004); `run.trigger` kommt vom Server.
+            run: Some(RunVars {
+                id: self.inner.opts.session_id.clone(),
+                turns: Some(s.turns),
+                duration_s: Some(duration_s),
+                ..RunVars::default()
+            }),
             session: Some(SessionVars {
+                duration_s: Some(duration_s),
                 id: self.inner.opts.session_id.clone(),
                 harness: Some(self.inner.opts.harness.to_string()),
                 mode: Some("native".into()),
@@ -1496,6 +1703,11 @@ impl PolicyGate {
             return;
         };
         if let Some(s) = vars.session.as_mut() {
+            s.title.clone_from(&u.session_title);
+            s.parent_id.clone_from(&u.session_parent_id);
+            s.depth = u.session_depth;
+            s.is_async = u.session_is_async;
+            s.project.clone_from(&u.session_project);
             s.cost_usd = u.session_cost_usd;
             s.equivalent_usd = u.session_equivalent_usd;
             s.unpriced_models.clone_from(&u.session_unpriced_models);
@@ -1504,6 +1716,7 @@ impl PolicyGate {
         }
         // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
         let run = vars.run.get_or_insert_with(RunVars::default);
+        run.trigger.clone_from(&u.run_trigger);
         run.cost_usd = u.session_cost_usd;
         run.equivalent_usd = u.session_equivalent_usd;
         run.subtree_cost_usd = u.subtree_cost_usd;
@@ -1927,26 +2140,43 @@ impl PolicyGate {
             "fake" => "claude",
             other => other,
         };
+        let (mcp_server, native_name, own) = self.own_server(req);
+        // Vergifteter Zustand: niemandem vertrauen (fail closed). Mit eigenem Server der
+        // Session gilt ein reservierter Name nur für genau ihn (#252).
+        let mut trusted = self
+            .inner
+            .trusted_servers
+            .lock()
+            .map(|t| t.clone())
+            .unwrap_or_default();
+        if self.session_server().is_some() {
+            trusted.retain(|t| !beton_mcp::config::reserved_name(t));
+            if own {
+                trusted.push(crate::session_server::CANONICAL.to_owned());
+            }
+        }
         Arc::new(ToolSource {
             harness: family.to_owned(),
-            native_name: req.tool.clone(),
+            native_name,
             acp_kind: req.acp_kind.clone(),
-            mcp_server: req.mcp_server.clone(),
-            cwd: self.inner.opts.workdir.display().to_string(),
+            mcp_server,
+            // Das Arbeitsverzeichnis des Calls, wenn der Harness es meldet (Claude-Hook: Bash
+            // behält ein `cd` zwischen Calls, #293); nur absolut, sonst das der Session.
+            cwd: req
+                .cwd
+                .as_deref()
+                .filter(|c| Path::new(c).is_absolute())
+                .map_or_else(
+                    || self.inner.opts.workdir.display().to_string(),
+                    str::to_owned,
+                ),
             home: self
                 .inner
                 .opts
                 .home
                 .as_ref()
                 .map(|h| h.display().to_string()),
-            // Vergifteter Zustand: niemandem vertrauen (fail closed).
-            trusted_servers: Some(
-                self.inner
-                    .trusted_servers
-                    .lock()
-                    .map(|t| t.clone())
-                    .unwrap_or_default(),
-            ),
+            trusted_servers: Some(trusted),
         })
     }
 
@@ -1999,6 +2229,7 @@ impl PolicyGate {
                 tool.repeat_count = Some(self.note_call(&req.call_id, &n));
                 tool.consecutive_errors = Some(self.inner.errors_in_row.load(Ordering::SeqCst));
                 vars.tool = Some(tool);
+                self.git_context(&n, &mut vars);
                 let ev = self
                     .evaluate(
                         Phase::ToolCall,
@@ -2124,6 +2355,9 @@ impl PolicyGate {
         if let Ok(mut d) = self.inner.decided.lock() {
             d.insert(req.call_id.clone(), verdict.clone());
         }
+        if let Ok(mut c) = self.inner.claimed.lock() {
+            c.remove(&req.call_id);
+        }
         verdict
     }
 
@@ -2165,6 +2399,21 @@ impl PolicyGate {
             *cache = Some(dirs.clone());
         }
         dirs
+    }
+
+    /// Konfiguration der Vendor-CLIs, die Hooks bzw. Freigaben steuert (#258): unter dem Home
+    /// `.claude`, `.claude.json`, `.codex`, dazu `$CLAUDE_CONFIG_DIR`/`$CODEX_HOME`; kanonisch.
+    fn vendor_paths(&self) -> Vec<PathBuf> {
+        let opts = &self.inner.opts;
+        let home = opts.home.iter().flat_map(|h| {
+            [".claude", ".claude.json", ".codex"]
+                .into_iter()
+                .map(move |n| h.join(n))
+        });
+        home.chain(opts.vendor_dirs.iter().cloned())
+            .filter(|p| p.is_absolute())
+            .map(|p| PathBuf::from(resolve_fs(&p.display().to_string())))
+            .collect()
     }
 
     /// Gemeinsame Vorprüfungen eines Tool-Calls (#253, Security-Review B2 zu #257): Echte
@@ -2266,6 +2515,7 @@ impl PolicyGate {
         }
         let guard = PolicyPathGuard {
             dirs: self.policy_dirs(),
+            vendor: self.vendor_paths(),
             cwd: n.cwd.clone(),
             home: self
                 .inner
@@ -2299,6 +2549,15 @@ impl PolicyGate {
                         return Some(word.clone());
                     }
                 }
+            }
+            // Umleitungsziele mit Variablen (`>> $X/config.toml`) stehen nicht in `argv`: auch
+            // die Wörter des Kommando-Texts prüfen (#258).
+            if let Some(word) = words
+                .iter()
+                .map(|w| w.trim_start_matches(['>', '<']))
+                .find(|w| w.contains(['/', '$', '~']) && guard.hits_word(w, &vars))
+            {
+                return Some(word.to_owned());
             }
             if n.parse_uncertain
                 && let Some(cmd) = &n.command
@@ -2378,7 +2637,25 @@ impl PolicyGate {
     /// Trifft eine `deny`-Regel, liefert es die erste samt Begründung (POL-023 AC3: dann folgen
     /// `policy.notified` und der Abbruch des Turns).
     pub async fn observe(&self, req: GateRequest) -> Option<(beton_policy::load::RuleRef, String)> {
-        if self.decided(&req.call_id) {
+        // MCP-Aufrufe eingebundener Server entscheidet der Relay-Hub (#250): kurz auf ihn
+        // warten, dann nur beobachten, was er nicht gesehen hat.
+        if self.inner.hub_gated.load(Ordering::SeqCst)
+            && req
+                .mcp_server
+                .as_ref()
+                .is_some_and(|s| self.trusted_server(s))
+        {
+            let deadline = tokio::time::Instant::now() + HUB_WAIT * 2;
+            while !self.claimed(&req.call_id) {
+                let notified = self.inner.claims.notified();
+                if self.claimed(&req.call_id)
+                    || tokio::time::timeout_at(deadline, notified).await.is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if !self.claim(&req.call_id) {
             return None;
         }
         let call = req.call_id.clone();
@@ -2432,6 +2709,27 @@ impl PolicyGate {
                 None,
             )
             .await;
+        // Nur Verteuerungen unterhalb der User-Ebene (#353), schon entschieden: ohne neue
+        // Card; abgelehnt läuft der Turn ohne die verteuernde Modifikation weiter.
+        let remembered = match &ev.decision.outcome {
+            Outcome::Ask { reasons } => {
+                raise_key(reasons, &ev.decision).and_then(|k| self.raise_choice(&k))
+            }
+            _ => None,
+        };
+        if let Some(allowed) = remembered {
+            let outcome = if allowed {
+                FinalOutcome::Allow
+            } else {
+                FinalOutcome::Deny
+            };
+            self.apply_effects(&ev.decision, outcome, req.turn_id).await;
+            return Checked::Allow(if allowed {
+                ev.decision.modified
+            } else {
+                without_raises(ev.decision.modified, &ev.decision.cost_raises)
+            });
+        }
         match ev.decision.outcome.clone() {
             Outcome::Allow => {
                 self.apply_effects(&ev.decision, FinalOutcome::Allow, req.turn_id)
@@ -2448,6 +2746,7 @@ impl PolicyGate {
             }
             Outcome::Ask { .. } if !ask_human => Checked::AskNeeded,
             Outcome::Ask { reasons } => {
+                let raise = raise_key(&reasons, &ev.decision);
                 let approval = ev.approval.unwrap_or_default();
                 if let Some(w) = waiting {
                     let _ = w.send(approval);
@@ -2471,6 +2770,23 @@ impl PolicyGate {
                 self.apply_effects(&ev.decision, answered.outcome, req.turn_id)
                     .await;
                 let human = answered.human;
+                // Eine Verteuerung entscheidet der Mensch einmal je Session; abgelehnt läuft
+                // der Turn ohne sie weiter (#353). Eine abgelaufene Frist merkt sich nichts.
+                if let Some(key) = raise
+                    && !answered.aborted
+                {
+                    if answered.outcome != FinalOutcome::Expired
+                        && let Ok(mut c) = self.inner.raise_choices.lock()
+                    {
+                        c.insert(key, human.allow);
+                    }
+                    if !human.allow {
+                        return Checked::Allow(without_raises(
+                            ev.decision.modified,
+                            &ev.decision.cost_raises,
+                        ));
+                    }
+                }
                 if human.allow {
                     Checked::Allow(ev.decision.modified)
                 } else {
@@ -2605,10 +2921,11 @@ impl PolicyGate {
                 None,
             )
             .await;
+        // Derselbe Grund, nicht nur dieselbe Regel (#353): Regeltypen haben mehrere Teile mit
+        // einer ID (z. B. die Schwellen von `spend_cap`), und eine geänderte Fassung des Sets
+        // braucht eine neue Freigabe.
         let same = |a: &Reason, b: &Reason| {
-            a.rule.scope == b.rule.scope
-                && a.rule.set == b.rule.set
-                && a.rule.rule_id == b.rule.rule_id
+            a.rule == b.rule && a.reason == b.reason && a.fingerprint == b.fingerprint
         };
         match ev.decision.outcome.clone() {
             Outcome::Allow => Checked::Allow(tightened(ev.decision.modified)),
@@ -2637,14 +2954,48 @@ impl PolicyGate {
 
     /// Ordnet einen Aufruf im Relay-Hub dem jüngsten passenden, noch unentschiedenen
     /// `tool.call.requested` zu; sonst eine eigene ID.
-    fn correlate(&self, server: &str, tool: &str) -> String {
-        let found = self.inner.requested.lock().ok().and_then(|r| {
-            r.iter()
-                .rev()
-                .find(|(id, s, t)| s.as_deref() == Some(server) && t == tool && !self.decided(id))
-                .map(|(id, _, _)| id.clone())
-        });
-        found.unwrap_or_else(|| format!("{SYNTHETIC}{}", ApprovalId::new()))
+    fn correlate(&self, server: &str, tool: &str) -> Option<String> {
+        let requested = self.inner.requested.lock().ok()?;
+        requested
+            .iter()
+            .rev()
+            .filter(|(_, s, t)| s.as_deref() == Some(server) && t == tool)
+            .find(|(id, _, _)| self.claim(id))
+            .map(|(id, _, _)| id.clone())
+    }
+
+    /// Wie [`PolicyGate::correlate`], wartet aber kurz auf das `tool.call.requested` des
+    /// Adapters, wenn der Hub vor ihm entscheiden müsste (#250); sonst eine eigene ID.
+    async fn correlate_waiting(&self, server: &str, tool: &str) -> String {
+        let deadline = tokio::time::Instant::now() + HUB_WAIT;
+        loop {
+            let notified = self.inner.seen.notified();
+            if let Some(id) = self.correlate(server, tool) {
+                return id;
+            }
+            if !self.inner.ordered.load(Ordering::SeqCst)
+                || tokio::time::timeout_at(deadline, notified).await.is_err()
+            {
+                break;
+            }
+        }
+        let id = format!("{SYNTHETIC}{}", ApprovalId::new());
+        self.claim(&id);
+        id
+    }
+
+    /// Prüft der Relay-Hub Aufrufe an diesen Server (Name beim Harness)?
+    fn trusted_server(&self, server: &str) -> bool {
+        if let Some(exposed) = self.session_server()
+            && beton_mcp::config::reserved_name(server)
+        {
+            return server == exposed;
+        }
+        self.inner
+            .trusted_servers
+            .lock()
+            .map(|t| t.iter().any(|s| s == server))
+            .unwrap_or(false)
     }
 }
 
@@ -2932,7 +3283,13 @@ impl crate::mcp::Asker for PolicyGate {
 #[async_trait]
 impl beton_mcp::hub::McpGate for PolicyGate {
     async fn check(&self, server: &str, tool: &str, args: &Value) -> Result<Option<Value>, String> {
-        let call_id = self.correlate(server, tool);
+        let call_id = self.correlate_waiting(server, tool).await;
+        // Der Hub kennt seine Server unter den internen Namen; `beton` ist der eigene Server
+        // der Session (beim Harness `beton_<nonce>`, #252).
+        let harness_name = match self.session_server() {
+            Some(exposed) if server == crate::session_server::CANONICAL => exposed,
+            _ => server.to_owned(),
+        };
         let req = GateRequest {
             call_id,
             tool: tool.to_owned(),
@@ -2943,7 +3300,7 @@ impl beton_mcp::hub::McpGate for PolicyGate {
                 Some(server),
             ),
             args: args.clone(),
-            mcp_server: Some(server.to_owned()),
+            mcp_server: Some(harness_name),
             origin: GateOrigin::PreTool,
             ..GateRequest::default()
         };
@@ -3112,6 +3469,69 @@ mod tests {
         }
     }
 
+    /// #250 (POL-025 AC1): Ein MCP-Aufruf über den Relay-Hub hat genau ein `policy.decision`
+    /// mit der Call-ID des Adapters, egal ob der Hub vor oder nach dem `tool.call.requested`
+    /// entscheidet und ob die Beobachtung (Codex, `observe_at_start`) schon läuft.
+    #[tokio::test]
+    async fn pol_025_ac1_relay_hub_and_observation_share_one_decision() {
+        use beton_mcp::hub::McpGate as _;
+        for hub_first in [true, false] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let g = PolicyGate::new(
+                PolicyOptions {
+                    harness: "codex".parse().unwrap(),
+                    ..PolicyOptions::default()
+                },
+                tx,
+            );
+            g.set_trusted_servers(vec!["beton".into()]);
+            g.order_after_requests();
+            g.gate_mcp_in_hub();
+            let observed = GateRequest {
+                call_id: "c1".into(),
+                tool: "session_status".into(),
+                kind: "system".into(),
+                args: json!({}),
+                mcp_server: Some("beton".into()),
+                ..GateRequest::default()
+            };
+            let hub = {
+                let g = g.clone();
+                async move { g.check("beton", "session_status", &json!({})).await }
+            };
+            let adapter = {
+                let g = g.clone();
+                async move {
+                    if hub_first {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    g.note_requested("c1", Some("beton"), "session_status");
+                    g.observe(observed).await
+                }
+            };
+            let (hub, _) = if hub_first {
+                tokio::join!(hub, adapter)
+            } else {
+                let (a, h) = tokio::join!(adapter, async {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    hub.await
+                });
+                (h, a)
+            };
+            assert!(hub.is_ok(), "hub_first={hub_first}: {hub:?}");
+            let decisions: Vec<_> = drain(&mut rx)
+                .into_iter()
+                .filter_map(|e| match e {
+                    EventPayload::PolicyDecision(d) => Some(d),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(decisions.len(), 1, "hub_first={hub_first}: {decisions:?}");
+            assert_eq!(decisions[0].subject_ref["call_id"], "c1");
+            assert_eq!(decisions[0].enforcement, "full", "der Hub setzt durch");
+        }
+    }
+
     #[tokio::test]
     async fn pol_003_system_tools_pass_the_policy_without_a_human_card() {
         // #151: Fragt der Vendor (z. B. Claude im Plan-Modus) nach einem System-Tool von
@@ -3148,6 +3568,60 @@ mod tests {
                 .any(|e| matches!(e, EventPayload::ApprovalRequested(_))),
             "{seen:?}"
         );
+    }
+
+    /// #252 (M1 aus dem Security-Review von #385): Der eigene Server heißt je Session
+    /// `beton_<nonce>`; nur genau dieser Name ist der System-Server (in Policies `beton`). Ein
+    /// fremder Server `beton` oder `beton_<andere nonce>` aus der Vendor-Konfiguration ist
+    /// `untrusted:<name>`; der Name der Session ist in Policies nie sichtbar.
+    #[tokio::test]
+    async fn pol_005_only_the_session_server_of_this_session_is_trusted() {
+        use beton_mcp::hub::McpGate as _;
+        let own = "beton_0123456789abcdef";
+        let p = with_policy(
+            "rules:\n  - id: fremd\n    on: tool_call\n    when: 'tool.server.startsWith(\"untrusted:\")'\n    action: deny\n  - id: roh\n    on: tool_call\n    when: 'tool.server.startsWith(\"beton_\") || tool.kind != \"system\"'\n    action: deny\n",
+        );
+        let g = p.gate.clone();
+        g.set_session_server(own);
+        g.set_trusted_servers(vec![own.into()]);
+        let call = |id: &str, server: &str| GateRequest {
+            call_id: id.into(),
+            tool: format!("mcp__{server}__session_list"),
+            kind: "mcp".into(),
+            mcp_server: Some(server.into()),
+            args: json!({}),
+            origin: GateOrigin::PreTool,
+            ..GateRequest::default()
+        };
+        assert_eq!(
+            g.decide(call("c1", own)).await,
+            GateDecision::Allow { updated_args: None },
+            "eigener Server: System-Tool, in Policies `beton`"
+        );
+        for (i, foreign) in ["beton", "beton_fedcba9876543210", "beton-x"]
+            .iter()
+            .enumerate()
+        {
+            let d = g.decide(call(&format!("f{i}"), foreign)).await;
+            let GateDecision::Deny { reason } = &d else {
+                panic!("{foreign}: {d:?}")
+            };
+            assert!(
+                reason.as_deref().unwrap_or_default().contains("fremd"),
+                "{foreign}: {reason:?}"
+            );
+        }
+        // Codex meldet Server und Tool getrennt.
+        let codex = GateRequest {
+            tool: "session_list".into(),
+            ..call("c2", own)
+        };
+        assert_eq!(
+            g.decide(codex).await,
+            GateDecision::Allow { updated_args: None }
+        );
+        // Der Relay-Hub prüft mit seinem internen Namen `beton`: das ist der eigene Server.
+        assert!(g.check("beton", "session_list", &json!({})).await.is_ok());
     }
 
     // ------------------------------------------------------------------ WP-37 (POL-009/010)

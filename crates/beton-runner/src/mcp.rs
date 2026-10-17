@@ -180,6 +180,9 @@ pub struct McpSetup {
     pub agent_policies: Vec<beton_policy::load::LoadedSet>,
     /// `sandbox:` des Agents (AGT-014, verschärft die Sandbox der Session nur).
     pub agent_sandbox: Option<beton_agents::spec::Sandbox>,
+    /// Name des eigenen Servers beim Harness (`beton_<nonce>`, #252); `None` bei Harnesses im
+    /// Runner-Prozess.
+    pub session_server: Option<String>,
 }
 
 /// Woher der Agent einer Session kommt.

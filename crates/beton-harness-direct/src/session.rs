@@ -473,6 +473,7 @@ async fn one_call(
         args: input.clone(),
         mcp_server: Some(info.server.clone()),
         acp_kind: None,
+        cwd: None,
         origin: GateOrigin::PreTool,
         raw: None,
     };

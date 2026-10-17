@@ -286,9 +286,10 @@ jobs:
           BETON_TEST_POLICY_BUDGET_MS: "60000"
         run: |
           tree=$(cargo tree --workspace -e normal,build -f '{p} {f}')
-          # Ebenso der Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1).
-          if grep -wE 'test-budget|test-sandbox' <<<"$tree"; then
-            echo "Feature test-budget bzw. test-sandbox außerhalb von Dev-Dependencies aktiv" >&2
+          # Ebenso der Test-Schalter für abgeschaltete Sandbox-Backends (SBX-006 AC1) und der
+          # Ersatz der Managed-Settings-Pfade von Claude (POL-024, #258).
+          if grep -wE 'test-budget|test-sandbox|test-managed-settings' <<<"$tree"; then
+            echo "Feature test-budget, test-sandbox bzw. test-managed-settings außerhalb von Dev-Dependencies aktiv" >&2
             exit 1
           fi
           for assertions in false true; do

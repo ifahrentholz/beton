@@ -3,7 +3,8 @@
 //! M0-Prüfungen: Version, Daemon, Konfiguration, Rechte von `~/.beton` und Token-Datei,
 //! SQLite-Integrität, Harness-CLIs (Pfad, Version, Bereich, Quelle) und Login-Status über
 //! das Statuskommando der CLI. Ab M1: verwaiste Worktrees ohne Session (SES-016 AC3). Ab M2:
-//! Sandbox-Fähigkeiten (`sandbox.linux`, `sandbox.macos`). `doctor` schreibt nichts und kontaktiert nur den lokalen
+//! Sandbox-Fähigkeiten (`sandbox.linux`, `sandbox.macos`). Ab M3: Spracheingabe (`voice`, Backend
+//! und Real-Time-Factor, VOI-003). `doctor` schreibt nichts und kontaktiert nur den lokalen
 //! Daemon über Loopback (ADR-0033). Exit-Code 0 (ok), 1 (Warnungen), 2 (Fehler).
 
 use std::path::Path;
@@ -712,6 +713,64 @@ fn sandbox_status(
     }
 }
 
+/// Spracheingabe (VOI-003): gewähltes Backend und Real-Time-Factor; gemessen wird nur mit
+/// einem installierten Modell (ohne Download, ADR-0033).
+pub fn voice_check(d: &beton_voice::Diagnosis) -> Check {
+    let backend = d.backend.as_str();
+    let device = d
+        .gpu_note
+        .as_deref()
+        .filter(|_| d.backend.is_gpu())
+        .map(|n| format!(" ({n})"))
+        .unwrap_or_default();
+    let measured = match (&d.model, d.rtf) {
+        (Some(model), Some(rtf)) => format!(
+            "{model}, Echtzeitfaktor {} (5 s Testsignal)",
+            format!("{rtf:.2}").replace('.', ",")
+        ),
+        (Some(model), None) => format!("{model}, nicht messbar"),
+        (None, _) => format!(
+            "kein Modell installiert (Echtzeitfaktor nach `beton voice models pull {}`)",
+            beton_voice::default_model()
+        ),
+    };
+    let mut c = if d.gpu_fallback {
+        check(
+            "voice",
+            CheckStatus::Warn,
+            format!(
+                "Spracheingabe: GPU nicht nutzbar ({}), Diktate laufen auf der CPU; {measured}",
+                d.gpu_note.as_deref().unwrap_or("unbekannter Grund")
+            ),
+            Some("Details im Daemon-Log; mit `voice.acceleration: cpu` bewusst auf der CPU"),
+        )
+    } else if let Some(error) = &d.error {
+        check(
+            "voice",
+            CheckStatus::Warn,
+            format!("Spracheingabe: {backend}{device}; {measured}: {error}"),
+            Some(
+                "Modell neu laden: beton voice models remove <modell> && beton voice models pull <modell>",
+            ),
+        )
+    } else {
+        check(
+            "voice",
+            CheckStatus::Ok,
+            format!("Spracheingabe: {backend}{device}; {measured}"),
+            None,
+        )
+    };
+    c.details = Some(json!({
+        "backend": backend,
+        "gpu": d.gpu_note,
+        "fallback": d.gpu_fallback,
+        "model": d.model,
+        "rtf": d.rtf,
+    }));
+    c
+}
+
 /// Führt alle M0-Prüfungen aus.
 pub async fn run(ctx: &Ctx) -> DoctorReport {
     let mut checks = vec![check(
@@ -757,6 +816,10 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
         .as_ref()
         .map(|s| s.secrets.backend)
         .unwrap_or_default();
+    let voice_settings = daemon_settings
+        .as_ref()
+        .map(|s| s.voice.clone())
+        .unwrap_or_default();
     let configured = daemon_settings.map(|s| s.features).unwrap_or_default();
     checks.push(features(
         &configured,
@@ -774,6 +837,12 @@ pub async fn run(ctx: &Ctx) -> DoctorReport {
         &reports,
         beton_sandbox::linux::kernel_landlock_abi(),
     ));
+    let home = ctx.home.clone();
+    if let Ok(d) =
+        tokio::task::spawn_blocking(move || beton_voice::diagnose(&home, &voice_settings)).await
+    {
+        checks.push(voice_check(&d));
+    }
     checks.push(secrets_store(
         secrets_choice,
         &beton_secrets::backend::KeychainBackend::availability(),
@@ -1020,5 +1089,62 @@ mod tests {
         let c = permissions(dir.path());
         assert_eq!(c.status, CheckStatus::Fail);
         assert!(c.hint.unwrap().contains("chmod 600"));
+    }
+
+    fn diagnosis() -> beton_voice::Diagnosis {
+        beton_voice::Diagnosis {
+            backend: beton_voice::Backend::Metal,
+            gpu_note: Some("Apple M3 Pro".into()),
+            gpu_fallback: false,
+            model: Some("large-v3-turbo".into()),
+            rtf: Some(0.214),
+            error: None,
+        }
+    }
+
+    /// VOI-003: `doctor` meldet Backend und Real-Time-Factor in `details` des Checks `voice`.
+    #[test]
+    fn voi_003_doctor_reports_backend_and_rtf() {
+        let c = voice_check(&diagnosis());
+        assert_eq!(c.id, "voice");
+        assert_eq!(c.status, CheckStatus::Ok);
+        assert!(c.message.contains("metal (Apple M3 Pro)"), "{}", c.message);
+        assert!(c.message.contains("Echtzeitfaktor 0,21"), "{}", c.message);
+        let d = c.details.unwrap();
+        assert_eq!(d["backend"], "metal");
+        assert_eq!(d["rtf"], 0.214);
+        assert_eq!(d["model"], "large-v3-turbo");
+    }
+
+    /// VOI-003 AC2: Rückfall auf die CPU ist eine Warnung mit Grund.
+    #[test]
+    fn voi_003_ac2_doctor_warns_about_cpu_fallback() {
+        let c = voice_check(&beton_voice::Diagnosis {
+            backend: beton_voice::Backend::Cpu,
+            gpu_note: Some("metal ließ sich nicht initialisieren".into()),
+            gpu_fallback: true,
+            rtf: Some(0.9),
+            ..diagnosis()
+        });
+        assert_eq!(c.status, CheckStatus::Warn);
+        assert!(c.message.contains("auf der CPU"), "{}", c.message);
+        assert!(c.message.contains("ließ sich nicht"), "{}", c.message);
+        assert_eq!(c.details.unwrap()["backend"], "cpu");
+    }
+
+    #[test]
+    fn voi_003_doctor_without_model_reports_backend_only() {
+        let c = voice_check(&beton_voice::Diagnosis {
+            model: None,
+            rtf: None,
+            ..diagnosis()
+        });
+        assert_eq!(c.status, CheckStatus::Ok);
+        assert!(
+            c.message.contains("kein Modell installiert"),
+            "{}",
+            c.message
+        );
+        assert_eq!(c.details.unwrap()["rtf"], serde_json::Value::Null);
     }
 }

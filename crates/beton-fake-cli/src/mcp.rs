@@ -131,6 +131,12 @@ impl Clients {
         out
     }
 
+    /// Server eines Szenario-Schritts beim Harness: `beton` meint den System-Server, den beton
+    /// je Session als `beton_<nonce>` einbindet (#252); wie ein Modell, das die Tool-Liste sieht.
+    pub fn scenario_server(&self, wanted: &str) -> String {
+        scenario_server(&self.connected(), wanted)
+    }
+
     pub fn connected(&self) -> Vec<String> {
         self.conns.iter().map(|c| c.name.clone()).collect()
     }
@@ -348,4 +354,37 @@ pub fn serve(tools: &[String]) -> std::io::Result<()> {
         out.flush()?;
     }
     Ok(())
+}
+
+/// Siehe [`Clients::scenario_server`].
+pub fn scenario_server(names: &[String], wanted: &str) -> String {
+    if wanted == "beton" && !names.iter().any(|n| n == wanted) {
+        let mut session = names
+            .iter()
+            .filter(|n| n.strip_prefix("beton_").is_some_and(|r| r.len() == 16));
+        if let (Some(one), None) = (session.next(), session.next()) {
+            return one.clone();
+        }
+    }
+    wanted.to_owned()
+}
+
+#[cfg(test)]
+mod scenario_tests {
+    #[test]
+    fn pol_005_scenario_server_beton_means_the_session_server() {
+        let names = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            super::scenario_server(&names(&["beton_0123456789abcdef", "gh"]), "beton"),
+            "beton_0123456789abcdef"
+        );
+        assert_eq!(
+            super::scenario_server(&names(&["beton", "gh"]), "beton"),
+            "beton"
+        );
+        assert_eq!(
+            super::scenario_server(&names(&["beton_a", "gh"]), "gh"),
+            "gh"
+        );
+    }
 }

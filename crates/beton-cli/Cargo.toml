@@ -33,6 +33,7 @@ beton-sdk.workspace = true
 beton-secrets.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
+beton-voice.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 fs4.workspace = true

@@ -281,3 +281,161 @@ async fn pol_023_ac2_acp_fs_write_is_checked_against_path_guard() {
     let d = g.decide(write("fs-2", &env.wt().join("notizen.txt"))).await;
     assert!(!denied(&d), "{d:?}");
 }
+
+/// Verbrauchswerte und Session-Daten vom Server (im Runner: `policy.usage`).
+struct FixedUsage(beton_runner::policy::Usage);
+
+#[async_trait::async_trait]
+impl beton_runner::policy::UsageSource for FixedUsage {
+    async fn usage(&self) -> Result<beton_runner::policy::Usage, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// #196 (POL-004): Der Runner füllt Laufzeit, Run (bis Runs existieren die Session selbst)
+/// und die Session-Daten des Servers (Titel, Eltern, Tiefe, Projekt, asynchron).
+#[tokio::test]
+async fn pol_004_runner_fills_run_duration_and_session_data_of_the_server() {
+    let env = Env::new();
+    env.policy(
+        "  - id: meta\n    on: tool_call\n    when: >-\n      session.title == \"Release\" && session.parent_id == \"ses_parent\" &&\n      session.depth == 1 && session.is_async && session.project == \"prj_1\" &&\n      session.duration_s >= 0.0 && run.id == session.id && run.trigger == \"spawn\" &&\n      run.turns == session.turns && run.duration_s >= 0.0\n    action: deny\n",
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = PolicyOptions {
+        session_id: Some("ses_child".into()),
+        harness: "claude".parse::<HarnessId>().unwrap(),
+        workdir: env.wt(),
+        home: Some(env.home()),
+        dirs: vec![(Scope::User, env.root.join("user"))],
+        ..PolicyOptions::default()
+    };
+    let usage = beton_runner::policy::Usage {
+        session_title: Some("Release".into()),
+        session_parent_id: Some("ses_parent".into()),
+        session_depth: Some(1),
+        session_is_async: Some(true),
+        session_project: Some("prj_1".into()),
+        run_trigger: Some("spawn".into()),
+        ..beton_runner::policy::Usage::default()
+    };
+    let gate = PolicyGate::new(opts, tx).with_usage(std::sync::Arc::new(FixedUsage(usage)));
+    let d = gate
+        .decide(req(
+            "c1",
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "ls"}),
+        ))
+        .await;
+    assert!(denied(&d), "alle Werte gefüllt: Regel greift ({d:?})");
+
+    // Ohne Antwort des Servers bleiben die Session-Daten `null`: Die Regel scheitert und
+    // lehnt ab (fail closed), statt mit einem Default zu greifen oder nicht.
+    env.policy(
+        "  - id: meta\n    on: tool_call\n    when: session.depth == 0\n    action: allow\n  - id: rest\n    on: tool_call\n    when: \"!(session.depth == 0)\"\n    action: deny\n",
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = PolicyOptions {
+        harness: "claude".parse::<HarnessId>().unwrap(),
+        workdir: env.wt(),
+        home: Some(env.home()),
+        dirs: vec![(Scope::User, env.root.join("user"))],
+        ..PolicyOptions::default()
+    };
+    let gate = PolicyGate::new(opts, tx);
+    let d = gate
+        .decide(req(
+            "c2",
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "ls"}),
+        ))
+        .await;
+    assert!(denied(&d), "ohne Session-Daten: fail closed ({d:?})");
+}
+
+fn git_head(dir: &Path, branch: &str) {
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
+}
+
+fn push_in(call: &str, cwd: Option<&Path>) -> GateRequest {
+    GateRequest {
+        cwd: cwd.map(path),
+        ..req(
+            call,
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "git push"}),
+        )
+    }
+}
+
+/// #293 R1: Der Runner übernimmt das Arbeitsverzeichnis des Hooks (`cwd`) in `tool.cwd` und
+/// liest `session.branch` aus dem Repo dort: Ein Klon im Worktree auf `main`, `cd sub` und
+/// `git push` ist ein Push auf einen geschützten Branch, nicht nur eine Rückfrage.
+#[tokio::test]
+async fn pol_017_runner_uses_the_cwd_of_the_hook_and_the_branch_of_its_repository() {
+    let env = Env::new();
+    git_head(&env.wt(), "feature/x");
+    let sub = env.wt().join("sub");
+    git_head(&sub, "main");
+    env.policy(
+        "  - id: git\n    type: git_guard\n    params: { push: allow }\n  - id: on-main\n    on: tool_call\n    when: 'tool.kind == \"shell\" && session.branch == \"main\"'\n    action: deny\n",
+    );
+    let (gate, _rx) = env.gate();
+    let d = gate.decide(push_in("c1", None)).await;
+    assert!(!denied(&d), "im Worktree auf feature/x: erlaubt ({d:?})");
+    let d = gate.decide(push_in("c2", Some(&sub))).await;
+    assert!(denied(&d), "im Klon auf main: geschützt ({d:?})");
+    let GateDecision::Deny { reason } = &d else {
+        unreachable!()
+    };
+    let reason = reason.clone().unwrap_or_default();
+    assert!(
+        reason.contains("on-main") || reason.contains("geschützten Branch"),
+        "{reason}"
+    );
+}
+
+/// #293 R2: Lenkt die Git-Konfiguration (Repo, `config.worktree`, `~/.gitconfig`) einen Push
+/// ohne Refspec um oder ist sie nicht sicher lesbar, gilt `git push` als Push auf einen
+/// geschützten Branch.
+#[tokio::test]
+async fn pol_017_runner_reads_push_config_without_starting_git() {
+    let env = Env::new();
+    git_head(&env.wt(), "feature/x");
+    env.policy("  - id: git\n    type: git_guard\n    params: { push: allow }\n");
+    let config = env.wt().join(".git/config");
+    let global = env.home().join(".gitconfig");
+    for (file, text, protected) in [
+        (
+            &config,
+            "[core]\n\tbare = false\n[push]\n\tdefault = simple\n",
+            false,
+        ),
+        (&config, "[push]\n\tdefault = upstream\n", true),
+        (&config, "[Push]\n\tDefault = Matching\n", true),
+        (
+            &config,
+            "[remote \"origin\"]\n\turl = ../o.git\n\tpush = refs/heads/feature/x:refs/heads/main\n",
+            true,
+        ),
+        (&config, "[remote \"origin\"]\n\tmirror = true\n", true),
+        (&config, "[include]\n\tpath = ../../elsewhere.cfg\n", true),
+        (
+            &config,
+            "[includeIf \"gitdir:/x/\"]\n\tpath = /tmp/c\n",
+            true,
+        ),
+        (&config, "[remote \"origin\"\n\tpush = x\n", true),
+        (&global, "[push]\n\tdefault = matching\n", true),
+    ] {
+        let _ = std::fs::remove_file(&config);
+        let _ = std::fs::remove_file(&global);
+        std::fs::write(file, text).unwrap();
+        let (gate, _rx) = env.gate();
+        let d = gate.decide(push_in("c1", None)).await;
+        assert_eq!(denied(&d), protected, "{text}: {d:?}");
+    }
+}

@@ -81,6 +81,9 @@ pub struct VerdictView {
     /// Ausgewertete Teilausdrücke.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<TracePart>,
+    /// Die Spur ist gekürzt, ihr Gesamtbudget war erschöpft (#353).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trace_incomplete: bool,
 }
 
 /// Rekonstruierte Entscheidung.
@@ -216,6 +219,7 @@ pub fn explain(event: &PolicyDecision, set: Option<&EffectiveSet>) -> Explanatio
                 reason: m["reason"].as_str().map(str::to_owned),
                 dry_run: m["dry_run"].as_bool().unwrap_or(false),
                 trace: serde_json::from_value(m["trace"].clone()).unwrap_or_default(),
+                trace_incomplete: m["trace_incomplete"].as_bool().unwrap_or(false),
                 rule_id,
                 scope,
                 set: name,
@@ -446,5 +450,8 @@ fn render_verdict(out: &mut String, v: &VerdictView) {
             None => "Fehler".into(),
         };
         let _ = writeln!(out, "      {} → {value}", p.expr);
+    }
+    if v.trace_incomplete {
+        let _ = writeln!(out, "      (Spur gekürzt: Budget der Spur erschöpft)");
     }
 }

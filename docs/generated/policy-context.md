@@ -2,13 +2,13 @@
 
 # Policy-Kontext (CEL-Variablen)
 
-Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikation: POL-004 in [03-policies.md](../spec/03-policies.md#pol-004--kontext-variablen-je-phase). Nicht gesetzte Felder sind `null`; eine Variable außerhalb ihrer Phasen ist ein Ladefehler.
+Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikation: POL-004 in [03-policies.md](../spec/03-policies.md#pol-004--kontext-variablen-je-phase). Nicht gesetzte Felder sind `null`; eine Variable außerhalb ihrer Phasen ist ein Ladefehler, ebenso eine als noch nicht verfügbar markierte (#196).
 
 | Variable | Typ | Phasen | Beschreibung |
 | --- | --- | --- | --- |
 | `now` | `timestamp` | alle | Zeitpunkt der Auswertung. |
-| `session.attached_clients` | `int` | alle | Verbundene Clients. |
-| `session.branch` | `string` | alle | Git-Branch des Arbeitsverzeichnisses. |
+| `session.attached_clients` | `int` | alle | **Noch nicht verfügbar**, Ladefehler: verbundene Clients kommen mit Presence (COL-004, M4). Verbundene Clients. |
+| `session.branch` | `string` | alle | Git-Branch des Arbeitsverzeichnisses; in `tool_call`/`tool_result` der des Repos von `tool.cwd` (#293). |
 | `session.cost_usd` | `double` | alle | Kosten der Session in USD aus der Usage-Projektion (ohne Subscriptions). |
 | `session.depth` | `int` | alle | Tiefe im Sub-Agent-Baum (0 = Wurzel). |
 | `session.duration_s` | `double` | alle | Laufzeit in Sekunden. |
@@ -16,13 +16,14 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.harness` | `string` | alle | Harness, z. B. `claude`, `codex`, `acp:gemini`. |
 | `session.id` | `string` | alle | ID der Session (`ses_…`). |
 | `session.is_async` | `bool` | alle | Asynchroner Lauf (Timer, Schedule, Spawn mit `async`). |
-| `session.labels` | `list(string)` | alle | Labels der Session. |
+| `session.labels` | `list(string)` | alle | **Noch nicht verfügbar**, Ladefehler: Sessions haben noch keine Labels. Labels der Session. |
 | `session.mode` | `string` | alle | `native` oder `tui`. |
 | `session.model` | `string` | alle | Aktuelles Modell. |
 | `session.parent_id` | `string` | alle | Eltern-Session eines Sub-Agents. |
 | `session.permission_mode` | `string` | alle | Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`). |
 | `session.project` | `string` | alle | Projekt der Session. |
 | `session.project_root` | `string` | alle | Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`. |
+| `session.push_redirected` | `bool` | alle | Die Git-Konfiguration des Repos von `tool.cwd` bzw. des Users lenkt einen Push ohne Refspec um (`remote.*.push`, `remote.*.mirror`, `push.default` `upstream`/`tracking`/ `matching`, Includes) oder ist nicht sicher lesbar; `git_guard` zählt dann nur Ziele der Form `src:dst` (POL-017, #293). |
 | `session.reasoning_effort` | `string` | alle | Aktueller Reasoning-Effort. |
 | `session.started_at` | `timestamp` | alle | Start der Session. |
 | `session.title` | `string` | alle | Titel der Session. |
@@ -32,7 +33,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.turns` | `int` | alle | Abgeschlossene oder laufende Turns. |
 | `session.unpriced_models` | `list(string)` | alle | Modelle der Session, deren Nutzung weder Geld noch Listenpreis-Äquivalent hat (ohne Katalogpreis); Budgets fragen dann nach (`on_unpriced`, POL-011). |
 | `session.worktree` | `string` | alle | Arbeitsverzeichnis (absolut). |
-| `run.budget_usd` | `double` | alle | Budget des Runs in USD. |
+| `run.budget_usd` | `double` | alle | **Noch nicht verfügbar**, Ladefehler: Run-Budgets kommen mit Runs (ASY, M5). Budget des Runs in USD. |
 | `run.cost_usd` | `double` | alle | Kosten des Runs in USD. |
 | `run.duration_s` | `double` | alle | Laufzeit in Sekunden. |
 | `run.equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Runs in USD (ADR-0034). |
@@ -46,14 +47,14 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `user.daily_cost_usd` | `double` | alle | Kosten des Users heute (00:00 in `user.timezone`) in USD über alle Sessions. |
 | `user.daily_equivalent_usd` | `double` | alle | Listenpreis-Äquivalent der Subscription-Nutzung des Users heute in USD (ADR-0034). |
 | `user.daily_unpriced_models` | `list(string)` | alle | Modelle ohne Preis, die der User heute genutzt hat (POL-012). |
-| `user.email` | `string` | alle | E-Mail-Adresse (nur mit Identität, ab M4). |
+| `user.email` | `string` | alle | **Noch nicht verfügbar**, Ladefehler: E-Mail, Rollen und Teams kommen mit der Identität (AUTH-005, POL-008, M4). E-Mail-Adresse (nur mit Identität, ab M4). |
 | `user.id` | `string` | alle | ID (`usr_…`). |
 | `user.monthly_cost_usd` | `double` | alle | Kosten des Users im laufenden Monat in USD. |
-| `user.roles` | `list(string)` | alle | Rollen. |
-| `user.teams` | `list(string)` | alle | Teams (ab M4). |
+| `user.roles` | `list(string)` | alle | **Noch nicht verfügbar**, Ladefehler: E-Mail, Rollen und Teams kommen mit der Identität (AUTH-005, POL-008, M4). Rollen. |
+| `user.teams` | `list(string)` | alle | **Noch nicht verfügbar**, Ladefehler: E-Mail, Rollen und Teams kommen mit der Identität (AUTH-005, POL-008, M4). Teams (ab M4). |
 | `user.timezone` | `string` | alle | Zeitzone (IANA), Default `UTC`; bestimmt die Tagesgrenze. |
 | `org.id` | `string` | alle | ID (`org_…`). |
-| `team.ids` | `list(string)` | alle | IDs der Teams. |
+| `team.ids` | `list(string)` | alle | **Noch nicht verfügbar**, Ladefehler: Teams kommen mit dem Team-Betrieb (POL-008, M4). IDs der Teams. |
 | `agent.hash` | `string` | alle | Inhalts-Hash des Agent-Snapshots. |
 | `agent.name` | `string` | alle | Name des Agents. |
 | `agent.source` | `string` | alle | Herkunft (`builtin`, `project`, `user`, Pfad). |
@@ -61,14 +62,14 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `host.arch` | `string` | alle | Architektur (`aarch64`, `x86_64`). |
 | `host.home` | `string` | alle | Home-Verzeichnis des Users auf dem Host (absolut); `~` und `${home}` in `path_guard`. |
 | `host.id` | `string` | alle | ID (`hst_…`). |
-| `host.labels` | `list(string)` | alle | Labels des Hosts. |
+| `host.labels` | `list(string)` | alle | **Noch nicht verfügbar**, Ladefehler: Host-Labels kommen mit Remote-Hosts (RUN-004, M4). Labels des Hosts. |
 | `host.local` | `bool` | alle | Lokaler Host (derselbe Rechner wie der Server). |
 | `host.os` | `string` | alle | Betriebssystem (`macos`, `linux`, `windows`). |
-| `actor.id` | `string` | alle | ID des Akteurs. |
+| `actor.id` | `string` | alle | **Noch nicht verfügbar**, Ladefehler: die ID des Akteurs kommt mit der Identität (M4). ID des Akteurs. |
 | `actor.kind` | `string` | alle | `user`, `agent` oder `system`. |
-| `budget.lease_expires_at` | `timestamp` | alle | Ablauf der Lease. |
-| `budget.lease_remaining_usd` | `double` | alle | Restbetrag der Lease in USD. |
-| `budget.online` | `bool` | alle | Verbindung zum Server. |
+| `budget.lease_expires_at` | `timestamp` | alle | **Noch nicht verfügbar**, Ladefehler: Budget-Leases kommen mit dem Offline-Betrieb (POL-021, M4). Ablauf der Lease. |
+| `budget.lease_remaining_usd` | `double` | alle | **Noch nicht verfügbar**, Ladefehler: Budget-Leases kommen mit dem Offline-Betrieb (POL-021, M4). Restbetrag der Lease in USD. |
+| `budget.online` | `bool` | alle | **Noch nicht verfügbar**, Ladefehler: Budget-Leases kommen mit dem Offline-Betrieb (POL-021, M4). Verbindung zum Server. |
 | `state.run` | `map(string, dyn)` | alle | Zustand des Runs. |
 | `state.session` | `map(string, dyn)` | alle | Zustand der Session. |
 | `state.user` | `map(string, dyn)` | alle | Zustand des Users. |
@@ -84,7 +85,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `start.reasoning_effort` | `string` | `session_start` | Angefragter Effort (modifizierbar). |
 | `start.sandbox.backend` | `string` | `session_start` | Backend (`seatbelt`, `landlock`, `none`, …). |
 | `start.sandbox.enabled` | `bool` | `session_start` | Tool-Sandbox aktiv. |
-| `start.sandbox.profile` | `string` | `session_start` | Profil der Sandbox. |
+| `start.sandbox.profile` | `string` | `session_start` | **Noch nicht verfügbar**, Ladefehler: Sandbox-Profile gibt es noch nicht. Profil der Sandbox. |
 | `start.trigger` | `string` | `session_start` | `interactive`, `spawn`, `timer`, `schedule`, `webhook`, `fork`, `resume` oder `import`. |
 | `start.worktree` | `string` | `session_start` | Arbeitsverzeichnis. |
 | `request.context_used_pct` | `double` | `model_request` | Füllstand des Kontextfensters in Prozent. |

@@ -260,7 +260,14 @@ impl Checker<'_> {
                 let field: Arc<str> = sel.field.as_str().into();
                 let (ty, declared) = match &oty {
                     Ty::Object(obj) => match DECLS.field(obj, &sel.field) {
-                        Some(t) => (t.clone(), true),
+                        Some(t) => {
+                            if let Some(why) = crate::vars::unavailable(obj, &sel.field) {
+                                return Err(
+                                    self.err(e.id, unavailable_msg(&sel.operand, &sel.field, why))
+                                );
+                            }
+                            (t.clone(), true)
+                        }
                         None => {
                             return Err(self.err(
                                 e.id,
@@ -392,7 +399,17 @@ impl Checker<'_> {
             return Ok((Node::Local(name.into()), t.clone()));
         }
         match DECLS.var(name, self.phase) {
-            Ok(t) => Ok((Node::Var(name.into()), t.clone())),
+            Ok(t) => {
+                if let Ty::Object(obj) = t
+                    && let Some(why) = crate::vars::unavailable(obj, "")
+                {
+                    return Err(self.err(
+                        id,
+                        format!("`{name}` ist noch nicht verfügbar: {why} (POL-004)"),
+                    ));
+                }
+                Ok((Node::Var(name.into()), t.clone()))
+            }
             Err(Some(phases)) => {
                 let list: Vec<&str> = phases.iter().map(|p| p.as_str()).collect();
                 Err(self.err(
@@ -866,4 +883,18 @@ fn symbol(name: &str) -> &str {
         op::IN => "in",
         other => other,
     }
+}
+
+/// Meldung für ein deklariertes, aber noch nicht verfügbares Feld (#196): Pfad wie im Ausdruck
+/// (`start.sandbox.profile`), dazu der Grund.
+fn unavailable_msg(operand: &IdedExpr, field: &str, why: &str) -> String {
+    fn path(e: &IdedExpr) -> Option<String> {
+        match &e.expr {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Select(sel) => Some(format!("{}.{}", path(&sel.operand)?, sel.field)),
+            _ => None,
+        }
+    }
+    let full = path(operand).map_or_else(|| field.to_owned(), |p| format!("{p}.{field}"));
+    format!("`{full}` ist noch nicht verfügbar: {why}; eine Regel darauf griffe nie (POL-004)")
 }

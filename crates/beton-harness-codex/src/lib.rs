@@ -729,6 +729,7 @@ async fn approval(d: &Dispatcher, id: &Value, method: &str, params: &Value, raw:
         args: args.clone(),
         mcp_server: None,
         acp_kind: None,
+        cwd: None,
         origin,
         raw,
     };
