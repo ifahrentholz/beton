@@ -9,9 +9,10 @@
 //! (`*_equivalent_usd`, ADR-0034), die Kosten des Teilbaums (Session samt Nachfahren) und die
 //! Zahl der Records ohne Preis (`*_without_price`, `policy.rule_inapplicable`) hinzu.
 
+use beton_core::event::{EventPayload, SessionKind, SessionTrigger};
 use beton_core::id::{OrgId, SessionId};
 use beton_core::timezone::UserTimeZone;
-use beton_store::{Store, UsageScope};
+use beton_store::{SessionRecord, Store, UsageScope};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
@@ -69,7 +70,14 @@ pub async fn usage_values(
     let unpriced_tree = store
         .unpriced_models(org, UsageScope::Subtree(session))
         .await?;
+    let meta = session_meta(store, org, &record).await?;
     Ok(json!({
+        "session_title": meta.title,
+        "session_parent_id": meta.parent_id,
+        "session_depth": meta.depth,
+        "session_is_async": meta.is_async,
+        "session_project": meta.project,
+        "run_trigger": meta.run_trigger,
         "session_unpriced_models": unpriced_session,
         "subtree_unpriced_models": unpriced_tree,
         "user_daily_unpriced_models": unpriced_day,
@@ -87,4 +95,119 @@ pub async fn usage_values(
         "user_monthly_cost_usd": usd(month.cost_micro),
         "timezone": tz.name(),
     }))
+}
+
+/// Höchstens so viele Ebenen über `parent_id` (wie `policy_query`, #276); tiefer gilt die
+/// Tiefe als unbekannt.
+const MAX_TREE_DEPTH: i64 = 64;
+
+/// Höchstens so viele `agent.spawned` eines Parents werden nach dem Child durchsucht.
+const MAX_SPAWNS: u32 = 10_000;
+
+/// Session-Daten für Policies, die nur der Server kennt (#196, POL-004). Unbekanntes bleibt
+/// `None` (in CEL `null`; Regeln darauf scheitern, fail closed), nie ein Default.
+struct SessionMeta {
+    title: Option<String>,
+    parent_id: Option<String>,
+    depth: Option<i64>,
+    is_async: Option<bool>,
+    project: Option<String>,
+    run_trigger: Option<&'static str>,
+}
+
+async fn session_meta(
+    store: &Store,
+    org: OrgId,
+    record: &SessionRecord,
+) -> Result<SessionMeta, Problem> {
+    // Tiefe im Sub-Agent-Baum: Schritte bis zur Wurzel.
+    let mut depth = Some(0);
+    let mut current = record.parent_id;
+    let mut steps = 0;
+    while let Some(parent) = current {
+        steps += 1;
+        if steps > MAX_TREE_DEPTH {
+            depth = None;
+            break;
+        }
+        current = store.session(org, parent).await?.parent_id;
+    }
+    if depth.is_some() {
+        depth = Some(steps);
+    }
+    let created = match store
+        .events(org, record.id, 0, 1)
+        .await?
+        .first()
+        .and_then(|e| e.payload().cloned())
+    {
+        Some(EventPayload::SessionCreated(c)) => Some(c),
+        _ => None,
+    };
+    let is_async = match &created {
+        None => None,
+        Some(c) if c.kind == SessionKind::Async => Some(true),
+        Some(c) => match c.trigger {
+            SessionTrigger::Schedule | SessionTrigger::Timer | SessionTrigger::Webhook => {
+                Some(true)
+            }
+            SessionTrigger::User | SessionTrigger::Api => Some(false),
+            // `session_spawn(async: true)` steht als `agent.spawned` im Parent.
+            SessionTrigger::Spawn => match record.parent_id {
+                Some(parent) => spawned_async(store, org, parent, record.id).await?,
+                None => None,
+            },
+        },
+    };
+    // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst.
+    let run_trigger = if store.count_events(org, record.id, "session.forked").await? > 0 {
+        Some("fork")
+    } else if store
+        .count_events(org, record.id, "session.imported")
+        .await?
+        > 0
+    {
+        Some("import")
+    } else {
+        created.as_ref().map(|c| match c.trigger {
+            SessionTrigger::User | SessionTrigger::Api => "interactive",
+            SessionTrigger::Spawn => "spawn",
+            SessionTrigger::Schedule => "schedule",
+            SessionTrigger::Timer => "timer",
+            SessionTrigger::Webhook => "webhook",
+        })
+    };
+    Ok(SessionMeta {
+        title: Some(record.title.clone()).filter(|t| !t.is_empty()),
+        parent_id: record.parent_id.map(|p| p.to_string()),
+        depth,
+        is_async,
+        project: record.project_id.map(|p| p.to_string()),
+        run_trigger,
+    })
+}
+
+/// Lief das Child laut `agent.spawned` seines Parents mit `async: true`? `None`, wenn der
+/// Parent den Start nicht verzeichnet hat.
+async fn spawned_async(
+    store: &Store,
+    org: OrgId,
+    parent: SessionId,
+    child: SessionId,
+) -> Result<Option<bool>, Problem> {
+    for event in store
+        .events_of_type(org, parent, "agent.spawned", MAX_SPAWNS)
+        .await?
+    {
+        let payload = match event.payload() {
+            Some(p) => p.clone(),
+            None => store.resolve_payload(org, &event).await?,
+        };
+        if let EventPayload::AgentSpawned(s) = payload
+            && s.child_session_id == child
+        {
+            return Ok(Some(s.r#async));
+        }
+    }
+    Ok(None)
 }

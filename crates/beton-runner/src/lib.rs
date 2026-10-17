@@ -1124,9 +1124,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         std::mem::take(&mut setup.agent_policies),
     );
     // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
+    let mut start_fork_of = None;
     let forked = match &boot.fork {
         Some(path) => match fork::load(path) {
-            Ok(plan) => Some(
+            Ok(plan) => Some({
+                start_fork_of = fork_of(Some(&plan));
                 fork::prepare(
                     &plan,
                     boot.fork_logged,
@@ -1138,8 +1140,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     &boot.workdir,
                     boot.model.clone(),
                 )
-                .await,
-            ),
+                .await
+            }),
             Err(e) => {
                 let e = beton_harness::HarnessError::StartRefused(e);
                 report_start_failure(&boot, &e).await;
@@ -1255,7 +1257,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 proxy_enabled: Some(sandbox_status.egress_proxy),
             }),
             worktree: Some(boot.workdir.display().to_string()),
-            fork_of: None,
+            fork_of: start_fork_of.clone(),
             agent_ref: boot.agent_ref.clone(),
         };
         let checked = pre
@@ -3388,8 +3390,9 @@ async fn deliver(
 
 /// `start.fork_of` (POL-004, #196): Quelle eines Forks laut Plan des Servers; das Fortsetzen
 /// eines Imports ist kein Fork.
-fn fork_of(_plan: Option<&beton_harness::handover::ForkPlan>) -> Option<String> {
-    None
+fn fork_of(plan: Option<&beton_harness::handover::ForkPlan>) -> Option<String> {
+    plan.filter(|p| p.kind == beton_harness::handover::PlanKind::Fork)
+        .map(|p| p.from_session.to_string())
 }
 
 #[cfg(test)]

@@ -191,7 +191,14 @@ pub trait UsageSource: Send + Sync {
 
 /// Felder, für die das Gate Verbrauchswerte vom Server holt. `user.timezone` kommt mit ihnen
 /// (Einstellung des Daemons, POL-004 AC4); ohne Antwort bleibt es `null` (fail closed).
-const USAGE_FIELDS: [&str; 16] = [
+const USAGE_FIELDS: [&str; 22] = [
+    // Session-Daten des Servers (#196).
+    "session.title",
+    "session.parent_id",
+    "session.depth",
+    "session.is_async",
+    "session.project",
+    "run.trigger",
     "session.cost_usd",
     "session.equivalent_usd",
     "session.unpriced_models",
@@ -592,6 +599,8 @@ struct Inner {
     granted: AtomicI64,
     denied: AtomicI64,
     started_at: CelTimestamp,
+    /// Start des Gates für `session.duration_s`/`run.duration_s` (monoton).
+    started_instant: std::time::Instant,
     /// Set-Snapshots je Version für Explain (POL-027 AC2).
     snapshots: dry::Snapshots,
     /// `policy_query`-Abfragen im laufenden Turn (Limit, Security-Review B1).
@@ -901,6 +910,7 @@ impl PolicyGate {
                 granted: AtomicI64::new(0),
                 denied: AtomicI64::new(0),
                 started_at: CelTimestamp::now(),
+                started_instant: std::time::Instant::now(),
                 snapshots: dry::Snapshots::default(),
                 queries: Mutex::new(dry::QueryBudget::default()),
                 query_source: None,
@@ -1438,9 +1448,19 @@ impl PolicyGate {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default();
+        let duration_s = self.inner.started_instant.elapsed().as_secs_f64();
         Vars {
             now: Some(CelTimestamp::now()),
+            // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst
+            // (POL-004); `run.trigger` kommt vom Server.
+            run: Some(RunVars {
+                id: self.inner.opts.session_id.clone(),
+                turns: Some(s.turns),
+                duration_s: Some(duration_s),
+                ..RunVars::default()
+            }),
             session: Some(SessionVars {
+                duration_s: Some(duration_s),
                 id: self.inner.opts.session_id.clone(),
                 harness: Some(self.inner.opts.harness.to_string()),
                 mode: Some("native".into()),
@@ -1509,6 +1529,11 @@ impl PolicyGate {
             return;
         };
         if let Some(s) = vars.session.as_mut() {
+            s.title.clone_from(&u.session_title);
+            s.parent_id.clone_from(&u.session_parent_id);
+            s.depth = u.session_depth;
+            s.is_async = u.session_is_async;
+            s.project.clone_from(&u.session_project);
             s.cost_usd = u.session_cost_usd;
             s.equivalent_usd = u.session_equivalent_usd;
             s.unpriced_models.clone_from(&u.session_unpriced_models);
@@ -1517,6 +1542,7 @@ impl PolicyGate {
         }
         // Bis es Runs gibt (ASY, M5), ist der Run einer Session die Session selbst (POL-004).
         let run = vars.run.get_or_insert_with(RunVars::default);
+        run.trigger.clone_from(&u.run_trigger);
         run.cost_usd = u.session_cost_usd;
         run.equivalent_usd = u.session_equivalent_usd;
         run.subtree_cost_usd = u.subtree_cost_usd;
