@@ -52,7 +52,7 @@ utoipa-axum.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 beton-harness.workspace = true

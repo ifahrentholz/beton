@@ -676,6 +676,75 @@ mod tests {
         assert_eq!(second[0].path, "src/main.rs");
     }
 
+    /// #92: Ersetzt ein gleichzeitig laufender Prozess (der Agent im Workspace) ein
+    /// Zwischenverzeichnis immer wieder atomar durch einen Symlink nach draußen, schreibt und
+    /// liest die Workspace-API trotzdem nie außerhalb des Workspace (auch keine temporäre Datei)
+    /// und listet nichts von draußen. Ohne Austausch gelingt dasselbe im Workspace.
+    #[cfg(unix)]
+    #[test]
+    fn ses_017_swapping_a_directory_for_a_symlink_never_leaks_outside() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (_tmp, ws, outside) = ws();
+        let root = ws.root().to_path_buf();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/geheim.txt"), "innen").unwrap();
+        std::fs::write(outside.join("nur-draussen.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a.lnk")).unwrap();
+        let outside_names = || {
+            let mut v: Vec<String> = std::fs::read_dir(&outside)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let before = outside_names();
+        // Kontrollgruppe ohne Austausch: alles im Workspace.
+        ws.write("a/neu.txt", b"x", None).unwrap();
+        assert_eq!(ws.read("a/geheim.txt").unwrap().bytes, b"innen");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, root) = (stop.clone(), root.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = renameat_with(
+                        CWD,
+                        root.join("a"),
+                        CWD,
+                        root.join("a.lnk"),
+                        RenameFlags::EXCHANGE,
+                    );
+                }
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut leaked = None;
+        while std::time::Instant::now() < deadline && leaked.is_none() {
+            let _ = ws.write("a/neu.txt", b"BOESE", None);
+            if let Ok(c) = ws.read("a/geheim.txt")
+                && c.bytes != b"innen"
+            {
+                leaked = Some("gelesen".to_owned());
+            }
+            if let Ok(entries) = ws.list("a")
+                && entries.iter().any(|e| e.name == "nur-draussen.txt")
+            {
+                leaked = Some("gelistet".to_owned());
+            }
+            if outside_names() != before {
+                leaked = Some(format!("geschrieben: {:?}", outside_names()));
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+        assert_eq!(leaked, None);
+        assert_eq!(outside_names(), before);
+    }
+
     mod prop {
         use proptest::prelude::*;
 
