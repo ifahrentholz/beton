@@ -354,17 +354,26 @@ function InboxPalette({ state }: { state: string }) {
 
 function InboxSwitcher({ state }: { state: string }) {
   const mru = ['ses_7f3k', 'ses_6n1c', 'ses_7f3m', 'ses_6q2a', 'ses_6p9z', 'ses_6k8e', 'ses_6m4d']
-  const list = mru.map((id) => sessions.find((s) => s.id === id)!).filter((s) => state !== 'search' || /rate|review/i.test(s.title))
+  const list = mru
+    .map((id) => sessions.find((s) => s.id === id)!)
+    .filter((s) => (state === 'empty' ? false : state !== 'search' || /rate|review/i.test(s.title)))
+  const query = state === 'search' ? 'rate' : state === 'empty' ? 'deploy' : ''
   const paused = new Set(['ses_6n1c'])
   return (
     <SessionBackdrop>
       <F id="UX-003" className="w-[560px] overflow-hidden rounded-lg border border-border bg-popover shadow-2xl">
         <div className="flex items-center gap-2 border-b border-border px-3 py-2">
           <Search className="size-4 text-muted-foreground" />
-          <span className={cn('flex-1 text-[14px]', state !== 'search' && 'text-muted-foreground')}>{state === 'search' ? 'rate' : 'Zu Session wechseln …'}</span>
+          <span className={cn('flex-1 text-[14px]', !query && 'text-muted-foreground')}>{query || 'Zu Session wechseln …'}</span>
           <span className="text-[11px] text-muted-foreground">zuletzt genutzt</span>
         </div>
         <div className="py-1">
+          {list.length === 0 && (
+            <div className="px-3 py-6 text-center">
+              <div className="text-[13px]">Keine Session passt zu „{query}“.</div>
+              <div className="mt-1 text-[12px] text-muted-foreground">Gesucht wird in den Titeln aller Sessions außer den archivierten.</div>
+            </div>
+          )}
           {list.map((s, i) => {
             const waiting = s.status === 'waiting' || paused.has(s.id)
             return (
@@ -442,23 +451,29 @@ function InboxShortcuts({ state }: { state: string }) {
           <Keyboard className="size-4" />
           <h2 className="text-[15px] font-semibold">Tastenkürzel</h2>
           <span className="ml-3 flex h-7 flex-1 items-center gap-2 rounded-md border border-input bg-card px-2 text-[12px] text-muted-foreground">
-            <Search className="size-3.5" /> Kürzel suchen
+            <Search className="size-3.5" /> {state === 'none' ? <span className="text-foreground">deploy</span> : 'Kürzel suchen'}
           </span>
           <button aria-label="Schließen" className="text-muted-foreground hover:text-foreground">
             <X className="size-4" />
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-x-8 px-4 py-3">
+        {state === 'none' && (
+          <div className="px-4 py-6 text-center">
+            <div className="text-[13px]">Kein Kürzel passt zu „deploy“.</div>
+            <div className="mt-1 text-[12px] text-muted-foreground">Gesucht wird in Namen und Tasten.</div>
+          </div>
+        )}
+        <div className={cn('grid grid-cols-2 gap-x-8 px-4 py-3', state === 'none' && 'hidden')}>
           {SHORTCUTS.map((g) => (
             <div key={g.group} className="mb-3">
               <div className="mb-1 text-[12px] font-medium text-muted-foreground">{g.group}</div>
               {g.items.map(([label, k]) => {
-                const editing = state === 'conflict' && label === 'Modell wechseln'
+                const editing = (state === 'conflict' || state === 'recording') && label === 'Modell wechseln'
                 return (
                   <div key={label} className={cn('group flex items-center gap-2 border-b border-border/60 py-1 text-[13px]', editing && 'bg-accent')}>
                     <span className="flex-1">{label}</span>
                     {editing ? (
-                      <span className="rounded-sm border-2 border-ring px-1 font-mono text-[11px]">⌘K</span>
+                      <span className="rounded-sm border-2 border-ring px-1 font-mono text-[11px]">{state === 'recording' ? 'Tasten drücken …' : '⌘K'}</span>
                     ) : (
                       <>
                         <button className="hidden text-[11px] text-muted-foreground group-hover:inline hover:text-foreground">Ändern</button>
@@ -471,6 +486,15 @@ function InboxShortcuts({ state }: { state: string }) {
             </div>
           ))}
         </div>
+        {state === 'recording' && (
+          <div className="mx-4 mb-3 flex items-center gap-3 rounded-md border border-border bg-card p-2.5 text-[13px]">
+            <Keyboard className="size-4 shrink-0" />
+            <span className="flex-1">
+              Neue Tasten für „Modell wechseln“ drücken. Belegbar sind Kombinationen mit ⌘, ⌥ oder Ctrl und Funktionstasten; <Keys k="Esc" /> bricht ab.
+            </span>
+            <button className="rounded-md border border-border px-3 py-1 text-[12px]">Abbrechen</button>
+          </div>
+        )}
         {state === 'conflict' && (
           <div className="mx-4 mb-3 flex items-center gap-3 rounded-md border border-border bg-card p-2.5 text-[13px]">
             <CircleAlert className="size-4 shrink-0" />
@@ -880,6 +904,7 @@ export const group: ScreenGroup = {
       states: [
         { id: 'default', title: 'Zuletzt genutzt' },
         { id: 'search', title: 'Suche' },
+        { id: 'empty', title: 'Keine Treffer' },
       ],
       component: InboxSwitcher,
     },
@@ -890,7 +915,9 @@ export const group: ScreenGroup = {
       features: ['UX-004'],
       states: [
         { id: 'default', title: 'Übersicht' },
+        { id: 'recording', title: 'Neue Tasten aufnehmen' },
         { id: 'conflict', title: 'Konflikt beim Umbelegen' },
+        { id: 'none', title: 'Keine Treffer' },
       ],
       component: InboxShortcuts,
     },
