@@ -274,7 +274,10 @@ impl D {
         );
         req.headers_mut()
             .insert("sec-websocket-protocol", "beton.v1".parse().unwrap());
-        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        // Ohne Nagle wie jeder Browser; sonst misst AC1 die verzögerten ACKs von TCP.
+        let (mut ws, _) = tokio_tungstenite::connect_async_with_config(req, None, true)
+            .await
+            .unwrap();
         send(
             &mut ws,
             json!({"t": "hello", "protocol": "1.1", "client": {"kind": "test", "version": "0"}}),

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::serve::ListenerExt as _;
 use beton_store::Store;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -192,6 +193,13 @@ pub async fn start_with(
             let shutdown = async move {
                 let _ = rx.wait_for(|s| *s).await;
             };
+            // Ohne Nagle: Terminal-Echos und kleine Steuernachrichten warten sonst auf das
+            // verzögerte ACK des Clients (bis 40 ms unter Linux, WEB-010 AC1).
+            let listener = listener.tap_io(|tcp| {
+                if let Err(e) = tcp.set_nodelay(true) {
+                    tracing::debug!("TCP_NODELAY nicht gesetzt: {e}");
+                }
+            });
             if let Err(e) = axum::serve(listener, app)
                 .with_graceful_shutdown(shutdown)
                 .await
