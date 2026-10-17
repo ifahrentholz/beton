@@ -977,10 +977,7 @@ async fn pol_003_recheck_after_approval_needs_the_same_reason_not_only_the_same_
     ));
     match task.await.unwrap() {
         Checked::Deny { reason, rules } => {
-            assert!(
-                reason.contains("5,00") || reason.contains("5.00"),
-                "{reason}"
-            );
+            assert!(reason.contains("erreichen 5 USD"), "{reason}");
             assert_eq!(rules, ["cap"]);
         }
         other => panic!("neue Schwelle als freigegeben gewertet: {other:?}"),

@@ -2713,10 +2713,11 @@ impl PolicyGate {
                 None,
             )
             .await;
+        // Derselbe Grund, nicht nur dieselbe Regel (#353): Regeltypen haben mehrere Teile mit
+        // einer ID (z. B. die Schwellen von `spend_cap`), und eine geänderte Fassung des Sets
+        // braucht eine neue Freigabe.
         let same = |a: &Reason, b: &Reason| {
-            a.rule.scope == b.rule.scope
-                && a.rule.set == b.rule.set
-                && a.rule.rule_id == b.rule.rule_id
+            a.rule == b.rule && a.reason == b.reason && a.fingerprint == b.fingerprint
         };
         match ev.decision.outcome.clone() {
             Outcome::Allow => Checked::Allow(tightened(ev.decision.modified)),
