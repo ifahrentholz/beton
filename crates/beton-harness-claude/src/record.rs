@@ -426,6 +426,17 @@ fn which(cmd: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// #252: Der Session-Server heißt je Session `beton_<nonce>`; Aufnahmen enthalten den
+    /// Namen nie als festen Wert, sondern `beton_<nonce>`.
+    #[test]
+    fn pol_005_recordings_normalize_the_session_server_name() {
+        let line = r#"{"type":"system","subtype":"init","tools":["mcp__beton_0123456789abcdef__policy_query"],"mcp_servers":[{"name":"beton_0123456789abcdef","status":"connected"},{"name":"beton_x","status":"failed"}]}"#;
+        let out = sanitize(line, &[]);
+        assert!(!out.contains("0123456789abcdef"), "{out}");
+        assert!(out.contains("mcp__beton_<nonce>__policy_query"), "{out}");
+        assert!(out.contains("beton_x"), "andere Namen bleiben: {out}");
+    }
+
     #[test]
     fn use_004_recordings_drop_overage_billing_state() {
         let line = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour","isUsingOverage":true,"overageInUse":true,"overageStatus":"allowed","overageResetsAt":1793491200,"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":1792014600}}}}"#;

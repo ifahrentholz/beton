@@ -12,6 +12,7 @@ pub mod harden;
 pub mod mcp;
 pub mod policy;
 mod push_config;
+mod session_server;
 pub mod settings;
 pub mod stages;
 pub mod state;

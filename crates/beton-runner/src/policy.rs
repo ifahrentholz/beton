@@ -1220,6 +1220,9 @@ impl PolicyGate {
         }
     }
 
+    /// Name des eigenen beton-Servers dieser Session beim Harness (`beton_<nonce>`, #252).
+    pub fn set_session_server(&self, _name: &str) {}
+
     pub fn set_trusted_servers(&self, servers: Vec<String>) {
         if let Ok(mut t) = self.inner.trusted_servers.lock() {
             *t = servers;
@@ -3508,6 +3511,60 @@ mod tests {
                 .any(|e| matches!(e, EventPayload::ApprovalRequested(_))),
             "{seen:?}"
         );
+    }
+
+    /// #252 (M1 aus dem Security-Review von #385): Der eigene Server heißt je Session
+    /// `beton_<nonce>`; nur genau dieser Name ist der System-Server (in Policies `beton`). Ein
+    /// fremder Server `beton` oder `beton_<andere nonce>` aus der Vendor-Konfiguration ist
+    /// `untrusted:<name>`; der Name der Session ist in Policies nie sichtbar.
+    #[tokio::test]
+    async fn pol_005_only_the_session_server_of_this_session_is_trusted() {
+        use beton_mcp::hub::McpGate as _;
+        let own = "beton_0123456789abcdef";
+        let p = with_policy(
+            "rules:\n  - id: fremd\n    on: tool_call\n    when: 'tool.server.startsWith(\"untrusted:\")'\n    action: deny\n  - id: roh\n    on: tool_call\n    when: 'tool.server.startsWith(\"beton_\") || tool.kind != \"system\"'\n    action: deny\n",
+        );
+        let g = p.gate.clone();
+        g.set_session_server(own);
+        g.set_trusted_servers(vec![own.into()]);
+        let call = |id: &str, server: &str| GateRequest {
+            call_id: id.into(),
+            tool: format!("mcp__{server}__session_list"),
+            kind: "mcp".into(),
+            mcp_server: Some(server.into()),
+            args: json!({}),
+            origin: GateOrigin::PreTool,
+            ..GateRequest::default()
+        };
+        assert_eq!(
+            g.decide(call("c1", own)).await,
+            GateDecision::Allow { updated_args: None },
+            "eigener Server: System-Tool, in Policies `beton`"
+        );
+        for (i, foreign) in ["beton", "beton_fedcba9876543210", "beton-x"]
+            .iter()
+            .enumerate()
+        {
+            let d = g.decide(call(&format!("f{i}"), foreign)).await;
+            let GateDecision::Deny { reason } = &d else {
+                panic!("{foreign}: {d:?}")
+            };
+            assert!(
+                reason.as_deref().unwrap_or_default().contains("fremd"),
+                "{foreign}: {reason:?}"
+            );
+        }
+        // Codex meldet Server und Tool getrennt.
+        let codex = GateRequest {
+            tool: "session_list".into(),
+            ..call("c2", own)
+        };
+        assert_eq!(
+            g.decide(codex).await,
+            GateDecision::Allow { updated_args: None }
+        );
+        // Der Relay-Hub prüft mit seinem internen Namen `beton`: das ist der eigene Server.
+        assert!(g.check("beton", "session_list", &json!({})).await.is_ok());
     }
 
     // ------------------------------------------------------------------ WP-37 (POL-009/010)
