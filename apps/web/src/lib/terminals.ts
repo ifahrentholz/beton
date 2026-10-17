@@ -13,19 +13,30 @@ export interface TerminalInfo {
   since: string
   /** Gestartet vom Agent (`kind: tool`) bzw. vom Benutzer. */
   byAgent: boolean
+  /** Beendet: mit `terminal.closed` (Zeit, Exit-Code) oder mit dem Runner. */
+  ended?: TerminalEnd
+  /** Letzter Bildschirmzustand (`terminal.snapshot`, DATA-011). */
+  snapshot?: { ref: string; cols: number; rows: number }
 }
 
+export type TerminalEnd = { at: string; exitCode?: number } | { withRunner: true }
+
 /**
- * Laufende Terminals aus dem Log: `terminal.opened` ohne `terminal.closed`, mit dem letzten
- * Namen aus `terminal.renamed`. Endet der Runner, sind sie mit ihm beendet (`runnerGone`).
+ * Alle Terminals der Session aus dem Log, in der Reihenfolge des Starts: laufende und beendete
+ * (DATA-011 AC2: Ein beendetes Terminal bleibt mit seinem letzten Snapshot sichtbar). Der Name
+ * kommt aus dem letzten `terminal.renamed`. Ein neuer Runner (`session.started`) bzw. das Ende
+ * des Runners (`runnerGone`) beendet die laufenden mit.
  */
-export function openTerminals(events: readonly Event[] | undefined, runnerGone = false): TerminalInfo[] {
-  if (runnerGone) return []
-  const open = new Map<string, TerminalInfo>()
+export function sessionTerminals(events: readonly Event[] | undefined, runnerGone = false): TerminalInfo[] {
+  const all = new Map<string, TerminalInfo>()
+  const endRunning = () => {
+    for (const t of all.values()) if (!t.ended) t.ended = { withRunner: true }
+  }
   for (const e of events ?? []) {
     const o = payloadOf(e, 'terminal.opened')
     if (o) {
-      open.set(o.terminal_id, {
+      all.delete(o.terminal_id)
+      all.set(o.terminal_id, {
         id: o.terminal_id,
         name: o.name ?? 'Terminal',
         kind: o.kind,
@@ -39,16 +50,31 @@ export function openTerminals(events: readonly Event[] | undefined, runnerGone =
     }
     const r = payloadOf(e, 'terminal.renamed')
     if (r) {
-      const t = open.get(r.terminal_id)
+      const t = all.get(r.terminal_id)
       if (t) t.name = r.name
       continue
     }
+    const snap = payloadOf(e, 'terminal.snapshot')
+    if (snap) {
+      const t = all.get(snap.terminal_id)
+      if (t) t.snapshot = { ref: snap.blob_ref, cols: snap.cols, rows: snap.rows }
+      continue
+    }
     const c = payloadOf(e, 'terminal.closed')
-    if (c) open.delete(c.terminal_id)
-    // Ein neuer Runner (Neustart, Resume) beginnt ohne Terminals.
-    if (e.type === 'session.started') open.clear()
+    if (c) {
+      const t = all.get(c.terminal_id)
+      if (t && !t.ended) t.ended = c.exit_code === undefined ? { at: e.ts } : { at: e.ts, exitCode: c.exit_code }
+      continue
+    }
+    if (e.type === 'session.started') endRunning()
   }
-  return [...open.values()]
+  if (runnerGone) endRunning()
+  return [...all.values()]
+}
+
+/** Laufende Terminals: `terminal.opened` ohne `terminal.closed` im aktuellen Runner. */
+export function openTerminals(events: readonly Event[] | undefined, runnerGone = false): TerminalInfo[] {
+  return sessionTerminals(events, runnerGone).filter((t) => !t.ended)
 }
 
 /** „läuft seit 14 Min.“ */
