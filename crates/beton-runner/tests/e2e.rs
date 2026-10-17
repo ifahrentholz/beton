@@ -420,6 +420,86 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
         .unwrap();
 }
 
+/// Redigiert nichts, ist aber für Werte mit `needle` die ersten `fails` Male nicht bereit
+/// (fail closed): Der Push mit diesem Event wird nicht gespeichert.
+struct FlakyRedactor {
+    needle: &'static str,
+    fails: std::sync::Mutex<usize>,
+}
+
+impl beton_store::ValueRedactor for FlakyRedactor {
+    fn redact(
+        &self,
+        value: &mut serde_json::Value,
+    ) -> Result<bool, beton_store::RedactionUnavailable> {
+        if value.to_string().contains(self.needle) {
+            let mut fails = self.fails.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err(beton_store::RedactionUnavailable);
+            }
+        }
+        Ok(false)
+    }
+}
+
+/// #72: Speichert der Server einen Push nicht, meldet der Runner das beim Wiederverbinden als
+/// `runner.status` mit `push_failed` und sendet das Unbestätigte erneut, ohne Lücke.
+#[tokio::test]
+async fn proto_015_failed_push_is_reported_as_runner_status_and_resent() {
+    let options = StoreOptions {
+        redactor: std::sync::Arc::new(FlakyRedactor {
+            needle: "Zeile 5",
+            fails: std::sync::Mutex::new(2),
+        }),
+        ..StoreOptions::default()
+    };
+    let f = fixture_with(options, |r| r).await;
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..10 {
+        yaml.push_str(&format!(
+            "      - {{ message: \"Zeile {i}\", delay_ms: 20 }}\n"
+        ));
+    }
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let lines: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => {
+                m.content[0]["text"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..10).map(|i| format!("Zeile {i}")).collect();
+    assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    let reasons: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::RunnerStatus(s)) => {
+                Some(format!("{}→{} {:?}", s.from, s.to, s.reason))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        reasons
+            .iter()
+            .any(|r| r.contains("push_failed: redaction_unavailable")),
+        "runner.status mit push_failed fehlt: {reasons:?}"
+    );
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
 /// #288: Lehnt der Server ein Event fachlich ab (hier: Nutzlast über dem Blob-Limit), steht an
 /// seiner Stelle ein sichtbares `event.rejected` ohne den abgelehnten Inhalt. Spätere Events
 /// bleiben erhalten, und der Runner sendet das abgelehnte Event nicht endlos erneut.

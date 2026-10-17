@@ -170,6 +170,7 @@ pub async fn create_session(
         .await?;
     Ok((
         StatusCode::CREATED,
+        [(header::LOCATION, format!("/v1/sessions/{}", record.id))],
         axum::Json(summary_of(&state, record.id).await?),
     )
         .into_response())
@@ -323,6 +324,10 @@ pub async fn fork_session(
         .await?;
     Ok((
         StatusCode::CREATED,
+        [(
+            header::LOCATION,
+            format!("/v1/sessions/{}", forked.session.id),
+        )],
         axum::Json(ForkResponse {
             session: summary_of(&state, forked.session.id).await?,
             effective_seq: forked.effective_seq,

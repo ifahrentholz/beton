@@ -1,4 +1,5 @@
 // Generiert von `cargo xtask codegen` aus den Rust-Typen. Nicht von Hand ändern.
+import type { ChannelKind } from "./ChannelKind";
 import type { ClientInfo } from "./ClientInfo";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -17,4 +18,4 @@ transient?: boolean,
 /**
  * Nur die letzten N Events (plus `has_more`).
  */
-tail?: number, } | { "t": "detach", id: string, session_id: `ses_${string}`, } | { "t": "cmd", id: string, session_id?: `ses_${string}`, name: string, args: JsonValue, idempotency_key?: string, };
+tail?: number, } | { "t": "detach", id: string, session_id: `ses_${string}`, } | { "t": "cmd", id: string, session_id?: `ses_${string}`, name: string, args: JsonValue, idempotency_key?: string, } | { "t": "open_channel", id: string, session_id: `ses_${string}`, kind: ChannelKind, ref: string, } | { "t": "close_channel", channel_id: number, } | { "t": "credit", channel_id: number, bytes?: number, frames?: number, };

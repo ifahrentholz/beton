@@ -151,15 +151,20 @@ impl AcpAdapter {
 }
 
 /// `initialize` an einen Agent; liefert die Antwort.
-async fn initialize(rpc: &RpcClient, timeout: Duration) -> Result<Value, HarnessError> {
+async fn initialize(
+    rpc: &RpcClient,
+    timeout: Duration,
+    stage_two: bool,
+) -> Result<Value, HarnessError> {
     let result = rpc
         .request_timeout(
             "initialize",
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 // `fs/write_text_file` führt beton selbst aus, geprüft wie jedes Schreiben (POL-023
-                // AC2, HAR-007 AC2); Lesen und `terminal/*` folgen.
-                "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": true}, "terminal": false},
+                // AC2, HAR-007 AC2); Lesen und `terminal/*` in Stufe 2, nur wenn die Session sie
+                // hat (#326, fail closed).
+                "clientCapabilities": {"fs": {"readTextFile": stage_two, "writeTextFile": true}, "terminal": stage_two},
                 "clientInfo": {"name": "beton", "version": env!("CARGO_PKG_VERSION")},
             }),
             timeout,
@@ -243,8 +248,9 @@ impl HarnessAdapter for AcpAdapter {
             // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
             permission_modes: vec![PermissionMode::Default],
             context_window: None,
-            // Solange beton `terminal/*` nicht anbietet, führt der Agent seine Tools selbst aus
-            // (SBX-002): kein Stufe-2-Zwang.
+            // `terminal/*` und `fs/read_text_file` führt beton schon in Stufe 2 aus (#326), aber
+            // `fs/write_text_file` noch in Stufe 0 (#329). ADR-0037 verlangt für `beton` beides;
+            // bis dahin degraded (`require_tool_isolation: false`, kein `yolo`).
             tool_isolation: beton_harness::ToolIsolation::Inherited,
             native_project_files: Vec::new(),
         }
@@ -305,7 +311,11 @@ impl HarnessAdapter for AcpAdapter {
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let process = Arc::new(Mutex::new(process));
         let (rpc, incoming) = RpcClient::spawn(io.stdin, io.stdout);
-        let opened = open_session(&rpc, &spec, self.handshake_timeout).await;
+        // Lesen und Terminals in Stufe 2 nur mit deren Launcher und den Terminals des Runners.
+        let tools = ctx.stage.as_ref().and_then(|s| s.tools.clone());
+        let terminals = ctx.stage.as_ref().and_then(|s| s.terminals.clone());
+        let stage_two = tools.is_some() && terminals.is_some();
+        let opened = open_session(&rpc, &spec, self.handshake_timeout, stage_two).await;
         let (session_id, modes, models, loaded) = match opened {
             Ok(s) => s,
             Err(e) => {
@@ -376,6 +386,9 @@ impl HarnessAdapter for AcpAdapter {
                 workdir: spec.workdir.clone(),
                 write_policy: ctx.stage.as_ref().and_then(|s| s.harness_policy.clone()),
                 fs_calls: Arc::default(),
+                tools: tools.filter(|_| stage_two),
+                terminals: terminals.filter(|_| stage_two),
+                terminal_calls: Arc::default(),
             },
         ));
         Ok(Box::new(AcpSession {
@@ -410,7 +423,7 @@ async fn handshake_probe(spec: LaunchSpec, timeout: Duration) -> AgentProbe {
         return AgentProbe::default();
     };
     let (rpc, _incoming) = RpcClient::spawn(io.stdin, io.stdout);
-    let probe = match initialize(&rpc, timeout).await {
+    let probe = match initialize(&rpc, timeout, false).await {
         Ok(v) => AgentProbe {
             version: v["agentInfo"]["version"].as_str().map(str::to_owned),
             load_session: v["agentCapabilities"]["loadSession"] == true,
@@ -444,8 +457,9 @@ async fn open_session(
     rpc: &RpcClient,
     spec: &SessionSpec,
     timeout: Duration,
+    stage_two: bool,
 ) -> Result<(String, Vec<String>, Vec<String>, bool), Opened> {
-    let init = initialize(rpc, timeout).await?;
+    let init = initialize(rpc, timeout, stage_two).await?;
     let load = init["agentCapabilities"]["loadSession"] == true;
     let cwd = spec.workdir.display().to_string();
     let servers = mcp_servers(spec);
@@ -576,6 +590,11 @@ struct Turn {
     map: MapState,
 }
 
+/// Tool-Call (`call_id`, Turn) je Terminal eines Agents.
+type TerminalCalls =
+    Arc<std::sync::Mutex<std::collections::HashMap<String, (String, Option<TurnId>)>>>;
+
+#[derive(Clone)]
 struct Dispatcher {
     harness: String,
     hint: String,
@@ -594,6 +613,12 @@ struct Dispatcher {
     write_policy: Option<Arc<beton_sandbox::ResolvedPolicy>>,
     /// Laufende Nummer für Call-IDs der Client-Aufrufe (`fs-<n>`).
     fs_calls: Arc<std::sync::atomic::AtomicU64>,
+    /// Startet Tools in Stufe 2 (`fs/read_text_file`, #326); ohne: nicht angeboten.
+    tools: Option<Arc<dyn beton_harness::process::ProcessLauncher>>,
+    /// Terminals des Runners in Stufe 2 (`terminal/*`, #326); ohne: nicht angeboten.
+    terminals: Option<Arc<dyn beton_harness::terminal::TerminalHost>>,
+    /// Tool-Call je Terminal (für `tool.call.completed` bei `terminal/release`).
+    terminal_calls: TerminalCalls,
 }
 
 async fn send_all(
@@ -643,6 +668,12 @@ async fn dispatch(mut incoming: mpsc::Receiver<Incoming>, d: Dispatcher) {
                     permission(&d, &id, &params, raw).await;
                 } else if method == "fs/write_text_file" {
                     fs_write(&d, &id, &params).await;
+                } else if method == "fs/read_text_file" && d.tools.is_some() {
+                    fs_read(&d, &id, &params).await;
+                } else if method.starts_with("terminal/") && d.terminals.is_some() {
+                    // `wait_for_exit` kann dauern: nicht im Lese-Loop warten.
+                    let d = d.clone();
+                    tokio::spawn(async move { terminal(&d, &method, &id, &params).await });
                 } else {
                     // fs/* und terminal/* erst mit der Tool-Sandbox (SBX-002, ab M2).
                     if !(method.starts_with("fs/") || method.starts_with("terminal/")) {
@@ -991,6 +1022,358 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
         turn,
     )
     .await;
+}
+
+/// Größte Datei für `fs/read_text_file`.
+const READ_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Ergebnis des Gates für einen Client-Aufruf: `None` = erlaubt, sonst der Grund.
+async fn gate_client_call(d: &Dispatcher, request: GateRequest) -> Option<String> {
+    match tokio::time::timeout(d.gate_timeout, d.gate.decide(request)).await {
+        Ok(GateDecision::Allow { updated_args: None }) => None,
+        Ok(GateDecision::Allow { .. }) => {
+            Some("geänderte Argumente kann beton hier nicht übernehmen".to_owned())
+        }
+        Ok(GateDecision::Deny { reason }) => {
+            Some(reason.unwrap_or_else(|| "von der beton-Policy abgelehnt".into()))
+        }
+        Err(_) => Some("Gate antwortet nicht".to_owned()),
+    }
+}
+
+fn tool_event(call_id: &str, tool: &str, kind: &str, args: &Value) -> EventPayload {
+    EventPayload::ToolCallRequested(beton_core::event::ToolCallRequested {
+        call_id: call_id.to_owned(),
+        tool: tool.into(),
+        kind: Some(kind.into()),
+        mcp_server: None,
+        args: args.clone(),
+        source: beton_core::event::ToolSource::Acp,
+        parent_call_id: None,
+    })
+}
+
+fn started_event(call_id: &str) -> EventPayload {
+    EventPayload::ToolCallStarted(beton_core::event::ToolCallStarted {
+        call_id: call_id.to_owned(),
+        sandbox_stage: Some(beton_core::event::SandboxStage::Tools),
+        args: None,
+    })
+}
+
+fn completed_event(
+    call_id: &str,
+    status: beton_core::event::ToolStatus,
+    result: Value,
+) -> EventPayload {
+    EventPayload::ToolCallCompleted(beton_core::event::ToolCallCompleted {
+        call_id: call_id.to_owned(),
+        status,
+        result: Some(result),
+        result_ref: None,
+        duration_ms: 0,
+    })
+}
+
+/// Zeilen `line` (ab 1) bis höchstens `limit` aus `text`.
+fn select_lines(text: &str, line: Option<u64>, limit: Option<u64>) -> String {
+    if line.is_none() && limit.is_none() {
+        return text.to_owned();
+    }
+    let skip = line.unwrap_or(1).saturating_sub(1) as usize;
+    let take = limit.map_or(usize::MAX, |l| l as usize);
+    text.split_inclusive('\n').skip(skip).take(take).collect()
+}
+
+/// `fs/read_text_file` (#326, HAR-007): Datei-Lesen durch das Gate (`file_read`), gelesen in
+/// Stufe 2 (`/bin/cat` über den Launcher der Tools): Masken und Grenzen der Sandbox gelten im
+/// Kernel, ohne Zeitfenster zwischen Prüfung und Öffnen. Ins Log kommt nur die Größe.
+async fn fs_read(d: &Dispatcher, id: &Value, params: &Value) {
+    let Some(tools) = &d.tools else { return };
+    let Some(raw) = params["path"].as_str() else {
+        let _ = d
+            .rpc
+            .respond_error(id, codes::INVALID_PARAMS, "`path` fehlt")
+            .await;
+        return;
+    };
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+        let _ = d
+            .rpc
+            .respond_error(
+                id,
+                codes::INVALID_PARAMS,
+                "`path` muss absolut sein (ohne `..`)",
+            )
+            .await;
+        return;
+    }
+    let n = d.fs_calls.fetch_add(1, Ordering::SeqCst) + 1;
+    let call_id = format!("fs-{n}");
+    let turn = d.state.lock().await.turn;
+    let args = json!({ "path": raw });
+    send_all(
+        &d.tx,
+        vec![tool_event(
+            &call_id,
+            "fs/read_text_file",
+            "file_read",
+            &args,
+        )],
+        None,
+        turn,
+    )
+    .await;
+    let request = GateRequest {
+        turn_id: turn,
+        call_id: call_id.clone(),
+        tool: "fs/read_text_file".into(),
+        kind: "file_read".into(),
+        args,
+        mcp_server: None,
+        acp_kind: Some("read".into()),
+        origin: GateOrigin::PreTool,
+        raw: None,
+    };
+    if let Some(reason) = gate_client_call(d, request).await {
+        let _ = d.rpc.respond_error(id, POLICY_DENIED, &reason).await;
+        send_all(
+            &d.tx,
+            vec![completed_event(
+                &call_id,
+                beton_core::event::ToolStatus::Denied,
+                json!(reason),
+            )],
+            None,
+            turn,
+        )
+        .await;
+        return;
+    }
+    send_all(&d.tx, vec![started_event(&call_id)], None, turn).await;
+    let read = async {
+        use tokio::io::AsyncReadExt as _;
+        let mut child = tools
+            .launch(LaunchSpec {
+                program: "/bin/cat".into(),
+                args: vec!["--".into(), raw.to_owned()],
+                cwd: Some(d.workdir.clone()),
+                ..LaunchSpec::default()
+            })
+            .await
+            .map_err(|e| format!("Stufe 2: {e}"))?;
+        let io = child.take_io().ok_or("Stufe 2 ohne Ausgabe")?;
+        drop(io.stdin);
+        let mut buf = Vec::new();
+        let mut limited = io.stdout.take(READ_MAX_BYTES as u64 + 1);
+        limited
+            .read_to_end(&mut buf)
+            .await
+            .map_err(|e| e.to_string())?;
+        if buf.len() > READ_MAX_BYTES {
+            let _ = child.kill().await;
+            return Err(format!("größer als {READ_MAX_BYTES} Bytes"));
+        }
+        let exit = child.wait().await.map_err(|e| e.to_string())?;
+        if exit.code != Some(0) {
+            // Masken und fehlende Rechte sehen für den Agent gleich aus.
+            return Err("nicht lesbar (Sandbox der Tools)".into());
+        }
+        String::from_utf8(buf).map_err(|_| "kein UTF-8-Text".to_owned())
+    };
+    let (status, result) = match tokio::time::timeout(Duration::from_secs(30), read).await {
+        Ok(Ok(text)) => {
+            let content = select_lines(&text, params["line"].as_u64(), params["limit"].as_u64());
+            let _ = d.rpc.respond(id, json!({ "content": content })).await;
+            (
+                beton_core::event::ToolStatus::Ok,
+                json!({ "bytes": text.len() }),
+            )
+        }
+        Ok(Err(e)) => {
+            let _ = d.rpc.respond_error(id, codes::INTERNAL_ERROR, &e).await;
+            (beton_core::event::ToolStatus::Error, json!(e))
+        }
+        Err(_) => {
+            let _ = d
+                .rpc
+                .respond_error(id, codes::INTERNAL_ERROR, "Zeitüberschreitung")
+                .await;
+            (
+                beton_core::event::ToolStatus::Error,
+                json!("Zeitüberschreitung"),
+            )
+        }
+    };
+    send_all(
+        &d.tx,
+        vec![completed_event(&call_id, status, result)],
+        None,
+        turn,
+    )
+    .await;
+}
+
+/// `terminal/*` (#326, HAR-007, SES-019): Kommandos des Agents laufen am PTY in Stufe 2 über
+/// die Terminals des Runners und erscheinen als Terminal (`kind: tool`). `terminal/create`
+/// geht vorher als Shell-Kommando durch das Gate.
+async fn terminal(d: &Dispatcher, method: &str, id: &Value, params: &Value) {
+    let Some(host) = &d.terminals else { return };
+    let term_id = params["terminalId"].as_str().unwrap_or_default().to_owned();
+    let reply = match method {
+        "terminal/create" => {
+            let Some(command) = params["command"].as_str() else {
+                let _ = d
+                    .rpc
+                    .respond_error(id, codes::INVALID_PARAMS, "`command` fehlt")
+                    .await;
+                return;
+            };
+            let args: Vec<String> = params["args"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let env: Vec<(String, String)> = params["env"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| {
+                            Some((
+                                v["name"].as_str()?.to_owned(),
+                                v["value"].as_str()?.to_owned(),
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let line = std::iter::once(command.to_owned())
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let n = d.fs_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let call_id = format!("term-{n}");
+            let turn = d.state.lock().await.turn;
+            let gate_args = json!({ "command": line });
+            send_all(
+                &d.tx,
+                vec![tool_event(&call_id, "terminal/create", "shell", &gate_args)],
+                None,
+                turn,
+            )
+            .await;
+            let request = GateRequest {
+                turn_id: turn,
+                call_id: call_id.clone(),
+                tool: "terminal/create".into(),
+                kind: "shell".into(),
+                args: gate_args,
+                mcp_server: None,
+                acp_kind: Some("execute".into()),
+                origin: GateOrigin::PreTool,
+                raw: None,
+            };
+            if let Some(reason) = gate_client_call(d, request).await {
+                let _ = d.rpc.respond_error(id, POLICY_DENIED, &reason).await;
+                send_all(
+                    &d.tx,
+                    vec![completed_event(
+                        &call_id,
+                        beton_core::event::ToolStatus::Denied,
+                        json!(reason),
+                    )],
+                    None,
+                    turn,
+                )
+                .await;
+                return;
+            }
+            let req = beton_harness::terminal::ToolTerminal {
+                command: command.to_owned(),
+                args,
+                env,
+                cwd: params["cwd"].as_str().map(std::path::PathBuf::from),
+                output_limit: params["outputByteLimit"].as_u64().map(|l| l as usize),
+            };
+            match host.create(req).await {
+                Ok(tid) => {
+                    send_all(&d.tx, vec![started_event(&call_id)], None, turn).await;
+                    d.terminal_calls
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(tid.clone(), (call_id, turn));
+                    Ok(json!({ "terminalId": tid }))
+                }
+                Err(e) => {
+                    send_all(
+                        &d.tx,
+                        vec![completed_event(
+                            &call_id,
+                            beton_core::event::ToolStatus::Error,
+                            json!(e),
+                        )],
+                        None,
+                        turn,
+                    )
+                    .await;
+                    Err(e)
+                }
+            }
+        }
+        "terminal/output" => host.output(&term_id).await.map(|o| {
+            let mut v = json!({ "output": o.output, "truncated": o.truncated });
+            if let Some(e) = o.exit {
+                v["exitStatus"] = json!({ "exitCode": e.exit_code, "signal": e.signal });
+            }
+            v
+        }),
+        "terminal/wait_for_exit" => host
+            .wait_for_exit(&term_id)
+            .await
+            .map(|e| json!({ "exitCode": e.exit_code, "signal": e.signal })),
+        "terminal/kill" => host.kill(&term_id).await.map(|()| Value::Null),
+        "terminal/release" => {
+            let r = host.release(&term_id).await.map(|()| Value::Null);
+            let call = d
+                .terminal_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&term_id);
+            if let Some((call_id, turn)) = call {
+                send_all(
+                    &d.tx,
+                    vec![completed_event(
+                        &call_id,
+                        beton_core::event::ToolStatus::Ok,
+                        json!({ "terminal_id": term_id }),
+                    )],
+                    None,
+                    turn,
+                )
+                .await;
+            }
+            r
+        }
+        _ => {
+            let _ = d
+                .rpc
+                .respond_error(id, codes::METHOD_NOT_FOUND, "von beton nicht unterstützt")
+                .await;
+            return;
+        }
+    };
+    match reply {
+        Ok(v) => {
+            let _ = d.rpc.respond(id, v).await;
+        }
+        Err(e) => {
+            let _ = d.rpc.respond_error(id, codes::INTERNAL_ERROR, &e).await;
+        }
+    }
 }
 
 /// Eine laufende ACP-Session.

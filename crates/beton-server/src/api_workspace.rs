@@ -360,6 +360,28 @@ pub async fn put_file(
         .transpose()
         .map_err(|_| Problem::new(ProblemCode::BadRequest).detail("If-Match ist kein Text"))?;
     let path = normalized(&path)?;
+    // #93: Vor dem Schreiben dem Runner ankündigen, damit sein Beobachter den Stand nicht als
+    // Änderung des Agents meldet (sonst könnte er zwischen Schreiben und Ankündigung schauen).
+    if state.runtime.runners.connected(record.id) {
+        use sha2::Digest as _;
+        let sha = hex::encode(sha2::Sha256::digest(req.content.as_bytes()));
+        if let Err(p) = state
+            .runtime
+            .runners
+            .deliver(
+                record.id,
+                "workspace.user_write",
+                serde_json::json!({"path": path, "sha256": sha}),
+                std::time::Duration::from_secs(2),
+            )
+            .await
+        {
+            tracing::debug!(
+                code = p.code.as_str(),
+                "Ankündigung an den Runner gescheitert"
+            );
+        }
+    }
     let raw = path.clone();
     let written = blocking(move || {
         ws.write(&raw, req.content.as_bytes(), if_match.as_deref())

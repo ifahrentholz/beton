@@ -380,6 +380,8 @@ async fn serve(mut conn: UnixStream, shared: Arc<Shared>) {
         stdin: Stdio::Fd(stdin),
         stdout: Stdio::Fd(stdout),
         stderr: Stdio::Fd(stderr),
+        // `tty: true` lehnt der Broker ab (Terminals laufen über `beton-pty`, SBX-017).
+        tty: None,
     };
     // Die Deskriptoren des Clients hält nur noch das Kind (sonst sähe der Harness nie EOF).
     let spawned = shared.tools.spawn(cmd);
