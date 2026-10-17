@@ -9,11 +9,21 @@
 
 /// Keine Core-Dumps (weiches und hartes Limit 0); vererbt sich auf Kindprozesse.
 pub fn no_core_dumps() -> std::io::Result<()> {
+    #[cfg(unix)]
+    rustix::process::setrlimit(
+        rustix::process::Resource::Core,
+        rustix::process::Rlimit {
+            current: Some(0),
+            maximum: Some(0),
+        },
+    )?;
     Ok(())
 }
 
 /// Prozess nicht dumpable (nur Linux; sonst ohne Wirkung). Gilt bis zum nächsten `execve`.
 pub fn not_dumpable() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)?;
     Ok(())
 }
 

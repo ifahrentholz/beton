@@ -7,8 +7,8 @@
 
 mod agent_sandbox;
 mod credentials;
-pub mod harden;
 pub mod fork;
+pub mod harden;
 pub mod mcp;
 pub mod policy;
 pub mod settings;
@@ -398,6 +398,11 @@ pub async fn main_from_env() -> std::process::ExitCode {
             budget_ms = ms,
             "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
         );
+    }
+    // Keine Core-Dumps mit Credential-Werten (#295). Nicht dumpable ist nur der Daemon: Der
+    // Runner bleibt für Diagnose und `RUN-002` über `/proc/<pid>/cwd` lesbar (Restrisiko).
+    if let Err(e) = harden::no_core_dumps() {
+        tracing::warn!("Core-Dumps nicht abschaltbar: {e}");
     }
     let boot = match RunnerBoot::from_env_and_stdin() {
         Ok(b) => b,

@@ -275,6 +275,14 @@ pub async fn serve(ctx: &Ctx, args: ServeArgs) -> CliResult {
     })
     .map_err(|e| ctx.note(format!("Logging nicht verfügbar: {e:#}")))
     .ok();
+    // #295: Secret-Werte im Speicher des Daemons nie in einem Core-Dump und nicht über
+    // `/proc/<pid>/mem` bzw. ptrace für andere Prozesse desselben Users (Linux).
+    if let Err(e) = beton_runner::harden::no_core_dumps() {
+        tracing::warn!("Core-Dumps nicht abschaltbar: {e}");
+    }
+    if let Err(e) = beton_runner::harden::not_dumpable() {
+        tracing::warn!("Daemon nicht als nicht-dumpable markierbar: {e}");
+    }
     // #304: Ein Testbudget der Policy-Engine (Feature `test-budget`) gehört nie in den Betrieb.
     if let Some(ms) = beton_policy::cel::Limits::active_test_budget_ms() {
         tracing::warn!(
