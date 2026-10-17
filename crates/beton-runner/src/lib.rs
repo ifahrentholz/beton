@@ -160,6 +160,9 @@ pub enum RunnerError {
     Harness(#[from] beton_harness::HarnessError),
     #[error("Tunnel: {0}")]
     Tunnel(String),
+    /// Der Tunnel lehnt das Token ab (401: abgelaufen oder gesperrt, #243).
+    #[error("Tunnel: Token abgelehnt (401)")]
+    Unauthorized,
     #[error("stale_epoch: Session gehört inzwischen einem anderen Schreiber")]
     StaleEpoch,
 }
@@ -422,7 +425,7 @@ pub async fn main_from_env() -> std::process::ExitCode {
         Ok(Exit::HarnessExited { code }) => {
             ExitCode::from(u8::try_from(code.unwrap_or(1)).unwrap_or(1))
         }
-        Ok(Exit::PolicyViolation) => ExitCode::FAILURE,
+        Ok(Exit::PolicyViolation | Exit::Unauthorized) => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("beton runner: {e}");
             ExitCode::FAILURE
@@ -628,6 +631,9 @@ pub enum Exit {
     TimedOut,
     /// Integritätsverletzung des Policy-Gates (HAR-005, #233): Session beendet.
     PolicyViolation,
+    /// Der Tunnel lehnt das Token ab (abgelaufen oder gesperrt, #243): ohne neues Token kommt
+    /// der Runner nie wieder hinein und endet (fail closed).
+    Unauthorized,
 }
 
 #[cfg(unix)]
@@ -674,7 +680,14 @@ async fn connect(boot: &RunnerBoot) -> Result<Ws, RunnerError> {
     );
     let (ws, _) = tokio_tungstenite::client_async(req, stream)
         .await
-        .map_err(|e| RunnerError::Tunnel(e.to_string()))?;
+        .map_err(|e| match e {
+            tokio_tungstenite::tungstenite::Error::Http(r)
+                if r.status() == tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED =>
+            {
+                RunnerError::Unauthorized
+            }
+            e => RunnerError::Tunnel(e.to_string()),
+        })?;
     Ok(ws)
 }
 
@@ -1539,6 +1552,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         // (Wieder-)Verbinden.
         let mut ws = match connect(&boot).await {
             Ok(ws) => ws,
+            Err(RunnerError::Unauthorized) => {
+                tracing::warn!("Tunnel lehnt das Runner-Token ab; Runner endet");
+                return finish(session, Exit::Unauthorized).await;
+            }
             Err(e) => {
                 tracing::warn!("Tunnel nicht erreichbar: {e}");
                 let keep = detached_keep(

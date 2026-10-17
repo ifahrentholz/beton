@@ -77,6 +77,14 @@ impl Launched {
             .clone()
     }
 
+    /// Vergisst die Start-Sperre einer gelöschten Session.
+    fn forget(&self, session: SessionId) {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&session);
+    }
+
     /// Zahl der Sessions mit Start-Sperre (Diagnose, Tests von #243).
     pub fn start_locks(&self) -> usize {
         self.starts
@@ -928,8 +936,20 @@ impl<'a> SessionManager<'a> {
         Ok(found)
     }
 
-    /// Startet einen Runner für die Session.
+    /// Startet einen Runner für die Session unter ihrer Start-Sperre: Ein gleichzeitiger
+    /// Stopp wartet, bis Token und Handle abgelegt sind, und räumt sie dann ab (#243, S1).
     pub(crate) async fn launch(
+        &self,
+        session: &SessionRecord,
+        resume: Option<String>,
+    ) -> Result<(), Problem> {
+        let starts = self.cfg().launched.start_lock(session.id);
+        let _start = starts.lock().await;
+        self.launch_unlocked(session, resume).await
+    }
+
+    /// Wie [`Self::launch`]; nur unter der Start-Sperre der Session aufrufen.
+    async fn launch_unlocked(
         &self,
         session: &SessionRecord,
         resume: Option<String>,
@@ -1110,7 +1130,7 @@ impl<'a> SessionManager<'a> {
             if !self.await_adopted(session).await && !self.runner_starting(session).await {
                 self.replace_start(session).await;
                 let reference = self.last_native_ref(session).await?;
-                self.launch(&record, reference).await?;
+                self.launch_unlocked(&record, reference).await?;
             }
         }
         self.wait_connected(session).await?;
@@ -1626,6 +1646,10 @@ impl<'a> SessionManager<'a> {
     /// mit (`parent_cancelled`, AGT-009 AC5).
     pub async fn stop(&self, session: SessionId, reason: &str) {
         self.cancel_children(session).await;
+        // Unter der Start-Sperre: Ein laufender Start (`resume`) legt sein Token erst ab und
+        // wird danach mit gestoppt, statt sich mit der gestoppten Session zu verbinden (#243).
+        let starts = self.cfg().launched.start_lock(session);
+        let _start = starts.lock().await;
         let runners = &self.state.runtime.runners;
         if runners.stop_with_reason(session, 10, reason) {
             let start = Instant::now();
@@ -1703,6 +1727,8 @@ impl<'a> SessionManager<'a> {
             .delete_session(self.org(), session, by, DeleteAuthority::Owner)
             .await?;
         self.state.runtime.queues.forget(session);
+        // Mit der Session verschwindet ihre Start-Sperre (#243, N4).
+        self.cfg().launched.forget(session);
         let _ = std::fs::remove_file(self.cfg().fork_plan(session));
         let _ = std::fs::remove_file(self.cfg().agent_snapshot(session));
         let fresh = self.cfg().fresh_dir(session);

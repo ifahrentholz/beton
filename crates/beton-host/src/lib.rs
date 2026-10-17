@@ -85,8 +85,8 @@ pub struct Provisioned {
 /// Übergabe des Stufenmodells an den Runner (SBX-002, #191).
 pub use beton_runner::stages::{CaText, SandboxBoot, active as stages_active, vendor_key};
 
-/// Startdaten für den Runner (RUN-002, AUTH-011).
-#[derive(Debug, Clone)]
+/// Startdaten für den Runner (RUN-002, AUTH-011). `Debug` zeigt das Token nicht (#243).
+#[derive(Clone)]
 pub struct RunnerBoot {
     pub tunnel_socket: PathBuf,
     /// Geht über stdin an den Runner, nie über Env oder argv.
@@ -127,6 +127,21 @@ pub struct RunnerBoot {
     pub max_cost_usd: Option<f64>,
     /// Child einer `session_spawn` (`start.trigger = "spawn"`, POL-011).
     pub spawned: bool,
+}
+
+impl std::fmt::Debug for RunnerBoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunnerBoot")
+            .field("tunnel_socket", &self.tunnel_socket)
+            .field("token", &"***")
+            .field("session_id", &self.session_id)
+            .field("epoch", &self.epoch)
+            .field("harness", &self.harness)
+            .field("dev", &self.dev)
+            .field("sandbox", &self.sandbox)
+            .field("unsandboxed_confirmed", &self.unsandboxed_confirmed)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Verweis auf den Fork-Plan einer Session (`beton_harness::handover::ForkPlan` als JSON).
