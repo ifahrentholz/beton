@@ -377,7 +377,7 @@ pub(crate) struct Precheck {
 /// Begründung für Tool-Calls auf Policy-Dateien (Regel `policy-files`, #234).
 fn policy_files_reason(path: &str) -> String {
     format!(
-        "Policy-Dateien ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
+        "Policy-Dateien und die Hook-Konfiguration der Vendor-CLIs ändert nur der Mensch, nicht ein Agent ({path}; beton-Policy, Regel `policy-files`)"
     )
 }
 
@@ -394,6 +394,9 @@ fn adapter_kind(n: &mut beton_policy::normalize::NormalizedTool, req: &GateReque
 struct PolicyPathGuard {
     /// Kanonische Policy-Verzeichnisse.
     dirs: Vec<PathBuf>,
+    /// Kanonische Konfiguration der Vendor-CLIs mit Hooks (`~/.claude`, `~/.claude.json`,
+    /// `$CLAUDE_CONFIG_DIR`, `~/.codex`, `$CODEX_HOME`, #258): geschützt wie Policies.
+    vendor: Vec<PathBuf>,
     cwd: String,
     home: Option<String>,
 }
@@ -406,6 +409,7 @@ impl PolicyPathGuard {
         self.dirs
             .iter()
             .any(|d| real.starts_with(d) || d.parent() == Some(real.as_path()))
+            || self.vendor.iter().any(|v| real.starts_with(v))
     }
 
     fn hits_word(&self, word: &str, vars: &HashMap<String, String>) -> bool {
@@ -449,10 +453,14 @@ fn resolve_fs(p: &str) -> String {
     FsResolver.resolve(p).unwrap_or_else(|_| p.to_owned())
 }
 
-/// Erwähnt der Text ein Policy-Verzeichnis (für Wörter mit nicht auflösbaren Variablen)?
+/// Erwähnt der Text ein Policy-Verzeichnis oder die Konfiguration einer Vendor-CLI (für
+/// Wörter mit nicht auflösbaren Variablen)?
 fn mentions_policies(text: &str) -> bool {
     let lower = text.to_lowercase();
-    lower.contains("beton") || lower.contains("polic")
+    lower.contains("beton")
+        || lower.contains("polic")
+        || lower.contains(".claude")
+        || lower.contains(".codex")
 }
 
 /// `NAME=wert`-Zuweisungen aller Teilkommandos (auch nach `export`).
@@ -2345,6 +2353,21 @@ impl PolicyGate {
         dirs
     }
 
+    /// Konfiguration der Vendor-CLIs, die Hooks bzw. Freigaben steuert (#258): unter dem Home
+    /// `.claude`, `.claude.json`, `.codex`, dazu `$CLAUDE_CONFIG_DIR`/`$CODEX_HOME`; kanonisch.
+    fn vendor_paths(&self) -> Vec<PathBuf> {
+        let opts = &self.inner.opts;
+        let home = opts.home.iter().flat_map(|h| {
+            [".claude", ".claude.json", ".codex"]
+                .into_iter()
+                .map(move |n| h.join(n))
+        });
+        home.chain(opts.vendor_dirs.iter().cloned())
+            .filter(|p| p.is_absolute())
+            .map(|p| PathBuf::from(resolve_fs(&p.display().to_string())))
+            .collect()
+    }
+
     /// Gemeinsame Vorprüfungen eines Tool-Calls (#253, Security-Review B2 zu #257): Echte
     /// Calls (`decide`, `tool_verdict`, Nachprüfung geänderter Argumente) und `policy_query`
     /// rufen genau diese Funktion auf, damit die Abfrage dieselbe Entscheidung liefert.
@@ -2444,6 +2467,7 @@ impl PolicyGate {
         }
         let guard = PolicyPathGuard {
             dirs: self.policy_dirs(),
+            vendor: self.vendor_paths(),
             cwd: n.cwd.clone(),
             home: self
                 .inner
@@ -2477,6 +2501,15 @@ impl PolicyGate {
                         return Some(word.clone());
                     }
                 }
+            }
+            // Umleitungsziele mit Variablen (`>> $X/config.toml`) stehen nicht in `argv`: auch
+            // die Wörter des Kommando-Texts prüfen (#258).
+            if let Some(word) = words
+                .iter()
+                .map(|w| w.trim_start_matches(['>', '<']))
+                .find(|w| w.contains(['/', '$', '~']) && guard.hits_word(w, &vars))
+            {
+                return Some(word.to_owned());
             }
             if n.parse_uncertain
                 && let Some(cmd) = &n.command

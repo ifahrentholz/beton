@@ -854,7 +854,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 source: Some(s.source.clone()),
                 hash: Some(s.hash.clone()),
             }),
-            vendor_dirs: Vec::new(),
+            // Weitere Konfigurationsverzeichnisse der Vendor-CLIs (#258).
+            vendor_dirs: ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .collect(),
         },
         gate_tx,
     )
