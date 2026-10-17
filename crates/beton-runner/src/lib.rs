@@ -385,6 +385,8 @@ fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter
         // Die Projektebene darf nur verschärfen (SBX-002, HAR-004).
         isolated: user.and_then(|e| e.isolated).unwrap_or(false)
             || project.and_then(|e| e.isolated) == Some(true),
+        // Managed Settings können Hooks abschalten (#258 R5).
+        managed_settings: beton_harness_claude::managed_settings_paths(),
         ..beton_harness_claude::ClaudeAdapter::default()
     }
 }

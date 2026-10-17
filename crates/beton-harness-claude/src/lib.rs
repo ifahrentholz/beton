@@ -356,6 +356,61 @@ pub fn command_args_with(
     args
 }
 
+/// Bekannte Pfade der Managed Settings von Claude Code (Datei und Drop-in-Verzeichnis) auf
+/// dieser Plattform; `BETON_CLAUDE_MANAGED_SETTINGS` (durch `:` getrennt) ersetzt sie (#258).
+pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
+    if let Some(list) = std::env::var_os("BETON_CLAUDE_MANAGED_SETTINGS") {
+        return std::env::split_paths(&list).collect();
+    }
+    let base: &[&str] = if cfg!(target_os = "macos") {
+        &["/Library/Application Support/ClaudeCode"]
+    } else if cfg!(windows) {
+        &[r"C:\Program Files\ClaudeCode", r"C:\ProgramData\ClaudeCode"]
+    } else {
+        &["/etc/claude-code"]
+    };
+    base.iter()
+        .flat_map(|b| {
+            let b = std::path::Path::new(b);
+            [
+                b.join("managed-settings.json"),
+                b.join("managed-settings.d"),
+            ]
+        })
+        .collect()
+}
+
+/// Schalten Managed Settings Hooks ab (`disableAllHooks`, `allowManagedHooksOnly`)? Eine
+/// vorhandene, aber nicht lesbare oder ungültige Datei zählt ebenfalls (fail closed, #258).
+/// Verzeichnisse werden nach `*.json` durchsucht.
+pub fn managed_hooks_disabled(paths: &[std::path::PathBuf]) -> bool {
+    use std::io::Read as _;
+    let file_disables = |path: &std::path::Path| -> bool {
+        let mut text = String::new();
+        let read =
+            std::fs::File::open(path).and_then(|f| f.take(1 << 20).read_to_string(&mut text));
+        if read.is_err() {
+            return true;
+        }
+        match serde_json::from_str::<Value>(&text) {
+            Ok(v) => v["disableAllHooks"] == true || v["allowManagedHooksOnly"] == true,
+            Err(_) => true,
+        }
+    };
+    paths.iter().any(|p| match std::fs::metadata(p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(m) if m.is_dir() => match std::fs::read_dir(p) {
+            Ok(entries) => entries.flatten().any(|e| {
+                let path = e.path();
+                path.extension().is_some_and(|x| x == "json") && file_disables(&path)
+            }),
+            Err(_) => true,
+        },
+        Ok(_) => file_disables(p),
+    })
+}
+
 /// Kleinstes Modell für Einmal-Aufrufe wie Session-Titel (SES-010); ein Alias der CLI.
 pub const ONE_SHOT_MODEL: &str = "haiku";
 
@@ -469,7 +524,9 @@ impl HarnessAdapter for ClaudeAdapter {
         let caps = capabilities();
         Capabilities {
             // Isoliert (`--safe-mode`) gibt es keinen Hook: nur die Rückfragen des Vendors.
-            tool_call_gate: if self.isolated {
+            // Managed Settings mit `disableAllHooks`/`allowManagedHooksOnly` schalten den Hook
+            // ebenfalls ab (#258 R5).
+            tool_call_gate: if self.isolated || managed_hooks_disabled(&self.managed_settings) {
                 ToolCallGate::ApprovalOnly
             } else {
                 ToolCallGate::Full
