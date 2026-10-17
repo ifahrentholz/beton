@@ -5,6 +5,7 @@
 //!
 //! Alle Homes und Toolchains sind Fixtures in Temp-Verzeichnissen.
 
+#![cfg(unix)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 mod support;
