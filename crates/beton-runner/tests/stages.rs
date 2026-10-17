@@ -793,6 +793,50 @@ fn git_fixture(fx: &Fx) -> PathBuf {
     git
 }
 
+/// #329 (HAR-007, SBX-002): ACP `fs/write_text_file` schreibt in Stufe 2. Ersetzt der Agent in
+/// Stufe 1 das Elternverzeichnis nach der Prüfung in Stufe 0 durch einen Symlink auf
+/// `.git/hooks` bzw. auf ein Verzeichnis außerhalb der Freigaben, scheitert das Schreiben im
+/// Kernel. Kontrollgruppe: Ein Schreiben in Stufe 0 über denselben Pfad (wie vor #329) landet
+/// dort.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn har_007_fs_write_in_stage_two_survives_a_swapped_parent_directory() {
+    let fx = fx();
+    let git = git_fixture(&fx);
+    std::fs::create_dir_all(git.join("hooks")).unwrap();
+    let outside = fx.home.join("draussen");
+    std::fs::create_dir_all(&outside).unwrap();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let tools = beton_harness::process::SandboxLauncher::new(s.tools.clone());
+    let sub = fx.ws.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    beton_harness_acp::write_in_stage_two(&tools, &sub.join("ok.txt"), "ok\n", &fx.ws)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(sub.join("ok.txt")).unwrap(), "ok\n");
+    for dest in [git.join("hooks"), outside.clone()] {
+        let aside = fx.ws.join("sub.weg");
+        std::fs::rename(&sub, &aside).unwrap();
+        std::os::unix::fs::symlink(&dest, &sub).unwrap();
+        let target = sub.join("pre-commit");
+        let r = beton_harness_acp::write_in_stage_two(&tools, &target, "BOESE\n", &fx.ws).await;
+        assert!(r.is_err(), "{}: {r:?}", dest.display());
+        assert!(!dest.join("pre-commit").exists(), "{}", dest.display());
+        // Kontrollgruppe: Stufe 0 folgt dem Symlink.
+        std::fs::write(&target, "KONTROLLE\n").unwrap();
+        assert!(dest.join("pre-commit").exists(), "{}", dest.display());
+        std::fs::remove_file(dest.join("pre-commit")).unwrap();
+        std::fs::remove_file(&sub).unwrap();
+        std::fs::rename(&aside, &sub).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn sbx_003_ac4_new_or_changed_git_control_files_end_the_session() {
     let fx = fx();

@@ -906,6 +906,16 @@ fn write_no_follow(target: &std::path::Path, content: &str) -> std::io::Result<(
     o.open(target)?.write_all(content.as_bytes())
 }
 
+/// Schreibt `content` nach `target` in Stufe 2 (#329); noch nicht umgesetzt.
+pub async fn write_in_stage_two(
+    _tools: &dyn beton_harness::process::ProcessLauncher,
+    _target: &std::path::Path,
+    _content: &str,
+    _cwd: &std::path::Path,
+) -> Result<(), String> {
+    Err("noch nicht in Stufe 2 (#329)".into())
+}
+
 /// `fs/write_text_file` (POL-023 AC2, HAR-007 AC2): unabhängig von Permission-Requests als
 /// Datei-Schreiben vor der Ausführung durch das Gate (`path_guard`, volles Gate), nur im
 /// Arbeitsverzeichnis; jede Ablehnung ist ein JSON-RPC-Fehler (fail closed).
