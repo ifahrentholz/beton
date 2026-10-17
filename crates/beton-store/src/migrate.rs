@@ -89,16 +89,16 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "policy_snapshots_shadow",
         sql: include_str!("../migrations/sqlite/0013_policy_snapshots_shadow.sql"),
     },
-    // 0014 gehört WP-58 (Einstellungen der Desktop-App, #362).
+    // Wird #362 (WP-58, `0014_user_settings`) zuerst gemergt, wird diese Migration zu 0015.
     Migration {
-        version: 15,
+        version: 14,
         name: "idempotency_location",
-        sql: include_str!("../migrations/sqlite/0015_idempotency_location.sql"),
+        sql: include_str!("../migrations/sqlite/0014_idempotency_location.sql"),
     },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,
