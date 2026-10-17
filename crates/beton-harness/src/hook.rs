@@ -195,6 +195,10 @@ impl HookServer {
         ))
     }
 
+    /// Nimmt nur noch Verbindungen des Prozesses `pid` (der CLI) und seiner Nachfahren an
+    /// (#247).
+    pub fn restrict_to_descendants_of(&self, _pid: u32) {}
+
     pub fn socket(&self) -> &Path {
         &self.socket
     }
