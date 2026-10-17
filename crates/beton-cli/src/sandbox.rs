@@ -1,6 +1,6 @@
-//! `beton sandbox probe|explain|exec` (SBX-001 AC1, SBX-003 AC5, SBX-010). Keins braucht einen
-//! Daemon; `probe` und `explain` ändern nichts, `exec` startet ein Kommando in der Sandbox
-//! einer Stufe (ohne Netz). `test` folgt mit der Escape-Suite (SBX-011).
+//! `beton sandbox probe|explain|exec|test` (SBX-001 AC1, SBX-003 AC5, SBX-010). Keins braucht
+//! einen Daemon; `probe`, `explain` und `test` ändern nichts, `exec` startet ein Kommando in
+//! der Sandbox einer Stufe (ohne Netz). `test` führt die Selbsttests der Probe aus (ADR-0042).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use beton_sandbox::registry::Os;
 use beton_sandbox::{
-    BackendChoice, CommandSpec, GitLayout, Mask, NetMode, ProbeReport, Registry, ResolveCtx,
-    ResolvedPolicy, SandboxProvider, Stage, Stdio,
+    BackendChoice, CommandSpec, GitLayout, Mask, NetMode, ProbeReport, ProviderId, Registry,
+    ResolveCtx, ResolvedPolicy, SandboxProvider, Stage, Stdio,
 };
 use serde_json::{Value, json};
 
@@ -23,7 +24,131 @@ pub async fn run(ctx: &Ctx, cmd: SandboxCommand) -> CliResult {
         SandboxCommand::Probe => probe(ctx),
         SandboxCommand::Explain(args) => explain(ctx, args),
         SandboxCommand::Exec(args) => exec(ctx, args).await,
+        SandboxCommand::Test => self_test(ctx),
     }
+}
+
+/// Backends mit Selbsttest auf diesem Betriebssystem (die nativen Backends der Probe).
+fn native_backends(os: Os) -> &'static [ProviderId] {
+    match os {
+        Os::MacOs => &[ProviderId::Seatbelt],
+        Os::Linux => &[ProviderId::Landlock, ProviderId::Bwrap],
+        Os::Windows => &[ProviderId::Windows],
+        Os::Other => &[],
+    }
+}
+
+/// Ein Fall von `beton sandbox test`: der Selbsttest eines Backends.
+fn case(report: Option<&ProbeReport>, id: ProviderId, required: bool) -> Value {
+    let (passed, reason) = match report {
+        // `none` isoliert nichts; als Pflicht besteht es nie (SBX-006).
+        _ if id == ProviderId::None => (false, Some("`none` isoliert nicht".to_owned())),
+        Some(r) if r.available => (true, None),
+        Some(r) => (
+            false,
+            Some(
+                r.unavailable_reason
+                    .clone()
+                    .unwrap_or_else(|| "nicht verfügbar".to_owned()),
+            ),
+        ),
+        None => (false, Some("Backend ist nicht registriert".to_owned())),
+    };
+    json!({
+        "id": format!("selftest:{}", id.as_str()),
+        "backend": id.as_str(),
+        "required": required,
+        "passed": passed,
+        "reason": reason,
+    })
+}
+
+/// SBX-010 AC3: die Selbsttests der Probe als Fälle; Pflicht ist das Backend einer Session.
+fn self_test(ctx: &Ctx) -> CliResult {
+    let settings = ctx
+        .layers()?
+        .settings()
+        .map_err(|e| CliError::new(Exit::General, e))?;
+    let (spec, _) = beton_sandbox::SandboxSpec::merged_with_origins(&[("user", &settings.sandbox)]);
+    let registry = Registry::platform();
+    let required = match spec.backend.unwrap_or(BackendChoice::Auto) {
+        BackendChoice::Auto => registry.auto_choice(),
+        BackendChoice::Provider(id) => Some(id),
+    };
+    let reports = registry.probe_all();
+    let report = |id: ProviderId| reports.iter().find(|r| r.id == id);
+    let mut cases: Vec<Value> = native_backends(registry.os())
+        .iter()
+        .map(|&id| case(report(id), id, Some(id) == required))
+        .collect();
+    if let Some(id) = required
+        && !native_backends(registry.os()).contains(&id)
+    {
+        cases.push(case(report(id), id, true));
+    }
+    let failed: Vec<String> = cases
+        .iter()
+        .filter(|c| c["required"] == true && c["passed"] != true)
+        .map(|c| {
+            format!(
+                "{} ({})",
+                c["id"].as_str().unwrap_or_default(),
+                c["reason"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    let passed = required.is_some() && failed.is_empty();
+    if ctx.global.json {
+        print_json(&json!({
+            "passed": passed,
+            "backend": required.map(|id| id.as_str()),
+            "cases": cases,
+        }))?;
+    } else {
+        let mut out = String::from("Selbsttests der Sandbox-Backends (Probe):\n");
+        for c in &cases {
+            let mark = if c["required"] == true {
+                " (Pflicht)"
+            } else {
+                ""
+            };
+            let state = if c["passed"] == true {
+                "bestanden".to_owned()
+            } else {
+                format!(
+                    "nicht bestanden: {}",
+                    c["reason"].as_str().unwrap_or_default()
+                )
+            };
+            let _ = writeln!(
+                out,
+                "  {}{mark}: {state}",
+                c["id"].as_str().unwrap_or_default()
+            );
+        }
+        let _ = writeln!(
+            out,
+            "Ergebnis: {}",
+            if passed {
+                "bestanden"
+            } else {
+                "nicht bestanden"
+            }
+        );
+        print!("{out}");
+    }
+    if passed {
+        return Ok(());
+    }
+    let why = if required.is_none() {
+        "für dieses Betriebssystem gibt es kein Sandbox-Backend".to_owned()
+    } else {
+        failed.join(", ")
+    };
+    Err(CliError::new(
+        Exit::General,
+        anyhow::anyhow!("Pflichtfall nicht bestanden: {why}"),
+    ))
 }
 
 fn probe(ctx: &Ctx) -> CliResult {
