@@ -357,7 +357,8 @@ pub fn command_args_with(
 }
 
 /// Bekannte Pfade der Managed Settings von Claude Code (Datei und Drop-in-Verzeichnis) auf
-/// dieser Plattform; `BETON_CLAUDE_MANAGED_SETTINGS` (durch `:` getrennt) ersetzt sie (#258).
+/// dieser Plattform (#258); nur in Test-Builds ersetzt `BETON_CLAUDE_MANAGED_SETTINGS` (durch `:`
+/// getrennt) sie.
 pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
     if let Some(paths) = managed_settings_override(std::env::var_os(MANAGED_SETTINGS_ENV)) {
         return paths;
@@ -383,9 +384,18 @@ pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
 /// Umgebungsvariable, die die Pfade der Managed Settings ersetzt (nur für Tests).
 pub const MANAGED_SETTINGS_ENV: &str = "BETON_CLAUDE_MANAGED_SETTINGS";
 
-/// Ersetzte Pfade aus [`MANAGED_SETTINGS_ENV`].
+/// Ersetzte Pfade aus [`MANAGED_SETTINGS_ENV`]; nur mit dem Feature `test-managed-settings`
+/// (Dev-Dependencies), sonst nie (Security-Review von #385).
 fn managed_settings_override(raw: Option<std::ffi::OsString>) -> Option<Vec<std::path::PathBuf>> {
-    raw.map(|list| std::env::split_paths(&list).collect())
+    #[cfg(feature = "test-managed-settings")]
+    {
+        raw.map(|list| std::env::split_paths(&list).collect())
+    }
+    #[cfg(not(feature = "test-managed-settings"))]
+    {
+        let _ = raw;
+        None
+    }
 }
 
 /// Schalten Managed Settings Hooks ab (`disableAllHooks`, `allowManagedHooksOnly`)? Eine
