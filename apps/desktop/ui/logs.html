@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Daemon-Logs</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="logs.js"></script>
+  </head>
+  <body>
+    <div class="logs">
+      <header>
+        <strong>Daemon-Logs</strong>
+        <span class="path" id="path"></span>
+        <span class="tools">
+          <button id="copy">Kopieren</button>
+          <button id="close" aria-label="Schließen">✕</button>
+        </span>
+      </header>
+      <pre id="lines" tabindex="0"></pre>
+    </div>
+  </body>
+</html>

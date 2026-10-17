@@ -3,7 +3,7 @@ import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
 import type { Capabilities, HarnessInfo, PermissionMode, SessionSandbox } from '@beton/sdk'
-import { Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
+import { Link2, Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
 import { compacting as compactingOf, contextOf } from '@/lib/context'
@@ -14,7 +14,8 @@ import { queueOf } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 import { openApprovals, timeline, type ApprovalItem, type Item } from '@/lib/timeline'
 import { titleFrom, windowTitle } from '@/lib/title'
-import { changedPaths, lineLink, rangeLabel, withAttachments, type WorkspaceSearch } from '@/lib/workspace'
+import { indexForSeq, linkOf, type SessionSearch } from '@/lib/deeplink'
+import { changedPaths, lineLink, rangeLabel, withAttachments } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
 import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } from '@/store/workspace'
@@ -28,6 +29,7 @@ import { ConflictHost } from './workspace/editor'
 import { WorkspaceRail } from './workspace/rail'
 import { ApprovalBar } from './approval-bar'
 import { ContextBar } from './context-bar'
+import { WindowDrop } from './window-drop'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
 
 /** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
@@ -138,7 +140,7 @@ const desktop = () => window.matchMedia('(min-width: 1024px)').matches
 export function SessionView({ sessionId }: { sessionId: string }) {
   useSessionStream(sessionId)
   useOpenFileSync(sessionId)
-  const search = useSearch({ strict: false }) as WorkspaceSearch
+  const search = useSearch({ strict: false }) as SessionSearch
   const navigate = useNavigate()
   const railOpen = useWorkspace((s) => s.railOpen)
   const railSheet = useWorkspace((s) => s.railSheet)
@@ -261,6 +263,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     overscan: 8,
     getItemKey: (i) => items[i]?.key ?? i,
   })
+  // Sprung zu Event `seq` aus Deep-Link oder Benachrichtigung (DESK-006 AC3, DESK-005 AC2):
+  // einmal, sobald das Event geladen ist; danach folgt die Ansicht nicht mehr dem Ende.
+  const target = search.seq !== undefined ? indexForSeq(items, search.seq) : undefined
+  const targetKey = target !== undefined ? items[target]?.key : undefined
+  const jumped = useRef<number | undefined>(undefined)
+  useEffect(() => {
+    if (target === undefined || search.seq === undefined || jumped.current === search.seq) return
+    if (lastSeq < search.seq) return
+    jumped.current = search.seq
+    atBottom.current = false
+    virtualizer.scrollToIndex(target, { align: 'center' })
+  }, [target, search.seq, lastSeq, virtualizer])
   useEffect(() => {
     if (atBottom.current && items.length > 0) virtualizer.scrollToIndex(items.length - 1, { align: 'end' })
   }, [items, virtualizer])
@@ -280,7 +294,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
+    <WindowDrop sessionId={sessionId} title={meta.title || 'Neue Session'}>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="@container flex h-12 shrink-0 items-center gap-3 border-b border-border px-3 sm:px-4">
         <button onClick={toggleList} className="flex size-8 items-center justify-center rounded-md hover:bg-accent lg:hidden" aria-label="Sessions anzeigen">
@@ -301,6 +315,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         </button>
       </header>
       {origin && <ForkBanner origin={origin} />}
+      {search.opened === 'link' && <OpenedViaLink sessionId={sessionId} search={search} />}
       {log?.reconnecting && (
         <div className="flex items-center gap-2 border-b border-border bg-sunken px-4 py-1 text-[12px] text-muted-foreground" role="status">
           <WifiOff className="size-3.5" /> Verbindung zum Daemon unterbrochen – verbinde neu …
@@ -321,7 +336,9 @@ export function SessionView({ sessionId }: { sessionId: string }) {
             if (!item) return null
             return (
               <div key={v.key} data-index={v.index} ref={virtualizer.measureElement} className="absolute top-0 left-0 w-full px-3 py-2 sm:px-6" style={{ transform: `translateY(${v.start}px)` }}>
-                <StreamItem item={item} sessionId={sessionId} harness={meta.harness} />
+                <div className={cn(item.key === targetKey && 'rounded-md outline-2 outline-offset-4 outline-foreground/60')} data-target={item.key === targetKey ? 'seq' : undefined}>
+                  <StreamItem item={item} sessionId={sessionId} harness={meta.harness} />
+                </div>
               </div>
             )
           })}
@@ -405,6 +422,18 @@ export function SessionView({ sessionId }: { sessionId: string }) {
         }}
       />
       <ConflictHost sessionId={sessionId} harness={meta.harness} />
+    </WindowDrop>
+  )
+}
+
+/** Hinweis „Geöffnet über beton://…“ (Entwurf `desktop-deeplink` Zustand „Session an Event geöffnet“). */
+export function OpenedViaLink({ sessionId, search }: { sessionId: string; search: SessionSearch }) {
+  return (
+    <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border bg-card px-4 text-[12px]" role="status">
+      <Link2 className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="shrink-0 text-muted-foreground">Geöffnet über</span>
+      <code className="truncate font-mono text-[11.5px]">{linkOf(sessionId, search)}</code>
+      {search.seq !== undefined && <span className="shrink-0 text-muted-foreground">· Event {search.seq}</span>}
     </div>
   )
 }

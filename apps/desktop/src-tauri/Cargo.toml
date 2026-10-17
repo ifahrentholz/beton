@@ -1,0 +1,44 @@
+[package]
+name = "beton-desktop-app"
+description = "Desktop-App von beton (Tauri 2): Fenster, Menü, Tray, Mitteilungen und Deep-Links um die Web-UI des lokalen Daemons."
+version.workspace = true
+edition.workspace = true
+# Tauri 2 braucht Rust 1.90; die Bibliotheken und das CLI bleiben bei der MSRV des Workspace.
+rust-version = "1.90"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "beton-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+beton-core.workspace = true
+beton-desktop.workspace = true
+beton-sdk.workspace = true
+notify-rust = "4.18"
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12", features = ["image-png", "tray-icon"] }
+tauri-plugin-deep-link = "2.6"
+tauri-plugin-opener = "2.7"
+tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# tauri-plugin-deep-link 2.6.2 baut unter Linux nur mit rust-ini bis 0.21.1 (0.21.2 hat
+# `ParseOption` um Felder erweitert). Entfernen, sobald das Plugin das nachzieht.
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"
