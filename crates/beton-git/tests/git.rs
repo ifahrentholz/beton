@@ -422,3 +422,105 @@ fn shadow_repository_inside_the_workspace_is_not_snapshotted() {
     assert!(shadow.exceeds_files(1).unwrap());
     assert!(!shadow.exceeds_files(10).unwrap());
 }
+
+// --------------------------------------------------------------------------- #223
+
+/// Git der Testumgebung ohne beton (Fixture und Kontrollgruppe), ohne globale Konfiguration.
+#[cfg(unix)]
+#[allow(clippy::disallowed_methods, reason = "Fixture und Kontrollgruppe ohne beton")]
+fn plain_git(dir: &Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new("git")
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "protocol.file.allow=always",
+        ])
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Repository mit einem Submodul `sub`, dessen Git-Verzeichnis (`.git/modules/sub`) eine
+/// vorbereitete Konfiguration hat, wie sie ein Agent in der Sandbox schreiben kann (#223):
+/// `core.fsmonitor` ist ein Programm, das beim Aufruf `marker` anlegt. Das Submodul hat eine
+/// Änderung, damit git dort nachsieht.
+#[cfg(unix)]
+fn repo_with_hostile_submodule() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let src = root.join("sub-src");
+    let repo = root.join("projekt");
+    for d in [&src, &repo] {
+        std::fs::create_dir_all(d).unwrap();
+        assert!(plain_git(d, &["init", "--quiet", "-b", "main"]).status.success());
+        write(d, "a.txt", "a\n");
+        assert!(plain_git(d, &["add", "-A"]).status.success());
+        assert!(
+            plain_git(d, &["commit", "--quiet", "-m", "start"])
+                .status
+                .success()
+        );
+    }
+    let added = plain_git(
+        &repo,
+        &["submodule", "add", "--quiet", src.to_str().unwrap(), "sub"],
+    );
+    assert!(added.status.success(), "{added:?}");
+    assert!(
+        plain_git(&repo, &["commit", "--quiet", "-m", "sub"])
+            .status
+            .success()
+    );
+    let marker = root.join("marker");
+    let script = root.join("fsmonitor.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let config = repo.join(".git/modules/sub/config");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!("[core]\n\tfsmonitor = {}\n", script.display()));
+    std::fs::write(&config, text).unwrap();
+    write(&repo, "sub/a.txt", "geändert\n");
+    (tmp, repo, marker)
+}
+
+/// #223 (SBX-003, Angreifer A2): Workspace-Inhalt aus der Sandbox darf beton-eigene
+/// git-Aufrufe in Stufe 0 (Änderungen, Diff, Worktree-Prüfung, Schatten-Repository) nicht zur
+/// Ausführung eines Programms aus der Konfiguration eines Submoduls bringen. Kontrollgruppe:
+/// `git status` bzw. `git diff` ohne beton führen es aus.
+#[cfg(unix)]
+#[test]
+fn sbx_003_own_git_calls_run_nothing_from_a_submodule_config() {
+    let (tmp, repo, marker) = repo_with_hostile_submodule();
+
+    changes::uncommitted(&repo).unwrap();
+    assert!(!marker.exists(), "uncommitted");
+    changes::diff_uncommitted(&repo, "sub").unwrap();
+    assert!(!marker.exists(), "diff_uncommitted");
+    worktree::dirty_files(&repo).unwrap();
+    assert!(!marker.exists(), "dirty_files");
+    let shadow = ShadowRepo::open(&tmp.path().join("shadow.git"), &repo).unwrap();
+    shadow.snapshot().unwrap();
+    assert!(!marker.exists(), "snapshot");
+
+    // Kontrollgruppe: Dasselbe Repository bringt ein gewöhnliches `git` zur Ausführung.
+    assert!(plain_git(&repo, &["status", "--porcelain"]).status.success());
+    assert!(marker.exists(), "Kontrollgruppe: git status");
+    std::fs::remove_file(&marker).unwrap();
+    assert!(plain_git(&repo, &["diff", "HEAD"]).status.success());
+    assert!(marker.exists(), "Kontrollgruppe: git diff");
+}
