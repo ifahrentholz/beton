@@ -1,0 +1,1 @@
+Der Agent soll heute die Tests für das neue Modul schreiben und danach die Dokumentation aktualisieren. Bitte prüfe auch, ob alle Abhängigkeiten auf dem neuesten Stand sind.

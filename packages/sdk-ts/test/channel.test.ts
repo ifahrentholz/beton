@@ -93,6 +93,8 @@ describe('Terminal-Kanal', () => {
       ['CD', false],
       ['$ ', false],
     ])
+    // Der Kredit kommt asynchron beim Server an (unabhängig von den Frames an den Client).
+    await until(() => server!.credits.length > 0)
     expect(server.credits[0]).toBe(4096)
     // 12 Bytes bei 8 Bytes Fenster: der Rest wartet auf den Kredit des Servers.
     ch.send('ls -la\r')

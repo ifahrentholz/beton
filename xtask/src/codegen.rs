@@ -10,6 +10,7 @@
 //! - `schemas/v1/policy.schema.json` (Policy-Sets, Format v1, POL-001)
 //! - `schemas/v1/doctor.schema.json` (`beton doctor --json`, OBS-005 AC2)
 //! - `schemas/v1/setup-check.schema.json` (`beton setup --check --json`, HAR-016 AC2)
+//! - `schemas/v1/voice-models.schema.json` (`beton voice models list --json`, VOI-002 AC4)
 //! - `schemas/v1/export-header.schema.json` (Kopfzeile des Session-Exports, DATA-010)
 //! - `schemas/v1/usage.schema.json` (`GET /v1/usage`, `beton usage --json`, USE-005/USE-007)
 //! - `schemas/v1/usage-session.schema.json` (`beton usage --session <id> --json`, USE-007)
@@ -92,6 +93,10 @@ pub fn generate() -> Result<BTreeMap<PathBuf, String>> {
         (
             "schemas/v1/setup-check.schema.json",
             schemars::schema_for!(beton_cli::setup::SetupReport),
+        ),
+        (
+            "schemas/v1/voice-models.schema.json",
+            schemars::schema_for!(Vec<beton_voice::store::ModelInfo>),
         ),
         (
             "schemas/v1/mcp.schema.json",

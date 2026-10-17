@@ -63,6 +63,9 @@ pub struct Settings {
     pub proxy: ProxySettings,
     /// Betreiber-Observability (OBS-003); nur in der User-Konfiguration.
     pub observability: ObservabilitySettings,
+    /// Spracheingabe mit lokalem Whisper (VOI-001 ff.): Modell, Sprache, Entladen,
+    /// gleichzeitige Diktate und Beschleunigung; nur in der User-Konfiguration.
+    pub voice: beton_voice::VoiceSettings,
 }
 
 /// `proxy:` (PRX-002).
@@ -637,6 +640,14 @@ fn parse_settings(value: &Value, origin: &str) -> Result<Settings, ConfigError> 
         .map_err(|message| ConfigError::Invalid {
             origin: origin.to_owned(),
             key: "compaction.threshold".into(),
+            message,
+        })?;
+    settings
+        .voice
+        .validate()
+        .map_err(|message| ConfigError::Invalid {
+            origin: origin.to_owned(),
+            key: "voice".into(),
             message,
         })?;
     validate_sandbox(&settings.sandbox).map_err(|(key, message)| ConfigError::Invalid {

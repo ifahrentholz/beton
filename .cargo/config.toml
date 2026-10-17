@@ -12,3 +12,8 @@ xtask = "run --quiet --package xtask --"
 # hat Vorrang, z. B. `BETON_TEST_POLICY_BUDGET_MS=0` für das echte Budget.
 [env]
 BETON_TEST_POLICY_BUDGET_MS = "500"
+# whisper.cpp (beton-voice, VOI-003) portabel bauen: ohne `-march=native`, mit der Baseline
+# AVX2/FMA/F16C unter x86_64 bzw. dem Standard-Ziel unter arm64. Ein nativ gebautes, gecachtes
+# Artefakt bricht sonst auf einem anderen Rechner (CI-Runner) mit SIGILL ab (#382).
+# whisper-rs-sys reicht `GGML_*` an CMake durch.
+GGML_NATIVE = "OFF"
