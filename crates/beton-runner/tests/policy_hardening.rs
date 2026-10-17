@@ -914,3 +914,75 @@ async fn pol_003_session_start_is_rechecked_after_approval_when_policies_changed
         other => panic!("Start trotz neuer deny-Regel: {other:?}"),
     }
 }
+
+/// Kosten der Session je Abfrage: erst 3,10 USD, danach 5,20 USD.
+struct RisingCost(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl beton_runner::policy::UsageSource for RisingCost {
+    async fn usage(&self) -> Result<beton_runner::policy::Usage, String> {
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(beton_runner::policy::Usage {
+            session_cost_usd: Some(if n == 0 { 3.1 } else { 5.2 }),
+            session_equivalent_usd: Some(0.0),
+            session_unpriced_models: Some(Vec::new()),
+            ..beton_runner::policy::Usage::default()
+        })
+    }
+}
+
+/// #353 Punkt 5 (#297): Die Neuauswertung nach der Freigabe deckt nur denselben Grund ab.
+/// Eine andere Schwelle derselben Budget-Regel (gleiche Regel-ID, anderer Teil) braucht eine
+/// neue Freigabe, statt als freigegeben zu gelten.
+#[tokio::test]
+async fn pol_003_recheck_after_approval_needs_the_same_reason_not_only_the_same_rule() {
+    use beton_core::event::EventPayload;
+    use beton_runner::policy::Human;
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "budget",
+        "  - id: cap\n    type: spend_cap\n    params: { scope: session, limit_usd: 10, ask_at_usd: [3, 5] }\n",
+    );
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let g = g.with_usage(std::sync::Arc::new(RisingCost(
+        std::sync::atomic::AtomicUsize::new(0),
+    )));
+    let g2 = g.clone();
+    let task = tokio::spawn(async move { g2.check_start(start(None), None).await });
+    let key = loop {
+        let e = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("approval.requested")
+            .unwrap();
+        if let EventPayload::ApprovalRequested(r) = e.payload {
+            break r.subject["call_id"].as_str().unwrap().to_owned();
+        }
+    };
+    // Während der Wartezeit ändern sich die Policies (Neuauswertung) und die Kosten steigen
+    // über die nächste Schwelle derselben Regel.
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "late",
+        "  - id: note\n    on: tool_call\n    action: notify\n    notify: { channels: [log], message: x }\n",
+    );
+    assert!(g.resolve(
+        &key,
+        Human {
+            allow: true,
+            ..Human::default()
+        }
+    ));
+    match task.await.unwrap() {
+        Checked::Deny { reason, rules } => {
+            assert!(
+                reason.contains("5,00") || reason.contains("5.00"),
+                "{reason}"
+            );
+            assert_eq!(rules, ["cap"]);
+        }
+        other => panic!("neue Schwelle als freigegeben gewertet: {other:?}"),
+    }
+}
