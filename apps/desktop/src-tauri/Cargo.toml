@@ -37,3 +37,8 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# tauri-plugin-deep-link 2.6.2 baut unter Linux nur mit rust-ini bis 0.21.1 (0.21.2 hat
+# `ParseOption` um Felder erweitert). Entfernen, sobald das Plugin das nachzieht.
+[target.'cfg(target_os = "linux")'.dependencies]
+rust-ini = "=0.21.1"
