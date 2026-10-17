@@ -524,3 +524,29 @@ fn sbx_004_masked_files_with_further_hardlinks_are_reported() {
         );
     }
 }
+
+/// #211: Beide Stufen verdecken das Elternverzeichnis des Session-Verzeichnisses (alle
+/// Sessions; unter Linux per tmpfs), nicht nur das eigene. Liegt es in einer Freigabe, ist das
+/// ein Fehler (fail closed).
+#[test]
+fn sbx_008_session_directories_of_all_sessions_are_private_in_both_stages() {
+    let e = env();
+    let base = e.home.parent().unwrap().join("sessions");
+    let session = base.join("beton-sbx-eins");
+    std::fs::create_dir_all(&session).unwrap();
+    for stage in [Stage::Harness, Stage::Tools] {
+        let mut ctx = e.ctx(stage);
+        ctx.session_dir = Some(session.clone());
+        let p = resolve(ProviderId::Seatbelt, &SandboxSpec::default(), &ctx).unwrap();
+        assert_eq!(p.private, vec![base.clone()], "{stage:?}");
+        let spec =
+            SandboxSpec::from_yaml(&format!("read_paths: [\"{}\"]\n", base.display())).unwrap();
+        assert!(
+            matches!(
+                resolve(ProviderId::Seatbelt, &spec, &ctx),
+                Err(SandboxError::PathEscape { .. })
+            ),
+            "{stage:?}"
+        );
+    }
+}

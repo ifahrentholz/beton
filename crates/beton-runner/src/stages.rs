@@ -1173,8 +1173,9 @@ async fn compose_unix(
     if tools_net {
         c.credential_env = tools_env;
     }
-    // Unter Linux verdeckt ein leeres tmpfs das Session-Verzeichnis (Sockets der Stufe 1,
-    // Broker-Socket; vor Landlock-ABI 9 sonst per `connect` erreichbar).
+    // Unter Linux verdeckt ein leeres tmpfs die Session-Verzeichnisse (Sockets der Stufe 1,
+    // Broker-Socket, auch paralleler Sessions; vor Landlock-ABI 9 sonst per `connect`
+    // erreichbar, #211).
     c.session_dir = Some(root.clone());
     let tools_policy = provider.resolve(&spec, &c)?;
     check_session_dir(&root, &[&tools_tmp, &xchg, &ca_dir], &tools_policy)?;
@@ -1218,6 +1219,8 @@ async fn compose_unix(
 
     // Stufe 1.
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
+    // Wie in Stufe 2: Session-Verzeichnisse paralleler Sessions verdeckt (#211).
+    c.session_dir = Some(root.clone());
     c.harness = grants;
     c.exec = Some(broker.access(bin.clone()));
     c.runtime = Some(runtime.clone());

@@ -133,8 +133,9 @@ pub struct ResolveCtx {
     /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
     /// beschreibbar, in Stufe 2 ohne Symlinks.
     pub exchange: Option<PathBuf>,
-    /// Verzeichnis der Session (Stufenmodell): In Stufe 2 bis auf die eigenen Wurzeln
-    /// verdeckt (Linux: leeres tmpfs; macOS gibt Seatbelt ohnehin nur die Wurzeln frei).
+    /// Verzeichnis der Session (Stufenmodell): Unter Linux verdeckt ein leeres tmpfs sein
+    /// Elternverzeichnis (alle Sessions, #211) bis auf die eigenen Wurzeln, in beiden Stufen;
+    /// macOS gibt Seatbelt ohnehin nur die Wurzeln frei.
     pub session_dir: Option<PathBuf>,
     /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
     /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
@@ -1206,23 +1207,30 @@ pub fn resolve(
         Vec::new()
     };
 
+    // Session-Verzeichnisse verdecken (#211): eine Ebene höher, über allen Sessions (unter
+    // Linux `/var/tmp`), damit auch die Sockets paralleler Sessions vor Landlock-ABI 9 nicht per
+    // `connect` erreichbar sind; in beiden Stufen. Die eigenen Wurzeln darin werden wieder
+    // eingebunden.
     let mut private = Vec::new();
-    if ctx.stage == Stage::Tools
-        && let Some(d) = &ctx.session_dir
-    {
+    if let Some(d) = &ctx.session_dir {
         let d = std::fs::canonicalize(d)
             .map_err(|e| SandboxError::invalid("session_dir", format!("{}: {e}", d.display())))?;
+        let base = d.parent().map_or_else(|| d.clone(), Path::to_path_buf);
         if read_roots
             .iter()
             .chain(&write_roots)
-            .any(|r| d.starts_with(r))
+            .any(|r| base.starts_with(r))
         {
             return Err(SandboxError::escape(
                 "session_dir",
-                format!("{} liegt in einer Freigabe der Stufe 2", d.display()),
+                format!(
+                    "{} liegt in einer Freigabe der Stufe {}",
+                    base.display(),
+                    if ctx.stage == Stage::Tools { 2 } else { 1 }
+                ),
             ));
         }
-        private.push(d);
+        private.push(base);
     }
 
     let (required, degraded) = if backend == ProviderId::None {
