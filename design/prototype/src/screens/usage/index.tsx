@@ -41,9 +41,16 @@ const DIMS: { id: Dim; label: string; central?: boolean }[] = [
 type UsageRow = { name: ReactNode; sub?: ReactNode; turns: number; input: number; output: number; cache: number; billing: ReactNode }
 
 const SUB = <span className="text-muted-foreground">Subscription</span>
+/** Subscription-Zeile mit API-Äquivalent (nur Zustand „API-Äquivalent eingeblendet“, ADR-0034: nie als Kosten). */
+const subEq = (v: number) => (
+  <span className="text-muted-foreground tabular-nums" title="Was diese Nutzung zu API-Preisen gekostet hätte (Katalog 2026-10-01). Nicht abgerechnet.">
+    Subscription · <span className="text-[11px]">≈ {dollars(v)} informativ</span>
+  </span>
+)
 const LOCAL = <span className="text-muted-foreground">lokal, kostenlos</span>
 
-function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
+function rowsFor(dim: Dim, mixed: boolean, equivalent = false): UsageRow[] {
+  const sub = (eq: number) => (equivalent ? subEq(eq) : SUB)
   const api = (v: number, src: string) => (
     <span className="tabular-nums">
       {dollars(v)} <span className="text-[11px] text-muted-foreground">{src}</span>
@@ -52,13 +59,13 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
   switch (dim) {
     case 'session':
       return [
-        { name: 'Rate-Limiter für die Login-API', sub: <HarnessBadge id="claude" model="claude-opus-5-5" />, turns: 14, input: 2210, output: 186, cache: 1840, billing: SUB },
-        { name: 'Review: Rate-Limiter', sub: <HarnessBadge id="codex" model="gpt-5.3-codex" />, turns: 6, input: 640, output: 72, cache: 410, billing: SUB },
+        { name: 'Rate-Limiter für die Login-API', sub: <HarnessBadge id="claude" model="claude-opus-5-5" />, turns: 14, input: 2210, output: 186, cache: 1840, billing: sub(38.6) },
+        { name: 'Review: Rate-Limiter', sub: <HarnessBadge id="codex" model="gpt-5.3-codex" />, turns: 6, input: 640, output: 72, cache: 410, billing: sub(1.85) },
         ...(mixed
           ? [{ name: 'CI: Release-Notes erzeugen', sub: <span className="text-[12px] text-muted-foreground">Claude Code · API-Key (Anthropic)</span>, turns: 3, input: 310, output: 41, cache: 0, billing: api(2.71, 'Katalog') }]
           : []),
-        { name: 'Event-Log: seq lückenlos halten', sub: <HarnessBadge id="codex" model="gpt-5.3-codex" />, turns: 21, input: 1980, output: 204, cache: 1620, billing: SUB },
-        { name: 'Nächtliches Dependency-Update', sub: <HarnessBadge id="claude" model="claude-sonnet-5-5" />, turns: 9, input: 860, output: 52, cache: 700, billing: SUB },
+        { name: 'Event-Log: seq lückenlos halten', sub: <HarnessBadge id="codex" model="gpt-5.3-codex" />, turns: 21, input: 1980, output: 204, cache: 1620, billing: sub(4.1) },
+        { name: 'Nächtliches Dependency-Update', sub: <HarnessBadge id="claude" model="claude-sonnet-5-5" />, turns: 9, input: 860, output: 52, cache: 700, billing: sub(3.42) },
         ...(mixed
           ? [{ name: 'Lasttest auswerten', sub: <span className="text-[12px] text-muted-foreground">Gateway litellm-intern · llama-3.3-70b</span>, turns: 4, input: 480, output: 66, cache: 0, billing: api(0.24, 'eigener Preis') }]
           : []),
@@ -67,9 +74,9 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
       ]
     case 'project':
       return [
-        { name: 'shop-frontend', sub: <span className="font-mono text-[11px] text-muted-foreground">~/code/shop-frontend</span>, turns: 48, input: 9840, output: 812, cache: 7210, billing: mixed ? api(0.24, '1 Session') : SUB },
-        { name: 'beton', sub: <span className="font-mono text-[11px] text-muted-foreground">~/Develop/ai/beton</span>, turns: 37, input: 6120, output: 590, cache: 4980, billing: mixed ? api(2.71, '1 Session') : SUB },
-        { name: 'infra', sub: <span className="font-mono text-[11px] text-muted-foreground">~/code/infra</span>, turns: 12, input: 1460, output: 102, cache: 980, billing: SUB },
+        { name: 'shop-frontend', sub: <span className="font-mono text-[11px] text-muted-foreground">~/code/shop-frontend</span>, turns: 48, input: 9840, output: 812, cache: 7210, billing: mixed ? api(0.24, '1 Session') : sub(61.2) },
+        { name: 'beton', sub: <span className="font-mono text-[11px] text-muted-foreground">~/Develop/ai/beton</span>, turns: 37, input: 6120, output: 590, cache: 4980, billing: mixed ? api(2.71, '1 Session') : sub(44.8) },
+        { name: 'infra', sub: <span className="font-mono text-[11px] text-muted-foreground">~/code/infra</span>, turns: 12, input: 1460, output: 102, cache: 980, billing: sub(9.7) },
       ]
     case 'harness':
       return (['claude', 'codex', 'gemini', 'ollama'] as HarnessId[]).map((h) => ({
@@ -79,13 +86,13 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
         input: { claude: 11980, codex: 4210, gemini: 380, ollama: 520 }[h],
         output: { claude: 1020, codex: 380, gemini: 40, ollama: 120 }[h],
         cache: { claude: 9840, codex: 3110, gemini: 0, ollama: 0 }[h],
-        billing: h === 'ollama' ? LOCAL : h === 'gemini' ? <span className="text-muted-foreground">nicht gemeldet</span> : SUB,
+        billing: h === 'ollama' ? LOCAL : h === 'gemini' ? <span className="text-muted-foreground">nicht gemeldet</span> : sub(h === 'claude' ? 118.4 : 9.2),
       }))
     case 'model':
       return [
-        { name: <span className="font-mono text-[12px]">claude-opus-5-5</span>, turns: 38, input: 8420, output: 760, cache: 7110, billing: SUB },
-        { name: <span className="font-mono text-[12px]">claude-sonnet-5-5</span>, turns: 23, input: 3560, output: 260, cache: 2730, billing: mixed ? api(2.71, 'Katalog') : SUB },
-        { name: <span className="font-mono text-[12px]">gpt-5.3-codex</span>, turns: 27, input: 4210, output: 380, cache: 3110, billing: SUB },
+        { name: <span className="font-mono text-[12px]">claude-opus-5-5</span>, turns: 38, input: 8420, output: 760, cache: 7110, billing: sub(96.1) },
+        { name: <span className="font-mono text-[12px]">claude-sonnet-5-5</span>, turns: 23, input: 3560, output: 260, cache: 2730, billing: mixed ? api(2.71, 'Katalog') : sub(22.3) },
+        { name: <span className="font-mono text-[12px]">gpt-5.3-codex</span>, turns: 27, input: 4210, output: 380, cache: 3110, billing: sub(9.2) },
         { name: <span className="font-mono text-[12px]">qwen3-coder:30b</span>, turns: 7, input: 520, output: 120, cache: 0, billing: LOCAL },
         ...(mixed
           ? [
@@ -107,7 +114,7 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
       ]
     case 'auth':
       return [
-        { name: 'Subscription über CLI-Login', sub: <span className="text-[11px] text-muted-foreground">Claude Max, ChatGPT Pro, Google-Konto</span>, turns: 92, input: 16570, output: 1440, cache: 12950, billing: SUB },
+        { name: 'Subscription über CLI-Login', sub: <span className="text-[11px] text-muted-foreground">Claude Max, ChatGPT Pro, Google-Konto</span>, turns: 92, input: 16570, output: 1440, cache: 12950, billing: sub(127.6) },
         { name: 'Lokal', sub: <span className="text-[11px] text-muted-foreground">Ollama auf diesem Rechner</span>, turns: 7, input: 520, output: 120, cache: 0, billing: LOCAL },
         ...(mixed
           ? [
@@ -118,14 +125,14 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
       ]
     case 'user':
       return [
-        { name: 'Ingo Fahrentholz', sub: <span className="text-[11px] text-muted-foreground">Plattform</span>, turns: 99, input: 17090, output: 1560, cache: 12950, billing: SUB },
-        { name: 'Mara Lindqvist', sub: <span className="text-[11px] text-muted-foreground">Shop</span>, turns: 64, input: 11240, output: 980, cache: 8820, billing: SUB },
+        { name: 'Ingo Fahrentholz', sub: <span className="text-[11px] text-muted-foreground">Plattform</span>, turns: 99, input: 17090, output: 1560, cache: 12950, billing: sub(127.6) },
+        { name: 'Mara Lindqvist', sub: <span className="text-[11px] text-muted-foreground">Shop</span>, turns: 64, input: 11240, output: 980, cache: 8820, billing: sub(84.2) },
         { name: 'Jonas Becker', sub: <span className="text-[11px] text-muted-foreground">Shop</span>, turns: 31, input: 4120, output: 410, cache: 2210, billing: api(18.4, 'Katalog') },
       ]
     case 'team':
       return [
         { name: 'Shop', sub: <span className="text-[11px] text-muted-foreground">5 Personen</span>, turns: 212, input: 38410, output: 3120, cache: 27400, billing: api(18.4, 'API-Keys') },
-        { name: 'Plattform', sub: <span className="text-[11px] text-muted-foreground">3 Personen</span>, turns: 141, input: 22860, output: 2040, cache: 17730, billing: SUB },
+        { name: 'Plattform', sub: <span className="text-[11px] text-muted-foreground">3 Personen</span>, turns: 141, input: 22860, output: 2040, cache: 17730, billing: sub(171.3) },
       ]
     default:
       return DAYS.slice()
@@ -140,7 +147,7 @@ function rowsFor(dim: Dim, mixed: boolean): UsageRow[] {
             input: Math.round(tot * 0.86),
             output: Math.round(tot * 0.08),
             cache: Math.round(tot * 0.64),
-            billing: mixed && COST_USD[idx] > 0 ? api(COST_USD[idx], 'API & Gateway') : SUB,
+            billing: mixed && COST_USD[idx] > 0 ? api(COST_USD[idx], 'API & Gateway') : sub(Math.round(tot * 1.922) / 100),
           }
         })
   }
@@ -246,6 +253,15 @@ function QuotaBar({ label, pct, reset, warn }: { label: string; pct: number; res
   )
 }
 
+/** API-Äquivalent einer Subscription, nur informativ (USE-004 AC1, ADR-0034). */
+function Equivalent({ usd }: { usd: number }) {
+  return (
+    <div className="text-[11px] text-muted-foreground tabular-nums" title="Was diese Nutzung zu API-Preisen gekostet hätte (Katalog 2026-10-01). Nicht abgerechnet.">
+      ≈ {dollars(usd)} zu API-Preisen · informativ
+    </div>
+  )
+}
+
 function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
   return (
     <div className="min-w-0 border-l border-border pl-4 first:border-l-0 first:pl-0">
@@ -258,14 +274,72 @@ function Kpi({ label, value, sub }: { label: string; value: ReactNode; sub?: Rea
 
 /* ───────────────────────── Verbrauchsseite ───────────────────────── */
 
+/** „20.09.“ aus „2026-09-20“. */
+const shortDay = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.`
+
+/** Popover „Eigener Zeitraum“ an der Zeitraumwahl (USE-006). */
+function RangePopover({ initial, onCancel, onApply }: { initial: { from: string; to: string }; onCancel: () => void; onApply: (r: { from: string; to: string }) => void }) {
+  const [from, setFrom] = useState(initial.from)
+  const [to, setTo] = useState(initial.to)
+  const invalid = !from || !to || from > to
+  const field = 'h-8 w-full rounded-md border border-input bg-card px-2 text-[13px] tabular-nums outline-none focus-visible:outline-2 focus-visible:outline-ring'
+  return (
+    <F id="USE-006" className="absolute top-full right-0 z-20 mt-1 w-[300px] rounded-md border border-border bg-popover p-3 text-[13px] text-popover-foreground shadow-lg" badge="top-right">
+      <div role="dialog" aria-labelledby="range-title" onKeyDown={(e) => e.key === 'Escape' && onCancel()}>
+        <div id="range-title" className="font-semibold">
+          Eigener Zeitraum
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1 text-[12px] text-muted-foreground">
+            Von
+            <input type="date" value={from} max="2026-10-03" onChange={(e) => setFrom(e.target.value)} className={cn(field, 'text-foreground')} />
+          </label>
+          <label className="flex flex-col gap-1 text-[12px] text-muted-foreground">
+            Bis
+            <input type="date" value={to} max="2026-10-03" onChange={(e) => setTo(e.target.value)} className={cn(field, 'text-foreground')} />
+          </label>
+        </div>
+        <p className="mt-2 text-[12px] text-muted-foreground">Tage in deiner Zeitzone, beide einschließlich</p>
+        {from && to && from > to && <p className="mt-1 text-[12px] text-deny">„Von“ liegt nach „Bis“ – tausche die Tage.</p>}
+        <div className="mt-3 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className="inline-flex h-8 items-center rounded-md border border-border px-3 text-[13px] hover:bg-accent">
+            Abbrechen
+          </button>
+          <button
+            type="button"
+            disabled={invalid}
+            onClick={() => onApply({ from, to })}
+            className="inline-flex h-8 items-center rounded-md border border-foreground bg-foreground px-3 text-[13px] font-semibold text-background disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Anwenden
+          </button>
+        </div>
+      </div>
+    </F>
+  )
+}
+
+/** Neu aufbauen je Zustand, damit Zeitraum, Schalter und Gruppierung vom Zustand starten. */
 function UsageOverview({ state }: { state: string }) {
+  return <UsageOverviewView key={state} state={state} />
+}
+
+function UsageOverviewView({ state }: { state: string }) {
   const mixed = state === 'mixed' || state === 'team'
   const team = state === 'team'
   const high = state === 'quota-high'
+  const loading = state === 'loading'
+  const failed = state === 'error'
+  const expired = state === 'window-expired'
   const [dim, setDim] = useState<Dim>(team ? 'user' : 'session')
   const [stack, setStack] = useState<'tokens' | 'cost'>('tokens')
+  const [period, setPeriod] = useState(state === 'custom-range' ? 'custom' : '14d')
+  const [rangeOpen, setRangeOpen] = useState(state === 'custom-range')
+  const [range, setRange] = useState<{ from: string; to: string } | null>(null)
+  const [equivalent, setEquivalent] = useState(state === 'equivalent')
   const effectiveDim = !team && DIMS.find((d) => d.id === dim)?.central ? 'session' : dim
-  const rows = rowsFor(effectiveDim, mixed)
+  const rows = rowsFor(effectiveDim, mixed, equivalent)
+  const csvName = range ? `verbrauch_${range.from}_${range.to}_nach-session.csv` : 'verbrauch_2026-09-20_2026-10-03_nach-session.csv'
 
   if (state === 'empty') {
     return (
@@ -287,169 +361,226 @@ function UsageOverview({ state }: { state: string }) {
         <div className="mx-auto max-w-6xl px-8 py-6">
           <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
             <h1 className="type-wide mr-auto text-xl font-[700]">Verbrauch</h1>
-            <Segmented
-              label="Zeitraum"
-              value="14d"
-              options={[
-                { id: 'today', label: 'Heute' },
-                { id: '7d', label: '7 Tage' },
-                { id: '14d', label: '14 Tage' },
-                { id: 'month', label: 'Oktober' },
-                { id: 'custom', label: 'Zeitraum …' },
-              ]}
-            />
-            <button className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[13px] hover:bg-accent" title="verbrauch_2026-09-20_2026-10-03_nach-session.csv">
+            <div className="relative">
+              <Segmented
+                label="Zeitraum"
+                value={period}
+                onChange={(id) => {
+                  setPeriod(id)
+                  setRangeOpen(id === 'custom')
+                }}
+                options={[
+                  { id: 'today', label: 'Heute' },
+                  { id: '7d', label: '7 Tage' },
+                  { id: '14d', label: '14 Tage' },
+                  { id: 'month', label: 'Oktober' },
+                  { id: 'custom', label: range ? `${shortDay(range.from)}–${shortDay(range.to)}` : 'Zeitraum …', title: range ? `${shortDay(range.from)}–${shortDay(range.to)}, beide Tage einschließlich` : undefined },
+                ]}
+              />
+              {rangeOpen && (
+                <RangePopover
+                  initial={range ?? { from: '2026-09-20', to: '2026-10-03' }}
+                  onCancel={() => {
+                    setRangeOpen(false)
+                    if (!range) setPeriod('14d')
+                  }}
+                  onApply={(r) => {
+                    setRange(r)
+                    setRangeOpen(false)
+                  }}
+                />
+              )}
+            </div>
+            <button
+              disabled={loading || failed}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[13px] enabled:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+              title={loading || failed ? 'Erst möglich, wenn der Verbrauch geladen ist' : csvName}
+            >
               <Download className="size-3.5" /> CSV exportieren
             </button>
           </div>
 
-          <F id={['USE-006', 'USE-005']} className="mt-5 grid grid-cols-4 gap-4">
-            <Kpi label="Heute" value={fmtTok(640)} sub="Tokens · 7 Turns" />
-            <Kpi label="Letzte 7 Tage" value={fmtTok(15_010)} sub="Tokens · 99 Turns" />
-            <Kpi label="Oktober" value={fmtTok(7_100)} sub="Tokens · 3 Tage" />
-            {mixed ? (
-              <Kpi label="Kosten 7 Tage" value={dollars(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
-            ) : (
-              <Kpi label="Kosten" value="keine" sub="alle Sessions über Subscriptions oder lokal" />
-            )}
-          </F>
-
-          <F id="USE-004" className="mt-6">
-            <div className="flex items-baseline gap-3">
-              <h2 className="text-[14px] font-semibold">Subscriptions</h2>
-              <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – kein Geldbetrag</span>
-            </div>
-            <div className="mt-2 divide-y divide-border rounded-md border border-border">
-              <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-warn-soft/60')}>
-                <div>
-                  <HarnessBadge id="claude" />
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">Claude Max · angemeldet über claude-CLI</div>
-                  <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">heute 640 k Tokens</div>
-                </div>
-                <div>
-                  <QuotaBar label="5-Stunden-Fenster" pct={high ? 92 : 38} reset={high ? 'setzt in 41 Min. zurück (14:46)' : 'setzt in 2 Std. 14 Min. zurück (16:19)'} warn />
-                  <QuotaBar label="Wochenlimit" pct={high ? 78 : 61} reset="setzt Mo. 09:00 zurück" />
-                  {high && (
-                    <p className="mt-1 text-[12px]">
-                      Neue Turns mit Claude Code können gleich abgelehnt werden. Du kannst mit Codex weiterarbeiten (Session forken) oder bis
-                      14:46 warten. Ein Hinweis liegt in der Inbox.
-                    </p>
-                  )}
-                </div>
-              </div>
-              <div className="grid grid-cols-[230px_1fr] gap-4 px-4 py-3">
-                <div>
-                  <HarnessBadge id="codex" />
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">ChatGPT Pro · angemeldet über codex-CLI</div>
-                  <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">heute 0 Tokens</div>
-                </div>
-                <div>
-                  <QuotaBar label="5-Stunden-Fenster" pct={12} reset="setzt in 4 Std. 2 Min. zurück (18:07)" />
-                  <QuotaBar label="Wochenlimit" pct={23} reset="setzt Do. 11:30 zurück" />
-                </div>
-              </div>
-              <div className="grid grid-cols-[230px_1fr] items-center gap-4 px-4 py-3">
-                <div>
-                  <HarnessBadge id="gemini" />
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">Google-Konto · angemeldet über gemini-CLI</div>
-                </div>
-                <div className="text-[12px] text-muted-foreground">Kontingent nicht gemeldet – die Gemini CLI liefert keine Rate-Limit-Daten. 380 k Tokens in 14 Tagen.</div>
-              </div>
-              <div className="grid grid-cols-[230px_1fr] items-center gap-4 px-4 py-3">
-                <div>
-                  <HarnessBadge id="ollama" />
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">läuft auf diesem Rechner</div>
-                </div>
-                <div className="text-[12px] text-muted-foreground">Kein Kontingent, keine Kosten. 520 k Tokens in 14 Tagen.</div>
-              </div>
-            </div>
-            <label className="mt-2 flex items-center gap-2 text-[12px] text-muted-foreground">
-              <Switch size="sm" aria-label="API-Äquivalent zeigen" />
-              API-Äquivalent zeigen (rein informativ: was die Subscription-Nutzung zu API-Preisen gekostet hätte)
-            </label>
-          </F>
-
-          <F id="USE-006" className="mt-7">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-[14px] font-semibold">Verlauf</h2>
-              <Segmented
-                label="Größe"
-                value={stack}
-                onChange={(v) => setStack(v as 'tokens' | 'cost')}
-                options={[
-                  { id: 'tokens', label: 'Tokens nach Harness' },
-                  { id: 'cost', label: 'Kosten (API & Gateway)', disabled: !mixed, title: mixed ? undefined : 'Keine Sessions mit API-Key oder Gateway' },
-                ]}
-              />
-              <div className="ml-auto flex gap-4 text-[12px]">
-                {(['claude', 'codex', 'gemini', 'ollama'] as HarnessId[]).map((h) => (
-                  <span key={h} className="inline-flex items-center gap-1.5">
-                    <VoiceDot voice={harnesses[h].voice} className="size-2.5 rounded-[2px]" />
-                    {harnesses[h].name}
-                  </span>
+          {loading ? (
+            <F id="USE-006" className="mt-5">
+              <div className="grid grid-cols-4 gap-4" aria-busy>
+                {['Heute', 'Letzte 7 Tage', 'Oktober', 'Kosten'].map((l) => (
+                  <Kpi key={l} label={l} value={<span className="text-muted-foreground">–</span>} />
                 ))}
               </div>
-            </div>
-            <div className="mt-3">
-              <StackedBars mode={stack} />
-            </div>
-          </F>
+              <p role="status" className="mt-5 text-[13px] text-muted-foreground">
+                Verbrauch wird geladen …
+              </p>
+            </F>
+          ) : failed ? (
+            <F id="USE-006" className="mt-5">
+              <div role="alert" className="rounded-md border border-deny/40 bg-deny-soft p-3 text-[13px]">
+                <p className="flex items-center gap-2">
+                  <span aria-hidden className="size-2 shrink-0 rotate-45 bg-deny" />
+                  <span>
+                    <strong className="font-semibold">Verbrauch nicht verfügbar</strong> – der lokale Daemon antwortet nicht. Läuft{' '}
+                    <code className="font-mono text-[12px]">beton serve</code>?
+                  </span>
+                </p>
+                <button className="mt-2 ml-4 inline-flex h-8 items-center rounded-md border border-border bg-card px-3 text-[13px] hover:bg-accent">Erneut laden</button>
+              </div>
+            </F>
+          ) : (
+            <>
+              <F id={['USE-006', 'USE-005']} className="mt-5 grid grid-cols-4 gap-4">
+                <Kpi label="Heute" value={fmtTok(640)} sub="Tokens · 7 Turns" />
+                <Kpi label="Letzte 7 Tage" value={fmtTok(15_010)} sub="Tokens · 99 Turns" />
+                <Kpi label="Oktober" value={fmtTok(7_100)} sub="Tokens · 3 Tage" />
+                {mixed ? (
+                  <Kpi label="Kosten 7 Tage" value={dollars(team ? 18.4 : 9.07)} sub="nur API-Key & Gateway" />
+                ) : (
+                  <Kpi label="Kosten" value="keine" sub="alle Sessions über Subscriptions oder lokal" />
+                )}
+              </F>
 
-          <F id={['USE-005', 'USE-001']} className="mt-7">
-            <div className="flex flex-wrap items-center gap-3">
-              <h2 className="text-[14px] font-semibold">Aufschlüsselung</h2>
-              <Segmented
-                label="Gruppieren nach"
-                value={effectiveDim}
-                onChange={(v) => setDim(v as Dim)}
-                options={DIMS.map((d) => ({
-                  id: d.id,
-                  label: d.label,
-                  disabled: d.central && !team,
-                  title: d.central && !team ? 'Nur mit Team-Server (ab M4); lokal gibt es nur dich' : undefined,
-                }))}
-              />
-              {team && <span className="text-[12px] text-muted-foreground">Du siehst als Team-Admin die Teams Shop und Plattform.</span>}
-            </div>
-            <div className="mt-2 overflow-hidden rounded-md border border-border">
-              <table className="w-full text-[13px]">
-                <thead className="bg-sunken text-[12px] text-muted-foreground">
-                  <tr>
-                    <th className="py-2 pl-3 text-left font-medium">{DIMS.find((d) => d.id === effectiveDim)?.label}</th>
-                    <th className="px-2 text-right font-medium">Turns</th>
-                    <th className="px-2 text-right font-medium">Eingabe</th>
-                    <th className="px-2 text-right font-medium">Ausgabe</th>
-                    <th className="px-2 text-right font-medium">Cache gelesen</th>
-                    <th className="py-2 pr-3 pl-6 text-left font-medium">Abrechnung</th>
-                  </tr>
-                </thead>
-                <tbody className="type-narrow">
-                  {rows.map((r, i) => (
-                    <tr key={i} className={cn('border-t border-border align-top', effectiveDim === 'session' && 'cursor-pointer hover:bg-accent/50')}>
-                      <td className="py-2 pl-3">
-                        <div className="font-sans">{r.name}</div>
-                        {r.sub && <div className="mt-0.5">{r.sub}</div>}
-                      </td>
-                      <td className="px-2 py-2 text-right tabular-nums">{r.turns}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.input)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.output)}</td>
-                      <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.cache)}</td>
-                      <td className="py-2 pr-3 pl-6 text-[12px]">{r.billing}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </F>
+              <F id="USE-004" className="mt-6">
+                <div className="flex items-baseline gap-3">
+                  <h2 className="text-[14px] font-semibold">Subscriptions</h2>
+                  <span className="text-[12px] text-muted-foreground">Kontingente, wie die CLIs sie melden – kein Geldbetrag</span>
+                </div>
+                <div className="mt-2 divide-y divide-border rounded-md border border-border">
+                  <div className={cn('grid grid-cols-[230px_1fr] gap-4 px-4 py-3', high && 'bg-warn-soft/60')}>
+                    <div>
+                      <HarnessBadge id="claude" />
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">Claude Max · angemeldet über claude-CLI</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">heute 640 k Tokens</div>
+                      {equivalent && <Equivalent usd={12.3} />}
+                    </div>
+                    <div>
+                      <QuotaBar label="5-Stunden-Fenster" pct={high ? 92 : 38} reset={high ? 'setzt in 41 Min. zurück (14:46)' : 'setzt in 2 Std. 14 Min. zurück (16:19)'} warn />
+                      <QuotaBar label="Wochenlimit" pct={high ? 78 : 61} reset="setzt Mo. 09:00 zurück" />
+                      {high && (
+                        <p className="mt-1 text-[12px]">
+                          Neue Turns mit Claude Code können gleich abgelehnt werden. Du kannst mit Codex weiterarbeiten (Session forken) oder bis
+                          14:46 warten. Ein Hinweis liegt in der Inbox.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-[230px_1fr] gap-4 px-4 py-3">
+                    <div>
+                      <HarnessBadge id="codex" />
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">ChatGPT Pro · angemeldet über codex-CLI</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground tabular-nums">heute 0 Tokens</div>
+                      {equivalent && <Equivalent usd={0} />}
+                    </div>
+                    {expired ? (
+                      <div className="self-center text-[12px] text-muted-foreground">Kontingent zurückgesetzt – der nächste Turn meldet den neuen Stand. 4,2 Mio. Tokens in 14 Tagen.</div>
+                    ) : (
+                      <div>
+                        <QuotaBar label="5-Stunden-Fenster" pct={12} reset="setzt in 4 Std. 2 Min. zurück (18:07)" />
+                        <QuotaBar label="Wochenlimit" pct={23} reset="setzt Do. 11:30 zurück" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-[230px_1fr] items-center gap-4 px-4 py-3">
+                    <div>
+                      <HarnessBadge id="gemini" />
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">Google-Konto · angemeldet über gemini-CLI</div>
+                    </div>
+                    <div className="text-[12px] text-muted-foreground">Kontingent nicht gemeldet – die Gemini CLI liefert keine Rate-Limit-Daten. 380 k Tokens in 14 Tagen.</div>
+                  </div>
+                  <div className="grid grid-cols-[230px_1fr] items-center gap-4 px-4 py-3">
+                    <div>
+                      <HarnessBadge id="ollama" />
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">läuft auf diesem Rechner</div>
+                    </div>
+                    <div className="text-[12px] text-muted-foreground">Kein Kontingent, keine Kosten. 520 k Tokens in 14 Tagen.</div>
+                  </div>
+                </div>
+                <label className="mt-2 flex items-center gap-2 text-[12px] text-muted-foreground">
+                  <Switch size="sm" aria-label="API-Äquivalent zeigen" checked={equivalent} onCheckedChange={setEquivalent} />
+                  API-Äquivalent zeigen (rein informativ: was die Subscription-Nutzung zu API-Preisen gekostet hätte)
+                </label>
+              </F>
 
-          <F id="USE-002" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-3 text-[11px] text-muted-foreground">
-            <span className="inline-flex items-center gap-1">
-              <Info className="size-3" /> Preise aus dem mitgelieferten Katalog <span className="font-mono">2026-10-01</span> (mit beton 0.9.2, kein
-              Online-Abruf)
-            </span>
-            <span>Beträge in USD; Anzeige in Euro optional zum festen Kurs (Einstellungen)</span>
-            <a className="underline underline-offset-2">Preise & eigene Preise</a>
-          </F>
+              <F id="USE-006" className="mt-7">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-[14px] font-semibold">Verlauf</h2>
+                  <Segmented
+                    label="Größe"
+                    value={stack}
+                    onChange={(v) => setStack(v as 'tokens' | 'cost')}
+                    options={[
+                      { id: 'tokens', label: 'Tokens nach Harness' },
+                      { id: 'cost', label: 'Kosten (API & Gateway)', disabled: !mixed, title: mixed ? undefined : 'Keine Sessions mit API-Key oder Gateway' },
+                    ]}
+                  />
+                  <div className="ml-auto flex gap-4 text-[12px]">
+                    {(['claude', 'codex', 'gemini', 'ollama'] as HarnessId[]).map((h) => (
+                      <span key={h} className="inline-flex items-center gap-1.5">
+                        <VoiceDot voice={harnesses[h].voice} className="size-2.5 rounded-[2px]" />
+                        {harnesses[h].name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <StackedBars mode={stack} />
+                </div>
+              </F>
+
+              <F id={['USE-005', 'USE-001']} className="mt-7">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="text-[14px] font-semibold">Aufschlüsselung</h2>
+                  <Segmented
+                    label="Gruppieren nach"
+                    value={effectiveDim}
+                    onChange={(v) => setDim(v as Dim)}
+                    options={DIMS.map((d) => ({
+                      id: d.id,
+                      label: d.label,
+                      disabled: d.central && !team,
+                      title: d.central && !team ? 'Nur mit Team-Server (ab M4); lokal gibt es nur dich' : undefined,
+                    }))}
+                  />
+                  {team && <span className="text-[12px] text-muted-foreground">Du siehst als Team-Admin die Teams Shop und Plattform.</span>}
+                </div>
+                <div className="mt-2 overflow-hidden rounded-md border border-border">
+                  <table className="w-full text-[13px]">
+                    <thead className="bg-sunken text-[12px] text-muted-foreground">
+                      <tr>
+                        <th className="py-2 pl-3 text-left font-medium">{DIMS.find((d) => d.id === effectiveDim)?.label}</th>
+                        <th className="px-2 text-right font-medium">Turns</th>
+                        <th className="px-2 text-right font-medium">Eingabe</th>
+                        <th className="px-2 text-right font-medium">Ausgabe</th>
+                        <th className="px-2 text-right font-medium">Cache gelesen</th>
+                        <th className="py-2 pr-3 pl-6 text-left font-medium">Abrechnung</th>
+                      </tr>
+                    </thead>
+                    <tbody className="type-narrow">
+                      {rows.map((r, i) => (
+                        <tr key={i} className={cn('border-t border-border align-top', effectiveDim === 'session' && 'cursor-pointer hover:bg-accent/50')}>
+                          <td className="py-2 pl-3">
+                            <div className="font-sans">{r.name}</div>
+                            {r.sub && <div className="mt-0.5">{r.sub}</div>}
+                          </td>
+                          <td className="px-2 py-2 text-right tabular-nums">{r.turns}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.input)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.output)}</td>
+                          <td className="px-2 py-2 text-right tabular-nums">{fmtTok(r.cache)}</td>
+                          <td className="py-2 pr-3 pl-6 text-[12px]">{r.billing}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </F>
+
+              <F id="USE-002" className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-3 text-[11px] text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  <Info className="size-3" /> Preise aus dem mitgelieferten Katalog <span className="font-mono">2026-10-01</span> (mit beton 0.9.2, kein
+                  Online-Abruf)
+                </span>
+                <span>Beträge in USD; Anzeige in Euro optional zum festen Kurs (Einstellungen)</span>
+                <a className="underline underline-offset-2">Preise & eigene Preise</a>
+              </F>
+            </>
+          )}
         </div>
       </div>
     </AppLayout>
@@ -512,32 +643,43 @@ function UsagePricing({ state }: { state: string }) {
                   </tr>
                 </thead>
                 <tbody className="type-narrow">
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">1</td>
-                    <td className="font-mono text-[12px]">litellm-intern / llama-3.3-70b*</td>
-                    <td className="px-2 text-right tabular-nums">0,40 $</td>
-                    <td className="px-2 text-right tabular-nums">0,80 $</td>
-                    <td className="px-2 text-right tabular-nums">0,04 $ / 0,50 $</td>
-                    <td className="px-2 text-right tabular-nums">131 k</td>
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">2</td>
-                    <td className="font-mono text-[12px]">ollama-local / *</td>
-                    <td colSpan={3} className="px-2 text-right text-[12px] text-muted-foreground">
-                      kostenlos
-                    </td>
-                    <td className="px-2 text-right text-muted-foreground">aus Modell</td>
-                  </tr>
-                  <tr className="border-t border-border">
-                    <td className="py-2 pl-3 text-muted-foreground">3</td>
-                    <td className="font-mono text-[12px]">openrouter / *</td>
-                    <td className="px-2 text-right tabular-nums">2,00 $</td>
-                    <td className="px-2 text-right tabular-nums">6,00 $</td>
-                    <td className="px-2 text-right text-muted-foreground tabular-nums" title="Fehlende Cache-Preise: 0,1 × bzw. 1,25 × Eingabe">
-                      0,20 $ / 2,50 $ <span className="text-[10px]">geschätzt</span>
-                    </td>
-                    <td className="px-2 text-right text-muted-foreground">—</td>
-                  </tr>
+                  {state === 'no-overrides' ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-3 py-3 font-sans text-[12px] text-muted-foreground">
+                        Noch keine eigenen Preise. Sie stehen in <span className="font-mono">~/.beton/config.yaml</span> unter{' '}
+                        <span className="font-mono">pricing.overrides</span>; der erste Treffer gewinnt.
+                      </td>
+                    </tr>
+                  ) : (
+                    <>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">1</td>
+                        <td className="font-mono text-[12px]">litellm-intern / llama-3.3-70b*</td>
+                        <td className="px-2 text-right tabular-nums">0,40 $</td>
+                        <td className="px-2 text-right tabular-nums">0,80 $</td>
+                        <td className="px-2 text-right tabular-nums">0,04 $ / 0,50 $</td>
+                        <td className="px-2 text-right tabular-nums">131 k</td>
+                      </tr>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">2</td>
+                        <td className="font-mono text-[12px]">ollama-local / *</td>
+                        <td colSpan={3} className="px-2 text-right text-[12px] text-muted-foreground">
+                          kostenlos
+                        </td>
+                        <td className="px-2 text-right text-muted-foreground">aus Modell</td>
+                      </tr>
+                      <tr className="border-t border-border">
+                        <td className="py-2 pl-3 text-muted-foreground">3</td>
+                        <td className="font-mono text-[12px]">openrouter / *</td>
+                        <td className="px-2 text-right tabular-nums">2,00 $</td>
+                        <td className="px-2 text-right tabular-nums">6,00 $</td>
+                        <td className="px-2 text-right text-muted-foreground tabular-nums" title="Fehlende Cache-Preise: 0,1 × bzw. 1,25 × Eingabe">
+                          0,20 $ / 2,50 $ <span className="text-[10px]">geschätzt</span>
+                        </td>
+                        <td className="px-2 text-right text-muted-foreground">—</td>
+                      </tr>
+                    </>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -629,7 +771,24 @@ const CTX: Record<string, { used: number; window: number | null }> = {
   auto: { used: 150_000, window: 200_000 },
   'no-window': { used: 150_000, window: null },
   unsupported: { used: 61_000, window: 131_072 },
+  'turn-running': { used: 162_000, window: 200_000 },
+  stopped: { used: 150_000, window: 200_000 },
+  'auto-compacted': { used: 38_500, window: 200_000 },
+  'harness-compacted': { used: 41_000, window: 200_000 },
+  'compact-failed': { used: 186_400, window: 200_000 },
+  'no-context': { used: 0, window: null },
 }
+
+/** Warum „Kompaktieren“ gerade nicht geht (USE-009 AC3; Tooltip und kurzer sichtbarer Hinweis). */
+const COMPACT_BLOCKED: Record<string, { title: string; hint?: string }> = {
+  unsupported: { title: 'Ollama (Direkt-API) kann nicht kompaktieren. Starte bei Bedarf eine neue Session.', hint: 'nicht verfügbar für diesen Harness' },
+  'turn-running': { title: 'Kompaktieren geht erst nach dem laufenden Turn', hint: 'erst nach dem Turn' },
+  stopped: { title: 'Session läuft nicht – erst fortsetzen (Nachricht senden)', hint: 'Session läuft nicht' },
+  'no-context': { title: 'Noch nichts zu kompaktieren' },
+}
+
+/** Erklärzeile unter jedem abgeschlossenen Compaction-Ereignis. */
+const COMPACTED_EXPLAIN = 'Claude Code hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.'
 
 function ContextRing({ used, window }: { used: number; window: number | null }) {
   const pct = window ? Math.round((used / window) * 100) : null
@@ -668,23 +827,40 @@ function UsageContext({ state }: { state: string }) {
   const ctx = CTX[state] ?? CTX.normal
   const unsupported = state === 'unsupported'
   const harness: HarnessId = unsupported ? 'ollama' : 'claude'
+  const running = state === 'compacting' || state === 'turn-running'
+  const blocked = COMPACT_BLOCKED[state]
+  const fresh = state === 'no-context'
   return (
     <AppLayout activeSession={unsupported ? 'ses_6h2f' : 'ses_7f3k'}>
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
-        <StatusMark status={state === 'compacting' ? 'running' : 'idle'} />
+        <StatusMark status={running ? 'running' : state === 'stopped' ? 'stopped' : 'idle'} withLabel={state === 'stopped'} />
         <h2 className="truncate text-[15px] font-semibold">{unsupported ? 'Lokales Modell testen' : 'Rate-Limiter für die Login-API'}</h2>
         <HarnessBadge id={harness} model={harnesses[harness].models[0]} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">
-          <UserMessage>Jetzt bitte auch die Register- und Passwort-Reset-Route absichern, gleiche Regeln.</UserMessage>
-          <ToolCall kind="read" name="Lesen" target="src/routes/register.ts" duration="0,1 s" />
-          <ToolCall kind="read" name="Lesen" target="src/routes/password-reset.ts" duration="0,1 s" />
-          <ToolCall kind="edit" name="Bearbeiten" target="src/routes/register.ts" duration="0,2 s" />
-          <AgentMessage harness={harness}>
-            <p>Beide Routen nutzen jetzt dieselbe Middleware. Die Tests für Register und Reset laufen grün.</p>
-          </AgentMessage>
-          <TurnFooter duration="48 s" tokens="21.900" cost="Subscription" />
+          {fresh ? (
+            <SystemNote>Session gestartet · noch kein Turn</SystemNote>
+          ) : (
+            <>
+              <UserMessage>Jetzt bitte auch die Register- und Passwort-Reset-Route absichern, gleiche Regeln.</UserMessage>
+              <ToolCall kind="read" name="Lesen" target="src/routes/register.ts" duration="0,1 s" />
+              <ToolCall kind="read" name="Lesen" target="src/routes/password-reset.ts" duration="0,1 s" />
+              <ToolCall kind="edit" name="Bearbeiten" target="src/routes/register.ts" duration="0,2 s" />
+              <AgentMessage harness={harness}>
+                <p>Beide Routen nutzen jetzt dieselbe Middleware. Die Tests für Register und Reset laufen grün.</p>
+              </AgentMessage>
+              <TurnFooter duration="48 s" tokens="21.900" cost="Subscription" />
+            </>
+          )}
+
+          {state === 'turn-running' && (
+            <>
+              <UserMessage>Und die Logout-Route bekommt dieselbe Middleware.</UserMessage>
+              <ToolCall kind="read" name="Lesen" target="src/routes/logout.ts" status="running" />
+            </>
+          )}
+          {state === 'stopped' && <SystemNote>Session gestoppt · Kontextstand vom letzten Turn</SystemNote>}
 
           {state === 'compacting' && (
             <F id="USE-009">
@@ -695,8 +871,20 @@ function UsageContext({ state }: { state: string }) {
             <F id="USE-009" className="flex flex-col gap-2">
               <SystemNote>Kontext kompaktiert · 186.400 → 38.200 Tokens · von dir ausgelöst</SystemNote>
               <p className="ml-9 text-[12px] text-muted-foreground">
-                Claude Code hat den bisherigen Verlauf zusammengefasst. Der volle Verlauf bleibt in beton erhalten und sichtbar.
+                {COMPACTED_EXPLAIN}
               </p>
+            </F>
+          )}
+          {state === 'auto-compacted' && (
+            <F id="USE-009" className="flex flex-col gap-2">
+              <SystemNote>Kontext kompaktiert · 172.000 → 38.500 Tokens · automatisch ab 80 % (vor dem nächsten Turn)</SystemNote>
+              <p className="ml-9 text-[12px] text-muted-foreground">{COMPACTED_EXPLAIN}</p>
+            </F>
+          )}
+          {state === 'harness-compacted' && (
+            <F id="USE-009" className="flex flex-col gap-2">
+              <SystemNote>Kontext kompaktiert · 186.400 → 41.000 Tokens · von Claude Code selbst ausgelöst</SystemNote>
+              <p className="ml-9 text-[12px] text-muted-foreground">{COMPACTED_EXPLAIN}</p>
             </F>
           )}
         </div>
@@ -725,32 +913,48 @@ function UsageContext({ state }: { state: string }) {
             <div className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">Gilt für deine Sessions. Pro Session in den Session-Einstellungen änderbar.</div>
           </F>
         )}
-        <div className="flex items-center gap-3 border-t border-border px-4 py-1.5">
-          <F id="USE-008" as="span" badge="top-left">
-            <ContextRing used={ctx.used} window={ctx.window} />
+        {state === 'compact-failed' && (
+          <F id="USE-009" className="mx-4 mb-2">
+            <p role="alert" className="flex items-center gap-2 rounded-md border border-deny/40 bg-deny-soft px-3 py-2 text-[13px]">
+              <span aria-hidden className="size-2 shrink-0 rotate-45 bg-deny" />
+              Kompaktieren fehlgeschlagen: Claude Code hat nicht geantwortet. Versuch es nach dem nächsten Turn erneut.
+            </p>
           </F>
-          <span className="text-[11px] text-muted-foreground tabular-nums">
-            {ctx.window ? `${ctx.used.toLocaleString('de-DE')} von ${ctx.window.toLocaleString('de-DE')} Tokens` : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
-          </span>
+        )}
+        <div className="flex items-center gap-3 border-t border-border px-4 py-1.5">
+          {fresh ? (
+            <F id="USE-008" as="span" badge="top-left" className="text-[12px] text-muted-foreground">
+              Kontext: noch kein Turn
+            </F>
+          ) : (
+            <>
+              <F id="USE-008" as="span" badge="top-left">
+                <ContextRing used={ctx.used} window={ctx.window} />
+              </F>
+              <span className="text-[11px] text-muted-foreground tabular-nums">
+                {ctx.window ? `${ctx.used.toLocaleString('de-DE')} von ${ctx.window.toLocaleString('de-DE')} Tokens` : 'Fenstergröße nicht bekannt (weder Harness noch Katalog)'}
+              </span>
+            </>
+          )}
           <F id="USE-009" as="span" className="ml-auto flex items-center gap-1" badge="top-right">
             <button
-              disabled={unsupported || state === 'compacting'}
-              title={unsupported ? 'Ollama (Direkt-API) kann nicht kompaktieren. Starte bei Bedarf eine neue Session.' : 'Verlauf zusammenfassen, um Platz im Kontext zu schaffen (/compact)'}
+              disabled={!!blocked || state === 'compacting'}
+              title={blocked ? blocked.title : 'Verlauf zusammenfassen, um Platz im Kontext zu schaffen (/compact)'}
               className={cn(
                 'inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] disabled:cursor-not-allowed disabled:opacity-50',
-                state === 'critical' ? 'border-foreground font-semibold' : 'border-border hover:bg-accent',
+                state === 'critical' || state === 'compact-failed' ? 'border-foreground font-semibold' : 'border-border hover:bg-accent',
               )}
             >
               <Minimize2 className="size-3.5" /> {state === 'compacting' ? 'Kompaktiert …' : 'Kompaktieren'}
             </button>
-            {unsupported && <span className="text-[11px] text-muted-foreground">nicht verfügbar für diesen Harness</span>}
+            {blocked?.hint && <span className="text-[11px] text-muted-foreground">{blocked.hint}</span>}
             <button aria-label="Automatisches Kompaktieren einstellen" className={cn('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent', state === 'auto' && 'bg-accent text-foreground')}>
               <Settings2 className="size-3.5" />
             </button>
           </F>
         </div>
       </div>
-      <Composer harness={harness} running={state === 'compacting'} />
+      <Composer harness={harness} running={running} />
     </AppLayout>
   )
 }
@@ -844,6 +1048,11 @@ export const group: ScreenGroup = {
         { id: 'mixed', title: 'Mit API-Key & Gateway' },
         { id: 'team', title: 'Team-Server (Person/Team)' },
         { id: 'empty', title: 'Noch kein Verbrauch' },
+        { id: 'loading', title: 'Lädt' },
+        { id: 'error', title: 'Daemon nicht erreichbar' },
+        { id: 'custom-range', title: 'Eigener Zeitraum' },
+        { id: 'equivalent', title: 'API-Äquivalent eingeblendet' },
+        { id: 'window-expired', title: 'Abo-Fenster zurückgesetzt' },
       ],
       component: UsageOverview,
     },
@@ -856,6 +1065,7 @@ export const group: ScreenGroup = {
         { id: 'default', title: 'Übersicht' },
         { id: 'unpriced', title: 'Turns ohne Preis' },
         { id: 'explain', title: 'Herleitung' },
+        { id: 'no-overrides', title: 'Keine eigenen Preise' },
       ],
       component: UsagePricing,
     },
@@ -874,6 +1084,12 @@ export const group: ScreenGroup = {
         { id: 'auto', title: 'Automatik einstellen' },
         { id: 'no-window', title: 'Fenster unbekannt' },
         { id: 'unsupported', title: 'Harness ohne Compaction' },
+        { id: 'turn-running', title: 'Turn läuft' },
+        { id: 'stopped', title: 'Session gestoppt' },
+        { id: 'auto-compacted', title: 'Automatisch kompaktiert (beton)' },
+        { id: 'harness-compacted', title: 'Vom Harness kompaktiert' },
+        { id: 'compact-failed', title: 'Kompaktieren fehlgeschlagen' },
+        { id: 'no-context', title: 'Vor dem ersten Turn' },
       ],
       component: UsageContext,
     },
