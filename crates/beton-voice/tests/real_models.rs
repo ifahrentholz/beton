@@ -18,10 +18,10 @@ mod support;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use beton_voice::catalog::Catalog;
-use beton_voice::engine::{Backend, Engine};
+use beton_voice::engine::Engine;
 use beton_voice::service::{FixedSource, ServiceConfig, VoiceService};
 use beton_voice::store::ModelStore;
 use beton_voice::whisper::WhisperEngine;
@@ -141,6 +141,8 @@ async fn voi_006_ac2_french_fixture_is_transcribed_as_de_or_en() {
 #[tokio::test]
 #[ignore = "nur lokal: Benchmark mit large-v3-turbo und Fixtures (BETON_TEST_VOICE_MODELS, BETON_TEST_VOICE_FIXTURES)"]
 async fn voi_003_ac3_large_v3_turbo_rtf_at_most_0_3_on_apple_silicon() {
+    use beton_voice::engine::Backend;
+    use std::time::Instant;
     let (pcm, _) = fixture("de");
     let svc = service(model("large-v3-turbo"), LanguageSetting::Auto);
     let warm = svc.transcribe(pcm.clone(), |_| {}).await.unwrap();
