@@ -92,6 +92,8 @@ pub struct Runtime {
     pub queues: Arc<crate::queue::Queues>,
     /// Aufträge an Sub-Agents (AGT-009).
     pub subagents: Arc<crate::subagents::Registry>,
+    /// `policy_query`-Abfragen je Session-Baum (AGT-007, #276).
+    pub policy_queries: Arc<crate::policy_state::QueryBudgets>,
     /// SSE-Strom für Skripte (PROTO-012).
     pub sse: crate::sse::SseConfig,
     /// Automatische Session-Titel (SES-010).
@@ -166,6 +168,7 @@ impl Runtime {
             features: Arc::default(),
             queues: Arc::default(),
             subagents: Arc::default(),
+            policy_queries: Arc::default(),
             sse: crate::sse::SseConfig::default(),
             titles: crate::titles::TitlesConfig::default(),
             title_jobs: Arc::default(),

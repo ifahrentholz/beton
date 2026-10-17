@@ -771,6 +771,74 @@ fn scope_of(t: RuleType, params: Option<&BTreeMap<String, Value>>) -> Option<Bud
     }
 }
 
+/// Ist `to` laut eingebettetem Preis-Katalog höchstens so teuer wie `from` (Eingabe- und
+/// Ausgabepreis)? Gleiche IDs immer; ein unbekanntes Modell (Default des Harness) bzw. ein
+/// Modell ohne Preis ist nie nachweisbar günstiger (#286).
+pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
+    if from == Some(to) {
+        return true;
+    }
+    let catalog = beton_core::pricing::Catalog::embedded();
+    match (from.and_then(|f| catalog.resolve(f)), catalog.resolve(to)) {
+        (Some(a), Some(b)) if a.id == b.id => true,
+        (Some(a), Some(b)) => {
+            b.input_per_mtok <= a.input_per_mtok && b.output_per_mtok <= a.output_per_mtok
+        }
+        _ => false,
+    }
+}
+
+/// Ist der Effort `to` höchstens so hoch wie `from`? Die niedrigste Stufe immer; ein
+/// unbekannter Effort ist nie nachweisbar niedriger (#286).
+pub fn effort_not_higher(from: Option<&str>, to: &str) -> bool {
+    let rank = |e: &str| EFFORTS.iter().position(|x| *x == e);
+    if from == Some(to) || rank(to) == Some(0) {
+        return true;
+    }
+    matches!((from.and_then(rank), rank(to)), (Some(a), Some(b)) if b <= a)
+}
+
+/// Kontextfelder, die Kosten lesen (Geld bzw. Listenpreis-Äquivalent, POL-004).
+const COST_FIELDS: [&str; 9] = [
+    "session.cost_usd",
+    "session.equivalent_usd",
+    "run.cost_usd",
+    "run.equivalent_usd",
+    "run.subtree_cost_usd",
+    "run.subtree_equivalent_usd",
+    "user.daily_cost_usd",
+    "user.daily_equivalent_usd",
+    "user.monthly_cost_usd",
+];
+
+/// Erste Regel des Sets (kanonische Reihenfolge, ohne Dry-Run), die als Budget wirkt: ein
+/// Regeltyp `spend_cap`/`daily_budget` oder eine Regel, deren Ausdrücke Kosten lesen
+/// (`*.cost_usd`, `*.equivalent_usd`; #297).
+pub fn first_budget(set: &EffectiveSet) -> Option<RuleRef> {
+    if let Some(b) = budget_rules(set).into_iter().next() {
+        return Some(b.rule);
+    }
+    for s in set.sets() {
+        if s.mode == crate::doc::Mode::DryRun {
+            continue;
+        }
+        for r in s.rules.iter().filter(|r| !r.doc.dry_run) {
+            let when = match &r.kind {
+                RuleKind::Cel { when: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            let reads_cost = when.into_iter().chain(r.aux()).any(|p| {
+                let fields = p.fields();
+                COST_FIELDS.iter().any(|f| fields.contains(*f))
+            });
+            if reads_cost {
+                return Some(s.rule_ref(&r.id));
+            }
+        }
+    }
+    None
+}
+
 /// Budget-Regeln (`spend_cap`, `daily_budget`) des Sets in kanonischer Reihenfolge, je Regel
 /// einmal; Dry-Run-Regeln zählen nicht.
 pub fn budget_rules(set: &EffectiveSet) -> Vec<BudgetRule> {

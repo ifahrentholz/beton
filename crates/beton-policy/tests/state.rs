@@ -19,12 +19,12 @@ use serde_json::json;
 
 fn set(body: &str) -> Arc<LoadedSet> {
     let text = format!("spec_version: 1\nname: p\n{body}");
-    Arc::new(parse_set(Scope::Project, "p.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
+    Arc::new(parse_set(Scope::User, "p.yaml", &text).unwrap_or_else(|e| panic!("{e}\n{text}")))
 }
 
 fn load_err(body: &str) -> String {
     parse_set(
-        Scope::Project,
+        Scope::User,
         "p.yaml",
         &format!("spec_version: 1\nname: p\n{body}"),
     )

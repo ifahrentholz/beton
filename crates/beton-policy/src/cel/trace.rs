@@ -45,27 +45,20 @@ fn flatten<'a>(node: &'a Node, op: Op, out: &mut Vec<&'a Node>) {
     }
 }
 
-/// Zerlegt `src` an `token` außerhalb von Klammern und Zeichenketten.
+/// Zerlegt `src` an `token` außerhalb von Klammern und Zeichenketten. Zeichenketten in allen
+/// CEL-Formen: `"…"`, `'…'`, Triple-Quotes (`"""…"""`, `'''…'''`) und mit Präfix `r`/`R`
+/// (Raw, ohne Escape), auch kombiniert mit `b`/`B` (#263).
 fn split_top_level<'a>(src: &'a str, token: &str) -> Vec<&'a str> {
     let bytes = src.as_bytes();
     let mut parts = Vec::new();
     let (mut depth, mut start, mut i) = (0usize, 0usize, 0usize);
-    let mut quote: Option<u8> = None;
     while i < bytes.len() {
         let c = bytes[i];
-        if let Some(q) = quote {
-            if c == b'\\' {
-                i += 2;
+        match c {
+            b'"' | b'\'' => {
+                i = string_end(bytes, i, raw_prefix(bytes, i));
                 continue;
             }
-            if c == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        match c {
-            b'"' | b'\'' => quote = Some(c),
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
             _ if depth == 0 && bytes[i..].starts_with(token.as_bytes()) => {
@@ -80,6 +73,43 @@ fn split_top_level<'a>(src: &'a str, token: &str) -> Vec<&'a str> {
     }
     parts.push(src[start..].trim());
     parts
+}
+
+fn ident(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// Steht vor dem Quote an `quote` ein Raw-Präfix (`r`, `R`, `rb`, `br`, …) als eigenes Token?
+fn raw_prefix(bytes: &[u8], quote: usize) -> bool {
+    let before = |n: usize| quote.checked_sub(n).map(|k| bytes[k]);
+    let boundary = |n: usize| before(n).is_none_or(|c| !ident(c));
+    let is_r = |c: Option<u8>| matches!(c, Some(b'r' | b'R'));
+    let is_b = |c: Option<u8>| matches!(c, Some(b'b' | b'B'));
+    (is_r(before(1)) && boundary(2))
+        || (is_r(before(1)) && is_b(before(2)) && boundary(3))
+        || (is_b(before(1)) && is_r(before(2)) && boundary(3))
+}
+
+/// Index nach dem Ende der Zeichenkette, die an `open` beginnt (bzw. das Ende von `bytes`).
+fn string_end(bytes: &[u8], open: usize, raw: bool) -> usize {
+    let q = bytes[open];
+    let triple = bytes[open..].starts_with(&[q, q, q]);
+    let (mut i, close): (usize, &[u8]) = if triple {
+        (open + 3, &[q, q, q][..])
+    } else {
+        (open + 1, &[q][..])
+    };
+    while i < bytes.len() {
+        if !raw && bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(close) {
+            return i + close.len();
+        }
+        i += 1;
+    }
+    bytes.len()
 }
 
 fn value_of(r: Result<Value, super::EvalError>) -> Option<bool> {
@@ -147,6 +177,32 @@ mod tests {
             vec![r#"s == "a\"&&""#, "t"]
         );
         assert_eq!(split_top_level("x", "&&"), vec!["x"]);
+        // #263: Raw-Strings kennen kein Escape, Triple-Quotes enthalten einfache Quotes.
+        assert_eq!(
+            split_top_level(r#"a == r"x\" && b"#, "&&"),
+            vec![r#"a == r"x\""#, "b"]
+        );
+        assert_eq!(
+            split_top_level(r"a == R'x\' && b", "&&"),
+            vec![r"a == R'x\'", "b"]
+        );
+        assert_eq!(
+            split_top_level(r#"a == """x " && y""" && b"#, "&&"),
+            vec![r#"a == """x " && y""""#, "b"]
+        );
+        assert_eq!(
+            split_top_level("a == '''it's && no''' || b", "||"),
+            vec!["a == '''it's && no'''", "b"]
+        );
+        assert_eq!(
+            split_top_level(r#"a == br"\" && b"#, "&&"),
+            vec![r#"a == br"\""#, "b"]
+        );
+        // Ein `r` am Ende eines Bezeichners ist kein Raw-String-Präfix.
+        assert_eq!(
+            split_top_level(r#"bar == "a\" && c" && d"#, "&&"),
+            vec![r#"bar == "a\" && c""#, "d"]
+        );
         assert_eq!(
             split_top_level("ä == \"ö\" && ü", "&&"),
             vec!["ä == \"ö\"", "ü"]

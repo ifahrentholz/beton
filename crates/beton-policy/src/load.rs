@@ -166,6 +166,46 @@ pub struct LoadedSet {
 }
 
 impl LoadedSet {
+    /// Hinweise zu handgeschriebenen Regeln (kein Ladefehler): `(Regel-ID, Text)`. Der Runner
+    /// meldet sie als Warnung (`notice`). Entzuckerte Regeltypen erzeugen keine.
+    pub fn lints(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for rule in self.rules.iter().filter(|r| r.doc.rule_type.is_none()) {
+            // #242 N3: ohne Tool und Server gilt ein Grant auch für andere Tools.
+            if let Some(key) = &rule.remember_key {
+                let fields = key.fields();
+                if !fields.contains("tool.name") || !fields.contains("tool.server") {
+                    out.push((
+                        rule.id.clone(),
+                        "`remember_key` enthält nicht `tool.name` und `tool.server`: ein Grant \
+                         gilt dann auch für andere Tools bzw. Server mit demselben Schlüssel \
+                         (POL-010)"
+                            .to_owned(),
+                    ));
+                }
+            }
+            // #248: lexikalische Vergleiche auf rohen Pfaden.
+            let when = match &rule.kind {
+                RuleKind::Cel { when: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            if when
+                .into_iter()
+                .chain(rule.aux())
+                .any(Program::compares_raw_paths)
+            {
+                out.push((
+                    rule.id.clone(),
+                    "vergleicht `tool.paths`, `tool.write_paths` bzw. `tool.cwd` lexikalisch \
+                     (ohne Symlinks und Groß-/Kleinschreibung des Dateisystems); für Pfade \
+                     `resolve(p)` bzw. `under(p, root)` verwenden (POL-002)"
+                        .to_owned(),
+                ));
+            }
+        }
+        out
+    }
+
     pub fn rule_ref(&self, rule_id: &str) -> RuleRef {
         RuleRef {
             scope: self.scope,
@@ -571,25 +611,26 @@ fn check_rules_with(
                 ));
             }
         }
-        // Der Präfix `agent/` gehört dem Zustand der Agent-Ebene (Security-Review #327).
-        if scope != Scope::Agent
-            && let Some(j) = rule
-                .effects
-                .iter()
-                .position(|e| e.key.starts_with("agent/"))
-        {
-            return Err(loc.at(
-                &field(&format!("effects[{j}].key")),
-                format!(
-                    "Key `{}`: der Präfix `agent/` ist für Regeln der Agent-Ebene reserviert",
-                    rule.effects[j].key
-                ),
-            ));
+        // Die Präfixe `project/` und `agent/` gehören dem Zustand ihrer Ebene (Security-Review
+        // #327, #268).
+        for (prefix, owner) in [("agent/", Scope::Agent), ("project/", Scope::Project)] {
+            if scope != owner
+                && let Some(j) = rule.effects.iter().position(|e| e.key.starts_with(prefix))
+            {
+                return Err(loc.at(
+                    &field(&format!("effects[{j}].key")),
+                    format!(
+                        "Key `{}`: der Präfix `{prefix}` ist für Regeln der Ebene {} reserviert",
+                        rule.effects[j].key,
+                        owner.as_str()
+                    ),
+                ));
+            }
         }
-        // Agent-Ebene verschärft nur (AGT-014): Effects nur auf eigenen Session-Zustand,
-        // keine automatische Freigabe nach Ablauf einer Rückfrage.
-        if scope == Scope::Agent {
-            let own = format!("agent/{}/", loc.set);
+        // Unterhalb der User-Ebene verschärfen Regeln nur (POL-007, AGT-014, #268): Effects nur
+        // auf eigenen Session-Zustand, nie auf Zähler oder Zustand anderer Ebenen.
+        if matches!(scope, Scope::Project | Scope::Agent) {
+            let own = format!("{}/{}/", scope.as_str(), loc.set);
             for (j, effect) in rule.effects.iter().enumerate() {
                 let own_scope = matches!(
                     effect.scope,
@@ -599,22 +640,25 @@ fn check_rules_with(
                     return Err(loc.at(
                         &field(&format!("effects[{j}]")),
                         format!(
-                            "Effects der Agent-Ebene schreiben nur eigenen Zustand der Session \
-                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen"
+                            "Effects der Ebene {} schreiben nur eigenen Zustand der Session \
+                             (Scope `session` oder `run`, Key `{own}…`), nie den anderer Ebenen",
+                            scope.as_str()
                         ),
                     ));
                 }
             }
-            if rule
+        }
+        // Keine automatische Freigabe nach Ablauf einer Rückfrage auf der Agent-Ebene.
+        if scope == Scope::Agent
+            && rule
                 .approval
                 .as_ref()
                 .is_some_and(|a| a.on_timeout == Some(crate::doc::TimeoutAction::Allow))
-            {
-                return Err(loc.at(
-                    &field("approval.on_timeout"),
-                    "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
-                ));
-            }
+        {
+            return Err(loc.at(
+                &field("approval.on_timeout"),
+                "`on_timeout: allow` lockert; die Agent-Ebene kann nur verschärfen",
+            ));
         }
         if let Some(parts) = desugar_parts(scope, rule, loc, &at)? {
             out.rules.extend(parts);

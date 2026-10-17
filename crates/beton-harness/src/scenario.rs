@@ -215,6 +215,10 @@ pub struct Step {
     /// Fehlerergebnis des letzten Tool-Calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_error: Option<String>,
+    /// Abbruch des letzten Tool-Calls nach seinem Start (Status `cancelled`, z. B. Interrupt
+    /// während der Ausführung; Integritätsprüfung, HAR-005, #268).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_cancelled: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// Abo-Fenster eines Subscription-Logins melden (USE-004): die Fake-CLI als
@@ -448,6 +452,7 @@ impl Step {
         add(self.on_gate.is_some(), "on_gate");
         add(self.tool_result.is_some(), "tool_result");
         add(self.tool_error.is_some(), "tool_error");
+        add(self.tool_cancelled.is_some(), "tool_cancelled");
         add(self.usage.is_some(), "usage");
         add(self.rate_limit.is_some(), "rate_limit");
         add(self.error.is_some(), "error");
