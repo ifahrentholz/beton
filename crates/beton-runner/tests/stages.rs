@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use beton_core::event::{EventPayload, ToolCallCompleted, ToolCallRequested, ToolStatus};
 use beton_harness::ToolIsolation;
-use beton_runner::stages::{ShellIntegrity, StageInput, StageOptions, compose, sandbox_vars};
+use beton_runner::stages::{
+    ShellAnchors, ShellIntegrity, StageInput, StageOptions, compose, sandbox_vars,
+};
 use beton_sandbox::{CommandSpec, SandboxSpec, Stage, Stdio};
 
 fn exe() -> PathBuf {
@@ -453,6 +455,49 @@ fn sbx_002_shell_call_without_broker_start_is_an_integrity_violation() {
     }
     i.observe(&requested("e", "Bash"), 2).unwrap();
     assert!(i.observe(&completed("e", ToolStatus::Error), 2).is_err());
+}
+
+/// #270: Jeder Shell-Aufruf braucht einen eigenen Broker-Start, der nach der Gate-Entscheidung
+/// über genau diesen Aufruf liegt (Claude startet die Shell erst nach dem `PreToolUse`-Hook).
+/// Starts davor (Env-Probe, Shell-Snapshot, ein Start aus Stufe 1) und der Start eines anderen
+/// Aufrufs decken ihn nicht; mit dem globalen Zähler taten sie es.
+#[test]
+fn sbx_002_each_shell_call_needs_its_own_broker_start_after_its_gate_decision() {
+    // Zwei Starts vor der Entscheidung, keiner danach.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("a", "Bash"), 2).unwrap();
+    anchors.record("a", 2);
+    assert!(i.observe(&completed("a", ToolStatus::Ok), 2).is_err());
+
+    // Kontrollgruppe: ein Start nach der Entscheidung genügt.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("a", "Bash"), 2).unwrap();
+    anchors.record("a", 2);
+    i.observe(&completed("a", ToolStatus::Ok), 3).unwrap();
+
+    // Zwei gleichzeitige Aufrufe, nur ein Start in ihren Fenstern: der zweite fehlt.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    for id in ["b", "c"] {
+        i.observe(&requested(id, "Bash"), 0).unwrap();
+        anchors.record(id, 0);
+    }
+    i.observe(&completed("b", ToolStatus::Ok), 1).unwrap();
+    assert!(i.observe(&completed("c", ToolStatus::Ok), 1).is_err());
+
+    // Gleichzeitig, in umgekehrter Reihenfolge fertig: jeder findet seinen Start; eine zweite
+    // Entscheidung (Rückfrage nach dem Hook) verschiebt das Fenster nicht.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("d", "Bash"), 0).unwrap();
+    anchors.record("d", 0);
+    i.observe(&requested("e", "Bash"), 1).unwrap();
+    anchors.record("e", 1);
+    anchors.record("d", 2);
+    i.observe(&completed("e", ToolStatus::Ok), 2).unwrap();
+    i.observe(&completed("d", ToolStatus::Ok), 2).unwrap();
 }
 
 #[tokio::test]

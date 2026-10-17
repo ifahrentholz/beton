@@ -531,6 +531,25 @@ impl SessionStages {
     }
 }
 
+/// Zahl der Broker-Starts, als das Gate zum ersten Mal über einen Tool-Call entschied (#270).
+/// Claude startet die Shell eines `Bash`-Aufrufs erst nach dem `PreToolUse`-Hook bzw. der
+/// Rückfrage; ein Start mit kleinerer Nummer gehört deshalb nie zu diesem Aufruf.
+#[derive(Debug, Clone, Default)]
+pub struct ShellAnchors(Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>);
+
+impl ShellAnchors {
+    /// Hält `starts` für `call_id` fest (nur die erste Entscheidung zählt).
+    pub fn record(&self, call_id: &str, starts: u64) {
+        if let Ok(mut m) = self.0.lock() {
+            m.entry(call_id.to_owned()).or_insert(starts);
+        }
+    }
+
+    fn take(&self, call_id: &str) -> Option<u64> {
+        self.0.lock().ok().and_then(|mut m| m.remove(call_id))
+    }
+}
+
 /// Integritätsprüfung für Harnesses mit `tool_isolation: shell_override` (Claude Code): Jeder
 /// abgeschlossene Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
 /// Ignoriert die CLI `CLAUDE_CODE_SHELL` (etwa nach einem Update), liefen ihre Kommandos in
@@ -543,6 +562,7 @@ pub struct ShellIntegrity {
     shell_tools: Vec<String>,
     open: std::collections::HashSet<String>,
     completed: u64,
+    anchors: ShellAnchors,
 }
 
 impl ShellIntegrity {
@@ -551,6 +571,13 @@ impl ShellIntegrity {
             shell_tools: shell_tools.iter().map(|s| (*s).to_owned()).collect(),
             ..Self::default()
         }
+    }
+
+    /// Zeitpunkte der Gate-Entscheidungen (siehe [`ShellAnchors`]).
+    #[must_use]
+    pub fn with_anchors(mut self, anchors: ShellAnchors) -> Self {
+        self.anchors = anchors;
+        self
     }
 
     /// Wertet ein Event aus; `Err` mit Begründung bei einem Verstoß.
