@@ -130,7 +130,7 @@ impl Workspace {
             && f.name.as_ref().is_some_and(|n| {
                 rustix::fs::statat(&f.dir, n.as_os_str(), rustix::fs::AtFlags::empty()).is_ok_and(
                     |st| {
-                        rustix::fs::FileType::from_raw_mode(st.st_mode as _)
+                        rustix::fs::FileType::from_raw_mode(st.st_mode)
                             == rustix::fs::FileType::Directory
                     },
                 )
@@ -350,7 +350,7 @@ mod beneath {
             };
             let last = pending.is_empty();
             match rustix::fs::statat(dir, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(st) if FileType::from_raw_mode(st.st_mode as _) == FileType::Symlink => {
+                Ok(st) if FileType::from_raw_mode(st.st_mode) == FileType::Symlink => {
                     links += 1;
                     if links > MAX_LINKS {
                         return Err(forbidden());
@@ -366,9 +366,7 @@ mod beneath {
                         pending.push_front(c);
                     }
                 }
-                Ok(st)
-                    if last || FileType::from_raw_mode(st.st_mode as _) != FileType::Directory =>
-                {
+                Ok(st) if last || FileType::from_raw_mode(st.st_mode) != FileType::Directory => {
                     if !last {
                         return Err(PathError::NotFound(raw.to_owned()));
                     }
@@ -454,7 +452,7 @@ mod beneath {
             Err(e) => return Err(io(e)),
         };
         let st = rustix::fs::fstat(&fd).map_err(io)?;
-        if FileType::from_raw_mode(st.st_mode as _) != FileType::RegularFile {
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
             return Err(not_file());
         }
         Ok(Some((std::fs::File::from(fd), st.st_size as u64)))
@@ -652,7 +650,7 @@ impl Workspace {
         };
         if let Ok(st) = rustix::fs::statat(&found.dir, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW)
         {
-            let _ = rustix::fs::fchmod(&fd, Mode::from_raw_mode((st.st_mode as u32 & 0o7777) as _));
+            let _ = rustix::fs::fchmod(&fd, Mode::from_raw_mode(st.st_mode & 0o7777));
         }
         let mut file = std::fs::File::from(fd);
         file.write_all(bytes).map_err(|e| cleanup(io(&e)))?;
@@ -701,7 +699,7 @@ impl Workspace {
             else {
                 continue;
             };
-            let kind = match FileType::from_raw_mode(st.st_mode as _) {
+            let kind = match FileType::from_raw_mode(st.st_mode) {
                 FileType::Symlink => EntryKind::Symlink,
                 FileType::Directory => EntryKind::Dir,
                 FileType::RegularFile => EntryKind::File,
