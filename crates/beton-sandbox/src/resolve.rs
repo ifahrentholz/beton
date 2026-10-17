@@ -267,6 +267,10 @@ pub struct ResolvedPolicy {
     pub inherited_tools: bool,
     /// Hinweise der Auflösung (z. B. übersprungene, nicht vorhandene Grants).
     pub notes: Vec<String>,
+    /// Maskierte Dateien mit weiteren Hardlinks (#203): Ein Link in einer Freigabe wäre
+    /// lesbar, weil Seatbelt Pfade prüft und Landlock wie die Masken-Mounts am Zugriffspfad
+    /// hängen. Der Runner warnt beim Start der Session.
+    pub hardlinked_masks: Vec<PathBuf>,
 }
 
 impl ResolvedPolicy {
@@ -301,6 +305,7 @@ impl ResolvedPolicy {
             degraded: caps::required_default(),
             inherited_tools: false,
             notes: Vec::new(),
+            hardlinked_masks: Vec::new(),
         }
     }
 }
@@ -1249,6 +1254,7 @@ pub fn resolve(
         degraded,
         inherited_tools: false,
         notes,
+        hardlinked_masks: Vec::new(),
     })
 }
 

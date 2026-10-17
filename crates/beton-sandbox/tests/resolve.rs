@@ -489,3 +489,38 @@ fn sbx_004_grant_inside_a_mask_is_rejected() {
     let err = e.resolve("masks: [\"a/b\"]\n", Stage::Tools).unwrap_err();
     assert_eq!(err.code(), "invalid_spec", "Muster mit `/` sind umgehbar");
 }
+
+/// #203 (SBX-004): Seatbelt prüft Pfade, Landlock und die Masken-Mounts hängen am Zugriffspfad:
+/// Ein außerhalb der Sandbox angelegter Hardlink auf eine maskierte Datei wäre über den Link in
+/// einer Freigabe lesbar (Restrisiko). Die Auflösung meldet maskierte Dateien mit weiteren
+/// Hardlinks deshalb (Hinweis in `explain`, Warnung beim Start der Session), in beiden Stufen
+/// und auch, wenn der Link nicht in einer Freigabe liegt (ihn zu suchen wäre nicht praktikabel).
+/// Kontrollgruppe: ohne zweiten Link keine Meldung.
+#[cfg(unix)]
+#[test]
+fn sbx_004_masked_files_with_further_hardlinks_are_reported() {
+    let e = env();
+    let key = e.home.join(".ssh/id_ed25519");
+    for stage in [Stage::Harness, Stage::Tools] {
+        let p = e.resolve("read_paths: [\"~\"]\n", stage).unwrap();
+        assert!(p.hardlinked_masks.is_empty(), "{:?}", p.hardlinked_masks);
+    }
+    std::fs::hard_link(&key, e.home.join("Documents/key")).unwrap();
+    std::fs::write(e.home.join(".netrc"), "FIXTURE-NETRC").unwrap();
+    std::fs::hard_link(e.home.join(".netrc"), e.ws.join("netrc")).unwrap();
+    for stage in [Stage::Harness, Stage::Tools] {
+        let p = e.resolve("read_paths: [\"~\"]\n", stage).unwrap();
+        assert_eq!(
+            p.hardlinked_masks,
+            vec![e.home.join(".netrc"), key.clone()],
+            "{stage:?}"
+        );
+        assert!(
+            p.notes
+                .iter()
+                .any(|n| n.contains(".ssh/id_ed25519") && n.contains("Hardlink")),
+            "{:?}",
+            p.notes
+        );
+    }
+}
