@@ -16,6 +16,7 @@ pub mod settings;
 pub mod stages;
 pub mod state;
 mod token;
+mod vendor_mcp;
 pub mod workspace;
 
 pub use token::RunnerToken;
@@ -1110,6 +1111,36 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             let mut trusted = s.injection.names();
             if boot.harness.as_str().starts_with("direct") {
                 trusted.push("beton-workspace".into());
+            }
+            // #252: Ein gleichnamiger Server aus der Vendor-Konfiguration wäre nicht von dem
+            // von beton zu unterscheiden: Start verweigern (fail closed).
+            let injected_reserved = s
+                .injection
+                .names()
+                .iter()
+                .any(|n| beton_mcp::config::reserved_name(n));
+            if injected_reserved {
+                let family = beton_policy::normalize::harness_family(boot.harness.as_str());
+                let vendor = vendor_mcp::VendorPaths::from_process(paths.home.clone());
+                let conflict = match vendor_mcp::reserved_servers(family, &vendor, &boot.workdir) {
+                    Ok(names) if names.is_empty() => None,
+                    Ok(names) => Some(format!(
+                        "mcp_server_conflict: Die Konfiguration von {family} definiert den reservierten MCP-Server {}; beton kann ihn nicht von seinem eigenen unterscheiden. Bitte umbenennen oder entfernen.",
+                        names
+                            .iter()
+                            .map(|n| format!("`{n}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    Err(why) => Some(format!(
+                        "mcp_server_conflict: MCP-Server der Konfiguration von {family} nicht prüfbar ({why})"
+                    )),
+                };
+                if let Some(reason) = conflict {
+                    let e = beton_harness::HarnessError::StartRefused(reason);
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
             }
             gate.set_trusted_servers(trusted);
             s
