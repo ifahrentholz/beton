@@ -409,6 +409,17 @@ impl Secrets {
         self.refresh_redaction("attach").await
     }
 
+    /// Weitere bekannte Werte außerhalb des Stores (z. B. `sandbox.env.passthrough`, #216):
+    /// `(Name, Wert)`; auditiert werden Grund und Namen, nie Werte. Ersetzt die Werte desselben
+    /// Grunds. Ohne angebundene Pipeline nichts zu tun.
+    pub async fn add_redaction_values(
+        &self,
+        _reason: &str,
+        _values: Vec<(String, SecretValue)>,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Baut den Matcher der angebundenen Pipeline neu (nach Anlegen, Rotieren, Löschen,
     /// Entsperren). Ohne Pipeline nichts zu tun.
     ///

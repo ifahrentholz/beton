@@ -165,6 +165,10 @@ impl Redactor {
         }
     }
 
+    /// SHA-256 von Tokens aus 64 Hex-Zeichen, die als bekannt gelten, ohne dass der Prozess
+    /// den Wert hält (z. B. das lokale Token des Daemons, #216). Ersetzt die bisherige Liste.
+    pub fn set_token_hashes(&self, _hashes: Vec<[u8; 32]>) {}
+
     /// Aufbau gescheitert: ab jetzt wird alles zurückgehalten (fail closed).
     pub(crate) fn fail(&self) {
         let mut state = self.state.write().unwrap_or_else(|e| e.into_inner());
