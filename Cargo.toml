@@ -37,6 +37,7 @@ beton-proxy = { path = "crates/beton-proxy", version = "0.0.0" }
 beton-sandbox = { path = "crates/beton-sandbox", version = "0.0.0" }
 beton-voice = { path = "crates/beton-voice", version = "0.0.0" }
 beton-pty = { path = "crates/beton-pty", version = "0.0.0" }
+beton-tui = { path = "crates/beton-tui", version = "0.0.0" }
 
 # extern
 # Secret-Store (SEC-001 … SEC-003): AEAD, KDF und Nullen von Secrets.
@@ -85,6 +86,10 @@ jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bun
 # VT-Emulator für Scrollback, Keyframes und Snapshots (DATA-011); nie tmux.
 portable-pty = "0.9"
 vt100 = "0.16"
+# TUI (TUI-001 … TUI-005): ratatui mit crossterm (Unix und Windows Terminal/Konsole).
+ratatui = { version = "0.30", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
+crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "event-stream", "events", "windows"] }
+unicode-width = "0.2"
 # Linux-Sandbox (SBX-008, SBX-009, SBX-013): Landlock, seccomp-BPF, Namespaces und rlimits.
 landlock = "0.4.4"
 libc = "0.2"

@@ -99,6 +99,7 @@ pub async fn run(cli: Cli) -> CliResult {
         Command::Resume(args) => crate::run::resume(&ctx, args).await,
         Command::Attach(args) => crate::run::attach(&ctx, args).await,
         Command::Open(args) => open(&ctx, args).await,
+        Command::Tui(args) => crate::tui::run(&ctx, args).await,
         Command::Session(SessionCommand::List(args)) => session_list(&ctx, args.archived).await,
         Command::Session(cmd) => session(&ctx, cmd).await,
         Command::Serve(args) => crate::serve::serve(&ctx, args).await,

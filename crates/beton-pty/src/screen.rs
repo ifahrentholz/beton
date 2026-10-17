@@ -132,6 +132,18 @@ impl Screen {
         out
     }
 
+    /// Der emulierte Bildschirm mit Zellen, Farben und Modi, z. B. zum Zeichnen eines Panes der
+    /// TUI (TUI-002). Zeigt den mit [`Screen::set_scrollback`] gewählten Ausschnitt.
+    pub fn vt(&self) -> &vt100::Screen {
+        self.parser.screen()
+    }
+
+    /// Ausschnitt `offset` Zeilen zurück im Scrollback (0: aktueller Bildschirm); begrenzt
+    /// auf den vorhandenen Scrollback.
+    pub fn set_scrollback(&mut self, offset: usize) {
+        self.parser.screen_mut().set_scrollback(offset);
+    }
+
     /// Größe des Scrollbacks dieses Emulators.
     pub fn scrollback_capacity(&self) -> usize {
         self.scrollback

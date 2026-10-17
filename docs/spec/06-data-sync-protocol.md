@@ -82,6 +82,7 @@ D = dauerhaft, T = transient. Felder knapp; optionale Felder mit `?`.
 | | `message.completed` | D | `message_id, role: user\|assistant, content: [text\|image\|file_ref\|code], author?` |
 | | `reasoning.delta` | T | `message_id, text` |
 | | `reasoning.completed` | D | `message_id, summary?, redacted` |
+| | `plan.updated` | D | `entries: [{content, priority?: high\|medium\|low, status: pending\|in_progress\|completed}], explanation?` (vollständiger Plan des Agents: ACP `plan`, Codex `turn/plan/updated`; HAR-006, HAR-007) |
 | Tools | `tool.call.requested` | D | `call_id, tool, mcp_server?, args, source: harness\|beton_mcp\|acp, parent_call_id?` (`parent_call_id`: auslösender Tool-Call eines Vendor-Sub-Agents, HAR-023) |
 | | `tool.call.started` | D | `call_id, sandbox_stage?, args?` (ausgeführte Argumente, wenn das Gate sie geändert hat) |
 | | `tool.call.output.delta` | T | `call_id, stream: stdout\|stderr, text` |

@@ -10,16 +10,16 @@ use std::collections::HashSet;
 use beton_core::event::{
     AuthSource, ContextSource, ContextUsage, CostDelta, CostSource, EventPayload,
     HarnessAuthRequired, HarnessUnmapped, McpServerFailed, MessageCompleted, MessageRole,
-    OutputStream, ReasoningCompleted, TextDelta, ToolCallCompleted, ToolCallOutputDelta,
-    ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus, TurnCompleted, TurnFailed,
-    TurnInterrupted, UsageSubscription,
+    OutputStream, PlanEntry, PlanStatus, PlanUpdated, ReasoningCompleted, TextDelta,
+    ToolCallCompleted, ToolCallOutputDelta, ToolCallRequested, ToolCallStarted, ToolSource,
+    ToolStatus, TurnCompleted, TurnFailed, TurnInterrupted, UsageSubscription,
 };
 use beton_core::id::{PrincipalId, TurnId, UserId};
 use beton_core::time::Timestamp;
 use serde_json::{Value, json};
 
 /// Notifications, die beton nicht als Event braucht.
-pub const IGNORED: [&str; 31] = [
+pub const IGNORED: [&str; 30] = [
     "thread/started",
     "thread/status/changed",
     "thread/name/updated",
@@ -30,7 +30,6 @@ pub const IGNORED: [&str; 31] = [
     "thread/compacted",
     "turn/started",
     "turn/diff/updated",
-    "turn/plan/updated",
     "turn/moderationMetadata",
     "item/plan/delta",
     "item/reasoning/summaryPartAdded",
@@ -217,6 +216,10 @@ pub fn map_notification(method: &str, params: &Value, st: &mut MapState) -> Vec<
             Vec::new()
         }
         "account/rateLimits/updated" => rate_limits(&params["rateLimits"]),
+        "turn/plan/updated" => match plan_of(params) {
+            Some(plan) => vec![EventPayload::PlanUpdated(plan)],
+            None => vec![unmapped(&json!({"method": method, "params": params}))],
+        },
         "mcpServer/startupStatus/updated" if params["status"] == "failed" => {
             vec![EventPayload::McpServerFailed(McpServerFailed {
                 name: params["name"].as_str().unwrap_or_default().to_owned(),
@@ -230,6 +233,29 @@ pub fn map_notification(method: &str, params: &Value, st: &mut MapState) -> Vec<
         m if IGNORED.contains(&m) => Vec::new(),
         _ => vec![unmapped(&json!({"method": method, "params": params}))],
     }
+}
+
+/// `turn/plan/updated {explanation?, plan: [{step, status}]}` als `plan.updated` (ohne
+/// Priorität, die Codex nicht kennt); `None` bei unlesbaren Einträgen.
+fn plan_of(params: &Value) -> Option<PlanUpdated> {
+    let entries = params["plan"]
+        .as_array()?
+        .iter()
+        .map(|e| {
+            Some(PlanEntry {
+                content: e["step"].as_str()?.to_owned(),
+                priority: None,
+                status: PlanStatus::from_vendor(e["status"].as_str()?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(PlanUpdated {
+        entries,
+        explanation: params["explanation"]
+            .as_str()
+            .filter(|e| !e.is_empty())
+            .map(str::to_owned),
+    })
 }
 
 fn text_delta(params: &Value, reasoning: bool) -> Option<EventPayload> {
@@ -442,6 +468,34 @@ mod tests {
 
     fn types(events: &[EventPayload]) -> Vec<&'static str> {
         events.iter().map(EventPayload::type_name).collect()
+    }
+
+    #[test]
+    fn proto_002_turn_plan_updated_becomes_plan_updated() {
+        let mut st = MapState::default();
+        let out = map_notification(
+            "turn/plan/updated",
+            &json!({"threadId": "t", "turnId": "u", "explanation": "Erst testen",
+                    "plan": [{"step": "Tests", "status": "inProgress"},
+                             {"step": "Push", "status": "pending"},
+                             {"step": "Lesen", "status": "completed"}]}),
+            &mut st,
+        );
+        let [EventPayload::PlanUpdated(plan)] = out.as_slice() else {
+            panic!("plan.updated erwartet: {out:?}");
+        };
+        let status: Vec<_> = plan.entries.iter().map(|e| e.status).collect();
+        assert_eq!(
+            status,
+            [
+                PlanStatus::InProgress,
+                PlanStatus::Pending,
+                PlanStatus::Completed
+            ]
+        );
+        assert_eq!(plan.entries[0].content, "Tests");
+        assert!(plan.entries.iter().all(|e| e.priority.is_none()));
+        assert_eq!(plan.explanation.as_deref(), Some("Erst testen"));
     }
 
     #[test]

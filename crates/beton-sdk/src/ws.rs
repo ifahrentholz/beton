@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use beton_core::event::Event;
 use beton_core::id::SessionId;
+use beton_proto::channel::Frame;
 pub use beton_proto::ws::ServerMsg;
 use beton_proto::ws::{ClientInfo, ClientMsg, PROTOCOL_MAJOR, PROTOCOL_MINOR, SUBPROTOCOL};
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -18,6 +19,13 @@ use crate::{Client, Error, Result};
 
 /// Wie lange auf `welcome` gewartet wird.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Was eine Verbindung empfängt: Text-Nachricht oder Binärframe eines Kanals.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Incoming {
+    Msg(ServerMsg),
+    Frame(Frame),
+}
 
 /// Eine geöffnete, begrüßte WebSocket-Verbindung.
 pub struct Connection {
@@ -122,10 +130,22 @@ impl Connection {
         format!("{prefix}{}", self.next_id)
     }
 
-    async fn send(&mut self, msg: &ClientMsg) -> Result<()> {
+    /// Sendet eine Nachricht an den Server.
+    pub async fn send(&mut self, msg: &ClientMsg) -> Result<()> {
         let text = serde_json::to_string(msg).map_err(|e| Error::Decode(e.to_string()))?;
         self.ws
             .send(Message::Text(text.into()))
+            .await
+            .map_err(|e| Error::Unreachable {
+                url: self.url.clone(),
+                reason: e.to_string(),
+            })
+    }
+
+    /// Sendet ein Binärframe (PROTO-007), z. B. Tastatureingaben an ein Terminal.
+    pub async fn send_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.ws
+            .send(Message::Binary(frame.encode().into()))
             .await
             .map_err(|e| Error::Unreachable {
                 url: self.url.clone(),
@@ -166,13 +186,35 @@ impl Connection {
         Ok(id)
     }
 
-    /// Nächste Nachricht; `None`, wenn der Server die Verbindung schließt.
+    /// Nächste Nachricht; `None`, wenn der Server die Verbindung schließt. Binärframes
+    /// überspringt es (siehe [`Connection::next_incoming`]).
     pub async fn next(&mut self) -> Option<Result<ServerMsg>> {
+        loop {
+            match self.next_incoming().await? {
+                Ok(Incoming::Msg(msg)) => return Some(Ok(msg)),
+                Ok(Incoming::Frame(_)) => {}
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }
+
+    /// Nächste Text-Nachricht oder nächstes Binärframe; `None`, wenn der Server die
+    /// Verbindung schließt. Abbruchsicher (in `select!` verwendbar).
+    pub async fn next_incoming(&mut self) -> Option<Result<Incoming>> {
         loop {
             match self.ws.next().await? {
                 Ok(Message::Text(text)) => {
                     return Some(
-                        ServerMsg::from_json(&text).map_err(|e| Error::Decode(e.to_string())),
+                        ServerMsg::from_json(&text)
+                            .map(Incoming::Msg)
+                            .map_err(|e| Error::Decode(e.to_string())),
+                    );
+                }
+                Ok(Message::Binary(bytes)) => {
+                    return Some(
+                        Frame::decode(&bytes)
+                            .map(Incoming::Frame)
+                            .map_err(|e| Error::Decode(e.to_string())),
                     );
                 }
                 Ok(Message::Close(frame)) => {

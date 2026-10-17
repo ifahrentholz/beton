@@ -69,3 +69,11 @@ async fn har_025_ac3_error_matches_golden() {
     let events = case("error").await;
     assert!(events.contains("\"type\":\"turn.failed\""));
 }
+
+#[tokio::test]
+async fn proto_002_plan_matches_golden() {
+    let events = case("plan").await;
+    assert!(events.contains("\"type\":\"plan.updated\""));
+    assert!(events.contains("\"status\":\"in_progress\""));
+    assert!(!events.contains("\"type\":\"harness.unmapped\""));
+}

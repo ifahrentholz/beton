@@ -1,0 +1,36 @@
+ beton tui  Rate-Limiter für die Login-API · 3 Panes                                                                             [Z] 2 htop
+┌ [Z] 2 htop ───────────────────────────────────────────────────────────────────────────────────────────────────────────────── ^G z zurück ┐
+│  1 [||||||||||       42.1%]   Tasks: 312                                                                                                 │
+│  2 [|||||            21.4%]   Load average: 2.31                                                                                         │
+│                                                                                                                                          │
+│  PID USER   CPU% Command                                                                                                                 │
+│48121 ingo   12.4 node vite                                                                                                               │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+│                                                                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ Panes laufen im Runner (beton-pty) – kein tmux                                                         Layout wird pro Session gespeichert
+  ^G |  teilen  ^G -  teilen  ^G o  nächster  ^G z  zoomen  ^G c  Terminal  ^G d  trennen  ^G ?  Hilfe

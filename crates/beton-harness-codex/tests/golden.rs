@@ -111,3 +111,11 @@ async fn use_004_ac2_subscription_usage_from_the_real_cli() {
     assert_eq!(cost["payload"]["source"], "subscription");
     assert!(cost["payload"].get("cost_micro").is_none(), "{cost}");
 }
+
+#[tokio::test]
+async fn proto_002_turn_plan_updated_matches_golden() {
+    let events = case("plan").await;
+    assert!(events.contains("\"type\":\"plan.updated\""));
+    assert!(events.contains("\"status\":\"in_progress\""));
+    assert!(!events.contains("\"type\":\"harness.unmapped\""));
+}
