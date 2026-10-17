@@ -141,6 +141,9 @@ pub struct Match {
     /// Teilausdrücke der Bedingung mit Ergebnis (POL-027 AC1); leer ohne `when`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<TracePart>,
+    /// Die Spur ist gekürzt: Ihr Gesamtbudget war erschöpft (#353).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trace_incomplete: bool,
 }
 
 /// Ein Grund für `deny` oder `ask`.
@@ -763,6 +766,7 @@ impl<'a> Run<'a> {
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
                 trace: Vec::new(),
+                trace_incomplete: false,
             };
             if dry {
                 self.decision.would.push(entry);
@@ -1056,6 +1060,7 @@ impl<'a> Run<'a> {
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
                 trace: Vec::new(),
+                trace_incomplete: false,
             };
             if dry {
                 self.decision.would.push(entry);
