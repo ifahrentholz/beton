@@ -94,10 +94,15 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         name: "user_settings",
         sql: include_str!("../migrations/sqlite/0014_user_settings.sql"),
     },
+    Migration {
+        version: 15,
+        name: "idempotency_location",
+        sql: include_str!("../migrations/sqlite/0015_idempotency_location.sql"),
+    },
 ];
 
 /// Schema-Version, die dieses Binary erwartet.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 const CREATE_BOOKKEEPING: &str = "CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER NOT NULL PRIMARY KEY,

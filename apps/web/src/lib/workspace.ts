@@ -25,8 +25,9 @@ interface TabDef {
 const TABS: TabDef[] = [
   { id: 'files', label: 'Dateien', ready: true },
   { id: 'changes', label: 'Änderungen', ready: true },
-  // Terminals und Browser folgen mit M3 (WEB-010, BRW-009).
-  { id: 'terminal', label: 'Terminal', ready: false, needs: (c) => c.role !== 'viewer' },
+  // Terminals (SES-019, WEB-010); Nur-Lese-Rollen sehen sie ohne Eingaben (AC3).
+  { id: 'terminal', label: 'Terminal', ready: true },
+  // Browser folgt mit BRW-009.
   { id: 'browser', label: 'Browser', ready: false },
   // Sub-Agent-Graph (WEB-012): bei Harnesses, die System-Tools (MCP) oder eigene Sub-Agents haben.
   {
@@ -49,8 +50,8 @@ export function visibleTabs(ctx: RailContext): { id: RailTab; label: string }[] 
   return TABS.filter((t) => t.ready && (t.needs?.(ctx) ?? true)).map(({ id, label }) => ({ id, label }))
 }
 
-/** Standardbreite je Tab laut Prototyp (Dateien 780 px, Änderungen 640 px, Agents 600 px). */
-export const TAB_WIDTH: Partial<Record<RailTab, number>> = { files: 780, changes: 640, agents: 600 }
+/** Standardbreite je Tab laut Prototyp (Dateien 780 px, Änderungen 640 px, Terminal 680 px, Agents 600 px). */
+export const TAB_WIDTH: Partial<Record<RailTab, number>> = { files: 780, changes: 640, terminal: 680, agents: 600 }
 export const RAIL_MIN = 320
 
 // --- fs.changed (WEB-008 AC1) --------------------------------------------------------------

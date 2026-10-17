@@ -2110,6 +2110,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/TerminalRenamed"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.renamed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/TerminalClosed"
             },
             "type": {
@@ -2922,6 +2938,7 @@
         "terminal.opened",
         "terminal.output",
         "terminal.snapshot",
+        "terminal.renamed",
         "terminal.closed",
         "browser.opened",
         "browser.frame",
@@ -4387,6 +4404,13 @@
         "kind": {
           "$ref": "#/$defs/TerminalKind"
         },
+        "name": {
+          "description": "Anzeigename des Terminal-Tabs (SES-019, WEB-010); ändert sich mit `terminal.renamed`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "rows": {
           "type": "integer",
           "format": "uint16",
@@ -4422,6 +4446,21 @@
       "required": [
         "terminal_id",
         "channel_id"
+      ]
+    },
+    "TerminalRenamed": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "name"
       ]
     },
     "TerminalSnapshot": {

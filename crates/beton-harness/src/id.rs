@@ -23,6 +23,11 @@ impl HarnessId {
         &self.0
     }
 
+    /// Ein ACP-Agent (`acp:<slug>`, HAR-007).
+    pub fn is_acp(&self) -> bool {
+        self.0.starts_with("acp:")
+    }
+
     /// Name der Umgebungsvariable für den Binary-Pfad (HAR-003), z. B. `BETON_CLAUDE_PATH`
     /// oder `BETON_ACP_GEMINI_PATH`.
     pub fn path_env_var(&self) -> String {

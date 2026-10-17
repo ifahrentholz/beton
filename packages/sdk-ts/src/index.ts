@@ -13,6 +13,19 @@ export {
   type UsageOptions,
 } from './client.js'
 export { BetonError, type Problem } from './errors.js'
+export {
+  Channel,
+  decodeFrame,
+  encodeFrame,
+  FLAG_FIN,
+  FLAG_INPUT,
+  FLAG_KEYFRAME,
+  FRAME_HEADER,
+  FRAME_VERSION,
+  MAX_PAYLOAD,
+  type ChannelOptions,
+  type Frame,
+} from './channel.js'
 export { Backoff, BACKOFF_BASE_MS, BACKOFF_MAX_MS, SHUTDOWN_JITTER_MS, shutdownDelay } from './backoff.js'
 export {
   eventStream,

@@ -25,6 +25,7 @@ pub mod transfer;
 pub mod usage;
 pub mod usage_report;
 pub mod voice;
+pub mod yaml_edit;
 
 /// Version des Binaries, wie sie in Logs und `beton --version` erscheint.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

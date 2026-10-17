@@ -310,6 +310,39 @@ async fn proto_010_ac2_idempotency_key_replays_or_rejects() {
     other.assert_problem("idempotency_key_reused");
 }
 
+/// PROTO-010 AC2 (#72): Das Replay einer 201-Antwort trägt auch ihren `Location`-Header.
+#[tokio::test]
+async fn proto_010_ac2_idempotent_replay_keeps_location() {
+    use axum::response::IntoResponse as _;
+    async fn create() -> axum::response::Response {
+        (
+            axum::http::StatusCode::CREATED,
+            [(header::LOCATION, "/v1/dinge/1")],
+            axum::Json(serde_json::json!({"id": 1})),
+        )
+            .into_response()
+    }
+    let t = app_with(
+        |r| r.route("/v1/dinge", axum::routing::post(create)),
+        "127.0.0.1:50000",
+    )
+    .await;
+    let post = || {
+        t.authed("POST", "/v1/dinge")
+            .header("idempotency-key", "ort-1")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap()
+    };
+    let first = t.send(post()).await;
+    assert_eq!(first.status, 201);
+    assert_eq!(first.header("location"), Some("/v1/dinge/1"));
+    let again = t.send(post()).await;
+    assert_eq!(again.status, 201);
+    assert_eq!(again.header("idempotent-replayed"), Some("true"));
+    assert_eq!(again.header("location"), Some("/v1/dinge/1"));
+}
+
 fn is_snake_case(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()

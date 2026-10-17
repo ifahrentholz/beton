@@ -216,7 +216,7 @@ pub mod macos {
         ) -> Result<SandboxedChild, SandboxError> {
             crate::resolve::check_caps(&self.probe(), policy)?;
             crate::resolve::ensure_read_only_dirs(policy)?;
-            let profile = profile::render(policy)?;
+            let profile = profile::render_for(policy, cmd.tty.as_ref().map(|t| t.path.as_path()))?;
             let mut c = child::command(Path::new(SANDBOX_EXEC), &cmd).map_err(|e| {
                 SandboxError::SpawnFailed {
                     message: format!("{SANDBOX_EXEC}: {e}"),
@@ -240,10 +240,11 @@ pub mod macos {
             }
             c.current_dir(cmd.cwd.as_deref().unwrap_or(&policy.workspace));
             let nproc = limits(&mut c, &policy.limits);
-            let child = child::spawn(c).map_err(|e| SandboxError::SpawnFailed {
-                message: format!("{SANDBOX_EXEC}: {e}"),
-                kind: e.kind(),
-            })?;
+            let child =
+                child::spawn(c, cmd.tty.is_some()).map_err(|e| SandboxError::SpawnFailed {
+                    message: format!("{SANDBOX_EXEC}: {e}"),
+                    kind: e.kind(),
+                })?;
             let violations = Violations::default();
             let Some(pid) = child.id() else {
                 return Ok(child);

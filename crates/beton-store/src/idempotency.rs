@@ -18,6 +18,8 @@ pub struct StoredResponse {
     pub status: u16,
     pub content_type: String,
     pub body: Vec<u8>,
+    /// `Location` einer 201-Antwort (PROTO-010, #72).
+    pub location: Option<String>,
 }
 
 impl Store {
@@ -37,7 +39,7 @@ impl Store {
                 .await?;
         }
         let row = sqlx::query(
-            "SELECT request_hash, status, content_type, body FROM idempotency_keys \
+            "SELECT request_hash, status, content_type, body, location FROM idempotency_keys \
              WHERE org_id = ? AND key = ?",
         )
         .bind(org.to_string())
@@ -50,6 +52,7 @@ impl Store {
                 status: u16::try_from(row.try_get::<i64, _>("status")?).unwrap_or(500),
                 content_type: row.try_get("content_type")?,
                 body: row.try_get("body")?,
+                location: row.try_get("location")?,
             })
         })
         .transpose()
@@ -65,7 +68,7 @@ impl Store {
         let _writer = self.write_guard().await?;
         sqlx::query(
             "INSERT INTO idempotency_keys (org_id, key, request_hash, status, content_type, body, \
-             created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+             created_at, location) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(org.to_string())
         .bind(key)
@@ -74,6 +77,7 @@ impl Store {
         .bind(&response.content_type)
         .bind(&response.body)
         .bind(Timestamp::now().to_string())
+        .bind(&response.location)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -94,6 +98,7 @@ mod tests {
             status: 201,
             content_type: "application/json".into(),
             body: b"{}".to_vec(),
+            location: Some("/v1/x/1".into()),
         };
         t.store.idempotency_save(org, "k1", &r).await.unwrap();
         assert_eq!(

@@ -1182,3 +1182,72 @@ turns:
     assert!(!ws.join(".git").exists(), "kein Git im Workspace angelegt");
     d.daemon.shutdown().await;
 }
+
+/// #93 (SES-017, SES-018): Schreibt der User während eines Turns über die Workspace-API, gibt
+/// es genau ein `fs.changed` (Akteur User, `source: api`); der Runner rechnet die Änderung nicht
+/// dem Agent zu, und die Turn-Sicht listet die Datei nicht.
+#[tokio::test]
+async fn ses_017_user_write_during_a_turn_is_not_attributed_to_the_agent() {
+    let (dir, data, repo) = setup();
+    let d = daemon(&data).await;
+    let sc = scenario(
+        dir.path(),
+        "turns:\n  - emit:\n      - { write_file: { path: \"agent.txt\", content: \"vom Agent\\n\" } }\n      - { message: \"weiter\", delay_ms: 3000 }\n      - { message: \"fertig\" }\n",
+    );
+    let r = d.create(session_body(&repo, &sc, None)).await;
+    assert_eq!(r.status, 201, "{}", r.body);
+    let id = r.body["id"].as_str().unwrap().to_owned();
+    d.wait_idle(&id).await;
+    let sent = d
+        .http(
+            "POST",
+            &format!("/v1/sessions/{id}/input"),
+            Some(json!({"text": "los"})),
+        )
+        .await;
+    assert_eq!(sent.status, 202, "{}", sent.body);
+    // Der Turn läuft und der Beobachter hat die Datei des Agents gemeldet.
+    d.wait_for(&id, |e| {
+        e["type"] == "fs.changed" && e["payload"]["changes"][0]["path"] == "agent.txt"
+    })
+    .await;
+    let put = d
+        .http(
+            "PUT",
+            &format!("/v1/sessions/{id}/workspace/files/user.txt"),
+            Some(json!({"content": "vom User\n"})),
+        )
+        .await;
+    assert_eq!(put.status, 201, "{}", put.body);
+    d.wait_idle(&id).await;
+    let events = d.events(&id).await;
+    let user: Vec<&Value> = events
+        .iter()
+        .filter(|e| {
+            e["type"] == "fs.changed"
+                && e["payload"]["changes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c["path"] == "user.txt")
+        })
+        .collect();
+    assert_eq!(user.len(), 1, "{user:#?}");
+    assert_eq!(user[0]["actor"]["kind"], "user");
+    assert_eq!(user[0]["payload"]["source"], "api");
+    let turn = d
+        .http(
+            "GET",
+            &format!("/v1/sessions/{id}/workspace/changes?scope=turn"),
+            None,
+        )
+        .await;
+    assert_eq!(turn.status, 200, "{}", turn.body);
+    let paths: Vec<&str> = turn.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["agent.txt"], "{}", turn.body);
+}

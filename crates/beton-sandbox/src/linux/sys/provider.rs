@@ -550,7 +550,9 @@ impl SandboxProvider for LinuxProvider {
                 }
             })?;
         let tokio_cmd = tokio::process::Command::from(std_cmd);
-        let mut child = child::spawn(tokio_cmd).map_err(|e| SandboxError::SpawnFailed {
+        // Mit PTY (SBX-017) führt der Launcher die Session; das Ziel erbt sie samt Terminal.
+        let tty = crate::none::has_tty(&cmd);
+        let mut child = child::spawn(tokio_cmd, tty).map_err(|e| SandboxError::SpawnFailed {
             message: format!("{}: {e}", launcher.display()),
             kind: e.kind(),
         })?;

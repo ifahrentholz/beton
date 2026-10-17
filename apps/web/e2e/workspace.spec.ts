@@ -56,10 +56,10 @@ test('WEB-008 AC2: nicht verfügbare Tabs sind ausgeblendet, nicht kaputt', asyn
   const id = await daemon.session('turns: []', 'Tabs', daemon.workspace({ 'a.txt': 'a\n' }))
   await daemon.login(page, `/s/${id}`)
   const tabs = rail(page).getByRole('tablist', { name: 'Workspace' }).getByRole('tab')
-  await expect(tabs).toHaveText(['Dateien', 'Änderungen'])
-  // Terminal, Browser (M3), PR, Side-Chats, Kommentare (M4) fehlen; Agents (WEB-012) nur bei Harnesses mit
+  await expect(tabs).toHaveText(['Dateien', 'Änderungen', 'Terminal'])
+  // Browser (M3), PR, Side-Chats, Kommentare (M4) fehlen; Agents (WEB-012) nur bei Harnesses mit
   // System-Tools oder eigenen Sub-Agents, nicht beim Fake-Harness.
-  for (const name of ['Terminal', 'Browser', 'Agents', 'PR', 'Side-Chats', 'Kommentare']) {
+  for (const name of ['Browser', 'Agents', 'PR', 'Side-Chats', 'Kommentare']) {
     await expect(tabs.filter({ hasText: name })).toHaveCount(0)
   }
   // Tabs per Tastenkürzel wechseln.

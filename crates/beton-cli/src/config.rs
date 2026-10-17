@@ -556,7 +556,13 @@ impl Layers {
             }
             Err(e) => return Err(e),
         };
-        write_file(next.paths.of(scope), next.layer(source_of(scope)))?;
+        write_preserving(next.paths.of(scope), next.layer(source_of(scope)), |text| {
+            crate::yaml_edit::set(
+                text,
+                &path,
+                lookup_path(next.layer(source_of(scope)), &path)?,
+            )
+        })?;
         *self = next;
         Ok(())
     }
@@ -569,7 +575,9 @@ impl Layers {
             return Ok(false);
         }
         next.validate()?;
-        write_file(next.paths.of(scope), next.layer(source_of(scope)))?;
+        write_preserving(next.paths.of(scope), next.layer(source_of(scope)), |text| {
+            crate::yaml_edit::unset(text, &path)
+        })?;
         *self = next;
         Ok(true)
     }
@@ -706,6 +714,45 @@ fn read_file(path: &Path) -> Result<Value, ConfigError> {
             message: "erwartet eine Zuordnung (Schlüssel: Wert)".into(),
         }),
     }
+}
+
+fn lookup_path<'a>(root: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(root, |v, k| v.get(k))
+}
+
+/// Schreibt `value` und erhält dabei Kommentare und Reihenfolge der Datei (CLI-008, #72):
+/// `edit` ändert nur die betroffenen Zeilen; liest sich das Ergebnis nicht genau als `value`
+/// ein, schreibt es die Datei wie bisher neu.
+fn write_preserving(
+    path: &Path,
+    value: &Value,
+    edit: impl FnOnce(&str) -> Option<String>,
+) -> Result<(), ConfigError> {
+    let edited = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| edit(&text))
+        .filter(|out| {
+            serde_norway::from_str::<Value>(out)
+                .ok()
+                .map(|v| {
+                    if v.is_null() {
+                        Value::Object(Map::new())
+                    } else {
+                        v
+                    }
+                })
+                .is_some_and(|v| &v == value)
+        });
+    let Some(text) = edited else {
+        return write_file(path, value);
+    };
+    let io = |source| ConfigError::Io {
+        path: path.display().to_string(),
+        source,
+    };
+    let tmp = path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, text).map_err(io)?;
+    std::fs::rename(&tmp, path).map_err(io)
 }
 
 /// Schreibt atomar (temporäre Datei, dann Umbenennen).
@@ -998,6 +1045,37 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(f.home.join("config.yaml")).unwrap(),
             before
+        );
+    }
+
+    /// CLI-008 (#72): `config set/unset` erhält Kommentare und Reihenfolge der Datei.
+    #[test]
+    fn cli_008_set_and_unset_keep_comments_and_order() {
+        let f = fixture();
+        f.write_user(
+            "# Meine Einstellungen\nserver:\n  # lokal\n  listen: [\"127.0.0.1:7420\"]\nevents:\n  store_raw: true # vorerst\n",
+        );
+        let mut layers = f.load(&[]).unwrap();
+        layers
+            .set(Scope::User, "events.store_raw", "false")
+            .unwrap();
+        layers.set(Scope::User, "compaction.auto", "beton").unwrap();
+        let text = std::fs::read_to_string(f.home.join("config.yaml")).unwrap();
+        assert!(
+            text.starts_with("# Meine Einstellungen\nserver:\n  # lokal\n"),
+            "{text}"
+        );
+        assert!(text.contains("  store_raw: false # vorerst"), "{text}");
+        assert!(text.find("server:").unwrap() < text.find("events:").unwrap());
+        assert!(text.find("events:").unwrap() < text.find("compaction:").unwrap());
+        assert!(layers.unset(Scope::User, "compaction.auto").unwrap());
+        let text = std::fs::read_to_string(f.home.join("config.yaml")).unwrap();
+        assert!(!text.contains("compaction"), "{text}");
+        assert!(text.contains("# lokal"), "{text}");
+        let again = f.load(&[]).unwrap();
+        assert_eq!(
+            again.get("events.store_raw", Some(Scope::User)),
+            Some(Value::Bool(false))
         );
     }
 
