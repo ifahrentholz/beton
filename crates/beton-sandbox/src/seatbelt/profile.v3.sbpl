@@ -1,7 +1,7 @@
 (version 1)
 ;; beton Seatbelt-Profil v3 (SBX-007; v2: Unix-Socket des Exec-Brokers, Dev-Ports, Projekt-
 ;; Konfiguration und Austausch der Stufe 2, SBX-002/PRX-008; v3: Pseudo-Terminal eines
-;; Workspace-Terminals, SBX-017).
+;; Workspace-Terminals, SBX-017; Xcode-Info.plist und SharedFrameworks lesbar, #241).
 ;; Dieser Text ist fest. Pfade, Muster und der Proxy-Port kommen ausschließlich als Parameter
 ;; (`sandbox-exec -D KEY=VALUE`) und werden nur über `(param "KEY")` referenziert; die
 ;; generierten Zeilen an den Markierungen `;;@…` enthalten nur feste Bausteine und Schlüssel.
@@ -49,7 +49,11 @@
   (subpath "/Library/Developer/CommandLineTools")
   (literal "/private/var/db/xcode_select_link")
   (literal "/Library/Preferences/com.apple.dt.Xcode.plist")
-  (regex #"^/Applications/Xcode[^/]*\.app/Contents/Developer(/.*)?$"))
+  (regex #"^/Applications/Xcode[^/]*\.app/Contents/Developer(/.*)?$")
+  ;; xcrun-Stubs wie /usr/bin/git mit Xcode.app als Developer-Verzeichnis (#241): nur lesen.
+  (regex #"^/Applications/Xcode[^/]*\.app/Contents/(Info|version)\.plist$")
+  (regex #"^/Applications/Xcode[^/]*\.app/Contents/(Shared)?Frameworks(/.*)?$"))
+(allow file-read-metadata (regex #"^/Applications/Xcode[^/]*\.app(/Contents)?$"))
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom") (literal "/dev/zero"))
 (allow file-read* file-write-data (literal "/dev/null"))
 (allow file-read* file-write-data (subpath "/dev/fd"))
