@@ -40,6 +40,7 @@ mod usage;
 mod usage_report_tests;
 #[cfg(test)]
 mod usage_tests;
+mod user_settings;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -285,6 +285,14 @@ function SettingsNotifications({ state }: { state: string }) {
           </table>
         </div>
 
+        <SectionTitle>Inhalt</SectionTitle>
+        <Row
+          label="Vorschau in Mitteilungen"
+          hint="Session-Titel und erste Zeile, z. B. der Befehl einer Freigabe. Aus: nur Session und Ereignis, kein Nachrichtentext."
+        >
+          <Switch defaultChecked aria-label="Vorschau in Mitteilungen" />
+        </Row>
+
         <SectionTitle>Ruhezeiten</SectionTitle>
         <Row label="Ruhezeiten" hint="In dieser Zeit bleiben Desktop-Mitteilung und Ton stumm; die Inbox sammelt weiter.">
           <Switch checked={quiet} aria-label="Ruhezeiten" />

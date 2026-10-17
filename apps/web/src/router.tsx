@@ -5,9 +5,10 @@ import { InboxView } from '@/components/inbox'
 import { PolicyShadowView } from '@/components/policy-shadow'
 import { useLayout } from '@/components/layout-state'
 import { SessionView } from '@/components/session-view'
+import { NotificationSettingsView } from '@/components/settings/notifications'
 import { PricingView } from '@/components/usage/pricing-view'
 import { UsageView } from '@/components/usage/usage-view'
-import { validateWorkspaceSearch } from '@/lib/workspace'
+import { validateSessionSearch } from '@/lib/deeplink'
 import { useSessions } from '@/store/sessions'
 
 function Root() {
@@ -67,12 +68,15 @@ const sessionRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/s/$sessionId',
   component: SessionRoute,
-  // Teilbare Links auf Diff-Zeilen (WEB-011 AC2).
-  validateSearch: validateWorkspaceSearch,
+  // Teilbare Links auf Diff-Zeilen (WEB-011 AC2) und Sprungziele aus Deep-Links (DESK-006).
+  validateSearch: validateSessionSearch,
 })
 
 // Inbox (UX-001).
 const inboxRoute = createRoute({ getParentRoute: () => rootRoute, path: '/inbox', component: InboxView })
+
+// Einstellungen: Benachrichtigungen (UX-006).
+const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings/notifications', component: NotificationSettingsView })
 
 // Shadow-Modus der Policies (POL-027 AC4).
 const shadowRoute = createRoute({ getParentRoute: () => rootRoute, path: '/policies/shadow', component: PolicyShadowView })
@@ -80,7 +84,7 @@ const shadowRoute = createRoute({ getParentRoute: () => rootRoute, path: '/polic
 const usageRoute = createRoute({ getParentRoute: () => rootRoute, path: '/usage', component: UsageView })
 const pricingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/usage/pricing', component: PricingView })
 
-export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute, inboxRoute, usageRoute, pricingRoute, shadowRoute]) })
+export const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, sessionRoute, inboxRoute, usageRoute, pricingRoute, shadowRoute, settingsRoute]) })
 
 declare module '@tanstack/react-router' {
   interface Register {

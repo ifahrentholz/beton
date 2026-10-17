@@ -37,6 +37,7 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Typen/Schemas generieren | `cargo xtask codegen` (JSON-Schemas nach `schemas/v1/`, z. B. `agent.schema.json`, TypeScript nach `packages/sdk-ts/src/gen/`, ER-Diagramm nach `docs/generated/`); `--check` prüft, ob alles aktuell ist |
 | TypeScript-SDK | `pnpm test` · `pnpm typecheck` · `pnpm build` in `packages/sdk-ts` |
 | Frontend | `pnpm test` · `pnpm lint` · `pnpm typecheck` · `pnpm build` in `apps/web`; lokal gegen den Daemon: `pnpm build` und `BETON_WEB_DIR=apps/web/dist beton serve` |
+| Desktop-App | `pnpm install` und `pnpm dev` in `apps/desktop` (baut `beton` und die Web-UI, startet die Tauri-App gegen `~/.beton` bzw. `BETON_HOME`); Bundle: `pnpm build`; Tests: `cargo test -p beton-desktop -p beton-desktop-app`. Unter Linux vorher `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev` |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen `beton serve --dev` und Fake-Harness; vorher `cargo build -p beton-cli`, `pnpm build`, `pnpm exec playwright install chromium`) |
 | Offline-E2E (Linux, sudo) | `scripts/offline-e2e.sh isolated` bzw. `sinkhole`: M0-Demo im Netz-Namespace nur mit Loopback, der Sinkhole-Lauf meldet jede DNS-Anfrage und jedes Paket nach außen (QA-018) |
 

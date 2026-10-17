@@ -10,6 +10,7 @@ import { MentionMenu, SlashMenu, type SlashEntry } from './composer-menus'
 import { HarnessMenu } from './fork'
 import { HarnessBadge } from './harness'
 import { ModePicker, ModelPicker, settingsOptions, yoloAvailable, type SettingsPatch } from './settings-picker'
+import { ATTACH_EVENT, type AttachFilesDetail } from './window-drop'
 
 const DRAFT_PREFIX = 'beton.draft.'
 
@@ -243,6 +244,17 @@ export function Composer({
     setRejected(refused)
     if (fresh.length > 0) setAttachments((list) => [...list, ...fresh])
   }
+  // Auf das Fenster gezogene Dateien (DESK-001 AC3) landen hier, wenn es diese Session ist.
+  const addFilesRef = useRef(addFiles)
+  addFilesRef.current = addFiles
+  useEffect(() => {
+    const onAttach = (e: Event) => {
+      const d = (e as CustomEvent<AttachFilesDetail>).detail
+      if (d?.sessionId === sessionId) addFilesRef.current(d.files)
+    }
+    window.addEventListener(ATTACH_EVENT, onAttach)
+    return () => window.removeEventListener(ATTACH_EVENT, onAttach)
+  }, [sessionId])
   const remove = (key: string) => {
     setAttachments((list) => {
       const gone = list.find((a) => a.key === key)
@@ -276,6 +288,8 @@ export function Composer({
       onDrop={(e) => {
         if (e.dataTransfer.files.length === 0) return
         e.preventDefault()
+        // Nicht zusätzlich an den Drop des Fensters (DESK-001 AC3) weitergeben.
+        e.stopPropagation()
         setDragging(false)
         addFiles([...e.dataTransfer.files])
       }}

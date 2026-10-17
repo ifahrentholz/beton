@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>beton beenden?</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="quit.js"></script>
+  </head>
+  <body>
+    <div class="dialog full" role="dialog" aria-labelledby="quit-title">
+      <h2 id="quit-title">beton beenden?</h2>
+      <p id="working"></p>
+      <div class="options" role="radiogroup" aria-label="Was passiert mit dem Daemon?">
+        <label>
+          <input type="radio" name="daemon" value="keep" checked />
+          <span>Daemon weiterlaufen lassen <span class="muted">(empfohlen)</span>
+            <small>Sessions laufen ohne Fenster weiter; Tray und Benachrichtigungen bleiben aus.</small></span>
+        </label>
+        <label>
+          <input type="radio" name="daemon" value="stop" />
+          <span>Daemon stoppen
+            <small>Laufende Turns werden abgebrochen; der Verlauf bleibt gespeichert.</small></span>
+        </label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="confirm">beton beenden</button>
+        <button id="cancel">Abbrechen</button>
+      </div>
+    </div>
+  </body>
+</html>

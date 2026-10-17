@@ -188,6 +188,47 @@ impl Client {
         }
     }
 
+    /// `GET /v1/sessions?updated_after=<ts>` (WEB-003): Sessions, die sich seit `ts` aus Sicht
+    /// des Users geändert haben (Aktivität, Gelesen-Stand, Pin); ohne `ts` die erste Seite.
+    pub async fn sessions_changed(&self, updated_after: Option<&str>) -> Result<Page<Value>> {
+        let mut query = vec![("limit", "200".to_owned())];
+        if let Some(ts) = updated_after {
+            query.push(("updated_after", ts.to_owned()));
+        }
+        self.send(self.http.get(self.url("/v1/sessions")).query(&query))
+            .await
+    }
+
+    /// `GET /v1/inbox` (UX-001): Einträge (neueste zuerst) und `open_count`.
+    pub async fn inbox(&self, status: Option<&str>, limit: u32) -> Result<Value> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(s) = status {
+            query.push(("status", s.to_owned()));
+        }
+        self.send(self.http.get(self.url("/v1/inbox")).query(&query))
+            .await
+    }
+
+    /// `GET /v1/settings/notifications` (UX-006).
+    pub async fn notification_settings(
+        &self,
+    ) -> Result<beton_core::notifications::NotificationSettings> {
+        self.get("/v1/settings/notifications").await
+    }
+
+    /// `PUT /v1/settings/notifications` (UX-006).
+    pub async fn set_notification_settings(
+        &self,
+        settings: &beton_core::notifications::NotificationSettings,
+    ) -> Result<beton_core::notifications::NotificationSettings> {
+        self.send(
+            self.http
+                .put(self.url("/v1/settings/notifications"))
+                .json(settings),
+        )
+        .await
+    }
+
     /// `GET /v1/usage` (USE-005): Parameter wie `from`, `to`, `tz`, `group_by`.
     pub async fn usage(&self, query: &[(&str, String)]) -> Result<Value> {
         self.send(self.http.get(self.url("/v1/usage")).query(query))
