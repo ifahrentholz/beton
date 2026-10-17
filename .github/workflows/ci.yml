@@ -267,6 +267,11 @@ jobs:
             grep -q "test result: ok. 1 passed" <<<"$out"
           done
 
+      # covers: WEB-010 AC1 (Tastendruck-zu-Echo-Latenz über Server, Tunnel, Runner und PTY,
+      # p95 ≤ 30 ms im Release-Build; Aufwärmrunde, p95 über fünf Runden)
+      - name: Benchmark Terminal-Echo-Latenz
+        run: cargo test -p beton-runner --release --test terminals web_010_ac1 -- --ignored --nocapture
+
       # covers: PRX-001 AC3 (200 parallele HTTPS-Verbindungen, p99-Zusatzlatenz < 20 ms im
       # Release-Build; nur Loopback und lokale Test-Upstreams)
       - name: Benchmark Egress-Proxy
