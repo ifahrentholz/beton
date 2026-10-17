@@ -382,6 +382,14 @@ fn all_text(s: &mut Screen) -> String {
     lines.join("\n")
 }
 
+/// Höchster `tick N` im Text.
+fn max_tick(text: &str) -> u32 {
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix("tick ")?.parse().ok())
+        .max()
+        .unwrap_or(0)
+}
+
 /// SES-019 AC1: Ein im Terminal gestarteter Langläufer (Dev-Server) läuft weiter, wenn alle
 /// Clients trennen, und ist beim Re-Attach mit Scrollback sichtbar; neue Ausgabe folgt live.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -396,11 +404,12 @@ async fn ses_019_ac1_long_runner_survives_disconnect_and_reattach_shows_scrollba
         .await;
     let term = t["terminal_id"].as_str().unwrap().to_owned();
     assert_eq!(t["name"], "Dev-Server");
-    {
+    let before = {
         let mut v = Viewer::attach(&d, &id, &term, 80, 10).await;
         v.until("tick 5", |s| all_text(s).contains("tick 5")).await;
         assert!(v.keyframes >= 1, "erst ein Keyframe");
-    }
+        max_tick(&all_text(&mut v.screen))
+    };
     // Alle Clients weg; der Prozess läuft weiter.
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let (_, list, _) = d
@@ -411,13 +420,12 @@ async fn ses_019_ac1_long_runner_survives_disconnect_and_reattach_shows_scrollba
     // Das Keyframe bringt den Verlauf (Scrollback) mit, danach geht es live weiter.
     v.until("Verlauf", |s| all_text(s).contains("tick 1\n"))
         .await;
-    let seen = all_text(&mut v.screen);
-    let last: u32 = seen
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("tick ")?.parse().ok())
-        .max()
-        .unwrap();
-    assert!(last >= 20, "lief während der Trennung weiter: {last}");
+    // Mindestens fünf Ticks in 1,5 s auch auf langsamen CI-Runnern (sonst etwa 30).
+    let last = max_tick(&all_text(&mut v.screen));
+    assert!(
+        last >= before + 5,
+        "lief während der Trennung weiter: {before} → {last}"
+    );
     v.until("neue Ausgabe", move |s| {
         all_text(s).contains(&format!("tick {}", last + 3))
     })

@@ -424,7 +424,7 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
 /// (fail closed): Der Push mit diesem Event wird nicht gespeichert.
 struct FlakyRedactor {
     needle: &'static str,
-    fails: std::sync::atomic::AtomicUsize,
+    fails: std::sync::Mutex<usize>,
 }
 
 impl beton_store::ValueRedactor for FlakyRedactor {
@@ -432,14 +432,12 @@ impl beton_store::ValueRedactor for FlakyRedactor {
         &self,
         value: &mut serde_json::Value,
     ) -> Result<bool, beton_store::RedactionUnavailable> {
-        use std::sync::atomic::Ordering;
-        if value.to_string().contains(self.needle)
-            && self
-                .fails
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-        {
-            return Err(beton_store::RedactionUnavailable);
+        if value.to_string().contains(self.needle) {
+            let mut fails = self.fails.lock().unwrap();
+            if *fails > 0 {
+                *fails -= 1;
+                return Err(beton_store::RedactionUnavailable);
+            }
         }
         Ok(false)
     }
@@ -452,7 +450,7 @@ async fn proto_015_failed_push_is_reported_as_runner_status_and_resent() {
     let options = StoreOptions {
         redactor: std::sync::Arc::new(FlakyRedactor {
             needle: "Zeile 5",
-            fails: std::sync::atomic::AtomicUsize::new(2),
+            fails: std::sync::Mutex::new(2),
         }),
         ..StoreOptions::default()
     };
