@@ -1,0 +1,22 @@
+# Required Checks der Branch-Protection von `main` (QA-010 AC3): genau die Job-Namen aus
+# .github/workflows/ci.yml, Matrix-Werte eingesetzt. Der Maintainer trägt genau diese Namen ein
+# (Settings → Branches); scripts/check_branch_protection.py prüft Datei, ci.yml und
+# Branch-Protection gegeneinander. Neue Jobs gehören im selben PR hierher.
+MSRV (1.88)
+build (windows, Beta)
+cargo deny
+commit-lint + DCO
+design-prototyp
+escape (linux-vm, debian-12)
+escape (linux-vm, fedora-44)
+escape (linux-vm, ubuntu-22.04)
+escape (macos-15)
+escape (ubuntu-24.04, apparmor)
+fmt + clippy
+offline-e2e (isolated)
+offline-e2e (sinkhole)
+sdk-ts
+spec + roadmap
+test (linux, ohne Netzwerk)
+test (macos)
+web (Vitest, Playwright)
