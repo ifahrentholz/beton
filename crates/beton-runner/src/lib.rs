@@ -1063,8 +1063,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 ..st.env.clone()
             }),
         ),
-        // Tools, die beton selbst ausführt (ACP `fs/read_text_file`, `terminal/*`, #326): in
-        // Stufe 2 und über die Terminals des Runners, auch solange ACP degraded ist (#329).
+        // Tools, die beton selbst ausführt (ACP `fs/*`, `terminal/*`, #326, #329): in Stufe 2
+        // und über die Terminals des Runners; für ACP auch ohne geprüfte Capabilities.
         Some(st)
             if beton_tools_in_stage_two(
                 &boot.harness,
@@ -2512,8 +2512,8 @@ enum TurnGate {
 /// Capabilities, mit denen der Harness laufen wird: beim Fake samt Szenario, bei Claude ohne
 /// Hook-Brücke nur die Rückfragen (POL-024).
 /// Bekommt der Harness die Stufe-2-Tools und Terminals des Runners für Tools, die beton selbst
-/// ausführt? Mit `tool_isolation: beton` immer, außerdem ACP (`fs/read_text_file`,
-/// `terminal/*`), das bis #329 als `inherited` gilt.
+/// ausführt? Mit `tool_isolation: beton` immer, ACP (`fs/*`, `terminal/*`) auch ohne geprüfte
+/// Capabilities.
 fn beton_tools_in_stage_two(harness: &HarnessId, isolation: beton_harness::ToolIsolation) -> bool {
     isolation == beton_harness::ToolIsolation::Beton || harness.is_acp()
 }
@@ -3557,8 +3557,9 @@ async fn deliver(
 mod tests {
     use beton_core::event::AuthSource;
 
-    /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals, obwohl es bis #329 als
-    /// `inherited` gilt; andere Harnesses mit `inherited` (Codex) nicht.
+    /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals immer (seit #329 meldet
+    /// es `beton`, auch vorhergesagte Capabilities ohne Probe genügen); andere Harnesses mit
+    /// `inherited` (Codex) nicht.
     #[test]
     fn har_007_acp_gets_stage_two_tools_while_inherited() {
         use beton_harness::ToolIsolation::{Beton, Inherited, ShellOverride};
