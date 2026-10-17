@@ -983,3 +983,81 @@ async fn pol_003_recheck_after_approval_needs_the_same_reason_not_only_the_same_
         other => panic!("neue Schwelle als freigegeben gewertet: {other:?}"),
     }
 }
+
+/// Wartet auf die nächste Approval-Card und liefert ihren Schlüssel; `None` ohne Card.
+async fn next_card(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> Option<String> {
+    loop {
+        let e = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .ok()??;
+        if let beton_core::event::EventPayload::ApprovalRequested(r) = e.payload {
+            return Some(r.subject["call_id"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+}
+
+fn turn(model: &str) -> beton_harness::ModelGateRequest {
+    beton_harness::ModelGateRequest {
+        model: Some(model.into()),
+        ..beton_harness::ModelGateRequest::default()
+    }
+}
+
+/// #353 Punkt 4 (#286): Lehnt der Mensch die Verteuerung einer Projekt-Route ab, läuft der
+/// Turn ohne die Route weiter (statt abgelehnt zu werden), und die Session fragt dieselbe
+/// Verteuerung nicht erneut. Eine Freigabe gilt ebenso für die Session.
+#[tokio::test]
+async fn pol_013_declined_cost_raise_drops_the_route_and_is_remembered_per_session() {
+    use beton_runner::policy::Human;
+    for allow in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        write_policy(
+            dir.path(),
+            Scope::Project,
+            "route",
+            "  - id: up\n    type: model_route\n    params: { routes: [{ model: claude-opus-4-5 }] }\n",
+        );
+        let (g, mut rx) = gate(dir.path(), "claude");
+        let g2 = g.clone();
+        let first = tokio::spawn(async move {
+            g2.check_model_request(turn("claude-haiku-4-5"), "turn", true, None)
+                .await
+        });
+        let key = next_card(&mut rx).await.expect("Card für die Verteuerung");
+        assert!(g.resolve(
+            &key,
+            Human {
+                allow,
+                ..Human::default()
+            }
+        ));
+        let expected = allow.then(|| "claude-opus-4-5".to_owned());
+        match first.await.unwrap() {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: Turn abgelehnt statt fortgesetzt: {other:?}"),
+        }
+        // Nächster Turn: keine neue Card, dieselbe Entscheidung.
+        let g2 = g.clone();
+        let second = tokio::spawn(async move {
+            g2.check_model_request(turn("claude-haiku-4-5"), "turn", true, None)
+                .await
+        });
+        assert_eq!(
+            next_card(&mut rx).await,
+            None,
+            "allow={allow}: erneute Card"
+        );
+        match second.await.unwrap() {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: {other:?}"),
+        }
+        // Auch ohne Rückfrage (Granularität `call`) gilt die gemerkte Entscheidung.
+        match g
+            .check_model_request(turn("claude-haiku-4-5"), "call", false, None)
+            .await
+        {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: {other:?}"),
+        }
+    }
+}

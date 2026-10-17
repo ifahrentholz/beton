@@ -1330,3 +1330,28 @@ fn pol_013_modification_to_the_current_value_needs_no_switch() {
     let d = EffectiveSet::new(vec![s]).evaluate(&unknown, &opts);
     assert_eq!(reason_ids(&d), ["stay"]);
 }
+
+/// #353 Punkt 4: Die Entscheidung nennt, welche Regel welche Felder verteuern würde
+/// (`cost_raises`); der Runner kann die Modifikation bei einer Ablehnung verwerfen und ohne
+/// Route fortfahren, statt den Turn abzulehnen.
+#[test]
+fn pol_013_cost_raising_routes_are_listed_with_their_fields() {
+    let sonnet = turn_with(Some("claude-sonnet-4-5"), Some("medium"));
+    let d = eval(
+        vec![route_to(
+            Scope::Project,
+            "model: claude-opus-4-5, reasoning_effort: low",
+        )],
+        &sonnet,
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
+    assert_eq!(d.cost_raises.len(), 1, "{d:#?}");
+    assert_eq!(d.cost_raises[0].rule.rule_id, "up");
+    assert_eq!(d.cost_raises[0].fields, ["model"], "nur das teurere Feld");
+    // Ohne Verteuerung keine Einträge.
+    let d = eval(
+        vec![route_to(Scope::Project, "model: claude-haiku-4-5")],
+        &sonnet,
+    );
+    assert!(d.cost_raises.is_empty(), "{d:#?}");
+}

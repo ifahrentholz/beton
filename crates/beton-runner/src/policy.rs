@@ -789,6 +789,7 @@ fn engine_deny(phase: Phase, hash: &str, message: String) -> Decision {
         notifications: Vec::new(),
         effects: Vec::new(),
         warnings: Vec::new(),
+        cost_raises: Vec::new(),
         policy_set_hash: hash.to_owned(),
         eval_us: 0,
     }

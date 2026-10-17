@@ -178,6 +178,15 @@ pub enum Outcome {
     },
 }
 
+/// Eine Modifikation unterhalb der User-Ebene, die Modell bzw. Effort verteuern würde und
+/// deshalb eine Freigabe braucht (#286, #353).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostRaise {
+    pub rule: RuleRef,
+    /// Die verteuernden Felder (`model`, `reasoning_effort`).
+    pub fields: Vec<&'static str>,
+}
+
 /// Angewendete Modifikationen.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Modifications {
@@ -262,6 +271,9 @@ pub struct Decision {
     pub notifications: Vec<Notification>,
     pub effects: Vec<PendingEffects>,
     pub warnings: Vec<String>,
+    /// Modifikationen unterhalb der User-Ebene, die verteuern würden und deshalb nachfragen
+    /// (#286, #353).
+    pub cost_raises: Vec<CostRaise>,
     pub policy_set_hash: String,
     pub eval_us: u64,
 }
@@ -427,6 +439,7 @@ impl<'a> Run<'a> {
                 notifications: Vec::new(),
                 effects: Vec::new(),
                 warnings: Vec::new(),
+                cost_raises: Vec::new(),
                 policy_set_hash: set.hash.clone(),
                 eval_us: 0,
             },
