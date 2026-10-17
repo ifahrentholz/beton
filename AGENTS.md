@@ -42,6 +42,9 @@ Siehe [00-overview § 4.4](docs/spec/00-overview.md#44-crate--und-repo-layout). 
 | Desktop-App | `pnpm install` und `pnpm dev` in `apps/desktop` (baut `beton` und die Web-UI, startet die Tauri-App gegen `~/.beton` bzw. `BETON_HOME`); Bundle: `pnpm build`; Tests: `cargo test -p beton-desktop -p beton-desktop-app`. Unter Linux vorher `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev` |
 | E2E | `pnpm e2e` in `apps/web` (Playwright gegen `beton serve --dev` und Fake-Harness; vorher `cargo build -p beton-cli`, `pnpm build`, `pnpm exec playwright install chromium`) |
 | Offline-E2E (Linux, sudo) | `scripts/offline-e2e.sh isolated` bzw. `sinkhole`: M0-Demo im Netz-Namespace nur mit Loopback, der Sinkhole-Lauf meldet jede DNS-Anfrage und jedes Paket nach außen (QA-018) |
+| Whisper mit echten Modellen (nur lokal, VOI) | `scripts/voice_fixtures.sh` erzeugt die Sprach-Fixtures; dann `BETON_TEST_VOICE_MODELS=~/.beton/models/whisper BETON_TEST_VOICE_FIXTURES=target/voice-fixtures cargo test -p beton-voice --release --test real_models -- --ignored` (nie in der CI, kein Download in Tests) |
+
+`beton-voice` baut whisper.cpp mit: Dafür braucht der Build **CMake ≥ 3.14** und einen C/C++-Compiler (bindgen nutzt libclang, sonst die mitgelieferten Bindings). Ohne Homebrew genügt z. B. `python3 -m venv /tmp/cmake-venv && /tmp/cmake-venv/bin/pip install cmake` und das `bin/` davon im `PATH`.
 
 `cargo-nextest` und `cargo-deny` sind optionale lokale Werkzeuge (`cargo install cargo-nextest cargo-deny`); die CI installiert sie selbst.
 
