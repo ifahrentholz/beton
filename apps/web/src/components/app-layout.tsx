@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { Gauge, Inbox, MessagesSquare, ShieldCheck } from 'lucide-react'
+import { Gauge, Inbox, MessagesSquare, Settings, ShieldCheck } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSessions } from '@/store/sessions'
 import { useInboxCount } from './inbox'
@@ -22,7 +22,16 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
   // Verbrauch (USE-006) ohne Session-Liste, wie im Entwurf `usage-overview`.
   const usage = path.startsWith('/usage')
   const policies = path.startsWith('/policies')
+  const settings = path.startsWith('/settings')
   const count = useInboxCount()
+  // `?new=1` öffnet den Dialog „Neue Session“ (Menü und Tray der Desktop-App, DESK-004).
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (url.searchParams.get('new') !== '1') return
+    setNewOpen(true)
+    url.searchParams.delete('new')
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [])
   return (
     <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background text-foreground">
       <div className="hidden w-12 shrink-0 flex-col items-center gap-1 border-r border-border bg-sidebar py-2 sm:flex">
@@ -30,8 +39,8 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
           to="/"
           title="Sessions"
           aria-label="Sessions"
-          aria-current={!inbox && !usage && !policies ? 'page' : undefined}
-          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && !usage && !policies && 'bg-accent text-foreground')}
+          aria-current={!inbox && !usage && !policies && !settings ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', !inbox && !usage && !policies && !settings && 'bg-accent text-foreground')}
         >
           <MessagesSquare className="size-[18px]" />
         </Link>
@@ -70,6 +79,16 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
         >
           <ShieldCheck className="size-[18px]" />
         </Link>
+        <Link
+          to="/settings/notifications"
+          title="Einstellungen"
+          aria-label="Einstellungen"
+          aria-current={settings ? 'page' : undefined}
+          className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', settings && 'bg-accent text-foreground')}
+          data-testid="nav-settings"
+        >
+          <Settings className="size-[18px]" />
+        </Link>
         <div className="mt-auto flex flex-col items-center gap-2 pb-1">
           <span
             title={offline ? 'Daemon nicht erreichbar' : 'Lokaler Server auf diesem Rechner'}
@@ -77,7 +96,7 @@ export function AppLayout({ active, children }: { active?: string | undefined; c
           />
         </div>
       </div>
-      {!usage && (
+      {!usage && !settings && (
         <div className="hidden w-64 shrink-0 border-r border-border lg:block">
           <SessionList active={active} onNew={() => setNewOpen(true)} />
         </div>

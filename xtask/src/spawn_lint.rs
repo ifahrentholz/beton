@@ -31,7 +31,7 @@ pub const NO_EXCEPTIONS: [&str; 4] = [
 pub const SPAWN_CRATES: [&str; 2] = ["crates/beton-sandbox/", "crates/beton-pty/"];
 
 /// Beton-eigene Prozesse (Stufe 0) außerhalb der Sandbox, jeweils mit Grund.
-pub const STAGE0_EXCEPTIONS: [(&str, &str); 8] = [
+pub const STAGE0_EXCEPTIONS: [(&str, &str); 9] = [
     (
         "crates/beton-cli/src/commands.rs",
         "Browser und Editor des Benutzers",
@@ -43,6 +43,10 @@ pub const STAGE0_EXCEPTIONS: [(&str, &str); 8] = [
     (
         "crates/beton-cli/src/setup.rs",
         "Installation und Login einer Vendor-CLI im Vordergrund auf Wunsch des Benutzers",
+    ),
+    (
+        "crates/beton-desktop/src/daemon.rs",
+        "Start des eigenen Daemons als Sidecar der Desktop-App (DESK-002)",
     ),
     (
         "crates/beton-git/src/cmd.rs",

@@ -9,6 +9,7 @@ import type { InputAccepted } from './gen/InputAccepted.js'
 import type { ApprovalPage } from './gen/ApprovalPage.js'
 import type { InboxItemView } from './gen/InboxItemView.js'
 import type { InboxPage } from './gen/InboxPage.js'
+import type { NotificationSettings } from './gen/NotificationSettings.js'
 import type { DecisionExplain } from './gen/DecisionExplain.js'
 import type { EffectivePolicies } from './gen/EffectivePolicies.js'
 import type { EvaluateRequest } from './gen/EvaluateRequest.js'
@@ -162,6 +163,15 @@ export class BetonClient {
     /** Treffer der Regeln im Shadow-Betrieb je Regel und Tag (Default 7 Tage). */
     shadow: (days?: number): Promise<ShadowReport> =>
       this.request('GET', `/v1/policies/shadow${days !== undefined ? `?days=${days}` : ''}`),
+  }
+
+  /** Einstellungen des angemeldeten Users, auf allen Geräten gleich (UX-006). */
+  readonly settings = {
+    notifications: {
+      get: (): Promise<NotificationSettings> => this.request('GET', '/v1/settings/notifications'),
+      /** Ersetzt die Einstellungen; fehlende Felder bekommen ihren Default. */
+      put: (settings: NotificationSettings): Promise<NotificationSettings> => this.request('PUT', '/v1/settings/notifications', settings),
+    },
   }
 
   /** Verbrauch (USE-005, USE-006): Summen je Gruppe und Abrechnungsart, Abo-Fenster. */

@@ -395,7 +395,7 @@ export function InboxView() {
         <span>
           <kbd className="font-mono">↵</kbd> Session öffnen
         </span>
-        <span className="ml-auto">Zähler = offene Freigaben und Fragen</span>
+        <span className="ml-auto">Zähler = offene Freigaben und Fragen; in der Desktop-App auch im Dock und in der Menüleiste</span>
       </div>
     </div>
   )
