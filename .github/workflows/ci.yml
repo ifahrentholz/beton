@@ -431,6 +431,17 @@ jobs:
         run: |
           cargo build -p beton-cli -p beton-fake-cli
           cargo nextest run --profile escape --no-run -p beton-sandbox -p beton-runner -p beton-cli
+      # Wie in „test (macos)“: echter, aber temporärer Keychain des Runners (SBX-007 AC1).
+      - name: Temporären Keychain als Standard anlegen
+        run: |
+          KC="$RUNNER_TEMP/beton-test.keychain-db"
+          security create-keychain -p beton-ci "$KC"
+          security set-keychain-settings "$KC"
+          security unlock-keychain -p beton-ci "$KC"
+          security list-keychains -d user -s "$KC"
+          security default-keychain -d user -s "$KC"
+          echo "BETON_TEST_KEYCHAIN=1" >> "$GITHUB_ENV"
+          echo "BETON_TEST_KEYCHAIN_PATH=$KC" >> "$GITHUB_ENV"
       # covers: SBX-010 AC3 (Selbsttests der Probe; Pflicht ist seatbelt)
       - name: beton sandbox test (SBX-010 AC3)
         run: |
@@ -448,6 +459,9 @@ jobs:
           path: target/nextest/escape/junit.xml
           if-no-files-found: warn
           retention-days: 14
+      - name: Temporären Keychain entfernen
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/beton-test.keychain-db" || true
 
   # Ubuntu 24.04 mit `kernel.apparmor_restrict_unprivileged_userns=1` und dem Paketprofil
   # `deploy/apparmor/beton` für die Launcher (SBX-008 AC5) auf dem Kernel des Runners.
@@ -536,7 +550,6 @@ jobs:
     env:
       # Kleinere Binaries für das Laufwerk der VM; Zeilennummern bleiben.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      VM_DIR: ${{ github.workspace }}/../escape-vm/${{ matrix.image }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -560,9 +573,11 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils genisoimage
           ls -l /dev/kvm
-      - name: Schlüssel des provisionierten Images
+      - name: Schlüssel und Verzeichnis des provisionierten Images
         id: vm
-        run: echo "key=escape-vm-$(python3 scripts/escape_vm.py cache-key ${{ matrix.image }})" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "key=escape-vm-$(python3 scripts/escape_vm.py cache-key ${{ matrix.image }})" >> "$GITHUB_OUTPUT"
+          echo "VM_DIR=$RUNNER_TEMP/escape-vm/${{ matrix.image }}" >> "$GITHUB_ENV"
       - uses: actions/cache/restore@v4
         id: vm-cache
         with:
