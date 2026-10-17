@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_ModelInfo",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/ModelInfo"
+  },
+  "$defs": {
+    "ModelInfo": {
+      "description": "Ein Modell, wie `beton voice models list --json` es zeigt (VOI-002 AC4; Schema\n`schemas/v1/voice-models.schema.json`).",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Dateiname im Modellverzeichnis.",
+          "type": "string"
+        },
+        "installed": {
+          "description": "Liegt das Modell vollständig im Modellverzeichnis?",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Name, z. B. `small` oder `large-v3-turbo-q5_0`.",
+          "type": "string"
+        },
+        "quantization": {
+          "description": "Quantisierung, z. B. `q5_0`; `null` für volle Genauigkeit.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recommended": {
+          "description": "Default-Modell für diese Hardware.",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "SHA-256 laut gepinnter Liste (hex).",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Größe in Bytes laut gepinnter Liste.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "file",
+        "size_bytes",
+        "installed",
+        "sha256",
+        "recommended"
+      ]
+    }
+  }
+}

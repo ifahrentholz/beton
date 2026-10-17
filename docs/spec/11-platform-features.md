@@ -200,6 +200,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Eine 10-s-WAV-Testdatei (Deutsch, Fixture) wird mit Modell `small` mit Wortfehlerrate ≤ 15 % transkribiert (Referenz-Transkript im Repo).
   - [ ] AC2 — Nach `idle_unload` ist der Modellspeicher freigegeben (RSS sinkt um ≥ 80 % der Modellgröße).
   - [ ] AC3 — Bei `max_concurrent` erreichten Sessions erhält der dritte Client `voice.status {state: "queued", position}`.
+- **Details** *(präzisiert, M3, WP-59)*: `beton-voice` stellt den Dienst als Bibliothek bereit (`VoiceService`); Daemon/Server und Audio-Kanal binden ihn mit VOI-004 (WP-60) ein. Konfiguration `voice: {model: auto | <name>, language, languages, idle_unload: "10m", max_concurrent, acceleration}` (Dauer als `<n>s|m|h`; `max_concurrent` ohne Angabe 1 lokal, 2 zentral). Status `voice.status {state: queued | transcribing, position?}`; Wartende kommen in Ankunftsreihenfolge dran, eine abgebrochene Anfrage gibt ihren Platz frei. AC1 läuft nur lokal (`crates/beton-voice/tests/real_models.rs`, `--ignored`), weil die CI keine Modelle lädt (ADR-0033) und Sprachaufnahmen mit passender Lizenz fehlen: Die Fixtures erzeugt `scripts/voice_fixtures.sh` per Sprachsynthese aus den Referenz-Transkripten `crates/beton-voice/tests/fixtures/*.txt`; ein regelmäßiger Lauf ist #381. AC2 und AC3 prüft die CI, AC2 mit der echten Engine und einem synthetischen Modell (ggml-Format, Null-Gewichte).
 - **Abhängigkeiten:** —
 - **Referenz:** ADR-0023
 
@@ -212,6 +213,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC3 — Ohne Modell und ohne Zustimmung findet kein Download statt; der Mikrofon-Button zeigt „Modell laden (≈ X MB)“.
   - [ ] AC4 — `beton voice models list --json` liefert Name, Größe, installiert ja/nein, Checksumme.
   - [ ] AC5 — `beton voice models import <datei>` installiert eine Modelldatei mit passender Prüfsumme ohne Netzwerk; eine Datei ohne passenden Eintrag in der gepinnten Liste wird abgelehnt.
+- **Details** *(präzisiert, M3, WP-59)*: Gepinnte Liste: `small`, `small-q5_1`, `medium`, `medium-q5_0`, `large-v3-turbo`, `large-v3-turbo-q5_0` aus `huggingface.co/ggerganov/whisper.cpp` auf einem festen Commit, je mit Größe und SHA-256. Weiterleitungen (CDN von Hugging Face) nur per HTTPS zu `huggingface.co` bzw. `*.hf.co`. Halbe Downloads liegen in `.partial/` des Modellverzeichnisses und werden per `Range` fortgesetzt; bei falscher Prüfsumme oder zu vielen Bytes wird die Datei gelöscht, ein Modell erscheint erst nach der Prüfung (Umbenennen). „Installiert“ heißt: Datei mit der erwarteten Größe vorhanden (geprüft wurde beim Download bzw. Import). Default-Modell ohne GPU-Erkennung zur Build-Zeit: `large-v3-turbo` auf Apple Silicon, sonst `small` (CUDA mit DIST-001). `pull` fragt am Terminal nach, sonst nur mit `--yes`; `list --json` folgt `schemas/v1/voice-models.schema.json`. Mit `--server` lehnt `beton voice models` ab (zentral verwaltet der Betreiber die Modelle). AC3: Ohne Modell meldet der Dienst `ModelMissing {model, download_size_bytes}` und lädt nichts; Größen wie „488 MB“, „1,6 GB“ (dezimal). Den Mikrofon-Button gibt es erst mit VOI-007 (WP-60); seine Beschriftung „Modell laden (≈ X MB)“ ist #380, die Einstellungsseite (`desktop-voice`) samt Voice-API #379.
 - **Abhängigkeiten:** VOI-001
 
 ### VOI-003 — Hardware-Beschleunigung
@@ -221,6 +223,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Auf Apple Silicon meldet `beton doctor` `voice.backend = metal`.
   - [ ] AC2 — Schlägt die GPU-Initialisierung fehl (simuliert), läuft die Transkription auf CPU und ein Warn-Log wird geschrieben.
   - [ ] AC3 — Benchmark: `large-v3-turbo` auf Apple M-Serie erreicht Real-Time-Factor ≤ 0,3 für die 10-s-Fixture (Nightly-Bench, kein PR-Gate).
+- **Details** *(präzisiert, M3, WP-59)*: `voice.acceleration: auto | cpu` (Entwurf: „Automatisch“ / „Nur CPU“). Bei `auto` prüft beton vor dem Laden, ob sich ein GPU-Gerät der ggml-Registry initialisieren lässt; scheitert das oder das Laden auf der GPU, lädt es auf der CPU und schreibt das Warn-Log `metal init failed, falling back to cpu`. `beton doctor` hat den Check `voice` mit `details.backend` (`metal`, `cpu`, später `cuda`), `gpu`, `fallback`, `model` und `rtf`; den RTF misst `doctor` mit dem installierten Modell an 5 s Testsignal (ohne Modell nur das Backend, nie ein Download); ein CPU-Rückfall ist eine Warnung. AC3 läuft nur lokal im Release-Build (`tests/real_models.rs`), weil die CI keine Modelle lädt; regelmäßiger Lauf: #381 (lokal gemessen RTF 0,13 auf M3 Pro). Portable Release-Builds: #382.
 - **Abhängigkeiten:** VOI-001
 
 ### VOI-004 — Audio-Streaming über WS-Binärkanal
@@ -250,6 +253,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Deutsche und englische Fixture werden ohne Vorgabe korrekt als `de` bzw. `en` erkannt (`voice.final.lang`).
   - [ ] AC2 — Eine französische Fixture wird als `de` oder `en` transkribiert, nie als `fr` (Beschränkung greift).
   - [ ] AC3 — Mit `voice.language: en` wird keine Erkennung durchgeführt.
+- **Details** *(präzisiert, M3, WP-59)*: Die Erkennung nutzt die Sprach-Wahrscheinlichkeiten von whisper.cpp für die ersten 30 s; beton wählt die wahrscheinlichste aus `voice.languages` und transkribiert dann mit fester Sprache. Mit `voice.language: de|en` erkennt weder beton noch whisper.cpp. Die Auswahl prüft die CI mit einer Fake-Engine; AC1 und AC2 mit echten Fixtures laufen nur lokal (`tests/real_models.rs`, #381).
 - **Abhängigkeiten:** VOI-001
 
 ### VOI-007 — Push-to-Talk (globaler Shortcut im Desktop)
@@ -268,6 +272,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
   - [ ] AC1 — Das Frontend referenziert weder `SpeechRecognition` noch `webkitSpeechRecognition` (Lint-Regel in CI).
   - [ ] AC2 — Während einer Transkription baut der Prozess keine ausgehenden Verbindungen auf (Integrationstest mit Netz-Monitoring/Proxy-Assertion).
   - [ ] AC3 — Modell-Downloads erfolgen nur zu URLs aus der eingebetteten, gepinnten Liste.
+- **Details** *(präzisiert, M3, WP-59)*: AC1: Regeln `no-restricted-globals`/`no-restricted-properties` in `apps/web/.oxlintrc.json` (`pnpm lint`) und ein Test, der die Quellen der Web-UI durchsucht. AC2: Ein Test beobachtet während Laden, Erkennung und Transkription mit der echten Engine laufend die offenen Sockets des Prozesses (mit Kontrollgruppe); die Linux-CI führt ihn zusätzlich ohne Netz aus. Netzwerk-Code steht in `beton-voice` nur im Download-Modul (Test). AC3: Downloads nehmen nur Namen der Liste, nie URLs.
 - **Abhängigkeiten:** VOI-002
 - **Referenz:** ADR-0023
 

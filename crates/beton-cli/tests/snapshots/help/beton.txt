@@ -24,6 +24,7 @@ Commands:
   audit       Audit-Log anzeigen, exportieren und seine Hash-Kette prüfen
   proxy       Egress-Proxy der Sandbox verwalten
   sandbox     Sandbox: Fähigkeiten der Backends prüfen und die aufgelöste Sandbox anzeigen
+  voice       Spracheingabe mit lokalem Whisper: Modelle verwalten (Download nur mit Zustimmung)
   admin       Wartung von Datenbank und Projektionen
   completion  Shell-Vervollständigung ausgeben
   version     Version ausgeben

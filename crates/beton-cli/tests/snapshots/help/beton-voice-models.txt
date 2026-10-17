@@ -1,0 +1,39 @@
+Whisper-Modelle in `~/.beton/models/whisper/` (VOI-002)
+
+Usage: beton voice models [OPTIONS] <COMMAND>
+
+Commands:
+  list    Modelle der mitgelieferten Liste: Name, Größe, installiert, SHA-256 (mit `--json`
+          maschinenlesbar)
+  pull    Modell von der im Programm hinterlegten Adresse laden und per SHA-256 prüfen. Fragt vorher
+          nach; ohne Terminal nur mit `--yes`. Abgebrochene Downloads setzt ein neuer Aufruf fort
+  import  Lokale Modelldatei übernehmen, ohne Netzwerk; nur wenn ihre SHA-256 zur mitgelieferten
+          Liste passt
+  remove  Installiertes Modell entfernen
+
+Options:
+      --server <URL>
+          Server-URL statt des lokalen Daemons (Token aus `BETON_TOKEN`)
+          
+          [env: BETON_SERVER]
+
+      --json
+          Maschinenlesbare Ausgabe (JSON) auf stdout
+
+  -q, --quiet
+          Keine Fortschritts- und Hinweismeldungen auf stderr
+
+  -v, --verbose...
+          Mehr Diagnose auf stderr (mehrfach: noch mehr)
+
+      --no-color
+          Keine Farben (auch über `NO_COLOR`)
+
+      --config <FILE>
+          User-Konfiguration aus dieser Datei statt `~/.beton/config.yaml`
+
+  -h, --help
+          Print help
+
+  -V, --version
+          Print version

@@ -18,6 +18,7 @@ beton-policy.workspace = true
 beton-proto.workspace = true
 beton-server.workspace = true
 beton-store.workspace = true
+beton-voice.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
