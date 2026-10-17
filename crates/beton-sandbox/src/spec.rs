@@ -312,6 +312,10 @@ pub struct CredentialSpec {
     /// Variablen der Stufe 2, die den Platzhalter bekommen (z. B. `GH_TOKEN`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
+    /// Ohne Platzhalter und ohne `Authorization`-Header einsetzen (Default `true`; nur
+    /// `git_https` mit `username`, `github` und `gitlab`, nie `bearer`/`basic`; PRX-006, #295).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implicit: Option<bool>,
 }
 
 /// Eine Ebene der Sandbox-Konfiguration (`sandbox:`). Nicht gesetzte Felder erbt sie von der
