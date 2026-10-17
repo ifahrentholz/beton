@@ -359,8 +359,8 @@ pub fn command_args_with(
 /// Bekannte Pfade der Managed Settings von Claude Code (Datei und Drop-in-Verzeichnis) auf
 /// dieser Plattform; `BETON_CLAUDE_MANAGED_SETTINGS` (durch `:` getrennt) ersetzt sie (#258).
 pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
-    if let Some(list) = std::env::var_os("BETON_CLAUDE_MANAGED_SETTINGS") {
-        return std::env::split_paths(&list).collect();
+    if let Some(paths) = managed_settings_override(std::env::var_os(MANAGED_SETTINGS_ENV)) {
+        return paths;
     }
     let base: &[&str] = if cfg!(target_os = "macos") {
         &["/Library/Application Support/ClaudeCode"]
@@ -378,6 +378,14 @@ pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
             ]
         })
         .collect()
+}
+
+/// Umgebungsvariable, die die Pfade der Managed Settings ersetzt (nur für Tests).
+pub const MANAGED_SETTINGS_ENV: &str = "BETON_CLAUDE_MANAGED_SETTINGS";
+
+/// Ersetzte Pfade aus [`MANAGED_SETTINGS_ENV`].
+fn managed_settings_override(raw: Option<std::ffi::OsString>) -> Option<Vec<std::path::PathBuf>> {
+    raw.map(|list| std::env::split_paths(&list).collect())
 }
 
 /// Schalten Managed Settings Hooks ab (`disableAllHooks`, `allowManagedHooksOnly`)? Eine
@@ -1591,6 +1599,15 @@ mod mcp_tests {
     /// Repositorys kann mit `disableAllHooks: true` den beton-Hook abschalten und eigene
     /// `PreToolUse`-Hooks mit `updatedInput` nach der beton-Prüfung einschleusen. beton lädt
     /// daher nur die User-Einstellungen und setzt `disableAllHooks: false` im `--settings`-JSON.
+    /// Security-Review von #385 (Minor 1): Ohne das Feature `test-managed-settings` (nur über
+    /// Dev-Dependencies) ersetzt die Umgebung die Pfade der Managed Settings nie; sonst könnte
+    /// eine Umgebungsvariable die Erkennung abgeschalteter Hooks umgehen.
+    #[cfg(not(feature = "test-managed-settings"))]
+    #[test]
+    fn pol_024_managed_settings_paths_are_not_overridable_in_normal_builds() {
+        assert_eq!(managed_settings_override(Some("/tmp/leer".into())), None);
+    }
+
     #[test]
     fn har_005_project_settings_cannot_disable_or_add_hooks() {
         let settings = hook_settings("/bin/beton hook claude", 60);
