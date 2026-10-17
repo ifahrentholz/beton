@@ -35,6 +35,7 @@ beton-policy = { path = "crates/beton-policy", version = "0.0.0" }
 beton-secrets = { path = "crates/beton-secrets", version = "0.0.0" }
 beton-proxy = { path = "crates/beton-proxy", version = "0.0.0" }
 beton-sandbox = { path = "crates/beton-sandbox", version = "0.0.0" }
+beton-voice = { path = "crates/beton-voice", version = "0.0.0" }
 
 # extern
 # Secret-Store (SEC-001 … SEC-003): AEAD, KDF und Nullen von Secrets.

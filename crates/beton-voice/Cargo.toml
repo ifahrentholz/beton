@@ -1,0 +1,37 @@
+[package]
+name = "beton-voice"
+description = "Lokale Spracheingabe: Whisper-Transkription (whisper.cpp), Modellverwaltung mit gepinnten Prüfsummen, Beschleunigung (VOI)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hex.workspace = true
+# Nur für den ausdrücklichen Modell-Download (VOI-002, VOI-008); sonst baut beton-voice keine
+# Verbindung auf.
+reqwest = { workspace = true, features = ["rustls-tls-native-roots"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+# whisper.cpp (MIT) über whisper-rs (Unlicense); baut whisper.cpp mit CMake und erzeugt die
+# Bindings mit bindgen (libclang). Metal nur unter macOS (VOI-003); CUDA folgt mit DIST-001.
+whisper-rs = { version = "0.16", features = ["raw-api", "tracing_backend"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", features = ["raw-api", "tracing_backend", "metal"] }
+
+[dev-dependencies]
+memory-stats = "1"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -41,6 +41,16 @@ allow = [
 allow = ["NCSA"]
 crate = "libfuzzer-sys"
 
+# Rust-Bindings von whisper.cpp (VOI-001, ADR-0023): gemeinfrei (Unlicense), mit Apache-2.0
+# vereinbar. Das mitgebaute whisper.cpp/ggml selbst steht unter MIT.
+[[licenses.exceptions]]
+allow = ["Unlicense"]
+crate = "whisper-rs"
+
+[[licenses.exceptions]]
+allow = ["Unlicense"]
+crate = "whisper-rs-sys"
+
 [licenses.private]
 ignore = true
 
