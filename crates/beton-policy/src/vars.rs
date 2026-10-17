@@ -135,9 +135,16 @@ pub struct SessionVars {
     /// Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
-    /// Git-Branch des Arbeitsverzeichnisses.
+    /// Git-Branch des Arbeitsverzeichnisses; in `tool_call`/`tool_result` der des Repos von
+    /// `tool.cwd` (#293).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Die Git-Konfiguration des Repos von `tool.cwd` bzw. des Users lenkt einen Push ohne
+    /// Refspec um (`remote.*.push`, `remote.*.mirror`, `push.default` `upstream`/`tracking`/
+    /// `matching`, Includes) oder ist nicht sicher lesbar; `git_guard` zählt dann nur Ziele der
+    /// Form `src:dst` (POL-017, #293).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_redirected: Option<bool>,
     /// Labels der Session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,

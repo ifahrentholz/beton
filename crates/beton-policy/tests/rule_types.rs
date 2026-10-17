@@ -1391,3 +1391,128 @@ fn pol_015_allowlists_of_the_same_layer_are_united() {
     );
     assert_eq!(outcome(&write), "deny", "{write:?}");
 }
+
+/// #293 R2: Kommandos, die die Push-Konfiguration für einen späteren Push ändern
+/// (`git config` auf `remote.*.push`/`mirror`, `push.default`, `branch.*.merge`, Includes,
+/// `git branch -u`, `git remote set-url --push`, `GIT_CONFIG_*` in der Umgebung), sind
+/// `uncertain` (Rückfrage), auch wenn im selben Kommando kein Push steht; lesende Aufrufe nicht.
+#[test]
+fn pol_017_push_config_changes_and_git_config_env_are_uncertain() {
+    let s = set(Scope::User, "u", GIT);
+    for command in [
+        "git config remote.origin.push refs/heads/feature:refs/heads/main",
+        "git config --add remote.origin.push +refs/heads/*:refs/heads/*",
+        "git config remote.origin.mirror true",
+        "git config --global push.default matching",
+        "git config push.default upstream",
+        "git config set push.default tracking",
+        "git config branch.feature.merge refs/heads/main",
+        "git config include.path ../evil.cfg",
+        "git config includeIf.gitdir:/x/.path /tmp/c",
+        "git config --edit",
+        "git branch -u origin/main",
+        "git branch --set-upstream-to=origin/main feature",
+        "git branch --track feature origin/main",
+        "git remote set-url --push origin ../other.git",
+        "git remote add --mirror=push backup ../b.git",
+        "git -c include.path=/tmp/c push",
+        "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=push.default GIT_CONFIG_VALUE_0=matching git push",
+        "export GIT_CONFIG_PARAMETERS=\"'push.default'='matching'\"",
+        "env GIT_CONFIG_GLOBAL=/tmp/c git push",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert!(
+            rule_ids(&d).contains(&"git/uncertain".to_owned()),
+            "{command}: {d:?}"
+        );
+    }
+    for command in [
+        "git config --get push.default",
+        "git config push.default",
+        "git config get push.default",
+        "git config -l",
+        "git config user.name 'A B'",
+        "git branch feature",
+        "git remote -v",
+    ] {
+        let d = eval(vec![s.clone()], &git_call(command, "feature"));
+        assert!(
+            !rule_ids(&d).contains(&"git/uncertain".to_owned()),
+            "{command}: {d:?}"
+        );
+    }
+}
+
+/// #293 (minor): `git send-pack` ohne Refs pusht alle gemeinsamen Branches, `--stdin` liest
+/// sie von stdin: beides `*` (geschützt).
+#[test]
+fn pol_017_send_pack_without_refs_or_from_stdin_targets_everything() {
+    for (command, targets) in [
+        ("git send-pack ../repo.git", r#"["*"]"#),
+        ("git send-pack --stdin ../repo.git", r#"["*"]"#),
+        (
+            "git send-pack --stdin ../repo.git feature",
+            r#"["*","feature"]"#,
+        ),
+        ("git send-pack ../repo.git feature", r#"["feature"]"#),
+    ] {
+        assert_eq!(
+            shell_value("shell.git_push_targets(tool.argv)", command),
+            targets,
+            "{command}"
+        );
+    }
+}
+
+/// #293 (minor): `tool.cwd != session.worktree` vergleicht aufgelöste Pfade; eine andere
+/// Schreibweise desselben Verzeichnisses gilt nicht als „anderes Repository“.
+#[test]
+fn pol_017_worktree_comparison_resolves_both_paths() {
+    let s = set(Scope::User, "u", GIT);
+    let same = call_with(
+        "Bash",
+        json!({ "command": "git push" }),
+        json!({ "session": { "branch": "feature", "worktree": "/home/u/./wt/" } }),
+    );
+    let d = eval(vec![s], &same);
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    assert_eq!(rule_ids(&d), ["git/push"]);
+}
+
+/// #293 R2: Lenkt die Git-Konfiguration einen Push ohne Refspec um
+/// (`session.push_redirected`, der Runner liest sie), zählen nur Ziele der Form `src:dst`.
+#[test]
+fn pol_017_redirecting_push_config_counts_like_another_repository() {
+    let s = set(Scope::User, "u", GIT);
+    let call = |command: &str, redirected: bool| {
+        call_with(
+            "Bash",
+            json!({ "command": command }),
+            json!({ "session": { "branch": "feature", "push_redirected": redirected } }),
+        )
+    };
+    let d = eval(vec![s.clone()], &call("git push", true));
+    assert_eq!(outcome(&d), "deny", "{d:?}");
+    assert!(rule_ids(&d).contains(&"git/protected".to_owned()));
+    let d = eval(vec![s.clone()], &call("git push", false));
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+    let d = eval(vec![s], &call("git push origin feature:feature", true));
+    assert_eq!(outcome(&d), "ask", "{d:?}");
+}
+
+/// #293 (minor): Ein Datei-Default `ask`/`deny` bleibt `required`, auch wenn eine
+/// `best_effort`-Allowlist im selben Set ihn verschärft.
+#[test]
+fn pol_024_file_default_stays_required_next_to_a_best_effort_allowlist() {
+    use beton_policy::enforcement::check_start;
+    let s = parse_set(
+        Scope::Project,
+        "p.yaml",
+        &format!(
+            "spec_version: 1\nname: p\ndefaults: {{ tool_call: ask }}\nrules:\n{READ_ONLY}    enforcement: best_effort\n"
+        ),
+    )
+    .unwrap();
+    let check = check_start(&EffectiveSet::new(vec![Arc::new(s)]), &codex_matrix());
+    assert!(!check.refused.is_empty(), "{check:?}");
+}
