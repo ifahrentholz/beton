@@ -2173,6 +2173,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     match down {
                         TunnelDown::ChannelCredit { channel_id, bytes } => terminals.credit(channel_id, bytes),
                         TunnelDown::ChannelKeyframe { channel_id } => terminals.keyframe(channel_id),
+                        TunnelDown::CmdDeliver { cmd_id, name, args, .. } if name == "workspace.user_write" => {
+                            // #93: Der User schreibt gleich über die Workspace-API; derselbe Stand
+                            // ist dann keine Änderung des Agents.
+                            if let (Some(t), Some(path), Some(sha)) = (&files, args["path"].as_str(), args["sha256"].as_str()) {
+                                workspace::expect_user_write(t, path.to_owned(), sha.to_owned());
+                            }
+                            let msg = TunnelUp::CmdResult { cmd_id, result: Some(Value::Null), problem: None };
+                            if !send(&mut ws, &msg).await { break None; }
+                        }
                         TunnelDown::CmdDeliver { cmd_id, name, args, actor } if name.starts_with("terminal.") => {
                             // Workspace-Terminals (SES-019): PTY hier, Prozess in Stufe 2.
                             let msg = match terminals.command(&name, &args, actor).await {
