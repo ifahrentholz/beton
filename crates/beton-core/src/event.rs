@@ -858,6 +858,9 @@ payload!(Compaction {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] after_tokens: Option<u64>,
     /// Wer die Compaction ausgelöst hat (USE-009); setzt der Runner. Fehlt in Logs vor M2.
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] trigger: Option<CompactionTrigger>,
+    /// Schwelle der Automatik als Anteil des Kontextfensters (`compaction.threshold`), nur bei
+    /// `trigger: beton`; der Verlauf zeigt „automatisch ab 80 %“ (USE-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] threshold: Option<f64>,
 });
 
 payload!(FsChange {

@@ -805,6 +805,14 @@ async fn use_009_ac2_beton_compacts_exactly_once_above_the_threshold_before_the_
         ],
         "{events:#?}"
     );
+    // Die Automatik nennt ihre Schwelle; der Verlauf zeigt „automatisch ab 80 %“.
+    for e in events.iter().filter(|e| {
+        e["type"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("compaction."))
+    }) {
+        assert_eq!(e["payload"]["threshold"], 0.8, "{e:#}");
+    }
     env.daemon.shutdown().await;
 }
 

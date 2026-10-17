@@ -759,6 +759,7 @@ async fn compact(
                 before_tokens: before,
                 after_tokens: None,
                 trigger: None,
+                threshold: None,
             }),
             turn,
         )
@@ -842,6 +843,7 @@ async fn compact(
                 before_tokens: before,
                 after_tokens: Some(after),
                 trigger: None,
+                threshold: None,
             }),
             turn,
         )

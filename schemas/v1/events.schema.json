@@ -790,6 +790,14 @@
           "format": "uint64",
           "minimum": 0
         },
+        "threshold": {
+          "description": "Schwelle der Automatik als Anteil des Kontextfensters (`compaction.threshold`), nur bei\n`trigger: beton`; der Verlauf zeigt „automatisch ab 80 %“ (USE-009).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "trigger": {
           "description": "Wer die Compaction ausgelöst hat (USE-009); setzt der Runner. Fehlt in Logs vor M2.",
           "anyOf": [

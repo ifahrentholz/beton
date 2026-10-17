@@ -513,12 +513,14 @@ impl HarnessSession for FakeSession {
             before_tokens: before,
             after_tokens: None,
             trigger: None,
+            threshold: None,
         }))
         .await?;
         self.emit(EventPayload::CompactionCompleted(Compaction {
             before_tokens: before,
             after_tokens: Some(after),
             trigger: None,
+            threshold: None,
         }))
         .await?;
         if let Some((_, window)) = last {
