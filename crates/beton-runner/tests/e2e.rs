@@ -377,12 +377,9 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
     use sqlx::Connection as _;
     let f = fixture(|r| r).await;
     let mut yaml = String::from("turns:\n  - emit:\n");
-    // Nach den ersten drei Zeilen kommen die übrigen langsam genug, dass Pushes sicher in die
-    // Schreibsperre fallen (auch auf langsamen CI-Runnern) und erst danach enden.
     for i in 0..30 {
-        let delay = if i < 3 { 50 } else { 200 };
         yaml.push_str(&format!(
-            "      - {{ message: \"Zeile {i}\", delay_ms: {delay} }}\n"
+            "      - {{ message: \"Zeile {i}\", delay_ms: 50 }}\n"
         ));
     }
     let h = f.launch(&f.scenario(&yaml), 1).await;
@@ -417,22 +414,87 @@ async fn proto_015_ac1_failed_push_is_resent_without_gap() {
         .collect();
     let expected: Vec<String> = (0..30).map(|i| format!("Zeile {i}")).collect();
     assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
-    // #72: Der Runner meldet den gescheiterten Push und das erneute Senden als `runner.status`.
-    let retried = events.iter().any(|e| {
-        matches!(e.payload(), Some(EventPayload::RunnerStatus(s))
-            if s.reason.as_deref().is_some_and(|r| r.contains("push_failed")))
-    });
+    f.provider
+        .terminate(&h, beton_host::TerminateMode::Force)
+        .await
+        .unwrap();
+}
+
+/// Redigiert nichts, ist aber für Werte mit `needle` die ersten `fails` Male nicht bereit
+/// (fail closed): Der Push mit diesem Event wird nicht gespeichert.
+struct FlakyRedactor {
+    needle: &'static str,
+    fails: std::sync::atomic::AtomicUsize,
+}
+
+impl beton_store::ValueRedactor for FlakyRedactor {
+    fn redact(
+        &self,
+        value: &mut serde_json::Value,
+    ) -> Result<bool, beton_store::RedactionUnavailable> {
+        use std::sync::atomic::Ordering;
+        if value.to_string().contains(self.needle)
+            && self
+                .fails
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        {
+            return Err(beton_store::RedactionUnavailable);
+        }
+        Ok(false)
+    }
+}
+
+/// #72: Speichert der Server einen Push nicht, meldet der Runner das beim Wiederverbinden als
+/// `runner.status` mit `push_failed` und sendet das Unbestätigte erneut, ohne Lücke.
+#[tokio::test]
+async fn proto_015_failed_push_is_reported_as_runner_status_and_resent() {
+    let options = StoreOptions {
+        redactor: std::sync::Arc::new(FlakyRedactor {
+            needle: "Zeile 5",
+            fails: std::sync::atomic::AtomicUsize::new(2),
+        }),
+        ..StoreOptions::default()
+    };
+    let f = fixture_with(options, |r| r).await;
+    let mut yaml = String::from("turns:\n  - emit:\n");
+    for i in 0..10 {
+        yaml.push_str(&format!(
+            "      - {{ message: \"Zeile {i}\", delay_ms: 20 }}\n"
+        ));
+    }
+    let h = f.launch(&f.scenario(&yaml), 1).await;
+    f.wait_connected().await;
+    f.deliver("input.submit", json!({"text": "los"})).await;
+    let events = f
+        .wait_for(|p| matches!(p, EventPayload::TurnCompleted(_)))
+        .await;
+    gapless(&events);
+    let lines: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::MessageCompleted(m)) => {
+                m.content[0]["text"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..10).map(|i| format!("Zeile {i}")).collect();
+    assert_eq!(lines, expected, "alle genau einmal, in Runner-Reihenfolge");
+    let reasons: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e.payload() {
+            Some(EventPayload::RunnerStatus(s)) => {
+                Some(format!("{}→{} {:?}", s.from, s.to, s.reason))
+            }
+            _ => None,
+        })
+        .collect();
     assert!(
-        retried,
-        "runner.status mit push_failed fehlt: {:?}",
-        events
+        reasons
             .iter()
-            .filter_map(|e| match e.payload() {
-                Some(EventPayload::RunnerStatus(s)) =>
-                    Some(format!("{}→{} {:?}", s.from, s.to, s.reason)),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
+            .any(|r| r.contains("push_failed: redaction_unavailable")),
+        "runner.status mit push_failed fehlt: {reasons:?}"
     );
     f.provider
         .terminate(&h, beton_host::TerminateMode::Force)
