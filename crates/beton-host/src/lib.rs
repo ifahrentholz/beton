@@ -286,6 +286,13 @@ macro_rules! runner_provider_contract {
                 }
             }
 
+            /// #243: `Debug` der Startdaten zeigt das Runner-Token nie (Logs, Fehler).
+            #[test]
+            fn auth_011_boot_debug_hides_the_runner_token() {
+                let text = format!("{:?}", boot());
+                assert!(!text.contains("bt_run_test"), "{text}");
+            }
+
             #[tokio::test]
             async fn run_001_ac2_provision_is_idempotent() {
                 let (provider, ws) = ($factory, $workspace);

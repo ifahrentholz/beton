@@ -646,6 +646,10 @@ struct Capture {
     hang: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Der Runner findet den Tunnel erst nach dieser Zeit (langsamer Harness-Start).
     slow: std::sync::Arc<std::sync::Mutex<Option<Duration>>>,
+    /// Der Runner bekommt ein ungültiges Token (401 am Tunnel).
+    bad_token: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Handles der gestarteten Runner.
+    handles: std::sync::Arc<std::sync::Mutex<Vec<beton_host::RunnerHandle>>>,
 }
 
 impl Capture {
@@ -658,6 +662,8 @@ impl Capture {
             delay: std::sync::Arc::default(),
             hang: std::sync::Arc::default(),
             slow: std::sync::Arc::default(),
+            bad_token: std::sync::Arc::default(),
+            handles: std::sync::Arc::default(),
         }
     }
 
@@ -690,6 +696,9 @@ impl beton_host::RunnerProvider for Capture {
         let delay = *self.delay.lock().unwrap();
         tokio::time::sleep(delay).await;
         let mut boot = boot.clone();
+        if self.bad_token.load(std::sync::atomic::Ordering::SeqCst) {
+            boot.token = format!("bt_run_{}", "0".repeat(64));
+        }
         let broken = self.broken.load(std::sync::atomic::Ordering::SeqCst);
         if broken || self.hang.load(std::sync::atomic::Ordering::SeqCst) {
             boot.tunnel_socket = "/nicht/vorhanden.sock".into();
@@ -706,6 +715,7 @@ impl beton_host::RunnerProvider for Capture {
             });
         }
         let h = self.inner.start(env, &boot).await?;
+        self.handles.lock().unwrap().push(h.clone());
         if broken {
             self.inner
                 .terminate(&h, beton_host::TerminateMode::Force)
@@ -1095,6 +1105,100 @@ async fn auth_011_ac2_tunnel_closes_when_the_token_is_not_renewed() {
     .await
     .expect("Tunnel bleibt trotz abgelaufenem Token offen");
     assert_eq!(closed, Some(4401));
+    d.daemon.shutdown().await;
+}
+
+/// #243 (N3): Ein Runner, den der Tunnel mit 401 abweist (Token abgelaufen oder gesperrt),
+/// versucht es nicht endlos weiter, sondern endet (fail closed).
+#[tokio::test]
+async fn auth_011_runner_exits_when_the_tunnel_rejects_its_token() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), None).await;
+    capture
+        .bad_token
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let _id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let handle = capture.handles.lock().unwrap()[0].clone();
+    let start = Instant::now();
+    loop {
+        let status = beton_host::RunnerProvider::status(&*capture.inner, &handle)
+            .await
+            .unwrap();
+        if !matches!(status, beton_host::RunnerStatus::Running) {
+            break;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "Runner läuft nach 401 weiter"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    d.daemon.shutdown().await;
+}
+
+/// #243 (S1): Ein Stopp (hier über Archivieren) während eines laufenden `resume` wartet auf
+/// den Start und sperrt danach auch dessen Token; der neue Runner kommt nicht in den Tunnel
+/// einer gestoppten Session.
+#[tokio::test]
+async fn ses_003_ac3_stop_during_resume_revokes_the_new_runner() {
+    let dir = tmp();
+    let (d, capture) = daemon_capturing(dir.path(), Some(Duration::from_millis(300))).await;
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    d.wait_status(&id, "stopped").await;
+    *capture.delay.lock().unwrap() = Duration::from_millis(1500);
+    let resume = format!("/v1/sessions/{id}/resume");
+    let archive = format!("/v1/sessions/{id}/archive");
+    let (_, (status, body)) = tokio::join!(d.http("POST", &resume, None), async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.http("POST", &archive, None).await
+    });
+    assert_eq!(status, 200, "{body}");
+    let tokens = capture.tokens();
+    assert_eq!(tokens.len(), 2, "Start beim Anlegen und beim Fortsetzen");
+    assert_eq!(
+        tunnel_status(dir.path(), &tokens[1]).await,
+        401,
+        "Token des fortgesetzten Runners nach dem Stopp gesperrt"
+    );
+    d.daemon.shutdown().await;
+}
+
+/// #243 (N4): Mit der Session verschwindet auch ihre Start-Sperre.
+#[tokio::test]
+async fn ses_001_ac3_delete_forgets_the_start_lock() {
+    let dir = tmp();
+    let launched = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let keep = launched.clone();
+    let d = daemon(dir.path(), move |r| {
+        *keep.lock().unwrap() = Some(r.sessions.launched.clone());
+        r
+    })
+    .await;
+    let launched = launched.lock().unwrap().clone().unwrap();
+    let id = d
+        .create(
+            dir.path(),
+            &scenario(dir.path(), "turns: [{ emit: [{ message: Antwort }] }]"),
+        )
+        .await;
+    let (status, body) = d
+        .http("POST", &format!("/v1/sessions/{id}/resume"), None)
+        .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(launched.start_locks(), 1);
+    let (status, body) = d.http("DELETE", &format!("/v1/sessions/{id}"), None).await;
+    assert!(status < 300, "{status} {body}");
+    assert_eq!(launched.start_locks(), 0);
     d.daemon.shutdown().await;
 }
 

@@ -77,6 +77,14 @@ impl Launched {
             .clone()
     }
 
+    /// Zahl der Sessions mit Start-Sperre (Diagnose, Tests von #243).
+    pub fn start_locks(&self) -> usize {
+        self.starts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
     /// Prozess-ID des Runners einer Session (Diagnose, Tests von HAR-020).
     pub async fn pid(&self, session: SessionId) -> Option<u32> {
         self.handles.lock().await.get(&session).and_then(|h| h.pid)
