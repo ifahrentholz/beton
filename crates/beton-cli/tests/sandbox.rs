@@ -487,3 +487,99 @@ fn sbx_010_ac2_exec_refuses_backend_none_and_degraded_policies() {
         refused(&o);
     }
 }
+
+/// Ergebnis von `beton sandbox test --json`; auch bei Exit ≠ 0 steht der Bericht in stdout.
+fn sandbox_test(o: &std::process::Output) -> Value {
+    serde_json::from_str(&stdout(o))
+        .unwrap_or_else(|e| panic!("{e}: {} / {}", stdout(o), stderr(o)))
+}
+
+/// SBX-010 AC3: `beton sandbox test` führt die Selbsttests der Probe aus (die vorhandenen Fälle
+/// der Backends dieser Plattform, ADR-0042) und endet mit Exit 0 nur, wenn alle Pflichtfälle
+/// bestanden sind. Pflicht ist das Backend, das eine Session hier nähme (`auto`).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn sbx_010_ac3_sandbox_test_passes_with_the_backend_of_this_platform() {
+    let e = env("");
+    let o = sandbox(&e, &["test", "--json"]);
+    let v = sandbox_test(&o);
+    assert!(o.status.success(), "{v}\n{}", stderr(&o));
+    assert_eq!(v["passed"], true, "{v}");
+    let native: &[&str] = if cfg!(target_os = "macos") {
+        &["seatbelt"]
+    } else {
+        &["landlock", "bwrap"]
+    };
+    let cases = v["cases"].as_array().unwrap();
+    let ids: Vec<&str> = cases
+        .iter()
+        .map(|c| c["backend"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, native, "{v}");
+    let required: Vec<&Value> = cases.iter().filter(|c| c["required"] == true).collect();
+    assert_eq!(required.len(), 1, "{v}");
+    assert_eq!(required[0]["backend"], v["backend"], "{v}");
+    assert_eq!(required[0]["passed"], true, "{v}");
+    assert!(
+        required[0]["id"].as_str().unwrap().starts_with("selftest:"),
+        "{v}"
+    );
+    // Text: jeder Fall mit Ergebnis.
+    let o = sandbox(&e, &["test"]);
+    assert!(o.status.success(), "{}", stderr(&o));
+    let text = stdout(&o);
+    assert!(text.contains("bestanden"), "{text}");
+}
+
+/// SBX-010 AC3 (fail closed): Ist kein Backend nutzbar, endet `beton sandbox test` mit Exit 1;
+/// der Bericht nennt den Grund.
+#[test]
+fn sbx_010_ac3_sandbox_test_fails_without_a_usable_backend() {
+    let e = env("");
+    let o = run(beton(&e.beton_home)
+        .env("HOME", &e.home)
+        .env("BETON_TEST_SANDBOX_UNAVAILABLE", "all")
+        .current_dir(&e.ws)
+        .args(["sandbox", "test", "--json"]));
+    assert_eq!(o.status.code(), Some(1), "{}", stderr(&o));
+    let v = sandbox_test(&o);
+    assert_eq!(v["passed"], false, "{v}");
+    let required: Vec<&Value> = v["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["required"] == true)
+        .collect();
+    assert_eq!(required.len(), 1, "{v}");
+    assert_eq!(required[0]["passed"], false, "{v}");
+    assert!(
+        required[0]["reason"]
+            .as_str()
+            .is_some_and(|r| !r.is_empty()),
+        "{v}"
+    );
+    assert!(stderr(&o).contains("Pflichtfall"), "{}", stderr(&o));
+}
+
+/// SBX-010 AC3: Pflicht ist das konfigurierte Backend; `none` isoliert nichts und ein
+/// nicht verfügbares Backend (Docker bis M5) besteht nicht.
+#[test]
+fn sbx_010_ac3_sandbox_test_requires_the_configured_backend() {
+    for backend in ["none", "docker"] {
+        let e = env(&format!("sandbox:\n  backend: {backend}\n"));
+        let o = sandbox(&e, &["test", "--json"]);
+        assert_eq!(o.status.code(), Some(1), "{backend}: {}", stderr(&o));
+        let v = sandbox_test(&o);
+        assert_eq!(v["passed"], false, "{v}");
+        assert_eq!(v["backend"], backend, "{v}");
+        let required: Vec<&Value> = v["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["required"] == true)
+            .collect();
+        assert_eq!(required.len(), 1, "{v}");
+        assert_eq!(required[0]["backend"], backend, "{v}");
+        assert_eq!(required[0]["passed"], false, "{v}");
+    }
+}
