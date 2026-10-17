@@ -1,12 +1,14 @@
 //! WebSocket-Protokoll `beton.v1` (PROTO-004 … PROTO-009).
 //!
-//! Textframes sind JSON-Steuernachrichten mit Feld `t`. Binärframes (Kanäle, PROTO-007)
-//! folgen in M3; das Framing lässt Platz dafür.
+//! Textframes sind JSON-Steuernachrichten mit Feld `t`. Binärframes sind Kanaldaten
+//! (PROTO-007, [`crate::channel`]).
 
 use std::time::Duration;
 
 use beton_core::event::Event;
 use beton_core::id::SessionId;
+
+use crate::channel::{ChannelAccess, ChannelKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,8 +18,9 @@ use ts_rs::TS;
 pub const SUBPROTOCOL: &str = "beton.v1";
 /// Major-Version des Protokolls.
 pub const PROTOCOL_MAJOR: u32 = 1;
-/// Aktuelle Minor-Version; unterstützt wird zusätzlich die vorherige.
-pub const PROTOCOL_MINOR: u32 = 0;
+/// Aktuelle Minor-Version; unterstützt wird zusätzlich die vorherige. `1.1`: Binärkanäle
+/// (`open_channel`, `credit`, PROTO-007).
+pub const PROTOCOL_MINOR: u32 = 1;
 
 /// Close-Codes (siehe Spec, WebSocket-Protokoll).
 pub mod close {
@@ -98,6 +101,30 @@ pub enum ClientMsg {
         #[ts(optional)]
         idempotency_key: Option<String>,
     },
+    /// Binärkanal öffnen (PROTO-007), z. B. ein Terminal (`ref`: `terminal_id`). Der Server
+    /// prüft die Berechtigung je Art und antwortet mit `channel_opened` oder `nack`.
+    OpenChannel {
+        id: String,
+        session_id: SessionId,
+        kind: ChannelKind,
+        #[serde(rename = "ref")]
+        #[ts(rename = "ref")]
+        target: String,
+    },
+    /// Kanal schließen; der Server bestätigt mit `channel_closed`.
+    CloseChannel {
+        channel_id: u32,
+    },
+    /// Kredit für Frames des Servers: `bytes` (Terminal) bzw. `frames` (Browser).
+    Credit {
+        channel_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        bytes: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        frames: Option<u32>,
+    },
 }
 
 fn yes() -> bool {
@@ -139,6 +166,27 @@ pub enum ServerMsg {
     Overflow {
         session_id: SessionId,
         resume_from: u64,
+    },
+    /// Kanal offen (PROTO-007). `window`: Bytes, die der Client mit `INPUT` senden darf, bevor
+    /// der Server weiteren Kredit gewährt (0 bei `access: read`). Frames sendet der Server erst
+    /// nach dem ersten `credit` des Clients.
+    ChannelOpened {
+        id: String,
+        channel_id: u32,
+        window: u64,
+        access: ChannelAccess,
+    },
+    /// Kanal beendet, z. B. Terminal geschlossen (`reason`: `closed`, `stalled`, `detached`).
+    ChannelClosed {
+        channel_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<String>,
+    },
+    /// Weiterer Kredit für Eingaben des Clients (Bytes).
+    Credit {
+        channel_id: u32,
+        bytes: u64,
     },
 }
 
@@ -295,6 +343,40 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s["t"], "live");
+    }
+
+    #[test]
+    fn proto_007_channel_messages_use_ref_and_t_tag() {
+        let m: ClientMsg = serde_json::from_value(serde_json::json!({
+            "t": "open_channel", "id": "r2", "session_id": "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C",
+            "kind": "terminal", "ref": "term_3"
+        }))
+        .unwrap();
+        assert!(matches!(
+            m,
+            ClientMsg::OpenChannel { kind: ChannelKind::Terminal, ref target, .. } if target == "term_3"
+        ));
+        let c: ClientMsg = serde_json::from_value(
+            serde_json::json!({"t": "credit", "channel_id": 5, "bytes": 262144}),
+        )
+        .unwrap();
+        assert_eq!(
+            c,
+            ClientMsg::Credit {
+                channel_id: 5,
+                bytes: Some(262_144),
+                frames: None
+            }
+        );
+        let s = serde_json::to_value(ServerMsg::ChannelOpened {
+            id: "r2".into(),
+            channel_id: 5,
+            window: 262_144,
+            access: ChannelAccess::Read,
+        })
+        .unwrap();
+        assert_eq!(s["t"], "channel_opened");
+        assert_eq!(s["access"], "read");
     }
 
     #[test]

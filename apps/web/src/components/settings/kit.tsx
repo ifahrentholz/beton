@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
+import { useT, type MessageKey } from '@/lib/i18n'
 import { cn } from '@/lib/utils'
 
 /**
@@ -8,18 +9,25 @@ import { cn } from '@/lib/utils'
  * `app/settings-shell`). Die Bereichsliste zeigt nur Bereiche, die es schon gibt.
  */
 
-const SECTIONS: { title: string; items: { to: string; label: string }[] }[] = [
-  { title: 'App', items: [{ to: '/settings/notifications', label: 'Benachrichtigungen' }] },
+const SECTIONS: { title: MessageKey; items: { to: string; label: MessageKey }[] }[] = [
+  {
+    title: 'settings.app',
+    items: [
+      { to: '/settings/appearance', label: 'settings.appearance' },
+      { to: '/settings/notifications', label: 'settings.notifications' },
+    ],
+  },
 ]
 
 export function SettingsShell({ active, children }: { active: string; children: ReactNode }) {
+  const t = useT()
   return (
     <div className="relative flex min-h-0 flex-1">
       <div className="relative hidden w-52 shrink-0 border-r border-border bg-sidebar md:block">
-        <nav aria-label="Einstellungsbereiche" className="absolute inset-0 flex flex-col overflow-y-auto py-3">
+        <nav aria-label={t('settings.sections')} className="absolute inset-0 flex flex-col overflow-y-auto py-3">
           {SECTIONS.map((g) => (
             <div key={g.title} className="mb-4">
-              <div className="px-4 pb-1 text-[11px] font-medium text-muted-foreground">{g.title}</div>
+              <div className="px-4 pb-1 text-[11px] font-medium text-muted-foreground">{t(g.title)}</div>
               {g.items.map((it) => (
                 <Link
                   key={it.to}
@@ -30,12 +38,12 @@ export function SettingsShell({ active, children }: { active: string; children: 
                     it.to === active ? 'border-foreground bg-accent font-medium' : 'border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground',
                   )}
                 >
-                  {it.label}
+                  {t(it.label)}
                 </Link>
               ))}
             </div>
           ))}
-          <div className="mt-auto px-4 text-[11px] leading-relaxed text-muted-foreground">Läuft lokal auf diesem Rechner</div>
+          <div className="mt-auto px-4 text-[11px] leading-relaxed text-muted-foreground">{t('settings.local')}</div>
         </nav>
       </div>
       <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
@@ -128,6 +136,63 @@ export function Switch({ checked, onChange, label }: { checked: boolean; onChang
       className={cn('relative inline-flex h-[18.4px] w-8 shrink-0 items-center rounded-full border border-transparent transition-colors', checked ? 'bg-primary' : 'bg-input')}
     >
       <span className={cn('block size-4 rounded-full bg-background transition-transform', checked ? 'translate-x-[calc(100%-2px)]' : 'translate-x-0')} />
+    </button>
+  )
+}
+
+/** Segmentierte Auswahl (Entwurf `app/kit/settings`), als Radiogruppe mit Pfeiltasten. */
+export function Segmented<V extends string>({
+  options,
+  value,
+  label,
+  onChange,
+}: {
+  options: { id: V; label: ReactNode }[]
+  value: V
+  label: string
+  onChange: (value: V) => void
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="inline-flex rounded-md border border-border bg-card p-0.5"
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return
+        e.preventDefault()
+        const i = options.findIndex((o) => o.id === value)
+        const next = options[(i + (e.key === 'ArrowRight' ? 1 : -1) + options.length) % options.length]!
+        onChange(next.id)
+        const buttons = e.currentTarget.querySelectorAll<HTMLButtonElement>('[role=radio]')
+        buttons[options.indexOf(next)]?.focus()
+      }}
+    >
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={o.id === value}
+          tabIndex={o.id === value ? 0 : -1}
+          onClick={() => onChange(o.id)}
+          className={cn('rounded-[3px] px-2.5 py-1 text-[12px] whitespace-nowrap', o.id === value ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground')}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+export function Btn({ children, onClick, title }: { children: ReactNode; onClick?: () => void; title?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[13px] whitespace-nowrap hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {children}
     </button>
   )
 }

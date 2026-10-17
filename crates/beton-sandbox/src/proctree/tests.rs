@@ -44,7 +44,7 @@ async fn tree_with_setsid_descendant(tag: &str) -> (SandboxedChild, String) {
     let spec = CommandSpec::new("/bin/sh").stdio(Stdio::Null, Stdio::Null, Stdio::Null);
     let mut cmd = crate::child::command(std::path::Path::new("/bin/sh"), &spec).unwrap();
     cmd.args(["-c", &script]);
-    let child = crate::child::spawn(cmd).unwrap();
+    let child = crate::child::spawn(cmd, false).unwrap();
     let root = child.id().unwrap();
     let tracker = Tracker {
         state: Arc::new(Mutex::new(State {

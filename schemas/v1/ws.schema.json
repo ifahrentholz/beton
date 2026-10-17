@@ -655,6 +655,41 @@
         "overrun_micro"
       ]
     },
+    "ChannelAccess": {
+      "description": "Was ein Client auf einem Kanal darf. Lokal hat der Owner immer `drive`; Freigaben mit\nRollen (`view`, `comment_approve`, COL-001) bilden ab M4 auf `read` ab.",
+      "oneOf": [
+        {
+          "description": "Nur lesen: Frames mit `INPUT` werden verworfen und mit `nack 403` beantwortet.",
+          "type": "string",
+          "const": "read"
+        },
+        {
+          "description": "Lesen und Eingaben senden.",
+          "type": "string",
+          "const": "drive"
+        }
+      ]
+    },
+    "ChannelKind": {
+      "description": "Art eines Kanals.",
+      "oneOf": [
+        {
+          "description": "PTY eines Workspace-Terminals (SES-019); `ref` ist die `terminal_id`.",
+          "type": "string",
+          "const": "terminal"
+        },
+        {
+          "description": "Screencast des eingebetteten Browsers (BRW-005); `ref` ist die `browser_id`.",
+          "type": "string",
+          "const": "browser"
+        },
+        {
+          "description": "Audio des Mikrofons zur Spracheingabe (VOI-004), Client → Server.",
+          "type": "string",
+          "const": "audio"
+        }
+      ]
+    },
     "ClientInfo": {
       "type": "object",
       "properties": {
@@ -794,6 +829,89 @@
             "t",
             "id",
             "name"
+          ]
+        },
+        {
+          "description": "Binärkanal öffnen (PROTO-007), z. B. ein Terminal (`ref`: `terminal_id`). Der Server\nprüft die Berechtigung je Art und antwortet mit `channel_opened` oder `nack`.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ChannelKind"
+            },
+            "ref": {
+              "type": "string"
+            },
+            "session_id": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "t": {
+              "type": "string",
+              "const": "open_channel"
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "session_id",
+            "kind",
+            "ref"
+          ]
+        },
+        {
+          "description": "Kanal schließen; der Server bestätigt mit `channel_closed`.",
+          "type": "object",
+          "properties": {
+            "channel_id": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "t": {
+              "type": "string",
+              "const": "close_channel"
+            }
+          },
+          "required": [
+            "t",
+            "channel_id"
+          ]
+        },
+        {
+          "description": "Kredit für Frames des Servers: `bytes` (Terminal) bzw. `frames` (Browser).",
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "channel_id": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "frames": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "t": {
+              "type": "string",
+              "const": "credit"
+            }
+          },
+          "required": [
+            "t",
+            "channel_id"
           ]
         }
       ]
@@ -2269,6 +2387,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/TerminalRenamed"
+            },
+            "type": {
+              "type": "string",
+              "const": "terminal.renamed"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/TerminalClosed"
             },
             "type": {
@@ -3081,6 +3215,7 @@
         "terminal.opened",
         "terminal.output",
         "terminal.snapshot",
+        "terminal.renamed",
         "terminal.closed",
         "browser.opened",
         "browser.frame",
@@ -4184,6 +4319,89 @@
             "session_id",
             "resume_from"
           ]
+        },
+        {
+          "description": "Kanal offen (PROTO-007). `window`: Bytes, die der Client mit `INPUT` senden darf, bevor\nder Server weiteren Kredit gewährt (0 bei `access: read`). Frames sendet der Server erst\nnach dem ersten `credit` des Clients.",
+          "type": "object",
+          "properties": {
+            "access": {
+              "$ref": "#/$defs/ChannelAccess"
+            },
+            "channel_id": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string"
+            },
+            "t": {
+              "type": "string",
+              "const": "channel_opened"
+            },
+            "window": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "t",
+            "id",
+            "channel_id",
+            "window",
+            "access"
+          ]
+        },
+        {
+          "description": "Kanal beendet, z. B. Terminal geschlossen (`reason`: `closed`, `stalled`, `detached`).",
+          "type": "object",
+          "properties": {
+            "channel_id": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "t": {
+              "type": "string",
+              "const": "channel_closed"
+            }
+          },
+          "required": [
+            "t",
+            "channel_id"
+          ]
+        },
+        {
+          "description": "Weiterer Kredit für Eingaben des Clients (Bytes).",
+          "type": "object",
+          "properties": {
+            "bytes": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "channel_id": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "t": {
+              "type": "string",
+              "const": "credit"
+            }
+          },
+          "required": [
+            "t",
+            "channel_id",
+            "bytes"
+          ]
         }
       ]
     },
@@ -4720,6 +4938,13 @@
         "kind": {
           "$ref": "#/$defs/TerminalKind"
         },
+        "name": {
+          "description": "Anzeigename des Terminal-Tabs (SES-019, WEB-010); ändert sich mit `terminal.renamed`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "rows": {
           "type": "integer",
           "format": "uint16",
@@ -4755,6 +4980,21 @@
       "required": [
         "terminal_id",
         "channel_id"
+      ]
+    },
+    "TerminalRenamed": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "terminal_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "terminal_id",
+        "name"
       ]
     },
     "TerminalSnapshot": {

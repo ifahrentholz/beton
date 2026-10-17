@@ -143,6 +143,7 @@ fn launch_in(sandbox: &Sandbox, spec: LaunchSpec) -> io::Result<Box<dyn ProcessH
         stdin: SbStdio::Piped,
         stdout: SbStdio::Piped,
         stderr: SbStdio::Piped,
+        ..CommandSpec::default()
     };
     let mut child = sandbox.spawn(cmd)?;
     let stdin = child.take_stdin();

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Capabilities, PermissionMode, SessionSandbox } from '@beton/sdk'
-import { Check, ChevronDown, Lock } from 'lucide-react'
+import { Bot, Check, ChevronDown, Lock } from 'lucide-react'
+import { useCommand } from '@/lib/commands'
 import { cn } from '@/lib/utils'
 import { harnessName } from './harness'
 
@@ -175,6 +176,17 @@ export function ModelPicker({
 }) {
   const { open, setOpen, ref } = usePopover()
   const current = model ?? undefined
+  // `⌘⇧M` bzw. „Modell wechseln“ in der Befehlspalette öffnet den Picker (UX-002, UX-004).
+  const switchable = !!onChange && (models.length > 0 || !!current) && (modelSwitch || efforts.length > 0)
+  useCommand({
+    id: 'session.model',
+    icon: Bot,
+    when: () => switchable,
+    run: () => {
+      setOpen(true)
+      requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>('[role="menuitemradio"]:not([disabled])')?.focus())
+    },
+  })
   const pick = (patch: SettingsPatch) => {
     setOpen(false)
     onChange?.(patch)

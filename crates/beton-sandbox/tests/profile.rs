@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use beton_sandbox::resolve::{GitProtection, HiddenDotfiles};
 use beton_sandbox::seatbelt::profile::{
-    MAX_PROFILE_BYTES, PROFILE_VERSION, TEMPLATE, glob_regex, regex_escape, render,
+    MAX_PROFILE_BYTES, PROFILE_VERSION, TEMPLATE, glob_regex, regex_escape, render, render_for,
 };
 use beton_sandbox::{Mask, NetMode, ProviderId, ResolvedPolicy, Stage};
 use proptest::prelude::*;
@@ -57,7 +57,7 @@ fn template_lines() -> Vec<&'static str> {
 
 #[test]
 fn sbx_007_template_is_versioned_deny_default() {
-    assert_eq!(PROFILE_VERSION, 2);
+    assert_eq!(PROFILE_VERSION, 3);
     assert!(TEMPLATE.starts_with("(version 1)"));
     assert!(TEMPLATE.contains("\n(deny default)\n"));
     // Kein DNS-Dienst, kein Keychain im festen Teil.
@@ -130,6 +130,48 @@ fn sbx_007_masks_come_after_grants_and_stage_two_has_no_keychain() {
     assert!(p.text.contains("com.apple.SecurityServer"));
     policy.keychain = false;
     assert!(!render(&policy).unwrap().text.contains("SecurityServer"));
+}
+
+/// SBX-017: Nur ein Start am PTY bekommt Terminal-Rechte, und nur für den eigenen Slave (als
+/// Parameter) und `/dev/tty`; nie ein Muster über alle Terminals des Benutzers.
+#[test]
+fn sbx_017_tty_rights_only_for_the_own_slave() {
+    let p = policy_for("/w");
+    let plain = render(&p).unwrap();
+    let rules: Vec<&str> = plain
+        .text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with(";;"))
+        .collect();
+    assert!(
+        !rules
+            .iter()
+            .any(|l| l.contains("file-ioctl") || l.contains("/dev/tty"))
+    );
+    let with = render_for(&p, Some(std::path::Path::new("/dev/ttys042"))).unwrap();
+    let line = with
+        .text
+        .lines()
+        .find(|l| l.contains("file-ioctl"))
+        .expect("Terminal-Regel");
+    assert!(line.contains("(literal (param \"TTY_"), "{line}");
+    assert!(line.contains("(literal \"/dev/tty\")"), "{line}");
+    assert!(
+        !line.contains("regex") && !line.contains("subpath"),
+        "{line}"
+    );
+    assert!(
+        !with.text.contains("/dev/ttys042"),
+        "Pfad nur als Parameter"
+    );
+    assert!(with.params.iter().any(|(_, v)| v == "/dev/ttys042"));
+    // Die Regel steht nach den Masken: Ein Slave unter einer Maske gäbe es nicht.
+    let tty_at = with.text.find("file-ioctl").unwrap();
+    let mask_at = with
+        .text
+        .find("(deny file-read* file-write* (subpath")
+        .unwrap();
+    assert!(mask_at < tty_at);
 }
 
 #[test]

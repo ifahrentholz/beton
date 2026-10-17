@@ -203,6 +203,7 @@ async fn start_staged(
             tools: None,
             sandbox: Default::default(),
             harness_policy: Some(Arc::new(p)),
+            terminals: None,
         }),
         gate,
         launcher: Arc::new(RealLauncher),
@@ -722,4 +723,323 @@ fn har_008_ac4_gemini_preset_starts_without_api_key() {
         );
         assert!(!env.contains("_API_KEY="), "{env}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// #326, HAR-007: `fs/read_text_file` und `terminal/*` führt beton in Stufe 2 aus.
+// ---------------------------------------------------------------------------------------------
+
+/// Startet Tools wie die Stufe 2 und merkt sich jeden Start.
+struct RecordingLauncher {
+    inner: Arc<dyn beton_harness::process::ProcessLauncher>,
+    seen: std::sync::Mutex<Vec<beton_harness::process::LaunchSpec>>,
+}
+
+#[async_trait::async_trait]
+impl beton_harness::process::ProcessLauncher for RecordingLauncher {
+    async fn launch(
+        &self,
+        spec: beton_harness::process::LaunchSpec,
+    ) -> std::io::Result<Box<dyn beton_harness::process::ProcessHandle>> {
+        self.seen.lock().unwrap().push(spec.clone());
+        self.inner.launch(spec).await
+    }
+}
+
+/// Terminals des Runners als Attrappe.
+#[derive(Default)]
+struct FakeTerminals {
+    created: std::sync::Mutex<Vec<beton_harness::terminal::ToolTerminal>>,
+    released: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl beton_harness::terminal::TerminalHost for FakeTerminals {
+    async fn create(&self, req: beton_harness::terminal::ToolTerminal) -> Result<String, String> {
+        self.created.lock().unwrap().push(req);
+        Ok("term_acp1".into())
+    }
+    async fn output(&self, _id: &str) -> Result<beton_harness::terminal::TerminalOutput, String> {
+        Ok(beton_harness::terminal::TerminalOutput {
+            output: "hallo aus stufe 2".into(),
+            truncated: false,
+            exit: Some(beton_harness::terminal::TerminalExit {
+                exit_code: Some(0),
+                signal: None,
+            }),
+        })
+    }
+    async fn wait_for_exit(
+        &self,
+        _id: &str,
+    ) -> Result<beton_harness::terminal::TerminalExit, String> {
+        Ok(beton_harness::terminal::TerminalExit {
+            exit_code: Some(0),
+            signal: None,
+        })
+    }
+    async fn kill(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn release(&self, id: &str) -> Result<(), String> {
+        self.released.lock().unwrap().push(id.to_owned());
+        Ok(())
+    }
+}
+
+/// Startet mit Stufe 2 (Launcher und Terminals) im Arbeitsverzeichnis.
+async fn start_tools(
+    scenario: &Path,
+    gate: Arc<dyn Gate>,
+    workdir: &Path,
+    tools: Arc<dyn beton_harness::process::ProcessLauncher>,
+    terminals: Arc<dyn beton_harness::terminal::TerminalHost>,
+) -> (Box<dyn HarnessSession>, mpsc::Receiver<NormalizedEvent>) {
+    let ctx = AdapterContext {
+        stage: Some(beton_harness::StageEnv {
+            shim_dir: PathBuf::from("/sbx/exec/bin"),
+            exchange: PathBuf::from("/sbx/xchg"),
+            tools: Some(tools),
+            sandbox: Default::default(),
+            harness_policy: None,
+            terminals: Some(terminals),
+        }),
+        gate,
+        launcher: Arc::new(RealLauncher),
+        env: env_for(scenario),
+    };
+    let mut s = adapter()
+        .start(
+            SessionSpec {
+                workdir: workdir.to_path_buf(),
+                ..SessionSpec::default()
+            },
+            ctx,
+        )
+        .await
+        .unwrap();
+    let rx = s.events().unwrap();
+    (s, rx)
+}
+
+fn text_of(events: &[EventPayload]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            EventPayload::MessageDelta(d) => Some(d.text.clone()),
+            EventPayload::MessageCompleted(m) => Some(format!("{:?}", m.content)),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// ADR-0037 verlangt für `tool_isolation: beton` `terminal/*` **und** `fs/*` in Stufe 2;
+/// `fs/write_text_file` läuft noch in Stufe 0 (#329). Bis dahin bleibt ACP `inherited`
+/// (degraded, nur mit `require_tool_isolation: false`, kein `yolo`), obwohl `terminal/*` und
+/// `fs/read_text_file` schon in Stufe 2 laufen (Review #370).
+#[test]
+fn har_007_acp_stays_inherited_until_fs_write_runs_in_stage_two() {
+    let caps = adapter().capabilities(Mode::Native, &beton_harness::ProbeReport::default());
+    assert_eq!(caps.tool_isolation, beton_harness::ToolIsolation::Inherited);
+}
+
+/// #326: `fs/read_text_file` geht als Datei-Lesen durch das Gate und läuft in Stufe 2 (über den
+/// Launcher der Tools, dort gelten die Masken); `line`/`limit` wählen Zeilen; eine Ablehnung ist
+/// ein JSON-RPC-Fehler.
+#[tokio::test]
+async fn har_007_fs_read_text_file_is_gated_and_read_in_stage_two() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws_path = ws.path().canonicalize().unwrap();
+    std::fs::write(ws_path.join("notiz.txt"), "eins\nzwei\ndrei\n").unwrap();
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_read: {{ path: \"{p}\" }} }}\n      - {{ fs_read: {{ path: \"{p}\", line: 2, limit: 1 }} }}\n      - {{ fs_read: {{ path: \"relativ.txt\" }} }}\n",
+        p = ws_path.join("notiz.txt").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let gate = Arc::new(Recording::default());
+    let tools = Arc::new(RecordingLauncher {
+        inner: Arc::new(RealLauncher),
+        seen: Default::default(),
+    });
+    let (mut s, mut rx) = start_tools(
+        &path,
+        gate.clone(),
+        &ws_path,
+        tools.clone(),
+        Arc::new(FakeTerminals::default()),
+    )
+    .await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let text = text_of(&events);
+    assert!(text.contains("fs_read ok eins\nzwei\ndrei\n"), "{text}");
+    assert!(text.contains("fs_read ok zwei\n"), "{text}");
+    assert!(text.contains("fs_read error -32602"), "relativ: {text}");
+    // In Stufe 2 gestartet, nie im Runner gelesen.
+    let seen = tools.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(
+        seen.iter().all(|l| l.program == Path::new("/bin/cat")),
+        "{seen:?}"
+    );
+    let reqs = gate.0.lock().unwrap().clone();
+    assert!(
+        reqs.iter()
+            .any(|r| r.tool == "fs/read_text_file" && r.kind == "file_read")
+    );
+    assert_eq!(
+        count(&events, "tool.call.requested"),
+        2,
+        "{:?}",
+        names(&events)
+    );
+    s.shutdown(Shutdown::Kill).await.unwrap();
+
+    // Abgelehnt: Fehler -32001, kein Start in Stufe 2.
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_read: {{ path: \"{}\" }} }}\n",
+        ws_path.join("notiz.txt").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let tools = Arc::new(RecordingLauncher {
+        inner: Arc::new(RealLauncher),
+        seen: Default::default(),
+    });
+    let (mut s, mut rx) = start_tools(
+        &path,
+        Arc::new(DenyAll),
+        &ws_path,
+        tools.clone(),
+        Arc::new(FakeTerminals::default()),
+    )
+    .await;
+    s.send("los".into()).await.unwrap();
+    let text = text_of(&until_turn_end(&mut rx).await);
+    assert!(text.contains("fs_read error -32001"), "{text}");
+    assert!(tools.seen.lock().unwrap().is_empty());
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+/// #326, SES-019: `terminal/create` geht als Shell-Kommando durch das Gate und startet über die
+/// Terminals des Runners (Stufe 2, erscheint als Terminal); Ausgabe, Ende und Freigabe kommen
+/// von dort. Abgelehnt: kein Terminal.
+#[tokio::test]
+async fn har_007_terminal_requests_run_through_the_runner_terminals() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws_path = ws.path().canonicalize().unwrap();
+    let yaml = "turns:\n  - emit:\n      - { terminal: { command: \"npm\", args: [\"run\", \"dev\"], output_byte_limit: 4096 } }\n";
+    let (_dir, path) = scenario(yaml);
+    let gate = Arc::new(Recording::default());
+    let terms = Arc::new(FakeTerminals::default());
+    let tools = Arc::new(RecordingLauncher {
+        inner: Arc::new(RealLauncher),
+        seen: Default::default(),
+    });
+    let (mut s, mut rx) = start_tools(&path, gate.clone(), &ws_path, tools, terms.clone()).await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let text = text_of(&events);
+    assert!(
+        text.contains("terminal exit 0 output hallo aus stufe 2"),
+        "{text}"
+    );
+    let created = terms.created.lock().unwrap().clone();
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].command, "npm");
+    assert_eq!(created[0].args, ["run", "dev"]);
+    assert_eq!(created[0].output_limit, Some(4096));
+    assert_eq!(terms.released.lock().unwrap().as_slice(), ["term_acp1"]);
+    let reqs = gate.0.lock().unwrap().clone();
+    let r = reqs
+        .iter()
+        .find(|r| r.tool == "terminal/create")
+        .expect("Gate");
+    assert_eq!(r.kind, "shell");
+    assert_eq!(r.args["command"], "npm run dev");
+    s.shutdown(Shutdown::Kill).await.unwrap();
+
+    let (_dir, path) = scenario(yaml);
+    let terms = Arc::new(FakeTerminals::default());
+    let tools = Arc::new(RecordingLauncher {
+        inner: Arc::new(RealLauncher),
+        seen: Default::default(),
+    });
+    let (mut s, mut rx) =
+        start_tools(&path, Arc::new(DenyAll), &ws_path, tools, terms.clone()).await;
+    s.send("los".into()).await.unwrap();
+    let text = text_of(&until_turn_end(&mut rx).await);
+    assert!(text.contains("terminal error -32001"), "{text}");
+    assert!(terms.created.lock().unwrap().is_empty());
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+/// #326, fail closed: Ohne Stufe 2 bietet beton weder Lesen noch Terminals an; Aufrufe
+/// scheitern als unbekannte Methode.
+#[tokio::test]
+async fn har_007_without_stage_two_read_and_terminal_stay_unavailable() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws_path = ws.path().canonicalize().unwrap();
+    std::fs::write(ws_path.join("a.txt"), "a\n").unwrap();
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_read: {{ path: \"{}\" }} }}\n      - {{ terminal: {{ command: \"ls\" }} }}\n",
+        ws_path.join("a.txt").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let (mut s, mut rx) = start_in(&path, Arc::new(AllowAll), &ws_path).await;
+    s.send("los".into()).await.unwrap();
+    let text = text_of(&until_turn_end(&mut rx).await);
+    assert!(text.contains("fs_read error -32601"), "{text}");
+    assert!(text.contains("terminal error -32601"), "{text}");
+    s.shutdown(Shutdown::Kill).await.unwrap();
+}
+
+/// #326: Gelesen wird in der echten Stufe 2: Masken (`.env`, Fixture-Schlüssel) gelten, der
+/// Workspace ist lesbar (Seatbelt; unter Linux prüfen das die Masken-Tests der Sandbox).
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn har_007_fs_read_respects_stage_two_masks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let (ws, home, scratch) = (root.join("ws"), root.join("home"), root.join("scratch"));
+    for d in [&ws, &home.join(".ssh"), &scratch] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(ws.join("ok.txt"), "LESBAR\n").unwrap();
+    std::fs::write(ws.join(".env"), "FIXTURE-DOTENV\n").unwrap();
+    std::fs::write(home.join(".ssh/id_ed25519"), "FIXTURE-SSH\n").unwrap();
+    let registry = beton_sandbox::Registry::platform();
+    let provider = registry.select(beton_sandbox::BackendChoice::Auto).unwrap();
+    let mut ctx = beton_sandbox::ResolveCtx::new(beton_sandbox::Stage::Tools, &ws, &home, &scratch);
+    ctx.adapters = beton_sandbox::masks::builtin_harness_grants();
+    let policy = provider
+        .resolve(&beton_sandbox::SandboxSpec::default(), &ctx)
+        .unwrap();
+    let tools = Arc::new(beton_harness::process::SandboxLauncher::new(
+        beton_sandbox::Sandbox::new(provider, policy, None),
+    ));
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_read: {{ path: \"{}\" }} }}\n      - {{ fs_read: {{ path: \"{}\" }} }}\n      - {{ fs_read: {{ path: \"{}\" }} }}\n",
+        ws.join("ok.txt").display(),
+        ws.join(".env").display(),
+        home.join(".ssh/id_ed25519").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let (mut s, mut rx) = start_tools(
+        &path,
+        Arc::new(AllowAll),
+        &ws,
+        tools,
+        Arc::new(FakeTerminals::default()),
+    )
+    .await;
+    s.send("los".into()).await.unwrap();
+    let text = text_of(&until_turn_end(&mut rx).await);
+    assert!(text.contains("fs_read ok LESBAR"), "{text}");
+    assert!(
+        !text.contains("FIXTURE-DOTENV") && !text.contains("FIXTURE-SSH"),
+        "{text}"
+    );
+    assert!(text.matches("fs_read error").count() >= 2, "{text}");
+    s.shutdown(Shutdown::Kill).await.unwrap();
 }

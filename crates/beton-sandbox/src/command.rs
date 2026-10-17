@@ -63,6 +63,36 @@ pub struct EnvSpec {
     pub remove: Vec<String>,
 }
 
+/// Pseudo-Terminal des Kindprozesses (SBX-017, SES-019): stdin, stdout und stderr sind der
+/// Slave, und der Slave ist das Controlling Terminal einer eigenen Session des Kindes. Nur so
+/// erreichen Ctrl+C (`SIGINT`) und Fenstergrößen (`SIGWINCH`) den Prozess in der Sandbox. Das
+/// PTY selbst hält beton in Stufe 0 (`beton-pty`).
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tty {
+    pub slave: std::sync::Arc<std::os::fd::OwnedFd>,
+    /// Pfad des Slaves (z. B. `/dev/ttys004`); nur auf ihn erlaubt Seatbelt `ioctl`.
+    pub path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Tty {
+    pub fn new(slave: std::sync::Arc<std::os::fd::OwnedFd>, path: PathBuf) -> Self {
+        Self { slave, path }
+    }
+}
+
+#[cfg(unix)]
+impl PartialEq for Tty {
+    fn eq(&self, other: &Self) -> bool {
+        use std::os::fd::AsRawFd as _;
+        self.slave.as_raw_fd() == other.slave.as_raw_fd() && self.path == other.path
+    }
+}
+
+#[cfg(unix)]
+impl Eq for Tty {}
+
 /// Ein zu startender Prozess.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -73,6 +103,9 @@ pub struct CommandSpec {
     pub stdin: Stdio,
     pub stdout: Stdio,
     pub stderr: Stdio,
+    /// Am Pseudo-Terminal starten (SBX-017); setzt alle drei Streams auf den Slave.
+    #[cfg(unix)]
+    pub tty: Option<Tty>,
 }
 
 impl CommandSpec {
@@ -111,6 +144,18 @@ impl CommandSpec {
         self.stdin = stdin;
         self.stdout = stdout;
         self.stderr = stderr;
+        self
+    }
+
+    /// Am Pseudo-Terminal `tty` starten (SBX-017): Streams auf den Slave, eigene Session mit
+    /// dem Slave als Controlling Terminal.
+    #[cfg(unix)]
+    pub fn tty(mut self, tty: Tty) -> Self {
+        let fd = Stdio::Fd(tty.slave.clone());
+        self.stdin = fd.clone();
+        self.stdout = fd.clone();
+        self.stderr = fd;
+        self.tty = Some(tty);
         self
     }
 }

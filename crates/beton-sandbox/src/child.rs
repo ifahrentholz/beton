@@ -199,12 +199,52 @@ pub(crate) fn command(
 /// Lese-, der Empfang die Schreibsperre.
 pub(crate) static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
+/// Macht stdin (den PTY-Slave) zum Controlling Terminal des Kindes (SBX-017). Läuft nach
+/// `setsid` ([`process_wrap::tokio::ProcessSession`], vorher registriert): Nur ein
+/// Session-Leader ohne Terminal kann eines übernehmen.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy)]
+struct ControllingTty;
+
+#[cfg(unix)]
+impl process_wrap::tokio::CommandWrapper for ControllingTty {
+    #[allow(
+        unsafe_code,
+        reason = "ioctl(TIOCSCTTY) nach fork gibt es nur über libc"
+    )]
+    fn pre_spawn(
+        &mut self,
+        command: &mut tokio::process::Command,
+        _core: &CommandWrap,
+    ) -> io::Result<()> {
+        // SAFETY: Nach fork nur ioctl (async-signal-sicher) auf FD 0.
+        unsafe {
+            command.pre_exec(|| {
+                #[allow(clippy::useless_conversion, reason = "Typ von TIOCSCTTY je Plattform")]
+                if libc::ioctl(0, libc::TIOCSCTTY.into(), 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Startet `cmd` als Prozessgruppen-Leader (Unix) bzw. im Job-Object (Windows); der Baum
-/// endet mit dem `Drop` des Kindes.
-pub(crate) fn spawn(cmd: tokio::process::Command) -> io::Result<SandboxedChild> {
+/// endet mit dem `Drop` des Kindes. Mit `tty` (SBX-017) als Leader einer eigenen Session mit
+/// stdin als Controlling Terminal; Signale an die Gruppe treffen den Baum wie sonst.
+pub(crate) fn spawn(cmd: tokio::process::Command, tty: bool) -> io::Result<SandboxedChild> {
     let mut wrap = CommandWrap::from(cmd);
     #[cfg(unix)]
-    wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+    if tty {
+        wrap.wrap(process_wrap::tokio::ProcessSession);
+        wrap.wrap(ControllingTty);
+    } else {
+        wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+    }
+    #[cfg(not(unix))]
+    let _ = tty;
     #[cfg(windows)]
     wrap.wrap(process_wrap::tokio::JobObject);
     wrap.wrap(KillOnDrop);

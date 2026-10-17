@@ -9,6 +9,7 @@ import * as monaco from 'monaco-editor/editor/editor.api.js'
 import 'monaco-editor/features/register.all.js'
 import 'monaco-editor/languages/definitions/register.all.js'
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker'
+import { monacoBase, useTheme } from '@/lib/theme'
 
 declare global {
   interface Window {
@@ -24,9 +25,13 @@ function token(name: string, fallback: string): string {
   return /^#[0-9a-f]{6}$/i.test(v) ? v : fallback
 }
 
-/** Monaco-Themes aus den Tokens von `apps/web` (hell/dunkel), Hervorhebung aus `vs`/`vs-dark`. */
+/**
+ * Monaco-Theme aus den Tokens des aktiven UI-Themes (UX-005): Farben der Fläche aus den Tokens,
+ * Hervorhebung aus `vs`/`vs-dark` bzw. `hc-light`/`hc-black` bei „Hoher Kontrast“.
+ */
 export function applyTheme(): void {
-  const dark = document.documentElement.classList.contains('dark')
+  const { family, mode } = useTheme.getState()
+  const dark = mode === 'dark'
   const bg = token('--card', dark ? '#26292d' : '#f0f0ec')
   const fg = token('--foreground', dark ? '#dcddd8' : '#24272b')
   const muted = token('--muted-foreground', dark ? '#9a9ea4' : '#585c62')
@@ -35,7 +40,7 @@ export function applyTheme(): void {
   const ok = token('--ok-soft', dark ? '#233a2b' : '#cfe3d4')
   const deny = token('--deny-soft', dark ? '#42231f' : '#f0d2ce')
   monaco.editor.defineTheme('beton', {
-    base: dark ? 'vs-dark' : 'vs',
+    base: monacoBase(family, mode),
     inherit: true,
     rules: [],
     colors: {
@@ -55,6 +60,8 @@ export function applyTheme(): void {
   monaco.editor.setTheme('beton')
 }
 
+// Theme-Wechsel wirkt ohne Neuladen (UX-005 AC1): Monaco folgt den Klassen am Wurzelelement,
+// die `lib/theme` nach jeder Änderung setzt.
 new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
 applyTheme()
 

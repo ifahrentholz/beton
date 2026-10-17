@@ -1,13 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { useCommand } from '@/lib/commands'
 import { PLACEHOLDER, type TitleSource } from '@/lib/title'
 import { cn } from '@/lib/utils'
-
-/** Fokus liegt in einem Eingabeelement: `F2` gehört dann dem Element. */
-function typing(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  if (!el) return false
-  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
-}
 
 /**
  * Titel im Kopf der Session (UX-009, Prototyp `inbox-titles`): „Neue Session“ als Platzhalter,
@@ -23,15 +17,8 @@ export function SessionTitle({ title, source, onRename }: { title: string; sourc
     setError(undefined)
     setEditing(true)
   }
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'F2' || e.defaultPrevented || typing(e.target)) return
-      e.preventDefault()
-      start()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  })
+  // `F2` aus der Befehls-Registry (UX-004); im Eingabefeld gehört die Taste dem Feld.
+  useCommand({ id: 'session.rename', when: () => !editing, run: start })
   useEffect(() => {
     if (editing) input.current?.select()
   }, [editing])
