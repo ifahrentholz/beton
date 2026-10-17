@@ -76,6 +76,9 @@ const EXIT_PLAN_MODE: &str = "ExitPlanMode";
 pub const CHANGED_AFTER_CHECK: &str = "Abgelehnt von beton: Die Argumente wurden nach der Policy-Prüfung verändert (z. B. durch einen weiteren Hook).";
 /// Präfix eigener Call-IDs des Relay-Hubs (Aufruf ohne zugeordnetes `tool.call.requested`).
 const SYNTHETIC: &str = "mcp_unmatched_";
+
+/// So lange wartet der Relay-Hub auf das `tool.call.requested` eines MCP-Aufrufs (#250).
+const HUB_WAIT: Duration = Duration::from_millis(500);
 /// Höchstgröße von `request.prompt` und `result.text` (POL-004).
 pub const TEXT_MAX: usize = 64 * 1024;
 
@@ -581,6 +584,14 @@ struct Inner {
     /// dort selbst).
     started: std::sync::atomic::AtomicBool,
     seen: tokio::sync::Notify,
+    /// Der Relay-Hub prüft MCP-Aufrufe der eingebundenen Server (#250): Die Beobachtung
+    /// solcher Calls wartet auf seinen Entscheid.
+    hub_gated: std::sync::atomic::AtomicBool,
+    /// Calls, deren Entscheid gerade läuft (Hub oder Beobachtung, #250): genau einer
+    /// entscheidet (POL-025 AC1).
+    claimed: Mutex<HashSet<String>>,
+    /// Weckt die Beobachtung, sobald der Hub einen Call übernimmt.
+    claims: tokio::sync::Notify,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
     /// Zustand `session`/`run` (POL-009); gültig, sobald `state_ready`.
@@ -896,6 +907,9 @@ impl PolicyGate {
                 ordered: std::sync::atomic::AtomicBool::new(false),
                 started: std::sync::atomic::AtomicBool::new(true),
                 seen: tokio::sync::Notify::new(),
+                hub_gated: std::sync::atomic::AtomicBool::new(false),
+                claimed: Mutex::new(HashSet::new()),
+                claims: tokio::sync::Notify::new(),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
                 state: Mutex::new(PolicyState::default()),
@@ -1247,7 +1261,37 @@ impl PolicyGate {
 
     /// MCP-Aufrufe der von beton eingebundenen Server prüft der Relay-Hub (Harness ohne volles
     /// Gate, POL-024).
-    pub fn gate_mcp_in_hub(&self) {}
+    pub fn gate_mcp_in_hub(&self) {
+        self.inner.hub_gated.store(true, Ordering::SeqCst);
+    }
+
+    /// Übernimmt den Entscheid eines Calls; `false`, wenn ihn schon jemand entscheidet oder
+    /// entschieden hat (POL-025 AC1, #250).
+    fn claim(&self, call_id: &str) -> bool {
+        if self.decided(call_id) {
+            return false;
+        }
+        let fresh = self
+            .inner
+            .claimed
+            .lock()
+            .map(|mut c| c.insert(call_id.to_owned()))
+            .unwrap_or(false);
+        if fresh {
+            self.inner.claims.notify_waiters();
+        }
+        fresh
+    }
+
+    fn claimed(&self, call_id: &str) -> bool {
+        self.decided(call_id)
+            || self
+                .inner
+                .claimed
+                .lock()
+                .map(|c| c.contains(call_id))
+                .unwrap_or(true)
+    }
 
     /// Der Runner meldet `tool.call.requested` über [`PolicyGate::note_requested`]; danach
     /// wartet ein `policy.decision` kurz auf sein Subjekt, damit es im Log dahinter steht.
@@ -2167,6 +2211,9 @@ impl PolicyGate {
         if let Ok(mut d) = self.inner.decided.lock() {
             d.insert(req.call_id.clone(), verdict.clone());
         }
+        if let Ok(mut c) = self.inner.claimed.lock() {
+            c.remove(&req.call_id);
+        }
         verdict
     }
 
@@ -2421,7 +2468,25 @@ impl PolicyGate {
     /// Trifft eine `deny`-Regel, liefert es die erste samt Begründung (POL-023 AC3: dann folgen
     /// `policy.notified` und der Abbruch des Turns).
     pub async fn observe(&self, req: GateRequest) -> Option<(beton_policy::load::RuleRef, String)> {
-        if self.decided(&req.call_id) {
+        // MCP-Aufrufe eingebundener Server entscheidet der Relay-Hub (#250): kurz auf ihn
+        // warten, dann nur beobachten, was er nicht gesehen hat.
+        if self.inner.hub_gated.load(Ordering::SeqCst)
+            && req
+                .mcp_server
+                .as_ref()
+                .is_some_and(|s| self.trusted_server(s))
+        {
+            let deadline = tokio::time::Instant::now() + HUB_WAIT * 2;
+            while !self.claimed(&req.call_id) {
+                let notified = self.inner.claims.notified();
+                if self.claimed(&req.call_id)
+                    || tokio::time::timeout_at(deadline, notified).await.is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if !self.claim(&req.call_id) {
             return None;
         }
         let call = req.call_id.clone();
@@ -2680,14 +2745,42 @@ impl PolicyGate {
 
     /// Ordnet einen Aufruf im Relay-Hub dem jüngsten passenden, noch unentschiedenen
     /// `tool.call.requested` zu; sonst eine eigene ID.
-    fn correlate(&self, server: &str, tool: &str) -> String {
-        let found = self.inner.requested.lock().ok().and_then(|r| {
-            r.iter()
-                .rev()
-                .find(|(id, s, t)| s.as_deref() == Some(server) && t == tool && !self.decided(id))
-                .map(|(id, _, _)| id.clone())
-        });
-        found.unwrap_or_else(|| format!("{SYNTHETIC}{}", ApprovalId::new()))
+    fn correlate(&self, server: &str, tool: &str) -> Option<String> {
+        let requested = self.inner.requested.lock().ok()?;
+        requested
+            .iter()
+            .rev()
+            .filter(|(_, s, t)| s.as_deref() == Some(server) && t == tool)
+            .find(|(id, _, _)| self.claim(id))
+            .map(|(id, _, _)| id.clone())
+    }
+
+    /// Wie [`PolicyGate::correlate`], wartet aber kurz auf das `tool.call.requested` des
+    /// Adapters, wenn der Hub vor ihm entscheiden müsste (#250); sonst eine eigene ID.
+    async fn correlate_waiting(&self, server: &str, tool: &str) -> String {
+        let deadline = tokio::time::Instant::now() + HUB_WAIT;
+        loop {
+            let notified = self.inner.seen.notified();
+            if let Some(id) = self.correlate(server, tool) {
+                return id;
+            }
+            if !self.inner.ordered.load(Ordering::SeqCst)
+                || tokio::time::timeout_at(deadline, notified).await.is_err()
+            {
+                break;
+            }
+        }
+        let id = format!("{SYNTHETIC}{}", ApprovalId::new());
+        self.claim(&id);
+        id
+    }
+
+    fn trusted_server(&self, server: &str) -> bool {
+        self.inner
+            .trusted_servers
+            .lock()
+            .map(|t| t.iter().any(|s| s == server))
+            .unwrap_or(false)
     }
 }
 
@@ -2975,7 +3068,7 @@ impl crate::mcp::Asker for PolicyGate {
 #[async_trait]
 impl beton_mcp::hub::McpGate for PolicyGate {
     async fn check(&self, server: &str, tool: &str, args: &Value) -> Result<Option<Value>, String> {
-        let call_id = self.correlate(server, tool);
+        let call_id = self.correlate_waiting(server, tool).await;
         let req = GateRequest {
             call_id,
             tool: tool.to_owned(),

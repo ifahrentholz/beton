@@ -1078,8 +1078,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 Some((&registry, &ctx.env)),
                 // MCP- und System-Tools im Relay-Hub prüfen, wenn der Harness nicht jeden
                 // Tool-Call selbst durch das Gate schickt (POL-024).
-                (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
-                    .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
+                (predicted.tool_call_gate != beton_harness::ToolCallGate::Full).then(|| {
+                    gate.gate_mcp_in_hub();
+                    Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>
+                }),
                 // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
                 stages.as_ref().map(|s| s.tools.clone()),
