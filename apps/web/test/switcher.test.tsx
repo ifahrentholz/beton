@@ -123,4 +123,23 @@ describe('Session-Switcher (UX-003)', () => {
     expect(api.navigate).toHaveBeenCalledWith({ to: '/s/$sessionId', params: { sessionId: 'ses_a' } })
     expect(useUi.getState().switcher).toBe(false)
   })
+  it('UX-003: Suche ohne Treffer zeigt „Keine Session passt zu …“ mit dem Hinweis, wo gesucht wird', async () => {
+    api.list.mockResolvedValue({ items: [], open_count: 0 })
+    useSessions.setState({ byId: { ses_a: summary('ses_a', 'Rate-Limiter'), ses_x: summary('ses_x', 'Deploy-Skript', { archived: true }) } })
+    act(() => useUi.setState({ switcher: 'open' }))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <SessionSwitcher />
+      </QueryClientProvider>,
+    )
+    // Ohne Suche kein Leerzustand.
+    expect(screen.queryByText(/Keine Session passt/)).toBeNull()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'deploy' } })
+    expect(screen.queryAllByRole('option')).toHaveLength(0)
+    expect(screen.getByText('Keine Session passt zu „deploy“.')).toBeTruthy()
+    expect(screen.getByText('Gesucht wird in den Titeln aller Sessions außer den archivierten.')).toBeTruthy()
+    // Ohne Treffer zeigt die Eingabe auf keine Option.
+    expect(screen.getByRole('combobox').getAttribute('aria-activedescendant')).toBeNull()
+  })
 })

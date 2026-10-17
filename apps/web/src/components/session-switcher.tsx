@@ -161,6 +161,13 @@ function SwitcherDialog({ cycle, onClose }: { cycle: boolean; onClose: () => voi
           <span className="text-[11px] text-muted-foreground">{t('switcher.recent')}</span>
         </div>
         <div ref={listRef} id={listId} role="listbox" aria-label={t('switcher.label')} className="max-h-[min(420px,60dvh)] overflow-y-auto py-1">
+          {rows.length === 0 && query.trim() && (
+            // Keine Treffer (Entwurf `inbox-switcher`, Zustand `empty`), wie in der Befehlspalette.
+            <div className="px-3 py-6 text-center" role="presentation">
+              <div className="text-[13px]">{t('switcher.empty', { q: query.trim() })}</div>
+              <div className="mt-1 text-[12px] text-muted-foreground">{t('switcher.emptyHint')}</div>
+            </div>
+          )}
           {rows.map((s, i) => {
             const wait = waiting.get(s.id) ?? (s.status === 'waiting_approval' ? 'approval' : undefined)
             const active = i === current
