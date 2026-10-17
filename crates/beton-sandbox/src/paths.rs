@@ -244,12 +244,23 @@ pub(crate) fn validate_spec(spec: &SandboxSpec) -> Result<(), SandboxError> {
     Ok(())
 }
 
-/// Hostname eines Credential-Bindings (PRX-006): exakt oder `*.domain`, ohne Port, Pfad oder
-/// IP-Literal; die genaue Prüfung übernimmt der Proxy beim Start der Instanz.
+/// Hostname eines Credential-Bindings (PRX-006): exakt oder `*.domain`, optional mit `:port`,
+/// ohne Pfad oder IP-Literal; die genaue Prüfung übernimmt der Proxy beim Start der Instanz.
 fn check_credential_host(field: &str, raw: &str) -> Result<(), SandboxError> {
-    let host = raw.strip_prefix("*.").unwrap_or(raw);
+    // Optional `:port` (1–65535); ohne Port gilt der Host nur für 443 (#295).
+    let (name, port_ok) = match raw.rsplit_once(':') {
+        Some((name, port)) => (
+            name,
+            !port.is_empty()
+                && port.chars().all(|c| c.is_ascii_digit())
+                && port.parse::<u16>().is_ok_and(|p| p != 0),
+        ),
+        None => (raw, true),
+    };
+    let host = name.strip_prefix("*.").unwrap_or(name);
     let ip_like = host.chars().all(|c| c.is_ascii_digit() || c == '.');
-    let bad = host.is_empty()
+    let bad = !port_ok
+        || host.is_empty()
         || host.len() > 253
         || ip_like
         || host.starts_with('.')
@@ -260,7 +271,9 @@ fn check_credential_host(field: &str, raw: &str) -> Result<(), SandboxError> {
     if bad {
         return Err(SandboxError::invalid(
             field,
-            format!("`{raw}`: erwartet wird ein Hostname oder `*.domain` (ohne Port, ohne IP)"),
+            format!(
+                "`{raw}`: erwartet wird ein Hostname oder `*.domain`, optional mit `:port` (ohne IP)"
+            ),
         ));
     }
     Ok(())

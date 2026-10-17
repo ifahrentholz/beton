@@ -200,37 +200,55 @@ impl CredentialKind {
     }
 }
 
-/// Ein gebundener Host: exakt oder `*.domain` (beliebige Subdomain, nicht `domain` selbst).
+/// Port eines gebundenen Hosts ohne Angabe: nur HTTPS auf 443 (#295).
+const DEFAULT_PORT: u16 = 443;
+
+/// Ein gebundener Host: exakt oder `*.domain` (beliebige Subdomain, nicht `domain` selbst),
+/// mit Port (ohne Angabe 443; andere Ports nur ausdrücklich als `host:port`, #295).
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum HostPattern {
-    Exact(String),
-    Subdomains(String),
+    Exact(String, u16),
+    Subdomains(String, u16),
 }
 
 impl HostPattern {
     fn parse(raw: &str) -> Result<Self, CredentialError> {
-        let bad = || CredentialError(format!("`{raw}` ist kein Hostname (ohne Port, ohne IP)"));
-        let (wild, rest) = match raw.strip_prefix("*.") {
+        let bad = || {
+            CredentialError(format!(
+                "`{raw}` ist kein Hostname (`host` oder `host:port`, ohne IP)"
+            ))
+        };
+        let (name, port) = match raw.rsplit_once(':') {
+            Some((name, port)) => (
+                name,
+                port.parse::<u16>()
+                    .ok()
+                    .filter(|p| *p != 0 && !port.starts_with('+'))
+                    .ok_or_else(bad)?,
+            ),
+            None => (raw, DEFAULT_PORT),
+        };
+        let (wild, rest) = match name.strip_prefix("*.") {
             Some(r) => (true, r),
-            None => (false, raw),
+            None => (false, name),
         };
         match Host::parse(rest).map_err(|_| bad())? {
-            Host::Domain(d) if !d.contains('*') => Ok(if wild {
-                Self::Subdomains(format!(".{d}"))
+            Host::Domain(d) if !d.contains('*') && !d.contains(':') => Ok(if wild {
+                Self::Subdomains(format!(".{d}"), port)
             } else {
-                Self::Exact(d)
+                Self::Exact(d, port)
             }),
             _ => Err(bad()),
         }
     }
 
-    fn matches(&self, host: &Host) -> bool {
+    fn matches(&self, host: &Host, port: u16) -> bool {
         let Host::Domain(d) = host else {
             return false;
         };
         match self {
-            Self::Exact(e) => d == e,
-            Self::Subdomains(s) => d.len() > s.len() && d.ends_with(s.as_str()),
+            Self::Exact(e, p) => *p == port && d == e,
+            Self::Subdomains(s, p) => *p == port && d.len() > s.len() && d.ends_with(s.as_str()),
         }
     }
 }
@@ -378,9 +396,8 @@ impl Credentials {
                 .collect::<Result<Vec<_>, _>>()?;
             compiled.push(Compiled { binding: b, hosts });
         }
-        if compiled.is_empty() {
-            return Ok(Self::default());
-        }
+        // Auch ohne Bindings mit Audit: Ein Platzhalter an diese Instanz ist ein Fehlgebrauch
+        // (`credential.misuse`, #295).
         Ok(Self(Some(Arc::new(Inner {
             bindings: compiled,
             source,
@@ -389,7 +406,7 @@ impl Credentials {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.0.is_none()
+        self.0.as_ref().is_none_or(|i| i.bindings.is_empty())
     }
 
     /// Namen der Bindings (für Logs).
@@ -406,6 +423,7 @@ impl Credentials {
         &self,
         scheme: Scheme,
         host: &Host,
+        port: u16,
         path: &str,
         query: Option<&str>,
         headers: &HeaderMap,
@@ -449,7 +467,7 @@ impl Credentials {
                 .enumerate()
                 .filter(|(_, c)| {
                     c.binding.implicit
-                        && c.hosts.iter().any(|h| h.matches(host))
+                        && c.hosts.iter().any(|h| h.matches(host, port))
                         && implicit_format(&c.binding, host, path).is_some()
                 })
                 .map(|(i, _)| i)
@@ -473,13 +491,18 @@ impl Credentials {
                 return Err(Refusal::unknown(Some(inner.clone())));
             };
             let c = &inner.bindings[i];
-            if !c.hosts.iter().any(|h| h.matches(host)) {
+            if !c.hosts.iter().any(|h| h.matches(host, port)) {
+                let target = if port == DEFAULT_PORT {
+                    host.to_string()
+                } else {
+                    format!("{host}:{port}")
+                };
                 return Err(Refusal::mismatch(
                     inner.clone(),
                     &c.binding.name,
                     "host_mismatch",
                     format!(
-                        "Der Platzhalter von `{}` gilt nicht für {host}",
+                        "Der Platzhalter von `{}` gilt nicht für {target}",
                         c.binding.name
                     ),
                 ));
@@ -528,8 +551,9 @@ fn implicit_format<'a>(b: &'a Binding, host: &Host, path: &str) -> Option<Implic
     };
     let api = path == "/api" || path.starts_with("/api/");
     match b.kind {
-        CredentialKind::Bearer => Some(Implicit::Bearer),
-        CredentialKind::Basic => b.username.as_deref().map(Implicit::Basic),
+        // Nur mit Platzhalter (#295): Sonst bekäme Stufe 2 für jeden gebundenen Host (auch
+        // `*.domain`) eine Fähigkeit, die sie ohne Platzhalter nicht hätte.
+        CredentialKind::Bearer | CredentialKind::Basic => None,
         CredentialKind::GitHttps => b.username.as_deref().map(Implicit::Basic),
         CredentialKind::Github => match domain {
             "api.github.com" | "uploads.github.com" => Some(Implicit::Bearer),
@@ -621,25 +645,30 @@ impl Plan {
         let mut values: Vec<(usize, SecretBytes)> = Vec::with_capacity(self.used.len());
         for i in &self.used {
             let b = &self.inner.bindings[*i].binding;
-            let v = self
-                .inner
-                .source
-                .value(&b.name)
-                .await
-                .map_err(|e| Refusal::source(format!("Quelle von `{}`: {e}", b.name)))?;
+            // Details der Quelle (Pfade, Kommandos, Secret-Refs) nur ins Log der Stufe 0, nicht
+            // in die Antwort an die Sandbox (#295).
+            let v = self.inner.source.value(&b.name).await.map_err(|e| {
+                tracing::warn!(binding = %b.name, "Credential-Quelle: {e}");
+                Refusal::source(unavailable(&b.name))
+            })?;
             if v.expose().is_empty() {
-                return Err(Refusal::source(format!("Quelle von `{}` ist leer", b.name)));
+                tracing::warn!(binding = %b.name, "Credential-Quelle lieferte einen leeren Wert");
+                return Err(Refusal::source(unavailable(&b.name)));
+            }
+            // Steuerzeichen (Tab, CR/LF, DEL) nie einsetzen, auch nicht base64-kodiert (#295).
+            if v.expose().iter().any(u8::is_ascii_control) {
+                tracing::warn!(binding = %b.name, "Credential-Wert enthält Steuerzeichen");
+                return Err(Refusal::source(unavailable(&b.name)));
             }
             values.push((*i, v));
         }
         // Erst das Audit, dann der Wert im Request (ohne Eintrag keine Nutzung).
         for (i, _) in &values {
             let b = &self.inner.bindings[*i].binding;
-            self.inner
-                .audit
-                .used(&b.name, &host_s)
-                .await
-                .map_err(|e| Refusal::source(format!("Audit von `{}`: {e}", b.name)))?;
+            self.inner.audit.used(&b.name, &host_s).await.map_err(|e| {
+                tracing::warn!(binding = %b.name, "Audit der Credential-Nutzung: {e}");
+                Refusal::source(unavailable(&b.name))
+            })?;
         }
         let lookup = |p: &Placeholder| -> Option<(&Binding, &SecretBytes)> {
             values
@@ -672,6 +701,11 @@ impl Plan {
         );
         Ok((path, query, redactor))
     }
+}
+
+/// Text der 502-Antwort an die Sandbox: nur das Binding (#295).
+fn unavailable(binding: &str) -> String {
+    format!("Credential `{binding}` ist nicht verfügbar (Quelle oder Audit gescheitert)")
 }
 
 fn header_value(bytes: &[u8]) -> Result<HeaderValue, Refusal> {
@@ -1138,15 +1172,40 @@ mod tests {
 
     #[test]
     fn prx_006_host_patterns() {
+        let h = |s: &str| Host::parse(s).unwrap();
         let p = HostPattern::parse("*.example.com").unwrap();
-        assert!(p.matches(&Host::parse("a.example.com").unwrap()));
-        assert!(p.matches(&Host::parse("a.b.example.com").unwrap()));
-        assert!(!p.matches(&Host::parse("example.com").unwrap()));
-        assert!(!p.matches(&Host::parse("example.com.evil.test").unwrap()));
-        assert!(!p.matches(&Host::parse("aexample.com").unwrap()));
+        assert!(p.matches(&h("a.example.com"), 443));
+        assert!(p.matches(&h("a.b.example.com"), 443));
+        assert!(!p.matches(&h("example.com"), 443));
+        assert!(!p.matches(&h("example.com.evil.test"), 443));
+        assert!(!p.matches(&h("aexample.com"), 443));
         let e = HostPattern::parse("API.github.com").unwrap();
-        assert!(e.matches(&Host::parse("api.github.com").unwrap()));
-        assert!(HostPattern::parse("127.0.0.1").is_err());
-        assert!(HostPattern::parse("a.test:443").is_err());
+        assert!(e.matches(&h("api.github.com"), 443));
+        // #295: ohne Port nur 443, sonst genau der genannte Port.
+        assert!(!e.matches(&h("api.github.com"), 8443));
+        let e = HostPattern::parse("api.github.com:8443").unwrap();
+        assert!(e.matches(&h("api.github.com"), 8443));
+        assert!(!e.matches(&h("api.github.com"), 443));
+        assert!(
+            HostPattern::parse("*.example.com:8443")
+                .unwrap()
+                .matches(&h("a.example.com"), 8443)
+        );
+        assert!(
+            HostPattern::parse("a.test:443")
+                .unwrap()
+                .matches(&h("a.test"), 443)
+        );
+        for bad in [
+            "127.0.0.1",
+            "127.0.0.1:443",
+            "a.test:0",
+            "a.test:x",
+            "a.test:+1",
+            "a.test:",
+            "[::1]:443",
+        ] {
+            assert!(HostPattern::parse(bad).is_err(), "{bad}");
+        }
     }
 }

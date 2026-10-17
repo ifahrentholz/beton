@@ -78,6 +78,10 @@ fn sha256(s: &str) -> [u8; 32] {
 pub struct LocalToken {
     path: PathBuf,
     state: Mutex<TokenState>,
+    /// Redaction-Pipeline, die das Token über seinen SHA-256 erkennt (#216).
+    redaction: std::sync::OnceLock<std::sync::Arc<beton_secrets::Redactor>>,
+    /// Bekannte Hashes: aktuelles und voriges Token (ältere Logs, Events).
+    known: Mutex<Vec<[u8; 32]>>,
 }
 
 struct TokenState {
@@ -152,7 +156,32 @@ impl LocalToken {
                 stamp,
             }),
             path,
+            redaction: std::sync::OnceLock::new(),
+            known: Mutex::new(vec![sha256(&token)]),
         })
+    }
+
+    /// Lässt die Redaction das Token erkennen, auch nach einer Rotation (#216). Sie bekommt
+    /// nur Hashes, nie den Wert.
+    pub fn watch_redaction(&self, redactor: std::sync::Arc<beton_secrets::Redactor>) {
+        let known = self.known.lock().map(|k| k.clone()).unwrap_or_default();
+        redactor.set_token_hashes(known);
+        let _ = self.redaction.set(redactor);
+    }
+
+    /// Ein neues Token gilt: Hash für die Redaction merken (aktuelles und voriges).
+    fn learned(&self, hash: [u8; 32]) {
+        let Ok(mut known) = self.known.lock() else {
+            return;
+        };
+        if known.first() == Some(&hash) {
+            return;
+        }
+        known.insert(0, hash);
+        known.truncate(2);
+        if let Some(r) = self.redaction.get() {
+            r.set_token_hashes(known.clone());
+        }
     }
 
     /// Erneuert das Token (`beton auth rotate-local`); laufende Clients lesen die Datei neu.
@@ -166,6 +195,7 @@ impl LocalToken {
             st.hash = Some(sha256(&token));
             st.stamp = stamp_of(&self.path);
         }
+        self.learned(sha256(&token));
         Ok(())
     }
 
@@ -179,7 +209,10 @@ impl LocalToken {
         if stamp != st.stamp {
             st.hash = match &stamp {
                 Some(_) => match load_checked(&self.path) {
-                    Ok(token) => Some(sha256(&token)),
+                    Ok(token) => {
+                        self.learned(sha256(&token));
+                        Some(sha256(&token))
+                    }
                     Err(e) => {
                         tracing::warn!("lokales Token abgelehnt: {e}");
                         None
