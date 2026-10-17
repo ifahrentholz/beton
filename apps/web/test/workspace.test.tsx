@@ -25,18 +25,19 @@ afterEach(() => cleanup())
 
 describe('Workspace-Rail', () => {
   it('WEB-008 AC2: nicht verfügbare Tabs (Meilenstein, Capability, Rolle) sind ausgeblendet', () => {
-    expect(visibleTabs({ role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes'])
+    expect(visibleTabs({ role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'terminal'])
     // Agents (WEB-012) nur bei Harnesses mit System-Tools (MCP) oder eigenen Sub-Agents.
     const native = { subagents: 'native', mcp_injection: false } as unknown as Capabilities
-    expect(visibleTabs({ capabilities: native, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'agents'])
+    expect(visibleTabs({ capabilities: native, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'terminal', 'agents'])
     const mcp = { subagents: 'none', mcp_injection: true } as unknown as Capabilities
-    expect(visibleTabs({ capabilities: mcp, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'agents'])
+    expect(visibleTabs({ capabilities: mcp, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'terminal', 'agents'])
     const plain = { subagents: 'none', mcp_injection: false } as unknown as Capabilities
-    expect(visibleTabs({ capabilities: plain, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes'])
-    expect(visibleTabs({ role: 'viewer' }).map((t) => t.id)).not.toContain('terminal')
+    expect(visibleTabs({ capabilities: plain, role: 'owner' }).map((t) => t.id)).toEqual(['files', 'changes', 'terminal'])
+    // Nur-Lese-Rollen sehen Terminals ohne Eingaben (WEB-010 AC3).
+    expect(visibleTabs({ role: 'viewer' }).map((t) => t.id)).toContain('terminal')
     render(<RailTabs tabs={visibleTabs({})} active="changes" badges={{}} onSelect={() => undefined} />)
-    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Dateien', 'Änderungen'])
-    for (const name of ['Terminal', 'Browser', 'Agents', 'PR', 'Side-Chats', 'Kommentare']) expect(screen.queryByText(name)).toBeNull()
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Dateien', 'Änderungen', 'Terminal'])
+    for (const name of ['Browser', 'Agents', 'PR', 'Side-Chats', 'Kommentare']) expect(screen.queryByText(name)).toBeNull()
   })
 
   it('WEB-008 AC1: fs.changed nach dem gesehenen Stand ergibt ein Change-Badge', () => {

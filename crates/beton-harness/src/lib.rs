@@ -19,6 +19,7 @@ pub mod permission;
 pub mod process;
 pub mod registry;
 pub mod scenario;
+pub mod terminal;
 
 pub use crate::adapter::{
     AdapterContext, AllowAll, AuthStatus, AutoCompaction, CompactionSettings,

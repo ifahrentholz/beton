@@ -56,7 +56,7 @@ export type ToolState = 'requested' | 'running' | 'completed' | 'failed' | 'deni
 
 export type Item =
   | { kind: 'user'; key: string; text: string; attachments: Attachment[] }
-  | { kind: 'assistant'; key: string; text: string; streaming: boolean }
+  | { kind: 'assistant'; key: string; text: string; streaming: boolean; messageId?: string | undefined }
   | { kind: 'reasoning'; key: string; text: string; streaming: boolean }
   | {
       kind: 'tool'
@@ -202,7 +202,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
       case 'message.completed': {
         const text = textOf(e.payload.content)
         if (e.payload.role === 'user') items.push({ kind: 'user', key, text, attachments: attachmentsOf(e.payload.content) })
-        else if (e.payload.role === 'assistant' && text) items.push({ kind: 'assistant', key, text, streaming: false })
+        else if (e.payload.role === 'assistant' && text) items.push({ kind: 'assistant', key, text, streaming: false, messageId: e.payload.message_id })
         break
       }
       case 'reasoning.completed': {
@@ -336,7 +336,7 @@ export function timeline(log: Pick<SessionLog, 'events' | 'streaming' | 'reasoni
     items.push({ kind: 'reasoning', key: `r-${id}`, text, streaming: true })
   }
   for (const [id, text] of Object.entries(log.streaming)) {
-    items.push({ kind: 'assistant', key: `s-${id}`, text, streaming: true })
+    items.push({ kind: 'assistant', key: `s-${id}`, text, streaming: true, messageId: id })
   }
   return items
 }

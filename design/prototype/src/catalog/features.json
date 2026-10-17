@@ -2437,7 +2437,7 @@
   "summary": "Terminal-Bytes, Browser-Frames und Audio laufen als Binärframes `[ver u8][channel_id u32 BE][flags u8][payload]` im selben WebSocket. Kanäle werden per `open_channel` geöffnet (Autorisierung je Kind, z. B. Terminal-Input nur mit `drive`) und per `close_channel`/`channel_closed` beendet. Flusskontrolle ist kreditbasiert: Der Empfänger gewährt `credit {channel_id, bytes|frames}`; der Sender überschreitet das Fenster nie. Browser-Frames: max. 2 Frames unbestätigt, ältere werden verworfen (nur neuester zählt).",
   "acs": [
    "Ein Terminal mit 50 MB Ausgabe an einen langsamen Client (gedrosselt auf 100 KB/s) erhöht den Server-Speicher um < 2 MB (Kredit stoppt den Sender, PTY-Lesen pausiert).",
-   "Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet.",
+   "Ein `view`-Client kann einen Terminal-Kanal lesend öffnen, Frames mit `INPUT`-Flag werden verworfen und mit `nack 403` beantwortet. *(M3: als Schnittstelle `Authorizer::channel_access` mit Owner-Default, lokal hat der Owner `drive`; die Rolle `view` kommt mit COL-001/AUTH-014 in M4.)*",
    "Bei einem Client, der keine Browser-Frames bestätigt, sendet der Server nie mehr als 2 ausstehende Frames."
   ]
  },
@@ -3207,7 +3207,7 @@
   "summary": "User können pro Session interaktive Shells öffnen (mehrere, benannt), die im Runner als PTY laufen und von allen berechtigten Clients gesehen werden; ebenso werden vom Agent gestartete Langläufer (Dev-Server) als Terminal angezeigt. Terminals überleben Client-Disconnects.",
   "acs": [
    "Ein in der Web-UI gestartetes `npm run dev` läuft weiter, wenn alle Clients trennen, und ist beim Re-Attach mit Scrollback sichtbar.",
-   "Ein User mit Rolle `comment_approve` kann Terminals sehen, aber keine Eingaben senden (`403`).",
+   "Ein User mit Rolle `comment_approve` kann Terminals sehen, aber keine Eingaben senden (`403`). *(M3: als Schnittstelle `Authorizer::can_drive` mit Owner-Default; die Rolle kommt mit COL-001 in M4.)*",
    "`cat ~/.ssh/id_rsa` in einem User-Terminal mit Default-Sandbox scheitert."
   ]
  },
@@ -3886,7 +3886,7 @@
   "acs": [
    "Tastendruck-zu-Echo-Latenz lokal ≤ 30 ms (p95).",
    "Fenster-Resize sendet die neue Größe an das PTY; `vim` rendert korrekt.",
-   "Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert."
+   "Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert. *(M3: Nur-Lese-Zugriff kommt aus `channel_opened.access`; lokal hat der Owner `drive`, Rollen kommen mit COL-001 in M4.)*"
   ]
  },
  {
@@ -3991,7 +3991,7 @@
   "chapter": "08-clients.md",
   "chapterTitle": "08 — Clients: Desktop, Web/PWA, CLI, TUI, API & SDKs",
   "anchor": "web-017--internationalisierung-deen",
-  "summary": "UI-Texte über `i18next` *(Annahme)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
+  "summary": "UI-Texte über eigene Übersetzungstabellen *(präzisiert, WP-62: statt `i18next`)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.",
   "acs": [
    "CI-Check schlägt fehl, wenn ein Key in `de` oder `en` fehlt.",
    "Umschalten der Sprache wirkt ohne Reload."

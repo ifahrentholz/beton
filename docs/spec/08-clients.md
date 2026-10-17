@@ -302,10 +302,11 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-010 — Terminals (xterm.js)
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Terminal-Tabs auf Basis xterm.js (WebGL-Renderer, Fit-, Weblinks-Addon), angebunden an den Binärkanal des Runner-PTY. Mehrere Terminals pro Session, Umbenennen, Schließen; Native-TUI-Sessions (Vendor-TUI im PTY) werden ebenfalls hier gerendert.
+- **Details:** Stand M3 (WP-51): Tab „Terminal“ in der Workspace-Rail nach dem Prototyp (`workspace-terminals`); xterm.js wird erst beim Öffnen nachgeladen. AC1 misst ein Benchmark im Runner (PTY → Kanal → Echo, Release-Build, Schwelle 30 ms p95). Native-TUI-Sessions folgen mit TUI-002. Fehlende Zustände (geschlossenes Terminal mit letztem Bildschirm, Fehler, leerer Zustand) entstehen als Entwurf im Design-Prototyp (ADR-0032).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Tastendruck-zu-Echo-Latenz lokal ≤ 30 ms (p95).
   - [ ] AC2 — Fenster-Resize sendet die neue Größe an das PTY; `vim` rendert korrekt.
-  - [ ] AC3 — Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert.
+  - [ ] AC3 — Nur-Lese-Rollen sehen den Output, Eingaben sind deaktiviert. *(M3: Nur-Lese-Zugriff kommt aus `channel_opened.access`; lokal hat der Owner `drive`, Rollen kommen mit COL-001 in M4.)*
 - **Abhängigkeiten:** SES-019 (siehe 07-sessions-collaboration.md), TUI-002, PROTO-007 (siehe 06-data-sync-protocol.md)
 
 ### WEB-011 — Diff-Ansicht
@@ -366,6 +367,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-016 — Barrierefreiheit (Basics)
 - **Meilenstein:** M3 · **Priorität:** Should
 - **Beschreibung:** Ziel WCAG 2.2 AA für Kernflüsse (Session öffnen, Nachricht senden, Approval entscheiden, Diff lesen): vollständige Tastaturbedienung, sichtbarer Fokus, Kontraste in allen Themes, `prefers-reduced-motion`, ARIA-Live-Region für Streaming (gedrosselt, nur abgeschlossene Absätze).
+- **Details:** *(Präzisiert, WP-62, Entwurf `settings-appearance`:)* Einstellungen je Gerät: „Bewegung reduzieren“ (wie System/an/aus), „Hoher Kontrast“ (wechselt auf das Theme), „Fokus immer deutlich zeigen“ (Standard an), „Streaming für Screenreader ansagen“ (Standard an; nur abgeschlossene Absätze, höchstens alle 2 s) und Schriftgröße 13/14/16 px. Die Live-Region liegt in einem geschlossenen Shadow-Root, damit der angesagte Text im DOM nicht doppelt neben der Nachricht steht. Geprüft wird mit axe in allen Themes (hell und dunkel) und einem E2E-Durchlauf nur mit Tastatur (`apps/web/e2e/a11y.spec.ts`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — axe-core meldet in den Kernflüssen keine `serious`/`critical`-Verstöße (Playwright-Test).
   - [ ] AC2 — Alle Kernflüsse sind ohne Maus durchführbar (E2E nur mit Tastatur).
@@ -373,7 +375,8 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### WEB-017 — Internationalisierung DE/EN
 - **Meilenstein:** M3 · **Priorität:** Should
-- **Beschreibung:** UI-Texte über `i18next` *(Annahme)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.
+- **Beschreibung:** UI-Texte über eigene Übersetzungstabellen *(präzisiert, WP-62: statt `i18next`)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.
+- **Details:** *(Präzisiert, WP-62:)* Kein `i18next`: zwei Sprachen mit flachen Schlüsseln brauchen keine Bibliothek im initialen Bundle (WEB-015). Texte in `apps/web/src/i18n/de.ts` und `en.ts`; der Typ von `en` verlangt alle Schlüssel aus `de`, und `test/i18n.test.tsx` prüft beide Richtungen und gleiche Platzhalter (CI über `pnpm typecheck` und `pnpm test`). Komponenten lesen Texte über `useT()`; ein Wechsel rendert neu, ohne zu laden. Die Wahl gilt je Gerät (`beton.lang`). Übersetzt sind in M3 Grundlayout, Session-Liste, Befehlspalette, Switcher, Tastenkürzel und Darstellung; die übrigen Ansichten folgen (#372).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — CI-Check schlägt fehl, wenn ein Key in `de` oder `en` fehlt.
   - [ ] AC2 — Umschalten der Sprache wirkt ohne Reload.
@@ -457,7 +460,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### CLI-008 — `config`
 - **Meilenstein:** M0 · **Priorität:** Must
 - **Beschreibung:** Lesen/Schreiben von Konfiguration auf User- (`~/.beton/config.yaml`) und Projekt-Ebene (`.beton/config.yaml`); `list` zeigt die effektive Konfiguration mit Herkunft je Key. Validierung gegen das veröffentlichte JSON-Schema.
-- **Details:** Vorrang `default` < `user` < `project` < `env`. Projektdatei ist das nächste `.beton/config.yaml` ab dem aktuellen Verzeichnis aufwärts (sonst unter der Git-Wurzel); das Datenverzeichnis `~/.beton` zählt nicht als Projekt. Env-Ebene: `BETON_CFG_<SCHLÜSSEL>` mit `__` als Trenner, Werte als YAML (z. B. `BETON_CFG_EVENTS__STORE_RAW=false`). Die Projektebene (also das Repository) darf nur `harnesses.*` setzen und dort keine Auth-Herkunft (HAR-015); daemonweite Schlüssel wie `server.*` und `events.*` gehören dem Benutzer. `set`/`unset` schreiben ohne Flag in die User-Datei; Werte werden als YAML gelesen (`false`, `7420`, `[a, b]`). Geprüft wird jede Ebene gegen `schemas/v1/config.schema.json` (generiert aus den Rust-Typen); beim Schreiben bleiben Kommentare der Datei derzeit nicht erhalten. `config edit` öffnet `$VISUAL`/`$EDITOR` und verwirft ungültige Änderungen.
+- **Details:** Vorrang `default` < `user` < `project` < `env`. Projektdatei ist das nächste `.beton/config.yaml` ab dem aktuellen Verzeichnis aufwärts (sonst unter der Git-Wurzel); das Datenverzeichnis `~/.beton` zählt nicht als Projekt. Env-Ebene: `BETON_CFG_<SCHLÜSSEL>` mit `__` als Trenner, Werte als YAML (z. B. `BETON_CFG_EVENTS__STORE_RAW=false`). Die Projektebene (also das Repository) darf nur `harnesses.*` setzen und dort keine Auth-Herkunft (HAR-015); daemonweite Schlüssel wie `server.*` und `events.*` gehören dem Benutzer. `set`/`unset` schreiben ohne Flag in die User-Datei; Werte werden als YAML gelesen (`false`, `7420`, `[a, b]`). Geprüft wird jede Ebene gegen `schemas/v1/config.schema.json` (generiert aus den Rust-Typen); beim Schreiben bleiben Kommentare und Reihenfolge der Datei erhalten (nur die betroffene Zeile samt Block ändert sich; Flow-Stil wie `{a: 1}` auf dem Pfad schreibt die Datei neu, #72). `config edit` öffnet `$VISUAL`/`$EDITOR` und verwirft ungültige Änderungen.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `beton config list` zeigt pro Key die Quelle (`default|user|project|env`).
   - [ ] AC2 — Ein ungültiger Wert wird mit Schema-Fehlermeldung abgelehnt, die Datei bleibt unverändert.

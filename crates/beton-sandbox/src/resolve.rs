@@ -419,6 +419,166 @@ fn own_grant(
     Ok(canon)
 }
 
+/// Systempfade, die jedes Backend ohnehin lesbar macht (keine eigenen Freigaben nötig).
+const SYSTEM_PREFIXES: [&str; 11] = [
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/System",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/etc",
+    "/private/etc",
+    "/Library/Developer/CommandLineTools",
+];
+
+/// Dateien mit Zugangsdaten, die in einem abgeleiteten Präfix maskiert bleiben (z. B. die
+/// globale npmrc von Homebrew bzw. nvm).
+const TOOLCHAIN_SECRETS: [&str; 5] = [
+    "etc/npmrc",
+    ".npmrc",
+    ".netrc",
+    ".git-credentials",
+    "credentials.toml",
+];
+
+/// Freigabe für einen kanonischen `PATH`-Eintrag (SBX-012, #241): Nur Verzeichnisse namens `bin`
+/// bzw. `sbin` zählen, andere nie (kein ganzer Baum wie `/opt`). Freigegeben wird das Präfix
+/// des Pakets (Elternverzeichnis, z. B. `/opt/homebrew`, `~/.nvm/versions/node/<v>`), außer es
+/// liegt direkt unter `/` (z. B. `/opt/bin`), ist `~` bzw. ein Vorfahr davon oder liegt direkt in
+/// `~` (z. B. `~/.cargo`, `~/go`); dann nur das `bin`-Verzeichnis selbst.
+fn toolchain_root(dir: &Path, home: &Path) -> Option<PathBuf> {
+    let name = dir.file_name()?.to_str()?;
+    if name != "bin" && name != "sbin" {
+        return None;
+    }
+    match dir.parent() {
+        Some(parent)
+            if parent.parent().is_some_and(|g| g != Path::new("/"))
+                && parent != home
+                && !home.starts_with(parent)
+                && parent.parent() != Some(home) =>
+        {
+            Some(parent.to_path_buf())
+        }
+        _ => Some(dir.to_path_buf()),
+    }
+}
+
+/// Lesende Freigaben für Toolchains aus dem `PATH` des Daemons (SBX-012, #241).
+///
+/// Nur absolute Einträge namens `bin`/`sbin` (kanonisch) zählen, siehe [`toolchain_root`]. Nie
+/// `/`, `~`, Vorfahren von `~` oder ein Eintrag direkt in `~`, der mit `.` beginnt
+/// (Home-Dotfiles). Nichts Verbotenes, nichts Maskiertes, nichts Schreibbares;
+/// Systempfade und Wurzeln der Sandbox brauchen keine Freigabe. Zugangsdaten im Präfix bleiben
+/// maskiert. Liegt `rustup` in einem freigegebenen Verzeichnis, werden `toolchains` und
+/// `settings.toml` von `RUSTUP_HOME` (bzw. `~/.rustup`) lesbar; Rückgabe ist `RUSTUP_HOME`.
+fn toolchains(
+    ctx: &ResolveCtx,
+    home: &Path,
+    forbidden: &Forbidden,
+    read_roots: &mut Vec<PathBuf>,
+    write_roots: &[PathBuf],
+    masks: &mut Vec<Mask>,
+    notes: &mut Vec<String>,
+) -> Option<PathBuf> {
+    let path = ctx.host_env.get("PATH")?;
+    let masked = |p: &Path, masks: &[Mask]| {
+        masks.iter().any(
+            |m| matches!(m, Mask::Path { path, .. } if p.starts_with(path) || path.starts_with(p)),
+        )
+    };
+    let home_dotfile = |p: &Path| {
+        p.parent() == Some(home)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+    };
+    let mut rustup = false;
+    for raw in path.split(':').filter(|d| d.starts_with('/')) {
+        let Ok(dir) = std::fs::canonicalize(raw) else {
+            continue;
+        };
+        if !dir.is_dir() || dir == Path::new("/") || home.starts_with(&dir) {
+            continue;
+        }
+        if SYSTEM_PREFIXES.iter().any(|s| dir.starts_with(s)) {
+            continue;
+        }
+        let Some(root) = toolchain_root(&dir, home) else {
+            notes.push(format!(
+                "PATH: {} nicht freigegeben (kein bin/sbin)",
+                dir.display()
+            ));
+            continue;
+        };
+        if home_dotfile(&root) || root == home {
+            notes.push(format!(
+                "PATH: {} nicht freigegeben (Dotfile im Home)",
+                root.display()
+            ));
+            continue;
+        }
+        if forbidden.reason(&root, false).is_some() || masked(&root, masks) {
+            notes.push(format!(
+                "PATH: {} nicht freigegeben (verboten bzw. maskiert)",
+                root.display()
+            ));
+            continue;
+        }
+        if read_roots
+            .iter()
+            .chain(write_roots)
+            .any(|r| root.starts_with(r))
+        {
+            continue;
+        }
+        // Nie mehr als lesend, und nichts, was eine Schreib-Wurzel enthält.
+        if write_roots.iter().any(|w| w.starts_with(&root)) {
+            notes.push(format!(
+                "PATH: {} nicht freigegeben (enthält eine Schreib-Wurzel)",
+                root.display()
+            ));
+            continue;
+        }
+        rustup |= dir.join("rustup").is_file();
+        for secret in TOOLCHAIN_SECRETS {
+            masks.push(Mask::Path {
+                path: root.join(secret),
+                source: "toolchain".into(),
+            });
+        }
+        notes.push(format!(
+            "PATH: {} lesend freigegeben (Toolchain)",
+            root.display()
+        ));
+        push_unique(read_roots, root);
+    }
+    if !rustup {
+        return None;
+    }
+    let rustup_home = ctx
+        .host_env
+        .get("RUSTUP_HOME")
+        .filter(|p| p.starts_with('/'))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".rustup"));
+    let rustup_home = std::fs::canonicalize(&rustup_home).ok()?;
+    if forbidden.reason(&rustup_home, false).is_some() || masked(&rustup_home, masks) {
+        return None;
+    }
+    for part in ["toolchains", "settings.toml"] {
+        let p = rustup_home.join(part);
+        if p.exists() {
+            notes.push(format!("PATH: {} lesend freigegeben (rustup)", p.display()));
+            push_unique(read_roots, p);
+        }
+    }
+    Some(rustup_home)
+}
+
 fn push_unique(list: &mut Vec<PathBuf>, p: PathBuf) {
     if !list.contains(&p) {
         list.push(p);
@@ -868,6 +1028,21 @@ pub fn resolve(
         }
     }
 
+    // Toolchains außerhalb der Systempfade (SBX-012, #241): nur Stufe 2, nur lesend.
+    let rustup_home = if ctx.stage == Stage::Tools {
+        toolchains(
+            ctx,
+            &home,
+            &forbidden,
+            &mut read_roots,
+            &write_roots,
+            &mut masks,
+            &mut notes,
+        )
+    } else {
+        None
+    };
+
     // Environment (explizit, kein Erben).
     let mut env = BTreeMap::new();
     for k in BASE_ENV {
@@ -927,6 +1102,10 @@ pub fn resolve(
         }
     }
     env.retain(|k, _| !env_denied(k) && !controlled_env(k));
+    // rustup findet seine Toolchains ohne lesbares Home (SBX-012, #241).
+    if let Some(rh) = &rustup_home {
+        env.insert("RUSTUP_HOME".into(), rh.to_string_lossy().into_owned());
+    }
     // Credential-Variablen nur mit Platzhalter (PRX-006, SBX-005 AC3); sie gewinnen gegen
     // `passthrough`, `set` und die Harness-Familie.
     for (k, v) in &ctx.credential_env {
@@ -1183,4 +1362,47 @@ pub fn check_credential_file(
         }
     }
     Ok(canonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root(dir: &str) -> Option<String> {
+        toolchain_root(Path::new(dir), Path::new("/Users/u")).map(|p| p.display().to_string())
+    }
+
+    /// SBX-012 (#241, Review #370): nur `bin`/`sbin`, Präfixe nie direkt unter `/` oder `~`.
+    #[test]
+    fn sbx_012_toolchain_root_only_bin_dirs_and_package_prefixes() {
+        assert_eq!(root("/opt/homebrew/bin").as_deref(), Some("/opt/homebrew"));
+        assert_eq!(root("/opt/homebrew/sbin").as_deref(), Some("/opt/homebrew"));
+        assert_eq!(
+            root("/Users/u/.nvm/versions/node/v24/bin").as_deref(),
+            Some("/Users/u/.nvm/versions/node/v24")
+        );
+        assert_eq!(
+            root("/opt/hostedtoolcache/node/24/x64/bin").as_deref(),
+            Some("/opt/hostedtoolcache/node/24/x64")
+        );
+        // Kein ganzer Baum: das Präfix läge direkt unter `/` bzw. in `~`.
+        assert_eq!(root("/opt/bin").as_deref(), Some("/opt/bin"));
+        assert_eq!(root("/nix/bin").as_deref(), Some("/nix/bin"));
+        assert_eq!(
+            root("/Users/u/.cargo/bin").as_deref(),
+            Some("/Users/u/.cargo/bin")
+        );
+        assert_eq!(root("/Users/u/bin").as_deref(), Some("/Users/u/bin"));
+        assert_eq!(root("/Users/bin").as_deref(), Some("/Users/bin"));
+        // Keine bin-Verzeichnisse: nie.
+        for dir in [
+            "/opt",
+            "/opt/tools",
+            "/Applications/X.app/Contents/MacOS",
+            "/Users/u",
+            "/",
+        ] {
+            assert_eq!(root(dir), None, "{dir}");
+        }
+    }
 }

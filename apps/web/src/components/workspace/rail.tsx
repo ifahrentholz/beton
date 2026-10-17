@@ -7,6 +7,7 @@ import { initSeen, markSeen, setTab, useSessionWorkspace, useWorkspace } from '@
 import { AgentsPanel } from './agents'
 import { ChangesPanel } from './changes'
 import { FilesPanel } from './files'
+import { TerminalsPanel } from './terminals'
 
 /** Tab-Leiste der Rail (ohne Router- und Server-Abhängigkeiten, für Tests). */
 export function RailTabs({
@@ -78,7 +79,7 @@ function useSettled(value: number, ms = 150): number {
 const KEEP = 48 + 256 + 420
 
 /**
- * Rechte Workspace-Rail einer Session (WEB-008): Tabs Dateien, Änderungen und Agents (WEB-012), Change-Badge
+ * Rechte Workspace-Rail einer Session (WEB-008): Tabs Dateien, Änderungen, Terminal (WEB-010) und Agents (WEB-012), Change-Badge
  * bei `fs.changed` (AC1), nicht verfügbare Tabs ausgeblendet (AC2). Breite per Ziehen am
  * linken Rand, Tabs mit Alt+1 … wechselbar. Unter 1024 px als Vollbild.
  */
@@ -178,6 +179,7 @@ export function WorkspaceRail({
       <div className="min-h-0 flex-1 overflow-hidden" role="tabpanel">
         {tab === 'files' && <FilesPanel sessionId={sessionId} version={version} worktree={worktree} />}
         {tab === 'agents' && <AgentsPanel sessionId={sessionId} events={events} />}
+        {tab === 'terminal' && <TerminalsPanel sessionId={sessionId} events={events} />}
         {tab === 'changes' && (
           <ChangesPanel
             sessionId={sessionId}

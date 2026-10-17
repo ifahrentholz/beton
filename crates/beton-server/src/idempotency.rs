@@ -97,6 +97,11 @@ pub async fn layer(State(state): State<Idempotency>, req: Request, next: Next) -
             .unwrap_or("application/json")
             .to_owned(),
         body: bytes.to_vec(),
+        location: parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned),
     };
     if let Err(e) = state.store.idempotency_save(state.org, &key, &stored).await {
         tracing::warn!("Idempotency-Antwort nicht gespeichert: {e}");
@@ -109,6 +114,13 @@ fn replay(stored: StoredResponse) -> Response {
     *res.status_mut() = StatusCode::from_u16(stored.status).unwrap_or(StatusCode::OK);
     if let Ok(ct) = HeaderValue::from_str(&stored.content_type) {
         res.headers_mut().insert(header::CONTENT_TYPE, ct);
+    }
+    if let Some(loc) = stored
+        .location
+        .as_deref()
+        .and_then(|l| HeaderValue::from_str(l).ok())
+    {
+        res.headers_mut().insert(header::LOCATION, loc);
     }
     res.headers_mut()
         .insert("idempotent-replayed", HeaderValue::from_static("true"));

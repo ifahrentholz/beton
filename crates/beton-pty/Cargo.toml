@@ -1,0 +1,22 @@
+[package]
+name = "beton-pty"
+description = "PTYs für Workspace-Terminals und TUI-Panes: Pseudo-Terminal in Stufe 0, VT-Emulator mit Scrollback (ohne tmux)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+portable-pty.workspace = true
+vt100.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

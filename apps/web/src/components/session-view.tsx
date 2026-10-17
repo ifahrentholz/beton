@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useQuery } from '@tanstack/react-query'
 import type { Capabilities, HarnessInfo, PermissionMode, SessionSandbox } from '@beton/sdk'
-import { Link2, Menu, PanelRight, Paperclip, WifiOff, X } from 'lucide-react'
+import { GitFork, Link2, Menu, Minimize2, PanelRight, Paperclip, Square, WifiOff, X } from 'lucide-react'
 import { useSessionStream } from '@/hooks/useSessionStream'
 import { client } from '@/lib/client'
-import { compacting as compactingOf, contextOf } from '@/lib/context'
+import { tk, useCommand, useCommands } from '@/lib/commands'
+import { compacting as compactingOf, contextLevel, contextOf } from '@/lib/context'
 import { payloadOf } from '@/lib/events'
 import { harnessVisible, useFeatures } from '@/lib/features'
 import { cost } from '@/lib/format'
@@ -15,6 +16,7 @@ import { cn } from '@/lib/utils'
 import { openApprovals, timeline, type ApprovalItem, type Item } from '@/lib/timeline'
 import { titleFrom, windowTitle } from '@/lib/title'
 import { indexForSeq, linkOf, type SessionSearch } from '@/lib/deeplink'
+import { useMru } from '@/lib/mru'
 import { changedPaths, lineLink, rangeLabel, withAttachments } from '@/lib/workspace'
 import { useEvents } from '@/store/events'
 import { useSessions } from '@/store/sessions'
@@ -22,7 +24,7 @@ import { clearAttachments, detach, refresh, useSessionWorkspace, useWorkspace } 
 import { Composer, type BetonCommand } from './composer'
 import { continueTargets, ForkBanner, forkOrigin } from './fork'
 import { QueueList } from './queue'
-import { HarnessBadge, listStatus, StatusMark } from './harness'
+import { HarnessBadge, harnessName, listStatus, StatusMark, VoiceDot, voiceOf } from './harness'
 import { useLayout } from './layout-state'
 import { SessionTitle } from './session-title'
 import { ConflictHost } from './workspace/editor'
@@ -30,10 +32,8 @@ import { WorkspaceRail } from './workspace/rail'
 import { ApprovalBar } from './approval-bar'
 import { ContextBar } from './context-bar'
 import { WindowDrop } from './window-drop'
+import { StreamAnnouncer } from './stream-announcer'
 import { AgentMessage, ApprovalCard, ErrorCard, Offloaded, PolicyCard, Reasoning, SystemNote, ToolCard, UserMessage } from './stream'
-
-/** Zwei `Esc` binnen dieser Zeit unterbrechen den Turn. */
-export const ESC_ESC_MS = 600
 
 /** Metadaten aus dem Log: Harness, Modell, Capabilities, Titel, Status. */
 function useMeta(sessionId: string) {
@@ -236,23 +236,42 @@ export function SessionView({ sessionId }: { sessionId: string }) {
     return () => clearTimeout(timer)
   }, [sessionId, lastSeq])
 
-  // `Esc` zweimal kurz hintereinander unterbricht den laufenden Turn (WEB-005, UX-004).
-  useEffect(() => {
-    if (!running) return
-    let last = 0
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented) return
-      const now = Date.now()
-      if (now - last < ESC_ESC_MS) {
-        last = 0
-        void client.session(sessionId).interrupt().catch(() => undefined)
-      } else {
-        last = now
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [running, sessionId])
+  // Zuletzt genutzt, je Gerät (UX-003 AC3).
+  useEffect(() => useMru.getState().touch(sessionId), [sessionId])
+
+  // Befehle dieser Session (UX-002): Palette und Kürzel aus der Registry. `Esc Esc` unterbricht
+  // nur bei laufendem Turn (WEB-005, UX-004; `when`, UX-002 AC2).
+  useCommand({
+    id: 'session.interrupt',
+    icon: Square,
+    when: () => running,
+    run: () => void client.session(sessionId).interrupt().catch(() => undefined),
+  })
+  useCommand({ id: 'session.fork', icon: GitFork, when: () => !!meta.harness, run: () => continueWith(meta.harness) })
+  const contextPct = context ? contextLevel(context.used, context.window).pct : null
+  useCommand({
+    id: 'session.compact',
+    title: tk('cmd.compact'),
+    hint: contextPct !== null ? (t) => t('cmd.compactHint', { percent: contextPct }) : '/compact',
+    icon: Minimize2,
+    group: 'session',
+    order: 4,
+    keywords: ['compact', 'kompaktieren', 'komprimieren', 'kontext', 'context'],
+    when: () => !!compaction && compaction !== 'none' && !running && !isCompacting,
+    run: compact,
+  })
+  useCommands(
+    targets.map((h, i) => ({
+      id: `session.continue.${h.id}`,
+      title: (t) => t('cmd.continueWith', { harness: harnessName(h.id) }),
+      hint: tk('cmd.continueHint'),
+      icon: voiceIcon(voiceOf(h.id)),
+      group: 'session',
+      order: 1 + i / 100,
+      keywords: ['fork', 'harness', 'weiter', 'continue', 'wechseln', 'switch'],
+      run: () => continueWith(h.id),
+    })),
+  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -349,6 +368,7 @@ export function SessionView({ sessionId }: { sessionId: string }) {
           </p>
         )}
       </div>
+      <StreamAnnouncer items={items} />
       {sendError && (
         <div className="border-t border-deny/40 bg-deny-soft px-4 py-1.5 text-[12px]" role="alert">
           {sendError}
@@ -436,4 +456,16 @@ export function OpenedViaLink({ sessionId, search }: { sessionId: string; search
       {search.seq !== undefined && <span className="shrink-0 text-muted-foreground">· Event {search.seq}</span>}
     </div>
   )
+}
+
+const voiceIcons = new Map<string, () => ReactElement>()
+
+/** Stimmfarbe als Symbol in der Palette („Weiter mit …“). */
+function voiceIcon(voice: ReturnType<typeof voiceOf>) {
+  let icon = voiceIcons.get(voice)
+  if (!icon) {
+    icon = () => <VoiceDot voice={voice} />
+    voiceIcons.set(voice, icon)
+  }
+  return icon
 }

@@ -25,6 +25,10 @@ pub struct Tracker {
     shadow: ShadowRepo,
     /// Letzter Snapshot (Baum); Vergleichsbasis für den nächsten.
     last: Option<String>,
+    work_tree: std::path::PathBuf,
+    /// Stände, die der User über die Workspace-API schreibt (Pfad → SHA-256 des Inhalts, #93):
+    /// Findet der Beobachter genau diesen Stand, ist es keine Änderung des Agents.
+    user_writes: std::collections::HashMap<String, String>,
 }
 
 /// Geteilter Tracker für Runner-Schleife und Beobachter.
@@ -57,7 +61,33 @@ impl Tracker {
         if shadow.exceeds_files(max_files)? {
             return Err(OpenError::TooLarge(max_files));
         }
-        Ok(Self { shadow, last: None })
+        Ok(Self {
+            shadow,
+            last: None,
+            work_tree: work_tree.to_path_buf(),
+            user_writes: Default::default(),
+        })
+    }
+
+    /// Der User schreibt gleich `path` mit Inhalt `sha256` (Hex) über die Workspace-API (#93).
+    pub fn expect_user_write(&mut self, path: String, sha256: String) {
+        self.user_writes.insert(path, sha256);
+    }
+
+    /// Entspricht `path` gerade dem angekündigten Stand des Users? Dann ist es dessen Änderung.
+    fn by_user(&mut self, path: &str) -> bool {
+        use sha2::Digest as _;
+        let Some(want) = self.user_writes.get(path) else {
+            return false;
+        };
+        let Ok(bytes) = std::fs::read(self.work_tree.join(path)) else {
+            return false;
+        };
+        let ok = hex::encode(sha2::Sha256::digest(&bytes)) == *want;
+        if ok {
+            self.user_writes.remove(path);
+        }
+        ok
     }
 
     /// Neuer Snapshot; liefert die Änderungen seit dem letzten und den neuen Baum.
@@ -68,7 +98,12 @@ impl Tracker {
             _ => Vec::new(),
         };
         self.last = Some(tree.clone());
-        Ok((changes.into_iter().map(fs_change).collect(), tree))
+        let changes = changes
+            .into_iter()
+            .map(fs_change)
+            .filter(|c| !self.by_user(&c.path))
+            .collect();
+        Ok((changes, tree))
     }
 
     /// Hält einen Baum als Stand vor bzw. nach einem Turn fest.
@@ -159,6 +194,13 @@ pub async fn mark(tracker: &Shared, turn: String, side: &'static str, tree: Stri
     .await;
     if let Ok(Err(e)) | Err(e) = result.map_err(|e| e.to_string()) {
         tracing::warn!("Turn-Snapshot nicht gespeichert: {e}");
+    }
+}
+
+/// Kündigt einen Schreibzugriff des Users an (Kommando `workspace.user_write`, #93).
+pub fn expect_user_write(tracker: &Shared, path: String, sha256: String) {
+    if let Ok(mut t) = tracker.lock() {
+        t.expect_user_write(path, sha256);
     }
 }
 

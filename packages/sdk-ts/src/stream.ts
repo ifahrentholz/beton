@@ -3,12 +3,15 @@ import type { Event } from './gen/Event.js'
 import type { ServerMsg } from './gen/ServerMsg.js'
 
 export const SUBPROTOCOL = 'beton.v1'
-export const PROTOCOL_VERSION = '1.0'
+/** `1.1`: Binärkanäle (PROTO-007). */
+export const PROTOCOL_VERSION = '1.1'
 
 /** Minimale WebSocket-Schnittstelle (Browser, Node ≥ 22 oder das Paket `ws`). */
 export interface WebSocketLike {
   readonly readyState: number
-  send(data: string): void
+  /** Binärframes als `ArrayBuffer` empfangen (Kanäle, PROTO-007). */
+  binaryType?: string
+  send(data: string | Uint8Array): void
   close(code?: number, reason?: string): void
   addEventListener(type: 'open', listener: () => void): void
   addEventListener(type: 'message', listener: (ev: { data: unknown }) => void): void

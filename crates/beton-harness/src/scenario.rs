@@ -206,6 +206,15 @@ pub struct Step {
     /// Ergebnis als Nachricht melden (`fs_write ok` bzw. `fs_write error <code>: <text>`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fs_write: Option<WriteFileStep>,
+    /// Nur ACP-Test-Agent: `fs/read_text_file` beim Client (#326); meldet `fs_read ok <text>`
+    /// bzw. `fs_read error <code>: <text>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_read: Option<ReadFileStep>,
+    /// Nur ACP-Test-Agent: `terminal/create`, dann `wait_for_exit` (bzw. nach `kill_after_ms`
+    /// `terminal/kill`), `terminal/output` und `terminal/release` beim Client (#326); meldet
+    /// `terminal exit <code> output <text>` bzw. `terminal error <code>: <text>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<TerminalStep>,
     /// Verzweigung nach der letzten Gate-Entscheidung.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_gate: Option<OnGate>,
@@ -261,6 +270,30 @@ pub struct Step {
     /// HAR-027).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub echo_settings: bool,
+}
+
+/// `fs/read_text_file` des ACP-Test-Agents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadFileStep {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// `terminal/*` des ACP-Test-Agents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalStep {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kill_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_byte_limit: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +495,8 @@ impl Step {
         add(self.await_steer.is_some(), "await_steer");
         add(self.write_file.is_some(), "write_file");
         add(self.fs_write.is_some(), "fs_write");
+        add(self.fs_read.is_some(), "fs_read");
+        add(self.terminal.is_some(), "terminal");
         add(self.echo_input, "echo_input");
         add(self.echo_history, "echo_history");
         add(self.echo_settings, "echo_settings");
