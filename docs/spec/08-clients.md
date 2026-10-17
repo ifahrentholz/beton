@@ -366,6 +366,7 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 ### WEB-016 — Barrierefreiheit (Basics)
 - **Meilenstein:** M3 · **Priorität:** Should
 - **Beschreibung:** Ziel WCAG 2.2 AA für Kernflüsse (Session öffnen, Nachricht senden, Approval entscheiden, Diff lesen): vollständige Tastaturbedienung, sichtbarer Fokus, Kontraste in allen Themes, `prefers-reduced-motion`, ARIA-Live-Region für Streaming (gedrosselt, nur abgeschlossene Absätze).
+- **Details:** *(Präzisiert, WP-62, Entwurf `settings-appearance`:)* Einstellungen je Gerät: „Bewegung reduzieren“ (wie System/an/aus), „Hoher Kontrast“ (wechselt auf das Theme), „Fokus immer deutlich zeigen“ (Standard an), „Streaming für Screenreader ansagen“ (Standard an; nur abgeschlossene Absätze, höchstens alle 2 s) und Schriftgröße 13/14/16 px. Die Live-Region liegt in einem geschlossenen Shadow-Root, damit der angesagte Text im DOM nicht doppelt neben der Nachricht steht. Geprüft wird mit axe in allen Themes (hell und dunkel) und einem E2E-Durchlauf nur mit Tastatur (`apps/web/e2e/a11y.spec.ts`).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — axe-core meldet in den Kernflüssen keine `serious`/`critical`-Verstöße (Playwright-Test).
   - [ ] AC2 — Alle Kernflüsse sind ohne Maus durchführbar (E2E nur mit Tastatur).
@@ -373,7 +374,8 @@ Globale Flags: --server PROFILE|URL · --json · -q/--quiet · -v/--verbose · -
 
 ### WEB-017 — Internationalisierung DE/EN
 - **Meilenstein:** M3 · **Priorität:** Should
-- **Beschreibung:** UI-Texte über `i18next` *(Annahme)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.
+- **Beschreibung:** UI-Texte über eigene Übersetzungstabellen *(präzisiert, WP-62: statt `i18next`)* mit Sprachen Englisch (Fallback) und Deutsch; Auswahl automatisch aus Browser/OS-Sprache, überschreibbar in den Einstellungen. Datums-/Zahlen-/Währungsformate über `Intl`. CLI- und TUI-Ausgaben sind in v1 nur Englisch *(Annahme)*.
+- **Details:** *(Präzisiert, WP-62:)* Kein `i18next`: zwei Sprachen mit flachen Schlüsseln brauchen keine Bibliothek im initialen Bundle (WEB-015). Texte in `apps/web/src/i18n/de.ts` und `en.ts`; der Typ von `en` verlangt alle Schlüssel aus `de`, und `test/i18n.test.tsx` prüft beide Richtungen und gleiche Platzhalter (CI über `pnpm typecheck` und `pnpm test`). Komponenten lesen Texte über `useT()`; ein Wechsel rendert neu, ohne zu laden. Die Wahl gilt je Gerät (`beton.lang`). Übersetzt sind in M3 Grundlayout, Session-Liste, Befehlspalette, Switcher, Tastenkürzel und Darstellung; die übrigen Ansichten folgen (#372).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — CI-Check schlägt fehl, wenn ein Key in `de` oder `en` fehlt.
   - [ ] AC2 — Umschalten der Sprache wirkt ohne Reload.

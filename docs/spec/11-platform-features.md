@@ -289,6 +289,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-002 — Command-Palette (⌘K)
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** `⌘K` / `Ctrl+K` öffnet eine fuzzy-durchsuchbare Palette mit Befehlen (neue Session, Modell wechseln, „Weiter mit <Harness>“ (Fork), Fork, Interrupt, Compact, Theme, Einstellungen, Agent starten), Navigation (Sessions, Projekte, Seiten) und kontextabhängigen Aktionen der aktuellen Session. Befehle stammen aus einer zentralen Registry (`registerCommand({id, title, keywords, shortcut, when, run})`), die auch Desktop-Menü und Shortcuts speist.
+- **Details:** *(Präzisiert, WP-62:)* Registry in `apps/web/src/lib/commands.ts`: Befehle werden mit Titel, Suchwörtern, Kürzel und Gruppe deklariert (`lib/keymap.ts`) und dort, wo sie wirken, mit `useCommand({id, when, run})` gebunden; die Palette zeigt nur gebundene Befehle mit erfüllter Bedingung. Navigation: Inbox, Verbrauch, Einstellungen und die zuletzt genutzten Sessions (mit Suche alle). „Agent starten“ und Projekte erscheinen, sobald es sie in der Web-UI gibt (#125, #142). „Theme wechseln“ schaltet hell/dunkel. Das Desktop-Menü liest die Registry noch nicht (#374).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Eingabe „fork“ in einer Session zeigt „Session forken“ als ersten Treffer; Enter führt den Fork aus.
   - [ ] AC2 — Befehle mit `when`-Bedingung (z.B. Interrupt nur bei laufendem Turn) erscheinen nur, wenn die Bedingung erfüllt ist.
@@ -298,6 +299,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-003 — Session-Switcher
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Schneller Wechsel zwischen Sessions: `⌘⌥S` / `Ctrl+Alt+S` öffnet eine MRU-Liste (zuletzt genutzt) mit Status (läuft, wartet auf Approval, ungelesen) und Suche; im Desktop zusätzlich `Ctrl+Tab` für MRU-Durchschalten. Der Wechsel lädt die Session aus dem lokalen Cache sofort und synchronisiert ab der letzten `seq`.
+- **Details:** *(Präzisiert, WP-62:)* MRU im `localStorage` des Geräts (`beton.mru.v1`, höchstens 50); Liste: zuletzt genutzte zuerst, dann die übrigen nach Aktivität. Offene Freigaben und Fragen kommen aus der Inbox (`GET /v1/inbox?status=open`), sonst aus `status: waiting_approval`. `Ctrl+Tab` schaltet durch (Tab rückt weiter, Loslassen von Ctrl wechselt); im Browser fängt der Browser die Taste ab, wirksam ist sie in der Desktop-App.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Wechsel zu einer zuvor geöffneten Session zeigt den letzten Stand in < 150 ms (gemessen im E2E-Test), Live-Events folgen.
   - [ ] AC2 — Sessions mit offenem Approval sind in der Liste markiert.
@@ -307,6 +309,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-004 — Tastenkürzel & Shortcuts-Overlay
 - **Meilenstein:** M3 · **Priorität:** Must
 - **Beschreibung:** Konsistente, plattformabhängige Shortcuts (⌘ auf macOS, Ctrl sonst), definiert in der Befehls-Registry; `⌘/` zeigt ein Overlay aller Shortcuts, gruppiert und durchsuchbar. Defaults: `⌘K` Palette, `⌘N` neue Session, `⌘⌥S` Switcher, `⌘↵` Approve fokussiertes Approval, `⌘⌫` Deny, `Esc Esc` Interrupt, `⌘⇧M` Modell wechseln, `⌘⇧I` Inbox, `⌘,` Einstellungen. User können Shortcuts umbelegen; Konflikte werden angezeigt.
+- **Details:** *(Präzisiert, WP-62:)* Eigene Belegungen gelten je Gerät (`localStorage`, `beton.shortcuts.v1`). Belegbar sind Kombinationen mit ⌘/Ctrl/⌥ und Funktionstasten; Tasten, die eine Ansicht selbst auswertet (`↵` Senden, `j`/`k` in der Inbox, `↑`/`↓` in der Freigabe-Leiste), sind fest und stehen nur zur Übersicht im Overlay. Ein Konflikt zeigt den bisherigen Besitzer und bietet Tauschen an (Entwurf `inbox-shortcuts`, Zustand „Konflikt beim Umbelegen“). `global_in_input` heißt im Code `globalInInput` (⌘K, ⌘⌥S, `Esc Esc` und die Freigabe-Kürzel).
 - **Akzeptanzkriterien:**
   - [ ] AC1 — `⌘/` öffnet das Overlay; alle in der Registry definierten Shortcuts sind gelistet (Test vergleicht Registry ↔ Overlay).
   - [ ] AC2 — Eine Umbelegung, die mit einem bestehenden Shortcut kollidiert, wird mit Hinweis abgelehnt oder nach Bestätigung getauscht.
@@ -316,6 +319,7 @@ Typen: `approval`, `question`, `async_done`, `async_failed`, `mention` (+ weiter
 ### UX-005 — Themes
 - **Meilenstein:** M3 · **Priorität:** Should
 - **Beschreibung:** Light und Dark (Default: folgt System) plus drei weitere Themes: „Concrete“ (warmes Betongrau, Markenthema), „Nord“ und „High Contrast“. Themes sind Token-Sets (CSS-Variablen im shadcn/ui-Schema) mit zugeordneten Varianten für Monaco, xterm.js und Shiki, damit Editor, Terminal und Code-Blöcke konsistent sind. Auswahl pro Gerät, optional synchronisiert *(Annahme)*.
+- **Details:** *(Präzisiert, WP-62, Entwurf `settings-appearance`:)* Auswahl „System“ (Sichtbeton, folgt dem OS), „Sichtbeton hell“, „Sichtbeton dunkel“, „Nord“ und „Hoher Kontrast“; Nord und Hoher Kontrast folgen für hell/dunkel ebenfalls dem OS. Familie und Modus stehen als Klassen am Wurzelelement (`theme-nord dark`). Zuordnung: Shiki `github-light`/`github-dark` (Sichtbeton), `github-light`/`nord` (Nord), `github-*-high-contrast` (Hoher Kontrast); Token-Farben werden auf den Flächen des UI-Themes auf AA-Kontrast gezogen. Monaco übernimmt die Flächen aus den Tokens mit Basis `vs`/`vs-dark` bzw. `hc-light`/`hc-black`. xterm.js bekommt seine Farben über `terminalTheme()` aus den Tokens; die Einbindung in die Workspace-Terminals folgt mit WEB-010 (#373). Gespeichert je Gerät (`beton.appearance.v1`); eine Synchronisierung über Geräte folgt nicht in M3.
 - **Akzeptanzkriterien:**
   - [ ] AC1 — Theme-Wechsel wirkt ohne Reload auf UI, Monaco, xterm und Code-Blöcke.
   - [ ] AC2 — Alle Themes erfüllen WCAG-AA-Kontrast für Fließtext; „High Contrast“ erfüllt AAA (automatisierter Kontrasttest über Token-Paare).
