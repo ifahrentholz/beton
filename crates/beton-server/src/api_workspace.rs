@@ -264,31 +264,16 @@ pub async fn get_file(
     let (_, ws) = open(&state, auth, &id).await?;
     let path = normalized(&path)?;
     let raw = path.clone();
-    let resolved = blocking(move || {
-        let p = ws.resolve_existing(&raw).map_err(path_problem)?;
-        if !p.is_file() {
-            return Err(path_problem(PathError::Invalid(
-                raw,
-                "ist keine Datei".into(),
-            )));
-        }
-        let size = std::fs::metadata(&p)
-            .map_err(|e| Problem::internal(&e))?
-            .len();
-        Ok((p, size))
-    })
-    .await?;
-    let (file, size) = resolved;
+    // Race-frei geöffnet (#92): Gelesen wird aus dem geöffneten Handle, nie erneut über den Pfad.
+    let (file, size, resolved) = blocking(move || ws.open_file(&raw).map_err(path_problem)).await?;
     if q.download == Some(true) {
         if size > DOWNLOAD_MAX {
             return Err(Problem::new(ProblemCode::PayloadTooLarge)
                 .detail("Datei ist für den Download über die API zu groß"));
         }
-        let bytes = tokio::fs::read(&file)
-            .await
-            .map_err(|e| Problem::internal(&e))?;
+        let bytes = blocking(move || read_limited(file, DOWNLOAD_MAX)).await?;
         let sha = crate::workspace::sha256_hex(&bytes);
-        let name = file
+        let name = resolved
             .file_name()
             .map(|n| n.to_string_lossy().replace(['"', '\\', '\r', '\n'], "_"))
             .unwrap_or_default();
@@ -300,18 +285,18 @@ pub async fn get_file(
         return Ok(res);
     }
     let body = blocking(move || {
-        let sha256 = sha256_file(&file)?;
         if size > INLINE_MAX {
             return Ok(WorkspaceFile {
                 path,
                 size,
-                sha256,
+                sha256: sha256_reader(file)?,
                 binary: false,
                 too_large: true,
                 content: None,
             });
         }
-        let bytes = std::fs::read(&file).map_err(|e| Problem::internal(&e))?;
+        let bytes = read_limited(file, INLINE_MAX)?;
+        let sha256 = crate::workspace::sha256_hex(&bytes);
         let text = String::from_utf8(bytes).ok();
         Ok(WorkspaceFile {
             path,
@@ -328,12 +313,21 @@ pub async fn get_file(
     Ok(res)
 }
 
-fn sha256_file(path: &std::path::Path) -> Result<String, Problem> {
+fn sha256_reader(mut file: std::fs::File) -> Result<String, Problem> {
     use sha2::Digest as _;
-    let mut file = std::fs::File::open(path).map_err(|e| Problem::internal(&e))?;
     let mut hasher = sha2::Sha256::new();
     std::io::copy(&mut file, &mut hasher).map_err(|e| Problem::internal(&e))?;
     Ok(hex::encode(hasher.finalize()))
+}
+
+/// Liest höchstens `max` Bytes aus einer geöffneten Datei.
+fn read_limited(file: std::fs::File, max: u64) -> Result<Vec<u8>, Problem> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    file.take(max)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Problem::internal(&e))?;
+    Ok(bytes)
 }
 
 /// Datei schreiben; mit `If-Match: <sha256>` nur, wenn sie seitdem unverändert ist, sonst
