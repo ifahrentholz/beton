@@ -152,6 +152,13 @@ fn har_005_recorded_hook_payloads_map_to_gate_requests() {
             assert!(req.args["command"].is_string(), "{name}");
             // Dieselbe Call-ID wie der `tool_use` im Strom der CLI.
             assert!(raw.contains(&req.call_id), "{name}: {}", req.call_id);
+            // Das Arbeitsverzeichnis des Calls aus dem Hook (#293): Bash behält ein `cd`.
+            assert_eq!(
+                req.cwd.as_deref(),
+                payload["cwd"].as_str(),
+                "{name}: cwd des Hooks"
+            );
+            assert!(req.cwd.is_some(), "{name}");
         }
     }
     // Antworten an die CLI: Ablehnung mit Begründung, Erlauben ohne Entscheidung.

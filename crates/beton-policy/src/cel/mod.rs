@@ -167,10 +167,20 @@ impl Limits {
 pub struct Meter<'a> {
     max_cost: u64,
     used: u64,
+    /// Kosten über alle Ausdrücke dieses Meters und ihr Limit (nur die Spur, #353).
+    total: u64,
+    max_total: u64,
     deadline_us: u64,
     clock: Option<&'a dyn Clock>,
     ticks: u32,
 }
+
+/// Zeitbudget der gesamten Explain-Spur einer Auswertung (#353): eigenes Fenster nach der
+/// Entscheidung, unabhängig von deren Budget.
+pub const TRACE_BUDGET_US: u64 = 5_000;
+
+/// Kostenbudget der gesamten Spur als Vielfaches des Limits je Ausdruck (#353).
+pub const TRACE_COST_FACTOR: u64 = 4;
 
 /// Wie oft (in Operationen) die Uhr gelesen wird.
 const CLOCK_EVERY: u32 = 32;
@@ -181,6 +191,8 @@ impl<'a> Meter<'a> {
         Self {
             max_cost: limits.max_cost,
             used: 0,
+            total: 0,
+            max_total: u64::MAX,
             deadline_us: clock.now_us().saturating_add(limits.eval_budget_us),
             clock: Some(clock),
             ticks: 0,
@@ -193,10 +205,32 @@ impl<'a> Meter<'a> {
         Self {
             max_cost: limits.max_cost,
             used: 0,
+            total: 0,
+            max_total: u64::MAX,
             deadline_us: u64::MAX,
             clock: None,
             ticks: 0,
         }
+    }
+
+    /// Für die Explain-Spur nach der Entscheidung (#353): Kostenlimit je Ausdruck wie bei der
+    /// Entscheidung, dazu ein Gesamtbudget für Kosten ([`TRACE_COST_FACTOR`]) und Zeit
+    /// ([`TRACE_BUDGET_US`] ab jetzt). Ist es erschöpft, liefert [`Meter::exhausted`] `true`.
+    pub fn for_trace(limits: &Limits, clock: &'a dyn Clock) -> Self {
+        Self {
+            max_cost: limits.max_cost,
+            used: 0,
+            total: 0,
+            max_total: limits.max_cost.saturating_mul(TRACE_COST_FACTOR),
+            deadline_us: clock.now_us().saturating_add(TRACE_BUDGET_US),
+            clock: Some(clock),
+            ticks: 0,
+        }
+    }
+
+    /// Ist das Gesamtbudget (Kosten oder Zeit) erschöpft?
+    pub fn exhausted(&self) -> bool {
+        self.total > self.max_total || self.check_deadline().is_err()
     }
 
     /// Ohne Kosten- und Zeitgrenzen (nur für Tests und Werkzeuge).
@@ -204,15 +238,21 @@ impl<'a> Meter<'a> {
         Self {
             max_cost: u64::MAX,
             used: 0,
+            total: 0,
+            max_total: u64::MAX,
             deadline_us: u64::MAX,
             clock: None,
             ticks: 0,
         }
     }
 
-    /// Beginnt einen neuen Ausdruck: Kosten auf null, Zeitbudget weiter wie bisher.
+    /// Beginnt einen neuen Ausdruck: Kosten auf null, Zeit- und Gesamtbudget weiter wie
+    /// bisher.
     pub fn begin_expr(&mut self) -> Result<(), EvalError> {
         self.used = 0;
+        if self.total > self.max_total {
+            return Err(EvalError::CostExceeded);
+        }
         self.check_deadline()
     }
 
@@ -231,7 +271,8 @@ impl<'a> Meter<'a> {
 
     pub(crate) fn charge(&mut self, cost: u64) -> Result<(), EvalError> {
         self.used = self.used.saturating_add(cost);
-        if self.used > self.max_cost {
+        self.total = self.total.saturating_add(cost);
+        if self.used > self.max_cost || self.total > self.max_total {
             return Err(EvalError::CostExceeded);
         }
         self.ticks += 1;

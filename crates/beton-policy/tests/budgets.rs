@@ -1288,3 +1288,70 @@ fn pol_013_handwritten_cost_rules_also_block_unpriced_routes_below_the_user_leve
     let d = eval(vec![other, route], &turn);
     assert!(!matches!(d.outcome, Outcome::Deny { .. }), "{d:#?}");
 }
+
+/// #283 Punkt 2: Eine Modifikation auf den Wert, der ohnehin gilt (z. B. `spend_cap` mit
+/// `on_exceed: route` auf das laufende Modell), ändert nichts und ist deshalb auch ohne
+/// Modellwechsel anwendbar; eine echte Änderung bleibt `on_unsupported`.
+#[test]
+fn pol_013_modification_to_the_current_value_needs_no_switch() {
+    let s = set(
+        Scope::User,
+        "u",
+        "  - id: stay\n    on: model_request\n    when: 'true'\n    action: modify\n    modify: { model: claude-sonnet-4-5, reasoning_effort: medium }\n",
+    );
+    let opts = EvalOptions {
+        capabilities: Capabilities {
+            model: false,
+            reasoning_effort: false,
+            ..Capabilities::default()
+        },
+        ..common::opts()
+    };
+    let same = act(
+        Phase::ModelRequest,
+        json!({ "request": { "model": "claude-sonnet-4-5", "reasoning_effort": "medium", "granularity": "turn" } }),
+    );
+    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&same, &opts);
+    assert_eq!(d.outcome, Outcome::Allow, "{:?}", d);
+    assert_eq!(d.modified.model, None, "nichts zu ändern");
+    assert_eq!(d.modified.reasoning_effort, None);
+    // Ein anderes Modell braucht den Wechsel: `on_unsupported` (Default `deny`).
+    let other = act(
+        Phase::ModelRequest,
+        json!({ "request": { "model": "claude-opus-4-5", "reasoning_effort": "medium", "granularity": "turn" } }),
+    );
+    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&other, &opts);
+    assert_eq!(reason_ids(&d), ["stay"]);
+    // Ohne bekanntes Modell (Harness-Default) ist es keine sichere No-op.
+    let unknown = act(
+        Phase::ModelRequest,
+        json!({ "request": { "reasoning_effort": "medium", "granularity": "turn" } }),
+    );
+    let d = EffectiveSet::new(vec![s]).evaluate(&unknown, &opts);
+    assert_eq!(reason_ids(&d), ["stay"]);
+}
+
+/// #353 Punkt 4: Die Entscheidung nennt, welche Regel welche Felder verteuern würde
+/// (`cost_raises`); der Runner kann die Modifikation bei einer Ablehnung verwerfen und ohne
+/// Route fortfahren, statt den Turn abzulehnen.
+#[test]
+fn pol_013_cost_raising_routes_are_listed_with_their_fields() {
+    let sonnet = turn_with(Some("claude-sonnet-4-5"), Some("medium"));
+    let d = eval(
+        vec![route_to(
+            Scope::Project,
+            "model: claude-opus-4-5, reasoning_effort: low",
+        )],
+        &sonnet,
+    );
+    assert!(matches!(d.outcome, Outcome::Ask { .. }), "{d:#?}");
+    assert_eq!(d.cost_raises.len(), 1, "{d:#?}");
+    assert_eq!(d.cost_raises[0].rule.rule_id, "up");
+    assert_eq!(d.cost_raises[0].fields, ["model"], "nur das teurere Feld");
+    // Ohne Verteuerung keine Einträge.
+    let d = eval(
+        vec![route_to(Scope::Project, "model: claude-haiku-4-5")],
+        &sonnet,
+    );
+    assert!(d.cost_raises.is_empty(), "{d:#?}");
+}

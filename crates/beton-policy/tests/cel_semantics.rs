@@ -19,13 +19,12 @@ fn ctx() -> Activation {
                 "cost_usd": 2,
                 "turns": 3,
                 "started_at": "2026-01-01T11:00:00Z",
-                "labels": ["a", "b"],
+                "unpriced_models": ["a", "b"],
                 "is_async": false,
                 "branch": null
             },
             "start": { "model": "opus", "sandbox": { "enabled": true }, "network": { "proxy_enabled": false } },
             "state": { "session": { "pushes": 2, "names": ["x"], "big": 18446744073709551615u64, "f": 1.5, "m": { "k": 1 } } },
-            "budget": { "lease_expires_at": "2026-01-02T00:00:00Z" },
         }),
     )
     .unwrap()
@@ -54,7 +53,7 @@ fn pol_002_true_expressions() {
         "now - session.started_at == duration(\"1h\")",
         "now - duration(\"1h\") == session.started_at && duration(\"1h\") + now > now",
         "duration(\"30m\") + duration(\"30m\") == duration(\"1h\") && duration(\"2h\") - duration(\"1h\") == duration(\"1h\")",
-        "budget.lease_expires_at > now && int(now) == 1767268800",
+        "timestamp(\"2026-01-02T00:00:00Z\") > now && int(now) == 1767268800",
         "duration(\"1.5h\") == duration(\"90m\") && duration(\"250ms\") < duration(\"1s\") && duration(\"0\") == duration(\"0s\")",
         "duration(\"1us\") < duration(\"1ms\") && duration(\"10ns\") < duration(\"1us\") && duration(\"-5m\") < duration(\"0s\")",
         // Konvertierungen
@@ -62,10 +61,10 @@ fn pol_002_true_expressions() {
         "double(\"1.5\") == 1.5 && double(2u) == 2.0 && double(1.5) == 1.5 && string(true) == \"true\"",
         "string(1.5) == \"1.5\" && string(2u) == \"2\" && string(\"x\") == \"x\"",
         // Listen, Maps, in, Index
-        "session.labels[0] == \"a\" && session.labels[1u] == \"b\" && \"a\" in session.labels",
+        "session.unpriced_models[0] == \"a\" && session.unpriced_models[1u] == \"b\" && \"a\" in session.unpriced_models",
         "\"pushes\" in state.session && !(\"x\" in state.session) && 1 in [1.0]",
         "state.session.m[\"k\"] == 1 && {1: \"a\"}[1] == \"a\" && {true: 1}[true] == 1 && {2u: 1}[2u] == 1",
-        "size(\"äb\") == 2 && size(b\"ab\") == 2 && size({\"a\": 1}) == 1 && session.labels.size() == 2",
+        "size(\"äb\") == 2 && size(b\"ab\") == 2 && size({\"a\": 1}) == 1 && session.unpriced_models.size() == 2",
         "state.session.names.exists(n, n == \"x\") && state.session.m.all(k, k == \"k\")",
         "[1, 2, 3].map(x, x * 2) == [2, 4, 6] && [1, 2, 3].filter(x, x > 1).size() == 2",
         "[1, 2, 3].map(x, x > 1, x) == [2, 3]",
@@ -188,7 +187,7 @@ fn pol_002_type_errors_at_load() {
         "true && 1",
         "!1",
         "1 ? 2 : 3",
-        "session.labels.exists(x, 1)",
+        "session.unpriced_models.exists(x, 1)",
         "1.exists(x, true)",
         "session.cost_usd.x",
         "{[1]: 2}",
@@ -198,7 +197,7 @@ fn pol_002_type_errors_at_load() {
         "glob(\"a\", \"[\") || glob(\"a\")",
         "Struct{a: 1}",
         "[?1]",
-        "session.labels.map(k, v, x, y)",
+        "session.unpriced_models.map(k, v, x, y)",
     ] {
         assert!(
             compile_expr(src, Phase::SessionStart, Ty::Dyn).is_err(),

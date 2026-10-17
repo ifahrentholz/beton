@@ -348,6 +348,32 @@ impl Store {
         .collect()
     }
 
+    /// Dauerhafte Events eines Typs in einer Session, aufsteigend, höchstens `limit` (z. B.
+    /// `agent.spawned` im Parent, POL-004).
+    pub async fn events_of_type(
+        &self,
+        org: OrgId,
+        session: SessionId,
+        ty: &str,
+        limit: u32,
+    ) -> Result<Vec<Event>> {
+        let mut conn = self.pool.acquire().await?;
+        session_exists(&mut conn, org, session).await?;
+        sqlx::query(
+            "SELECT seq, id, ts, actor, type, payload, payload_ref, turn_id, causation_id \
+             FROM events WHERE org_id = ? AND session_id = ? AND type = ? ORDER BY seq LIMIT ?",
+        )
+        .bind(org.to_string())
+        .bind(session.to_string())
+        .bind(ty)
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(|row| event_from_row(session, row))
+        .collect()
+    }
+
     /// Anzahl dauerhafter Events eines Typs in einer Session (z. B. `turn.started`, #276).
     pub async fn count_events(&self, org: OrgId, session: SessionId, ty: &str) -> Result<u64> {
         let n: i64 = sqlx::query_scalar(

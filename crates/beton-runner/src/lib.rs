@@ -11,6 +11,8 @@ pub mod fork;
 pub mod harden;
 pub mod mcp;
 pub mod policy;
+mod push_config;
+mod session_server;
 pub mod settings;
 pub mod stages;
 pub mod state;
@@ -385,6 +387,8 @@ fn claude_adapter(layers: &HarnessLayers) -> beton_harness_claude::ClaudeAdapter
         // Die Projektebene darf nur verschärfen (SBX-002, HAR-004).
         isolated: user.and_then(|e| e.isolated).unwrap_or(false)
             || project.and_then(|e| e.isolated) == Some(true),
+        // Managed Settings können Hooks abschalten (#258 R5).
+        managed_settings: beton_harness_claude::managed_settings_paths(),
         ..beton_harness_claude::ClaudeAdapter::default()
     }
 }
@@ -854,6 +858,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 source: Some(s.source.clone()),
                 hash: Some(s.hash.clone()),
             }),
+            // Weitere Konfigurationsverzeichnisse der Vendor-CLIs (#258).
+            vendor_dirs: ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]
+                .iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .collect(),
         },
         gate_tx,
     )
@@ -1123,8 +1134,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 Some((&registry, &ctx.env)),
                 // MCP- und System-Tools im Relay-Hub prüfen, wenn der Harness nicht jeden
                 // Tool-Call selbst durch das Gate schickt (POL-024).
-                (predicted.tool_call_gate != beton_harness::ToolCallGate::Full)
-                    .then(|| Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>),
+                (predicted.tool_call_gate != beton_harness::ToolCallGate::Full).then(|| {
+                    gate.gate_mcp_in_hub();
+                    Arc::new(gate.clone()) as Arc<dyn beton_mcp::hub::McpGate>
+                }),
                 // `ask_user` fragt über das Gate (Inbox-Frage, AGT-007 AC4).
                 Some(Arc::new(gate.clone()) as Arc<dyn mcp::Asker>),
                 stages.as_ref().map(|s| s.tools.clone()),
@@ -1138,7 +1151,21 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         None => Ok(mcp::McpSetup::default()),
     };
     let mut setup = match setup {
-        Ok(s) => {
+        Ok(mut s) => {
+            // #252: Der eigene Server heißt beim Harness `beton_<nonce>`; nur dieser Name ist
+            // der System-Server. beton liest dafür keine Vendor-Konfiguration (ADR-0005).
+            match session_server::expose(&mut s.injection, &boot.harness) {
+                Ok(Some(name)) => {
+                    gate.set_session_server(&name);
+                    s.session_server = Some(name);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    let e = beton_harness::HarnessError::StartRefused(format!("mcp: {e}"));
+                    report_start_failure(&boot, &e).await;
+                    return Err(e.into());
+                }
+            }
             // Nur von beton eingebundene Server tragen die Klassen reservierter Namen (#234).
             let mut trusted = s.injection.names();
             if boot.harness.as_str().starts_with("direct") {
@@ -1154,6 +1181,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
             return Err(e.into());
         }
     };
+    let session_server = setup.session_server.clone();
     // AGT-014: Ohne Snapshot ließe sich `sandbox:` nicht vor dem Aufbau der Stufen anwenden.
     if setup.agent_sandbox.is_some() && agent_sandbox.is_none() {
         let e = beton_harness::HarnessError::StartRefused(
@@ -1169,9 +1197,11 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
         std::mem::take(&mut setup.agent_policies),
     );
     // Übernommener Verlauf (Fork, Resume eines Imports): native, Rebuild oder Präambel.
+    let mut start_fork_of = None;
     let forked = match &boot.fork {
         Some(path) => match fork::load(path) {
-            Ok(plan) => Some(
+            Ok(plan) => Some({
+                start_fork_of = fork_of(Some(&plan));
                 fork::prepare(
                     &plan,
                     boot.fork_logged,
@@ -1183,8 +1213,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                     &boot.workdir,
                     boot.model.clone(),
                 )
-                .await,
-            ),
+                .await
+            }),
             Err(e) => {
                 let e = beton_harness::HarnessError::StartRefused(e);
                 report_start_failure(&boot, &e).await;
@@ -1300,7 +1330,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 proxy_enabled: Some(sandbox_status.egress_proxy),
             }),
             worktree: Some(boot.workdir.display().to_string()),
-            fork_of: None,
+            fork_of: start_fork_of.clone(),
             agent_ref: boot.agent_ref.clone(),
         };
         let checked = pre
@@ -1994,7 +2024,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             }
                         }
                         if done && let Some(context) = held_context.take() {
-                            batch.push(to_event(&boot, &actor, context));
+                            batch.push(to_event(&boot, &actor, context, session_server.as_deref()));
                         }
                         // Integrität (HAR-005, #233): Ein ausgeführter Call ohne Gate-Entscheidung
                         // bei Matrix `full` heißt, dass der Hook umgangen wurde.
@@ -2018,7 +2048,7 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                             _ => None,
                         };
                         let observe = track_tool_calls(&gate, &ev, &mut unobserved, done, !harness_gates_all);
-                        let event = to_event(&boot, &actor, ev);
+                        let event = to_event(&boot, &actor, ev, session_server.as_deref());
                         if let Some(EventPayload::ToolCallRequested(r)) = event.payload() {
                             call_events.insert(r.call_id.clone(), event.id);
                         }
@@ -2542,12 +2572,25 @@ fn apply_start_modifications(
         caps,
         sandbox,
     )?;
+    // Zweite Linie hinter `on_unsupported` (#283): nie still verwerfen.
+    let unsupported = |what: &str| settings::Rejected {
+        code: "capability_unsupported",
+        detail: format!("Der Harness kann {what} beim Start nicht setzen (Policy-Modifikation)"),
+    };
+    if m.model.is_some() && !caps.start_model() {
+        return Err(unsupported("das Modell"));
+    }
+    let effort = match &m.reasoning_effort {
+        Some(effort) => Some(
+            beton_harness::map_effort(effort, &caps.efforts)
+                .ok_or_else(|| unsupported("diesen Effort"))?,
+        ),
+        None => None,
+    };
     if let Some(model) = &m.model {
         start.model = Some(model.clone());
     }
-    if let Some(effort) = &m.reasoning_effort
-        && let Some(mapped) = beton_harness::map_effort(effort, &caps.efforts)
-    {
+    if let Some(mapped) = effort {
         start.effort = Some(mapped);
     }
     if let Some(mode) = mode {
@@ -3254,7 +3297,16 @@ async fn finish(session: Box<dyn HarnessSession>, exit: Exit) -> Result<Exit, Ru
     Ok(exit)
 }
 
-fn to_event(boot: &RunnerBoot, actor: &Actor, ev: NormalizedEvent) -> Event {
+fn to_event(
+    boot: &RunnerBoot,
+    actor: &Actor,
+    mut ev: NormalizedEvent,
+    session_server: Option<&str>,
+) -> Event {
+    // Im Log heißt der eigene Server `beton`, fremde reservierte `untrusted:<name>` (#252).
+    if let Some(exposed) = session_server {
+        session_server::map_event(&mut ev.payload, exposed);
+    }
     let mut e = Event::new(boot.session_id, 0, actor.clone(), ev.payload);
     e.raw = ev.raw;
     e.turn_id = ev.turn_id;
@@ -3536,8 +3588,67 @@ async fn deliver(
     }
 }
 
+/// `start.fork_of` (POL-004, #196): Quelle eines Forks laut Plan des Servers; das Fortsetzen
+/// eines Imports ist kein Fork.
+fn fork_of(plan: Option<&beton_harness::handover::ForkPlan>) -> Option<String> {
+    plan.filter(|p| p.kind == beton_harness::handover::PlanKind::Fork)
+        .map(|p| p.from_session.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    /// #283: Eine Modifikation beim Start, die der Harness nicht anwenden kann, lehnt den
+    /// Start ab (zweite Linie hinter `on_unsupported`), statt still verworfen zu werden.
+    #[test]
+    fn pol_013_start_modifications_are_never_dropped_silently() {
+        use beton_harness::{Capabilities, Mode, SwitchSupport, Transport};
+        let mut acp = Capabilities::minimal(Mode::Native, Transport::Acp);
+        acp.model_switch = SwitchSupport::None;
+        let model = beton_policy::engine::Modifications {
+            model: Some("claude-haiku-4-5".into()),
+            ..Default::default()
+        };
+        let mut start = super::settings::Change::default();
+        let r = super::apply_start_modifications(&mut start, &model, &acp, Default::default());
+        assert!(r.is_err(), "ACP ohne set_model: {r:?}");
+        assert_eq!(start.model, None);
+        acp.model_switch = SwitchSupport::Live;
+        let r = super::apply_start_modifications(&mut start, &model, &acp, Default::default());
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(start.model.as_deref(), Some("claude-haiku-4-5"));
+
+        // Effort ohne abbildbare Stufe.
+        let native = Capabilities::minimal(Mode::Native, Transport::Native);
+        let effort = beton_policy::engine::Modifications {
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let mut start = super::settings::Change::default();
+        let r = super::apply_start_modifications(&mut start, &effort, &native, Default::default());
+        assert!(r.is_err(), "Effort ohne Stufen: {r:?}");
+    }
+
+    #[test]
+    fn pol_004_start_fork_of_names_the_source_of_a_fork() {
+        let plan = |kind: &str| -> beton_harness::handover::ForkPlan {
+            serde_json::from_value(serde_json::json!({
+                "kind": kind,
+                "from_session": "ses_01JZ0000000000000000000001",
+                "from_harness": "claude",
+                "at_seq": 3,
+                "reason": "user",
+                "history": [],
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            super::fork_of(Some(&plan("fork"))).as_deref(),
+            Some("ses_01JZ0000000000000000000001")
+        );
+        assert_eq!(super::fork_of(Some(&plan("resume"))), None);
+        assert_eq!(super::fork_of(None), None);
+    }
+
     use beton_core::event::AuthSource;
 
     /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals, obwohl es bis #329 als

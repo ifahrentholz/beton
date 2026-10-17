@@ -774,6 +774,15 @@ fn scope_of(t: RuleType, params: Option<&BTreeMap<String, Value>>) -> Option<Bud
 /// Ist `to` laut eingebettetem Preis-Katalog höchstens so teuer wie `from` (Eingabe- und
 /// Ausgabepreis)? Gleiche IDs immer; ein unbekanntes Modell (Default des Harness) bzw. ein
 /// Modell ohne Preis ist nie nachweisbar günstiger (#286).
+/// Sind die Raten `to` in keiner Kategorie (Eingabe, Ausgabe, Cache lesen und schreiben)
+/// höher als `from` (#286, #353)?
+fn rates_not_higher(from: &beton_core::pricing::Rates, to: &beton_core::pricing::Rates) -> bool {
+    to.input_micro <= from.input_micro
+        && to.output_micro <= from.output_micro
+        && to.cache_read_micro <= from.cache_read_micro
+        && to.cache_write_micro <= from.cache_write_micro
+}
+
 pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
     if from == Some(to) {
         return true;
@@ -781,9 +790,7 @@ pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
     let catalog = beton_core::pricing::Catalog::embedded();
     match (from.and_then(|f| catalog.resolve(f)), catalog.resolve(to)) {
         (Some(a), Some(b)) if a.id == b.id => true,
-        (Some(a), Some(b)) => {
-            b.input_per_mtok <= a.input_per_mtok && b.output_per_mtok <= a.output_per_mtok
-        }
+        (Some(a), Some(b)) => rates_not_higher(&a.rates(), &b.rates()),
         _ => false,
     }
 }
@@ -916,4 +923,22 @@ pub fn exhausted(decision: &Decision, set: &EffectiveSet) -> Vec<Exhausted> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod raise_tests {
+    use beton_core::pricing::Rates;
+
+    /// #353 Punkt 4: Günstiger heißt auch bei den Cache-Raten nicht teurer.
+    #[test]
+    fn pol_013_cache_prices_count_when_comparing_models() {
+        let from = Rates::new(3.0, 15.0, Some(0.3), Some(3.75));
+        let cheaper = Rates::new(1.0, 5.0, Some(0.1), Some(1.25));
+        let dear_cache = Rates::new(1.0, 5.0, Some(0.5), Some(1.25));
+        let dear_write = Rates::new(1.0, 5.0, Some(0.1), Some(5.0));
+        assert!(super::rates_not_higher(&from, &cheaper));
+        assert!(super::rates_not_higher(&from, &from));
+        assert!(!super::rates_not_higher(&from, &dear_cache));
+        assert!(!super::rates_not_higher(&from, &dear_write));
+    }
 }

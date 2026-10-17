@@ -207,6 +207,7 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
     for (from, to) in replacements {
         text = text.replace(from.as_str(), to.as_str());
     }
+    let text = session_server_placeholder(&text);
     let Ok(mut v) = serde_json::from_str::<Value>(&text) else {
         return text;
     };
@@ -222,6 +223,29 @@ fn sanitize(line: &str, replacements: &[(String, String)]) -> String {
     }
     clean(&mut v);
     v.to_string()
+}
+
+/// Der eigene Server heißt je Session `beton_<16 Hex>` (#252): in Aufnahmen `beton_<nonce>`.
+fn session_server_placeholder(text: &str) -> String {
+    const PREFIX: &str = "beton_";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(PREFIX) {
+        let after = &rest[i + PREFIX.len()..];
+        let hex = after
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+            .count();
+        out.push_str(&rest[..i + PREFIX.len()]);
+        if hex == 16 {
+            out.push_str("<nonce>");
+            rest = &after[16..];
+        } else {
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn clean(v: &mut Value) {
@@ -425,6 +449,17 @@ fn which(cmd: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #252: Der Session-Server heißt je Session `beton_<nonce>`; Aufnahmen enthalten den
+    /// Namen nie als festen Wert, sondern `beton_<nonce>`.
+    #[test]
+    fn pol_005_recordings_normalize_the_session_server_name() {
+        let line = r#"{"type":"system","subtype":"init","tools":["mcp__beton_0123456789abcdef__policy_query"],"mcp_servers":[{"name":"beton_0123456789abcdef","status":"connected"},{"name":"beton_x","status":"failed"}]}"#;
+        let out = sanitize(line, &[]);
+        assert!(!out.contains("0123456789abcdef"), "{out}");
+        assert!(out.contains("mcp__beton_<nonce>__policy_query"), "{out}");
+        assert!(out.contains("beton_x"), "andere Namen bleiben: {out}");
+    }
 
     #[test]
     fn use_004_recordings_drop_overage_billing_state() {

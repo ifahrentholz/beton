@@ -75,6 +75,9 @@ pub struct ClaudeAdapter {
     /// Benutzer-Anpassungen der CLI (Hooks, Skills, Plugins, MCP) abschalten.
     pub isolated: bool,
     pub gate_timeout: Duration,
+    /// Managed Settings der CLI (Dateien bzw. Verzeichnisse mit `*.json`), die Hooks
+    /// abschalten können (#258 R5).
+    pub managed_settings: Vec<std::path::PathBuf>,
 }
 
 impl Default for ClaudeAdapter {
@@ -84,6 +87,7 @@ impl Default for ClaudeAdapter {
             auth: AuthSource::VendorCli,
             isolated: false,
             gate_timeout: GATE_TIMEOUT,
+            managed_settings: Vec::new(),
         }
     }
 }
@@ -352,6 +356,86 @@ pub fn command_args_with(
     args
 }
 
+/// Bekannte Pfade der Managed Settings von Claude Code (Datei und Drop-in-Verzeichnis) auf
+/// dieser Plattform (#258); nur in Test-Builds ersetzt `BETON_CLAUDE_MANAGED_SETTINGS` (durch `:`
+/// getrennt) sie.
+pub fn managed_settings_paths() -> Vec<std::path::PathBuf> {
+    if let Some(paths) = managed_settings_override(std::env::var_os(MANAGED_SETTINGS_ENV)) {
+        return paths;
+    }
+    let base: &[&str] = if cfg!(target_os = "macos") {
+        &["/Library/Application Support/ClaudeCode"]
+    } else if cfg!(windows) {
+        &[r"C:\Program Files\ClaudeCode", r"C:\ProgramData\ClaudeCode"]
+    } else {
+        &["/etc/claude-code"]
+    };
+    base.iter()
+        .flat_map(|b| {
+            let b = std::path::Path::new(b);
+            [
+                b.join("managed-settings.json"),
+                b.join("managed-settings.d"),
+            ]
+        })
+        .collect()
+}
+
+/// Umgebungsvariable, die die Pfade der Managed Settings ersetzt (nur für Tests).
+pub const MANAGED_SETTINGS_ENV: &str = "BETON_CLAUDE_MANAGED_SETTINGS";
+
+/// Ersetzte Pfade aus [`MANAGED_SETTINGS_ENV`]; nur mit dem Feature `test-managed-settings`
+/// (Dev-Dependencies), sonst nie (Security-Review von #385).
+fn managed_settings_override(raw: Option<std::ffi::OsString>) -> Option<Vec<std::path::PathBuf>> {
+    #[cfg(feature = "test-managed-settings")]
+    {
+        raw.map(|list| std::env::split_paths(&list).collect())
+    }
+    #[cfg(not(feature = "test-managed-settings"))]
+    {
+        let _ = raw;
+        None
+    }
+}
+
+/// Schalten Managed Settings Hooks ab (`disableAllHooks`, `allowManagedHooksOnly`)? Eine
+/// vorhandene, aber nicht lesbare oder ungültige Datei zählt ebenfalls (fail closed, #258).
+/// Verzeichnisse werden nach `*.json` durchsucht.
+pub fn managed_hooks_disabled(paths: &[std::path::PathBuf]) -> bool {
+    use std::io::Read as _;
+    let file_disables = |path: &std::path::Path| -> bool {
+        let mut text = String::new();
+        let read =
+            std::fs::File::open(path).and_then(|f| f.take(1 << 20).read_to_string(&mut text));
+        if read.is_err() {
+            return true;
+        }
+        match serde_json::from_str::<Value>(&text) {
+            Ok(v) => v["disableAllHooks"] == true || v["allowManagedHooksOnly"] == true,
+            Err(_) => true,
+        }
+    };
+    paths.iter().any(|p| match std::fs::metadata(p) {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            false
+        }
+        Err(_) => true,
+        Ok(m) if m.is_dir() => match std::fs::read_dir(p) {
+            Ok(entries) => entries.flatten().any(|e| {
+                let path = e.path();
+                path.extension().is_some_and(|x| x == "json") && file_disables(&path)
+            }),
+            Err(_) => true,
+        },
+        Ok(_) => file_disables(p),
+    })
+}
+
 /// Kleinstes Modell für Einmal-Aufrufe wie Session-Titel (SES-010); ein Alias der CLI.
 pub const ONE_SHOT_MODEL: &str = "haiku";
 
@@ -465,7 +549,9 @@ impl HarnessAdapter for ClaudeAdapter {
         let caps = capabilities();
         Capabilities {
             // Isoliert (`--safe-mode`) gibt es keinen Hook: nur die Rückfragen des Vendors.
-            tool_call_gate: if self.isolated {
+            // Managed Settings mit `disableAllHooks`/`allowManagedHooksOnly` schalten den Hook
+            // ebenfalls ab (#258 R5).
+            tool_call_gate: if self.isolated || managed_hooks_disabled(&self.managed_settings) {
                 ToolCallGate::ApprovalOnly
             } else {
                 ToolCallGate::Full
@@ -677,6 +763,11 @@ impl ClaudeAdapter {
             cwd: Some(spec.workdir.clone()),
         };
         let mut process = ctx.launcher.launch(launch).await?;
+        // Der Hook-Socket nimmt nur noch die CLI (bzw. ihren Launcher) und deren Nachfahren an
+        // (#247); ohne PID (Replay, Attrappe) bleibt es bei Token und UID.
+        if let (Some((server, _)), Some(pid)) = (&hook, process.id()) {
+            server.restrict_to_descendants_of(pid);
+        }
         let io = process.take_io().ok_or(HarnessError::Closed)?;
         let stdin: Writer = Arc::new(Mutex::new(Some(io.stdin)));
         state.lock().await.session_ref.clone_from(&session_ref);
@@ -919,7 +1010,7 @@ fn hook_deny(reason: &str) -> HookReply {
 }
 
 /// Gate-Anfrage aus der Eingabe des `PreToolUse`-Hooks (`tool_name`, `tool_input`,
-/// `tool_use_id`; gegen 2.1.296 aufgenommen in `tests/golden/pretool-hook-*/hooks.jsonl`).
+/// `tool_use_id`, `cwd`; gegen 2.1.296 aufgenommen in `tests/golden/pretool-hook-*/hooks.jsonl`).
 pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
     let tool = payload["tool_name"].as_str().unwrap_or_default().to_owned();
     let (_, mcp_server) = mapping::split_mcp_name(&tool);
@@ -934,6 +1025,8 @@ pub fn pre_tool_request(payload: &Value, turn: Option<TurnId>) -> GateRequest {
         args: payload["tool_input"].clone(),
         mcp_server,
         acp_kind: None,
+        // Arbeitsverzeichnis des Calls (#293): Bash behält ein `cd` zwischen Calls.
+        cwd: payload["cwd"].as_str().map(str::to_owned),
         origin: GateOrigin::PreTool,
         raw: None,
     }
@@ -1017,6 +1110,7 @@ async fn handle_control(r: &Reader, v: &Value, raw: Option<RawJson>) {
             args: input.clone(),
             mcp_server,
             acp_kind: None,
+            cwd: None,
             origin: GateOrigin::VendorAsk,
             raw,
         }),
@@ -1515,6 +1609,15 @@ mod mcp_tests {
     /// Repositorys kann mit `disableAllHooks: true` den beton-Hook abschalten und eigene
     /// `PreToolUse`-Hooks mit `updatedInput` nach der beton-Prüfung einschleusen. beton lädt
     /// daher nur die User-Einstellungen und setzt `disableAllHooks: false` im `--settings`-JSON.
+    /// Security-Review von #385 (Minor 1): Ohne das Feature `test-managed-settings` (nur über
+    /// Dev-Dependencies) ersetzt die Umgebung die Pfade der Managed Settings nie; sonst könnte
+    /// eine Umgebungsvariable die Erkennung abgeschalteter Hooks umgehen.
+    #[cfg(not(feature = "test-managed-settings"))]
+    #[test]
+    fn pol_024_managed_settings_paths_are_not_overridable_in_normal_builds() {
+        assert_eq!(managed_settings_override(Some("/tmp/leer".into())), None);
+    }
+
     #[test]
     fn har_005_project_settings_cannot_disable_or_add_hooks() {
         let settings = hook_settings("/bin/beton hook claude", 60);

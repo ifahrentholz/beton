@@ -190,8 +190,10 @@ impl Capabilities {
     ///   Browser-Tools laufen bei MCP-Injektion über den Relay-Hub des Runners und sind dort
     ///   immer voll durchsetzbar (HAR-009).
     /// - `tool_result`: `tool_result_gate`.
-    /// - Modifikationen: `model`/`reasoning_effort` je Turn nur mit Live-Wechsel, `args` nur
-    ///   mit vollem Gate; `redact` gibt es noch nicht (Redaction-Pipeline, WP-38).
+    /// - Modifikationen: `model`/`reasoning_effort` je Turn nur mit Live-Wechsel, beim Start
+    ///   nur, wenn der Harness sie dort setzen kann ([`Capabilities::start_model`],
+    ///   [`Capabilities::start_effort`], #283); `args` nur mit vollem Gate; `redact` gibt es
+    ///   noch nicht (Redaction-Pipeline, WP-38).
     pub fn enforcement(&self) -> beton_policy::enforcement::Matrix {
         use beton_policy::Phase;
         use beton_policy::enforcement::{KINDS, Level, Matrix};
@@ -222,6 +224,8 @@ impl Capabilities {
         modify.insert(
             Phase::SessionStart,
             Modify {
+                model: self.start_model(),
+                reasoning_effort: self.start_effort(),
                 redact: false,
                 args: false,
                 ..Modify::default()
@@ -253,6 +257,20 @@ impl Capabilities {
             browser: Level::Full,
             modify,
         }
+    }
+
+    /// Lässt sich das Modell beim Start setzen (#283)? Native und In-Process-Harnesses haben
+    /// einen Startparameter; ACP kennt keinen und setzt es nur per `session/set_model`
+    /// (`model_switch: live`, HAR-017).
+    pub fn start_model(&self) -> bool {
+        self.transport != Transport::Acp || self.model_switch == SwitchSupport::Live
+    }
+
+    /// Lässt sich der Effort beim Start setzen (#283)? Nur mit abbildbaren Stufen, bei ACP
+    /// zusätzlich nur mit Live-Wechsel.
+    pub fn start_effort(&self) -> bool {
+        !self.efforts.is_empty()
+            && (self.transport != Transport::Acp || self.effort_switch == SwitchSupport::Live)
     }
 
     /// Prüft, ob eine Aktion möglich ist (HAR-002 AC3).

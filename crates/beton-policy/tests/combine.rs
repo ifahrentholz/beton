@@ -909,3 +909,57 @@ fn pol_006_no_capabilities_means_every_modification_is_unsupported() {
     .collect();
     assert_eq!(names, ["deny", "ask", "modify", "allow", "notify", "error"]);
 }
+
+/// Uhr, die bei jedem Lesen um 1 ms vorrückt.
+struct JumpClock(AtomicU64);
+
+impl Clock for JumpClock {
+    fn now_us(&self) -> u64 {
+        self.0.fetch_add(1_000, Ordering::SeqCst)
+    }
+}
+
+/// #353 Punkt 1: Die Spur (Explain) hat ein Gesamtbudget für Kosten und Zeit. Ist es
+/// erschöpft, endet sie gekürzt und als unvollständig markiert; die Entscheidung bleibt
+/// unverändert (viele teure Teile einer Projekt-Policy können sonst den Timeout des Runners
+/// reißen und so ein `deny` erzwingen).
+#[test]
+fn pol_027_trace_has_a_total_budget_and_is_marked_incomplete() {
+    let parts = ["tool.kind == \"shell\""; 12].join(" && ");
+    let rules: String = (0..40)
+        .map(|i| rule(&format!("r{i}"), "tool_call", &parts, "allow"))
+        .collect();
+    let s = set(Scope::Project, "p", &format!("rules:\n{rules}"));
+    // Kosten: Jede Bedingung bleibt unter dem Limit je Ausdruck, alle Spuren zusammen nicht.
+    let opts = EvalOptions {
+        limits: Limits {
+            max_cost: 100,
+            ..common::opts().limits
+        },
+        ..common::opts()
+    };
+    let d = EffectiveSet::new(vec![s.clone()]).evaluate(&tool("shell", json!({})), &opts);
+    assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
+    assert_eq!(d.matched.len(), 40);
+    assert!(
+        d.matched[0].trace.iter().all(|p| p.value == Some(true)) && !d.matched[0].trace_incomplete,
+        "{:?}",
+        d.matched[0]
+    );
+    let last = &d.matched[39];
+    assert!(last.trace_incomplete, "{last:?}");
+    assert!(
+        last.trace.is_empty(),
+        "nach dem Budget keine Auswertung mehr: {last:?}"
+    );
+
+    // Zeit: großzügiges Budget der Entscheidung, die Spur endet trotzdem nach ihrem eigenen.
+    let clock = JumpClock(AtomicU64::new(0));
+    let opts = EvalOptions {
+        clock: Some(&clock),
+        ..common::opts()
+    };
+    let d = EffectiveSet::new(vec![s]).evaluate(&tool("shell", json!({})), &opts);
+    assert_eq!(d.outcome, Outcome::Allow, "{d:#?}");
+    assert!(d.matched.iter().any(|m| m.trace_incomplete), "{d:#?}");
+}

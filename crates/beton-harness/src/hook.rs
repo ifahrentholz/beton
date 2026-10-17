@@ -100,6 +100,8 @@ pub struct HookServer {
     socket: PathBuf,
     token_file: PathBuf,
     task: tokio::task::JoinHandle<()>,
+    /// Prozess der CLI: Verbindungen nur von ihm und seinen Nachfahren (#247).
+    root: Arc<std::sync::OnceLock<u32>>,
 }
 
 impl std::fmt::Debug for HookServer {
@@ -165,12 +167,25 @@ impl HookServer {
         std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))
             .map_err(cleanup)?;
         let token = Arc::new(token.into_bytes());
+        let root: Arc<std::sync::OnceLock<u32>> = Arc::new(std::sync::OnceLock::new());
+        let peer_root = root.clone();
+        // Eigentümer des Sockets ist dieser Prozess: nur dieselbe UID darf verbinden.
+        let own_uid = {
+            use std::os::unix::fs::MetadataExt as _;
+            std::fs::metadata(&socket).map_err(cleanup)?.uid()
+        };
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     continue;
                 };
+                // Peer-Credentials (#247): fremde UID, unbekannte PID oder ein Prozess außerhalb
+                // des Prozessbaums der CLI werden ohne Antwort getrennt (der Hook blockiert).
+                if !peer_allowed(&stream, own_uid, peer_root.get().copied()) {
+                    tracing::warn!("Hook-Verbindung eines fremden Prozesses abgelehnt");
+                    continue;
+                }
                 let handler = handler.clone();
                 let token = token.clone();
                 tokio::spawn(async move {
@@ -184,6 +199,7 @@ impl HookServer {
             socket,
             token_file,
             task,
+            root,
         })
     }
 
@@ -193,6 +209,12 @@ impl HookServer {
             std::io::ErrorKind::Unsupported,
             "Hook-Brücke über Unix-Sockets gibt es unter Windows noch nicht",
         ))
+    }
+
+    /// Nimmt nur noch Verbindungen des Prozesses `pid` (der CLI) und seiner Nachfahren an
+    /// (#247).
+    pub fn restrict_to_descendants_of(&self, pid: u32) {
+        let _ = self.root.set(pid);
     }
 
     pub fn socket(&self) -> &Path {
@@ -224,6 +246,25 @@ impl HookServer {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+/// Darf der Peer einer Verbindung den Hook nutzen (#247)? Gleiche UID; ist der Prozess der CLI
+/// bekannt, außerdem die CLI selbst oder ein Nachfahre (PID per `SO_PEERCRED` bzw.
+/// `LOCAL_PEEREPID`). Ohne Auskunft über die Peer-PID: nein (fail closed).
+#[cfg(unix)]
+fn peer_allowed(stream: &tokio::net::UnixStream, uid: u32, root: Option<u32>) -> bool {
+    let Ok(cred) = stream.peer_cred() else {
+        return false;
+    };
+    if cred.uid() != uid {
+        return false;
+    }
+    let Some(root) = root else {
+        return true;
+    };
+    cred.pid()
+        .and_then(|p| u32::try_from(p).ok())
+        .is_some_and(|p| beton_sandbox::ancestry::is_descendant(p, root))
 }
 
 impl Drop for HookServer {

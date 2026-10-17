@@ -140,3 +140,47 @@ async fn sbx_002_stage_vars_also_go_through_settings_env() {
         plain.args
     );
 }
+
+/// #258 R5: Managed Settings haben Vorrang vor `--settings`; `disableAllHooks` bzw.
+/// `allowManagedHooksOnly` schalten den `PreToolUse`-Hook von beton still ab. Der Adapter liest
+/// die bekannten Pfade (Datei und `managed-settings.d/`) und meldet dann nur noch
+/// `approval_only` (POL-024: Warnung bzw. Startverweigerung), ebenso bei einer nicht lesbaren
+/// Datei (fail closed). Ob die echte CLI weitere Quellen kennt (MDM), prüft #260.
+#[test]
+fn pol_024_managed_settings_that_disable_hooks_degrade_the_tool_gate() {
+    use beton_harness::{Mode, ProbeReport, ToolCallGate};
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("managed-settings.json");
+    let drop_in = dir.path().join("managed-settings.d");
+    let adapter = ClaudeAdapter {
+        managed_settings: vec![file.clone(), drop_in.clone()],
+        ..ClaudeAdapter::default()
+    };
+    let gate = || {
+        adapter
+            .capabilities(Mode::Native, &ProbeReport::default())
+            .tool_call_gate
+    };
+    assert_eq!(gate(), ToolCallGate::Full, "ohne Managed Settings");
+    for (text, expected) in [
+        (r#"{"model": "claude-sonnet-4-5"}"#, ToolCallGate::Full),
+        (r#"{"disableAllHooks": false}"#, ToolCallGate::Full),
+        (r#"{"disableAllHooks": true}"#, ToolCallGate::ApprovalOnly),
+        (
+            r#"{"allowManagedHooksOnly": true}"#,
+            ToolCallGate::ApprovalOnly,
+        ),
+        ("{ kaputt", ToolCallGate::ApprovalOnly),
+    ] {
+        std::fs::write(&file, text).unwrap();
+        assert_eq!(gate(), expected, "{text}");
+    }
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir_all(&drop_in).unwrap();
+    std::fs::write(
+        drop_in.join("10-hooks.json"),
+        r#"{"disableAllHooks": true}"#,
+    )
+    .unwrap();
+    assert_eq!(gate(), ToolCallGate::ApprovalOnly, "managed-settings.d");
+}

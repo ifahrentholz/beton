@@ -5,9 +5,10 @@
 //! füllt sie und übergibt sie als JSON an [`crate::context::Activation`]; nicht gesetzte
 //! Felder fehlen und sind in CEL `null`.
 //!
-//! Variablen späterer Meilensteine (`browser.*` ab M3, `budget.*` und `team` ab M4) sind
-//! deklariert, damit Policies sie schon prüfen können; der Runner füllt sie erst mit ihren
-//! Features.
+//! Variablen, die der Runner noch nicht füllen kann (z. B. `user.email` vor der Identität,
+//! `budget.*` und `team` ab M4), sind deklariert, aber ein Ladefehler mit Grund
+//! ([`unavailable`], #196): Eine Regel darauf griffe sonst stillschweigend nie. `browser.*`
+//! gilt nur in den Browser-Phasen (ab M3).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -134,9 +135,16 @@ pub struct SessionVars {
     /// Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_root: Option<String>,
-    /// Git-Branch des Arbeitsverzeichnisses.
+    /// Git-Branch des Arbeitsverzeichnisses; in `tool_call`/`tool_result` der des Repos von
+    /// `tool.cwd` (#293).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Die Git-Konfiguration des Repos von `tool.cwd` bzw. des Users lenkt einen Push ohne
+    /// Refspec um (`remote.*.push`, `remote.*.mirror`, `push.default` `upstream`/`tracking`/
+    /// `matching`, Includes) oder ist nicht sicher lesbar; `git_guard` zählt dann nur Ziele der
+    /// Form `src:dst` (POL-017, #293).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_redirected: Option<bool>,
     /// Labels der Session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
@@ -622,6 +630,27 @@ impl Vars {
     }
 }
 
+/// Warum eine deklarierte Variable bzw. ein Feld in diesem Meilenstein noch nicht verfügbar
+/// ist (#196, POL-004): Der Runner füllt sie nicht, ein Zugriff ist deshalb ein Ladefehler
+/// statt eines stillen `null`. `object` ist der Typname aus der Deklaration (`session`,
+/// `start_sandbox`, …), `field` leer für die Variable selbst.
+pub fn unavailable(object: &str, field: &str) -> Option<&'static str> {
+    Some(match (object, field) {
+        ("team", _) => "Teams kommen mit dem Team-Betrieb (POL-008, M4)",
+        ("budget", _) => "Budget-Leases kommen mit dem Offline-Betrieb (POL-021, M4)",
+        ("session", "labels") => "Sessions haben noch keine Labels",
+        ("session", "attached_clients") => "verbundene Clients kommen mit Presence (COL-004, M4)",
+        ("run", "budget_usd") => "Run-Budgets kommen mit Runs (ASY, M5)",
+        ("user", "email" | "roles" | "teams") => {
+            "E-Mail, Rollen und Teams kommen mit der Identität (AUTH-005, POL-008, M4)"
+        }
+        ("host", "labels") => "Host-Labels kommen mit Remote-Hosts (RUN-004, M4)",
+        ("actor", "id") => "die ID des Akteurs kommt mit der Identität (M4)",
+        ("start_sandbox", "profile") => "Sandbox-Profile gibt es noch nicht",
+        _ => return None,
+    })
+}
+
 /// Eine Variable der obersten Ebene.
 pub struct VarDef {
     pub name: &'static str,
@@ -761,7 +790,7 @@ pub fn reference_markdown() -> String {
          Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikation: \
          POL-004 in [03-policies.md](../spec/03-policies.md#pol-004--kontext-variablen-je-phase). \
          Nicht gesetzte Felder sind `null`; eine Variable außerhalb ihrer Phasen ist ein \
-         Ladefehler.\n\n\
+         Ladefehler, ebenso eine als noch nicht verfügbar markierte (#196).\n\n\
          | Variable | Typ | Phasen | Beschreibung |\n| --- | --- | --- | --- |\n",
     );
     for row in crate::types::DECLS.rows() {
@@ -774,14 +803,45 @@ pub fn reference_markdown() -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
+        let mut doc = row.doc.replace('|', "\\|").replace('\n', " ");
+        if let Some(why) = row_unavailable(&row.path) {
+            doc = format!("**Noch nicht verfügbar**, Ladefehler: {why}. {doc}");
+        }
         let _ = writeln!(
             out,
             "| `{}` | `{}` | {} | {} |",
             row.path,
             row.ty,
             phases,
-            row.doc.replace('|', "\\|").replace('\n', " ")
+            doc.trim_end()
         );
     }
     out
+}
+
+/// Grund aus [`unavailable`] für eine Zeile der Referenztabelle (`user.email`,
+/// `start.sandbox.profile`): über die Objekttypen der Deklaration aufgelöst.
+fn row_unavailable(path: &str) -> Option<&'static str> {
+    let decls = &*crate::types::DECLS;
+    let mut parts = path.split('.');
+    let var = parts.next()?;
+    let mut ty = decls.vars.iter().find(|v| v.name == var)?.ty.clone();
+    let mut object = match &ty {
+        crate::types::Ty::Object(o) => *o,
+        _ => return None,
+    };
+    if let Some(why) = unavailable(object, "") {
+        return Some(why);
+    }
+    for field in parts {
+        if let Some(why) = unavailable(object, field) {
+            return Some(why);
+        }
+        ty = decls.field(object, field)?.clone();
+        object = match &ty {
+            crate::types::Ty::Object(o) => o,
+            _ => return None,
+        };
+    }
+    None
 }

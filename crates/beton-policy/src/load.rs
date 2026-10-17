@@ -548,11 +548,21 @@ impl Checked {
         defaults: &mut BTreeMap<Phase, DefaultAction>,
     ) -> BTreeMap<Phase, TypeDefault> {
         let mut out: BTreeMap<Phase, TypeDefault> = BTreeMap::new();
+        // Defaults der Datei (`defaults:`) sind immer `required` (#293): Verschärft sie eine
+        // `best_effort`-Typ-Regel, bleibt die Durchsetzung `required`.
+        let from_file = defaults.clone();
         for (phase, default, origin) in &self.defaults {
             let current = defaults.get(phase).copied().unwrap_or(DefaultAction::Allow);
             if *default > current {
                 defaults.insert(*phase, *default);
-                out.insert(*phase, origin.clone());
+                let mut origin = origin.clone();
+                if from_file
+                    .get(phase)
+                    .is_some_and(|d| *d != DefaultAction::Allow)
+                {
+                    origin.enforcement = None;
+                }
+                out.insert(*phase, origin);
             } else if *default == current
                 && let Some(existing) = out.get_mut(phase)
                 && origin.enforcement != Some(Enforcement::BestEffort)

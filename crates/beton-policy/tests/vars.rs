@@ -145,3 +145,79 @@ fn pol_004_typed_context_feeds_the_activation() {
     // Eine Phasenvariable in der falschen Phase ist ein Fehler (fail closed).
     assert!(Activation::new(Phase::ToolCall, request.to_json()).is_err());
 }
+
+/// #196: Variablen, die der Runner in diesem Meilenstein nicht füllen kann, sind ein
+/// Ladefehler mit Grund statt stillschweigend `null` (eine Regel darauf griffe nie).
+#[test]
+fn pol_004_unfilled_variables_are_load_errors_not_silent_defaults() {
+    let unavailable = [
+        ("session.labels.size() > 0", Phase::ToolCall),
+        ("has(session.attached_clients)", Phase::ToolCall),
+        ("run.budget_usd > 1.0", Phase::ModelRequest),
+        ("user.email == \"a@example.invalid\"", Phase::ToolCall),
+        ("\"admin\" in user.roles", Phase::ToolCall),
+        ("size(user.teams) > 0", Phase::SessionStart),
+        ("\"gpu\" in host.labels", Phase::ToolCall),
+        ("actor.id == \"usr_x\"", Phase::ToolCall),
+        ("team.ids.size() > 0", Phase::ToolCall),
+        ("team == null", Phase::ToolCall),
+        ("budget.online", Phase::ModelRequest),
+        ("budget.lease_remaining_usd < 1.0", Phase::ModelRequest),
+        ("start.sandbox.profile == \"strict\"", Phase::SessionStart),
+    ];
+    for (src, phase) in unavailable {
+        let err = compile_bool(src, phase).expect_err(src);
+        assert!(
+            err.message.contains("noch nicht verfügbar"),
+            "{src}: {}",
+            err.message
+        );
+    }
+    // Was der Runner füllt, bleibt ladbar.
+    let filled = [
+        ("session.title == \"x\"", Phase::ToolCall),
+        (
+            "session.depth > 0 && has(session.parent_id)",
+            Phase::ToolCall,
+        ),
+        ("session.is_async", Phase::ModelRequest),
+        ("session.duration_s > 60.0", Phase::ToolCall),
+        ("has(session.project)", Phase::ToolCall),
+        (
+            "run.trigger == \"spawn\" && run.id == session.id",
+            Phase::ToolCall,
+        ),
+        ("run.turns > 3 && run.duration_s > 1.0", Phase::ModelRequest),
+        ("start.fork_of == \"ses_x\"", Phase::SessionStart),
+        ("user.id == \"usr_local\" && host.local", Phase::ToolCall),
+    ];
+    for (src, phase) in filled {
+        compile_bool(src, phase).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    // Auch in einer Policy-Datei: Ladefehler mit Grund und Position.
+    let err = beton_policy::load::parse_set(
+        beton_policy::load::Scope::User,
+        "teams.yaml",
+        "spec_version: 1\nname: x\nrules:\n  - id: t\n    on: tool_call\n    when: \"'ops' in user.teams\"\n    action: deny\n",
+    )
+    .expect_err("Ladefehler erwartet");
+    assert!(err.message.contains("user.teams"), "{err}");
+    assert!(err.message.contains("noch nicht verfügbar"), "{err}");
+    assert_eq!(err.line, 6, "{err}");
+}
+
+/// #196: Die Referenztabelle nennt nicht verfügbare Variablen samt Grund.
+#[test]
+fn pol_004_reference_table_marks_unavailable_variables() {
+    let table = reference_markdown();
+    let line = table
+        .lines()
+        .find(|l| l.starts_with("| `user.email` |"))
+        .unwrap();
+    assert!(line.contains("Noch nicht verfügbar"), "{line}");
+    let line = table
+        .lines()
+        .find(|l| l.starts_with("| `session.title` |"))
+        .unwrap();
+    assert!(!line.contains("Noch nicht verfügbar"), "{line}");
+}

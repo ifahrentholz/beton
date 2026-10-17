@@ -426,14 +426,15 @@ impl<R: BufRead, W: Write> AppServer<R, W> {
             }
             state.call = Some(Call { id, item });
         } else if let Some(call) = &step.mcp_call {
+            let server = self.mcp.scenario_server(&call.server);
             let id = self.next_item("mcp");
             let args = self.mcp.resolve(&call.args);
             let mut item = json!({
-                "type": "mcpToolCall", "id": id, "server": call.server, "tool": call.tool,
+                "type": "mcpToolCall", "id": id, "server": server, "tool": call.tool,
                 "arguments": args, "status": "inProgress",
             });
             self.item("item/started", state, item.clone())?;
-            match self.mcp.call(&call.server, &call.tool, &args) {
+            match self.mcp.call(&server, &call.tool, &args) {
                 Ok(result) => {
                     item["status"] = json!(if result["isError"] == true {
                         "failed"

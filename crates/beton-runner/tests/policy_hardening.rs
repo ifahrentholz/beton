@@ -914,3 +914,249 @@ async fn pol_003_session_start_is_rechecked_after_approval_when_policies_changed
         other => panic!("Start trotz neuer deny-Regel: {other:?}"),
     }
 }
+
+/// Kosten der Session je Abfrage: erst 3,10 USD, danach 5,20 USD.
+struct RisingCost(std::sync::atomic::AtomicUsize);
+
+#[async_trait::async_trait]
+impl beton_runner::policy::UsageSource for RisingCost {
+    async fn usage(&self) -> Result<beton_runner::policy::Usage, String> {
+        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(beton_runner::policy::Usage {
+            session_cost_usd: Some(if n == 0 { 3.1 } else { 5.2 }),
+            session_equivalent_usd: Some(0.0),
+            session_unpriced_models: Some(Vec::new()),
+            ..beton_runner::policy::Usage::default()
+        })
+    }
+}
+
+/// #353 Punkt 5 (#297): Die Neuauswertung nach der Freigabe deckt nur denselben Grund ab.
+/// Eine andere Schwelle derselben Budget-Regel (gleiche Regel-ID, anderer Teil) braucht eine
+/// neue Freigabe, statt als freigegeben zu gelten.
+#[tokio::test]
+async fn pol_003_recheck_after_approval_needs_the_same_reason_not_only_the_same_rule() {
+    use beton_core::event::EventPayload;
+    use beton_runner::policy::Human;
+    let dir = tempfile::tempdir().unwrap();
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "budget",
+        "  - id: cap\n    type: spend_cap\n    params: { scope: session, limit_usd: 10, ask_at_usd: [3, 5] }\n",
+    );
+    let (g, mut rx) = gate(dir.path(), "claude");
+    let g = g.with_usage(std::sync::Arc::new(RisingCost(
+        std::sync::atomic::AtomicUsize::new(0),
+    )));
+    let g2 = g.clone();
+    let task = tokio::spawn(async move { g2.check_start(start(None), None).await });
+    let key = loop {
+        let e = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("approval.requested")
+            .unwrap();
+        if let EventPayload::ApprovalRequested(r) = e.payload {
+            break r.subject["call_id"].as_str().unwrap().to_owned();
+        }
+    };
+    // Während der Wartezeit ändern sich die Policies (Neuauswertung) und die Kosten steigen
+    // über die nächste Schwelle derselben Regel.
+    write_policy(
+        dir.path(),
+        Scope::User,
+        "late",
+        "  - id: note\n    on: tool_call\n    action: notify\n    notify: { channels: [log], message: x }\n",
+    );
+    assert!(g.resolve(
+        &key,
+        Human {
+            allow: true,
+            ..Human::default()
+        }
+    ));
+    match task.await.unwrap() {
+        Checked::Deny { reason, rules } => {
+            assert!(reason.contains("erreichen 5 USD"), "{reason}");
+            assert_eq!(rules, ["cap"]);
+        }
+        other => panic!("neue Schwelle als freigegeben gewertet: {other:?}"),
+    }
+}
+
+/// Wartet auf die nächste Approval-Card und liefert ihren Schlüssel; `None` ohne Card.
+async fn next_card(rx: &mut mpsc::UnboundedReceiver<GateEvent>) -> Option<String> {
+    loop {
+        let e = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .ok()??;
+        if let beton_core::event::EventPayload::ApprovalRequested(r) = e.payload {
+            return Some(r.subject["call_id"].as_str().unwrap_or_default().to_owned());
+        }
+    }
+}
+
+fn turn(model: &str) -> beton_harness::ModelGateRequest {
+    beton_harness::ModelGateRequest {
+        model: Some(model.into()),
+        ..beton_harness::ModelGateRequest::default()
+    }
+}
+
+/// #353 Punkt 4 (#286): Lehnt der Mensch die Verteuerung einer Projekt-Route ab, läuft der
+/// Turn ohne die Route weiter (statt abgelehnt zu werden), und die Session fragt dieselbe
+/// Verteuerung nicht erneut. Eine Freigabe gilt ebenso für die Session.
+#[tokio::test]
+async fn pol_013_declined_cost_raise_drops_the_route_and_is_remembered_per_session() {
+    use beton_runner::policy::Human;
+    for allow in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        write_policy(
+            dir.path(),
+            Scope::Project,
+            "route",
+            "  - id: up\n    type: model_route\n    params: { routes: [{ model: claude-opus-4-5 }] }\n",
+        );
+        let (g, mut rx) = gate(dir.path(), "claude");
+        let g2 = g.clone();
+        let first = tokio::spawn(async move {
+            g2.check_model_request(turn("claude-haiku-4-5"), "turn", true, None)
+                .await
+        });
+        let key = next_card(&mut rx).await.expect("Card für die Verteuerung");
+        assert!(g.resolve(
+            &key,
+            Human {
+                allow,
+                ..Human::default()
+            }
+        ));
+        let expected = allow.then(|| "claude-opus-4-5".to_owned());
+        match first.await.unwrap() {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: Turn abgelehnt statt fortgesetzt: {other:?}"),
+        }
+        // Nächster Turn: keine neue Card, dieselbe Entscheidung.
+        let g2 = g.clone();
+        let second = tokio::spawn(async move {
+            g2.check_model_request(turn("claude-haiku-4-5"), "turn", true, None)
+                .await
+        });
+        assert_eq!(
+            next_card(&mut rx).await,
+            None,
+            "allow={allow}: erneute Card"
+        );
+        match second.await.unwrap() {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: {other:?}"),
+        }
+        // Auch ohne Rückfrage (Granularität `call`) gilt die gemerkte Entscheidung.
+        match g
+            .check_model_request(turn("claude-haiku-4-5"), "call", false, None)
+            .await
+        {
+            Checked::Allow(m) => assert_eq!(m.model, expected, "allow={allow}"),
+            other => panic!("allow={allow}: {other:?}"),
+        }
+    }
+}
+
+/// #258 R4: Ohne Sandbox könnte ein Tool-Call einen User-Hook (`PreToolUse.updatedInput`) in
+/// `~/.claude/settings*.json`, `~/.claude.json` bzw. `$CLAUDE_CONFIG_DIR` anlegen, der in allen
+/// folgenden Sessions die Prüfung unterläuft; ebenso die Konfiguration von Codex. Die Regel
+/// `policy-files` schützt diese Pfade gegen Schreibzugriffe von Tools.
+#[tokio::test]
+async fn pol_001_tools_cannot_write_vendor_hook_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let home = root.join("home");
+    let config_dir = root.join("claude-config");
+    for d in [
+        home.join(".claude"),
+        home.join(".codex"),
+        config_dir.clone(),
+    ] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::create_dir_all(root.join("wt/.claude")).unwrap();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let g = PolicyGate::new(
+        PolicyOptions {
+            harness: "claude".parse::<HarnessId>().unwrap(),
+            workdir: root.join("wt"),
+            home: Some(home.clone()),
+            vendor_dirs: vec![config_dir.clone()],
+            dirs: vec![(Scope::User, root.join("user"))],
+            ..PolicyOptions::default()
+        },
+        tx,
+    );
+    let file = |call: &str, tool: &str, kind: &str, path: &std::path::Path| GateRequest {
+        call_id: call.into(),
+        tool: tool.into(),
+        kind: kind.into(),
+        args: serde_json::json!({ "file_path": path, "content": "{\"hooks\":{}}" }),
+        origin: GateOrigin::PreTool,
+        ..GateRequest::default()
+    };
+    for (i, (tool, kind, path)) in [
+        ("Write", "file_write", home.join(".claude/settings.json")),
+        (
+            "Edit",
+            "file_edit",
+            home.join(".claude/settings.local.json"),
+        ),
+        ("Write", "file_write", home.join(".claude.json")),
+        ("Write", "file_write", config_dir.join("settings.json")),
+        ("Edit", "file_edit", home.join(".codex/config.toml")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g.decide(file(&format!("v{i}"), tool, kind, &path)).await;
+        let GateDecision::Deny { reason } = &d else {
+            panic!("{tool} {}: {d:?}", path.display())
+        };
+        assert!(
+            reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("policy-files"),
+            "{reason:?}"
+        );
+    }
+    for (i, command) in [
+        "echo '{}' > ~/.claude/settings.json",
+        "cp /tmp/x $HOME/.claude.json",
+        "X=~/.codex; cat /tmp/c >> $X/config.toml",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let d = g
+            .decide(bash(&format!("s{i}"), command, GateOrigin::PreTool))
+            .await;
+        assert!(matches!(d, GateDecision::Deny { .. }), "{command}: {d:?}");
+    }
+    // Lesen bleibt erlaubt, ebenso Projekt-Dateien unter `.claude/` (die Projekt-Einstellungen
+    // lädt Claude nicht, #233).
+    let d = g
+        .decide(file(
+            "r1",
+            "Read",
+            "file_read",
+            &home.join(".claude/settings.json"),
+        ))
+        .await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+    let d = g
+        .decide(file(
+            "r2",
+            "Write",
+            "file_write",
+            &root.join("wt/.claude/commands/x.md"),
+        ))
+        .await;
+    assert_eq!(d, GateDecision::Allow { updated_args: None });
+}

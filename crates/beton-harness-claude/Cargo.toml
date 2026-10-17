@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Nur für Tests (Dev-Dependencies, wie `test-budget`, #304): `BETON_CLAUDE_MANAGED_SETTINGS`
+# ersetzt die Pfade der Managed Settings. Nie in ausgelieferten Builds.
+test-managed-settings = []
+
 [dependencies]
 async-trait.workspace = true
 beton-core.workspace = true

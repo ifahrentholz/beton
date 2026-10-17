@@ -141,6 +141,9 @@ pub struct Match {
     /// Teilausdrücke der Bedingung mit Ergebnis (POL-027 AC1); leer ohne `when`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<TracePart>,
+    /// Die Spur ist gekürzt: Ihr Gesamtbudget war erschöpft (#353).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub trace_incomplete: bool,
 }
 
 /// Ein Grund für `deny` oder `ask`.
@@ -173,6 +176,15 @@ pub enum Outcome {
     Ask {
         reasons: Vec<Reason>,
     },
+}
+
+/// Eine Modifikation unterhalb der User-Ebene, die Modell bzw. Effort verteuern würde und
+/// deshalb eine Freigabe braucht (#286, #353).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CostRaise {
+    pub rule: RuleRef,
+    /// Die verteuernden Felder (`model`, `reasoning_effort`).
+    pub fields: Vec<&'static str>,
 }
 
 /// Angewendete Modifikationen.
@@ -259,6 +271,9 @@ pub struct Decision {
     pub notifications: Vec<Notification>,
     pub effects: Vec<PendingEffects>,
     pub warnings: Vec<String>,
+    /// Modifikationen unterhalb der User-Ebene, die verteuern würden und deshalb nachfragen
+    /// (#286, #353).
+    pub cost_raises: Vec<CostRaise>,
     pub policy_set_hash: String,
     pub eval_us: u64,
 }
@@ -376,6 +391,7 @@ struct Run<'a> {
     set: &'a EffectiveSet,
     phase: Phase,
     opts: &'a EvalOptions<'a>,
+    clock: &'a dyn Clock,
     meter: Meter<'a>,
     decision: Decision,
     /// Die geladene Regel je Eintrag in `decision.matched` (gleiche Reihenfolge): Regeltypen
@@ -408,6 +424,7 @@ impl<'a> Run<'a> {
             set,
             phase,
             opts,
+            clock,
             meter: Meter::new(&opts.limits, clock),
             decision: Decision {
                 phase,
@@ -422,6 +439,7 @@ impl<'a> Run<'a> {
                 notifications: Vec::new(),
                 effects: Vec::new(),
                 warnings: Vec::new(),
+                cost_raises: Vec::new(),
                 policy_set_hash: set.hash.clone(),
                 eval_us: 0,
             },
@@ -464,16 +482,22 @@ impl<'a> Run<'a> {
         self.pending_traces.push((dry, index, rule, modified));
     }
 
-    /// Spuren nach der Entscheidung (#263): mit eigenem Meter (Kostenlimit je Teilausdruck,
-    /// ohne Zeitbudget), damit Explain weder das Zeitbudget der Entscheidung verbraucht noch
-    /// sie ändern kann. Den Aufwand begrenzen Ausdrucksgröße (4 KiB) und Kostenlimit.
+    /// Spuren nach der Entscheidung (#263): mit eigenem Meter, damit Explain weder das
+    /// Zeitbudget der Entscheidung verbraucht noch sie ändern kann. Den Aufwand begrenzen das
+    /// Kostenlimit je Teilausdruck und ein Gesamtbudget für Kosten und Zeit (#353); ist es
+    /// erschöpft, bleiben die übrigen Spuren leer und alle betroffenen als unvollständig
+    /// markiert.
     fn fill_traces(&mut self, original: &Activation, modified: &Activation) {
-        let mut meter = Meter::cost_only(&self.opts.limits);
+        let mut meter = Meter::for_trace(&self.opts.limits, self.clock);
         for (dry, index, rule, pass2) in std::mem::take(&mut self.pending_traces) {
             let ctx = if pass2 { modified } else { original };
-            let trace = match &rule.kind {
-                RuleKind::Cel { when: Some(p), .. } => p.trace(ctx, &mut meter),
-                _ => Vec::new(),
+            let (trace, incomplete) = match &rule.kind {
+                _ if meter.exhausted() => (Vec::new(), true),
+                RuleKind::Cel { when: Some(p), .. } => {
+                    let trace = p.trace(ctx, &mut meter);
+                    (trace, meter.exhausted())
+                }
+                _ => (Vec::new(), false),
             };
             let list = if dry {
                 &mut self.decision.would
@@ -482,6 +506,7 @@ impl<'a> Run<'a> {
             };
             if let Some(entry) = list.get_mut(index) {
                 entry.trace = trace;
+                entry.trace_incomplete = incomplete;
             }
         }
     }
@@ -763,6 +788,7 @@ impl<'a> Run<'a> {
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
                 trace: Vec::new(),
+                trace_incomplete: false,
             };
             if dry {
                 self.decision.would.push(entry);
@@ -771,10 +797,17 @@ impl<'a> Run<'a> {
             self.decision.matched.push(entry);
             self.hits.push(rule);
             let Some(m) = &rule.doc.modify else { continue };
+            // Auf den ohnehin geltenden Wert zu ändern ist keine Änderung und braucht keine
+            // Fähigkeit des Harness (#283); solche Felder entfallen.
+            let noop: Vec<&str> = m
+                .fields()
+                .into_iter()
+                .filter(|f| !self.opts.capabilities.supports(f) && self.unchanged(m, f, ctx))
+                .collect();
             let unsupported: Vec<&str> = m
                 .fields()
                 .into_iter()
-                .filter(|f| !self.opts.capabilities.supports(f))
+                .filter(|f| !self.opts.capabilities.supports(f) && !noop.contains(f))
                 .collect();
             if !unsupported.is_empty() {
                 let what = format!(
@@ -807,13 +840,17 @@ impl<'a> Run<'a> {
             // Unterhalb der User-Ebene nur verschärfen (POL-007, #286): Ein teureres Modell oder
             // ein höherer Effort gilt erst nach Freigabe.
             if set.scope > Scope::User
-                && let Some(why) = self.raises_cost(set.scope, m, &written, ctx)
+                && let Some((why, fields)) = self.raises_cost(set.scope, m, &written, ctx)
             {
                 let mut r = Self::reason(set, rule, &why);
                 if r.reason != why {
                     r.reason = format!("{} ({why})", r.reason);
                 }
                 verdicts.ask.push((r, false));
+                self.decision.cost_raises.push(CostRaise {
+                    rule: me.clone(),
+                    fields,
+                });
             }
             for (field, value) in [
                 ("model", &m.model),
@@ -821,6 +858,9 @@ impl<'a> Run<'a> {
                 ("permission_mode", &m.permission_mode),
             ] {
                 let Some(value) = value else { continue };
+                if noop.contains(&field) {
+                    continue;
+                }
                 let value = Value::String(value.clone());
                 match written.get(field) {
                     None => {
@@ -883,18 +923,42 @@ impl<'a> Run<'a> {
     /// Würde die Modifikation einer Regel Modell oder Effort gegenüber der Anfrage verteuern
     /// (#286)? Felder, die schon eine autoritativere Regel geschrieben hat, zählen nicht (sie
     /// werden ohnehin verworfen). `Some(begründung)`, wenn nicht nachweisbar günstiger.
+    /// Gilt der Wert der Modifikation für `field` (`model`, `reasoning_effort`,
+    /// `permission_mode`) ohnehin schon (`start.*` bzw. `request.*`)? Ohne bekannten Wert
+    /// nie.
+    fn unchanged(&self, m: &crate::doc::ModifyDoc, field: &str, ctx: &Activation) -> bool {
+        let object = match self.phase {
+            Phase::SessionStart => "start",
+            Phase::ModelRequest => "request",
+            _ => return false,
+        };
+        let wanted = match field {
+            "model" => &m.model,
+            "reasoning_effort" => &m.reasoning_effort,
+            "permission_mode" => &m.permission_mode,
+            _ => return false,
+        };
+        match (wanted, ctx.field(object, field)) {
+            (Some(w), Some(crate::value::Value::String(current))) => {
+                !w.is_empty() && **w == *current.as_ref()
+            }
+            _ => false,
+        }
+    }
+
     fn raises_cost(
         &self,
         scope: Scope,
         m: &crate::doc::ModifyDoc,
         written: &BTreeMap<&'static str, (Value, RuleRef)>,
         ctx: &Activation,
-    ) -> Option<String> {
+    ) -> Option<(String, Vec<&'static str>)> {
         let object = match self.phase {
             Phase::SessionStart => "start",
             Phase::ModelRequest => "request",
             _ => return None,
         };
+        let mut fields = Vec::new();
         let current = |field: &str| match ctx.field(object, field) {
             Some(crate::value::Value::String(s)) if !s.is_empty() => Some(s.to_string()),
             _ => None,
@@ -906,6 +970,7 @@ impl<'a> Run<'a> {
         {
             let from = current("model");
             if !crate::budget::model_not_more_expensive(from.as_deref(), to) {
+                fields.push("model");
                 why.push(format!(
                     "Modell `{}` → `{to}` ist laut Preis-Katalog nicht nachweisbar günstiger",
                     shown(&from)
@@ -917,6 +982,7 @@ impl<'a> Run<'a> {
         {
             let from = current("reasoning_effort");
             if !crate::budget::effort_not_higher(from.as_deref(), to) {
+                fields.push("reasoning_effort");
                 why.push(format!(
                     "Effort `{}` → `{to}` ist nicht nachweisbar niedriger",
                     shown(&from)
@@ -924,10 +990,13 @@ impl<'a> Run<'a> {
             }
         }
         (!why.is_empty()).then(|| {
-            format!(
-                "Regel der Ebene {} würde verteuern: {}; Freigabe nötig",
-                scope.as_str(),
-                why.join("; ")
+            (
+                format!(
+                    "Regel der Ebene {} würde verteuern: {}; Freigabe nötig",
+                    scope.as_str(),
+                    why.join("; ")
+                ),
+                fields,
             )
         })
     }
@@ -1023,6 +1092,7 @@ impl<'a> Run<'a> {
                 reason: rule.doc.reason.clone(),
                 dry_run: dry,
                 trace: Vec::new(),
+                trace_incomplete: false,
             };
             if dry {
                 self.decision.would.push(entry);

@@ -725,6 +725,7 @@ impl Player {
                 args: call.args,
                 mcp_server: None,
                 acp_kind: None,
+                cwd: None,
                 origin: GateOrigin::PreTool,
                 raw: None,
             };
