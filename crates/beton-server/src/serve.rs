@@ -128,6 +128,18 @@ pub async fn start_with(
         beton_secrets::Secrets::new(store.clone(), local, runtime.secret_backend.clone());
     if let Some(redactor) = &runtime.redactor {
         caps.redaction.attach(&secrets, redactor.clone()).await?;
+        // #216: Auch das lokale Token (nur über seinen Hash) und durchgereichte Secrets aus
+        // der Umgebung des Daemons sind bekannte Werte.
+        token.watch_redaction(redactor.clone());
+        secrets
+            .add_redaction_values(
+                "env_passthrough",
+                crate::sessions::passthrough_secrets(
+                    &runtime.sessions.sandbox,
+                    &runtime.sessions.daemon_env,
+                ),
+            )
+            .await?;
     }
     // Die Proxy-Capability teilen sich die Quelle der beton-CA (PRX-002, #191) und die
     // Credentials der Proxy-Instanzen (PRX-006); beide gehören zum Egress-Proxy.

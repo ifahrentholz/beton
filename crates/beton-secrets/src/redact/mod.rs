@@ -89,9 +89,25 @@ enum State {
     Failed,
 }
 
+/// Bekannte Werte außerhalb des Stores (#216): Matcher je Grund (z. B. `env_passthrough`)
+/// und SHA-256 von Tokens aus 64 Hex-Zeichen (lokales Token des Daemons).
+#[derive(Default)]
+struct Extras {
+    by_reason: std::collections::BTreeMap<String, Arc<KnownSecrets>>,
+    hashes: Arc<Vec<[u8; 32]>>,
+}
+
+/// Matcher für einen Aufruf: Store-Werte (fehlen während des Starts), weitere Werte, Hashes.
+struct Matchers {
+    known: Option<Arc<KnownSecrets>>,
+    extra: Vec<Arc<KnownSecrets>>,
+    hashes: Arc<Vec<[u8; 32]>>,
+}
+
 /// Die Redaction-Pipeline eines Prozesses. Hält die bekannten Werte nur als Matcher.
 pub struct Redactor {
     state: RwLock<State>,
+    extras: RwLock<Extras>,
 }
 
 impl std::fmt::Debug for Redactor {
@@ -108,6 +124,7 @@ impl Redactor {
     pub fn pending() -> Self {
         Self {
             state: RwLock::new(State::Pending),
+            extras: RwLock::default(),
         }
     }
 
@@ -118,6 +135,7 @@ impl Redactor {
                 known: Arc::new(KnownSecrets::empty()),
                 source: KnownSource::None,
             }),
+            extras: RwLock::default(),
         }
     }
 
@@ -167,7 +185,16 @@ impl Redactor {
 
     /// SHA-256 von Tokens aus 64 Hex-Zeichen, die als bekannt gelten, ohne dass der Prozess
     /// den Wert hält (z. B. das lokale Token des Daemons, #216). Ersetzt die bisherige Liste.
-    pub fn set_token_hashes(&self, _hashes: Vec<[u8; 32]>) {}
+    pub fn set_token_hashes(&self, hashes: Vec<[u8; 32]>) {
+        let mut extras = self.extras.write().unwrap_or_else(|e| e.into_inner());
+        extras.hashes = Arc::new(hashes);
+    }
+
+    /// Setzt die weiteren bekannten Werte eines Grunds (nur `beton-secrets`, nach dem Audit).
+    pub(crate) fn install_extra(&self, reason: &str, known: KnownSecrets) {
+        let mut extras = self.extras.write().unwrap_or_else(|e| e.into_inner());
+        extras.by_reason.insert(reason.to_owned(), Arc::new(known));
+    }
 
     /// Aufbau gescheitert: ab jetzt wird alles zurückgehalten (fail closed).
     pub(crate) fn fail(&self) {
@@ -175,39 +202,45 @@ impl Redactor {
         *state = State::Failed;
     }
 
-    /// Der aktuelle Matcher; `None` während des Starts.
-    fn known(&self, lenient: bool) -> Result<Option<Arc<KnownSecrets>>, Unavailable> {
-        match &*self.read() {
-            State::Ready { known, .. } => Ok(Some(known.clone())),
-            State::Pending if lenient => Ok(None),
-            State::Pending | State::Failed => Err(Unavailable),
-        }
+    /// Die aktuellen Matcher; ohne Store-Werte während des Starts.
+    fn known(&self, lenient: bool) -> Result<Matchers, Unavailable> {
+        let known = match &*self.read() {
+            State::Ready { known, .. } => Some(known.clone()),
+            State::Pending if lenient => None,
+            State::Pending | State::Failed => return Err(Unavailable),
+        };
+        let extras = self.extras.read().unwrap_or_else(|e| e.into_inner());
+        Ok(Matchers {
+            known,
+            extra: extras.by_reason.values().cloned().collect(),
+            hashes: extras.hashes.clone(),
+        })
     }
 
     /// Schwärzt einen Text (strikt: [`Unavailable`], solange die Pipeline nicht bereit ist).
     pub fn redact_str<'a>(&self, text: &'a str) -> Result<Cow<'a, str>, Unavailable> {
         let known = self.known(false)?;
-        redact_text(known.as_deref(), text)
+        redact_text(&known, text)
     }
 
     /// Schwärzt alle Strings eines JSON-Werts an Ort und Stelle; `true`, wenn sich etwas
     /// geändert hat. Schlüssel, Zahlen und Wahrheitswerte bleiben.
     pub fn redact_json(&self, value: &mut Value) -> Result<bool, Unavailable> {
         let known = self.known(false)?;
-        redact_value(known.as_deref(), value)
+        redact_value(&known, value)
     }
 
     /// Wie [`Redactor::redact_str`], für Log-Zeilen: Während des Starts (`Pending`) laufen nur
     /// die Detektoren (siehe Modul-Doku); nach einem gescheiterten Aufbau [`Unavailable`].
     pub fn redact_log_str<'a>(&self, text: &'a str) -> Result<Cow<'a, str>, Unavailable> {
         let known = self.known(true)?;
-        redact_text(known.as_deref(), text)
+        redact_text(&known, text)
     }
 
     /// Wie [`Redactor::redact_json`], für Log-Zeilen (siehe [`Redactor::redact_log_str`]).
     pub fn redact_log_json(&self, value: &mut Value) -> Result<bool, Unavailable> {
         let known = self.known(true)?;
-        redact_value(known.as_deref(), value)
+        redact_value(&known, value)
     }
 }
 
@@ -220,14 +253,15 @@ pub(crate) struct Span {
 }
 
 /// Bekannte Werte und Detektoren über einen Text.
-fn redact_text<'a>(
-    known: Option<&KnownSecrets>,
-    text: &'a str,
-) -> Result<Cow<'a, str>, Unavailable> {
+fn redact_text<'a>(m: &Matchers, text: &'a str) -> Result<Cow<'a, str>, Unavailable> {
     let mut spans = Vec::new();
-    if let Some(known) = known {
+    if let Some(known) = &m.known {
         known.find(text, &mut spans);
     }
+    for extra in &m.extra {
+        extra.find(text, &mut spans);
+    }
+    find_hashed(text, &m.hashes, &mut spans);
     detect::find(text, &mut spans)?;
     if spans.is_empty() {
         return Ok(Cow::Borrowed(text));
@@ -283,7 +317,41 @@ fn ceil_char(text: &str, mut i: usize) -> usize {
     i.min(text.len())
 }
 
-fn redact_value(known: Option<&KnownSecrets>, value: &mut Value) -> Result<bool, Unavailable> {
+/// Tokens aus genau 64 Hex-Zeichen (klein, nicht Teil eines längeren Worts), deren SHA-256
+/// bekannt ist (#216); der Wert selbst liegt nicht im Prozess. Art `beton`.
+fn find_hashed(text: &str, hashes: &[[u8; 32]], out: &mut Vec<Span>) {
+    use sha2::Digest as _;
+    const LEN: usize = 64;
+    if hashes.is_empty() {
+        return;
+    }
+    let b = text.as_bytes();
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let hex = |c: u8| c.is_ascii_digit() || (b'a'..=b'f').contains(&c);
+    let mut i = 0;
+    while i < b.len() {
+        if !hex(b[i]) || (i > 0 && word(b[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && hex(b[i]) {
+            i += 1;
+        }
+        if i - start == LEN && (i == b.len() || !word(b[i])) {
+            let h: [u8; 32] = sha2::Sha256::digest(&b[start..i]).into();
+            if hashes.iter().any(|k| *k == h) {
+                out.push(Span {
+                    start,
+                    end: i,
+                    kind: "beton",
+                });
+            }
+        }
+    }
+}
+
+fn redact_value(known: &Matchers, value: &mut Value) -> Result<bool, Unavailable> {
     match value {
         Value::String(s) => match redact_text(known, s)? {
             Cow::Borrowed(_) => Ok(false),

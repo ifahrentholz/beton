@@ -337,6 +337,31 @@ impl crate::tunnel::SystemCalls for ServerSystemCalls {
     }
 }
 
+/// Durchgereichte Variablen mit Secret-Namen (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*PASSWORD*`)
+/// und ihre Werte aus der Umgebung des Daemons: bekannte Werte der Redaction (#216).
+pub fn passthrough_secrets(
+    spec: &beton_sandbox::SandboxSpec,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, beton_secrets::SecretValue)> {
+    passthrough_names(spec, env)
+        .into_iter()
+        .filter(|name| secret_like(name))
+        .filter_map(|name| {
+            let value = beton_secrets::SecretValue::from(env.get(&name)?.as_str());
+            Some((name, value))
+        })
+        .collect()
+}
+
+/// Klingt der Name einer Variable nach einem Secret?
+fn secret_like(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    ["TOKEN", "KEY", "SECRET"]
+        .iter()
+        .any(|s| n == *s || n.ends_with(&format!("_{s}")))
+        || n.contains("PASSWORD")
+}
+
 /// Variablen aus `sandbox.env.passthrough`, die der Runner erben muss, damit die Auflösung sie
 /// in die Sandbox übernehmen kann (SBX-005): Namen bzw. Präfixe (`LC_*`) gegen die Umgebung
 /// des Daemons, nie gesperrte (SSH_AUTH_SOCK, LD_PRELOAD, …) oder `BETON_*`.
