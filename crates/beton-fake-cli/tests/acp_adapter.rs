@@ -834,14 +834,65 @@ fn text_of(events: &[EventPayload]) -> String {
         .join("\n")
 }
 
-/// ADR-0037 verlangt für `tool_isolation: beton` `terminal/*` **und** `fs/*` in Stufe 2;
-/// `fs/write_text_file` läuft noch in Stufe 0 (#329). Bis dahin bleibt ACP `inherited`
-/// (degraded, nur mit `require_tool_isolation: false`, kein `yolo`), obwohl `terminal/*` und
-/// `fs/read_text_file` schon in Stufe 2 laufen (Review #370).
+/// ADR-0037 verlangt für `tool_isolation: beton` `terminal/*` **und** `fs/*` in Stufe 2; seit
+/// #329 schreibt auch `fs/write_text_file` dort. ACP meldet deshalb `beton` (kein degraded
+/// mehr, `require_tool_isolation` bleibt `true`).
 #[test]
-fn har_007_acp_stays_inherited_until_fs_write_runs_in_stage_two() {
+fn har_007_acp_reports_tool_isolation_beton() {
     let caps = adapter().capabilities(Mode::Native, &beton_harness::ProbeReport::default());
-    assert_eq!(caps.tool_isolation, beton_harness::ToolIsolation::Inherited);
+    assert_eq!(caps.tool_isolation, beton_harness::ToolIsolation::Beton);
+}
+
+/// #329: Hat die Session Stufe 2, schreibt beton `fs/write_text_file` dort (über den Launcher
+/// der Tools, Inhalt über stdin), nie im Runner. Die Prüfungen in Stufe 0 (Arbeitsverzeichnis,
+/// `.git`, Policy der Stufe 1) gelten zusätzlich: Ein abgelehntes Ziel startet nichts.
+#[tokio::test]
+async fn har_007_fs_write_text_file_is_written_in_stage_two() {
+    let ws = tempfile::tempdir().unwrap();
+    let ws_path = ws.path().canonicalize().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let yaml = format!(
+        "turns:\n  - emit:\n      - {{ fs_write: {{ path: \"{}\", content: \"hallo stufe 2\" }} }}\n      - {{ fs_write: {{ path: \"{}\", content: \"böse\" }} }}\n",
+        ws_path.join("notiz.txt").display(),
+        outside.path().join("x.txt").display()
+    );
+    let (_dir, path) = scenario(&yaml);
+    let gate = Arc::new(Recording::default());
+    let tools = Arc::new(RecordingLauncher {
+        inner: Arc::new(RealLauncher),
+        seen: Default::default(),
+    });
+    let (mut s, mut rx) = start_tools(
+        &path,
+        gate.clone(),
+        &ws_path,
+        tools.clone(),
+        Arc::new(FakeTerminals::default()),
+    )
+    .await;
+    s.send("los".into()).await.unwrap();
+    let events = until_turn_end(&mut rx).await;
+    let text = text_of(&events);
+    assert!(text.contains("fs_write ok"), "{text}");
+    assert!(text.contains("fs_write error"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(ws_path.join("notiz.txt")).unwrap(),
+        "hallo stufe 2"
+    );
+    assert!(!outside.path().join("x.txt").exists());
+    let seen = tools.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    let target = ws_path.join("notiz.txt").display().to_string();
+    assert!(seen[0].args.contains(&target), "{seen:?}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EventPayload::ToolCallStarted(t)
+            if t.sandbox_stage == Some(beton_core::event::SandboxStage::Tools))),
+        "{:?}",
+        names(&events)
+    );
+    s.shutdown(Shutdown::Kill).await.unwrap();
 }
 
 /// #326: `fs/read_text_file` geht als Datei-Lesen durch das Gate und läuft in Stufe 2 (über den

@@ -133,8 +133,9 @@ pub struct ResolveCtx {
     /// Austausch zwischen Stufe 1 und 2 (cwd-Datei und Ausgaben von Claude): in beiden Stufen
     /// beschreibbar, in Stufe 2 ohne Symlinks.
     pub exchange: Option<PathBuf>,
-    /// Verzeichnis der Session (Stufenmodell): In Stufe 2 bis auf die eigenen Wurzeln
-    /// verdeckt (Linux: leeres tmpfs; macOS gibt Seatbelt ohnehin nur die Wurzeln frei).
+    /// Verzeichnis der Session (Stufenmodell): Unter Linux verdeckt ein leeres tmpfs sein
+    /// Elternverzeichnis (alle Sessions, #211) bis auf die eigenen Wurzeln, in beiden Stufen;
+    /// macOS gibt Seatbelt ohnehin nur die Wurzeln frei.
     pub session_dir: Option<PathBuf>,
     /// Verzeichnisse, die nicht in den `PATH` dieser Stufe gehören (Stufe 1: alles, was
     /// Stufe 2 schreiben kann; sonst legte ein Tool dort ein Programm ab, das Stufe 1 startet).
@@ -267,6 +268,10 @@ pub struct ResolvedPolicy {
     pub inherited_tools: bool,
     /// Hinweise der Auflösung (z. B. übersprungene, nicht vorhandene Grants).
     pub notes: Vec<String>,
+    /// Maskierte Dateien mit weiteren Hardlinks (#203): Ein Link in einer Freigabe wäre
+    /// lesbar, weil Seatbelt Pfade prüft und Landlock wie die Masken-Mounts am Zugriffspfad
+    /// hängen. Der Runner warnt beim Start der Session.
+    pub hardlinked_masks: Vec<PathBuf>,
 }
 
 impl ResolvedPolicy {
@@ -301,6 +306,7 @@ impl ResolvedPolicy {
             degraded: caps::required_default(),
             inherited_tools: false,
             notes: Vec::new(),
+            hardlinked_masks: Vec::new(),
         }
     }
 }
@@ -1004,6 +1010,10 @@ pub fn resolve(
             });
         }
     }
+    // Maskierte Dateien mit weiteren Hardlinks (#203): Warnung, kein Abbruch. Den Link selbst
+    // legt nur ein Prozess außerhalb der Sandbox an (wie eine Kopie der Datei); aus der Sandbox
+    // gelingt es nicht (SBX-004 AC4).
+    let hardlinked_masks = hardlinked(&masks, &mut notes);
     // Ein Workspace oder Grant in einem maskierten Pfad wäre unsichtbar bzw. eine Lücke.
     for m in &masks {
         if let Mask::Path { path, .. } = m {
@@ -1197,23 +1207,30 @@ pub fn resolve(
         Vec::new()
     };
 
+    // Session-Verzeichnisse verdecken (#211): eine Ebene höher, über allen Sessions (unter
+    // Linux `/var/tmp`), damit auch die Sockets paralleler Sessions vor Landlock-ABI 9 nicht per
+    // `connect` erreichbar sind; in beiden Stufen. Die eigenen Wurzeln darin werden wieder
+    // eingebunden.
     let mut private = Vec::new();
-    if ctx.stage == Stage::Tools
-        && let Some(d) = &ctx.session_dir
-    {
+    if let Some(d) = &ctx.session_dir {
         let d = std::fs::canonicalize(d)
             .map_err(|e| SandboxError::invalid("session_dir", format!("{}: {e}", d.display())))?;
+        let base = d.parent().map_or_else(|| d.clone(), Path::to_path_buf);
         if read_roots
             .iter()
             .chain(&write_roots)
-            .any(|r| d.starts_with(r))
+            .any(|r| base.starts_with(r))
         {
             return Err(SandboxError::escape(
                 "session_dir",
-                format!("{} liegt in einer Freigabe der Stufe 2", d.display()),
+                format!(
+                    "{} liegt in einer Freigabe der Stufe {}",
+                    base.display(),
+                    if ctx.stage == Stage::Tools { 2 } else { 1 }
+                ),
             ));
         }
-        private.push(d);
+        private.push(base);
     }
 
     let (required, degraded) = if backend == ProviderId::None {
@@ -1249,7 +1266,88 @@ pub fn resolve(
         degraded,
         inherited_tools: false,
         notes,
+        hardlinked_masks,
     })
+}
+
+/// Höchstzahl der Einträge, die die Hardlink-Prüfung in maskierten Verzeichnissen ansieht,
+/// und deren Tiefe (der Start der Session soll nicht an großen Verzeichnissen hängen).
+const HARDLINK_SCAN_ENTRIES: usize = 4000;
+const HARDLINK_SCAN_DEPTH: usize = 3;
+
+/// Maskierte Dateien (Default-Masken, in Stufe 2 auch Credential-Dateien der Adapter) mit
+/// `st_nlink > 1`, sortiert; je Fund ein Hinweis (#203). Symlinks werden nicht verfolgt.
+fn hardlinked(masks: &[Mask], notes: &mut Vec<String>) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        fn visit(path: &Path, depth: usize, budget: &mut usize, out: &mut BTreeMap<PathBuf, u64>) {
+            let Ok(meta) = std::fs::symlink_metadata(path) else {
+                return;
+            };
+            if meta.is_file() {
+                if meta.nlink() > 1 {
+                    out.insert(path.to_path_buf(), meta.nlink());
+                }
+                return;
+            }
+            if !meta.is_dir() || depth == 0 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for e in entries.flatten() {
+                if *budget == 0 {
+                    return;
+                }
+                *budget -= 1;
+                visit(&e.path(), depth - 1, budget, out);
+            }
+        }
+        let checked = |source: &str| source == "default" || source.starts_with("harness:");
+        let mut found = BTreeMap::new();
+        let mut budget = HARDLINK_SCAN_ENTRIES;
+        for m in masks {
+            match m {
+                Mask::Path { path, source } if checked(source) => {
+                    visit(path, HARDLINK_SCAN_DEPTH, &mut budget, &mut found);
+                }
+                Mask::Pattern {
+                    root,
+                    glob,
+                    any_depth: false,
+                    source,
+                } if checked(source) => {
+                    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+                        if crate::linux::plan::glob_match(glob, &e.file_name().to_string_lossy()) {
+                            visit(&e.path(), 0, &mut budget, &mut found);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if budget == 0 {
+            notes.push(format!(
+                "Hardlinks maskierter Dateien: nur die ersten {HARDLINK_SCAN_ENTRIES} Einträge \
+                 geprüft (#203)"
+            ));
+        }
+        for (path, n) in &found {
+            notes.push(format!(
+                "Maske {}: Datei hat {n} Hardlinks; ein weiterer Link in einer Freigabe wäre in \
+                 der Sandbox lesbar (#203)",
+                path.display()
+            ));
+        }
+        found.into_keys().collect()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (masks, notes);
+        Vec::new()
+    }
 }
 
 /// Markiert Limits, die das Backend laut Probe nicht durchsetzen kann, als *degraded* (sichtbar

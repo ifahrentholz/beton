@@ -400,10 +400,14 @@ pub async fn main_from_env() -> std::process::ExitCode {
             "Testbudget der Policy-Engine aktiv: {ms} ms je Auswertung statt 10 ms (nur für Tests)"
         );
     }
-    // Keine Core-Dumps mit Credential-Werten (#295). Nicht dumpable ist nur der Daemon: Der
-    // Runner bleibt für Diagnose und `RUN-002` über `/proc/<pid>/cwd` lesbar (Restrisiko).
+    // Keine Core-Dumps mit Credential-Werten (#295); unter Linux zusätzlich nicht dumpable,
+    // damit Prozesse desselben Users den Speicher nicht über `/proc/<pid>/mem` bzw. ptrace lesen
+    // (#364). Der Harness wird per `execve` gestartet und ist wieder dumpable.
     if let Err(e) = harden::no_core_dumps() {
         tracing::warn!("Core-Dumps nicht abschaltbar: {e}");
+    }
+    if let Err(e) = harden::not_dumpable() {
+        tracing::warn!("Runner nicht als nicht-dumpable markierbar: {e}");
     }
     let boot = match RunnerBoot::from_env_and_stdin() {
         Ok(b) => b,
@@ -1059,8 +1063,8 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 ..st.env.clone()
             }),
         ),
-        // Tools, die beton selbst ausführt (ACP `fs/read_text_file`, `terminal/*`, #326): in
-        // Stufe 2 und über die Terminals des Runners, auch solange ACP degraded ist (#329).
+        // Tools, die beton selbst ausführt (ACP `fs/*`, `terminal/*`, #326, #329): in Stufe 2
+        // und über die Terminals des Runners; für ACP auch ohne geprüfte Capabilities.
         Some(st)
             if beton_tools_in_stage_two(
                 &boot.harness,
@@ -1087,9 +1091,15 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     };
     // Vor dem Start prüft der Runner Policies selbst (Start verweigert, #182, POL-024).
     gate.defer_rechecks();
+    // SBX-002 (#270): Zahl der Broker-Starts je Gate-Entscheidung für die Integritätsprüfung.
+    let shell_anchors = stages::ShellAnchors::default();
+    let harness_gate: Arc<dyn beton_harness::Gate> = match stages.as_ref() {
+        Some(s) => s.anchoring_gate(Arc::new(gate.clone()), shell_anchors.clone()),
+        None => Arc::new(gate.clone()),
+    };
     let ctx = AdapterContext {
         stage,
-        gate: Arc::new(gate.clone()),
+        gate: harness_gate,
         launcher,
         env,
     };
@@ -1490,9 +1500,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut pending_calls: HashMap<String, oneshot::Sender<Result<Value, Value>>> = HashMap::new();
     let mut next_call: u64 = 0;
 
-    // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018).
+    // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018); Hardlinks auf
+    // maskierte Dateien (#203).
     let (files, files_notice) = open_tracker(&boot).await;
-    if let Some(text) = files_notice {
+    let hardlink_notice = stages
+        .as_ref()
+        .and_then(stages::SessionStages::hardlink_notice);
+    for text in files_notice.into_iter().chain(hardlink_notice) {
         pending_status.push(Event::new(
             boot.session_id,
             0,
@@ -1587,7 +1601,10 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
                 && predicted_caps(&boot, caps.as_ref(), true).tool_isolation
                     == beton_harness::ToolIsolation::ShellOverride
         })
-        .map(|_| stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS));
+        .map(|_| {
+            stages::ShellIntegrity::new(&beton_harness_claude::SHELL_TOOLS)
+                .with_anchors(shell_anchors.clone())
+        });
     // SBX-003 (#311): Weckt den Runner, wenn der Git-Shim der Stufe 1 einen Verstoß findet.
     let git_alarm = stages
         .as_ref()
@@ -2495,8 +2512,8 @@ enum TurnGate {
 /// Capabilities, mit denen der Harness laufen wird: beim Fake samt Szenario, bei Claude ohne
 /// Hook-Brücke nur die Rückfragen (POL-024).
 /// Bekommt der Harness die Stufe-2-Tools und Terminals des Runners für Tools, die beton selbst
-/// ausführt? Mit `tool_isolation: beton` immer, außerdem ACP (`fs/read_text_file`,
-/// `terminal/*`), das bis #329 als `inherited` gilt.
+/// ausführt? Mit `tool_isolation: beton` immer, ACP (`fs/*`, `terminal/*`) auch ohne geprüfte
+/// Capabilities.
 fn beton_tools_in_stage_two(harness: &HarnessId, isolation: beton_harness::ToolIsolation) -> bool {
     isolation == beton_harness::ToolIsolation::Beton || harness.is_acp()
 }
@@ -3540,8 +3557,9 @@ async fn deliver(
 mod tests {
     use beton_core::event::AuthSource;
 
-    /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals, obwohl es bis #329 als
-    /// `inherited` gilt; andere Harnesses mit `inherited` (Codex) nicht.
+    /// #326, Review #370: ACP bekommt die Stufe-2-Tools und Terminals immer (seit #329 meldet
+    /// es `beton`, auch vorhergesagte Capabilities ohne Probe genügen); andere Harnesses mit
+    /// `inherited` (Codex) nicht.
     #[test]
     fn har_007_acp_gets_stage_two_tools_while_inherited() {
         use beton_harness::ToolIsolation::{Beton, Inherited, ShellOverride};

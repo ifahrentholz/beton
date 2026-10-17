@@ -343,6 +343,49 @@ pub fn sandbox_vars(stages: Option<&SessionStages>) -> beton_policy::vars::Start
 }
 
 impl SessionStages {
+    /// Warnung beim Start (#203): maskierte Dateien mit weiteren Hardlinks (beide Stufen). Ein
+    /// Link in einer Freigabe wäre in der Sandbox lesbar; `beton sandbox explain` nennt sie.
+    pub fn hardlink_notice(&self) -> Option<String> {
+        let mut paths: Vec<&Path> = self
+            .harness
+            .policy()
+            .hardlinked_masks
+            .iter()
+            .chain(&self.tools.policy().hardlinked_masks)
+            .map(PathBuf::as_path)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        if paths.is_empty() {
+            return None;
+        }
+        let list: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        Some(format!(
+            "Sandbox: maskierte Dateien haben weitere Hardlinks ({}); liegt ein Link in einer \
+             Freigabe, ist die Datei darüber lesbar. Hardlinks entfernen oder `beton sandbox \
+             explain` prüfen.",
+            list.join(", ")
+        ))
+    }
+
+    /// Gate des Harness, das vor jeder Entscheidung die Zahl der Broker-Starts festhält
+    /// (Integritätsprüfung je Tool-Call, #270).
+    pub fn anchoring_gate(
+        &self,
+        inner: Arc<dyn beton_harness::Gate>,
+        anchors: ShellAnchors,
+    ) -> Arc<dyn beton_harness::Gate> {
+        #[cfg(unix)]
+        let starts = Some(self._broker.start_counter());
+        #[cfg(not(unix))]
+        let starts = None;
+        Arc::new(AnchoringGate {
+            inner,
+            anchors,
+            starts,
+        })
+    }
+
     /// Kommandos, die der Exec-Broker bisher in Stufe 2 gestartet hat.
     pub fn broker_starts(&self) -> u64 {
         #[cfg(unix)]
@@ -506,18 +549,77 @@ impl SessionStages {
     }
 }
 
+/// Zahl der Broker-Starts, als das Gate zum ersten Mal über einen Tool-Call entschied (#270).
+/// Claude startet die Shell eines `Bash`-Aufrufs erst nach dem `PreToolUse`-Hook bzw. der
+/// Rückfrage; ein Start mit kleinerer Nummer gehört deshalb nie zu diesem Aufruf.
+#[derive(Debug, Clone, Default)]
+pub struct ShellAnchors(Arc<std::sync::Mutex<std::collections::HashMap<String, u64>>>);
+
+impl ShellAnchors {
+    /// Hält `starts` für `call_id` fest (nur die erste Entscheidung zählt).
+    pub fn record(&self, call_id: &str, starts: u64) {
+        if let Ok(mut m) = self.0.lock() {
+            m.entry(call_id.to_owned()).or_insert(starts);
+        }
+    }
+
+    fn take(&self, call_id: &str) -> Option<u64> {
+        self.0.lock().ok().and_then(|mut m| m.remove(call_id))
+    }
+}
+
+/// Hält vor jeder Entscheidung des inneren Gates die Zahl der Broker-Starts fest.
+struct AnchoringGate {
+    inner: Arc<dyn beton_harness::Gate>,
+    anchors: ShellAnchors,
+    starts: Option<Arc<std::sync::atomic::AtomicU64>>,
+}
+
+#[async_trait::async_trait]
+impl beton_harness::Gate for AnchoringGate {
+    async fn decide(&self, request: beton_harness::GateRequest) -> beton_harness::GateDecision {
+        let starts = self
+            .starts
+            .as_ref()
+            .map_or(0, |s| s.load(std::sync::atomic::Ordering::SeqCst));
+        self.anchors.record(&request.call_id, starts);
+        self.inner.decide(request).await
+    }
+
+    async fn model_request(
+        &self,
+        request: beton_harness::ModelGateRequest,
+    ) -> beton_harness::ModelGateDecision {
+        self.inner.model_request(request).await
+    }
+
+    async fn tool_result(
+        &self,
+        request: beton_harness::ResultGateRequest,
+    ) -> beton_harness::GateDecision {
+        self.inner.tool_result(request).await
+    }
+}
+
 /// Integritätsprüfung für Harnesses mit `tool_isolation: shell_override` (Claude Code): Jeder
 /// abgeschlossene Aufruf eines Shell-Tools muss über den Exec-Broker gestartet worden sein.
 /// Ignoriert die CLI `CLAUDE_CODE_SHELL` (etwa nach einem Update), liefen ihre Kommandos in
 /// Stufe 1; dann endet die Session (fail closed, Security-Review #228). Gezählt wird jeder
-/// Abschluss außer `denied` (auch ein gescheitertes oder abgebrochenes Kommando ist gelaufen);
-/// zusätzliche Broker-Starts (Env-Probe, Shell-Snapshot) schaden nicht. Der Zähler ist global,
-/// nicht je Tool-Call; Code, der schon in Stufe 1 läuft, kann ihn erhöhen (#270).
+/// Abschluss außer `denied` (auch ein gescheitertes oder abgebrochenes Kommando ist gelaufen).
+///
+/// Zuordnung je Tool-Call (#270): Jeder Aufruf verbraucht einen eigenen Start, der nach der
+/// ersten Gate-Entscheidung über ihn liegt ([`ShellAnchors`]) und spätestens bei seinem
+/// Abschluss stattgefunden hat; gewählt wird der früheste freie (bei sich überlappenden
+/// Aufrufen in der Reihenfolge ihres Abschlusses optimal). Weitere Starts (Env-Probe,
+/// Shell-Snapshot) schaden nicht, decken aber keinen späteren Aufruf mehr. Ohne festgehaltene
+/// Entscheidung zählt jeder freie Start. Restrisiko: Code, der schon in Stufe 1 läuft, kann im
+/// Fenster eines Aufrufs selbst über den Broker starten (Shell-Starts in Stufe 1 sperren: #270).
 #[derive(Debug, Default)]
 pub struct ShellIntegrity {
     shell_tools: Vec<String>,
     open: std::collections::HashSet<String>,
-    completed: u64,
+    consumed: std::collections::BTreeSet<u64>,
+    anchors: ShellAnchors,
 }
 
 impl ShellIntegrity {
@@ -526,6 +628,13 @@ impl ShellIntegrity {
             shell_tools: shell_tools.iter().map(|s| (*s).to_owned()).collect(),
             ..Self::default()
         }
+    }
+
+    /// Zeitpunkte der Gate-Entscheidungen (siehe [`ShellAnchors`]).
+    #[must_use]
+    pub fn with_anchors(mut self, anchors: ShellAnchors) -> Self {
+        self.anchors = anchors;
+        self
     }
 
     /// Wertet ein Event aus; `Err` mit Begründung bei einem Verstoß.
@@ -541,16 +650,20 @@ impl ShellIntegrity {
             }
             EventPayload::ToolCallCompleted(c) => {
                 let shell = self.open.remove(&c.call_id);
+                let after = self.anchors.take(&c.call_id).unwrap_or(0);
                 if shell && c.status != ToolStatus::Denied {
-                    self.completed += 1;
-                    if self.completed > broker_starts {
+                    let free = (after.saturating_add(1)..=broker_starts)
+                        .find(|k| !self.consumed.contains(k));
+                    let Some(start) = free else {
                         return Err(format!(
-                            "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker ({} \
-                             abgeschlossene Aufrufe, {broker_starts} Starts in Stufe 2); die \
-                             Session endet, weil Kommandos sonst in Stufe 1 liefen",
-                            c.call_id, self.completed
+                            "Shell-Tool-Aufruf {} lief nicht über den Exec-Broker (kein eigener \
+                             Start in Stufe 2 nach der Freigabe: {after} Starts davor, \
+                             {broker_starts} insgesamt); die Session endet, weil Kommandos sonst \
+                             in Stufe 1 liefen",
+                            c.call_id
                         ));
-                    }
+                    };
+                    self.consumed.insert(start);
                 }
             }
             _ => {}
@@ -1060,8 +1173,9 @@ async fn compose_unix(
     if tools_net {
         c.credential_env = tools_env;
     }
-    // Unter Linux verdeckt ein leeres tmpfs das Session-Verzeichnis (Sockets der Stufe 1,
-    // Broker-Socket; vor Landlock-ABI 9 sonst per `connect` erreichbar).
+    // Unter Linux verdeckt ein leeres tmpfs die Session-Verzeichnisse (Sockets der Stufe 1,
+    // Broker-Socket, auch paralleler Sessions; vor Landlock-ABI 9 sonst per `connect`
+    // erreichbar, #211).
     c.session_dir = Some(root.clone());
     let tools_policy = provider.resolve(&spec, &c)?;
     check_session_dir(&root, &[&tools_tmp, &xchg, &ca_dir], &tools_policy)?;
@@ -1105,6 +1219,8 @@ async fn compose_unix(
 
     // Stufe 1.
     let mut c = ctx(Stage::Harness, &harness_tmp, harness_proxy);
+    // Wie in Stufe 2: Session-Verzeichnisse paralleler Sessions verdeckt (#211).
+    c.session_dir = Some(root.clone());
     c.harness = grants;
     c.exec = Some(broker.access(bin.clone()));
     c.runtime = Some(runtime.clone());

@@ -1,6 +1,6 @@
 # ADR-0037: Tool-Isolation der Vendor-CLIs – Claude über `CLAUDE_CODE_SHELL`, Codex nur als bestätigtes, degradiertes Opt-out
 
-- **Status:** Akzeptiert
+- **Status:** Akzeptiert; ACP-Teil umgesetzt (2026-10-17, #329: `tool_isolation: beton`), Integritätsprüfung je Tool-Call (#270)
 - **Datum:** 2026-10-16
 - **Entscheider:** Coding-Agent (delegiert, AGENTS.md § 5); umgesetzt und security-reviewed in WP-45 (#168, PR #228)
 
@@ -21,13 +21,13 @@ ADR-0007 legt das zweistufige Modell fest: Die Vendor-CLI läuft in Stufe 1 und 
 ## Entscheidung
 - **Claude Code:** Option **B**. `tool_isolation: shell_override` über `CLAUDE_CODE_SHELL=<shim>/bt-exec-zsh` bzw. `bt-exec-bash`, zusätzlich per `--settings` (`env`); `CLAUDE_CODE_TMPDIR` zeigt auf den Austausch. Der Runner prüft jeden abgeschlossenen `Bash`-Aufruf gegen die Starts des Exec-Brokers; fehlt einer, endet die Session mit `sandbox_integrity` (fail closed). Hooks und von Claude gestartete MCP-Server laufen in Stufe 1 (Restrisiko im Bedrohungsmodell).
 - **Codex:** Option **D**. Der Adapter deklariert `tool_isolation: inherited`. Mit dem Default „Sandbox erforderlich“ (SBX-006) startet Codex nicht (`sandbox_unavailable` mit Hinweis). Nur mit `sandbox.require_tool_isolation: false` startet er, markiert als *degraded* (`sandbox.started.degraded`) und ohne `yolo`. Option **E** wird je Codex-Release neu geprüft (#239); bei Erfolg wird der Adapter `shell_override`.
-- **ACP:** `inherited`, bis beton `terminal/*` und `fs/*` in Stufe 2 anbietet (#326, #329); dann `beton`.
+- **ACP:** `inherited`, bis beton `terminal/*` und `fs/*` in Stufe 2 anbietet (#326, #329); dann `beton`. *(Umgesetzt mit #329: `fs/write_text_file` schreibt über den Launcher der Tools in Stufe 2, ACP meldet `beton`.)*
 - **Direkt-API-Harness:** `beton`, Tools immer in Stufe 2.
 - Jede Annahme über Vendor-Mechanismen wird pro Vendor-Release gegen die echte CLI geprüft (QA-019, Golden Transcripts HAR-025).
 
 ## Konsequenzen
 - Positiv: Für Claude ist Stufe 2 erzwungen und überprüft; Hook und System-Tools funktionieren in der Sandbox.
-- Negativ / Risiken: Codex ist in der Default-Konfiguration nicht nutzbar, das betrifft das Demo-Szenario von M3 und Release 0.1. Der Integritätszähler ist global: Code, der schon in Stufe 1 läuft, kann ihn erhöhen (#270). Hooks und MCP-Server des Nutzers laufen in Stufe 1.
+- Negativ / Risiken: Codex ist in der Default-Konfiguration nicht nutzbar, das betrifft das Demo-Szenario von M3 und Release 0.1. Der Integritätszähler ist global: Code, der schon in Stufe 1 läuft, kann ihn erhöhen (#270). *(Seit #270 ordnet der Runner jedem Aufruf einen eigenen Start nach der Gate-Entscheidung zu; Code in Stufe 1 kann im Fenster eines Aufrufs weiter selbst starten, bis Shell-Starts in Stufe 1 gesperrt sind.)* Hooks und MCP-Server des Nutzers laufen in Stufe 1.
 - Folgearbeiten: #239 (Codex in Stufe 2), #270 (Zuordnung je Tool-Call, Shell-Starts in Stufe 1 sperren), #326/#329 (ACP über beton), manuelle Nachprüfung mit der echten CLI (#260).
 
 ## Bezug

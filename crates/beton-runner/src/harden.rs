@@ -3,8 +3,8 @@
 //! Secret-Werte liegen in Stufe 0 auch in Puffern, die sich nicht nullen lassen
 //! (`serde_json::Value`, Tunnel-Frames, hyper-Puffer); `zeroize` ist dort nur best effort.
 //! Damit sie nicht in einem Core-Dump auf der Platte landen, setzen Daemon und Runner
-//! `RLIMIT_CORE` auf 0; der Daemon ist unter Linux zusätzlich nicht dumpable
-//! (`PR_SET_DUMPABLE`), sodass auch andere Prozesse desselben Users seinen Speicher nicht über
+//! `RLIMIT_CORE` auf 0; beide sind unter Linux zusätzlich nicht dumpable (`PR_SET_DUMPABLE`,
+//! Runner seit #364), sodass auch andere Prozesse desselben Users ihren Speicher nicht über
 //! `/proc/<pid>/mem` oder ptrace lesen.
 
 /// Keine Core-Dumps (weiches und hartes Limit 0); vererbt sich auf Kindprozesse.

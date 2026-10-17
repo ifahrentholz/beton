@@ -162,8 +162,8 @@ async fn initialize(
             json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 // `fs/write_text_file` führt beton selbst aus, geprüft wie jedes Schreiben (POL-023
-                // AC2, HAR-007 AC2); Lesen und `terminal/*` in Stufe 2, nur wenn die Session sie
-                // hat (#326, fail closed).
+                // AC2, HAR-007 AC2), mit Stufenmodell in Stufe 2 (#329); Lesen und `terminal/*` in
+                // Stufe 2, nur wenn die Session sie hat (#326, fail closed).
                 "clientCapabilities": {"fs": {"readTextFile": stage_two, "writeTextFile": true}, "terminal": stage_two},
                 "clientInfo": {"name": "beton", "version": env!("CARGO_PKG_VERSION")},
             }),
@@ -248,10 +248,10 @@ impl HarnessAdapter for AcpAdapter {
             // Weitere Modi meldet die Session, sobald der Agent sie anbietet (HAR-027).
             permission_modes: vec![PermissionMode::Default],
             context_window: None,
-            // `terminal/*` und `fs/read_text_file` führt beton schon in Stufe 2 aus (#326), aber
-            // `fs/write_text_file` noch in Stufe 0 (#329). ADR-0037 verlangt für `beton` beides;
-            // bis dahin degraded (`require_tool_isolation: false`, kein `yolo`).
-            tool_isolation: beton_harness::ToolIsolation::Inherited,
+            // `terminal/*`, `fs/read_text_file` (#326) und `fs/write_text_file` (#329) führt
+            // beton in Stufe 2 aus (ADR-0037). Tools, die der Agent in seinem eigenen Prozess
+            // ausführt, laufen weiter in Stufe 1 (Restrisiko, 04-sandbox.md).
+            tool_isolation: beton_harness::ToolIsolation::Beton,
             native_project_files: Vec::new(),
         }
     }
@@ -906,6 +906,58 @@ fn write_no_follow(target: &std::path::Path, content: &str) -> std::io::Result<(
     o.open(target)?.write_all(content.as_bytes())
 }
 
+/// Höchste Wartezeit auf das Schreiben in Stufe 2.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Schreibt `content` nach `target` in Stufe 2 (#329): `/bin/sh -c 'cat >"$1"'` über den
+/// Launcher der Tools, der Inhalt kommt über stdin, der Pfad als Argument (keine Shell-Syntax
+/// aus dem Agent). Rechte-Matrix, Masken und Symlinks im Pfad prüft der Kernel beim Öffnen,
+/// ohne Zeitfenster zwischen Prüfung und Schreiben; die Prüfungen in Stufe 0
+/// ([`write_target`]) gelten zusätzlich.
+pub async fn write_in_stage_two(
+    tools: &dyn beton_harness::process::ProcessLauncher,
+    target: &std::path::Path,
+    content: &str,
+    cwd: &std::path::Path,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt as _;
+    let mut child = tools
+        .launch(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "cat >\"$1\"".into(),
+                "beton-fs-write".into(),
+                target.to_string_lossy().into_owned(),
+            ],
+            cwd: Some(cwd.to_path_buf()),
+            ..LaunchSpec::default()
+        })
+        .await
+        .map_err(|e| format!("Stufe 2: {e}"))?;
+    let io = child.take_io().ok_or("Stufe 2 ohne Eingabe")?;
+    drop(io.stdout);
+    let mut stdin = io.stdin;
+    let wrote = async {
+        stdin.write_all(content.as_bytes()).await?;
+        stdin.shutdown().await
+    }
+    .await;
+    drop(stdin);
+    let exit = match tokio::time::timeout(WRITE_TIMEOUT, child.wait()).await {
+        Ok(r) => r.map_err(|e| e.to_string())?,
+        Err(_) => {
+            let _ = child.kill().await;
+            return Err("Stufe 2 antwortet nicht".into());
+        }
+    };
+    if wrote.is_err() || exit.code != Some(0) {
+        // Masken, fehlende Rechte und Symlinks nach draußen sehen für den Agent gleich aus.
+        return Err("nicht schreibbar (Sandbox der Tools)".into());
+    }
+    Ok(())
+}
+
 /// `fs/write_text_file` (POL-023 AC2, HAR-007 AC2): unabhängig von Permission-Requests als
 /// Datei-Schreiben vor der Ausführung durch das Gate (`path_guard`, volles Gate), nur im
 /// Arbeitsverzeichnis; jede Ablehnung ist ein JSON-RPC-Fehler (fail closed).
@@ -979,12 +1031,17 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
             (beton_core::event::ToolStatus::Denied, json!(reason))
         }
         None => {
+            // Mit Stufenmodell schreibt Stufe 2 (#329); ohne (`backend: none`) Stufe 0.
+            let stage = d
+                .tools
+                .as_ref()
+                .map(|_| beton_core::event::SandboxStage::Tools);
             send_all(
                 &d.tx,
                 vec![EventPayload::ToolCallStarted(
                     beton_core::event::ToolCallStarted {
                         call_id: call_id.clone(),
-                        sandbox_stage: None,
+                        sandbox_stage: stage,
                         args: None,
                     },
                 )],
@@ -992,7 +1049,11 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
                 turn,
             )
             .await;
-            match write_no_follow(&target, content) {
+            let written = match &d.tools {
+                Some(tools) => write_in_stage_two(&**tools, &target, content, &d.workdir).await,
+                None => write_no_follow(&target, content).map_err(|e| e.to_string()),
+            };
+            match written {
                 Ok(()) => {
                     let _ = d.rpc.respond(id, Value::Null).await;
                     (beton_core::event::ToolStatus::Ok, json!("geschrieben"))
@@ -1002,7 +1063,7 @@ async fn fs_write(d: &Dispatcher, id: &Value, params: &Value) {
                         .rpc
                         .respond_error(id, codes::INTERNAL_ERROR, &format!("schreiben: {e}"))
                         .await;
-                    (beton_core::event::ToolStatus::Error, json!(e.to_string()))
+                    (beton_core::event::ToolStatus::Error, json!(e))
                 }
             }
         }

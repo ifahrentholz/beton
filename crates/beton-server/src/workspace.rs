@@ -4,6 +4,16 @@
 //! Sicherheitsregel (fail closed): Jeder Pfad ist relativ zum Workspace. Absolute Pfade,
 //! `..`-Komponenten, `.git` und Pfade, die nach Auflösung aller Symlinks außerhalb des Workspace
 //! liegen, werden mit [`PathError::Forbidden`] abgewiesen – auch wenn das Ziel nicht existiert.
+//!
+//! Race-frei (#92, Unix): Lesen, Schreiben und Auflisten lösen den Pfad Komponente für
+//! Komponente ab einem Handle auf die Wurzel auf (`openat` mit `O_NOFOLLOW`/`O_DIRECTORY`),
+//! Symlinks werden selbst aufgelöst und nur innerhalb des Workspace verfolgt. Ein gleichzeitig
+//! laufender Prozess (der Agent) kann ein schon geprüftes Verzeichnis dann nicht mehr gegen
+//! einen Symlink nach draußen tauschen: Der Zugriff hält das Verzeichnis selbst, nicht seinen
+//! Pfad. Geschrieben wird in eine temporäre Datei im gehaltenen Verzeichnis (`O_EXCL`), dann
+//! `renameat` darin. Unter Linux wäre `openat2` mit `RESOLVE_BENEATH` eine Alternative; die
+//! schrittweise Auflösung gilt auf beiden Plattformen gleich und verfolgt auch absolute Symlinks
+//! in den Workspace. Windows nutzt bis dahin die pfadbasierte Prüfung.
 
 use std::path::{Path, PathBuf};
 
@@ -78,7 +88,64 @@ impl Workspace {
         &self.root
     }
 
+    /// Löst `raw` race-frei auf (#92); mit `create` legt es fehlende Verzeichnisse an.
+    #[cfg(unix)]
+    fn found(&self, raw: &str, create: bool) -> Result<beneath::Found, PathError> {
+        let parts = components(raw)?;
+        beneath::walk(&self.root, raw, &parts, create)
+    }
+
+    /// Bestehender Pfad (Datei oder Verzeichnis) innerhalb des Workspace, kanonisch. Nur zur
+    /// Anzeige bzw. Vorprüfung; Zugriffe laufen über [`Workspace::read`],
+    /// [`Workspace::open_file`], [`Workspace::write`] und [`Workspace::list`].
+    #[cfg(unix)]
+    pub fn resolve_existing(&self, raw: &str) -> Result<PathBuf, PathError> {
+        let f = self.found(raw, false)?;
+        if !f.missing.is_empty() {
+            return Err(PathError::NotFound(raw.to_owned()));
+        }
+        if let Some(name) = &f.name {
+            match rustix::fs::statat(
+                &f.dir,
+                name.as_os_str(),
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ) {
+                Ok(_) => {}
+                Err(rustix::io::Errno::NOENT) => return Err(PathError::NotFound(raw.to_owned())),
+                Err(e) => return Err(beneath::io(e)),
+            }
+        }
+        Ok(f.path())
+    }
+
+    /// Zielpfad zum Schreiben einer Datei; das Ziel muss nicht existieren (nur zur Anzeige bzw.
+    /// Vorprüfung, siehe [`Workspace::resolve_existing`]).
+    #[cfg(unix)]
+    pub fn resolve_for_write(&self, raw: &str) -> Result<PathBuf, PathError> {
+        if components(raw)?.is_empty() {
+            return Err(PathError::Invalid(raw.to_owned(), "Dateipfad fehlt".into()));
+        }
+        let f = self.found(raw, false)?;
+        let is_dir = f.missing.is_empty()
+            && f.name.as_ref().is_some_and(|n| {
+                rustix::fs::statat(&f.dir, n.as_os_str(), rustix::fs::AtFlags::empty()).is_ok_and(
+                    |st| {
+                        rustix::fs::FileType::from_raw_mode(st.st_mode)
+                            == rustix::fs::FileType::Directory
+                    },
+                )
+            });
+        if f.name.is_none() || is_dir {
+            return Err(PathError::Invalid(
+                raw.to_owned(),
+                "ist ein Verzeichnis".into(),
+            ));
+        }
+        Ok(f.path())
+    }
+
     /// Liegt ein kanonischer Pfad im Workspace und nicht in einem `.git`?
+    #[cfg(not(unix))]
     fn contained(&self, canonical: &Path) -> bool {
         canonical.starts_with(&self.root)
             && !canonical
@@ -91,6 +158,7 @@ impl Workspace {
     /// Kanonischer, nächster existierender Vorfahr von `path` (inklusive `path` selbst) und die
     /// Zahl der Komponenten dahinter. Ein Symlink ohne Ziel zählt als existierend und wird
     /// abgewiesen, weil sein Ziel nicht prüfbar ist.
+    #[cfg(not(unix))]
     fn existing_ancestor(
         &self,
         raw: &str,
@@ -114,6 +182,7 @@ impl Workspace {
     }
 
     /// Bestehender Pfad (Datei oder Verzeichnis) innerhalb des Workspace, kanonisch.
+    #[cfg(not(unix))]
     pub fn resolve_existing(&self, raw: &str) -> Result<PathBuf, PathError> {
         let parts = components(raw)?;
         let (canonical, missing) = self.existing_ancestor(raw, &parts)?;
@@ -126,6 +195,7 @@ impl Workspace {
     /// Zielpfad zum Schreiben einer Datei; das Ziel muss nicht existieren. Fehlende
     /// Zwischenverzeichnisse liegen nach der Prüfung garantiert unter einem Verzeichnis im
     /// Workspace, weil ihre Namen weder `..` noch `.git` sein können.
+    #[cfg(not(unix))]
     pub fn resolve_for_write(&self, raw: &str) -> Result<PathBuf, PathError> {
         let parts = components(raw)?;
         if parts.is_empty() {
@@ -144,6 +214,248 @@ impl Workspace {
         let mut target = canonical;
         target.extend(&parts[parts.len() - missing..]);
         Ok(target)
+    }
+}
+
+/// Race-freie Auflösung unter der Wurzel (#92).
+#[cfg(unix)]
+mod beneath {
+    use std::collections::VecDeque;
+    use std::ffi::OsString;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    use std::path::{Component, Path, PathBuf};
+
+    use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
+    use rustix::io::Errno;
+
+    use super::PathError;
+
+    /// Höchstzahl verfolgter Symlinks (wie `MAXSYMLINKS`) und Schritte insgesamt (gegen einen
+    /// Prozess, der Verzeichnisse laufend anlegt und entfernt).
+    const MAX_LINKS: usize = 40;
+    const MAX_STEPS: usize = 4096;
+
+    /// Verzeichnis öffnen, ohne einem Symlink zu folgen.
+    pub(super) const DIR: OFlags = OFlags::RDONLY
+        .union(OFlags::DIRECTORY)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+    /// Datei lesen, ohne einem Symlink zu folgen; `O_NONBLOCK`, damit eine FIFO im Workspace
+    /// das Öffnen nicht blockiert (sie scheitert danach an der Prüfung auf eine reguläre Datei).
+    pub(super) const FILE: OFlags = OFlags::RDONLY
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+
+    /// Aufgelöster Pfad: gehaltenes Verzeichnis, sein Pfad unter der Wurzel und der letzte Name
+    /// darin (`None`: das Verzeichnis selbst). `missing`: Komponenten hinter einem fehlenden
+    /// Verzeichnis (nur ohne Anlegen).
+    pub(super) struct Found {
+        pub dir: OwnedFd,
+        pub dir_path: PathBuf,
+        pub name: Option<OsString>,
+        pub missing: Vec<OsString>,
+    }
+
+    impl Found {
+        /// Pfad unter der Wurzel (für Antworten und Prüfungen).
+        pub fn path(&self) -> PathBuf {
+            let mut p = self.dir_path.clone();
+            p.extend(&self.name);
+            p.extend(&self.missing);
+            p
+        }
+    }
+
+    pub(super) fn io(e: Errno) -> PathError {
+        PathError::Io(std::io::Error::from(e).kind().to_string())
+    }
+
+    fn is_git(name: &std::ffi::OsStr) -> bool {
+        name.as_bytes().eq_ignore_ascii_case(b".git")
+    }
+
+    /// Komponenten eines Symlink-Ziels; absolute Ziele nur innerhalb der Wurzel (auch über
+    /// einen anderen Pfad zu ihr, etwa `/tmp` und `/private/tmp`).
+    fn link_parts(root: &Path, target: &Path) -> Option<(bool, Vec<OsString>)> {
+        let rel = if target.is_absolute() {
+            if let Ok(r) = target.strip_prefix(root) {
+                r.to_path_buf()
+            } else {
+                // Längster vorhandener Vorfahr kanonisch; nur zum Übersetzen, verfolgt wird
+                // danach wieder Schritt für Schritt ab der Wurzel.
+                let mut probe = target.to_path_buf();
+                let mut tail = Vec::new();
+                loop {
+                    if let Ok(c) = probe.canonicalize() {
+                        let mut r = c.strip_prefix(root).ok()?.to_path_buf();
+                        r.extend(tail.iter().rev());
+                        break r;
+                    }
+                    tail.push(probe.file_name()?.to_os_string());
+                    if !probe.pop() {
+                        return None;
+                    }
+                }
+            }
+        } else {
+            target.to_path_buf()
+        };
+        let parts = rel
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(n) => Some(n.to_os_string()),
+                Component::ParentDir => Some(OsString::from("..")),
+                _ => None,
+            })
+            .collect();
+        Some((target.is_absolute(), parts))
+    }
+
+    /// Löst `parts` unter `root` auf; mit `create` werden fehlende Verzeichnisse angelegt.
+    pub(super) fn walk(
+        root: &Path,
+        raw: &str,
+        parts: &[String],
+        create: bool,
+    ) -> Result<Found, PathError> {
+        let forbidden = || PathError::Forbidden(raw.to_owned());
+        let root_fd = rustix::fs::openat(CWD, root, DIR, Mode::empty()).map_err(io)?;
+        let mut stack: Vec<(OwnedFd, PathBuf)> = vec![(root_fd, root.to_path_buf())];
+        let mut pending: VecDeque<OsString> = parts.iter().map(OsString::from).collect();
+        let (mut links, mut steps) = (0, 0);
+        while let Some(name) = pending.pop_front() {
+            steps += 1;
+            if steps > MAX_STEPS {
+                return Err(forbidden());
+            }
+            match name.as_bytes() {
+                b"" | b"." => continue,
+                b".." => {
+                    // Nur aus Symlink-Zielen (Eingaben mit `..` lehnt `components` ab).
+                    if stack.len() == 1 {
+                        return Err(forbidden());
+                    }
+                    stack.pop();
+                    continue;
+                }
+                _ => {}
+            }
+            if is_git(&name) {
+                return Err(forbidden());
+            }
+            let Some((dir, _)) = stack.last() else {
+                return Err(forbidden());
+            };
+            let last = pending.is_empty();
+            match rustix::fs::statat(dir, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(st) if FileType::from_raw_mode(st.st_mode) == FileType::Symlink => {
+                    links += 1;
+                    if links > MAX_LINKS {
+                        return Err(forbidden());
+                    }
+                    let target = rustix::fs::readlinkat(dir, name.as_os_str(), Vec::new())
+                        .map_err(|_| forbidden())?;
+                    let target = PathBuf::from(OsString::from_vec(target.into_bytes()));
+                    let (absolute, rest) = link_parts(root, &target).ok_or_else(forbidden)?;
+                    if absolute {
+                        stack.truncate(1);
+                    }
+                    for c in rest.into_iter().rev() {
+                        pending.push_front(c);
+                    }
+                }
+                Ok(st) if last || FileType::from_raw_mode(st.st_mode) != FileType::Directory => {
+                    if !last {
+                        return Err(PathError::NotFound(raw.to_owned()));
+                    }
+                    let (dir, dir_path) = stack.pop().ok_or_else(forbidden)?;
+                    return Ok(Found {
+                        dir,
+                        dir_path,
+                        name: Some(name),
+                        missing: Vec::new(),
+                    });
+                }
+                Ok(_) => match rustix::fs::openat(dir, name.as_os_str(), DIR, Mode::empty()) {
+                    Ok(fd) => {
+                        let path = stack
+                            .last()
+                            .map(|(_, p)| p.join(&name))
+                            .ok_or_else(forbidden)?;
+                        stack.push((fd, path));
+                    }
+                    // Inzwischen ausgetauscht (z. B. gegen einen Symlink): neu ansehen.
+                    Err(Errno::LOOP | Errno::NOTDIR | Errno::NOENT) => pending.push_front(name),
+                    Err(e) => return Err(io(e)),
+                },
+                Err(Errno::NOENT) if last => {
+                    let (dir, dir_path) = stack.pop().ok_or_else(forbidden)?;
+                    return Ok(Found {
+                        dir,
+                        dir_path,
+                        name: Some(name),
+                        missing: Vec::new(),
+                    });
+                }
+                Err(Errno::NOENT) if create => {
+                    match rustix::fs::mkdirat(dir, name.as_os_str(), Mode::from_raw_mode(0o777)) {
+                        Ok(()) | Err(Errno::EXIST) => pending.push_front(name),
+                        Err(e) => return Err(io(e)),
+                    }
+                }
+                Err(Errno::NOENT) => {
+                    let mut missing = vec![name];
+                    missing.extend(pending.drain(..));
+                    if missing.iter().any(|m| m.as_bytes() == b".." || is_git(m)) {
+                        return Err(forbidden());
+                    }
+                    let (dir, dir_path) = stack.pop().ok_or_else(forbidden)?;
+                    let name = Some(missing.remove(0));
+                    return Ok(Found {
+                        dir,
+                        dir_path,
+                        name,
+                        missing,
+                    });
+                }
+                Err(e) => return Err(io(e)),
+            }
+        }
+        let (dir, dir_path) = stack.pop().ok_or_else(forbidden)?;
+        Ok(Found {
+            dir,
+            dir_path,
+            name: None,
+            missing: Vec::new(),
+        })
+    }
+
+    /// Öffnet den letzten Namen als Datei (ohne Symlink); `Ok(None)`, wenn es ihn nicht gibt.
+    pub(super) fn open_file(
+        found: &Found,
+        raw: &str,
+    ) -> Result<Option<(std::fs::File, u64)>, PathError> {
+        let not_file = || PathError::Invalid(raw.to_owned(), "ist keine Datei".into());
+        if !found.missing.is_empty() {
+            return Ok(None);
+        }
+        let Some(name) = &found.name else {
+            return Err(not_file());
+        };
+        let fd = match rustix::fs::openat(&found.dir, name.as_os_str(), FILE, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOENT) => return Ok(None),
+            // Zwischen Prüfung und Öffnen gegen einen Symlink getauscht: fail closed.
+            Err(Errno::LOOP) => return Err(PathError::Forbidden(raw.to_owned())),
+            Err(e) => return Err(io(e)),
+        };
+        let st = rustix::fs::fstat(&fd).map_err(io)?;
+        if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
+            return Err(not_file());
+        }
+        Ok(Some((std::fs::File::from(fd), st.st_size as u64)))
     }
 }
 
@@ -251,7 +563,173 @@ fn io(e: &std::io::Error) -> PathError {
     PathError::Io(e.kind().to_string())
 }
 
+#[cfg(unix)]
 impl Workspace {
+    /// Öffnet eine Datei race-frei (#92); liefert sie samt Größe und Pfad unter der Wurzel.
+    pub fn open_file(&self, raw: &str) -> Result<(std::fs::File, u64, PathBuf), PathError> {
+        let f = self.found(raw, false)?;
+        let (file, size) =
+            beneath::open_file(&f, raw)?.ok_or_else(|| PathError::NotFound(raw.to_owned()))?;
+        Ok((file, size, f.path()))
+    }
+
+    /// Liest eine Datei vollständig.
+    pub fn read(&self, raw: &str) -> Result<FileContent, PathError> {
+        use std::io::Read as _;
+        let (mut file, _, path) = self.open_file(raw)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).map_err(|e| io(&e))?;
+        Ok(FileContent {
+            sha256: sha256_hex(&bytes),
+            path,
+            bytes,
+        })
+    }
+
+    /// Schreibt eine Datei atomar (temporäre Datei + `renameat` im gehaltenen Verzeichnis). Mit
+    /// `If-Match` nur, wenn der aktuelle Inhalt dazu passt; sonst [`PathError::Stale`] und keine
+    /// Änderung.
+    pub fn write(
+        &self,
+        raw: &str,
+        bytes: &[u8],
+        if_match: Option<&str>,
+    ) -> Result<Written, PathError> {
+        use rustix::fs::{AtFlags, Mode, OFlags};
+        use std::io::{Read as _, Write as _};
+        if components(raw)?.is_empty() {
+            return Err(PathError::Invalid(raw.to_owned(), "Dateipfad fehlt".into()));
+        }
+        let found = self.found(raw, false)?;
+        let current = match beneath::open_file(&found, raw) {
+            Ok(Some((mut file, _))) => {
+                let mut b = Vec::new();
+                file.read_to_end(&mut b).map_err(|e| io(&e))?;
+                Some(sha256_hex(&b))
+            }
+            Ok(None) => None,
+            Err(PathError::Invalid(..)) => {
+                return Err(PathError::Invalid(
+                    raw.to_owned(),
+                    "ist keine Datei (z. B. ein Verzeichnis)".into(),
+                ));
+            }
+            Err(e) => return Err(e),
+        };
+        if let Some(header) = if_match
+            && !if_match_ok(header, current.as_deref())
+        {
+            return Err(PathError::Stale(raw.to_owned()));
+        }
+        let found = if found.missing.is_empty() {
+            found
+        } else {
+            self.found(raw, true)?
+        };
+        let name = found
+            .name
+            .clone()
+            .ok_or_else(|| PathError::Invalid(raw.to_owned(), "ist ein Verzeichnis".into()))?;
+        let tmp = format!(
+            ".{}.beton-{}",
+            name.to_string_lossy(),
+            &sha256_hex(
+                format!("{}{:?}", std::process::id(), std::time::SystemTime::now()).as_bytes()
+            )[..8]
+        );
+        let fd = rustix::fs::openat(
+            &found.dir,
+            tmp.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o666),
+        )
+        .map_err(beneath::io)?;
+        let cleanup = |e: PathError| {
+            let _ = rustix::fs::unlinkat(&found.dir, tmp.as_str(), AtFlags::empty());
+            e
+        };
+        if let Ok(st) = rustix::fs::statat(&found.dir, name.as_os_str(), AtFlags::SYMLINK_NOFOLLOW)
+        {
+            let _ = rustix::fs::fchmod(&fd, Mode::from_raw_mode(st.st_mode & 0o7777));
+        }
+        let mut file = std::fs::File::from(fd);
+        file.write_all(bytes).map_err(|e| cleanup(io(&e)))?;
+        drop(file);
+        rustix::fs::renameat(&found.dir, tmp.as_str(), &found.dir, name.as_os_str())
+            .map_err(|e| cleanup(beneath::io(e)))?;
+        Ok(Written {
+            created: current.is_none(),
+            sha256: sha256_hex(bytes),
+            size: bytes.len() as u64,
+        })
+    }
+
+    /// Einträge eines Verzeichnisses (eine Ebene), nach Namen sortiert, ohne `.git`.
+    pub fn list(&self, raw: &str) -> Result<Vec<Entry>, PathError> {
+        use rustix::fs::{AtFlags, FileType, Mode};
+        let not_dir = || PathError::Invalid(raw.to_owned(), "ist kein Verzeichnis".into());
+        let f = self.found(raw, false)?;
+        if !f.missing.is_empty() {
+            return Err(PathError::NotFound(raw.to_owned()));
+        }
+        let (dir, dir_path) = match &f.name {
+            None => (f.dir, f.dir_path),
+            Some(name) => {
+                match rustix::fs::openat(&f.dir, name.as_os_str(), beneath::DIR, Mode::empty()) {
+                    Ok(fd) => (fd, f.dir_path.join(name)),
+                    Err(rustix::io::Errno::NOENT) => {
+                        return Err(PathError::NotFound(raw.to_owned()));
+                    }
+                    Err(rustix::io::Errno::NOTDIR) => return Err(not_dir()),
+                    Err(rustix::io::Errno::LOOP) => {
+                        return Err(PathError::Forbidden(raw.to_owned()));
+                    }
+                    Err(e) => return Err(beneath::io(e)),
+                }
+            }
+        };
+        let mut out = Vec::new();
+        for entry in rustix::fs::Dir::read_from(&dir).map_err(beneath::io)? {
+            let entry = entry.map_err(beneath::io)?;
+            let name = String::from_utf8_lossy(entry.file_name().to_bytes()).into_owned();
+            if name == "." || name == ".." || name.eq_ignore_ascii_case(".git") {
+                continue;
+            }
+            let Ok(st) = rustix::fs::statat(&dir, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW)
+            else {
+                continue;
+            };
+            let kind = match FileType::from_raw_mode(st.st_mode) {
+                FileType::Symlink => EntryKind::Symlink,
+                FileType::Directory => EntryKind::Dir,
+                FileType::RegularFile => EntryKind::File,
+                _ => EntryKind::Other,
+            };
+            out.push(Entry {
+                path: relative(&self.root, &dir_path.join(&name)),
+                name,
+                kind,
+                size: (kind == EntryKind::File).then_some(st.st_size as u64),
+            });
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(out)
+    }
+}
+
+#[cfg(not(unix))]
+impl Workspace {
+    /// Öffnet eine Datei (pfadbasiert); liefert sie samt Größe und kanonischem Pfad.
+    pub fn open_file(&self, raw: &str) -> Result<(std::fs::File, u64, PathBuf), PathError> {
+        let path = self.resolve_existing(raw)?;
+        if !path.is_file() {
+            return Err(PathError::Invalid(raw.to_owned(), "ist keine Datei".into()));
+        }
+        let file = std::fs::File::open(&path).map_err(|e| io(&e))?;
+        let size = file.metadata().map_err(|e| io(&e))?.len();
+        Ok((file, size, path))
+    }
+
     /// Liest eine Datei vollständig.
     pub fn read(&self, raw: &str) -> Result<FileContent, PathError> {
         let path = self.resolve_existing(raw)?;
@@ -357,11 +835,16 @@ impl Workspace {
         out.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
     }
+}
 
+impl Workspace {
     /// Suche mit ripgrep-Semantik: `.gitignore` (in Git-Repositories), versteckte Dateien und
     /// Binärdateien werden übersprungen, Symlinks nicht verfolgt. Smart-Case: case-insensitiv,
     /// solange die Anfrage keine Großbuchstaben enthält. Liefert höchstens `limit` Treffer
-    /// nach `after` (Pfad, Zeile) und ob weitere folgen.
+    /// nach `after` (Pfad, Zeile) und ob weitere folgen. Der Verzeichnis-Durchlauf ist
+    /// pfadbasiert; jeder Treffer wird deshalb erneut race-frei aufgelöst und Inhalte werden nur
+    /// darüber gelesen (#92), damit ein gegen einen Symlink getauschtes Verzeichnis nichts von
+    /// draußen liefert.
     pub fn search(
         &self,
         query: &str,
@@ -393,7 +876,10 @@ impl Workspace {
             let rel = relative(&self.root, entry.path());
             match mode {
                 SearchMode::Name | SearchMode::Fuzzy => {
-                    if pattern.is_match(&rel) && after_key(&rel, 0) {
+                    if pattern.is_match(&rel)
+                        && after_key(&rel, 0)
+                        && self.resolve_existing(&rel).is_ok()
+                    {
                         hits.push(Hit {
                             path: rel,
                             line: None,
@@ -406,9 +892,21 @@ impl Workspace {
                     if entry.metadata().is_ok_and(|m| m.len() > SEARCH_MAX_FILE) {
                         continue;
                     }
-                    let Ok(bytes) = std::fs::read(entry.path()) else {
+                    let Ok((file, size, _)) = self.open_file(&rel) else {
                         continue;
                     };
+                    if size > SEARCH_MAX_FILE {
+                        continue;
+                    }
+                    let mut bytes = Vec::new();
+                    if std::io::Read::read_to_end(
+                        &mut std::io::Read::take(file, SEARCH_MAX_FILE),
+                        &mut bytes,
+                    )
+                    .is_err()
+                    {
+                        continue;
+                    }
                     if bytes.iter().take(8000).any(|b| *b == 0) {
                         continue;
                     }
@@ -674,6 +1172,98 @@ mod tests {
             .unwrap();
         assert!(!more);
         assert_eq!(second[0].path, "src/main.rs");
+    }
+
+    /// #92: Eine FIFO im Workspace (vom Agent angelegt) blockiert Lesen und Schreiben nicht;
+    /// sie ist keine Datei.
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "Testaufbau: mkfifo")]
+    fn ses_017_fifo_in_the_workspace_does_not_block() {
+        let (_tmp, ws, _) = ws();
+        let fifo = ws.root().join("fifo");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(matches!(ws.read("fifo"), Err(PathError::Invalid(..))));
+        assert!(matches!(ws.open_file("fifo"), Err(PathError::Invalid(..))));
+        assert!(matches!(
+            ws.write("fifo", b"x", None),
+            Err(PathError::Invalid(..))
+        ));
+    }
+
+    /// #92: Ersetzt ein gleichzeitig laufender Prozess (der Agent im Workspace) ein
+    /// Zwischenverzeichnis immer wieder atomar durch einen Symlink nach draußen, schreibt und
+    /// liest die Workspace-API trotzdem nie außerhalb des Workspace (auch keine temporäre Datei)
+    /// und listet nichts von draußen. Ohne Austausch gelingt dasselbe im Workspace.
+    #[cfg(unix)]
+    #[test]
+    fn ses_017_swapping_a_directory_for_a_symlink_never_leaks_outside() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (_tmp, ws, outside) = ws();
+        let root = ws.root().to_path_buf();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/geheim.txt"), "innen").unwrap();
+        std::fs::write(outside.join("nur-draussen.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("a.lnk")).unwrap();
+        let outside_names = || {
+            let mut v: Vec<String> = std::fs::read_dir(&outside)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        let before = outside_names();
+        // Kontrollgruppe ohne Austausch: alles im Workspace.
+        ws.write("a/neu.txt", b"x", None).unwrap();
+        assert_eq!(ws.read("a/geheim.txt").unwrap().bytes, b"innen");
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, root) = (stop.clone(), root.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = renameat_with(
+                        CWD,
+                        root.join("a"),
+                        CWD,
+                        root.join("a.lnk"),
+                        RenameFlags::EXCHANGE,
+                    );
+                }
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut leaked = None;
+        while std::time::Instant::now() < deadline && leaked.is_none() {
+            let _ = ws.write("a/neu.txt", b"BOESE", None);
+            if let Ok(c) = ws.read("a/geheim.txt")
+                && c.bytes != b"innen"
+            {
+                leaked = Some("gelesen".to_owned());
+            }
+            if let Ok(entries) = ws.list("a")
+                && entries.iter().any(|e| e.name == "nur-draussen.txt")
+            {
+                leaked = Some("gelistet".to_owned());
+            }
+            if outside_names() != before {
+                leaked = Some(format!("geschrieben: {:?}", outside_names()));
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+        assert_eq!(leaked, None);
+        assert_eq!(outside_names(), before);
     }
 
     mod prop {

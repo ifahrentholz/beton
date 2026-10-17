@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use beton_core::event::{EventPayload, ToolCallCompleted, ToolCallRequested, ToolStatus};
 use beton_harness::ToolIsolation;
-use beton_runner::stages::{ShellIntegrity, StageInput, StageOptions, compose, sandbox_vars};
+use beton_runner::stages::{
+    ShellAnchors, ShellIntegrity, StageInput, StageOptions, compose, sandbox_vars,
+};
 use beton_sandbox::{CommandSpec, SandboxSpec, Stage, Stdio};
 
 fn exe() -> PathBuf {
@@ -226,6 +228,92 @@ async fn sbx_006_the_sandbox_is_required_by_default() {
     assert!(s.is_none());
 }
 
+/// Führt `script` in `sandbox` aus; liefert stdout.
+async fn run_in(sandbox: &beton_sandbox::Sandbox, fx: &Fx, script: &str) -> String {
+    let out = sandbox
+        .spawn(
+            CommandSpec::new("/bin/sh")
+                .args(["-c", script])
+                .cwd(&fx.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// #150 (Befund aus #71, neu bewertet mit WP-45/WP-49): Vendor-CLIs außerhalb des Worktrees.
+/// Codex liest in Stufe 1 keine persönlichen Skills (`~/.agents/skills` ist nicht freigegeben)
+/// und schreibt im Home nur in sein State-Verzeichnis. Claudes Plan-Dateien
+/// (`~/.claude/plans`) entstehen in seinem eigenen State-Verzeichnis (Stufe 1 lesen/schreiben,
+/// SBX-002), Stufe 2 sieht sie nicht. Kontrollgruppe: ohne Sandbox gelingt alles.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_002_vendor_clis_reach_only_their_own_state_outside_the_worktree() {
+    let fx = fx();
+    let skill = fx.home.join(".agents/skills/privat/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, "FIXTURE-SKILL").unwrap();
+    std::fs::create_dir_all(fx.home.join(".codex")).unwrap();
+    std::fs::create_dir_all(fx.home.join(".claude/plans")).unwrap();
+    let h = fx.home.display().to_string();
+    let codex_probe = format!(
+        "cat '{h}/.agents/skills/privat/SKILL.md' && echo =SKILL=; \
+         printf x > '{h}/notiz.txt' && echo =HOME=; \
+         printf x > '{h}/.codex/state.txt' && echo =STATE="
+    );
+    let plan_write = format!("printf FIXTURE-PLAN > '{h}/.claude/plans/p.md' && echo =PLAN=");
+    let plan_read = format!("cat '{h}/.claude/plans/p.md' && echo =READ=");
+    // Kontrollgruppe ohne Sandbox.
+    #[allow(clippy::disallowed_methods, reason = "Kontrollgruppe ohne Sandbox")]
+    let host = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("{codex_probe}; {plan_write}; {plan_read}")])
+        .output()
+        .unwrap();
+    let host = String::from_utf8_lossy(&host.stdout);
+    for w in ["SKILL", "HOME", "STATE", "PLAN", "READ"] {
+        assert!(
+            host.contains(&format!("={w}=")),
+            "Kontrollgruppe {w}: {host}"
+        );
+    }
+    for f in ["notiz.txt", ".codex/state.txt", ".claude/plans/p.md"] {
+        std::fs::remove_file(fx.home.join(f)).unwrap();
+    }
+
+    let codex = compose(
+        input(&fx, "codex", ToolIsolation::Inherited),
+        opts(
+            "backend: auto\nrequire_tool_isolation: false\nallow_network: false\n",
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = run_in(&codex.harness, &fx, &codex_probe).await;
+    assert!(!out.contains("=SKILL="), "{out}");
+    assert!(!out.contains("FIXTURE-SKILL"), "{out}");
+    assert!(!out.contains("=HOME="), "{out}");
+    assert!(out.contains("=STATE="), "{out}");
+    assert!(!fx.home.join("notiz.txt").exists());
+
+    let claude = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = run_in(&claude.harness, &fx, &plan_write).await;
+    assert!(out.contains("=PLAN="), "{out}");
+    let out = run_in(&claude.tools, &fx, &plan_read).await;
+    assert!(!out.contains("=READ="), "{out}");
+    assert!(!out.contains("FIXTURE-PLAN"), "{out}");
+}
+
 #[tokio::test]
 async fn sbx_002_ac4_inherited_tool_isolation_starts_only_with_require_tool_isolation_false() {
     let fx = fx();
@@ -354,6 +442,30 @@ async fn sbx_002_exchange_is_separate_from_the_stage_two_tmpdir() {
     assert!(s.tools.policy().write_roots.contains(&s.env.exchange));
 }
 
+/// #203: Hat eine maskierte Datei weitere Hardlinks, warnt der Runner beim Start der Session
+/// (Kontrollgruppe: ohne Link keine Warnung).
+#[cfg(unix)]
+#[tokio::test]
+async fn sbx_004_hardlinked_masked_files_warn_at_session_start() {
+    let fx = fx();
+    std::fs::create_dir_all(fx.home.join(".ssh")).unwrap();
+    let key = fx.home.join(".ssh/id_ed25519");
+    std::fs::write(&key, "FIXTURE-SSH-KEY").unwrap();
+    let start = || async {
+        compose(
+            input(&fx, "claude", ToolIsolation::ShellOverride),
+            opts("backend: auto\n", true),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    };
+    assert_eq!(start().await.hardlink_notice(), None);
+    std::fs::hard_link(&key, fx.home.join("key-kopie")).unwrap();
+    let notice = start().await.hardlink_notice().expect("Warnung");
+    assert!(notice.contains(&key.display().to_string()), "{notice}");
+}
+
 /// `start.sandbox.enabled` meint die Tools: Läuft ein Harness degraded (Tools in Stufe 1),
 /// ist es `false` (Policies, die eine Sandbox verlangen, greifen dann).
 #[tokio::test]
@@ -429,6 +541,49 @@ fn sbx_002_shell_call_without_broker_start_is_an_integrity_violation() {
     }
     i.observe(&requested("e", "Bash"), 2).unwrap();
     assert!(i.observe(&completed("e", ToolStatus::Error), 2).is_err());
+}
+
+/// #270: Jeder Shell-Aufruf braucht einen eigenen Broker-Start, der nach der Gate-Entscheidung
+/// über genau diesen Aufruf liegt (Claude startet die Shell erst nach dem `PreToolUse`-Hook).
+/// Starts davor (Env-Probe, Shell-Snapshot, ein Start aus Stufe 1) und der Start eines anderen
+/// Aufrufs decken ihn nicht; mit dem globalen Zähler taten sie es.
+#[test]
+fn sbx_002_each_shell_call_needs_its_own_broker_start_after_its_gate_decision() {
+    // Zwei Starts vor der Entscheidung, keiner danach.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("a", "Bash"), 2).unwrap();
+    anchors.record("a", 2);
+    assert!(i.observe(&completed("a", ToolStatus::Ok), 2).is_err());
+
+    // Kontrollgruppe: ein Start nach der Entscheidung genügt.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("a", "Bash"), 2).unwrap();
+    anchors.record("a", 2);
+    i.observe(&completed("a", ToolStatus::Ok), 3).unwrap();
+
+    // Zwei gleichzeitige Aufrufe, nur ein Start in ihren Fenstern: der zweite fehlt.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    for id in ["b", "c"] {
+        i.observe(&requested(id, "Bash"), 0).unwrap();
+        anchors.record(id, 0);
+    }
+    i.observe(&completed("b", ToolStatus::Ok), 1).unwrap();
+    assert!(i.observe(&completed("c", ToolStatus::Ok), 1).is_err());
+
+    // Gleichzeitig, in umgekehrter Reihenfolge fertig: jeder findet seinen Start; eine zweite
+    // Entscheidung (Rückfrage nach dem Hook) verschiebt das Fenster nicht.
+    let anchors = ShellAnchors::default();
+    let mut i = ShellIntegrity::new(&["Bash"]).with_anchors(anchors.clone());
+    i.observe(&requested("d", "Bash"), 0).unwrap();
+    anchors.record("d", 0);
+    i.observe(&requested("e", "Bash"), 1).unwrap();
+    anchors.record("e", 1);
+    anchors.record("d", 2);
+    i.observe(&completed("e", ToolStatus::Ok), 2).unwrap();
+    i.observe(&completed("d", ToolStatus::Ok), 2).unwrap();
 }
 
 #[tokio::test]
@@ -589,6 +744,81 @@ async fn sbx_002_bt_exec_from_stage_one_runs_in_stage_two() {
     assert_eq!(started.load(Ordering::SeqCst), 2);
 }
 
+/// #211 (SBX-008, SBX-002): Vor Landlock-ABI 9 kontrolliert Landlock `connect` auf Unix-Sockets
+/// nicht; erreichbar ist dann jeder sichtbare Pfad. Stufe 1 und Stufe 2 einer Session erreichen
+/// den Broker-Socket einer parallelen Session nicht (unter Linux verdeckt ein tmpfs die
+/// Session-Verzeichnisse eine Ebene höher, macOS sperrt per Seatbelt). Kontrollgruppe: Außerhalb
+/// der Sandbox verbindet dasselbe Kommando, und aus Stufe 1 bleibt der eigene Broker-Socket
+/// erreichbar. `curl` meldet 7, wenn die Verbindung scheitert.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_008_parallel_sessions_cannot_reach_each_others_sockets() {
+    let (fa, fb) = (fx(), fx());
+    let yaml = "backend: auto\nallow_network: false\n";
+    let a = compose(
+        input(&fa, "claude", ToolIsolation::ShellOverride),
+        opts(yaml, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let b = compose(
+        input(&fb, "claude", ToolIsolation::ShellOverride),
+        opts(yaml, true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let own = a.harness.policy().env["BETON_EXEC_SOCKET"].clone();
+    let other = b.harness.policy().env["BETON_EXEC_SOCKET"].clone();
+    let connect = |sock: &str| {
+        format!(
+            "/usr/bin/curl -s -o /dev/null --max-time 5 --unix-socket '{sock}' http://beton/; \
+             echo \"rc=$?\""
+        )
+    };
+    let rc = |out: &[u8]| {
+        String::from_utf8_lossy(out)
+            .lines()
+            .find_map(|l| l.strip_prefix("rc=").map(str::to_owned))
+            .unwrap_or_default()
+    };
+    // Kontrollgruppe ohne Sandbox.
+    #[allow(clippy::disallowed_methods, reason = "Kontrollgruppe ohne Sandbox")]
+    let host = std::process::Command::new("/bin/sh")
+        .args(["-c", &connect(&other)])
+        .output()
+        .unwrap();
+    assert_ne!(rc(&host.stdout), "7", "Kontrollgruppe: Socket erreichbar");
+    for (stage, sandbox) in [("harness", &a.harness), ("tools", &a.tools)] {
+        let out = sandbox
+            .spawn(
+                CommandSpec::new("/bin/sh")
+                    .args(["-c", &connect(&other)])
+                    .cwd(&fa.ws)
+                    .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+            )
+            .unwrap()
+            .output(Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(rc(&out.stdout), "7", "{stage} erreicht die andere Session");
+    }
+    let out = a
+        .harness
+        .spawn(
+            CommandSpec::new("/bin/sh")
+                .args(["-c", &connect(&own)])
+                .cwd(&fa.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    assert_ne!(rc(&out.stdout), "7", "eigener Broker aus Stufe 1");
+}
+
 #[tokio::test]
 async fn har_011_ac2_direct_loop_gets_its_own_proxy_instance_with_a_placeholder() {
     let fx = fx();
@@ -722,6 +952,50 @@ fn git_fixture(fx: &Fx) -> PathBuf {
     std::fs::write(git.join("worktrees/wt2/commondir"), "../..\n").unwrap();
     std::fs::write(git.join("worktrees/wt2/gitdir"), "/x/wt2/.git\n").unwrap();
     git
+}
+
+/// #329 (HAR-007, SBX-002): ACP `fs/write_text_file` schreibt in Stufe 2. Ersetzt der Agent in
+/// Stufe 1 das Elternverzeichnis nach der Prüfung in Stufe 0 durch einen Symlink auf
+/// `.git/hooks` bzw. auf ein Verzeichnis außerhalb der Freigaben, scheitert das Schreiben im
+/// Kernel. Kontrollgruppe: Ein Schreiben in Stufe 0 über denselben Pfad (wie vor #329) landet
+/// dort.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn har_007_fs_write_in_stage_two_survives_a_swapped_parent_directory() {
+    let fx = fx();
+    let git = git_fixture(&fx);
+    std::fs::create_dir_all(git.join("hooks")).unwrap();
+    let outside = fx.home.join("draussen");
+    std::fs::create_dir_all(&outside).unwrap();
+    let s = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let tools = beton_harness::process::SandboxLauncher::new(s.tools.clone());
+    let sub = fx.ws.join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    beton_harness_acp::write_in_stage_two(&tools, &sub.join("ok.txt"), "ok\n", &fx.ws)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(sub.join("ok.txt")).unwrap(), "ok\n");
+    for dest in [git.join("hooks"), outside.clone()] {
+        let aside = fx.ws.join("sub.weg");
+        std::fs::rename(&sub, &aside).unwrap();
+        std::os::unix::fs::symlink(&dest, &sub).unwrap();
+        let target = sub.join("pre-commit");
+        let r = beton_harness_acp::write_in_stage_two(&tools, &target, "BOESE\n", &fx.ws).await;
+        assert!(r.is_err(), "{}: {r:?}", dest.display());
+        assert!(!dest.join("pre-commit").exists(), "{}", dest.display());
+        // Kontrollgruppe: Stufe 0 folgt dem Symlink.
+        std::fs::write(&target, "KONTROLLE\n").unwrap();
+        assert!(dest.join("pre-commit").exists(), "{}", dest.display());
+        std::fs::remove_file(dest.join("pre-commit")).unwrap();
+        std::fs::remove_file(&sub).unwrap();
+        std::fs::rename(&aside, &sub).unwrap();
+    }
 }
 
 #[tokio::test]
