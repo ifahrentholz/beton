@@ -5,13 +5,14 @@
 //! Turn-Ende, dann `message.completed`), `agent_thought_chunk` → `reasoning.delta` und
 //! `reasoning.completed`, `tool_call`/`tool_call_update` → `tool.call.*`. ACP-Nachrichten
 //! tragen keine IDs; beton vergibt sie je Turn deterministisch (`msg_<turn>_<n>`). `plan`
-//! wird bis zur Aufnahme von `plan.updated` in PROTO-002 als `harness.unmapped` geloggt.
+//! wird zu `plan.updated` (PROTO-002).
 
 use std::collections::HashMap;
 
 use beton_core::event::{
-    EventPayload, HarnessUnmapped, MessageCompleted, MessageRole, ReasoningCompleted, TextDelta,
-    ToolCallCompleted, ToolCallRequested, ToolCallStarted, ToolSource, ToolStatus,
+    EventPayload, HarnessUnmapped, MessageCompleted, MessageRole, PlanEntry, PlanPriority,
+    PlanStatus, PlanUpdated, ReasoningCompleted, TextDelta, ToolCallCompleted, ToolCallRequested,
+    ToolCallStarted, ToolSource, ToolStatus,
 };
 use serde_json::{Value, json};
 
@@ -134,6 +135,25 @@ fn text_of(update: &Value) -> Option<&str> {
         .flatten()
 }
 
+/// ACP-`plan` (immer der vollständige Plan) als `plan.updated`; `None` bei unlesbaren Einträgen.
+fn plan_of(update: &Value) -> Option<PlanUpdated> {
+    let entries = update["entries"]
+        .as_array()?
+        .iter()
+        .map(|e| {
+            Some(PlanEntry {
+                content: e["content"].as_str()?.to_owned(),
+                priority: e["priority"].as_str().and_then(PlanPriority::from_vendor),
+                status: PlanStatus::from_vendor(e["status"].as_str()?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(PlanUpdated {
+        entries,
+        explanation: None,
+    })
+}
+
 /// Ein `session/update` auf null oder mehr Events abbilden.
 pub fn map_update(update: &Value, st: &mut MapState) -> Vec<EventPayload> {
     let kind = update["sessionUpdate"].as_str().unwrap_or_default();
@@ -234,8 +254,11 @@ pub fn map_update(update: &Value, st: &mut MapState) -> Vec<EventPayload> {
             }
             out
         }
+        "plan" => match plan_of(update) {
+            Some(plan) => vec![EventPayload::PlanUpdated(plan)],
+            None => vec![unmapped(update)],
+        },
         k if IGNORED.contains(&k) => Vec::new(),
-        // `plan` → `plan.updated`, sobald PROTO-002 den Typ führt.
         _ => vec![unmapped(update)],
     }
 }
@@ -306,11 +329,39 @@ mod tests {
     }
 
     #[test]
+    fn proto_002_plan_becomes_plan_updated() {
+        let mut st = MapState::default();
+        let out = map_update(
+            &json!({"sessionUpdate": "plan", "entries": [
+                {"content": "Tests schreiben", "priority": "high", "status": "in_progress"},
+                {"content": "Pushen", "priority": "low", "status": "pending"}
+            ]}),
+            &mut st,
+        );
+        let [EventPayload::PlanUpdated(plan)] = out.as_slice() else {
+            panic!("plan.updated erwartet: {out:?}");
+        };
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(plan.entries[0].content, "Tests schreiben");
+        assert_eq!(plan.entries[0].priority, Some(PlanPriority::High));
+        assert_eq!(plan.entries[0].status, PlanStatus::InProgress);
+        assert_eq!(plan.entries[1].status, PlanStatus::Pending);
+        // Unlesbar bleibt es `harness.unmapped` statt still zu verschwinden.
+        assert_eq!(
+            types(&map_update(
+                &json!({"sessionUpdate": "plan", "entries": [{"status": "weird"}]}),
+                &mut st
+            )),
+            ["harness.unmapped"]
+        );
+    }
+
+    #[test]
     fn unknown_updates_become_unmapped() {
         let mut st = MapState::default();
         assert_eq!(
             types(&map_update(
-                &json!({"sessionUpdate": "plan", "entries": []}),
+                &json!({"sessionUpdate": "made_up_update"}),
                 &mut st
             )),
             ["harness.unmapped"]

@@ -1875,6 +1875,22 @@
           "type": "object",
           "properties": {
             "payload": {
+              "$ref": "#/$defs/PlanUpdated"
+            },
+            "type": {
+              "type": "string",
+              "const": "plan.updated"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "payload": {
               "$ref": "#/$defs/ToolCallRequested"
             },
             "type": {
@@ -3183,6 +3199,7 @@
         "message.completed",
         "reasoning.delta",
         "reasoning.completed",
+        "plan.updated",
         "tool.call.requested",
         "tool.call.started",
         "tool.call.output.delta",
@@ -3661,6 +3678,71 @@
       "enum": [
         "planned",
         "forced"
+      ]
+    },
+    "PlanEntry": {
+      "description": "Ein Schritt im Plan des Agents (ACP `plan`, Codex `turn/plan/updated`).",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "Nur, wenn der Harness sie meldet (ACP); Codex kennt keine Priorität.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanPriority"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/PlanStatus"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ]
+    },
+    "PlanPriority": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "PlanStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ]
+    },
+    "PlanUpdated": {
+      "description": "Vollständiger Plan nach jeder Änderung (wie ACP und Codex ihn melden).",
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanEntry"
+          }
+        },
+        "explanation": {
+          "description": "Begründung der Änderung, wenn der Harness eine liefert (Codex `explanation`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "entries"
       ]
     },
     "PolicyDecision": {

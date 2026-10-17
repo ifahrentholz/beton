@@ -492,6 +492,12 @@ string_enum!(EgressSource {
     Browser
 });
 string_enum!(NoticeLevel { Info, Warn });
+string_enum!(PlanPriority { High, Medium, Low });
+string_enum!(PlanStatus {
+    Pending,
+    InProgress,
+    Completed
+});
 
 // ---------------------------------------------------------------------------
 // Nutzlasten
@@ -688,6 +694,47 @@ payload!(ReasoningCompleted {
     #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] summary: Option<String>,
     redacted: bool,
 });
+
+impl PlanStatus {
+    /// Status aus Vendor-Schreibweisen: ACP `in_progress`, Codex `inProgress`.
+    pub fn from_vendor(raw: &str) -> Option<Self> {
+        match raw {
+            "pending" => Some(Self::Pending),
+            "in_progress" | "inProgress" => Some(Self::InProgress),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+}
+
+impl PlanPriority {
+    pub fn from_vendor(raw: &str) -> Option<Self> {
+        match raw {
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
+}
+
+payload!(
+    /// Ein Schritt im Plan des Agents (ACP `plan`, Codex `turn/plan/updated`).
+    PlanEntry {
+        content: String,
+        /// Nur, wenn der Harness sie meldet (ACP); Codex kennt keine Priorität.
+        #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] priority: Option<PlanPriority>,
+        status: PlanStatus,
+    }
+);
+payload!(
+    /// Vollständiger Plan nach jeder Änderung (wie ACP und Codex ihn melden).
+    PlanUpdated {
+        entries: Vec<PlanEntry>,
+        /// Begründung der Änderung, wenn der Harness eine liefert (Codex `explanation`).
+        #[serde(default, skip_serializing_if = "Option::is_none")] #[ts(optional)] explanation: Option<String>,
+    }
+);
 
 payload!(ToolCallRequested {
     call_id: String,
@@ -1189,6 +1236,7 @@ catalog! {
     MessageCompleted = "message.completed", Durable, MessageCompleted;
     ReasoningDelta = "reasoning.delta", Transient, TextDelta;
     ReasoningCompleted = "reasoning.completed", Durable, ReasoningCompleted;
+    PlanUpdated = "plan.updated", Durable, PlanUpdated;
     ToolCallRequested = "tool.call.requested", Durable, ToolCallRequested;
     ToolCallStarted = "tool.call.started", Durable, ToolCallStarted;
     ToolCallOutputDelta = "tool.call.output.delta", Transient, ToolCallOutputDelta;
