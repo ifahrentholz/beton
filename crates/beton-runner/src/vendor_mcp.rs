@@ -134,7 +134,7 @@ fn read_text(path: &Path) -> Result<Option<String>, String> {
     use std::io::Read as _;
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if missing(&e) => return Ok(None),
         Err(_) => return Err(format!("{} ist nicht lesbar", shown(path))),
     };
     let mut text = String::new();
@@ -259,4 +259,12 @@ mod tests {
             "{err}"
         );
     }
+}
+
+/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
+fn missing(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }

@@ -77,7 +77,7 @@ fn read_small(path: &Path) -> std::io::Result<String> {
 /// Lese- oder Zerlegungsfehlern).
 fn file_redirects(path: &Path) -> bool {
     match std::fs::symlink_metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) if missing(&e) => return false,
         Err(_) => return true,
         Ok(_) => {}
     }
@@ -189,4 +189,12 @@ mod tests {
             assert_eq!(text_redirects(text), redirects, "{text}");
         }
     }
+}
+
+/// Fehlt die Datei (auch, weil ein Teil des Pfads kein Verzeichnis ist)?
+fn missing(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
 }

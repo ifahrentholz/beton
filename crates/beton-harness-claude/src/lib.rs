@@ -398,7 +398,14 @@ pub fn managed_hooks_disabled(paths: &[std::path::PathBuf]) -> bool {
         }
     };
     paths.iter().any(|p| match std::fs::metadata(p) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            false
+        }
         Err(_) => true,
         Ok(m) if m.is_dir() => match std::fs::read_dir(p) {
             Ok(entries) => entries.flatten().any(|e| {
