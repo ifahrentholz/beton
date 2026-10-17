@@ -1009,6 +1009,10 @@ pub fn resolve(
             });
         }
     }
+    // Maskierte Dateien mit weiteren Hardlinks (#203): Warnung, kein Abbruch. Den Link selbst
+    // legt nur ein Prozess außerhalb der Sandbox an (wie eine Kopie der Datei); aus der Sandbox
+    // gelingt es nicht (SBX-004 AC4).
+    let hardlinked_masks = hardlinked(&masks, &mut notes);
     // Ein Workspace oder Grant in einem maskierten Pfad wäre unsichtbar bzw. eine Lücke.
     for m in &masks {
         if let Mask::Path { path, .. } = m {
@@ -1254,8 +1258,88 @@ pub fn resolve(
         degraded,
         inherited_tools: false,
         notes,
-        hardlinked_masks: Vec::new(),
+        hardlinked_masks,
     })
+}
+
+/// Höchstzahl der Einträge, die die Hardlink-Prüfung in maskierten Verzeichnissen ansieht,
+/// und deren Tiefe (der Start der Session soll nicht an großen Verzeichnissen hängen).
+const HARDLINK_SCAN_ENTRIES: usize = 4000;
+const HARDLINK_SCAN_DEPTH: usize = 3;
+
+/// Maskierte Dateien (Default-Masken, in Stufe 2 auch Credential-Dateien der Adapter) mit
+/// `st_nlink > 1`, sortiert; je Fund ein Hinweis (#203). Symlinks werden nicht verfolgt.
+fn hardlinked(masks: &[Mask], notes: &mut Vec<String>) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        fn visit(path: &Path, depth: usize, budget: &mut usize, out: &mut BTreeMap<PathBuf, u64>) {
+            let Ok(meta) = std::fs::symlink_metadata(path) else {
+                return;
+            };
+            if meta.is_file() {
+                if meta.nlink() > 1 {
+                    out.insert(path.to_path_buf(), meta.nlink());
+                }
+                return;
+            }
+            if !meta.is_dir() || depth == 0 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for e in entries.flatten() {
+                if *budget == 0 {
+                    return;
+                }
+                *budget -= 1;
+                visit(&e.path(), depth - 1, budget, out);
+            }
+        }
+        let checked = |source: &str| source == "default" || source.starts_with("harness:");
+        let mut found = BTreeMap::new();
+        let mut budget = HARDLINK_SCAN_ENTRIES;
+        for m in masks {
+            match m {
+                Mask::Path { path, source } if checked(source) => {
+                    visit(path, HARDLINK_SCAN_DEPTH, &mut budget, &mut found);
+                }
+                Mask::Pattern {
+                    root,
+                    glob,
+                    any_depth: false,
+                    source,
+                } if checked(source) => {
+                    for e in std::fs::read_dir(root).into_iter().flatten().flatten() {
+                        if crate::linux::plan::glob_match(glob, &e.file_name().to_string_lossy()) {
+                            visit(&e.path(), 0, &mut budget, &mut found);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if budget == 0 {
+            notes.push(format!(
+                "Hardlinks maskierter Dateien: nur die ersten {HARDLINK_SCAN_ENTRIES} Einträge \
+                 geprüft (#203)"
+            ));
+        }
+        for (path, n) in &found {
+            notes.push(format!(
+                "Maske {}: Datei hat {n} Hardlinks; ein weiterer Link in einer Freigabe wäre in \
+                 der Sandbox lesbar (#203)",
+                path.display()
+            ));
+        }
+        found.into_keys().collect()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (masks, notes);
+        Vec::new()
+    }
 }
 
 /// Markiert Limits, die das Backend laut Probe nicht durchsetzen kann, als *degraded* (sichtbar

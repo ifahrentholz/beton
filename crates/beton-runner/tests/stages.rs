@@ -354,6 +354,30 @@ async fn sbx_002_exchange_is_separate_from_the_stage_two_tmpdir() {
     assert!(s.tools.policy().write_roots.contains(&s.env.exchange));
 }
 
+/// #203: Hat eine maskierte Datei weitere Hardlinks, warnt der Runner beim Start der Session
+/// (Kontrollgruppe: ohne Link keine Warnung).
+#[cfg(unix)]
+#[tokio::test]
+async fn sbx_004_hardlinked_masked_files_warn_at_session_start() {
+    let fx = fx();
+    std::fs::create_dir_all(fx.home.join(".ssh")).unwrap();
+    let key = fx.home.join(".ssh/id_ed25519");
+    std::fs::write(&key, "FIXTURE-SSH-KEY").unwrap();
+    let start = || async {
+        compose(
+            input(&fx, "claude", ToolIsolation::ShellOverride),
+            opts("backend: auto\n", true),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    };
+    assert_eq!(start().await.hardlink_notice(), None);
+    std::fs::hard_link(&key, fx.home.join("key-kopie")).unwrap();
+    let notice = start().await.hardlink_notice().expect("Warnung");
+    assert!(notice.contains(&key.display().to_string()), "{notice}");
+}
+
 /// `start.sandbox.enabled` meint die Tools: Läuft ein Harness degraded (Tools in Stufe 1),
 /// ist es `false` (Policies, die eine Sandbox verlangen, greifen dann).
 #[tokio::test]

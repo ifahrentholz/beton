@@ -1494,9 +1494,13 @@ pub async fn run(boot: RunnerBoot, registry: Registry) -> Result<Exit, RunnerErr
     let mut pending_calls: HashMap<String, oneshot::Sender<Result<Value, Value>>> = HashMap::new();
     let mut next_call: u64 = 0;
 
-    // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018).
+    // Workspace-Beobachtung (SES-017 AC3) und Turn-Snapshots (SES-018); Hardlinks auf
+    // maskierte Dateien (#203).
     let (files, files_notice) = open_tracker(&boot).await;
-    if let Some(text) = files_notice {
+    let hardlink_notice = stages
+        .as_ref()
+        .and_then(stages::SessionStages::hardlink_notice);
+    for text in files_notice.into_iter().chain(hardlink_notice) {
         pending_status.push(Event::new(
             boot.session_id,
             0,

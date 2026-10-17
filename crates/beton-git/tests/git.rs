@@ -427,7 +427,10 @@ fn shadow_repository_inside_the_workspace_is_not_snapshotted() {
 
 /// Git der Testumgebung ohne beton (Fixture und Kontrollgruppe), ohne globale Konfiguration.
 #[cfg(unix)]
-#[allow(clippy::disallowed_methods, reason = "Fixture und Kontrollgruppe ohne beton")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Fixture und Kontrollgruppe ohne beton"
+)]
 fn plain_git(dir: &Path, args: &[&str]) -> std::process::Output {
     std::process::Command::new("git")
         .current_dir(dir)
@@ -460,7 +463,11 @@ fn repo_with_hostile_submodule() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let repo = root.join("projekt");
     for d in [&src, &repo] {
         std::fs::create_dir_all(d).unwrap();
-        assert!(plain_git(d, &["init", "--quiet", "-b", "main"]).status.success());
+        assert!(
+            plain_git(d, &["init", "--quiet", "-b", "main"])
+                .status
+                .success()
+        );
         write(d, "a.txt", "a\n");
         assert!(plain_git(d, &["add", "-A"]).status.success());
         assert!(
@@ -518,7 +525,11 @@ fn sbx_003_own_git_calls_run_nothing_from_a_submodule_config() {
     assert!(!marker.exists(), "snapshot");
 
     // Kontrollgruppe: Dasselbe Repository bringt ein gewöhnliches `git` zur Ausführung.
-    assert!(plain_git(&repo, &["status", "--porcelain"]).status.success());
+    assert!(
+        plain_git(&repo, &["status", "--porcelain"])
+            .status
+            .success()
+    );
     assert!(marker.exists(), "Kontrollgruppe: git status");
     std::fs::remove_file(&marker).unwrap();
     assert!(plain_git(&repo, &["diff", "HEAD"]).status.success());

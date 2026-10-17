@@ -343,6 +343,31 @@ pub fn sandbox_vars(stages: Option<&SessionStages>) -> beton_policy::vars::Start
 }
 
 impl SessionStages {
+    /// Warnung beim Start (#203): maskierte Dateien mit weiteren Hardlinks (beide Stufen). Ein
+    /// Link in einer Freigabe wäre in der Sandbox lesbar; `beton sandbox explain` nennt sie.
+    pub fn hardlink_notice(&self) -> Option<String> {
+        let mut paths: Vec<&Path> = self
+            .harness
+            .policy()
+            .hardlinked_masks
+            .iter()
+            .chain(&self.tools.policy().hardlinked_masks)
+            .map(PathBuf::as_path)
+            .collect();
+        paths.sort();
+        paths.dedup();
+        if paths.is_empty() {
+            return None;
+        }
+        let list: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        Some(format!(
+            "Sandbox: maskierte Dateien haben weitere Hardlinks ({}); liegt ein Link in einer \
+             Freigabe, ist die Datei darüber lesbar. Hardlinks entfernen oder `beton sandbox \
+             explain` prüfen.",
+            list.join(", ")
+        ))
+    }
+
     /// Kommandos, die der Exec-Broker bisher in Stufe 2 gestartet hat.
     pub fn broker_starts(&self) -> u64 {
         #[cfg(unix)]
