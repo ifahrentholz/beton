@@ -592,6 +592,9 @@ struct Inner {
     claimed: Mutex<HashSet<String>>,
     /// Weckt die Beobachtung, sobald der Hub einen Call übernimmt.
     claims: tokio::sync::Notify,
+    /// Entscheidungen des Menschen zu Verteuerungen unterhalb der User-Ebene (#353): Schlüssel
+    /// der Gründe → freigegeben. Gilt für die Session.
+    raise_choices: Mutex<HashMap<String, bool>>,
     evaluator: Arc<dyn Evaluator>,
     usage: Option<Arc<dyn UsageSource>>,
     /// Zustand `session`/`run` (POL-009); gültig, sobald `state_ready`.
@@ -702,6 +705,48 @@ fn current_branch(workdir: &Path) -> Option<String> {
     let head = read(&git_dir.join("HEAD"))?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
     (!branch.is_empty()).then(|| branch.to_owned())
+}
+
+/// Schlüssel der Gründe, wenn alle `ask`-Gründe Verteuerungen unterhalb der User-Ebene sind
+/// (#353): Regel samt Set-Fassung und Begründung; sonst `None`.
+fn raise_key(reasons: &[Reason], decision: &Decision) -> Option<String> {
+    if reasons.is_empty()
+        || !reasons
+            .iter()
+            .all(|r| decision.cost_raises.iter().any(|c| c.rule == r.rule))
+    {
+        return None;
+    }
+    let mut parts: Vec<String> = reasons
+        .iter()
+        .map(|r| {
+            serde_json::to_string(&json!([
+                r.rule.scope.as_str(),
+                r.rule.set,
+                r.rule.set_version,
+                r.rule.rule_id,
+                r.reason
+            ]))
+            .unwrap_or_default()
+        })
+        .collect();
+    parts.sort();
+    Some(parts.join("\n"))
+}
+
+/// Die Modifikationen ohne die verteuernden Felder (abgelehnte Verteuerung, #353).
+fn without_raises(
+    mut m: Modifications,
+    raises: &[beton_policy::engine::CostRaise],
+) -> Modifications {
+    for f in raises.iter().flat_map(|r| r.fields.iter()) {
+        match *f {
+            "model" => m.model = None,
+            "reasoning_effort" => m.reasoning_effort = None,
+            _ => {}
+        }
+    }
+    m
 }
 
 fn truncate(text: &str) -> String {
@@ -911,6 +956,7 @@ impl PolicyGate {
                 hub_gated: std::sync::atomic::AtomicBool::new(false),
                 claimed: Mutex::new(HashSet::new()),
                 claims: tokio::sync::Notify::new(),
+                raise_choices: Mutex::new(HashMap::new()),
                 evaluator: Arc::new(EngineEvaluator),
                 usage: None,
                 state: Mutex::new(PolicyState::default()),
@@ -1264,6 +1310,15 @@ impl PolicyGate {
     /// Gate, POL-024).
     pub fn gate_mcp_in_hub(&self) {
         self.inner.hub_gated.store(true, Ordering::SeqCst);
+    }
+
+    /// Gemerkte Entscheidung zu einer Verteuerung (#353).
+    fn raise_choice(&self, key: &str) -> Option<bool> {
+        self.inner
+            .raise_choices
+            .lock()
+            .ok()
+            .and_then(|c| c.get(key).copied())
     }
 
     /// Übernimmt den Entscheid eines Calls; `false`, wenn ihn schon jemand entscheidet oder
@@ -2555,8 +2610,27 @@ impl PolicyGate {
                     rules: rule_ids(&reasons),
                 }
             }
+            // Nur Verteuerungen unterhalb der User-Ebene (#353), schon entschieden: ohne neue
+            // Card; abgelehnt läuft der Turn ohne die verteuernde Modifikation weiter.
+            Outcome::Ask { reasons }
+                if let Some(allowed) =
+                    raise_key(&reasons, &ev.decision).and_then(|k| self.raise_choice(&k)) =>
+            {
+                let outcome = if allowed {
+                    FinalOutcome::Allow
+                } else {
+                    FinalOutcome::Deny
+                };
+                self.apply_effects(&ev.decision, outcome, req.turn_id).await;
+                Checked::Allow(if allowed {
+                    ev.decision.modified
+                } else {
+                    without_raises(ev.decision.modified, &ev.decision.cost_raises)
+                })
+            }
             Outcome::Ask { .. } if !ask_human => Checked::AskNeeded,
             Outcome::Ask { reasons } => {
+                let raise = raise_key(&reasons, &ev.decision);
                 let approval = ev.approval.unwrap_or_default();
                 if let Some(w) = waiting {
                     let _ = w.send(approval);
@@ -2580,6 +2654,23 @@ impl PolicyGate {
                 self.apply_effects(&ev.decision, answered.outcome, req.turn_id)
                     .await;
                 let human = answered.human;
+                // Eine Verteuerung entscheidet der Mensch einmal je Session; abgelehnt läuft
+                // der Turn ohne sie weiter (#353). Eine abgelaufene Frist merkt sich nichts.
+                if let Some(key) = raise
+                    && !answered.aborted
+                {
+                    if answered.outcome != FinalOutcome::Expired
+                        && let Ok(mut c) = self.inner.raise_choices.lock()
+                    {
+                        c.insert(key, human.allow);
+                    }
+                    if !human.allow {
+                        return Checked::Allow(without_raises(
+                            ev.decision.modified,
+                            &ev.decision.cost_raises,
+                        ));
+                    }
+                }
                 if human.allow {
                     Checked::Allow(ev.decision.modified)
                 } else {

@@ -776,8 +776,11 @@ fn scope_of(t: RuleType, params: Option<&BTreeMap<String, Value>>) -> Option<Bud
 /// Modell ohne Preis ist nie nachweisbar günstiger (#286).
 /// Sind die Raten `to` in keiner Kategorie (Eingabe, Ausgabe, Cache lesen und schreiben)
 /// höher als `from` (#286, #353)?
-fn rates_not_higher(_from: &beton_core::pricing::Rates, _to: &beton_core::pricing::Rates) -> bool {
-    true
+fn rates_not_higher(from: &beton_core::pricing::Rates, to: &beton_core::pricing::Rates) -> bool {
+    to.input_micro <= from.input_micro
+        && to.output_micro <= from.output_micro
+        && to.cache_read_micro <= from.cache_read_micro
+        && to.cache_write_micro <= from.cache_write_micro
 }
 
 pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
@@ -787,9 +790,7 @@ pub fn model_not_more_expensive(from: Option<&str>, to: &str) -> bool {
     let catalog = beton_core::pricing::Catalog::embedded();
     match (from.and_then(|f| catalog.resolve(f)), catalog.resolve(to)) {
         (Some(a), Some(b)) if a.id == b.id => true,
-        (Some(a), Some(b)) => {
-            b.input_per_mtok <= a.input_per_mtok && b.output_per_mtok <= a.output_per_mtok
-        }
+        (Some(a), Some(b)) => rates_not_higher(&a.rates(), &b.rates()),
         _ => false,
     }
 }

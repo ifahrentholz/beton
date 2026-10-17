@@ -840,13 +840,17 @@ impl<'a> Run<'a> {
             // Unterhalb der User-Ebene nur verschärfen (POL-007, #286): Ein teureres Modell oder
             // ein höherer Effort gilt erst nach Freigabe.
             if set.scope > Scope::User
-                && let Some(why) = self.raises_cost(set.scope, m, &written, ctx)
+                && let Some((why, fields)) = self.raises_cost(set.scope, m, &written, ctx)
             {
                 let mut r = Self::reason(set, rule, &why);
                 if r.reason != why {
                     r.reason = format!("{} ({why})", r.reason);
                 }
                 verdicts.ask.push((r, false));
+                self.decision.cost_raises.push(CostRaise {
+                    rule: me.clone(),
+                    fields,
+                });
             }
             for (field, value) in [
                 ("model", &m.model),
@@ -948,12 +952,13 @@ impl<'a> Run<'a> {
         m: &crate::doc::ModifyDoc,
         written: &BTreeMap<&'static str, (Value, RuleRef)>,
         ctx: &Activation,
-    ) -> Option<String> {
+    ) -> Option<(String, Vec<&'static str>)> {
         let object = match self.phase {
             Phase::SessionStart => "start",
             Phase::ModelRequest => "request",
             _ => return None,
         };
+        let mut fields = Vec::new();
         let current = |field: &str| match ctx.field(object, field) {
             Some(crate::value::Value::String(s)) if !s.is_empty() => Some(s.to_string()),
             _ => None,
@@ -965,6 +970,7 @@ impl<'a> Run<'a> {
         {
             let from = current("model");
             if !crate::budget::model_not_more_expensive(from.as_deref(), to) {
+                fields.push("model");
                 why.push(format!(
                     "Modell `{}` → `{to}` ist laut Preis-Katalog nicht nachweisbar günstiger",
                     shown(&from)
@@ -976,6 +982,7 @@ impl<'a> Run<'a> {
         {
             let from = current("reasoning_effort");
             if !crate::budget::effort_not_higher(from.as_deref(), to) {
+                fields.push("reasoning_effort");
                 why.push(format!(
                     "Effort `{}` → `{to}` ist nicht nachweisbar niedriger",
                     shown(&from)
@@ -983,10 +990,13 @@ impl<'a> Run<'a> {
             }
         }
         (!why.is_empty()).then(|| {
-            format!(
-                "Regel der Ebene {} würde verteuern: {}; Freigabe nötig",
-                scope.as_str(),
-                why.join("; ")
+            (
+                format!(
+                    "Regel der Ebene {} würde verteuern: {}; Freigabe nötig",
+                    scope.as_str(),
+                    why.join("; ")
+                ),
+                fields,
             )
         })
     }
