@@ -281,3 +281,75 @@ async fn pol_023_ac2_acp_fs_write_is_checked_against_path_guard() {
     let d = g.decide(write("fs-2", &env.wt().join("notizen.txt"))).await;
     assert!(!denied(&d), "{d:?}");
 }
+
+/// Verbrauchswerte und Session-Daten vom Server (im Runner: `policy.usage`).
+struct FixedUsage(beton_runner::policy::Usage);
+
+#[async_trait::async_trait]
+impl beton_runner::policy::UsageSource for FixedUsage {
+    async fn usage(&self) -> Result<beton_runner::policy::Usage, String> {
+        Ok(self.0.clone())
+    }
+}
+
+/// #196 (POL-004): Der Runner füllt Laufzeit, Run (bis Runs existieren die Session selbst)
+/// und die Session-Daten des Servers (Titel, Eltern, Tiefe, Projekt, asynchron).
+#[tokio::test]
+async fn pol_004_runner_fills_run_duration_and_session_data_of_the_server() {
+    let env = Env::new();
+    env.policy(
+        "  - id: meta\n    on: tool_call\n    when: >-\n      session.title == \"Release\" && session.parent_id == \"ses_parent\" &&\n      session.depth == 1 && session.is_async && session.project == \"prj_1\" &&\n      session.duration_s >= 0.0 && run.id == session.id && run.trigger == \"spawn\" &&\n      run.turns == session.turns && run.duration_s >= 0.0\n    action: deny\n",
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = PolicyOptions {
+        session_id: Some("ses_child".into()),
+        harness: "claude".parse::<HarnessId>().unwrap(),
+        workdir: env.wt(),
+        home: Some(env.home()),
+        dirs: vec![(Scope::User, env.root.join("user"))],
+        ..PolicyOptions::default()
+    };
+    let usage = beton_runner::policy::Usage {
+        session_title: Some("Release".into()),
+        session_parent_id: Some("ses_parent".into()),
+        session_depth: Some(1),
+        session_is_async: Some(true),
+        session_project: Some("prj_1".into()),
+        run_trigger: Some("spawn".into()),
+        ..beton_runner::policy::Usage::default()
+    };
+    let gate = PolicyGate::new(opts, tx).with_usage(std::sync::Arc::new(FixedUsage(usage)));
+    let d = gate
+        .decide(req(
+            "c1",
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "ls"}),
+        ))
+        .await;
+    assert!(denied(&d), "alle Werte gefüllt: Regel greift ({d:?})");
+
+    // Ohne Antwort des Servers bleiben die Session-Daten `null`: Die Regel scheitert und
+    // lehnt ab (fail closed), statt mit einem Default zu greifen oder nicht.
+    env.policy(
+        "  - id: meta\n    on: tool_call\n    when: session.depth == 0\n    action: allow\n  - id: rest\n    on: tool_call\n    when: \"!(session.depth == 0)\"\n    action: deny\n",
+    );
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let opts = PolicyOptions {
+        harness: "claude".parse::<HarnessId>().unwrap(),
+        workdir: env.wt(),
+        home: Some(env.home()),
+        dirs: vec![(Scope::User, env.root.join("user"))],
+        ..PolicyOptions::default()
+    };
+    let gate = PolicyGate::new(opts, tx);
+    let d = gate
+        .decide(req(
+            "c2",
+            "Bash",
+            "shell",
+            serde_json::json!({"command": "ls"}),
+        ))
+        .await;
+    assert!(denied(&d), "ohne Session-Daten: fail closed ({d:?})");
+}

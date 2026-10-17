@@ -817,3 +817,116 @@ async fn pol_004_ac4_usage_api_defaults_to_the_users_timezone() {
     assert_eq!(res.status, 400);
     assert_problem(&res, "validation_failed");
 }
+
+/// #196 (POL-004): Session-Daten, die nur der Server kennt, kommen mit `policy.usage`:
+/// Titel, Eltern-Session, Tiefe im Baum, Projekt und ob die Session asynchron läuft.
+#[tokio::test]
+async fn pol_004_session_title_parent_depth_and_async_for_policies() {
+    use beton_core::event::{AgentSpawned, SessionTitleChanged, TitleSource};
+    use time::macros::datetime;
+
+    use crate::usage_policy::usage_values;
+
+    let t = app().await;
+    let parent = session(&t, "codex").await;
+    let waited = child(&t, &parent).await;
+    let background = child(&t, &parent).await;
+    let grandchild = child(&t, &background).await;
+    append(
+        &t,
+        &parent,
+        "2026-07-01T10:00:00.000Z",
+        vec![
+            EventPayload::SessionTitleChanged(SessionTitleChanged {
+                title: "Release vorbereiten".into(),
+                source: TitleSource::User,
+            }),
+            EventPayload::AgentSpawned(AgentSpawned {
+                child_session_id: waited.id,
+                agent_ref: "builtin:review".into(),
+                harness: "codex".into(),
+                r#async: false,
+            }),
+            EventPayload::AgentSpawned(AgentSpawned {
+                child_session_id: background.id,
+                agent_ref: "builtin:review".into(),
+                harness: "codex".into(),
+                r#async: true,
+            }),
+        ],
+    )
+    .await;
+    let utc = beton_core::timezone::UserTimeZone::utc();
+    let now = datetime!(2026-07-01 12:00 UTC);
+    let meta = |v: &Value| {
+        (
+            v["session_title"].clone(),
+            v["session_parent_id"].clone(),
+            v["session_depth"].clone(),
+            v["session_is_async"].clone(),
+        )
+    };
+    let v = usage_values(&t.store, OrgId::LOCAL, parent.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(
+        meta(&v),
+        (
+            json!("Release vorbereiten"),
+            Value::Null,
+            json!(0),
+            json!(false)
+        )
+    );
+    assert_eq!(v["session_project"], Value::Null);
+    assert_eq!(v["run_trigger"], "interactive");
+    let v = usage_values(&t.store, OrgId::LOCAL, waited.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(
+        meta(&v),
+        (
+            Value::Null,
+            json!(parent.id.to_string()),
+            json!(1),
+            json!(false)
+        )
+    );
+    let v = usage_values(&t.store, OrgId::LOCAL, background.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["session_is_async"], true, "Spawn mit async: true");
+    assert_eq!(v["run_trigger"], "spawn");
+    // Ohne `agent.spawned` im Parent ist unbekannt, ob das Child asynchron läuft: `null`
+    // (Regeln darauf scheitern, fail closed), nie stillschweigend `false`.
+    let v = usage_values(&t.store, OrgId::LOCAL, grandchild.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["session_depth"], 2);
+    assert_eq!(v["session_parent_id"], json!(background.id.to_string()));
+    assert_eq!(v["session_is_async"], Value::Null);
+
+    // Ein Fork ist ein eigener Run mit `trigger = "fork"`.
+    let forked = session(&t, "codex").await;
+    append(
+        &t,
+        &forked,
+        "2026-07-01T10:00:00.000Z",
+        vec![EventPayload::SessionForked(
+            beton_core::event::SessionForked {
+                from_session: parent.id,
+                at_seq: 1,
+                reason: beton_core::event::ForkReason::User,
+                harness: None,
+                from_harness: None,
+                history_mode: None,
+                fallback_reason: None,
+            },
+        )],
+    )
+    .await;
+    let v = usage_values(&t.store, OrgId::LOCAL, forked.id, &utc, now)
+        .await
+        .unwrap();
+    assert_eq!(v["run_trigger"], "fork");
+}

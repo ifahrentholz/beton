@@ -3386,8 +3386,35 @@ async fn deliver(
     }
 }
 
+/// `start.fork_of` (POL-004, #196): Quelle eines Forks laut Plan des Servers; das Fortsetzen
+/// eines Imports ist kein Fork.
+fn fork_of(_plan: Option<&beton_harness::handover::ForkPlan>) -> Option<String> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pol_004_start_fork_of_names_the_source_of_a_fork() {
+        let plan = |kind: &str| -> beton_harness::handover::ForkPlan {
+            serde_json::from_value(serde_json::json!({
+                "kind": kind,
+                "from_session": "ses_01JZ0000000000000000000001",
+                "from_harness": "claude",
+                "at_seq": 3,
+                "reason": "user",
+                "history": [],
+            }))
+            .unwrap()
+        };
+        assert_eq!(
+            super::fork_of(Some(&plan("fork"))).as_deref(),
+            Some("ses_01JZ0000000000000000000001")
+        );
+        assert_eq!(super::fork_of(Some(&plan("resume"))), None);
+        assert_eq!(super::fork_of(None), None);
+    }
+
     use beton_core::event::AuthSource;
     use beton_harness::registry::{HarnessAuth, HarnessCommandConfig, HarnessesConfig};
 

@@ -155,6 +155,19 @@ pub struct Usage {
     pub subtree_unpriced_models: Option<Vec<String>>,
     #[serde(default)]
     pub user_daily_unpriced_models: Option<Vec<String>>,
+    /// Session-Daten, die nur der Server kennt (#196, POL-004).
+    #[serde(default)]
+    pub session_title: Option<String>,
+    #[serde(default)]
+    pub session_parent_id: Option<String>,
+    #[serde(default)]
+    pub session_depth: Option<i64>,
+    #[serde(default)]
+    pub session_is_async: Option<bool>,
+    #[serde(default)]
+    pub session_project: Option<String>,
+    #[serde(default)]
+    pub run_trigger: Option<String>,
 }
 
 impl Usage {
