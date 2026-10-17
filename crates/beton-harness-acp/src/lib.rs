@@ -1135,6 +1135,7 @@ async fn fs_read(d: &Dispatcher, id: &Value, params: &Value) {
         args,
         mcp_server: None,
         acp_kind: Some("read".into()),
+        cwd: None,
         origin: GateOrigin::PreTool,
         raw: None,
     };
@@ -1276,6 +1277,7 @@ async fn terminal(d: &Dispatcher, method: &str, id: &Value, params: &Value) {
                 args: gate_args,
                 mcp_server: None,
                 acp_kind: Some("execute".into()),
+                cwd: None,
                 origin: GateOrigin::PreTool,
                 raw: None,
             };
