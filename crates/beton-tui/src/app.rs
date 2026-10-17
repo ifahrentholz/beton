@@ -299,7 +299,13 @@ pub struct App {
     show_approval_on_load: bool,
     changes_version: u64,
     restored_terminals: HashSet<String>,
+    /// Seit wann die Karte zu sehen ist: Entscheidungen greifen erst nach [`ARM_DELAY`], damit
+    /// ein gerade getipptes `y`/`n` nicht versehentlich entscheidet.
+    card_since: Option<(ApprovalId, std::time::Instant)>,
 }
+
+/// Wartezeit, bevor eine neu erschienene Freigabe-Karte Tasten annimmt.
+pub const ARM_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl App {
     pub fn new(opts: AppOptions, size: (u16, u16)) -> Self {
@@ -331,6 +337,7 @@ impl App {
             show_approval_on_load: false,
             changes_version: 0,
             restored_terminals: HashSet::new(),
+            card_since: None,
         }
     }
 
@@ -396,6 +403,28 @@ impl App {
 
     /// Eine Nachricht der Laufzeit anwenden.
     pub fn update(&mut self, msg: Msg) -> Vec<Effect> {
+        let out = self.update_inner(msg);
+        self.arm_card();
+        out
+    }
+
+    /// Merkt sich, seit wann die sichtbare Karte erscheint.
+    fn arm_card(&mut self) {
+        let visible = self.visible_approval().map(|c| c.approval_id);
+        match (visible, self.card_since) {
+            (Some(id), Some((since, _))) if id == since => {}
+            (Some(id), _) => self.card_since = Some((id, std::time::Instant::now())),
+            (None, _) => self.card_since = None,
+        }
+    }
+
+    /// Nimmt die Karte schon Entscheidungen an?
+    pub fn card_armed(&self) -> bool {
+        self.card_since
+            .is_none_or(|(_, since)| since.elapsed() >= ARM_DELAY)
+    }
+
+    fn update_inner(&mut self, msg: Msg) -> Vec<Effect> {
         match msg {
             Msg::Events { session, events } => {
                 let Some(model) = self.session.as_mut().filter(|m| m.id == session) else {
@@ -697,6 +726,12 @@ impl App {
 
     /// Eine Eingabe verarbeiten.
     pub fn input(&mut self, input: Input) -> Vec<Effect> {
+        let out = self.input_inner(input);
+        self.arm_card();
+        out
+    }
+
+    fn input_inner(&mut self, input: Input) -> Vec<Effect> {
         match input {
             Input::Resize(cols, rows) => {
                 self.size = (cols, rows);
@@ -761,6 +796,10 @@ impl App {
         }
         if let Some(id) = self.focused_terminal() {
             return self.terminal_key(&id, k);
+        }
+        if !self.layout.is_single() && self.focus == Focus::Sessions {
+            // In der Pane-Ansicht gibt es keine Session-Liste.
+            self.focus = Focus::Composer;
         }
         if self.approval_captures_keys() {
             return self.approval_key(k);
@@ -1031,6 +1070,12 @@ impl App {
             }
             return Vec::new();
         }
+        if matches!(k.code, KeyCode::Char('y' | 'n' | 's')) && !self.card_armed() {
+            // Gerade erschienen: ein im Schwung getipptes Zeichen entscheidet nichts.
+            self.flash =
+                Some("Freigabe ist gerade erschienen – Taste bitte erneut drücken.".into());
+            return Vec::new();
+        }
         match k.code {
             KeyCode::Char('y') => {
                 self.decided.insert(id, 'y');
@@ -1276,6 +1321,37 @@ mod tests {
         assert!(matches!(fx.last(), Some(Effect::Quit)));
         assert_eq!(thousands(4812), "4.812");
         assert_eq!(thousands(12), "12");
+    }
+
+    #[test]
+    fn tui_004_fresh_card_ignores_keys_typed_in_the_same_moment() {
+        use beton_core::event::{Actor, Event, EventPayload};
+        let mut app = App::new(AppOptions::default(), (120, 40));
+        let id: SessionId = "ses_01JB8Y2D0M3K4J5H6G7F8E9D0C".parse().unwrap();
+        app.open_session(id);
+        let body: EventPayload = serde_json::from_value(serde_json::json!({
+            "type": "approval.requested",
+            "payload": {"approval_id": ApprovalId::new().to_string(), "kind": "tool", "subject": {"title": "x"},
+                        "options": ["approve", "deny"], "expires_at": "2026-10-17T08:00:00Z", "on_timeout": "deny"}
+        }))
+        .unwrap();
+        app.update(Msg::Events {
+            session: id,
+            events: vec![Event::new(id, 1, Actor::default(), body)],
+        });
+        assert!(app.visible_approval().is_some());
+        assert!(
+            app.input(key('y')).is_empty(),
+            "zu früh: keine Entscheidung"
+        );
+        assert!(app.flash.is_some());
+        app.card_since = app
+            .card_since
+            .map(|(a, t)| (a, t.checked_sub(ARM_DELAY).unwrap_or(t)));
+        assert!(matches!(
+            app.input(key('y')).as_slice(),
+            [Effect::Resolve { allow: true, .. }]
+        ));
     }
 
     #[test]

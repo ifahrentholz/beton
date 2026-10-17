@@ -234,6 +234,8 @@ async fn tui_004_ac1_y_resolves_the_approval_with_the_tui_user_as_actor() {
         .await;
     assert!(card.contains("git push origin main"), "{card}");
     assert!(card.contains(" y  erlauben"), "{card}");
+    // Eine frisch erschienene Karte nimmt Tasten erst nach kurzer Zeit an.
+    tokio::time::sleep(beton_tui::app::ARM_DELAY * 2).await;
     tui.key(KeyCode::Char('y')).await;
     tui.wait_for("Ergebnis", WAIT, |s| s.contains("Gepusht."))
         .await;
@@ -286,6 +288,7 @@ async fn tui_004_ac2_approval_in_a_hidden_session_counts_and_ctrl_g_a_jumps_ther
         })
         .await;
     assert!(screen.contains("git push origin main"), "{screen}");
+    tokio::time::sleep(beton_tui::app::ARM_DELAY * 2).await;
     tui.key(KeyCode::Char('n')).await;
     tui.wait_for("Ablehnung", WAIT, |s| s.contains("Push abgelehnt."))
         .await;
