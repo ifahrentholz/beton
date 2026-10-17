@@ -8,7 +8,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | --- | --- | --- | --- |
 | `now` | `timestamp` | alle | Zeitpunkt der Auswertung. |
 | `session.attached_clients` | `int` | alle | **Noch nicht verfügbar**, Ladefehler: verbundene Clients kommen mit Presence (COL-004, M4). Verbundene Clients. |
-| `session.branch` | `string` | alle | Git-Branch des Arbeitsverzeichnisses. |
+| `session.branch` | `string` | alle | Git-Branch des Arbeitsverzeichnisses; in `tool_call`/`tool_result` der des Repos von `tool.cwd` (#293). |
 | `session.cost_usd` | `double` | alle | Kosten der Session in USD aus der Usage-Projektion (ohne Subscriptions). |
 | `session.depth` | `int` | alle | Tiefe im Sub-Agent-Baum (0 = Wurzel). |
 | `session.duration_s` | `double` | alle | Laufzeit in Sekunden. |
@@ -23,6 +23,7 @@ Variablen, die CEL-Ausdrücke in Policies sehen, mit Typ und Phasen. Spezifikati
 | `session.permission_mode` | `string` | alle | Permission-Mode (`plan`, `default`, `accept_edits`, `yolo`). |
 | `session.project` | `string` | alle | Projekt der Session. |
 | `session.project_root` | `string` | alle | Projektverzeichnis (absolut): nächstes Verzeichnis mit `.beton/config.yaml`, sonst die Git-Wurzel des Arbeitsverzeichnisses (CLI-008); `${project_root}` in `path_guard`. |
+| `session.push_redirected` | `bool` | alle | Die Git-Konfiguration des Repos von `tool.cwd` bzw. des Users lenkt einen Push ohne Refspec um (`remote.*.push`, `remote.*.mirror`, `push.default` `upstream`/`tracking`/ `matching`, Includes) oder ist nicht sicher lesbar; `git_guard` zählt dann nur Ziele der Form `src:dst` (POL-017, #293). |
 | `session.reasoning_effort` | `string` | alle | Aktueller Reasoning-Effort. |
 | `session.started_at` | `timestamp` | alle | Start der Session. |
 | `session.title` | `string` | alle | Titel der Session. |

@@ -62,14 +62,21 @@ const RELOCATING: [&str; 3] = ["-C", "--git-dir", "--work-tree"];
 /// Umgebungsvariablen, die ein anderes Repository bzw. einen anderen Worktree wählen.
 const RELOCATING_ENV: [&str; 3] = ["GIT_DIR=", "GIT_WORK_TREE=", "GIT_COMMON_DIR="];
 
-/// Konfiguration, die bestimmt, wohin gepusht wird (`-c remote.*`, `push.*`, `branch.*`).
+/// Konfigurationsschlüssel, die bestimmen, wohin gepusht wird (`remote.*`, `push.*`,
+/// `branch.*`), auch über eingebundene Dateien (`include.*`, `includeIf.*`, #293).
+const PUSH_CONFIG_PREFIXES: [&str; 5] = ["remote.", "push.", "branch.", "include.", "includeif."];
+
+fn push_config_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    PUSH_CONFIG_PREFIXES
+        .iter()
+        .any(|p| key.starts_with(p) || key == p.trim_end_matches('.'))
+}
+
+/// Konfiguration, die bestimmt, wohin gepusht wird (`-c remote.*`, `push.*`, `branch.*`,
+/// `include.*`).
 fn push_config(global: &[&str]) -> bool {
-    let affects = |kv: &str| {
-        let key = kv.to_ascii_lowercase();
-        ["remote.", "push.", "branch."]
-            .iter()
-            .any(|p| key.starts_with(p))
-    };
+    let affects = |kv: &str| push_config_key(kv);
     let mut i = 0;
     while i < global.len() {
         let a = global[i];
@@ -119,6 +126,82 @@ pub fn git_elsewhere(argv: &[Vec<&str>]) -> bool {
     false
 }
 
+/// Optionen von `git config`, die einen Wert nehmen.
+const CONFIG_VALUE_OPTIONS: [&str; 8] = [
+    "-f",
+    "--file",
+    "--blob",
+    "--type",
+    "--default",
+    "--comment",
+    "--value",
+    "--worktree-file",
+];
+
+/// Ändert `git config …` einen Schlüssel, der das Push-Ziel bestimmt (#293)? Lesende Aufrufe
+/// (`--get*`, `-l`, `get`, `list`, nur ein Schlüssel) nicht; `--edit` immer.
+fn config_changes_push(args: &[&str]) -> bool {
+    let mut positional: Vec<&str> = Vec::new();
+    let mut read = false;
+    let mut write = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        i += 1;
+        if a == "--" {
+            positional.extend(args[i..].iter().copied());
+            break;
+        }
+        if !a.starts_with('-') || a.len() == 1 {
+            positional.push(a);
+            continue;
+        }
+        if CONFIG_VALUE_OPTIONS.contains(&a) {
+            i += 1;
+            continue;
+        }
+        match a {
+            "-e" | "--edit" => return true,
+            "--get" | "--get-all" | "--get-regexp" | "--get-urlmatch" | "--get-color"
+            | "--get-colorbool" | "-l" | "--list" => read = true,
+            "--add" | "--unset" | "--unset-all" | "--replace-all" | "--rename-section"
+            | "--remove-section" => write = true,
+            _ => {}
+        }
+    }
+    // Neue Syntax: `git config get|list|set|unset|rename-section|remove-section|edit …`.
+    match positional.first().copied() {
+        Some("edit") => return true,
+        Some("get" | "list") if !write => return false,
+        Some("set" | "unset" | "rename-section" | "remove-section") => {
+            return positional[1..].iter().any(|k| push_config_key(k));
+        }
+        _ => {}
+    }
+    if read && !write {
+        return false;
+    }
+    // Alte Syntax: nur ein Schlüssel liest, Schlüssel und Wert schreiben.
+    let changes = write || positional.len() >= 2;
+    changes && positional.iter().any(|k| push_config_key(k))
+}
+
+/// Setzt `git branch …` den Upstream (`-u`, `--set-upstream-to`, `--track`, #293)?
+fn branch_sets_upstream(args: &[&str]) -> bool {
+    options(args).any(|a| {
+        flag(a, "--set-upstream-to", &['u']) || flag(a, "--track", &['t']) || a == "--set-upstream"
+    })
+}
+
+/// Ändert `git remote …`, wohin gepusht wird (`set-url --push`, `add --mirror`, #293)?
+fn remote_changes_push(args: &[&str]) -> bool {
+    match args.first().copied() {
+        Some("set-url") => options(&args[1..]).any(|a| a == "--push"),
+        Some("add") => options(&args[1..]).any(|a| a == "--mirror" || a.starts_with("--mirror=")),
+        _ => false,
+    }
+}
+
 /// Options-Argumente bis `--`.
 fn options<'a>(args: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
     args.iter()
@@ -149,7 +232,7 @@ struct Push {
     explicit: Vec<String>,
 }
 
-fn push(args: &[&str]) -> Push {
+fn push(args: &[&str], send_pack: bool) -> Push {
     let mut p = Push::default();
     let mut all = false;
     let mut tags = false;
@@ -183,6 +266,10 @@ fn push(args: &[&str]) -> Push {
         if a == "--tags" {
             tags = true;
         }
+        // `send-pack --stdin` liest die Refs von stdin (#293).
+        if send_pack && a == "--stdin" {
+            all = true;
+        }
     }
     if all {
         p.targets.push("*".into());
@@ -212,8 +299,13 @@ fn push(args: &[&str]) -> Push {
         p.targets.push(target);
     }
     if positional.len() <= 1 && !all && !tags {
-        // Ohne Refspec: der aktuelle Branch (`session.branch`).
-        p.targets.push("HEAD".into());
+        if send_pack {
+            // `send-pack` ohne Refs aktualisiert alle Branches beider Seiten (#293).
+            p.targets.push("*".into());
+        } else {
+            // Ohne Refspec: der aktuelle Branch (`session.branch`).
+            p.targets.push("HEAD".into());
+        }
     }
     p
 }
@@ -259,9 +351,19 @@ fn ops_of(cmd: &[&str], out: &mut Vec<&'static str>) {
     if push_config(g.global) {
         add("uncertain");
     }
+    // Änderungen der Push-Konfiguration für einen späteren Push (#293).
+    let changes_push = match sub {
+        "config" => config_changes_push(args),
+        "branch" => branch_sets_upstream(args),
+        "remote" => remote_changes_push(args),
+        _ => false,
+    };
+    if changes_push {
+        add("uncertain");
+    }
     match sub {
         "push" | "send-pack" => {
-            let p = push(args);
+            let p = push(args, sub == "send-pack");
             add("push");
             if p.force {
                 add("force_push");
@@ -304,7 +406,7 @@ pub fn git_push_targets(argv: &[Vec<&str>], elsewhere: bool) -> Vec<String> {
         if let Some((sub, args)) = invocation(cmd)
             && is_push(sub)
         {
-            let p = push(args);
+            let p = push(args, sub == "send-pack");
             if elsewhere {
                 let explicit = p.explicit;
                 out.extend(p.targets.into_iter().map(|t| {

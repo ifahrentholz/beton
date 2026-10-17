@@ -134,14 +134,17 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
                 // Wechselt dasselbe Kommando den Branch, ist `session.branch` nicht der Branch
                 // beim Push bzw. Merge: dann gilt der aktuelle Branch als geschützt.
                 // Läuft der Git-Aufruf womöglich anderswo (`git -C`, `GIT_DIR=`, `cd`,
-                // anderes Arbeitsverzeichnis), zählen nur Ziele `src:dst` (Review #285 M1).
+                // anderes Arbeitsverzeichnis), zählen nur Ziele `src:dst` (Review #285 M1);
+                // ebenso, wenn die Git-Konfiguration einen Push ohne Refspec umlenkt (#293).
                 when: format!(
-                    "tool.kind == \"shell\" && (shell.git_push_targets(tool.argv, {elsewhere}).exists(b, b == \"*\" || {p} || (b == \"HEAD\" && ({switch} || {current}))) || (\"merge\" in shell.git_ops(tool.argv) && ({switch} || {elsewhere} || {current})))",
+                    "tool.kind == \"shell\" && (shell.git_push_targets(tool.argv, {elsewhere} || session.push_redirected == true).exists(b, b == \"*\" || {p} || (b == \"HEAD\" && ({switch} || {current}))) || (\"merge\" in shell.git_ops(tool.argv) && ({switch} || {elsewhere} || {current})))",
                     p = protected("b"),
                     current = protected("session.branch"),
                     switch = "shell.has_command(tool.argv, \"git\", \"checkout\") || shell.has_command(tool.argv, \"git\", \"switch\")",
                     // Zuweisungen vor dem Kommando stehen nicht in `argv`, nur in `command`.
-                    elsewhere = "(shell.git_elsewhere(tool.argv) || tool.cwd != session.worktree || tool.command.matches(\"GIT_(DIR|WORK_TREE|COMMON_DIR)=\"))",
+                    // Pfade aufgelöst verglichen (#293): eine andere Schreibweise desselben
+                    // Verzeichnisses ist kein anderes Repository.
+                    elsewhere = "(shell.git_elsewhere(tool.argv) || resolve(tool.cwd) != resolve(session.worktree) || tool.command.matches(\"GIT_(DIR|WORK_TREE|COMMON_DIR)=\"))",
                 ),
                 action: a,
                 reason: "Push bzw. Merge auf einen geschützten Branch (git_guard)".into(),
@@ -155,7 +158,9 @@ pub(super) fn desugar(params: &Params) -> Result<Sugar, ParamError> {
     rules.push(SugarRule {
         part: Some("uncertain"),
         phase: Phase::ToolCall,
-        when: "tool.kind == \"shell\" && ((tool.parse_uncertain && tool.command.contains(\"git\")) || \"uncertain\" in shell.git_ops(tool.argv))"
+        // `GIT_CONFIG_*` in der Umgebung ändert die Konfiguration späterer Git-Aufrufe (#293);
+        // Zuweisungen stehen nur in `command`.
+        when: "tool.kind == \"shell\" && ((tool.parse_uncertain && tool.command.contains(\"git\")) || \"uncertain\" in shell.git_ops(tool.argv) || tool.command.contains(\"GIT_CONFIG\"))"
             .into(),
         action: Action::Ask,
         reason: "Git-Kommando nicht sicher erkennbar (git_guard)".into(),
