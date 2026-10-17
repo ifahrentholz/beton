@@ -228,6 +228,92 @@ async fn sbx_006_the_sandbox_is_required_by_default() {
     assert!(s.is_none());
 }
 
+/// Führt `script` in `sandbox` aus; liefert stdout.
+async fn run_in(sandbox: &beton_sandbox::Sandbox, fx: &Fx, script: &str) -> String {
+    let out = sandbox
+        .spawn(
+            CommandSpec::new("/bin/sh")
+                .args(["-c", script])
+                .cwd(&fx.ws)
+                .stdio(Stdio::Null, Stdio::Piped, Stdio::Piped),
+        )
+        .unwrap()
+        .output(Duration::from_secs(60))
+        .await
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// #150 (Befund aus #71, neu bewertet mit WP-45/WP-49): Vendor-CLIs außerhalb des Worktrees.
+/// Codex liest in Stufe 1 keine persönlichen Skills (`~/.agents/skills` ist nicht freigegeben)
+/// und schreibt im Home nur in sein State-Verzeichnis. Claudes Plan-Dateien
+/// (`~/.claude/plans`) entstehen in seinem eigenen State-Verzeichnis (Stufe 1 lesen/schreiben,
+/// SBX-002), Stufe 2 sieht sie nicht. Kontrollgruppe: ohne Sandbox gelingt alles.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sbx_002_vendor_clis_reach_only_their_own_state_outside_the_worktree() {
+    let fx = fx();
+    let skill = fx.home.join(".agents/skills/privat/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, "FIXTURE-SKILL").unwrap();
+    std::fs::create_dir_all(fx.home.join(".codex")).unwrap();
+    std::fs::create_dir_all(fx.home.join(".claude/plans")).unwrap();
+    let h = fx.home.display().to_string();
+    let codex_probe = format!(
+        "cat '{h}/.agents/skills/privat/SKILL.md' && echo =SKILL=; \
+         printf x > '{h}/notiz.txt' && echo =HOME=; \
+         printf x > '{h}/.codex/state.txt' && echo =STATE="
+    );
+    let plan_write = format!("printf FIXTURE-PLAN > '{h}/.claude/plans/p.md' && echo =PLAN=");
+    let plan_read = format!("cat '{h}/.claude/plans/p.md' && echo =READ=");
+    // Kontrollgruppe ohne Sandbox.
+    #[allow(clippy::disallowed_methods, reason = "Kontrollgruppe ohne Sandbox")]
+    let host = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("{codex_probe}; {plan_write}; {plan_read}")])
+        .output()
+        .unwrap();
+    let host = String::from_utf8_lossy(&host.stdout);
+    for w in ["SKILL", "HOME", "STATE", "PLAN", "READ"] {
+        assert!(
+            host.contains(&format!("={w}=")),
+            "Kontrollgruppe {w}: {host}"
+        );
+    }
+    for f in ["notiz.txt", ".codex/state.txt", ".claude/plans/p.md"] {
+        std::fs::remove_file(fx.home.join(f)).unwrap();
+    }
+
+    let codex = compose(
+        input(&fx, "codex", ToolIsolation::Inherited),
+        opts(
+            "backend: auto\nrequire_tool_isolation: false\nallow_network: false\n",
+            true,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = run_in(&codex.harness, &fx, &codex_probe).await;
+    assert!(!out.contains("=SKILL="), "{out}");
+    assert!(!out.contains("FIXTURE-SKILL"), "{out}");
+    assert!(!out.contains("=HOME="), "{out}");
+    assert!(out.contains("=STATE="), "{out}");
+    assert!(!fx.home.join("notiz.txt").exists());
+
+    let claude = compose(
+        input(&fx, "claude", ToolIsolation::ShellOverride),
+        opts("backend: auto\nallow_network: false\n", true),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let out = run_in(&claude.harness, &fx, &plan_write).await;
+    assert!(out.contains("=PLAN="), "{out}");
+    let out = run_in(&claude.tools, &fx, &plan_read).await;
+    assert!(!out.contains("=READ="), "{out}");
+    assert!(!out.contains("FIXTURE-PLAN"), "{out}");
+}
+
 #[tokio::test]
 async fn sbx_002_ac4_inherited_tool_isolation_starts_only_with_require_tool_isolation_false() {
     let fx = fx();
